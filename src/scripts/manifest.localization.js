@@ -93,6 +93,21 @@ function initializeLocalizationPlugin() {
         return document.head?.querySelector('meta[name="manifest:prerendered"][content="1"]') !== null;
     }
 
+    // Returns the set of locales the prerender actually generated URL paths for.
+    // Read from `<meta name="manifest:prerender-locales" content="en,fr,...">`.
+    // When the target locale isn't in this set, MPA locale switching should NOT
+    // navigate (it would 404) — instead, fall back to the in-page store update
+    // so locale-aware data sources (e.g. examples on a localization docs page)
+    // can re-render without leaving the current page.
+    function getPrerenderLocales() {
+        const meta = document.head?.querySelector('meta[name="manifest:prerender-locales"]');
+        const content = meta?.getAttribute('content') || '';
+        return content
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+    }
+
     function buildLocaleNavigationUrl(newLang, availableLocales) {
         const currentUrl = new URL(window.location.href);
         const pathParts = currentUrl.pathname.split('/').filter(Boolean);
@@ -135,11 +150,28 @@ function initializeLocalizationPlugin() {
         return currentUrl.toString();
     }
 
-    // Input validation for language codes
+    // Input validation for language codes.
+    //
+    // Conforms to BCP 47 / ISO 639 shape:
+    //   - 2 or 3 letter primary tag (e.g. en, fr, zh, kab)
+    //   - Optional region: -XX (ISO 3166 alpha-2, e.g. en-US) or -DDD (UN M.49)
+    //   - Optional script: -Xxxx (ISO 15924, e.g. zh-Hans, zh-Hant)
+    //
+    // The previous /^[a-zA-Z0-9_-]+$/ pattern was too permissive — it matched
+    // arbitrary identifiers like `appwriteTableId`, `scope`, `storage` from
+    // non-localization data source configs and added them to `available`.
     function isValidLanguageCode(lang) {
         if (typeof lang !== 'string' || lang.length === 0) return false;
-        // Allow alphanumeric, hyphens, and underscores
-        return /^[a-zA-Z0-9_-]+$/.test(lang);
+        return /^[a-z]{2,3}(?:-(?:[A-Z][a-z]{3}|[A-Z]{2}|\d{3}))?$/i.test(lang);
+    }
+
+    // Identify data source entries that are Appwrite collections/buckets.
+    // These have structural keys like `appwriteTableId` / `appwriteBucketId`
+    // that must not be treated as locale codes during locale discovery.
+    function isAppwriteDataSource(collection) {
+        return !!(collection && typeof collection === 'object' &&
+            (collection.appwriteTableId || collection.appwriteBucketId ||
+             collection.appwriteDatabaseId));
     }
 
     // Safe localStorage operations with error handling
@@ -203,6 +235,9 @@ function initializeLocalizationPlugin() {
             if (manifest.data && typeof manifest.data === 'object') {
                 // Process each data source
                 for (const [sourceName, collection] of Object.entries(manifest.data)) {
+                    // Skip Appwrite collections — their config keys (appwriteTableId,
+                    // scope, storage, etc.) shouldn't be treated as locale codes.
+                    if (isAppwriteDataSource(collection)) continue;
                     if (collection && typeof collection === 'object') {
                         // Check for single-file multi-locale CSV (e.g., {"locales": "/path/to/file.csv"})
                         if (collection.locales && typeof collection.locales === 'string' && collection.locales.endsWith('.csv')) {
@@ -359,14 +394,44 @@ function initializeLocalizationPlugin() {
 
 
         try {
-            // In prerendered static output, locale switching must navigate to a locale URL.
-            // Mutating Alpine store alone won't re-render baked static content.
+            // In prerendered static output, locale switching normally navigates
+            // to the target locale's URL.  But only do this when the target
+            // locale was ACTUALLY prerendered — otherwise navigation would 404.
+            //
+            // When the host site has a single locale (e.g. an English docs site
+            // with locale-aware example data on one page), `prerender-locales`
+            // contains only that locale.  Switching to any other locale falls
+            // through to the in-page store update below — locale-aware data
+            // re-loads via the `localechange` event and the page reflects the
+            // new locale without navigating.
+            // Track whether this is a "scoped" change (in-page only on a
+            // prerendered single-locale site).  Scoped changes must NOT persist
+            // to localStorage or update the URL — the locale is a transient
+            // example/demo state, not a site-wide preference.  Persisting would
+            // leak the demo locale to subsequent page loads via localStorage,
+            // making `<html lang>` mismatch the actual baked content (English
+            // article body with `lang="fr"`) and muddying the SEO signal.
+            let isScopedDemoChange = false;
             if (isPrerenderedStaticBuild()) {
-                const targetUrl = buildLocaleNavigationUrl(newLang, store.available || []);
-                if (targetUrl !== window.location.href) {
-                    window.location.assign(targetUrl);
+                const prerenderLocales = getPrerenderLocales();
+                // Multi-locale site: navigate to the target locale's URL.
+                // Single-locale site: there are no other locale URLs to navigate
+                // to (the renderer skips the redundant default-locale mirror),
+                // so ALL switches must be treated as in-page demos.
+                const isMultiLocaleSite = prerenderLocales.length > 1;
+                const targetIsPrerendered =
+                    prerenderLocales.length === 0 ||
+                    prerenderLocales.includes(newLang);
+                if (isMultiLocaleSite && targetIsPrerendered) {
+                    const targetUrl = buildLocaleNavigationUrl(newLang, store.available || []);
+                    if (targetUrl !== window.location.href) {
+                        window.location.assign(targetUrl);
+                    }
+                    return true;
                 }
-                return true;
+                // In-page demo: locale-aware data re-renders without navigating.
+                // Mark as scoped so we skip URL/localStorage persistence below.
+                isScopedDemoChange = true;
             }
 
             // Update store
@@ -382,16 +447,21 @@ function initializeLocalizationPlugin() {
                 console.error('[Manifest Localization] DOM update error:', domError);
             }
 
-            // Update localStorage safely
-            safeStorage.set('lang', newLang);
+            // Update localStorage safely — but skip for scoped demo changes
+            // so the next page load doesn't restore a non-prerendered locale.
+            if (!isScopedDemoChange) {
+                safeStorage.set('lang', newLang);
+            }
 
-            // Update URL based on current URL state and updateUrl parameter
+            // Update URL based on current URL state and updateUrl parameter.
+            // Skip entirely for scoped demo changes — adding/replacing a locale
+            // prefix would point at a URL that wasn't prerendered (404).
             try {
                 const currentUrl = new URL(window.location.href);
                 const pathParts = currentUrl.pathname.split('/').filter(Boolean);
                 const hasLanguageInUrl = pathParts[0] && store.available.includes(pathParts[0]);
 
-                if (updateUrl || hasLanguageInUrl) {
+                if (!isScopedDemoChange && (updateUrl || hasLanguageInUrl)) {
                     // Update URL if:
                     // 1. updateUrl is explicitly true (router navigation, initialization)
                     // 2. OR there's already a language code in the URL (user expects URL to update)
@@ -626,7 +696,7 @@ if (document.readyState === 'loading') {
 // If Alpine is already initialized when this script loads, initialize immediately
 if (window.Alpine && typeof window.Alpine.magic === 'function') {
     setTimeout(ensureLocalizationPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.magic === 'function') {
             clearInterval(checkAlpine);

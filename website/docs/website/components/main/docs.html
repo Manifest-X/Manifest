@@ -3,14 +3,13 @@
   <div class="col md:row justify-between gap-4 w-7xl max-w-full mx-auto">
 
     <!-- Desktop Navigation-->
-    <div class="hidden md:block w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pr-10 overflow-y-auto no-scrollbar">
+    <div style="view-transition-name: docs-nav-desktop" class="hidden md:block w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pr-10 overflow-y-auto no-scrollbar">
       <template x-for="group in $x.docs" :key="group.group">
         <div>
           <h5 class="mb-2.5 pl-2.5 text-content-subtle" x-text="group.group"></h5>
           <div class="col">
             <template x-for="(item, index) in group.items" :key="item.path || index">
-              <a x-show="item.name" :href="'/' + group.group.toLowerCase().replace(' ', '-') + '/' + item.path"
-                role="button" class="ghost justify-start w-full text-content-neutral" :class="[
+              <a x-show="item.name" :href="'/docs/' + group.group.toLowerCase().replace(' ', '-') + '/' + item.path" role="button" class="ghost justify-start w-full text-content-neutral" :class="[
                     $x.docs.$route('path') && $x.docs.$route('path').path === item.path ? 'selected brand !text-content-stark pointer-events-none' : '',
                     item.indent ? 'ps-10 text-content-subtle' : ''
                   ]">
@@ -25,15 +24,13 @@
     </div>
 
     <!-- Mobile Navigation Subheader -->
-    <div
-      class="row-wrap md:hidden gap-4 justify-between items-center fixed top-[69px] left-0 right-0 z-5 px-viewport-padding py-4 bg-page/65 border-b border-line backdrop-blur-xl">
+    <div class="row-wrap md:hidden gap-4 justify-between items-center fixed top-[69px] left-0 right-0 z-5 px-viewport-padding py-4 bg-page/65 border-b border-line backdrop-blur-xl">
 
       <!-- Left Side -->
       <div class="row gap-4 max-w-full">
 
         <!-- Mobile Sidebar Button -->
-        <button class="ghost" popovertarget="mobile-navigation" x-icon="lucide:menu"
-          aria-label="Mobile Navigation"></button>
+        <button class="ghost" popovertarget="mobile-navigation" x-icon="lucide:menu" aria-label="Mobile Navigation"></button>
 
         <!-- Breadcrumbs-->
         <small class="truncate" x-show="$x.docs.$route('path')">
@@ -47,19 +44,16 @@
       <!-- <button class="ghost" popovertarget="search" x-icon="lucide:search" aria-label="Search Menu"></button> -->
 
       <!-- Mobile Navigation Sidebar -->
-      <aside popover id="mobile-navigation"
-        class="start col w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 px-4 border-eborder-line overflow-y-auto no-scrollbar">
+      <aside popover id="mobile-navigation" data-no-view-transition class="start col w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 px-4 border-eborder-line overflow-y-auto no-scrollbar">
         <template x-for="group in $x.docs" :key="group.group">
           <div>
             <h5 class="mb-2.5 pl-2.5 text-content-subtle" x-text="group.group"></h5>
             <div class="col mb-8">
               <template x-for="(item, index) in group.items" :key="item.path || index">
-                <button x-show="item.name" popovertarget="mobile-navigation" popoveraction="hide"
-                  class="ghost justify-start w-full text-content-neutral" :class="[
+                <button x-show="item.name" popovertarget="mobile-navigation" popoveraction="hide" class="ghost justify-start w-full text-content-neutral" :class="[
                     $x.docs.$route('path') && $x.docs.$route('path').path === item.path ? 'selected brand !text-content-stark pointer-events-none' : '',
                     item.indent ? 'ps-10' : ''
-                  ]"
-                  @click="history.pushState(null, '', '/' + group.group.toLowerCase().replace(' ', '-') + '/' + item.path); window.dispatchEvent(new CustomEvent('manifest:route-change', { detail: { from: window.location.pathname, to: '/' + group.group.toLowerCase().replace(' ', '-') + '/' + item.path, normalizedPath: group.group.toLowerCase().replace(' ', '-') + '/' + item.path } }))">
+                  ]" @click="history.pushState(null, '', '/' + group.group.toLowerCase().replace(' ', '-') + '/' + item.path); window.dispatchEvent(new CustomEvent('manifest:route-change', { detail: { from: window.location.pathname, to: '/' + group.group.toLowerCase().replace(' ', '-') + '/' + item.path, normalizedPath: group.group.toLowerCase().replace(' ', '-') + '/' + item.path } }))">
                   <span x-icon="item.icon"></span>
                   <span x-text="item.name"></span>
                 </button>
@@ -71,18 +65,15 @@
     </div>
 
     <!-- Articles -->
-    <div
-      class="col justify-between max-h-screen pt-42 md:pt-26 px-4 md:px-8 pb-[30vh] overflow-y-auto no-scrollbar scroll-smooth">
+    <div class="col justify-between max-h-screen pt-42 md:pt-26 px-4 md:px-8 pb-[30vh] overflow-y-auto no-scrollbar scroll-smooth">
 
       <div class="x-3xl max-w-full mx-auto">
 
         <!-- Eyebrow Group Name -->
-        <span class="h5 text-brand-content" x-show="$x.docs.$route('path')" class="mb-2.5 text-brand-content"
-          x-text="$x.docs.$route('path')?.group || 'No group'"></span>
+        <span class="h5 text-brand-content" x-show="$x.docs.$route('path')" class="mb-2.5 text-brand-content" x-text="$x.docs.$route('path')?.group || 'No group'"></span>
 
         <!-- Markdown Document for Route -->
-        <div x-show="$x.docs.$route('path')" class="prose [&_:where(h1,h2,h3)]:scroll-mt-26"
-          x-markdown="$x.docs.$route('path')?.doc"></div>
+        <div x-show="$x.docs.$route('path')" class="prose [&_:where(h1,h2,h3)]:scroll-mt-26" x-markdown="$x.docs.$route('path')?.doc"></div>
 
       </div>
 
@@ -97,8 +88,7 @@
       <footer class="mt-20">
         <hr>
         <div class="row-wrap justify-between items-center gap-4 pt-4">
-          <a href="https://github.com/andrewmatlock/Manifest" target="_blank" role="button" class="transparent"
-            aria-label="GitHub" x-icon="simple-icons:github"></a>
+          <a href="https://github.com/andrewmatlock/Manifest" target="_blank" role="button" class="transparent" aria-label="GitHub" x-icon="simple-icons:github"></a>
           <p class="text-sm text-subtle">Powered by Manifest</p>
         </div>
       </footer>
@@ -106,8 +96,7 @@
     </div>
 
     <!-- Anchor Links -->
-    <div
-      class="hidden lg:col gap-2.5 w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pl-10 overflow-y-auto no-scrollbar">
+    <div style="view-transition-name: docs-toc" class="hidden lg:col gap-2.5 w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pl-10 overflow-y-auto no-scrollbar">
 
       <span class="h5 mb-2" x-show="$store.anchors?.count > 0">
         <span x-icon="lucide:align-left" class="[dir=rtl]:rotate-180"></span>
@@ -116,8 +105,7 @@
 
       <template x-anchors=".prose | h2, h3">
         <div class="col gap-1.5" x-show="$store.anchors?.count > 0">
-          <a :href="anchor.link" class="text-content-subtle hover:text-content-neutral text-sm no-underline block mb-2"
-            :class="{
+          <a :href="anchor.link" class="text-content-subtle hover:text-content-neutral text-sm no-underline block mb-2" :class="{
                 'pl-2': anchor.tag === 'h3',
                 '!text-content-stark font-medium': anchor.selected
               }" x-text="anchor.text">

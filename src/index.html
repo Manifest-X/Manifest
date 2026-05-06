@@ -48,6 +48,9 @@
   <link rel="stylesheet" href="/styles/utilities/manifest.utilities.css">
 
   <!-- Scripts -->
+  <!-- Runtime env injection (gitignored, populates window.env for ${VAR} interpolation in manifest.json) -->
+  <script src="/env.js"></script>
+
   <!-- Alpine & Tailwind -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   <script src="/scripts/tailwind.v4.1.js"></script>
@@ -60,6 +63,7 @@
   <script src="/scripts/manifest.icons.js"></script>
   <script src="/scripts/manifest.localization.js"></script>
   <script src="/scripts/manifest.markdown.js"></script>
+  <script src="/scripts/manifest.svg.js"></script>
   <script src="/scripts/manifest.resize.js"></script>
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
@@ -105,16 +109,247 @@
 
     <x-header></x-header>
 
-    <!-- Tab Panels -->
-    <div class="col gap-4 pt-12 pb-40">
-      <x-colorpicker></x-colorpicker>
-      <x-core x-show="tab === 'core'"></x-core>
-      <x-appwrite x-show="tab === 'appwrite'"></x-appwrite>
-      <x-local-data x-show="tab === 'local-data'"></x-local-data>
-      <!-- <x-utilities x-show="tab === 'utilities'"></x-utilities> -->
+  </main>
+
+  <section class="row-wrap gap-20 p-20" x-data="{col:'linear-gradient(90deg, rgba(0,0,0,0) 0%, #0000ff 100%)'}">
+
+    <div class="prose">
+
+      <button x-tab="solid">Solid</button>
+      <button x-tab="gradient">Gradient</button>
+      <button x-tab="library">Library</button>
+
+      <div id="solid" x-tabpanel>First content</div>
+      <div id="gradient" x-tabpanel>Second content</div>
+      <div id="library" x-tabpanel>Third content</div>
+
+
+      <hr>
+      <details>
+        <summary>Test 1</summary>
+        <p>Testing</p>
+      </details>
+      <hr>
+      <details>
+        <summary>Test 1</summary>
+        <p>Testing</p>
+      </details>
+      <hr>
+      <details>
+        <summary>Test 1</summary>
+        <p>Testing</p>
+      </details>
+      <hr>
     </div>
 
-  </main>
+    <!-- Bare swatch -->
+    <button x-colorpicker.swatch></button>
+
+    <!-- Color defined by parent -->
+    <div x-data="{ color: '#ff0000' }">
+      <button x-colorpicker.swatch x-model="color"></button>
+    </div>
+
+    <!-- Color defined by self -->
+    <button x-colorpicker.swatch x-data="{ color: '#ff0000' }" x-model="color"></button>
+
+    <!-- Swatch coloring other elements -->
+    <div x-data>
+      <button id="brand" x-colorpicker.swatch value="#3b82f6"></button>
+      <h1 :style="`color: ${$colorpicker('brand')}`">Brand Color</h1>
+      <span x-text="$colorpicker('brand')"></span>
+    </div>
+
+    <!-- Swatch + color picker -->
+    <button x-colorpicker.swatch="test-2"></button>
+    <menu popover id="test-2" class="w-50 border border-line" x-colorpicker>
+      <div x-colorpicker.library></div>
+    </menu>
+
+    <!-- Inline menus -->
+    <button x-colorpicker.swatch="dropdown-picker"></button>
+    <button x-colorpicker.swatch="dialog-picker"></button>
+    <button x-colorpicker.swatch="inline-picker"></button>
+
+    <menu id="dropdown-picker" popover x-colorpicker></menu>
+    <dialog id="dialog-picker" popover x-colorpicker></dialog>
+    <div id="inline-picker" x-colorpicker></div>
+
+    <!-- Modified menus -->Solid
+    <button x-colorpicker.swatch="['solid']"></button>
+    <button x-colorpicker.swatch="['gradient']"></button>
+    <button x-colorpicker.swatch="['solid', 'gradient']"></button>
+    <button x-colorpicker.swatch="['library', 'solid', 'gradient']"></button>
+    <button x-colorpicker.swatch="my-picker"></button>
+    <menu id="my-picker" popover x-colorpicker class="max-h-160">
+      <div x-colorpicker.solid></div>
+      <hr>
+      <div x-colorpicker.library></div>
+    </menu>
+
+
+    <!-- Full custom picker -->
+    <div x-colorpicker class="border border-line" x-data=" { tab: ' library' }">
+
+      <!-- Hidden input for form participation -->
+      <input type="color" value="#f97316" hidden />
+
+      <!-- Tabs -->
+      <div class="tabs-wrapper">
+        <button class="ghost sm" :class="tab === 'solid' && 'selected'" @click="tab = 'solid'" x-tooltip="Solid" aria-label="Solid"><span x-icon class="color-icon-solid"></span></button>
+        <button class="ghost sm" :class="tab === 'gradient' && 'selected'" @click="tab = 'gradient'" x-tooltip="Gradient" aria-label="Gradient"><span x-icon class="color-icon-gradient"></span></button>
+        <button class="ghost sm" :class="tab === 'library' && 'selected'" @click="tab = 'library'" x-tooltip="Library" aria-label="Library"><span x-icon class="color-icon-library"></span></button>
+      </div>
+
+      <!-- Tab Areas -->
+      <div x-colorpicker.solid x-show="tab === 'solid'"></div>
+      <div x-colorpicker.gradient x-show="tab === 'gradient'"></div>
+      <div x-colorpicker.library x-show="tab === 'library'"></div>
+
+      <!-- Templates -->
+
+      <!-- Solid options -->
+      <template x-colorpicker.solid>
+        <div>
+          <div class="canvas-wrapper">
+            <canvas x-colorpicker.set-canvas></canvas>
+            <div class="color-reticle"></div>
+          </div>
+          <div class="solid-options-inputs">
+            <input type="range" x-colorpicker.set-hue class="hue" />
+            <input type="range" x-colorpicker.set-alpha class="alpha" />
+            <div>
+              <button popovertarget="color-space-menu" x-colorpicker.set-color-space class="ghost sm"></button>
+              <menu id="color-space-menu" popover>
+                <li x-colorpicker.set-color-space="hex">Hex</li>
+                <li x-colorpicker.set-color-space="rgb">RGB</li>
+                <li x-colorpicker.set-color-space="hsl">HSL</li>
+                <li x-colorpicker.set-color-space="oklch">OKLCH</li>
+                <hr>
+                <li x-colorpicker.grab-color><span x-icon class="color-icon-grab"></span><span>Grab color</span></li>
+              </menu>
+              <input type="text" x-colorpicker.set-color-value class="ghost sm" onClick="this.select()" />
+              <input type="number" x-colorpicker.set-alpha-value class="ghost sm no-spinner" min="0" max="100" step="1" onClick="this.select()" />
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Gradient options -->
+      <template x-colorpicker.gradient>
+        <div>
+
+          <!-- Gradient layers -->
+          <div x-colorpicker.gradient-layers></div>
+
+          <!-- Gradient layers template -->
+          <template x-colorpicker.layer-options>
+            <div>
+              <div class="layer-options-wrapper">
+                <div class="layer-options-inputs">
+
+                  <!-- Gradient type -->
+                  <button class="ghost sm" x-dropdown="gradient-layer-options" aria-label="Layer options"><span :class="'gradient-layer-icon-' + layerType" x-icon></span></button>
+                  <menu popover id="gradient-layer-options">
+                    <li x-colorpicker.set-gradient-type="linear">
+                      <span x-icon class="gradient-layer-icon-linear"></span><span>Linear Gradient</span>
+                    </li>
+                    <li x-colorpicker.set-gradient-type="radial">
+                      <span x-icon class="gradient-layer-icon-radial"></span><span>Radial Gradient</span>
+                    </li>
+                    <li x-colorpicker.set-gradient-type="conic">
+                      <span x-icon class="gradient-layer-icon-conic"></span><span>Conic Gradient</span>
+                    </li>
+                    <hr>
+                    <li x-colorpicker.rotate-layer>Rotate 90°</li>
+                    <li x-colorpicker.flip-layer>Flip Direction</li>
+                    <hr>
+                    <li x-colorpicker.add-layer-above>Add Above</li>
+                    <li x-colorpicker.add-layer-below>Add Below</li>
+                    <li x-colorpicker.duplicate-layer>Duplicate</li>
+                    <hr>
+                    <li x-colorpicker.move-layer-up :disabled="layerIndex === 0">Move Up</li>
+                    <li x-colorpicker.move-layer-down :disabled="layerIndex === layerCount - 1">Move Down</li>
+                    <hr>
+                    <li x-colorpicker.remove-layer :disabled="layerCount === 1" class="negative">Remove</li>
+                  </menu>
+
+                  <!-- Gradient angle -->
+                  <div class="layer-angle-wrapper">
+                    <input type="number" x-colorpicker.set-angle class="ghost sm no-spinner" min="0" max="360" onclick="select()" />
+                    <span>°</span>
+                  </div>
+
+                  <!-- Gradient stop bar -->
+                  <div x-colorpicker.layer-stops-bar class="gradient-layer" x-dropdown.context="stop-context-menu"></div>
+                  <menu popover id="stop-context-menu" class="stop-context-menu">
+                    <li x-colorpicker.duplicate-stop>Duplicate</li>
+                    <li x-colorpicker.delete-stop class="negative">Delete</li>
+                    <hr>
+                    <!-- Library groups — pick a color to apply to the right-clicked stop -->
+                    <div x-colorpicker.library></div>
+                  </menu>
+
+                </div>
+
+                <!-- Solid options (per stop) -->
+                <div x-colorpicker.solid></div>
+              </div>
+
+            </div>
+          </template>
+
+          <!-- Gradient value input (all layers) -->
+          <div class="gradient-value-wrapper">
+            <textarea x-colorpicker.set-gradient-value class="ghost sm" spellcheck="false" rows="3" onclick="select()"></textarea>
+          </div>
+        </div>
+
+      </template>
+
+      <!-- Library template -->
+      <template x-colorpicker.library>
+        <div class="library-wrapper">
+
+          <!-- Group template (Recent, Tailwind, iOS, any customs) -->
+          <template x-colorpicker.library-group>
+            <div class="library-group">
+              <small x-text="group.name"></small>
+
+              <!-- Palette template -->
+              <template x-colorpicker.library-palette>
+                <div class="library-palette">
+
+                  <!-- Recent swatch template with context menu -->
+                  <template x-colorpicker.library-recent-swatch>
+                    <div>
+                      <button x-colorpicker.apply-color x-dropdown.context="recent-menu" :style="`background: ${swatch.value}`" x-tooltip="`${swatch.name || swatch.value}`"></button>
+                      <menu popover id="recent-menu">
+                        <li x-colorpicker.remove-recent>Remove</li>
+                      </menu>
+                    </div>
+                  </template>
+
+                  <!-- Other swatch template -->
+                  <template x-colorpicker.library-swatch>
+                    <button x-colorpicker.apply-color :style="`background: ${swatch.value}`" x-tooltip="`${swatch.name || swatch.value}`"></button>
+                  </template>
+
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Shared context menu for every Recent swatch (lives at the library root, not
+               inside the swatch template — one menu, many triggers). -->
+
+        </div>
+      </template>
+
+    </div>
+
+  </section>
+  <!-- End colorpicker tests -->
 
   <!-- About route: localized content + data-hydrate island -->
   <section x-route="about" style="padding: 2rem; max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem">

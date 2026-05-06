@@ -5,6 +5,7 @@
         "colors": "!gap-0 [&_strong]:-ml-1 [&_strong]:mb-1 !text-white !bg-neutral-900 dark:!text-black dark:!bg-neutral-100"
     },
     "icon": "lucide:aperture",
+    "sampleSvg": "/assets/examples/icon-star.svg",
     "toast": "This content comes from a data source",
     "tooltip": "This content comes from a data source",
     "tooltipList": [

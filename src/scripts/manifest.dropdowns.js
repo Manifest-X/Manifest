@@ -84,7 +84,7 @@ function initializeDropdownPlugin() {
                     const uniqueDropdownId = `dropdown-${anchorCode}`;
                     menu.setAttribute('id', uniqueDropdownId);
                     document.body.appendChild(menu);
-                    el.setAttribute('popovertarget', uniqueDropdownId);
+                    if (!modifiers.includes('context')) el.setAttribute('popovertarget', uniqueDropdownId);
 
                     // Initialize Alpine on the cloned menu
                     Alpine.initTree(menu);
@@ -114,7 +114,7 @@ function initializeDropdownPlugin() {
                                             menu = menuElement.cloneNode(true);
                                             menu.setAttribute('id', dropdownId);
                                             document.body.appendChild(menu);
-                                            el.setAttribute('popovertarget', dropdownId);
+                                            if (!modifiers.includes('context')) el.setAttribute('popovertarget', dropdownId);
 
                                             // Initialize Alpine on the menu
                                             Alpine.initTree(menu);
@@ -139,10 +139,14 @@ function initializeDropdownPlugin() {
                             }
                         }
 
+                        // Silently skip if the trigger was detached from the DOM before init
+                        // (common during rapid library re-renders). The init is no longer
+                        // meaningful for a node that's no longer wired up.
+                        if (!el.isConnected) return;
                         console.warn(`[Manifest] Dropdown menu with id "${dropdownId}" not found`);
                         return;
                     }
-                    el.setAttribute('popovertarget', dropdownId);
+                    if (!modifiers.includes('context')) el.setAttribute('popovertarget', dropdownId);
                 }
 
                 // Set up the dropdown
@@ -151,8 +155,9 @@ function initializeDropdownPlugin() {
                 function setupDropdown() {
                     if (!menu) return;
 
-                    // Set up popover
-                    menu.setAttribute('popover', '');
+                    // Context menus use manual popover (no light-dismiss) to avoid
+                    // conflicts with multi-touch trackpad right-click
+                    menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
 
                     // Set up anchor positioning
                     const anchorName = `--dropdown-${anchorCode}`;
@@ -170,6 +175,12 @@ function initializeDropdownPlugin() {
                             }
                         };
 
+                        // True when pointer is over an open Manifest tooltip (hint popover), e.g. after leaving the menu
+                        const isOverOpenHintTooltip = () =>
+                            Array.from(document.querySelectorAll('.tooltip:popover-open')).some((t) =>
+                                t.matches(':hover')
+                            );
+
                         // Enhanced auto-close when mouse leaves both trigger and menu
                         startAutoCloseTimer = () => {
                             clearTimeout(autoCloseTimeout);
@@ -178,7 +189,7 @@ function initializeDropdownPlugin() {
                                     const isOverButton = el.matches(':hover');
                                     const isOverMenu = menu.matches(':hover');
 
-                                    if (!isOverButton && !isOverMenu) {
+                                    if (!isOverButton && !isOverMenu && !isOverOpenHintTooltip()) {
                                         menu.hidePopover();
                                     }
                                 }
@@ -189,7 +200,54 @@ function initializeDropdownPlugin() {
                         el.addEventListener('mouseleave', startAutoCloseTimer);
                     }
 
+                    // Set up context menu (right-click) functionality
+                    // Uses popover="manual" — we handle dismiss ourselves
+                    if (modifiers.includes('context')) {
+                        const closeContext = () => {
+                            if (menu.matches(':popover-open')) menu.hidePopover();
+                        };
 
+                        el.addEventListener('contextmenu', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+
+                            // Stash the actual right-clicked element so menu items can act on it.
+                            // (e.target is the deepest hit; el is the directive-bearing ancestor.)
+                            menu._triggerEl = e.target.closest('[data-cp-value], [x-data]') || el;
+                            menu._triggerHost = el;
+
+                            // Position at cursor, overriding anchor positioning
+                            menu.style.position = 'fixed';
+                            menu.style.positionAnchor = 'unset';
+                            menu.style.positionArea = 'unset';
+                            menu.style.inset = 'auto';
+                            menu.style.left = e.clientX + 'px';
+                            menu.style.top = e.clientY + 'px';
+                            menu.style.margin = '0';
+
+                            if (!menu.matches(':popover-open')) menu.showPopover();
+
+                            // Adjust if menu overflows viewport
+                            requestAnimationFrame(() => {
+                                const rect = menu.getBoundingClientRect();
+                                if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
+                                if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
+                            });
+                        });
+
+                        // Manual dismiss: click outside or Escape
+                        document.addEventListener('pointerdown', (e) => {
+                            if (menu.matches(':popover-open') && !menu.contains(e.target)) closeContext();
+                        });
+                        document.addEventListener('keydown', (e) => {
+                            if (e.key === 'Escape' && menu.matches(':popover-open')) { closeContext(); el.focus(); }
+                        });
+
+                        // Close after clicking a menu item
+                        menu.addEventListener('click', (e) => {
+                            if (e.target.closest('li, a, button')) closeContext();
+                        });
+                    }
 
                     // Add keyboard navigation handling
                     menu.addEventListener('keydown', (e) => {
@@ -346,7 +404,7 @@ document.addEventListener('alpine:init', ensureDropdownPluginInitialized);
 // If Alpine is already initialized when this script loads, initialize immediately
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     setTimeout(ensureDropdownPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {

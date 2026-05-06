@@ -1,6 +1,6 @@
 {
   "name": "mnfst-starter",
-  "version": "1.5.36",
+  "version": "1.5.37",
   "description": "Create a Manifest (mnfst) starter application",
   "main": "index.html",
   "bin": {
@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "npx mnfst-serve",
-    "build": "echo 'Starter template - no build needed'"
+    "build": "echo 'Starter template - no build needed'",
+    "prepare:source": "node ./scripts/sync-template.mjs",
+    "prepack": "npm run prepare:source"
   },
   "keywords": [
     "manifest",

@@ -1,0 +1,31 @@
+{
+  "name": "Prerender E2E Fixture",
+  "short_name": "Fixture",
+  "description": "Exercises every interactive Manifest directive to validate prerender hydration.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "browser",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [],
+  "components": [
+    "components/popup.html"
+  ],
+  "preloadedComponents": [
+    "components/header.html"
+  ],
+  "data": {
+    "content": {
+      "en": "data/content.en.yaml",
+      "fr": "data/content.fr.yaml"
+    }
+  },
+  "prerender": {
+    "localUrl": "http://localhost:5099",
+    "liveUrl": "https://fixture.test",
+    "output": ".out",
+    "routerBase": "",
+    "browserRecycleEvery": 2,
+    "concurrency": 2
+  }
+}

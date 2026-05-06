@@ -95,6 +95,34 @@ Avoid mixing `x-dropdown.hover` and `x-tooltip` on the same button, since they b
 
 ---
 
+## Context Menu
+
+Add the `context` modifier to `x-dropdown` for right-click dropdowns. The menu appears at the cursor position, replacing the browser's native context menu on the trigger element.
+
+::: frame
+<div x-dropdown.context="context-menu-preview" style="padding: 2rem; border: 1px dashed var(--color-line, #ccc); border-radius: var(--radius, 0.5rem); text-align: center; color: var(--color-content-subtle);">Right-click this area</div>
+
+<menu popover id="context-menu-preview">
+    <li>Cut</li>
+    <li>Copy</li>
+    <li>Paste</li>
+</menu>
+:::
+
+```html copy
+<div x-dropdown.context="context-menu">Right-click this area</div>
+
+<menu popover id="context-menu">
+    <li>Cut</li>
+    <li>Copy</li>
+    <li>Paste</li>
+</menu>
+```
+
+The trigger element does not need to be a `<button>` since the menu is opened programmatically on right-click rather than via the `popovertarget` attribute's click-to-toggle behavior. The menu still uses the Popover API for rendering and stacking.
+
+---
+
 ## Nesting
 
 Create multi-level navigation menus with nested dropdowns.

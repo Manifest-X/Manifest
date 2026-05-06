@@ -1,0 +1,17 @@
+My Brand:
+  Primary:
+    - name: Brand Blue
+      value: "#0066ff"
+    - name: Brand Navy
+      value: "#001f54"
+  Accents:
+    - "#ff6b35"
+    - "#f7b801"
+    - "#00a86b"
+  Neutrals:
+    - "#111111"
+    - "#333333"
+    - "#666666"
+    - "#999999"
+    - "#cccccc"
+    - "#ffffff"

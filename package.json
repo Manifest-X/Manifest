@@ -1,6 +1,6 @@
 {
     "name": "mnfst",
-    "version": "0.5.53",
+    "version": "0.5.64",
     "private": false,
     "workspaces": [
         "templates/starter",
@@ -28,6 +28,7 @@
         "publish:starter": "cd packages/create-starter && npm publish --auth-type=web",
         "publish:run": "cd packages/run && npm publish --auth-type=web",
         "publish:render": "cd packages/render && npm publish --auth-type=web",
+        "publish:claude": "cd packages/create-claude && npm publish --auth-type=web",
         "prepublishOnly": "npm run build",
         "test": "vitest run",
         "lint": "echo 'No linting configured'"
@@ -36,11 +37,13 @@
         "@rollup/plugin-commonjs": "^28.0.1",
         "@rollup/plugin-node-resolve": "^15.3.0",
         "@rollup/plugin-terser": "^0.4.4",
+        "@tailwindcss/cli": "^4.2.4",
         "cssnano": "^7.1.1",
         "glob": "^11.0.2",
         "puppeteer": "^24.15.0",
         "rimraf": "^5.0.0",
         "rollup": "^4.24.2",
+        "tailwindcss": "^4.2.4",
         "vitest": "^4.1.2"
     },
     "keywords": [

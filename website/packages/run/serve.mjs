@@ -3,12 +3,18 @@
  * mnfst-run — zero-dependency dev server for Manifest projects.
  *
  * Usage:
- *   npx mnfst-run [dir] [--port 5001]
+ *   npx mnfst-run [dir] [--port 5001] [--idle-shutdown 30] [--no-idle-shutdown]
  *
- *   dir    Directory to serve (default: current directory). Any depth of
- *          nesting is valid, e.g. npx mnfst-run docs/articles/publishing
- *   --port Preferred port (default: PORT env var, then 5001). Auto-increments
- *          if the port is already in use.
+ *   dir                 Directory to serve (default: current directory). Any
+ *                       depth of nesting is valid, e.g.
+ *                       npx mnfst-run docs/articles/publishing
+ *   --port              Preferred port (default: PORT env var, then 5001).
+ *                       Auto-increments if the port is already in use.
+ *   --idle-shutdown N   Exit after N seconds with no open browser tabs
+ *                       (default 30). Only arms once a tab has connected, so
+ *                       the auto-launched browser has time to load.
+ *   --no-idle-shutdown  Disable auto-shutdown (useful in CI / headless cases
+ *                       where no browser will connect).
  *
  * SPA vs MPA is auto-detected: if the root index.html contains
  * <meta name="manifest:prerendered"> the server disables SPA fallback.
@@ -75,9 +81,17 @@ const LIVE_RELOAD_SCRIPT = `<script>
 const args = process.argv.slice(2);
 let dir  = '.';
 let port = process.env.PORT ? parseInt(process.env.PORT, 10) : 5001;
+// Auto-shutdown: when the last open browser tab disconnects (SSE drops to 0
+// clients) and stays gone for `idleShutdownSec`, the server exits. Cancelled
+// by `--no-idle-shutdown` (e.g. CI, headless smoke tests, or any case where
+// no browser will ever connect).
+let idleShutdownSec = 30;
+let idleShutdownEnabled = true;
 
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--port' || args[i] === '-p') && args[i + 1]) { port = parseInt(args[++i], 10); continue; }
+  if (args[i] === '--no-idle-shutdown') { idleShutdownEnabled = false; continue; }
+  if (args[i] === '--idle-shutdown' && args[i + 1]) { idleShutdownSec = parseInt(args[++i], 10); continue; }
   if (!args[i].startsWith('-')) dir = args[i];
 }
 
@@ -100,6 +114,51 @@ function broadcast(data) {
   clients.forEach(res => { try { res.write(msg); } catch { /* client gone */ } });
 }
 
+// --- Idle auto-shutdown ---
+// `everConnected` keeps the timer dormant until at least one tab has opened —
+// otherwise the server would exit before the auto-launched browser tab finishes
+// loading. `idleTimer` runs only while clients.length === 0; any new SSE
+// connection cancels it. The grace window also covers hard-reload churn (Cmd+R
+// drops the SSE briefly, then reconnects in well under a second).
+let everConnected = false;
+let idleTimer = null;
+
+function armIdleShutdown() {
+  if (!idleShutdownEnabled || !everConnected || idleTimer) return;
+  if (clients.length > 0) return;
+  idleTimer = setTimeout(() => {
+    console.log(`\nmnfst-run: no open tabs for ${idleShutdownSec}s — shutting down.\n`);
+    process.exit(0);
+  }, idleShutdownSec * 1000);
+}
+
+function cancelIdleShutdown() {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+}
+
+// --- .env support ---
+// Minimal dotenv parser. Skips comments/blank lines, splits on first `=`,
+// trims whitespace, strips wrapping single/double quotes. No multiline values,
+// no `${VAR}` substitution within .env itself — we just want plain KEY=VALUE.
+function parseDotenv(text) {
+  const out = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    if (!key) continue;
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
 // --- File watcher ---
 const IGNORE = /node_modules|\.git/;
 try {
@@ -108,7 +167,10 @@ try {
     clearTimeout(debounce);
     debounce = setTimeout(() => {
       const ext = extname(filename).toLowerCase();
-      if (ext === '.css') {
+      const base = basename(filename);
+      if (base === '.env') {
+        broadcast({ type: 'reload' });
+      } else if (ext === '.css') {
         broadcast({ type: 'css', file: '/' + filename.replace(/\\/g, '/') });
       } else if (['.csv', '.json', '.yaml', '.yml', '.md'].includes(ext)) {
         broadcast({ type: 'data' });
@@ -149,6 +211,27 @@ function serveFile(res, filePath) {
 const server = createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split('?')[0]);
 
+  // Virtual /env.js — generated from .env at the project root.
+  // Loaded by HTML before manifest.data.js so window.env is populated for
+  // ${VAR} interpolation in manifest.json. Returns an empty no-op if no
+  // .env exists, so the <script src="/env.js"> tag is always safe to include.
+  if (urlPath === '/env.js') {
+    const envPath = join(root, '.env');
+    let body = 'window.env = window.env || {};';
+    try {
+      if (isFile(envPath)) {
+        const env = parseDotenv(readFileSync(envPath, 'utf8'));
+        body = `window.env = Object.assign(window.env || {}, ${JSON.stringify(env)});`;
+      }
+    } catch { /* fall through to no-op */ }
+    res.writeHead(200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    res.end(body);
+    return;
+  }
+
   // SSE endpoint for live reload
   if (urlPath === '/__mnfst_sse__') {
     res.writeHead(200, {
@@ -158,7 +241,12 @@ const server = createServer((req, res) => {
     });
     res.write(':\n\n'); // initial keep-alive comment
     clients.push(res);
-    req.on('close', () => { clients = clients.filter(c => c !== res); });
+    everConnected = true;
+    cancelIdleShutdown();
+    req.on('close', () => {
+      clients = clients.filter(c => c !== res);
+      if (clients.length === 0) armIdleShutdown();
+    });
     return;
   }
 
@@ -193,15 +281,25 @@ function tryListen(p, attempt = 0) {
     console.error('mnfst-run: could not find a free port after 20 attempts.');
     process.exit(1);
   }
-  server.once('error', err => {
-    if (err.code === 'EADDRINUSE') tryListen(p + 1, attempt + 1);
-    else throw err;
-  });
-  server.listen(p, () => {
+  // Use explicit listeners so we can remove the pending 'listening' handler
+  // when retrying — otherwise each failed attempt leaves a once('listening')
+  // handler registered, and the eventual successful listen fires ALL of them,
+  // opening a browser tab for every port that was tried (including ports
+  // already taken by other projects).
+  const onListening = () => {
+    server.removeListener('error', onError);
     const url = `http://localhost:${p}`;
     console.log(`\n${label} running at ${url}\n`);
     openBrowser(url);
-  });
+  };
+  const onError = err => {
+    server.removeListener('listening', onListening);
+    if (err.code === 'EADDRINUSE') tryListen(p + 1, attempt + 1);
+    else throw err;
+  };
+  server.once('listening', onListening);
+  server.once('error', onError);
+  server.listen(p);
 }
 
 tryListen(port);

@@ -2,6 +2,10 @@
     "name": "Manifest",
     "short_name": "Manifest",
     "description": "Supercharge HTML for rapid, feature-rich website and web app development.",
+    "live_url": "https://manifestjs.org",
+    "prerender": {
+        "locales": ["en"]
+    },
     "start_url": "/",
     "scope": "/",
     "display": "browser",

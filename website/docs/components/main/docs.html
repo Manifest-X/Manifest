@@ -3,7 +3,7 @@
   <div class="col md:row justify-between gap-4 w-7xl max-w-full mx-auto">
 
     <!-- Desktop Navigation-->
-    <div class="hidden md:block w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pr-10 overflow-y-auto no-scrollbar">
+    <div style="view-transition-name: docs-nav-desktop" class="hidden md:block w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pr-10 overflow-y-auto no-scrollbar">
       <template x-for="group in $x.docs" :key="group.group">
         <div>
           <h5 class="mb-2.5 pl-2.5 text-content-subtle" x-text="group.group"></h5>
@@ -44,7 +44,7 @@
       <!-- <button class="ghost" popovertarget="search" x-icon="lucide:search" aria-label="Search Menu"></button> -->
 
       <!-- Mobile Navigation Sidebar -->
-      <aside popover id="mobile-navigation" class="start col w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 px-4 border-eborder-line overflow-y-auto no-scrollbar">
+      <aside popover id="mobile-navigation" data-no-view-transition class="start col w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 px-4 border-eborder-line overflow-y-auto no-scrollbar">
         <template x-for="group in $x.docs" :key="group.group">
           <div>
             <h5 class="mb-2.5 pl-2.5 text-content-subtle" x-text="group.group"></h5>
@@ -96,7 +96,7 @@
     </div>
 
     <!-- Anchor Links -->
-    <div class="hidden lg:col gap-2.5 w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pl-10 overflow-y-auto no-scrollbar">
+    <div style="view-transition-name: docs-toc" class="hidden lg:col gap-2.5 w-64 max-h-[calc(100vh-69px)] mt-[69px] pt-8 pb-64 pl-10 overflow-y-auto no-scrollbar">
 
       <span class="h5 mb-2" x-show="$store.anchors?.count > 0">
         <span x-icon="lucide:align-left" class="[dir=rtl]:rotate-180"></span>

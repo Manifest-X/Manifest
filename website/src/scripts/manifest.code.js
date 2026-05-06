@@ -226,6 +226,13 @@ function initializeCodePlugin() {
         }
 
         setupCodeGroup() {
+            // Idempotency: if a tab header is already present (from prerender output
+            // or a previous connection), skip rebuilding it.  Otherwise the DOM ends
+            // up with a doubled tab row when the static page rehydrates.
+            if (this.querySelector(':scope > header[aria-label="Code examples"]')) {
+                return;
+            }
+
             // Find all x-code elements within this group
             const codeElements = this.querySelectorAll('x-code');
 
@@ -359,10 +366,19 @@ function initializeCodePlugin() {
         }
 
         connectedCallback() {
-            this.setupElement();
-            // Remove tabindex to prevent focusing the container itself
-            // Focus should go to interactive elements like copy button
-            this.highlightCode();
+            // Idempotency: if the element already has a fully-rendered structure
+            // (a <pre><code> child from prerender output), skip the rebuild.
+            // Reading innerHTML and re-setting it as textContent (extractContent
+            // line ~524) treats the prerendered hljs <span> markup as code
+            // source, producing nested highlight-of-highlight output.
+            const alreadyRendered =
+                this.querySelector(':scope > pre > code') &&
+                (this.hasAttribute('data-pre-rendered') ||
+                 this.querySelector(':scope > pre > code.hljs, :scope > pre > code[data-highlighted="yes"]'));
+            if (!alreadyRendered) {
+                this.setupElement();
+                this.highlightCode();
+            }
         }
 
         attributeChangedCallback(name, oldValue, newValue) {

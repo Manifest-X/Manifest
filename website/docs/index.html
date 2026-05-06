@@ -19,7 +19,6 @@
   <title>Manifest</title>
   <meta name="description" content="Supercharge HTML for rapid, feature-rich website and web app development.">
   <meta name="author" content="Andrew Matlock">
-  <meta name="keywords" content="Manifest, HTML, CSS, JS, JavaScript, Alpine JS, Tailwind CSS, website, web app, framework">
   <meta name="robots" content="index, follow">
   <meta name="googlebot" content="index, follow">
   <meta name="google" content="notranslate">
@@ -43,7 +42,7 @@
 
   <!-- Scripts -->
   <script src="https://cdn.jsdelivr.net/npm/appwrite@latest"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.js" data-tailwind data-version="latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mnfst@0.5.63/lib/manifest.min.js" data-tailwind data-version="0.5.63"></script>
 
 </head>
 
@@ -60,7 +59,7 @@
   <x-landing x-route="/"></x-landing>
 
   <!-- Documentation pages -->
-  <x-docs x-route="/docs"></x-docs>
+  <x-docs x-route="/docs, /docs/*"></x-docs>
 
   <!-- Theme Builder page -->
   <x-theme x-route="/theme-builder"></x-theme>

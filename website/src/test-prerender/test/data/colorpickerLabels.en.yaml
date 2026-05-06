@@ -1,0 +1,60 @@
+# Color picker label overrides (English).
+# Keys map to palette/group names used by the Tailwind + iOS presets.
+# Meta keys start with `_`; regular keys match hue/color names.
+
+tailwind:
+  _group: Tailwind
+  _base: Base
+  _black: Black
+  _white: White
+  red: Red
+  orange: Orange
+  amber: Amber
+  yellow: Yellow
+  lime: Lime
+  green: Green
+  emerald: Emerald
+  teal: Teal
+  cyan: Cyan
+  sky: Sky
+  blue: Blue
+  indigo: Indigo
+  violet: Violet
+  purple: Purple
+  fuchsia: Fuchsia
+  pink: Pink
+  rose: Rose
+  slate: Slate
+  gray: Gray
+  zinc: Zinc
+  neutral: Neutral
+  stone: Stone
+  mauve: Mauve
+  olive: Olive
+  mist: Mist
+  taupe: Taupe
+
+ios:
+  _group: iOS
+  _colorLight: Color Light
+  _colorDark: Color Dark
+  _shadesLight: Shades Light
+  _shadesDark: Shades Dark
+  red: Red
+  orange: Orange
+  yellow: Yellow
+  green: Green
+  mint: Mint
+  teal: Teal
+  cyan: Cyan
+  blue: Blue
+  indigo: Indigo
+  purple: Purple
+  pink: Pink
+  brown: Brown
+  gray: Gray
+  gray2: Gray 2
+  gray3: Gray 3
+  gray4: Gray 4
+  gray5: Gray 5
+  gray6: Gray 6

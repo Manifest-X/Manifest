@@ -1,0 +1,15 @@
+greeting: Hello
+theme:
+  light: Light
+  dark: Dark
+  system: System
+pricing:
+  plans:
+    - name: Starter
+      price:
+        monthly: $10
+        yearly: $100
+    - name: Pro
+      price:
+        monthly: $30
+        yearly: $300

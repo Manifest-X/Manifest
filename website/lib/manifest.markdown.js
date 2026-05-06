@@ -6,6 +6,17 @@ let markedPromise = null;
 // Cache for fetched markdown files to prevent duplicate requests
 const markdownCache = new Map();
 
+// Invalidate the markdown fetch cache when mnfst-run signals a data file
+// changed on disk. Without this, a saved .md file is re-read by the data
+// plugin but x-markdown still serves the old content from cache; combined
+// with the lastProcessedContent short-circuit in the directive's effect,
+// the article appears blank until the user manually reloads.
+if (typeof window !== 'undefined') {
+    window.addEventListener('manifest:dev-reload', () => {
+        markdownCache.clear();
+    });
+}
+
 // Load marked.js from CDN
 async function loadMarkedJS() {
     if (typeof marked !== 'undefined') {
@@ -309,6 +320,15 @@ async function initializeMarkdownPlugin() {
         // Check if there are any elements with x-markdown already on the page
         const existingMarkdownElements = document.querySelectorAll('[x-markdown]');
 
+        // Detect whether this page was produced by the prerender.  On
+        // prerendered pages, x-markdown elements arrive with their content
+        // already rendered to HTML — we must NOT hide them on init or the
+        // user sees a flash of empty content while the plugin re-fetches.
+        const isPrerenderedPage = !!(
+            document.querySelector('meta[name="manifest:prerendered"]') &&
+            document.querySelector('meta[name="manifest:prerendered"]').getAttribute('content') !== '0'
+        );
+
         // Register markdown directive
         Alpine.directive('markdown', (el, { expression, modifiers }, { effect, evaluateLater }) => {
 
@@ -317,14 +337,23 @@ async function initializeMarkdownPlugin() {
                 return;
             }
 
-            // Hide element initially to prevent flicker
-            el.style.opacity = '0';
-            el.style.transition = 'opacity 0.15s ease-in-out';
+            // Prerender idempotency: if the page is a prerendered MPA and this
+            // element already has rendered HTML children, the content was baked
+            // at build time and is authoritative for SEO + no-JS users.  Skip
+            // the initial hide-and-re-render step entirely.  We still register
+            // the reactive effect below so the content can update if its
+            // expression is dynamic and later changes (e.g. via $route).
+            const hasBakedContent = isPrerenderedPage && el.innerHTML && el.innerHTML.trim() !== '';
+            if (!hasBakedContent) {
+                // Hide element initially to prevent flicker (live SPA behaviour)
+                el.style.opacity = '0';
+                el.style.transition = 'opacity 0.15s ease-in-out';
+            }
 
             // Store original markdown content
             let markdownSource = '';
             let isUpdating = false;
-            let hasContent = false;
+            let hasContent = hasBakedContent;
 
             const normalizeContent = (content) => {
                 const lines = content.split('\n');
@@ -428,6 +457,15 @@ async function initializeMarkdownPlugin() {
                 return;
             }
 
+            // Prerender idempotency: on prerendered MPA pages with baked content,
+            // the x-markdown element is already correct — skip the reactive effect
+            // entirely.  Navigation on MPA is full page loads, so there's no
+            // dynamic re-resolution to handle; each route serves its own prerendered
+            // HTML with the right baked content.
+            if (hasBakedContent) {
+                return;
+            }
+
             // Handle expressions (file paths, inline strings, content references)
             // Check if this is a simple string literal that needs to be quoted
             let processedExpression = expression;
@@ -500,8 +538,17 @@ async function initializeMarkdownPlugin() {
                         }
                     }
 
-                    // Skip if content hasn't changed (prevents unnecessary re-renders)
+                    // Skip re-render if content hasn't changed, but still restore
+                    // visibility — during a dev-reload the data plugin briefly
+                    // clears its source cache, which makes the expression
+                    // resolve to undefined and pushes opacity to 0; if we
+                    // early-return here without restoring it, the article stays
+                    // hidden even though innerHTML is intact.
                     if (markdownContent === lastProcessedContent) {
+                        if (el.innerHTML && el.innerHTML.trim() !== '') {
+                            hasContent = true;
+                            el.style.opacity = '1';
+                        }
                         return;
                     }
                     lastProcessedContent = markdownContent;

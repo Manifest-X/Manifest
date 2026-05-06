@@ -358,6 +358,25 @@ function pathnameToLogical(pathname) {
 }
 
 // Handle route changes
+// Run a same-document DOM mutation through the View Transitions API when
+// supported, so route changes / theme toggles / locale demos crossfade like
+// cross-document MPA navigations.  Falls back to running the callback
+// directly when the browser lacks support or the user has prefers-reduced-
+// motion.  Authors tune duration/easing via `--view-transition-duration` /
+// `--view-transition-easing` CSS custom properties on `manifest.theme.css`,
+// and can call `window.manifestViewTransition(fn)` from their own code to
+// participate in the same animation system.
+function withViewTransition(updateFn) {
+    if (typeof document.startViewTransition !== 'function') return updateFn();
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return updateFn();
+    return document.startViewTransition(updateFn);
+}
+
+// Expose the helper for other plugins (themes, localization) and authors.
+if (typeof window !== 'undefined' && !window.manifestViewTransition) {
+    window.manifestViewTransition = withViewTransition;
+}
+
 async function handleRouteChange() {
     const pathname = window.location.pathname;
     const newRoute = pathnameToLogical(pathname);
@@ -366,17 +385,30 @@ async function handleRouteChange() {
     const prevRoute = currentRoute;
     currentRoute = newRoute;
 
-    // Handle scrolling based on whether this is an anchor link or route change
+    // Wrap the synchronous DOM mutations (route visibility toggle + event
+    // listeners that swap content) in a view transition.  Any async tail
+    // (async component fetching, deferred scroll) is intentionally left
+    // outside the transition — it runs after the crossfade completes.
+    withViewTransition(() => {
+        window.dispatchEvent(new CustomEvent('manifest:route-change', {
+            detail: {
+                from: prevRoute,
+                to: newRoute,
+                normalizedPath: newRoute === '/' ? '/' : newRoute.replace(/^\/|\/$/g, '')
+            }
+        }));
+    });
+
+    // Handle scrolling based on whether this is an anchor link or route change.
+    // Deferred so it runs after the view transition completes (smooth scroll
+    // mid-transition would interfere with the crossfade snapshot).
     if (!window.location.hash) {
-        // This is a route change - scroll to top
-        // Use a small delay to ensure content has loaded
         setTimeout(() => {
-            // Scroll main page to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
-            // Find and scroll scrollable containers to top
-            // Use a generic approach that works with any CSS framework
-            // Only check elements that are likely to be scrollable containers
+            // Find and scroll scrollable containers to top.  Generic approach
+            // that works with any CSS framework — only check elements that are
+            // likely to be scrollable containers.
             const potentialContainers = document.querySelectorAll('div, main, section, article, aside, nav, header, footer, .prose');
             potentialContainers.forEach(element => {
                 const computedStyle = window.getComputedStyle(element);
@@ -392,23 +424,7 @@ async function handleRouteChange() {
                 }
             });
         }, 50);
-    } else {
-        // This is an anchor link - let the browser handle the scroll naturally
-        // Use a small delay to ensure content has loaded, then let browser scroll to anchor
-        setTimeout(() => {
-            // The browser will automatically scroll to the anchor
-            // We just need to ensure the content is loaded first
-        }, 50);
     }
-
-    // Emit route change event
-    window.dispatchEvent(new CustomEvent('manifest:route-change', {
-        detail: {
-            from: prevRoute,
-            to: newRoute,
-            normalizedPath: newRoute === '/' ? '/' : newRoute.replace(/^\/|\/$/g, '')
-        }
-    }));
 }
 
 // Resolve internal link to absolute pathname for pushState. Relative hrefs (e.g. "gadget") are resolved against the app base, not the current URL, so we never get additive paths like /src/dist/widget/gadget/widget/...

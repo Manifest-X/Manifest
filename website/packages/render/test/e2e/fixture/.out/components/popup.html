@@ -1,0 +1,12 @@
+<!-- Lazy component: exercises x-data scope + conditional classes + @click + data-hydrate -->
+<div id="popup-root" class="fixed-bottom" x-data="{ showChannels: false }">
+    <a id="popup-a" href="#a"
+       class="base-class"
+       :class="showChannels ? 'visible open' : 'hidden closed'"
+       data-hydrate>Popup A</a>
+    <button id="popup-b" type="button"
+            class="base-class"
+            :class="showChannels ? 'visible open' : 'hidden closed'"
+            data-hydrate>Popup B</button>
+    <button id="popup-toggle" type="button" @click="showChannels = !showChannels">Toggle</button>
+</div>

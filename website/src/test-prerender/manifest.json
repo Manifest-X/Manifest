@@ -32,8 +32,7 @@
         "test/components/options.html",
         "test/components/utilities.html",
         "test/components/test.html",
-        "test/components/styles.html",
-        "test/components/colorpicker.html"
+        "test/components/styles.html"
     ],
     "preloadedComponents": [
         "test/components/header.html",
@@ -42,6 +41,10 @@
     ],
     "data": {
         "manifest": "/manifest.json",
+        "colors": {
+            "en": "/test/data/colors.en.yaml",
+            "fr": "/test/data/colors.fr.yaml"
+        },
         "allLocales": {
             "locales": "/test/data/test.csv"
         },
@@ -131,6 +134,7 @@
             "creatorRole": "Admin"
         }
     },
+    "colorpicker": "colors",
     "prerender": {
         "localUrl": "http://localhost:5001",
         "liveUrl": "https://test.com",

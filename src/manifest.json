@@ -32,8 +32,7 @@
         "test/components/options.html",
         "test/components/utilities.html",
         "test/components/test.html",
-        "test/components/styles.html",
-        "test/components/colorpicker.html"
+        "test/components/styles.html"
     ],
     "preloadedComponents": [
         "test/components/header.html",
@@ -42,6 +41,12 @@
     ],
     "data": {
         "manifest": "/manifest.json",
+        "colors": {
+            "colorpicker": {
+                "en": "/test/data/colors.en.yaml",
+                "fr": "/test/data/colors.fr.yaml"
+            }
+        },
         "allLocales": {
             "locales": "/test/data/test.csv"
         },
@@ -95,7 +100,7 @@
     "appwrite": {
         "projectId": "68cfcc610014415b6f9a",
         "endpoint": "https://fra.cloud.appwrite.io/v1",
-        "devKey": "b080a2dbcd5ab6867db7e9e965c20b92fed79015ee3b4071a6e66b16431463ad7f3a8a855cdffb03e6f87f31890721b9ab2c8fd6a893d190be35b6027b2cae6a4d15fb7caadbd87accfc946e17803d003cf716d6acf6b269a05576fab09485049f3e5720adfbc2d0a06613edd7196d561b09c31dbfb4e3db8f750ee2839b8cde",
+        "devKey": "${APPWRITE_DEV_KEY}",
         "auth": {
             "methods": [
                 "guest-manual",

@@ -11,6 +11,166 @@
 (function () {
 	'use strict';
 
+	/*
+	 * Hydration contract runtime
+	 * --------------------------
+	 * Prerendered MPA pages carry a `<script type="application/json"
+	 * id="__manifest_hydrate__">` blob containing the source-authored
+	 * attributes (and, for explicit `data-hydrate` subtrees, the source
+	 * innerHTML) of every element that needs runtime hydration.  This
+	 * function runs once on page load BEFORE any plugin or Alpine starts —
+	 * it walks the contract, restores source state, and removes its own
+	 * markers.  Every downstream plugin (themes, router, data, markdown,
+	 * icons, …) then sees exactly the DOM the user authored, exactly as it
+	 * would in a live SPA.  No plugin needs a "prerender mode" branch.
+	 *
+	 * Implementation notes:
+	 *  - We use a temp-div HTML parse to set attributes because `setAttribute`
+	 *    throws InvalidCharacterError on Alpine special names like `@click`.
+	 *    The HTML parser is lenient and accepts them.
+	 *  - The contract is a compact diff: only attributes whose values drifted
+	 *    from source during prerender appear.  An entry's `attrs` object maps
+	 *    attribute name -> source value, or null to mean "remove".
+	 */
+	function hydratePrerenderedPage() {
+		if (typeof document === 'undefined' || !document.querySelector) return;
+		// Only run on pages the prerender marked as static MPA output.
+		const prerenderMeta = document.querySelector('meta[name="manifest:prerendered"]');
+		if (!prerenderMeta || prerenderMeta.getAttribute('content') === '0') return;
+		const blob = document.getElementById('__manifest_hydrate__');
+		if (!blob) return;
+		let entries;
+		try {
+			entries = JSON.parse(blob.textContent || '[]');
+		} catch (_) {
+			entries = [];
+		}
+		if (!Array.isArray(entries) || entries.length === 0) {
+			blob.remove();
+			return;
+		}
+		const escAttr = (s) => String(s == null ? '' : s)
+			.replace(/&/g, '&amp;')
+			.replace(/"/g, '&quot;');
+		const voidEls = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+		// Restore deepest-first so that when an ancestor rebuilds its innerHTML,
+		// its children have already been restored and their source state is what
+		// the ancestor captures.
+		const items = [];
+		for (const entry of entries) {
+			const el = document.querySelector('[data-hydrate-id="' + entry.id + '"]');
+			if (!el) continue;
+			let depth = 0;
+			for (let p = el.parentNode; p; p = p.parentNode) depth++;
+			items.push({ entry, el, depth });
+		}
+		items.sort((a, b) => b.depth - a.depth);
+
+		for (const { entry, el: initialEl } of items) {
+			const el = document.querySelector('[data-hydrate-id="' + entry.id + '"]') || initialEl;
+			if (!el || !el.parentNode) continue;
+
+			// Case 1: explicit subtree restoration (entry.html present).
+			// Rebuild the element from scratch via outerHTML replacement so the
+			// entire subtree mirrors the authored source.
+			if (typeof entry.html === 'string') {
+				const tag = el.tagName.toLowerCase();
+				const finalAttrs = {};
+				// Start from current attrs, then apply the contract diff.
+				const cur = el.attributes;
+				for (let i = 0; i < cur.length; i++) {
+					if (cur[i].name !== 'data-hydrate-id') finalAttrs[cur[i].name] = cur[i].value;
+				}
+				if (entry.attrs) {
+					for (const name in entry.attrs) {
+						const v = entry.attrs[name];
+						if (v === null) delete finalAttrs[name];
+						else finalAttrs[name] = v;
+					}
+				}
+				const attrString = Object.keys(finalAttrs)
+					.map((n) => n + '="' + escAttr(finalAttrs[n]) + '"')
+					.join(' ');
+				const isVoid = voidEls.has(tag);
+				const newHTML = isVoid
+					? '<' + tag + ' ' + attrString + '>'
+					: '<' + tag + ' ' + attrString + '>' + entry.html + '</' + tag + '>';
+				const tmp = document.createElement('div');
+				tmp.innerHTML = newHTML;
+				const parsed = tmp.firstElementChild;
+				if (parsed) {
+					try { el.parentNode.replaceChild(parsed, el); } catch (_) {}
+				}
+				continue;
+			}
+
+			// Case 2: attribute-only diff.  Reparse the element with the merged
+			// attribute set (current attrs overlaid by source diff) so that
+			// special-name attributes like @click work.  Preserve innerHTML.
+			if (!entry.attrs) continue;
+			const tag = el.tagName.toLowerCase();
+			const finalAttrs = {};
+			const cur = el.attributes;
+			for (let i = 0; i < cur.length; i++) {
+				if (cur[i].name !== 'data-hydrate-id') finalAttrs[cur[i].name] = cur[i].value;
+			}
+			for (const name in entry.attrs) {
+				const v = entry.attrs[name];
+				if (v === null) delete finalAttrs[name];
+				else finalAttrs[name] = v;
+			}
+			const attrString = Object.keys(finalAttrs)
+				.map((n) => n + '="' + escAttr(finalAttrs[n]) + '"')
+				.join(' ');
+			const isVoid = voidEls.has(tag);
+			const innerHTML = isVoid ? '' : el.innerHTML;
+			const newHTML = isVoid
+				? '<' + tag + ' ' + attrString + '>'
+				: '<' + tag + ' ' + attrString + '>' + innerHTML + '</' + tag + '>';
+			const tmp = document.createElement('div');
+			tmp.innerHTML = newHTML;
+			const parsed = tmp.firstElementChild;
+			if (parsed) {
+				try { el.parentNode.replaceChild(parsed, el); } catch (_) {}
+			}
+		}
+
+		blob.remove();
+	}
+
+	// Run hydration BEFORE Alpine's deferred script executes.
+	//
+	// Timing: `<script defer>` runs AFTER HTML parsing finishes but BEFORE
+	// `DOMContentLoaded` fires.  So listening for DOMContentLoaded is too late —
+	// Alpine has already walked the tree and attached directives by then, and
+	// our `replaceChild`-based restore would destroy the Alpine-bound nodes.
+	//
+	// The only earlier hook is `readystatechange → 'interactive'`, which is
+	// dispatched the moment the parser finishes and BEFORE deferred scripts run.
+	// We also run synchronously if readyState is already 'interactive' or later
+	// (e.g. if manifest.js was injected dynamically after page load).
+	function tryHydrate() {
+		try { hydratePrerenderedPage(); } catch (e) { /* graceful */ }
+	}
+	if (typeof document !== 'undefined') {
+		if (document.readyState === 'loading') {
+			// We're still parsing.  Listen for 'interactive' via readystatechange
+			// — this is the earliest moment document.body is guaranteed to exist
+			// but deferred scripts haven't run yet.
+			let hydrated = false;
+			document.addEventListener('readystatechange', () => {
+				if (!hydrated && document.readyState !== 'loading') {
+					hydrated = true;
+					tryHydrate();
+				}
+			});
+		} else {
+			// Parser already done (interactive or complete).  Hydrate immediately.
+			tryHydrate();
+		}
+	}
+
 	// Configuration
 	const DEFAULT_VERSION = 'latest';
 	const ALPINE_CDN_URL = 'https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js';
@@ -29,6 +189,7 @@
 		'icons',
 		'localization',
 		'markdown',
+		'svg',
 		'code',
 		'themes',
 		'toasts',
@@ -80,16 +241,26 @@
 		});
 	}
 
-	// Get plugin URL from CDN
+	// Get plugin URL from CDN or the `data-plugin-base` override.  When the
+	// loader's <script> tag carries `data-plugin-base="/scripts"` (or an
+	// absolute URL), plugins are loaded from that base as unminified `.js`
+	// files.  Otherwise they come from the jsDelivr CDN as `.min.js`.
+	let _pluginBase = null;
+	function setPluginBase(b) { _pluginBase = b || null; }
 	function getPluginUrl(pluginName, version = DEFAULT_VERSION) {
+		if (_pluginBase) {
+			const base = _pluginBase.replace(/\/$/, '');
+			if (pluginName.startsWith('appwrite-')) {
+				const appwriteName = pluginName.replace('appwrite-', 'appwrite.');
+				return `${base}/manifest.${appwriteName}.js`;
+			}
+			return `${base}/manifest.${pluginName}.js`;
+		}
 		const base = getBaseUrl(version);
-
-		// Handle Appwrite plugin naming (appwrite-auth -> manifest.appwrite.auth.min.js)
 		if (pluginName.startsWith('appwrite-')) {
 			const appwriteName = pluginName.replace('appwrite-', 'appwrite.');
 			return `${base}/manifest.${appwriteName}.min.js`;
 		}
-
 		return `${base}/manifest.${pluginName}.min.js`;
 	}
 
@@ -100,23 +271,31 @@
 		return `https://cdn.jsdelivr.net/npm/alpinejs@${dataAlpine}/dist/cdn.min.js`;
 	}
 
-	// Load Alpine.js from CDN with defer attribute
-	// Alpine waits for DOM to be ready, and by then all plugins are registered
+	// Load Alpine.js from CDN.  Called by the loader AFTER all plugin scripts
+	// have finished loading and registered their directives/magics.  We do
+	// NOT use `defer` here — defer fires at DOMContentLoaded, which may race
+	// the plugin loads; instead we wait for every plugin script's load event
+	// explicitly and then append Alpine synchronously (the script downloads
+	// but Alpine's `auto-start` hooks DOMContentLoaded if still loading, or
+	// runs immediately if past it).
 	function loadAlpine(alpineUrl = ALPINE_CDN_URL) {
 		// Fast check: Alpine already initialized
 		if (window.Alpine) {
 			return;
 		}
 
-		// Fallback: Check if script tag exists (Alpine might be loading)
-		const existingAlpine = document.querySelector('script[src*="alpine"]');
+		// Fallback: if an existing Alpine <script> tag is already in the DOM
+		// (e.g. the fixture explicitly added one), wait for it — don't inject
+		// a second copy.
+		const existingAlpine = document.querySelector('script[src*="alpinejs"]');
 		if (existingAlpine) {
 			return;
 		}
 
 		const script = document.createElement('script');
 		script.src = alpineUrl;
-		script.defer = true; // Critical: defer ensures Alpine waits for DOM and all plugins
+		// No `defer` — we're already past plugin registration, so Alpine
+		// should load and execute as soon as it arrives.
 		document.head.appendChild(script);
 	}
 
@@ -175,42 +354,30 @@
 		return resolved;
 	}
 
-	// Detect Appwrite usage from manifest.json (non-blocking, just suggests)
-	function detectAppwriteFromManifest() {
-		// Check if manifest link exists
-		const manifestLink = document.querySelector('link[rel="manifest"]');
-		if (!manifestLink) {
-			return;
+	// Detect Appwrite plugins needed from manifest.json content.
+	// Returns an array of Appwrite plugin names to auto-load.
+	function detectAppwritePlugins(manifest) {
+		if (!manifest || typeof manifest !== 'object') return [];
+
+		const hasAppwrite = manifest.appwrite ||
+			(manifest.data && Object.values(manifest.data).some(
+				item => item && typeof item === 'object' &&
+					(item.appwriteTableId || item.appwriteDatabaseId || item.appwriteBucketId)
+			));
+
+		if (!hasAppwrite) return [];
+
+		const plugins = [];
+		if (manifest.appwrite?.auth) plugins.push('appwrite-auth');
+		if (manifest.appwrite || (manifest.data && Object.values(manifest.data).some(
+			item => item && typeof item === 'object' && item.appwriteTableId
+		))) {
+			plugins.push('appwrite-data');
 		}
-
-		const manifestUrl = manifestLink.getAttribute('href') || '/manifest.json';
-
-		// Fetch manifest asynchronously (don't block plugin loading)
-		fetch(manifestUrl)
-			.then(response => response.json())
-			.then(manifest => {
-				const hasAppwrite = manifest.appwrite ||
-					(manifest.data && Object.values(manifest.data).some(
-						item => item && typeof item === 'object' &&
-							(item.appwriteTableId || item.appwriteDatabaseId || item.appwriteBucketId)
-					));
-
-				if (hasAppwrite) {
-					const suggestedPlugins = [];
-					if (manifest.appwrite?.auth) suggestedPlugins.push('appwrite-auth');
-					if (manifest.appwrite || (manifest.data && Object.values(manifest.data).some(
-						item => item && typeof item === 'object' && item.appwriteTableId
-					))) {
-						suggestedPlugins.push('appwrite-data');
-					}
-					if (manifest.data?.presence?.appwriteTableId) {
-						suggestedPlugins.push('appwrite-presence');
-					}
-				}
-			})
-			.catch(() => {
-				// Silently fail - manifest might not be available yet or CORS issue
-			});
+		if (manifest.data?.presence?.appwriteTableId) {
+			plugins.push('appwrite-presence');
+		}
+		return plugins;
 	}
 
 	// Parse data attributes
@@ -230,6 +397,12 @@
 		const tailwind = script.getAttribute('data-tailwind') !== null;
 		const version = script.getAttribute('data-version') || DEFAULT_VERSION;
 		const alpine = script.getAttribute('data-alpine');
+		// Optional override: when present, plugin URLs are resolved against
+		// this base instead of the CDN.  Useful for self-hosted deployments
+		// and for the e2e harness which needs to load locally-built plugins.
+		// The base should point at a directory that serves `manifest.<name>.js`
+		// files.  It can be relative (e.g. "/scripts") or absolute.
+		const pluginBase = script.getAttribute('data-plugin-base');
 
 		let pluginList = [];
 		const deriveFromManifest = !plugins;
@@ -256,7 +429,8 @@
 			deriveFromManifest,
 			tailwind,
 			version,
-			alpine
+			alpine,
+			pluginBase,
 		};
 	}
 
@@ -305,9 +479,7 @@
 
 	// Parse config and load plugins
 	const config = parseDataAttributes();
-
-	// Detect Appwrite usage from manifest (non-blocking, just suggests)
-	detectAppwriteFromManifest();
+	if (config && config.pluginBase) setPluginBase(config.pluginBase);
 
 	if (config && config.plugins.length > 0) {
 		if (window.__manifestLoaderStarted) {
@@ -328,7 +500,9 @@
 
 			if (config.deriveFromManifest) {
 				manifest = await fetch(manifestUrl).then(r => r.ok ? r.json() : null).catch(() => null);
-				pluginsToLoad = resolveDependencies(getDefaultPluginsFromManifest(manifest));
+				const corePlugins = getDefaultPluginsFromManifest(manifest);
+				const appwritePlugins = detectAppwritePlugins(manifest);
+				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins]);
 			} else {
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {

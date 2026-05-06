@@ -127,6 +127,63 @@ Register local data in the project's `manifest.json`. Under the `data` property,
 
 ---
 
+## API Sources
+
+Register an HTTP endpoint as a data source the same way as a file. Currently read-only, only `GET` requests are fully supported. For full CRUD with realtime sync, use [Appwrite databases](/docs/appwrite-plugins/databases).
+
+For an endpoint with no auth or transformation, register the URL string directly:
+
+```json "manifest.json" copy
+{
+    "data": {
+        "weather": "https://api.example.com/weather"
+    }
+}
+```
+
+For headers, query params, or response shaping, use an object witha git-ignored `.env` variable references as needed:
+
+<x-code-group>
+
+```json "manifest.json" copy
+{
+    "data": {
+        "products": {
+            "url": "${API_BASE_URL}/products",
+            "headers": {
+                "Authorization": "Bearer ${API_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            "params": {
+                "limit": 50,
+                "status": "active"
+            },
+            "transform": "data.products",
+            "defaultValue": []
+        }
+    }
+}
+```
+
+```env ".env" copy
+API_BASE_URL=https://api.example.com/weather
+API_TOKEN=sk_1234567890abcdef
+```
+
+</x-code-group>
+
+| Property | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `url` | Yes | – | Endpoint URL |
+| `headers` | No | `{}` | Request headers for auth and content type |
+| `params` | No | `{}` | Query parameters appended to the URL |
+| `transform` | No | – | Dot-notation path to extract nested data (e.g. `"data.products"` unwraps `{ data: { products: [...] } }`) |
+| `defaultValue` | No | `[]` | Fallback if the request fails |
+
+API sources behave the same as local sources, accessed via `$x.sourceName` with the same loading/error/ready state and `$search` / `$query` / `$route` helpers (see [Display Content](#display-content) below).
+
+---
+
 ## Display Content
 
 Data sources are accessed in HTML using our `$x` magic method with dot notation. The structure follows this pattern:

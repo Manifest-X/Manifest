@@ -46,9 +46,11 @@ An optional <b>Dev Key</b> can also be used during Manifest project development 
 
 Add the Appwrite SDK and `manifest.js` scripts to the HTML head. `manifest.json` is also required to register Appwrite credentials and data sources.
 
-<x-code-group copy>
+Appwrite plugins can be loaded in two ways: explicitly via the `data-plugins` attribute, or automatically when Appwrite credentials are declared in `manifest.json`. When auto-detected, only the relevant Appwrite plugins are loaded based on the credentials and data sources present. The supporting core data plugin will also be loaded whether or not it's declared.
 
-```html "All Plugins (default)"
+<x-code-group>
+
+```html "Auto Detection" copy
 <!-- Meta -->
 <link rel="manifest" href="/manifest.json">
 
@@ -57,41 +59,47 @@ Add the Appwrite SDK and `manifest.js` scripts to the HTML head. `manifest.json`
 <script src="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.js"></script>
 ```
 
-```html "Selective"
+```html "Selective" copy
 <!-- Meta -->
 <link rel="manifest" href="/manifest.json">
 
 <!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/appwrite@latest"></script>
 <script src="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.js"
-    data-plugins="appwrite-auth,appwrite-data,appwrite-persistence"></script>
+    data-plugins="appwrite-auth,appwrite-data,appwrite-presence"></script>
 ```
 
 </x-code-group>
-
-If Appwrite plugins are not declared in a `data-*` attribute but Appwrite credentials are listed in `manifest.json` below, all Appwrite plugins will be auto loaded. The supporting core data plugin will also be loaded whether or not it's declared.
 
 ---
 
 ### manifest.json
 
-Appwrite credentials are public and safe to expose client-side.
+The Project ID and API Endpoint are public and safe to commit client-side — Appwrite enforces project-level access via its own permissions. The Dev Key is sensitive (it bypasses rate limits) and must not be committed. Reference it via `${APPWRITE_DEV_KEY}` and put the value in a gitignored `.env` file. This pattern is also supported for the Project ID and API Endpoint if desired.
 
 Add the Appwrite project credentials detailed [above](#credentials) to `manifest.json`, under an `appwrite` property. These credentials are used by any other objects in the manifest that reference Appwrite, like database or storage sources.
 
-```json "manifest.json" numbers copy
+<x-code-group>
+
+```json "manifest.json" copy
 {
     "appwrite": {
         "projectId": "your-project-id",
         "endpoint": "your-API-endpoint",
-        "devKey": "your-dev-key",
+        "devKey": "${APPWRITE_DEV_KEY}"
     }
 }
 ```
 
-Alternatively, credentials can be added directly into specific [database](/docs/core-plugins/appwrite-plugins/databases) or [storage](/docs/core-plugins/appwrite-plugins/storage) sources, declared within the `data` object.
+```env ".env" copy
+APPWRITE_DEV_KEY=your-appwrite-dev-key
+```
 
-```json "manifest.json" numbers copy
+</x-code-group>
+
+Alternatively, credentials can be added directly into specific [database](/docs/appwrite-plugins/databases) or [storage](/docs/appwrite-plugins/storage) sources, declared within the `data` object.
+
+```json "manifest.json" copy
 {
     "data": {
         "projects": {

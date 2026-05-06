@@ -248,5 +248,8 @@
             "description": "Affordable accessory for all devices",
             "path": "accessory"
         }
-    ]
+    ],
+    "xSvg": {
+        "assetPath": "/test/assets/x-svg-sample.svg"
+    }
 }

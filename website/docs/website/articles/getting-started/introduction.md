@@ -18,7 +18,7 @@ HTML is the scaffolding of the digital world. It's more written than any human l
 
 **Manifest brings the developer experience home to HTML** (plus a few thoughtfully chosen content formats), making modern web development faster, lighter, and more enjoyable—without sacrificing flexibility or power. Its design philosophies include:
 
-- Plug and play, no build steps.
+- Plug and play, no mandatory build steps.
 - Style and function with less code.
 - No performance sacrifice.
 - Use only what you need.
@@ -27,9 +27,9 @@ HTML is the scaffolding of the digital world. It's more written than any human l
 ---
 
 ## Core Features
-- Alpine JS plugins for essential features like SPA routing, HTML components, color modes, localization, icons, and more.
+- Alpine JS plugins for essential features like routing, HTML components, color modes, localization, icons, and more.
 - CSS stylesheets for normalization, pre-styled HTML elements, utility classes, and global theme management. Fully compatible with Tailwind v4+.
-- Accessibility, i18n, and web app-ready.
+- a11y, i18n, SEO, GEO, AEO, and web app-ready.
 - Centralized project configuration in `manifest.json`.
 
 ---

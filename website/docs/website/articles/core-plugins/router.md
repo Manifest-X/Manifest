@@ -8,6 +8,8 @@ Set page navigation paths in your project.
 
 With the router plugin, Manifest turns your project into a single-page application (SPA), where URL paths can be used to show or hide any element, including [components](/docs/core-plugins/components).
 
+See [website publishing](/docs/publishing/websites) for generating static sites that are optimized for search engines and AI crawlers, also supported by this router.
+
 ::: brand icon="lucide:info"
 If applied, this router should be used independent of other routing systems or frameworks with routers.
 :::

@@ -1152,20 +1152,51 @@ async function initializeDataSourcesPlugin() {
             _currentUrl: existingStore._currentUrl || window.location.pathname
         });
 
-        // Pre-load manifest and critical data sources so $x.content (etc.) is ready before components render
+        // Pre-load all local file-backed data sources so $x.* accessors see
+        // real data on the very first render pass.
+        //
+        // Each source is at most ONE fetch regardless of type:
+        //   - Simple string paths (e.g. "/data/clients.yaml") → one file.
+        //   - Localized objects (e.g. { "en": "...", "fr": "..." }) → only the
+        //     current locale file is fetched (+ default locale for fallback
+        //     merging if different), NOT all 35 variants.
+        //   - Single CSV with embedded locales → one file.
+        //
+        // Skipped (remain on-demand):
+        //   - Appwrite collections / buckets — require auth/session context.
+        //   - API-URL sources — may have side-effects or auth requirements.
+        //   - The special "manifest" key — handled separately below.
+        //
+        // Without pre-loading, sources like $x.clients load asynchronously on
+        // first access, causing a visible flash in the SPA and missing data in
+        // prerender snapshots.
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             const locale = (typeof document !== 'undefined' && document.documentElement?.lang) || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';
+            const isAppwriteCollection = window.ManifestDataConfig.isAppwriteCollection;
 
-            // Pre-load content so first $x.content access (e.g. in header) sees data; avoids race with on-demand load
-            if (manifest?.data?.content) {
-                try {
-                    const content = await loadDataSource('content', locale);
-                    if (content != null && window.ManifestDataStore?.updateStore) {
-                        window.ManifestDataStore.updateStore('content', content, { loading: false, error: null, ready: true, allowDuringInit: true });
-                    }
-                } catch (contentErr) {
-                    console.warn('[Manifest Data] Failed to pre-load content:', contentErr);
+            if (manifest?.data) {
+                const preloadNames = [];
+                for (const [name, source] of Object.entries(manifest.data)) {
+                    if (name === 'manifest') continue; // handled separately below
+                    if (isAppwriteCollection(source)) continue;
+                    if (source && typeof source === 'object' && source.url) continue;
+                    preloadNames.push(name);
+                }
+
+                if (preloadNames.length > 0) {
+                    await Promise.all(
+                        preloadNames.map(async (name) => {
+                            try {
+                                const data = await loadDataSource(name, locale);
+                                if (data != null && window.ManifestDataStore?.updateStore) {
+                                    window.ManifestDataStore.updateStore(name, data, { loading: false, error: null, ready: true, allowDuringInit: true });
+                                }
+                            } catch (err) {
+                                console.warn(`[Manifest Data] Failed to pre-load ${name}:`, err);
+                            }
+                        })
+                    );
                 }
             }
 

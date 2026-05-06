@@ -207,7 +207,11 @@
 .text-code-char { color: var(--color-code-char) }
 .bg-code-char { background-color: var(--color-code-char) }
 .border-code-char { border-color: var(--color-code-char) }
+.text-picker-swatch { color: var(--color-picker-swatch) }
+.bg-picker-swatch { background-color: var(--color-picker-swatch) }
+.border-picker-swatch { border-color: var(--color-picker-swatch) }
 
+.bg-page { background-color: var(--color-page) }
 .border-line { border-color: var(--color-line) }
 /* manifest utilities */
 
@@ -218,19 +222,5 @@
 
 .bg-page { background-color: var(--color-page) }
 
-.bg-surface-1 { background-color: var(--color-surface-1) }
-
-.bg-surface-2 { background-color: var(--color-surface-2) }
-
-.text-content-neutral { color: var(--color-content-neutral) }
-
 .border-line { border-color: var(--color-line) }
-
-.peer-invalid\:disabled {
-    &.peer:invalid ~ {
-opacity: .5;
-        cursor: default;
-        pointer-events: none
-    }
-}
 }

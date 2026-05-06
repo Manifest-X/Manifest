@@ -273,7 +273,7 @@ document.addEventListener('alpine:init', ensureToastPluginInitialized);
 // If Alpine is already initialized when this script loads, initialize immediately
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     setTimeout(ensureToastPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {

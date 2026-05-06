@@ -154,7 +154,7 @@ document.addEventListener('alpine:init', ensureIconPluginInitialized);
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     // Small delay to ensure Alpine is fully initialized
     setTimeout(ensureIconPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {

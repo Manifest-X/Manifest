@@ -1,0 +1,139 @@
+<html lang="en"><head>
+  <script id="manifest-theme-bootstrap">(function(){try{var t=localStorage.getItem('theme')||'system';var d=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.add(d?'dark':'light');}catch(e){document.documentElement.classList.add('light');}})();</script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prerender E2E Fixture</title>
+  <link rel="manifest" href="/manifest.json">
+
+  <!-- Load Manifest locally.  The loader orchestrates plugin loading then
+       loads Alpine itself AFTER plugins are registered.  We intentionally do
+       NOT include a <script defer src="alpinejs"> tag here because defer fires
+       at DOMContentLoaded, racing against async plugin loads — by the time
+       Alpine starts walking the DOM, plugin directives may not yet be
+       registered and `$theme`/`$locale` magics will be undefined. -->
+  <script src="/scripts/manifest.js" data-plugins="components,router,data,icons,localization,themes,markdown,dropdowns" data-plugin-base="/scripts"></script>
+
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    .active { font-weight: bold; color: red; }
+    .visible { opacity: 1; }
+    .hidden { opacity: 0; pointer-events: none; }
+    .open { display: block; }
+    .closed { display: none; }
+    [x-cloak] { display: none; }
+  </style>
+<link rel="canonical" href="https://fixture.test/">
+  <link rel="alternate" hreflang="x-default" href="https://fixture.test">
+  <link rel="alternate" hreflang="fr" href="https://fixture.test/fr">
+<meta name="manifest:router-base" content="">
+<meta name="manifest:prerender-locales" content="en,fr">
+<meta name="manifest:prerendered" content="1">
+<meta name="manifest:router-base-depth" content="0">
+</head>
+<body x-data="{ tab: 'local-data' }">
+
+  <header data-order="0" data-component="header-1">
+    <span id="greeting">Hello</span>
+    <button id="theme-light" x-theme="'light'" :class="{ 'active': $theme.current === 'light' }">Light</button>
+    <button id="theme-dark" x-theme="'dark'" :class="{ 'active': $theme.current === 'dark' }">Dark</button>
+    <button id="theme-system" x-theme="'system'" :class="{ 'active': $theme.current === 'system' }" class="active" data-hydrate-id="h0">System</button>
+    <button id="locale-en" @click="$locale.set('en')">EN</button>
+    <button id="locale-fr" @click="$locale.set('fr')">FR</button>
+</header>
+
+  <!-- Bare unregistered component placeholder.  The components plugin
+       leaves this in the DOM as-is (no template registered), so it reaches
+       the marker pass as a bare tag with no source attributes.  The marker
+       pass must inject the data-pre-rendered attribute with a leading space
+       so the tag name stays intact. -->
+  <x-not-registered data-order="1" data-component="not-registered-1" data-pre-rendered="1"></x-not-registered>
+
+  <!-- Route: home -->
+  <section x-route="/" data-order="2">
+    <h1 id="home-heading">Home</h1>
+    <p>Current locale: <strong id="current-locale" x-text="$locale.current">en</strong></p>
+
+    <!-- x-markdown baked content: should render at prerender time and NOT
+         flicker/hide on load.  The plugin has an idempotency guard that
+         detects prerendered MPA pages with already-rendered content. -->
+    <div id="markdown-container" style="opacity: 1"><h1 id="test-article">Test Article</h1><p>This is <strong>baked</strong> markdown content that should survive prerendering.</p>
+<ul>
+<li>One</li>
+<li>Two</li>
+<li>Three</li>
+</ul>
+</div>
+
+    <!-- Second x-markdown using a proper expression reference.  The prerender
+         strips x-markdown from elements with baked content AND cleans any
+         leftover opacity:0 the plugin set during initial render. -->
+    <div id="markdown-dynamic" x-data="{ articlePath: 'data/article.md' }" style="opacity: 1"><h1 id="test-article">Test Article</h1><p>This is <strong>baked</strong> markdown content that should survive prerendering.</p>
+<ul>
+<li>One</li>
+<li>Two</li>
+<li>Three</li>
+</ul>
+</div>
+  </section>
+
+  <!-- Route: about -->
+  
+
+  <!-- Explicit data-hydrate island: counter that must work at runtime -->
+  <div id="counter-island" data-hydrate="" x-data="{ count: 0 }" data-order="4" data-hydrate-id="h1">
+    <button id="counter-btn" @click="count++">Inc</button>
+    <span id="counter-value" x-text="count">0</span>
+  </div>
+
+  <!-- Pricing section: x-for over plans, with data-hydrate price that depends
+       on a parent-scope variable (`frequency`).  This exercises the exact
+       pattern where a loop-variable x-text binding inside a data-hydrate
+       element must survive the loop-binding strip so runtime frequency
+       toggles update the price text reactively. -->
+  <section id="pricing-section" x-data="{ frequency: 'monthly' }" data-order="5">
+    <button id="frequency-monthly" @click="frequency = 'monthly'">Monthly</button>
+    <button id="frequency-yearly" @click="frequency = 'yearly'">Yearly</button>
+    <span id="frequency-current" x-text="frequency">monthly</span>
+    <div id="plans">
+      <template x-for="plan in $x.content.pricing.plans" :key="plan.name">
+        <div class="plan">
+          <p class="plan-name" x-text="plan?.name || ''"></p>
+          <p class="plan-price" data-hydrate="">
+            <span x-text="plan?.price?.[frequency] || ''"></span>
+          </p>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- Lazy component with diff-binding children and toggle sibling -->
+  <div id="popup-root" class="fixed-bottom" x-data="{ showChannels: false }" data-order="6" data-component="popup-1">
+    <a id="popup-a" href="#a" class="base-class hidden closed" :class="showChannels ? 'visible open' : 'hidden closed'" data-hydrate="" data-hydrate-id="h2">Popup A</a>
+    <button id="popup-b" type="button" class="base-class hidden closed" :class="showChannels ? 'visible open' : 'hidden closed'" data-hydrate="" data-hydrate-id="h3">Popup B</button>
+    <button id="popup-toggle" type="button" @click="showChannels = !showChannels">Toggle</button>
+</div>
+
+  <!-- x-show visibility: elements hidden by x-show must stay hidden after hydration.
+       Regression test for the bug where the hydration contract emitted "style": null
+       for x-show elements, removing their baked display:none and making hidden
+       elements visible (e.g. RTL icons appearing alongside LTR icons). -->
+  <div id="xshow-test" x-data="{ visible: false }" data-order="7">
+    <span id="xshow-visible" x-show="true">Visible</span>
+    <span id="xshow-hidden" x-show="false" style="display: none">Hidden</span>
+    <button id="xshow-toggle" @click="visible = !visible">Toggle</button>
+    <span id="xshow-togglable" x-show="visible" style="display: none">Togglable</span>
+  </div>
+
+  <!-- x-for over $x data: template must survive prerender so Alpine can re-render
+       the list at runtime (for locale changes, filtering, etc).  Static clones
+       must NOT duplicate when Alpine boots. -->
+  <div id="xfor-data-test" data-order="8">
+    <template x-for="plan in $x.content.pricing.plans" :key="plan.name">
+      <span class="data-plan" x-text="plan?.name || ''"></span>
+    </template>
+  </div>
+
+
+
+<script type="application/json" id="__manifest_hydrate__">[{"id":"h0","attrs":{"class":null}},{"id":"h1","attrs":{"data-order":null}},{"id":"h2","attrs":{"class":"base-class"}},{"id":"h3","attrs":{"class":"base-class"}}]</script>
+</body></html>

@@ -1,0 +1,269 @@
+<div class="col gap-0 p-4 pb-32" x-data>
+
+    <!-- Header -->
+    <div class="row items-center justify-between mb-4">
+        <h4 class="m-0">Theme Builder</h4>
+        <div class="row gap-1">
+            <button class="sm" :class="$store.themeBuilder.previewDark ? 'ghost' : 'brand'"
+                @click="$store.themeBuilder.previewDark = false">
+                <span x-icon="lucide:sun"></span>
+            </button>
+            <button class="sm" :class="$store.themeBuilder.previewDark ? 'brand' : 'ghost'"
+                @click="$store.themeBuilder.previewDark = true">
+                <span x-icon="lucide:moon"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- ==================== PALETTE ==================== -->
+    <h6 class="m-0 mb-2">Palette</h6>
+    <small class="text-content-subtle mb-3">Base color scale used by theme mappings.</small>
+
+    <!-- Palette actions -->
+    <div class="row gap-2 mb-3">
+        <button class="sm ghost grow" x-dropdown="tw-palette-menu">
+            <span x-icon="lucide:palette"></span>
+            <span>Tailwind</span>
+            <span x-icon="lucide:chevron-down" class="trailing"></span>
+        </button>
+        <menu popover id="tw-palette-menu" class="max-h-80">
+            <template x-for="name in Object.keys($store.themeBuilder.tailwindPalettes)" :key="name">
+                <li @click="$store.themeBuilder.applyPalette($store.themeBuilder.tailwindPalettes[name])">
+                    <span class="w-4 h-4 shrink-0 rounded" :style="'background-color:' + $store.themeBuilder.tailwindPalettes[name]['500']"></span>
+                    <span x-text="name.charAt(0).toUpperCase() + name.slice(1)"></span>
+                </li>
+            </template>
+        </menu>
+        <button class="sm ghost grow" popovertarget="palette-import-dialog">
+            <span x-icon="lucide:clipboard-paste"></span> Import
+        </button>
+        <button class="sm ghost grow" @click="$store.themeBuilder.resetPalette()">
+            <span x-icon="lucide:rotate-ccw"></span> Reset
+        </button>
+    </div>
+
+    <!-- Import dialog -->
+    <dialog popover id="palette-import-dialog" x-data="{ pasteInput: '' }">
+        <header>
+            <h3>Import Palette</h3>
+            <button popovertarget="palette-import-dialog" aria-label="Close" x-icon="lucide:x"></button>
+        </header>
+        <main>
+            <p class="text-sm text-content-subtle">Paste a color palette in Tailwind JS format, e.g. from <a href="https://uicolors.app" target="_blank" rel="noopener">uicolors.app</a>.</p>
+            <textarea class="font-mono text-sm w-full" rows="12" x-model="pasteInput"
+                placeholder="'my-palette': {
+    '50': '#f0f9ff',
+    '100': '#e0f2fe',
+    ...
+}"></textarea>
+        </main>
+        <footer>
+            <button popovertarget="palette-import-dialog">Cancel</button>
+            <button class="brand" @click="$store.themeBuilder.parsePaletteInput(pasteInput); pasteInput = ''; document.getElementById('palette-import-dialog').hidePopover();">Import</button>
+        </footer>
+    </dialog>
+
+    <!-- Swatch list -->
+    <div class="col gap-3">
+        <template x-for="key in ['50','100','200','300','400','500','600','700','800','900','950']" :key="key">
+            <label class="row items-center gap-2">
+                <div class="w-8 h-8 shrink-0 rounded border border-line"
+                    :style="'background-color:' + $store.themeBuilder.palette[key]"></div>
+                <span class="text-sm font-mono w-10 shrink-0 text-content-subtle" x-text="key"></span>
+                <input class="sm ghost font-mono grow" type="text"
+                    :value="$store.themeBuilder.palette[key]"
+                    @input="$store.themeBuilder.palette[key] = $event.target.value">
+            </label>
+        </template>
+    </div>
+
+    <hr class="my-4">
+
+    <!-- ==================== THEME ==================== -->
+    <h6 class="m-0 mb-2">Theme</h6>
+    <small class="text-content-subtle mb-3">Map theme roles to palette slots. Editing <strong x-text="$store.themeBuilder.previewDark ? 'dark' : 'light'"></strong> theme.</small>
+
+    <div class="col gap-3">
+        <template x-for="[label, key] in [
+            ['Page', 'page'], ['Surface 1', 'surface1'], ['Surface 2', 'surface2'], ['Surface 3', 'surface3'],
+            ['Content Stark', 'contentStark'], ['Content Neutral', 'contentNeutral'], ['Content Subtle', 'contentSubtle'],
+            ['Field Surface', 'fieldSurface'], ['Field Hover', 'fieldSurfaceHover'], ['Field Inverse', 'fieldInverse'],
+            ['Popover Surface', 'popoverSurface']
+        ]" :key="key">
+            <label class="row items-center gap-2">
+                <div class="w-6 h-6 shrink-0 rounded border border-line"
+                    :style="'background-color:' + $store.themeBuilder.palette[$store.themeBuilder.previewDark ? $store.themeBuilder.darkTheme[key] : $store.themeBuilder.theme[key]]">
+                </div>
+                <span class="text-sm w-28 shrink-0" x-text="label"></span>
+                <select class="sm ghost grow"
+                    :value="$store.themeBuilder.previewDark ? $store.themeBuilder.darkTheme[key] : $store.themeBuilder.theme[key]"
+                    @change="$store.themeBuilder.previewDark ? ($store.themeBuilder.darkTheme[key] = $event.target.value) : ($store.themeBuilder.theme[key] = $event.target.value)">
+                    <template x-for="slot in ['50','100','200','300','400','500','600','700','800','900','950']" :key="slot">
+                        <option :value="slot" x-text="slot"></option>
+                    </template>
+                </select>
+            </label>
+        </template>
+    </div>
+
+    <hr class="my-4">
+
+    <!-- ==================== SEMANTIC ==================== -->
+    <h6 class="m-0 mb-2">Semantic</h6>
+    <small class="text-content-subtle mb-3">Named colors for brand, accent, positive, and negative states.</small>
+
+    <div class="col gap-4">
+        <template x-for="[groupLabel, groupKey] in [['Brand', 'brand'], ['Accent', 'accent'], ['Positive', 'positive'], ['Negative', 'negative']]" :key="groupKey">
+            <div class="col gap-2 p-3 bg-surface-1 rounded-lg">
+                <h6 class="m-0" x-text="groupLabel"></h6>
+                <template x-for="[label, prop] in [['Surface', 'surface'], ['Hover', 'surfaceHover'], ['Inverse', 'inverse'], ['Content', 'content']]" :key="prop">
+                    <label class="row items-center gap-2">
+                        <input type="color" class="w-6 h-6 shrink-0 cursor-pointer rounded border border-line p-0"
+                            style="appearance: none; -webkit-appearance: none; background: none;"
+                            :value="$store.themeBuilder[groupKey][prop]"
+                            @input="$store.themeBuilder[groupKey][prop] = $event.target.value">
+                        <span class="text-sm w-16 shrink-0" x-text="label"></span>
+                        <input class="sm ghost font-mono grow" type="text"
+                            :value="$store.themeBuilder[groupKey][prop]"
+                            @input="$store.themeBuilder[groupKey][prop] = $event.target.value">
+                    </label>
+                </template>
+            </div>
+        </template>
+
+        <!-- Dark overrides -->
+        <div class="col gap-2 p-3 bg-surface-1 rounded-lg">
+            <h6 class="m-0">Dark Mode Overrides</h6>
+            <small class="text-content-subtle">Only colors that differ in dark mode.</small>
+            <label class="row items-center gap-2">
+                <input type="color" class="w-6 h-6 shrink-0 cursor-pointer rounded border border-line p-0"
+                    style="appearance: none; -webkit-appearance: none; background: none;"
+                    :value="$store.themeBuilder.darkBrand.content"
+                    @input="$store.themeBuilder.darkBrand.content = $event.target.value">
+                <span class="text-sm w-28 shrink-0">Brand Content</span>
+                <input class="sm ghost font-mono grow" type="text"
+                    :value="$store.themeBuilder.darkBrand.content"
+                    @input="$store.themeBuilder.darkBrand.content = $event.target.value">
+            </label>
+            <label class="row items-center gap-2">
+                <input type="color" class="w-6 h-6 shrink-0 cursor-pointer rounded border border-line p-0"
+                    style="appearance: none; -webkit-appearance: none; background: none;"
+                    :value="$store.themeBuilder.darkAccent.content"
+                    @input="$store.themeBuilder.darkAccent.content = $event.target.value">
+                <span class="text-sm w-28 shrink-0">Accent Content</span>
+                <input class="sm ghost font-mono grow" type="text"
+                    :value="$store.themeBuilder.darkAccent.content"
+                    @input="$store.themeBuilder.darkAccent.content = $event.target.value">
+            </label>
+        </div>
+    </div>
+
+    <hr class="my-4">
+
+    <!-- ==================== SPACING ==================== -->
+    <h6 class="m-0 mb-2">Spacing</h6>
+    <small class="text-content-subtle mb-3">Size tokens for radius, spacing, and layout.</small>
+
+    <div class="col gap-4">
+        <!-- Radius -->
+        <label class="col gap-1">
+            <div class="row items-center justify-between">
+                <span class="text-sm">Border Radius</span>
+                <span class="text-sm font-mono text-content-subtle" x-text="$store.themeBuilder.radius + 'rem'"></span>
+            </div>
+            <input type="range" min="0" max="2" step="0.0625"
+                :value="$store.themeBuilder.radius"
+                @input="$store.themeBuilder.radius = $event.target.value">
+        </label>
+
+        <!-- Spacing base -->
+        <label class="col gap-1">
+            <div class="row items-center justify-between">
+                <span class="text-sm">Spacing Unit</span>
+                <span class="text-sm font-mono text-content-subtle" x-text="$store.themeBuilder.spacing + 'rem'"></span>
+            </div>
+            <input type="range" min="0.125" max="0.5" step="0.0625"
+                :value="$store.themeBuilder.spacing"
+                @input="$store.themeBuilder.spacing = $event.target.value">
+        </label>
+
+        <!-- Content width -->
+        <label class="col gap-1">
+            <div class="row items-center justify-between">
+                <span class="text-sm">Content Width</span>
+                <span class="text-sm font-mono text-content-subtle" x-text="$store.themeBuilder.contentWidth + 'rem'"></span>
+            </div>
+            <input type="range" min="40" max="100" step="1.25"
+                :value="$store.themeBuilder.contentWidth"
+                @input="$store.themeBuilder.contentWidth = $event.target.value">
+        </label>
+
+        <!-- Viewport padding -->
+        <label class="col gap-1">
+            <div class="row items-center justify-between">
+                <span class="text-sm">Viewport Padding</span>
+                <span class="text-sm font-mono text-content-subtle" x-text="$store.themeBuilder.viewportPadding + 'vw'"></span>
+            </div>
+            <input type="range" min="0" max="10" step="0.5"
+                :value="$store.themeBuilder.viewportPadding"
+                @input="$store.themeBuilder.viewportPadding = $event.target.value">
+        </label>
+    </div>
+
+    <hr class="my-4">
+
+    <!-- ==================== EFFECTS ==================== -->
+    <h6 class="m-0 mb-2">Effects</h6>
+    <small class="text-content-subtle mb-3">Transition timing and tooltip behavior.</small>
+
+    <div class="col gap-4">
+        <!-- Transition duration -->
+        <label class="col gap-1">
+            <div class="row items-center justify-between">
+                <span class="text-sm">Transition Duration</span>
+                <span class="text-sm font-mono text-content-subtle" x-text="$store.themeBuilder.transitionDuration + 's'"></span>
+            </div>
+            <input type="range" min="0" max="0.5" step="0.01"
+                :value="$store.themeBuilder.transitionDuration"
+                @input="$store.themeBuilder.transitionDuration = $event.target.value">
+        </label>
+
+        <!-- Transition easing -->
+        <label class="col gap-1">
+            <span class="text-sm">Easing Function</span>
+            <select :value="$store.themeBuilder.transitionEasing"
+                @change="$store.themeBuilder.transitionEasing = $event.target.value">
+                <option value="ease-in-out">ease-in-out</option>
+                <option value="ease-in">ease-in</option>
+                <option value="ease-out">ease-out</option>
+                <option value="ease">ease</option>
+                <option value="linear">linear</option>
+            </select>
+        </label>
+
+        <!-- Tooltip delay -->
+        <label class="col gap-1">
+            <div class="row items-center justify-between">
+                <span class="text-sm">Tooltip Hover Delay</span>
+                <span class="text-sm font-mono text-content-subtle" x-text="$store.themeBuilder.tooltipDelay + 's'"></span>
+            </div>
+            <input type="range" min="0" max="2" step="0.1"
+                :value="$store.themeBuilder.tooltipDelay"
+                @input="$store.themeBuilder.tooltipDelay = $event.target.value">
+        </label>
+    </div>
+
+    <hr class="my-4">
+
+    <!-- ==================== FONT ==================== -->
+    <h6 class="m-0 mb-2">Font</h6>
+    <small class="text-content-subtle mb-3">Default font family stack.</small>
+
+    <label class="col gap-1">
+        <span class="text-sm">Font Sans</span>
+        <textarea class="font-mono text-sm" rows="3"
+            :value="$store.themeBuilder.fontSans"
+            @input="$store.themeBuilder.fontSans = $event.target.value"></textarea>
+    </label>
+
+</div>

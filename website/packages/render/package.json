@@ -1,6 +1,6 @@
 {
   "name": "mnfst-render",
-  "version": "0.5.1",
+  "version": "0.5.23",
   "description": "Render Manifest sites to static HTML for SEO",
   "type": "module",
   "bin": {
@@ -25,6 +25,9 @@
     "render",
     "seo"
   ],
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
   "author": "Andrew Matlock",
   "license": "MIT",
   "repository": {

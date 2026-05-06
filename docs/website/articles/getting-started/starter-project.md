@@ -4,7 +4,7 @@ Kickstart new websites and apps with a turnkey template.
 
 ---
 
-## Installation
+## Install
 
 Install the starter project locally with the `npx` command:
 
@@ -12,13 +12,29 @@ Install the starter project locally with the `npx` command:
 npx mnfst-starter MyProject
 ```
 
-"MyProject" is the modifiable root directory title—name it after your project.
+"MyProject" is the modifiable root directory title — name it after your project.
 
 Alternatively, download the template directory from <a href="https://github.com/andrewmatlock/Manifest/tree/master/templates/starter" target="_blank">GitHub</a>.
 
-### Running Locally
+---
 
-The project includes a built-in SPA router, requiring a local server like Live Server to run.
+## Run
+
+<x-code-group>
+
+```bash "From Root" copy
+npx mnfst-run
+```
+
+```bash "From Subdirectory" copy
+npx mnfst-run path
+```
+
+</x-code-group>
+
+Run this project locally from the project root with `npx mnfst-run`, or any subdirectory with `npx mnfst-run path`, where "path" is the folder path. Alternatively, most local server solutions can run Manifest projects.
+
+See [websites](/docs/publishing/websites) for deploying live to production.
 
 ---
 

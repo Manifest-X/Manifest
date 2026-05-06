@@ -150,11 +150,11 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
     )
     .catch((e) => ({ ok: false, reason: 'evaluate', message: String(e) }));
 
-  if (!result?.ok) {
-    const parts = [`prerender: render-ready wait incomplete (${result?.reason ?? 'unknown'})`];
-    if (result?.message) parts.push(result.message);
-    process.stdout.write(`${parts.join('; ')}\n`);
-  }
+  // Note: render-ready wait timeouts are silently tolerated.  Earlier versions
+  // logged a warning per path, but it fires on essentially every route in
+  // projects whose data plugins don't dispatch `manifest:render-ready` (i.e.
+  // most of them), drowning the terminal in noise.  The fallback timeout is
+  // intentional and benign — the DOM is still captured.
 }
 
 // --- Config ------------------------------------------------------------------
@@ -172,6 +172,7 @@ function parseArgs() {
     if (args[i] === '--wait' && args[i + 1]) { out.wait = parseInt(args[++i], 10); continue; }
     if (args[i] === '--wait-after-idle' && args[i + 1]) { out.waitAfterIdle = parseInt(args[++i], 10); continue; }
     if (args[i] === '--concurrency' && args[i + 1]) { out.concurrency = parseInt(args[++i], 10); continue; }
+    if (args[i] === '--retries' && args[i + 1]) { out.retries = parseInt(args[++i], 10); continue; }
     if (args[i] === '--dry-run') { out.dryRun = true; continue; }
     if (args[i] === '--debug-prerender') { out.debugPrerender = true; continue; }
   }
@@ -230,7 +231,12 @@ function resolveConfig() {
     redirects: Array.isArray(pre.redirects) ? pre.redirects : [],
     wait: cli.wait ?? pre.wait ?? null,
     waitAfterIdle: 0,
-    concurrency: Math.max(1, cli.concurrency ?? pre.concurrency ?? Math.max(4, cpus().length - 1)),
+    // Default concurrency: 2.  Chromium per-page memory overhead is large and
+    // our hydration source-attribute map adds more per page.  On big sites
+    // (>100 routes) higher concurrency crashes the browser with OOM/target
+    // closed errors.  Users can override for small projects with --concurrency.
+    concurrency: Math.max(1, cli.concurrency ?? pre.concurrency ?? 2),
+    retries: Math.max(0, cli.retries ?? pre.retries ?? 2),
     localeSubstitution: true,
     localeSubstitutionExclude: [],
     /** Explicit locale-neutral paths to render in addition to those discovered automatically.
@@ -240,7 +246,11 @@ function resolveConfig() {
       : [],
     dryRun: !!cli.dryRun,
     debugPrerender: !!cli.debugPrerender,
-    pipelineTimeout: 25000,
+    // Cap on the manifest:render-ready wait.  When the data plugin dispatches
+    // the event, we resolve immediately; when it doesn't (most projects), we
+    // fall back to the timeout.  10s gives slow data plugin pipelines a
+    // chance while bounding worst-case per-path overhead.
+    pipelineTimeout: 10000,
   };
 }
 
@@ -353,7 +363,7 @@ function parseYamlPaths(filePath) {
   let currentGroup = '';
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
-    const groupMatch = line.match(/^group:\s*["']?([^"'\n]+)["']?/);
+    const groupMatch = line.match(/^\s*-?\s*group:\s*["']?([^"'\n]+)["']?/);
     if (groupMatch) {
       currentGroup = groupMatch[1].trim().toLowerCase().replace(/\s+/g, '-');
       continue;
@@ -362,12 +372,15 @@ function parseYamlPaths(filePath) {
     if (pathMatch && currentGroup) {
       const segment = pathMatch[1].trim();
       paths.push(`${currentGroup}/${segment}`);
-    }
-    const genericPathMatch = line.match(/^\s*(?:-\s*)?(?:path|slug):\s*["']?([^"'\n#]+)["']?/);
-    if (genericPathMatch) {
-      const v = genericPathMatch[1].trim().replace(/^\/+|\/+$/g, '');
-      if (v && !v.includes('*') && !/\.[a-z0-9]+$/i.test(v)) {
-        paths.push(v);
+    } else {
+      // No group context — fall back to a bare path/slug.  Used by data files
+      // whose entries are flat (e.g. articles list with `path:` per item).
+      const genericPathMatch = line.match(/^\s*(?:-\s*)?(?:path|slug):\s*["']?([^"'\n#]+)["']?/);
+      if (genericPathMatch) {
+        const v = genericPathMatch[1].trim().replace(/^\/+|\/+$/g, '');
+        if (v && !v.includes('*') && !/\.[a-z0-9]+$/i.test(v)) {
+          paths.push(v);
+        }
       }
     }
   }
@@ -599,22 +612,107 @@ function stripDevOnlyContent(html) {
   return out;
 }
 
-// --- Strip CDN-injected plugin scripts from snapshot so only the loader remains ---
-// When the static page loads, the loader runs once and adds plugins; avoids duplicate script execution.
-function stripInjectedPluginScripts(html) {
-  const pluginPattern =
-    /<script[^>]*\ssrc=["'][^"']*manifest\.(?:components|router|utilities|data|icons|localization|markdown|code|themes|toasts|tooltips|dropdowns|tabs|slides|resize|tailwind|appwrite\.(?:auth|data|presence))[^"']*\.min\.js["'][^>]*>\s*<\/script>/gi;
-  let out = html.replace(pluginPattern, '');
-  const runtimePattern =
-    /<script[^>]*\ssrc=["'][^"']*(?:alpinejs\/dist\/cdn\.min\.js|papaparse@[^"']*\/papaparse\.min\.js|marked\/marked\.min\.js|highlightjs\/cdn-release@[^"']*\/highlight\.min\.js)[^"']*["'][^>]*>\s*<\/script>/gi;
-  out = out.replace(runtimePattern, '');
-  return out;
+// --- Strip scripts injected at runtime during prerender ---
+// The Manifest loader, Alpine, plugins, and third-party libraries inject
+// <script> tags into the DOM during the Puppeteer render.  These must be
+// removed from the serialized HTML so the loader can re-inject them fresh
+// at runtime (otherwise the addScript function finds an existing tag, waits
+// for a load event that already fired, and hangs forever).
+//
+// Approach: diff the prerendered HTML against the ORIGINAL index.html from
+// disk.  Any <script src="..."> whose src does NOT appear in the original
+// file was injected at runtime and must be stripped.  Inline scripts without
+// src are left alone (author-written analytics snippets, etc.).
+//
+// This is future-proof — new framework plugins, Alpine version bumps, and
+// arbitrary third-party scripts (webchat, analytics) are all handled
+// automatically without maintaining a hardcoded allowlist.
+let _originalScriptSrcs = null;
+
+function buildOriginalScriptSrcSet(rootDir) {
+  if (_originalScriptSrcs) return _originalScriptSrcs;
+  _originalScriptSrcs = new Set();
+  const indexPath = join(rootDir, 'index.html');
+  if (!existsSync(indexPath)) return _originalScriptSrcs;
+  const html = readFileSync(indexPath, 'utf8');
+  const srcPattern = /<script[^>]*\ssrc=["']([^"']+)["'][^>]*>/gi;
+  let m;
+  while ((m = srcPattern.exec(html)) !== null) {
+    _originalScriptSrcs.add(m[1]);
+  }
+  return _originalScriptSrcs;
+}
+
+function stripInjectedPluginScripts(html, rootDir) {
+  const originals = buildOriginalScriptSrcSet(rootDir);
+  // Remove every <script src="...">...</script> whose src is NOT in the
+  // original index.html.  This catches all loader-injected plugins, Alpine,
+  // runtime libraries (js-yaml, marked, highlight, etc.), and any third-party
+  // scripts added dynamically during the render.
+  return html.replace(/<script[^>]*\ssrc=["']([^"']+)["'][^>]*>\s*<\/script>/gi,
+    (full, src) => originals.has(src) ? full : ''
+  );
 }
 
 function stripRuntimeTailwindArtifacts(html) {
   let out = html.replace(/\sdata-tailwind(?:=(["']).*?\1)?/gi, '');
   // Remove PlayCDN-injected runtime Tailwind stylesheet from snapshots.
   out = out.replace(/<style>\s*\/\*!\s*tailwindcss[\s\S]*?<\/style>/gi, '');
+  return out;
+}
+
+// When tailwindcss isn't installed for the project, the prerender keeps the
+// runtime-injected inline tailwind <style> block (it serves the static page
+// for crawlers).  But we must still strip `data-tailwind` from the loader
+// script tag, otherwise the runtime tailwind plugin loads at page boot and
+// injects ANOTHER tailwind <style> block AFTER prerender.utilities.css,
+// breaking the cascade order so .hidden wins over .lg:col etc.
+function stripDataTailwindAttr(html) {
+  return html.replace(/\sdata-tailwind(?:=(["']).*?\1)?/gi, '');
+}
+
+/** Theme class de-bake + synchronous bootstrap.
+ *
+ * Puppeteer applies `<html class="light">` or `<html class="dark">` based on
+ * the build host's system preference at prerender time.  Shipping that baked
+ * class to users in the OPPOSITE preference causes a visible flash on every
+ * page load (dark→light or light→dark) until the themes plugin re-evaluates.
+ *
+ * Fix: strip `light`/`dark` from the baked `<html class>` and inject a tiny
+ * synchronous `<script>` at the top of `<head>` that sets the correct class
+ * BEFORE the first paint — based on the user's `localStorage.theme` (their
+ * saved preference) or `prefers-color-scheme` (their system preference).
+ *
+ * The themes plugin (`manifest.themes.js`) still runs later for reactivity
+ * (Alpine bindings, click handlers, system-preference change listener), but
+ * the initial paint already has the correct class so there's no flash.
+ */
+function debakeThemeClass(html) {
+  // Strip `light`/`dark` from `<html class="...">`.  When the class attribute
+  // becomes empty, drop the attribute entirely (including its leading space)
+  // while preserving the rest of the `<html ...>` tag.  Bug-fixed twice — the
+  // earlier version's regex captured the entire `<html ... class="...` chunk
+  // so returning `''` for an empty cleaned class wiped the whole opening tag.
+  let out = html.replace(/<html\b([^>]*)>/i, (full, attrs) => {
+    const newAttrs = attrs.replace(/\sclass=(["'])([^"']*)\1/i, (_, q, classes) => {
+      const cleaned = classes
+        .split(/\s+/)
+        .filter((c) => c && c !== 'light' && c !== 'dark')
+        .join(' ')
+        .trim();
+      return cleaned ? ` class=${q}${cleaned}${q}` : '';
+    });
+    return `<html${newAttrs}>`;
+  });
+  // Inject the synchronous theme bootstrap as the FIRST element inside <head>
+  // so it runs before any CSS or other scripts.  Self-contained — reads
+  // localStorage + prefers-color-scheme and sets the class atomically.
+  const bootstrap = `<script>(function(){try{var t=localStorage.getItem('theme')||'system';var d=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.add(d?'dark':'light');}catch(e){document.documentElement.classList.add('light');}})();</script>`;
+  if (!out.includes('id="manifest-theme-bootstrap"')) {
+    // Tag the script for idempotency on rebuilds and easy debugging.
+    const tagged = bootstrap.replace('<script>', '<script id="manifest-theme-bootstrap">');
+    out = out.replace(/<head(\s[^>]*)?>/i, (m) => `${m}\n  ${tagged}`);
+  }
   return out;
 }
 
@@ -647,6 +745,7 @@ function injectBeforeHeadClose(html, snippet) {
   }
   return out.replace(/<\/head>/i, `${snippet}\n</head>`);
 }
+
 
 function indexHtmlUsesTailwind(rootDir) {
   const indexPath = join(rootDir, 'index.html');
@@ -761,6 +860,29 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
     console.error('prerender: Tailwind CLI did not produce prerender.tailwind.css');
     return false;
   }
+  // Strip Tailwind preflight rules that conflict with Manifest's element-level
+  // resets.  Tailwind's `hr { height: 0; border-top-width: 1px }` would win on
+  // specificity over Manifest's `:where(hr) {...}` reset (same `@layer base`,
+  // higher specificity), even when Manifest CSS loads after Tailwind.  Removing
+  // the specific conflicting rules here is surgical: Tailwind's other utility
+  // classes (mt-6, md:hidden, etc.) keep their normal `@layer utilities`
+  // behaviour and continue to override Manifest's `*` reset as expected.
+  try {
+    const compiled = readFileSync(outCss, 'utf8');
+    // Inside Tailwind's `@layer base { ... }` block, remove the bare `hr { ... }`
+    // declaration only.  Other element resets in the same layer don't conflict
+    // with Manifest's `:where()` resets (they target other elements or rely on
+    // Manifest's resets winning later in source order at equal specificity).
+    const stripped = compiled.replace(
+      /(\s*)hr\s*\{\s*height:\s*0;\s*color:\s*inherit;\s*border-top-width:\s*1px;?\s*\}/g,
+      ''
+    );
+    if (stripped !== compiled) {
+      writeFileSync(outCss, stripped, 'utf8');
+    }
+  } catch (e) {
+    console.warn('prerender: failed to strip conflicting Tailwind preflight rules:', e?.message || e);
+  }
   process.stdout.write(`prerender: wrote ${relative(rootDir, outCss)}\n`);
   return true;
 }
@@ -840,8 +962,15 @@ function stripDuplicatedLoopDirectives(html) {
   return html;
 }
 
+// Returns true if the attribute string contains either the explicit `data-hydrate`
+// attribute (source-authored hydrate island root) or a `data-hydrate-id` (element
+// that the prerender has tagged as a runtime-restoration target).  String-level
+// strip passes use this to skip elements whose attribute state will be restored
+// from the hydration contract at runtime — leaving them untouched is the safest
+// default even though the contract would correct most damage anyway.
 function isHydrateMarkedAttrs(attrsStr) {
-  return /\sdata-prerender-hydrate(?:\s*=|[\s>])/i.test(attrsStr || '');
+  if (!attrsStr) return false;
+  return /\sdata-hydrate(?:-id)?(?:\s*=|[\s>])/i.test(attrsStr);
 }
 
 // --- Strip x-text and x-html that reference $x when static/SEO (content already in snapshot).
@@ -943,24 +1072,23 @@ function stripResolvedXIconDirectives(html) {
   });
 }
 
-function stripPrerenderHydrateMarkers(html) {
-  return html.replace(/\sdata-prerender-hydrate(?:=(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '');
-}
-
-// Remove the snapshot id attribute used by the hydrate restore phase.  These ids
-// only exist to let the post-Alpine restore step in Puppeteer find each snapshotted
-// element back; they have no purpose in the final output.
-function stripPrerenderHydrateSnapshotIds(html) {
-  return html.replace(/\sdata-manifest-hyd-id(?:=(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '');
-}
-
 function markPrerenderedManifestComponents(html) {
   return html.replace(/<(x-[a-z][\w-]*)([^>]*)>/gi, (full, tag, attrs) => {
     const a = attrs || '';
     if (/\bdata-pre-rendered\s*=/i.test(a) || /\bdata-processed\s*=/i.test(a)) return full;
-    if (/\bdata-prerender-hydrate\b/i.test(a)) return full; // Inside data-hydrate island — skip
-    const spacer = /\S/.test(a) ? ' ' : '';
-    return `<${tag}${a}${spacer}data-pre-rendered="1">`;
+    // Inside an explicit hydrate island — the runtime will restore its
+    // innerHTML to the authored source, so we must NOT tell the components
+    // processor to skip re-fetching.  Leaving the placeholder unmarked lets
+    // the runtime restoration reinstate the <x-*> tag and the components
+    // plugin processes it normally on load.
+    if (/\bdata-hydrate\b/i.test(a)) return full;
+    // CRITICAL: always insert a leading space before the injected attribute.
+    // For tags with no existing attributes (e.g. `<x-sidebar>`), `a` is empty
+    // and concatenating directly produces `<x-sidebardata-pre-rendered=...>`,
+    // which mangles the tag name and prevents the components plugin from
+    // recognising it.  The trailing-space normalisation on `a` keeps the
+    // output tidy when there ARE existing attributes.
+    return `<${tag}${a.replace(/\s+$/, '')} data-pre-rendered="1">`;
   });
 }
 
@@ -1246,6 +1374,49 @@ function buildSubstitutionPairs(defaultLocaleData, targetLocaleData) {
 }
 
 /**
+/**
+ * Prefix internal navigation links with the target locale so that prerendered
+ * MPA pages link directly to the correct locale variant (e.g. /platform →
+ * /fr/platform on the French page).  Without this, users must rely on runtime
+ * JS interception (`installMpaStickyLocaleLinks`) which may not be ready by
+ * the time they click — causing navigation to fall back to English.
+ *
+ * Only rewrites `<a href="...">` where the href is a root-relative path that
+ * doesn't already carry a locale prefix and isn't an excluded route.
+ */
+function prefixLocaleInternalLinks(html, locale, locales, localeRouteExclude) {
+  if (!locale || !locales || !locales.length) return html;
+  const localeSet = new Set(locales);
+  const excludeSet = new Set(localeRouteExclude || []);
+
+  // Match <a ... href="..." ...>  — capture the href value
+  return html.replace(
+    /(<a\b[^>]*\shref=["'])(\/?[^"'#][^"']*)(["'][^>]*>)/gi,
+    (full, prefix, href, suffix) => {
+      // Only process root-relative paths
+      if (!href.startsWith('/')) return full;
+      // Skip external protocols embedded as relative (shouldn't happen but guard)
+      if (/^\/\//.test(href)) return full;
+
+      const withoutSlash = href.replace(/^\//, '');
+      const firstSeg = withoutSlash.split('/')[0].split('#')[0].split('?')[0];
+
+      // Already has a locale prefix
+      if (localeSet.has(firstSeg)) return full;
+
+      // Skip asset-like paths
+      if (/\.(css|js|json|svg|png|jpg|jpeg|gif|ico|woff2?|ttf|eot|pdf|xml|txt)$/i.test(href)) return full;
+
+      // Respect localeRouteExclude — these routes stay locale-neutral
+      if (excludeSet.has(firstSeg)) return full;
+
+      // Prefix with locale
+      return `${prefix}/${locale}${href}${suffix}`;
+    }
+  );
+}
+
+/**
  * Apply locale text substitution to rendered HTML.
  * Replaces content in text nodes (between > and <) and in key attributes:
  * content, alt, title, placeholder, aria-label.
@@ -1308,10 +1479,21 @@ function generateLocaleVariantHtml({
   // Apply locale text substitution
   html = applyLocaleSubstitution(html, substitutionPairs);
 
+  // Prefix internal <a> links with the locale so MPA navigation stays in-locale
+  // without relying on runtime JS interception.
+  if (targetLocale && targetLocale !== defaultLocale) {
+    html = prefixLocaleInternalLinks(html, targetLocale, locales, config.localeRouteExclude);
+  }
+
   // Standard Node.js post-processing (same sequence as processPath)
   html = stripDevOnlyContent(html);
-  html = stripInjectedPluginScripts(html);
-  if (tailwindBuilt) html = stripRuntimeTailwindArtifacts(html);
+  html = stripInjectedPluginScripts(html, config.root);
+  if (tailwindBuilt) {
+    html = stripRuntimeTailwindArtifacts(html);
+  } else {
+    html = stripDataTailwindAttr(html);
+  }
+  html = debakeThemeClass(html);
 
   const pageUtilityBlocks = [];
   if (bundleUtilities) {
@@ -1339,10 +1521,8 @@ function generateLocaleVariantHtml({
   html = stripEmptyInlineMaskStyles(html);
   html = stripResolvedXIconDirectives(html);
   // markPrerenderedManifestComponents must run BEFORE stripPrerenderHydrateMarkers so it can
-  // detect data-prerender-hydrate markers and skip components inside hydrate islands.
+  // detect data-hydrate markers and skip components inside hydrate islands.
   html = markPrerenderedManifestComponents(html);
-  html = stripPrerenderHydrateMarkers(html);
-  html = stripPrerenderHydrateSnapshotIds(html);
 
   const fileSegments = pathToFileSegments(pathSeg ? '/' + pathSeg : '/');
   html = rewriteHtmlAssetPaths(html, fileSegments.length);
@@ -1361,10 +1541,18 @@ function generateLocaleVariantHtml({
     ? `<meta name="manifest:router-base" content="${String(routerBasePath).replace(/"/g, '&quot;')}">\n`
     : '';
   const routeDepth = fileSegments.length;
+  // List of locales that actually have prerendered URL paths, so the runtime
+  // localization plugin knows when a locale switch should navigate vs stay on
+  // the current page (e.g. example switches in docs that use locale-aware data
+  // sources without the host site being multilingual).
+  const prerenderLocalesMeta =
+    Array.isArray(locales) && locales.length > 0
+      ? `<meta name="manifest:prerender-locales" content="${locales.join(',')}">\n`
+      : '';
 
   html = html.replace(
     '</head>',
-    `${canonicalHreflang}${injectOgLocale ? ogLocale : ''}${routeMeta}${baseMeta}<meta name="manifest:prerendered" content="1">\n<meta name="manifest:router-base-depth" content="${routeDepth}">\n</head>`
+    `${canonicalHreflang}${injectOgLocale ? ogLocale : ''}${routeMeta}${baseMeta}${prerenderLocalesMeta}<meta name="manifest:prerendered" content="1">\n<meta name="manifest:router-base-depth" content="${routeDepth}">\n</head>`
   );
 
   return { html, utilityBlocks: pageUtilityBlocks };
@@ -1381,6 +1569,26 @@ function loadContentForPrerender(manifest, rootDir, locale) {
     content = parseCsvToKeyValue(join(rootDir, data.slice(1)), loc);
   } else if (data && typeof data === 'object' && data.locales && typeof data.locales === 'string') {
     content = parseCsvToKeyValue(join(rootDir, data.locales.slice(1)), loc);
+  } else if (data && typeof data === 'object' && !Array.isArray(data)) {
+    // Per-locale files: { "en": "/data/content.en.yaml", "fr": "/data/content.fr.yaml", ... }
+    const filePath = data[loc] || data[Object.keys(data)[0]];
+    if (typeof filePath === 'string') {
+      const fullPath = join(rootDir, filePath.startsWith('/') ? filePath.slice(1) : filePath);
+      if (existsSync(fullPath)) {
+        try {
+          const raw = readFileSync(fullPath, 'utf8');
+          if (filePath.endsWith('.yaml') || filePath.endsWith('.yml')) {
+            let jsYaml = null;
+            try { jsYaml = require('js-yaml'); } catch { /* skip */ }
+            if (jsYaml) content = jsYaml.load(raw) || {};
+          } else if (filePath.endsWith('.json')) {
+            content = JSON.parse(raw);
+          } else if (filePath.endsWith('.csv')) {
+            content = parseCsvToKeyValue(fullPath, loc);
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
   }
   if (manifest.description !== undefined && content.description === undefined) {
     content.description = manifest.description;
@@ -1453,15 +1661,27 @@ function resolveHeadXBindings(html, xData) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
   return html.replace(/<head>([\s\S]*?)<\/head>/i, (_, headContent) => {
-    let out = headContent.replace(
-      /(\s)(?::|x-bind:)(\w+)=["'](\$x\.[^"']+)["']/g,
-      (_, space, attr, expr) => {
+    // Process each tag in <head> that has a :attr or x-bind:attr binding
+    const out = headContent.replace(/<[^>]+>/g, (tag) => {
+      // Find all :attr="$x...." or x-bind:attr="$x...." bindings in this tag
+      const bindingRe = /\s(?::|x-bind:)(\w+)=["'](\$x\.[^"']+)["']/g;
+      let m;
+      let newTag = tag;
+      while ((m = bindingRe.exec(tag)) !== null) {
+        const attr = m[1];
+        const expr = m[2];
         const path = expr.replace(/^\$x\./, '').trim();
         const value = getXPath(xData, path);
-        if (value === undefined) return _;
-        return `${space}${attr}="${esc(value)}"`;
+        if (value === undefined) continue;
+        // Remove the binding
+        newTag = newTag.replace(m[0], '');
+        // Remove existing static fallback for this attr
+        newTag = newTag.replace(new RegExp(`\\s${attr}=["'][^"']*["']`), '');
+        // Insert the resolved attr before the closing >
+        newTag = newTag.replace(/>$/, ` ${attr}="${esc(value)}">`);
       }
-    );
+      return newTag;
+    });
     return `<head>${out}</head>`;
   });
 }
@@ -1688,8 +1908,11 @@ async function runPrerender(config) {
       paths.add(`${locale}/${seg}`);
     }
   }
-  // Default locale also under its slug (e.g. /en/, /en/page-1) so linking is symmetric; canonical points to root
-  if (defaultLocale) {
+  // Default locale also under its slug (e.g. /en/, /en/page-1) so linking is
+  // symmetric with other locales; canonical points to root.  Skip this when
+  // there's only one locale — the duplicates serve no purpose and bloat the
+  // output (every page would be written twice: at root AND under /en/).
+  if (defaultLocale && locales.length > 1) {
     paths.add(defaultLocale);
     for (const seg of localeNeutralSegments) {
       if (seg !== '') paths.add(`${defaultLocale}/${seg}`);
@@ -1725,34 +1948,64 @@ async function runPrerender(config) {
   const tailwindBuilt = runTailwindCliForPrerender(rootResolved, outputResolved, pre);
   const utilityBlocks = [];
 
-  let browser;
-  try {
-    const chromium = await importFromProject('@sparticuz/chromium');
-    const pptr = await importFromProject('puppeteer-core');
-    const executablePath = await chromium.default.executablePath();
-    browser = await pptr.default.launch({
-      args: chromium.default.args,
-      defaultViewport: chromium.default.defaultViewport ?? null,
-      executablePath,
-      headless: chromium.default.headless ?? true,
-      ignoreHTTPSErrors: true,
-    });
-  } catch (serverlessErr) {
-    let puppeteer;
+  // Launch a fresh browser instance.  Chromium is known to accumulate memory
+  // and handle leaks on large prerender runs (we've seen crashes around page
+  // ~230 on sites with hundreds of routes).  The launchBrowser function is
+  // used both for the initial launch AND for periodic recycling — we close
+  // the old browser and start a new one every `browserRecycleEvery` pages to
+  // bound memory growth.
+  async function launchBrowser() {
     try {
-      puppeteer = await importFromProject('puppeteer');
-    } catch {
-      console.error('prerender: missing browser runtime.');
-      console.error('Install one of the following, then rerun:');
-      console.error('  npm i -D puppeteer');
-      console.error('  npm i -D puppeteer-core @sparticuz/chromium');
-      process.exit(1);
+      const chromium = await importFromProject('@sparticuz/chromium');
+      const pptr = await importFromProject('puppeteer-core');
+      const executablePath = await chromium.default.executablePath();
+      return await pptr.default.launch({
+        args: chromium.default.args,
+        defaultViewport: chromium.default.defaultViewport ?? null,
+        executablePath,
+        headless: chromium.default.headless ?? true,
+        ignoreHTTPSErrors: true,
+      });
+    } catch (_serverlessErr) {
+      let puppeteer;
+      try {
+        puppeteer = await importFromProject('puppeteer');
+      } catch {
+        console.error('prerender: missing browser runtime.');
+        console.error('Install one of the following, then rerun:');
+        console.error('  npm i -D puppeteer');
+        console.error('  npm i -D puppeteer-core @sparticuz/chromium');
+        process.exit(1);
+      }
+      return await puppeteer.default.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+        ],
+      });
     }
-    browser = await puppeteer.default.launch({ headless: true });
   }
+  let browser = await launchBrowser();
 
-  const timeout = config.wait ?? 15000;
+  const timeout = config.wait ?? 30000;
+  // Lower default concurrency: Chromium's own memory overhead per page is
+  // substantial, and we also now maintain a per-page source-attribute Map for
+  // the hydration contract.  On large sites (>100 routes) higher concurrency
+  // spikes memory and crashes the browser.  Users can still override via
+  // --concurrency or manifest.prerender.concurrency.
   const concurrency = config.concurrency;
+  const maxRetries = config.retries ?? 2;
+  // Recycle the browser every N processed pages to bound resource growth.
+  // Configurable via manifest.prerender.browserRecycleEvery.
+  const browserRecycleEvery = Math.max(0, pre.browserRecycleEvery ?? 40);
+  let pagesSinceRecycle = 0;
+  const recycleLock = { busy: false };
+  // Workers block on this promise before touching `browser`.  While a recycle
+  // is in progress it's a pending promise; once the new browser is up it
+  // resolves and workers can proceed.  This prevents "browser not ready"
+  // errors from racing retries during recycle.
+  let browserReadyPromise = Promise.resolve();
   const pathTotal = pathList.length;
   const failedPaths = [];
   const debugRows = [];
@@ -1844,6 +2097,11 @@ async function runPrerender(config) {
           : defaultLocale || 'en'
         : defaultLocale || 'en';
 
+    // Wait for any in-progress browser recycle to complete before touching
+    // `browser`.  This transparently handles the window between the old
+    // browser being closed and the new one being launched — workers block
+    // here instead of throwing "browser not ready".
+    await browserReadyPromise;
     const page = await browser.newPage();
     try {
       // Align <html lang> with the URL being prerendered before any app script runs.
@@ -1865,135 +2123,113 @@ async function runPrerender(config) {
         }
       }, currentLocale);
 
-      // Snapshot pristine source attributes of hydrate-target elements BEFORE Alpine
-      // touches them.  We do this by wrapping `Alpine.initTree` — Alpine calls this
-      // for the initial tree walk AND every time the components plugin lazy-loads a
-      // new <x-*> component.  Right before Alpine processes a subtree, we walk it
-      // and snapshot every hydrate target inside.  This is the exact moment the
-      // user's source HTML is sitting in the DOM with no Alpine mutations applied.
+      // Deterministic source-attribute capture via MutationObserver with
+      // `attributeOldValue`.  This runs before ANY page script and records the
+      // first (pre-mutation) value of every attribute that Alpine or a Manifest
+      // plugin ever touches.  It also records the *initial* attributes of every
+      // new element added to the DOM via childList mutations — so elements
+      // parsed from innerHTML (components, markdown rendering, etc.) are also
+      // captured the moment they appear.
       //
-      // The snapshots are restored in a later page.evaluate call after Alpine
-      // settles.  This is true hydration: Alpine never gets to bake state into
-      // hydrate elements, so every directive (`:class`, `:style`, `x-text`, custom
-      // plugin directives, etc.) works in the prerendered MPA exactly the way it
-      // does in the live SPA — no per-binding strip logic, no cloak band-aids, no
-      // edge cases to chase.
+      // The observer handles all mutation surfaces at once:
+      //   - setAttribute / removeAttribute
+      //   - className setter
+      //   - classList.add / remove / toggle / replace
+      //   - style.* property assignments (which mutate the style attribute)
+      //   - Any other path that ultimately modifies an attribute
+      //
+      // At serialize time we read the map, identify hydrate targets per the
+      // catalog, and emit a compact JSON hydration contract.  The runtime
+      // (`hydratePrerenderedPage` in manifest.js) reads the contract and
+      // restores source attributes before Alpine starts.
       await page.evaluateOnNewDocument(() => {
-        const allSnapshots = [];
-        let nextId = 0;
-        const skipTags = new Set(['MAIN', 'BODY', 'HTML']);
+        // element -> { attrName: originalValue (null if attribute was absent) }
+        // Keyed by reference so detached elements drop out naturally.
+        const sourceAttrs = new Map();
+        // element -> original innerHTML (only populated for elements already
+        // marked data-hydrate when we first see them — used for subtree-wide
+        // restoration of explicit hydrate islands).
+        const sourceInnerHTML = new Map();
 
-        const snapshotElement = (el) => {
-          if (!el || el.nodeType !== 1) return;
-          if (el.hasAttribute('data-manifest-hyd-id')) return; // already snapshotted
-          const id = '__manifest-hyd-' + nextId++;
-          el.setAttribute('data-manifest-hyd-id', id);
-          const attrs = {};
-          for (let i = 0; i < el.attributes.length; i++) {
-            const a = el.attributes[i];
-            if (a.name === 'data-manifest-hyd-id') continue;
-            attrs[a.name] = a.value;
+        const recordInitialAttrs = (el) => {
+          if (!el || el.nodeType !== 1 || sourceAttrs.has(el)) return;
+          const rec = {};
+          const list = el.attributes;
+          for (let i = 0; i < list.length; i++) {
+            rec[list[i].name] = list[i].value;
           }
-          allSnapshots.push({ id, attrs });
-        };
-
-        const snapshotElementAndDescendants = (el) => {
-          snapshotElement(el);
-          if (el && el.querySelectorAll) {
-            el.querySelectorAll('*').forEach(snapshotElement);
+          sourceAttrs.set(el, rec);
+          if (el.hasAttribute && el.hasAttribute('data-hydrate')) {
+            try { sourceInnerHTML.set(el, el.innerHTML); } catch (_) {}
           }
         };
 
-        const snapshotSubtree = (root) => {
-          if (!root || root.nodeType !== 1) return;
-
-          // 1. Direct data-hydrate roots + descendants within this subtree.
-          const hydrateRoots = [];
-          if (root.matches && root.matches('[data-hydrate]')) hydrateRoots.push(root);
-          if (root.querySelectorAll) {
-            root.querySelectorAll('[data-hydrate]').forEach((el) => hydrateRoots.push(el));
-          }
-          hydrateRoots.forEach(snapshotElementAndDescendants);
-
-          // 2. x-theme elements (color mode plugin needs runtime click handler).
-          if (root.matches && root.matches('[x-theme]')) snapshotElementAndDescendants(root);
-          if (root.querySelectorAll) {
-            root.querySelectorAll('[x-theme]').forEach(snapshotElementAndDescendants);
-          }
-
-          // 3. Propagate from data-hydrate children to nearest LOCAL x-data ancestor
-          //    so the reactive controller, sibling event handlers (@click toggles
-          //    etc.) and all bindings inside the scope are preserved together.
-          //    Skip page-level scopes (main, body, [x-route]).
-          hydrateRoots.forEach((el) => {
-            let ancestor = el.parentElement;
-            while (ancestor && ancestor !== document.body) {
-              if (
-                ancestor.hasAttribute('x-data') &&
-                !skipTags.has(ancestor.tagName) &&
-                !ancestor.hasAttribute('x-route')
-              ) {
-                snapshotElementAndDescendants(ancestor);
-                break;
+        const handleMutations = (mutations) => {
+          for (const m of mutations) {
+            if (m.type === 'attributes') {
+              const el = m.target;
+              let rec = sourceAttrs.get(el);
+              if (!rec) {
+                // First time we see this element AT ALL via an attribute record:
+                // seed with every current attribute so we never lose attrs that
+                // existed before any mutation we happened to observe.
+                rec = {};
+                const list = el.attributes;
+                for (let i = 0; i < list.length; i++) {
+                  rec[list[i].name] = list[i].value;
+                }
+                // Overwrite the one being mutated with the true oldValue
+                // (which may be null if the attribute was absent pre-mutation).
+                rec[m.attributeName] = m.oldValue;
+                sourceAttrs.set(el, rec);
+              } else if (!(m.attributeName in rec)) {
+                rec[m.attributeName] = m.oldValue;
               }
-              ancestor = ancestor.parentElement;
+            } else if (m.type === 'childList') {
+              for (const node of m.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                recordInitialAttrs(node);
+                if (node.querySelectorAll) {
+                  node.querySelectorAll('*').forEach(recordInitialAttrs);
+                }
+              }
             }
-          });
-
-          window.__manifestHydrateSnapshots = allSnapshots;
+          }
         };
 
-        // Two complementary mechanisms — both are needed to cover every entry point
-        // through which Alpine processes a tree, including preloaded components that
-        // exist in the DOM before Alpine starts:
-        //
-        //   (a) Snapshot at `alpine:init` time.  Alpine fires this event AFTER all
-        //       preloaded components are expanded and the DOM is stable, but BEFORE
-        //       Alpine begins its internal tree walk.  Critically, Alpine v3's start
-        //       routine uses a *private* internal initTree reference for the initial
-        //       walk — wrapping the public `Alpine.initTree` does NOT intercept it.
-        //       So we have to snapshot everything in document.body at this exact
-        //       moment, before Alpine touches it.
-        //
-        //   (b) Wrap `Alpine.initTree` for lazy-loaded components.  After Alpine
-        //       starts, the components plugin lazy-fetches templates for any
-        //       remaining <x-*> placeholders and calls the public Alpine.initTree on
-        //       each new component.  Our wrap intercepts those calls and snapshots
-        //       the new subtree before Alpine processes it.
-        //
-        // The wrap is installed via a defineProperty setter on window.Alpine so it
-        // lands the instant Alpine's CDN script does `window.Alpine = ...`.
-        const wrap = (alpine) => {
-          if (!alpine || alpine.__manifestRenderWrapped) return;
-          if (typeof alpine.initTree !== 'function') return;
-          alpine.__manifestRenderWrapped = true;
-          const original = alpine.initTree.bind(alpine);
-          alpine.initTree = function (root) {
-            try { snapshotSubtree(root || document.body); } catch (_) { /* graceful */ }
-            return original.apply(this, arguments);
-          };
+        const observer = new MutationObserver(handleMutations);
+
+        let observing = false;
+        const startObserving = () => {
+          if (observing) return true;
+          // We can observe `document` itself — MutationObserver accepts it as a
+          // target and forwards subtree mutations, so we catch <html> creation
+          // and everything under it without racing the parser.
+          try {
+            observer.observe(document, {
+              attributes: true,
+              attributeOldValue: true,
+              childList: true,
+              subtree: true,
+            });
+            observing = true;
+          } catch (_) { return false; }
+          // Seed whatever already exists.
+          if (document.documentElement) {
+            recordInitialAttrs(document.documentElement);
+            document.documentElement.querySelectorAll('*').forEach(recordInitialAttrs);
+          }
+          return true;
         };
+        startObserving();
 
-        let _Alpine;
-        try {
-          Object.defineProperty(window, 'Alpine', {
-            configurable: true,
-            enumerable: true,
-            get() { return _Alpine; },
-            set(v) { _Alpine = v; wrap(v); },
-          });
-        } catch (_) { /* defineProperty failed, fall back to event listeners */ }
-
-        if (typeof document !== 'undefined') {
-          // (a) — snapshot the entire document right before Alpine's initial walk.
-          //      `alpine:init` fires after preloaded components are in the DOM but
-          //      before Alpine processes any directive.
-          document.addEventListener('alpine:init', () => {
-            try { snapshotSubtree(document.body); } catch (_) { /* graceful */ }
-            wrap(window.Alpine); // belt and braces in case the setter trap missed
-          });
-          document.addEventListener('alpine:initialized', () => wrap(window.Alpine));
-        }
+        // Flush any pending mutations before the DOM is read for serialization.
+        window.__manifestFlushHydrateSources = () => {
+          try { handleMutations(observer.takeRecords()); } catch (_) {}
+        };
+        // Expose for the contract-emission phase.
+        window.__manifestSourceAttrs = sourceAttrs;
+        window.__manifestSourceInnerHTML = sourceInnerHTML;
       });
 
       pushDebug({ path: displayPath, stage: 'start' });
@@ -2002,16 +2238,27 @@ async function runPrerender(config) {
         timeout: Math.min(timeout, 30000),
       });
 
+      // Settle waits.  These give Manifest plugins (especially the components
+      // plugin, which lazy-fetches each component HTML over the network) time
+      // to finish loading and expanding everything before we snapshot.  Each
+      // wait is bounded; large projects with many components need the full
+      // budget on cold runs, but small projects settle long before the cap.
+      //
+      // Lowered from the original "any wait could hold the prerender for ~50s
+      // per path" defaults, but kept generous enough that Playcom-scale sites
+      // (~10 preloaded components, dozens of lazy components) actually finish
+      // expanding before snapshot.  Earlier reductions were too aggressive and
+      // left unexpanded `<x-*>` placeholders in the output.
       await Promise.race([
         page.evaluate(() => {
           return new Promise((resolve) => {
             const done = () => resolve();
-            const t = setTimeout(done, 6000);
+            const t = setTimeout(done, 3000);
             window.addEventListener(
               'manifest:routing-ready',
               () => {
                 clearTimeout(t);
-                setTimeout(done, 2000);
+                setTimeout(done, 1000);
               },
               { once: true }
             );
@@ -2020,13 +2267,14 @@ async function runPrerender(config) {
         new Promise((_, rej) => setTimeout(() => rej(new Error('ready timeout')), timeout)),
       ]).catch(() => { });
 
-      // Ensure manifest.min.js (dynamic loader) has run and injected plugin scripts before snapshot.
-      // Static output still runs the loader and Alpine; we just capture the DOM after they've set up.
+      // Ensure the dynamic loader has injected at least one plugin script.
+      // In practice this happens within ~100ms but allow up to 3s for cold
+      // CDN cache or slow disk.
       await page.evaluate(() => {
         return new Promise((resolve) => {
           const check = () => document.querySelectorAll('script[src*="manifest"]').length >= 2;
           if (check()) return resolve();
-          const deadline = Date.now() + 5000;
+          const deadline = Date.now() + 3000;
           const t = setInterval(() => {
             if (check() || Date.now() >= deadline) {
               clearInterval(t);
@@ -2036,19 +2284,21 @@ async function runPrerender(config) {
         });
       }).catch(() => { });
 
-      await page.waitForNetworkIdle({ idleTime: 1500, timeout: 10000 }).catch(() => { });
+      // Network idle: drain pending fetches (component templates, data sources,
+      // markdown files, icon SVGs).  Larger projects need the full window;
+      // small ones settle in well under 1 second.
+      await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => { });
 
+      // DOM stability after network idle.
       await page.evaluate(() => {
         return new Promise((resolve) => {
           const observer = new MutationObserver(() => {
             clearTimeout(stable);
-            stable = setTimeout(resolve, 800);
+            stable = setTimeout(finish, 500);
           });
           observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-          let stable = setTimeout(() => {
-            observer.disconnect();
-            resolve();
-          }, 800);
+          const finish = () => { observer.disconnect(); resolve(); };
+          let stable = setTimeout(finish, 500);
         });
       }).catch(() => { });
 
@@ -2217,147 +2467,213 @@ async function runPrerender(config) {
       });
 
       // Strip x-markdown from elements that already have baked content.
-      // The markdown plugin hides elements with opacity:0 on init, then re-fetches and re-renders.
-      // For prerendered pages the content is already baked — removing x-markdown prevents the
-      // runtime plugin from re-processing (and temporarily hiding) the static content.
+      // The markdown plugin hides elements with opacity:0 on init, then re-fetches
+      // and re-renders.  For prerendered pages the content is already baked —
+      // removing x-markdown prevents the runtime plugin from re-processing (and
+      // temporarily hiding) the static content.
+      //
+      // We ALSO clear any leftover `opacity: 0` inline style the plugin set
+      // before/while rendering.  On dynamic expressions that initially evaluate
+      // empty (e.g. article content keyed off `$route` before `$x.articles` has
+      // loaded), the plugin sets opacity to 0 and may never restore it to 1 if
+      // the effect re-fires with an empty value.  The end state in the
+      // serialized HTML has rendered content but opacity:0 — invisible in
+      // production.  Since we're also removing x-markdown (so the runtime
+      // plugin doesn't re-hide the element), leaving the inline style would
+      // permanently hide authored content.
       await page.evaluate(() => {
         document.querySelectorAll('[x-markdown]').forEach((el) => {
           if (!el.textContent.trim() && !el.innerHTML.trim()) return;
           el.removeAttribute('x-markdown');
+          // Clean up opacity-0 + transition inline styles the plugin left behind.
+          const style = el.getAttribute('style') || '';
+          if (style) {
+            const cleaned = style
+              .replace(/\bopacity\s*:\s*0(?:\.\d+)?\s*;?/gi, '')
+              .replace(/\btransition\s*:\s*opacity[^;]*;?/gi, '')
+              .replace(/;\s*;/g, ';')
+              .replace(/^\s*;\s*|\s*;\s*$/g, '')
+              .trim();
+            if (cleaned) el.setAttribute('style', cleaned);
+            else el.removeAttribute('style');
+          }
         });
       });
 
-      // Restore hydrate-target elements to their pristine source attributes
-      // (snapshotted via evaluateOnNewDocument before Alpine ran).  This is true
-      // hydration: every Alpine binding (`:class`, `:style`, `:value`, `x-text`,
-      // `x-init`, custom plugin directives, …) is preserved exactly as authored,
-      // and Alpine processes them at runtime in the prerendered MPA the same way
-      // it would in the live SPA.  After restoring source attributes we re-add the
-      // `data-prerender-hydrate` marker so downstream Node.js stripping passes
-      // continue to skip these elements.
+      // Emit the hydration contract: walk the DOM, identify every hydrate
+      // target (explicit `data-hydrate`, interactive Manifest directives,
+      // diff-semantic bindings, runtime-magic-driven bindings), tag each with
+      // `data-hydrate-id`, and collect the diff between each target's source
+      // attributes (recorded by the MutationObserver in evaluateOnNewDocument)
+      // and its current post-render attributes.  The contract is returned as a
+      // JSON-serialisable array; the runtime reads it on page load and restores
+      // source state before Alpine starts.
       //
-      // Implementation note: we use `outerHTML` to swap the element rather than
-      // `setAttribute` per-attribute.  Alpine's special attribute names (`@click`,
-      // possibly others starting with `@`) are not valid DOM Names per the XML
-      // production, so `setAttribute('@click', …)` throws InvalidCharacterError.
-      // The HTML parser, on the other hand, is lenient and accepts these names.
-      // Building an HTML string and assigning it via outerHTML round-trips through
-      // the parser and produces an element with all source attributes intact.
-      const restoreReport = await page.evaluate(() => {
-        // Stop Alpine from observing further DOM mutations and tear down the
-        // reactive bindings on hydrate-target elements.  Without this, when our
-        // restore wipes/sets attributes, Alpine's `:class` (and other) bindings
-        // re-fire from queued microtasks and re-bake the dynamic state on top of
-        // the source attributes we just put back.
-        try { window.Alpine && window.Alpine.stopObservingMutations && window.Alpine.stopObservingMutations(); } catch (_) {}
-        try {
-          document.querySelectorAll('[data-manifest-hyd-id]').forEach((el) => {
-            const cleanups = el._x_attributeCleanups;
-            if (cleanups) {
-              for (const arr of Object.values(cleanups)) {
-                if (Array.isArray(arr)) arr.forEach((fn) => { try { fn(); } catch (_) {} });
-              }
-              el._x_attributeCleanups = {};
-            }
-            if (Array.isArray(el._x_cleanups)) {
-              el._x_cleanups.forEach((fn) => { try { fn(); } catch (_) {} });
-              el._x_cleanups = [];
-            }
-            // Effects array — release each effect so it stops watching.
-            if (Array.isArray(el._x_effects)) {
-              el._x_effects.forEach((eff) => {
-                try { window.Alpine && window.Alpine.release && window.Alpine.release(eff); } catch (_) {}
-              });
-              el._x_effects = [];
-            }
-          });
-        } catch (_) {}
+      // For explicit `data-hydrate` roots, the entry also carries the original
+      // innerHTML so the whole subtree is restored to source, not just its
+      // attributes.
+      //
+      // The catalog here is the authoritative list of "what counts as
+      // interactive" and MUST match the docs/articles surface.
+      const hydrationContractRaw = await page.evaluate(() => {
+        // Drain any mutations not yet delivered to the observer so our source
+        // map has the latest values.
+        try { window.__manifestFlushHydrateSources && window.__manifestFlushHydrateSources(); } catch (_) {}
 
-        const snapshots = window.__manifestHydrateSnapshots || [];
-        const report = { total: snapshots.length, restored: 0, notFound: 0, errors: [] };
+        const sourceAttrs = window.__manifestSourceAttrs || new Map();
+        const sourceInnerHTML = window.__manifestSourceInnerHTML || new Map();
 
-        // Resolve every snapshot to its element BEFORE we start mutating, then sort
-        // by depth (deepest first).  This guarantees children are processed before
-        // their ancestors, so when an ancestor is rebuilt the children captured in
-        // its innerHTML have already been restored to source state.
-        const items = [];
-        snapshots.forEach(({ id, attrs }) => {
-          const el = document.querySelector(`[data-manifest-hyd-id="${id}"]`);
-          if (!el) { report.notFound++; return; }
-          let depth = 0;
-          for (let p = el.parentNode; p; p = p.parentNode) depth++;
-          items.push({ el, attrs, depth });
+        // --- CATALOG: what makes an element a hydrate target ---
+        // Interactive Manifest-registered directives that attach click/hover/
+        // observer state at runtime and therefore need the live Alpine scope.
+        const INTERACTIVE_DIRECTIVES = new Set([
+          'x-theme', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
+          'x-toast', 'x-carousel', 'x-resize', 'x-anchors', 'x-model',
+          'x-files', 'x-data-files',
+        ]);
+        // Runtime-only Alpine magics whose values change after the prerender
+        // snapshot (e.g. via media query, route change, auth state).  Bindings
+        // referencing these must re-evaluate in the live page.
+        const RUNTIME_MAGIC_RX = /(?<!['"])\$(theme|locale|url|auth|search|query|toast)\b/;
+
+        const isDiffBindingAttr = (name) =>
+          name === ':class' || name === 'x-bind:class' ||
+          name === ':style' || name === 'x-bind:style';
+
+        const isEventAttr = (name) =>
+          name.charCodeAt(0) === 64 /* @ */ || name.startsWith('x-on:');
+
+        const isBindingAttr = (name) =>
+          name.charCodeAt(0) === 58 /* : */ || name.startsWith('x-bind:') || name.startsWith('x-');
+
+        const classifyElement = (el) => {
+          // Explicit data-hydrate — subtree-wide restoration.
+          if (el.hasAttribute('data-hydrate')) return 'explicit';
+
+          const list = el.attributes;
+          for (let i = 0; i < list.length; i++) {
+            const name = list[i].name;
+            const val = list[i].value;
+
+            if (INTERACTIVE_DIRECTIVES.has(name)) return 'interactive';
+            if (isEventAttr(name)) return 'event';
+            if (isDiffBindingAttr(name)) return 'diff-binding';
+            if (isBindingAttr(name) && val && RUNTIME_MAGIC_RX.test(val)) return 'runtime-magic';
+          }
+          return null;
+        };
+
+        // --- Walk: collect all hydrate targets ---
+        const targets = new Set();
+        const subtreeRoots = new Set(); // explicit roots — restore innerHTML too
+        const all = document.body ? document.body.querySelectorAll('*') : [];
+        all.forEach((el) => {
+          const kind = classifyElement(el);
+          if (!kind) return;
+          if (kind === 'explicit') {
+            subtreeRoots.add(el);
+            targets.add(el);
+            el.querySelectorAll('*').forEach((d) => targets.add(d));
+          } else {
+            targets.add(el);
+          }
         });
-        items.sort((a, b) => b.depth - a.depth);
 
-        const voidEls = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
-        const isAlpineSpecial = (name) => name.startsWith('@') || name.startsWith(':') || name.startsWith('x-on:') || name.startsWith('x-bind:');
+        // --- Build contract entries ---
+        let nextId = 0;
+        const entries = [];
+        targets.forEach((el) => {
+          const source = sourceAttrs.get(el);
+          const attrsOut = {};
+          let dirty = false;
 
-        items.forEach(({ el, attrs }) => {
-          // Wipe everything first.
-          Array.from(el.attributes).map((a) => a.name).forEach((name) => {
-            try { el.removeAttribute(name); } catch (_) {}
-          });
-
-          // Try setAttribute for each source attribute; if a name is invalid for
-          // the DOM API (e.g. `@click`), fall back to building an Attr node via
-          // the lenient HTML parser and adopting it.
-          let needsParserFallback = false;
-          for (const [name, value] of Object.entries(attrs)) {
-            try {
-              el.setAttribute(name, value);
-            } catch (_) {
-              needsParserFallback = true;
-              break;
-            }
+          // Collect attributes that DIVERGED from source.  For each current
+          // attribute: if the source recorded a different value (or absent),
+          // we need to restore the source value.
+          const currentAttrs = {};
+          const list = el.attributes;
+          for (let i = 0; i < list.length; i++) {
+            currentAttrs[list[i].name] = list[i].value;
           }
 
-          if (needsParserFallback) {
-            // Wipe again because the partial setAttribute pass left the element
-            // in an inconsistent state.
-            Array.from(el.attributes).map((a) => a.name).forEach((name) => {
-              try { el.removeAttribute(name); } catch (_) {}
-            });
-            // Build a temp element via the HTML parser, then adopt its attributes.
-            const tag = el.tagName.toLowerCase();
-            const attrString = Object.entries(attrs)
-              .map(([name, value]) => `${name}="${String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"`)
-              .join(' ');
-            const tmp = document.createElement('div');
-            tmp.innerHTML = `<${tag} ${attrString}></${tag}>`;
-            const parsed = tmp.firstElementChild;
-            if (parsed) {
-              for (const a of Array.from(parsed.attributes)) {
-                try {
-                  el.setAttribute(a.name, a.value);
-                } catch (_) {
-                  // setAttribute still fails for special names — adopt the Attr
-                  // node directly.  setAttributeNode accepts Attr nodes that the
-                  // parser created (which can carry names invalid for createAttribute).
-                  try {
-                    const adopted = document.adoptNode(a);
-                    el.setAttributeNode(adopted);
-                  } catch (_) { /* skip */ }
+          if (source) {
+            // For every attribute in source, check if current differs.
+            for (const name in source) {
+              if (name === 'data-hydrate-id') continue;
+              const src = source[name];
+              const cur = name in currentAttrs ? currentAttrs[name] : null;
+              if (src !== cur) {
+                // If the source value is null (attribute didn't exist originally)
+                // but a reactive Alpine binding controls this attribute, skip the
+                // restoration.  Alpine will re-evaluate the binding on init and
+                // set the correct value; nulling it in the contract would flash
+                // the element unstyled until Alpine + async data loads catch up.
+                // The baked value IS the correct initial render.
+                if (src === null) {
+                  // Keep baked `style` when an Alpine binding manages it.
+                  // The baked value (e.g. `mask-image: url(...)` from a `:style`
+                  // expression evaluating against $x data, or `display: none`
+                  // from `x-show`) is the correct initial render — nulling it
+                  // would flash the element while Alpine + async data catch up.
+                  // Alpine's :style/x-show handlers diff against the current
+                  // DOM correctly, so the baked value is safely toggled later.
+                  const skipStyleNull = name === 'style' &&
+                    (':style' in source || 'x-bind:style' in source || 'x-show' in source);
+                  if (skipStyleNull) continue;
+                  // NOTE: do NOT extend this skip to `class`.  Alpine's
+                  // `:class="cond ? 'foo' : ''"` (string-form) treats the
+                  // pre-existing className as the immutable baseline and only
+                  // ADDS classes on top — it cannot REMOVE a baked class.  If
+                  // the prerender baked `class="selected"` for the initial
+                  // tab, clicking other tabs would never strip `selected`
+                  // from the first one.  Always restoring class to null lets
+                  // Alpine manage it cleanly from a blank slate.
                 }
+                attrsOut[name] = src; // may be null (means "remove this attribute")
+                dirty = true;
+              }
+            }
+            // For current attributes that weren't in source, remove them.
+            for (const name in currentAttrs) {
+              if (name === 'data-hydrate-id') continue;
+              if (!(name in source)) {
+                attrsOut[name] = null;
+                dirty = true;
               }
             }
           }
+          // If no source recorded and it's not an explicit subtree root, the
+          // element had no mutations observed — no restoration needed.
 
-          // Marker so downstream stripping skips this element.
-          try { el.setAttribute('data-prerender-hydrate', '1'); } catch (_) {}
-          report.restored++;
+          const innerHTMLSource = sourceInnerHTML.get(el);
+          let innerHTMLEntry;
+          if (subtreeRoots.has(el) && innerHTMLSource !== undefined) {
+            if (innerHTMLSource !== el.innerHTML) {
+              innerHTMLEntry = innerHTMLSource;
+              dirty = true;
+            }
+          }
+
+          if (!dirty) return;
+
+          const id = 'h' + nextId++;
+          el.setAttribute('data-hydrate-id', id);
+          const entry = { id, attrs: attrsOut };
+          if (innerHTMLEntry !== undefined) entry.html = innerHTMLEntry;
+          entries.push(entry);
         });
 
-        // Post-restore debug: capture state of x-theme buttons
-        report.themeButtonsAfterRestore = Array.from(document.querySelectorAll('[x-theme]')).map(el => ({
-          theme: el.getAttribute('x-theme'),
-          class: el.getAttribute('class'),
-          hasMarker: el.hasAttribute('data-prerender-hydrate'),
-        }));
-        return report;
+        return entries;
       });
+      // Stash the contract on the route record for HTML injection later.
+      // We carry it through as a string to avoid re-stringifying multiple times.
+      const hydrationContractJSON = JSON.stringify(hydrationContractRaw || []);
       if (config.debugPrerender) {
-        pushDebug({ path: displayPath, stage: 'hydrate-restore', metrics: restoreReport });
+        pushDebug({
+          path: displayPath,
+          stage: 'hydrate-contract',
+          metrics: { entries: (hydrationContractRaw || []).length },
+        });
       }
 
       // x-for lists: keep static lists in the HTML for SEO; collapse only dynamic lists so Alpine re-renders.
@@ -2365,7 +2681,7 @@ async function runPrerender(config) {
       // $url, $auth, or iterates over getter names (filtered*, results, searchResults). See docs prerender + local.data.
       await page.evaluate(() => {
         document.querySelectorAll('template[x-for]').forEach((tpl) => {
-          if (tpl.hasAttribute('data-prerender-hydrate') || tpl.closest('[data-prerender-hydrate]')) {
+          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) {
             tpl.removeAttribute('data-prerender-collapsed');
             tpl.removeAttribute('data-prerender-static-generated');
             return;
@@ -2446,7 +2762,7 @@ async function runPrerender(config) {
       await page.evaluate(() => {
         const loopVarRx = /^\s*(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*,\s*([A-Za-z_$][\w$]*))?\s*\)|([A-Za-z_$][\w$]*))\s+in\s+/;
         document.querySelectorAll('template[x-for][data-prerender-static-generated="1"]').forEach((tpl) => {
-          if (tpl.hasAttribute('data-prerender-hydrate') || tpl.closest('[data-prerender-hydrate]')) return;
+          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
           const xFor = (tpl.getAttribute('x-for') || '').trim();
           const m = xFor.match(loopVarRx);
           const itemVar = m ? (m[1] || m[3] || '') : '';
@@ -2460,7 +2776,7 @@ async function runPrerender(config) {
             // Only process clones that contain data-hydrate descendants
             if (
               !n.hasAttribute('x-data') &&
-              (n.hasAttribute('data-prerender-hydrate') || n.querySelector('[data-prerender-hydrate]'))
+              (n.hasAttribute('data-hydrate') || n.querySelector('[data-hydrate]'))
             ) {
               try {
                 const A = window.Alpine;
@@ -2502,7 +2818,7 @@ async function runPrerender(config) {
           const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
           for (const node of nodes) {
             // Skip elements inside data-hydrate islands — their bindings must remain live
-            if (node.hasAttribute('data-prerender-hydrate') || node.closest('[data-prerender-hydrate]')) continue;
+            if (node.hasAttribute('data-hydrate') || node.closest('[data-hydrate]')) continue;
             const attrs = node.attributes ? Array.from(node.attributes) : [];
             for (const attr of attrs) {
               if (!bindingAttrRegex.test(attr.name)) continue;
@@ -2540,7 +2856,7 @@ async function runPrerender(config) {
         };
 
         document.querySelectorAll('template[x-for]').forEach((tpl) => {
-          if (tpl.hasAttribute('data-prerender-hydrate') || tpl.closest('[data-prerender-hydrate]')) return;
+          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
           const xFor = (tpl.getAttribute('x-for') || '').trim();
           const m = xFor.match(loopVarRegex);
           const itemVar = m ? (m[1] || m[3] || '') : '';
@@ -2569,7 +2885,29 @@ async function runPrerender(config) {
         const runBatch = typeof A?.mutateDom === 'function' ? (fn) => A.mutateDom(fn) : (fn) => fn();
         runBatch(() => {
           document.querySelectorAll('template[x-for][data-prerender-static-generated="1"]').forEach((tpl) => {
-            if (tpl.hasAttribute('data-prerender-hydrate') || tpl.closest('[data-prerender-hydrate]')) return;
+            if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
+            // $x-driven x-for: keep the template so Alpine can re-render the
+            // list at runtime (locale switching, filtering, etc.), but remove
+            // the static clones — Alpine creates fresh clones on init and does
+            // NOT adopt existing DOM nodes, so leaving them produces duplicates.
+            // Individual article/pricing pages still have full baked content
+            // (via x-text/x-html); the x-for list is only the index/grid view.
+            const xFor = (tpl.getAttribute('x-for') || '');
+            if (xFor.includes('$x')) {
+              const first = tpl.content?.firstElementChild;
+              if (first) {
+                const tag = first.tagName;
+                const cls = first.getAttribute('class') || '';
+                let n = tpl.nextElementSibling;
+                while (n && n.tagName === tag && (n.getAttribute('class') || '') === cls) {
+                  const next = n.nextElementSibling;
+                  n.remove();
+                  n = next;
+                }
+              }
+              tpl.removeAttribute('data-prerender-static-generated');
+              return;
+            }
             const parent = tpl.parentNode;
             if (!parent) {
               tpl.remove();
@@ -2662,6 +3000,19 @@ async function runPrerender(config) {
       });
 
       let html = await page.evaluate(() => document.documentElement.outerHTML);
+      // Inject the hydration contract blob into the raw HTML *before* caching
+      // it for locale variant generation, so every locale variant inherits the
+      // same contract (locale substitution only mutates visible text, not the
+      // JSON blob).  The same injection happens again later in the Puppeteer
+      // path after Node.js post-processing, but injecting early simplifies the
+      // cache model: "raw HTML carries its own contract."
+      if (hydrationContractJSON && hydrationContractJSON !== '[]') {
+        const safe = hydrationContractJSON.replace(/<\/script/gi, '<\\/script');
+        html = html.replace(
+          '</body>',
+          `<script type="application/json" id="__manifest_hydrate__">${safe}</script>\n</body>`
+        );
+      }
       // Cache raw DOM snapshot for locale variant generation (before any Node.js transforms).
       if (typeof onRawHtml === 'function') onRawHtml(pathSeg, html);
       if (config.debugPrerender) {
@@ -2674,10 +3025,13 @@ async function runPrerender(config) {
         pushDebug({ path: displayPath, stage: 'pre-serialize', metrics: post });
       }
       html = stripDevOnlyContent(html);
-      html = stripInjectedPluginScripts(html);
+      html = stripInjectedPluginScripts(html, config.root);
       if (tailwindBuilt) {
         html = stripRuntimeTailwindArtifacts(html);
+      } else {
+        html = stripDataTailwindAttr(html);
       }
+      html = debakeThemeClass(html);
       if (bundleUtilities) {
         const extracted = extractUtilityStyleBlocks(html);
         html = extracted.html;
@@ -2699,11 +3053,14 @@ async function runPrerender(config) {
       html = stripRedundantImgSrcBindings(html);
       html = stripEmptyInlineMaskStyles(html);
       html = stripResolvedXIconDirectives(html);
-      // markPrerenderedManifestComponents must run BEFORE stripPrerenderHydrateMarkers so it can
-      // detect data-prerender-hydrate markers and skip components inside hydrate islands.
       html = markPrerenderedManifestComponents(html);
-      html = stripPrerenderHydrateMarkers(html);
-      html = stripPrerenderHydrateSnapshotIds(html);
+
+      // Prefix internal <a> links with the locale for non-default locales so
+      // MPA navigation stays in-locale without relying on runtime JS.
+      if (currentLocale && currentLocale !== defaultLocale) {
+        html = prefixLocaleInternalLinks(html, currentLocale, locales, config.localeRouteExclude);
+      }
+
       html = rewriteHtmlAssetPaths(html, fileSegments.length);
       const liveBase = config.liveUrl.replace(/\/$/, '');
       const canonicalHreflang = buildCanonicalAndHreflang(is404 ? '' : pathSeg, locales, defaultLocale, liveBase);
@@ -2718,10 +3075,16 @@ async function runPrerender(config) {
           : '';
       const routeDepth = fileSegments.length;
       const prerenderedMeta = `<meta name="manifest:prerendered" content="1">\n`;
+      const prerenderLocalesMeta =
+        Array.isArray(locales) && locales.length > 0
+          ? `<meta name="manifest:prerender-locales" content="${locales.join(',')}">\n`
+          : '';
       html = html.replace(
         '</head>',
-        `${canonicalHreflang}${injectOgLocale ? ogLocale : ''}${routeMeta}${baseMeta}${prerenderedMeta}<meta name="manifest:router-base-depth" content="${routeDepth}">\n</head>`
+        `${canonicalHreflang}${injectOgLocale ? ogLocale : ''}${routeMeta}${baseMeta}${prerenderLocalesMeta}${prerenderedMeta}<meta name="manifest:router-base-depth" content="${routeDepth}">\n</head>`
       );
+      // (Hydration contract was already injected into the raw HTML before
+      // the Node.js post-processing pipeline ran, so it's already present.)
       mkdirSync(outDir, { recursive: true });
       writeFileSync(outFile, html, 'utf8');
       pushDebug({
@@ -2740,30 +3103,139 @@ async function runPrerender(config) {
         process.stderr.write(`prerender: failed ${displayPath}: ${failedPaths[failedPaths.length - 1].message}\n`);
       }
     } finally {
-      await page.close();
+      try { await page.close(); } catch (_) { /* page may be gone if browser died */ }
     }
   }
 
-  // Phase 1: Puppeteer — render base paths, cache raw DOM for substitution
+  // Phase 1: Puppeteer — render base paths, cache raw DOM for substitution.
+  // Any failures (e.g. transient navigation timeouts) are retried up to
+  // `maxRetries` times with a short backoff before being reported as fatal.
+  //
+  // Browser recycling: after every `browserRecycleEvery` successful pages,
+  // all workers pause, one worker closes the browser and launches a fresh
+  // one, then all resume.  This bounds Chromium's memory + handle growth.
   try {
     let index = 0;
+    let activeWorkers = 0;
+    const recycleGate = { resume: null, waitForZero: null };
+
+    const waitUntilZero = () => new Promise((resolve) => {
+      if (activeWorkers === 0) return resolve();
+      recycleGate.waitForZero = resolve;
+    });
+    const waitForResume = () => new Promise((resolve) => {
+      if (!recycleLock.busy) return resolve();
+      const prev = recycleGate.resume;
+      recycleGate.resume = () => { if (prev) prev(); resolve(); };
+    });
+
+    const maybeRecycleBrowser = async () => {
+      if (browserRecycleEvery <= 0) return;
+      if (pagesSinceRecycle < browserRecycleEvery) return;
+      if (recycleLock.busy) return;
+      recycleLock.busy = true;
+      // Wait for all in-flight workers to finish their current page BEFORE
+      // we gate `browserReadyPromise`, so workers already mid-processPath
+      // don't deadlock awaiting a promise we haven't yet started.
+      await waitUntilZero();
+      // Now gate newPage() calls from any worker that enters processPath
+      // after this point.
+      let resolveReady;
+      browserReadyPromise = new Promise((r) => { resolveReady = r; });
+      try {
+        process.stdout.write(`prerender: recycling browser (processed ${pagesSinceRecycle} pages)\n`);
+        try { await browser.close(); } catch (_) {}
+        browser = await launchBrowser();
+        pagesSinceRecycle = 0;
+      } finally {
+        // Release the gate first so any waiting workers can proceed, then
+        // clear the recycle lock so the outer while loop stops pausing.
+        try { resolveReady(); } catch (_) {}
+        recycleLock.busy = false;
+        const r = recycleGate.resume;
+        recycleGate.resume = null;
+        if (r) r();
+      }
+    };
+
     async function worker() {
       while (true) {
+        // Pause if a recycle is underway.
+        if (recycleLock.busy) await waitForResume();
+        // Also wait for any pending browser readiness (e.g. another worker
+        // started a recycle while we were processing).
+        await browserReadyPromise;
+
         const i = index++;
         if (i >= puppeteerPaths.length) return;
-        await processPath(puppeteerPaths[i], i, {
-          onRawHtml: (seg, html) => {
-            // Cache raw DOM snapshot for locale variant generation (NOT_FOUND_PATH excluded)
-            if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
-          },
-        });
+        const pathSeg = puppeteerPaths[i];
+        let attempt = 0;
+        while (true) {
+          // Re-check recycle state at the start of every retry iteration.
+          if (recycleLock.busy) await waitForResume();
+          await browserReadyPromise;
+
+          const failureCountBefore = failedPaths.length;
+          activeWorkers++;
+          try {
+            await processPath(pathSeg, i, {
+              onRawHtml: (seg, html) => {
+                if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
+              },
+            });
+          } catch (err) {
+            // Unexpected exception escaped processPath (e.g. browser died
+            // mid-call).  Record as a failure so the retry logic can handle
+            // it gracefully instead of tearing down the whole worker.
+            failedPaths.push({
+              path: pathSeg === '' ? '/' : '/' + pathSeg,
+              message: err && err.message ? err.message : String(err),
+            });
+            if (failedPaths.length <= 10) {
+              process.stderr.write(`prerender: worker exception on ${pathSeg || '/'}: ${failedPaths[failedPaths.length - 1].message}\n`);
+            }
+          } finally {
+            activeWorkers--;
+            if (activeWorkers === 0 && recycleGate.waitForZero) {
+              const z = recycleGate.waitForZero;
+              recycleGate.waitForZero = null;
+              z();
+            }
+          }
+          if (failedPaths.length === failureCountBefore) {
+            pagesSinceRecycle++;
+            break; // success
+          }
+          if (attempt >= maxRetries) {
+            // Exhausted retries — likely an unstable browser (e.g. cascading
+            // "detached Frame" errors).  Force a recycle counter past the
+            // threshold so the next path triggers a fresh browser.
+            pagesSinceRecycle = Math.max(pagesSinceRecycle + 1, browserRecycleEvery);
+            break;
+          }
+          // Halfway through retries with no success → preemptively recycle the
+          // browser before the next attempt.  This unblocks cascading frame
+          // failures where the browser process needs a fresh start.
+          if (attempt + 1 >= Math.ceil(maxRetries / 2) && pagesSinceRecycle > 0) {
+            pagesSinceRecycle = Math.max(pagesSinceRecycle, browserRecycleEvery);
+            await maybeRecycleBrowser();
+          }
+          failedPaths.pop();
+          attempt++;
+          const displayPath = pathSeg === '' ? '/' : (pathSeg === NOT_FOUND_PATH ? '/__prerender_404__' : '/' + pathSeg);
+          process.stderr.write(`prerender: retrying ${displayPath} (attempt ${attempt + 1}/${maxRetries + 1})\n`);
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+        }
+        // Attempt recycle after each completed path (only one worker will
+        // actually perform the recycle; others will be gated by recycleLock).
+        await maybeRecycleBrowser();
       }
     }
     await Promise.all(
       Array.from({ length: Math.min(concurrency, puppeteerPaths.length || 1) }, () => worker())
     );
   } finally {
-    await browser.close();
+    try { await browser.close(); } catch (_) {}
   }
 
   // Phase 2: Node.js — generate locale variants via text substitution
@@ -2850,7 +3322,24 @@ async function runPrerender(config) {
 
 }
 
-main().catch((err) => {
-  console.error('prerender:', err);
-  process.exit(1);
-});
+// Auto-run main() when this file is the direct entry point (node manifest.render.mjs)
+// but NOT when imported by the bin wrapper or test harness.  The bin wrapper
+// calls main() explicitly; test harnesses only need the exported helpers.
+const _isDirectEntry = (() => {
+  try {
+    const arg1 = process.argv[1];
+    if (!arg1) return false;
+    const invoked = String(new URL('file://' + resolve(arg1)));
+    return invoked === import.meta.url;
+  } catch { return false; }
+})();
+
+if (_isDirectEntry) {
+  main().catch((err) => {
+    console.error('prerender:', err);
+    process.exit(1);
+  });
+}
+
+// Exports for the CLI bin script and for unit testing.
+export { main, markPrerenderedManifestComponents };

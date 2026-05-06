@@ -1,0 +1,9 @@
+<!-- Preloaded component: exercises x-theme, locale toggle, and baked $x text -->
+<header>
+    <span id="greeting" x-text="$x.content.greeting">Hello</span>
+    <button id="theme-light" x-theme="'light'" :class="{ 'active': $theme.current === 'light' }">Light</button>
+    <button id="theme-dark" x-theme="'dark'" :class="{ 'active': $theme.current === 'dark' }">Dark</button>
+    <button id="theme-system" x-theme="'system'" :class="{ 'active': $theme.current === 'system' }">System</button>
+    <button id="locale-en" @click="$locale.set('en')">EN</button>
+    <button id="locale-fr" @click="$locale.set('fr')">FR</button>
+</header>

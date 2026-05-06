@@ -2,6 +2,10 @@
     "name": "Manifest",
     "short_name": "Manifest",
     "description": "Supercharge HTML for rapid, feature-rich website and web app development.",
+    "live_url": "https://manifestjs.org",
+    "prerender": {
+        "locales": ["en"]
+    },
     "start_url": "/",
     "scope": "/",
     "display": "browser",
@@ -20,6 +24,8 @@
         }
     ],
     "components": [
+        "components/main/theme-controls.html",
+        "components/main/theme-preview.html",
         "components/main/appwrite.html",
         "components/examples/disclaimer.html",
         "components/examples/header-basic.html",
@@ -35,7 +41,8 @@
         "components/main/landing.html",
         "components/main/docs.html",
         "components/main/header.html",
-        "components/main/logo.html"
+        "components/main/logo.html",
+        "components/main/theme.html"
     ],
     "data": {
         "docs": "/data/docs.yaml",

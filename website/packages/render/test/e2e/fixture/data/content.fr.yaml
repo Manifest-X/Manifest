@@ -1,0 +1,15 @@
+greeting: Bonjour
+theme:
+  light: Clair
+  dark: Sombre
+  system: Système
+pricing:
+  plans:
+    - name: Débutant
+      price:
+        monthly: 10 €
+        yearly: 100 €
+    - name: Pro
+      price:
+        monthly: 30 €
+        yearly: 300 €

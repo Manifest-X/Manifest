@@ -31,7 +31,7 @@
 
 @layer components {
 
-    :where(menu[popover]):not(.unstyle) {
+    :where(menu[popover], .dropdown-menu):not(.unstyle) {
         position-try-fallbacks: flip-inline, flip-block, flip-start;
         position-area: end span-end;
         inset: auto;
@@ -59,7 +59,7 @@
             align-items: center;
             width: 100%;
             max-width: 100%;
-            min-height: 2rem;
+            min-height: var(--spacing-field-height, 2.25rem);
             padding-inline-start: 0.5rem;
             padding-inline-end: 0.5rem;
             font-weight: normal;

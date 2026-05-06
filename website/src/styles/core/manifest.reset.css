@@ -347,4 +347,23 @@
             animation-direction: reverse
         }
     }
+
+    /* View transition styles */
+    ::view-transition-group(*) {
+        animation-duration: var(--view-transition-duration, 200ms);
+        animation-timing-function: var(--view-transition-easing, ease)
+    }
+
+    /* Skip view transition for live/non-rasterizable content */
+    iframe,
+    video,
+    canvas,
+    [data-no-view-transition] {
+        view-transition-name: none
+    }
+}
+
+/* Cross-document view transitions opt-in */
+@view-transition {
+    navigation: auto
 }

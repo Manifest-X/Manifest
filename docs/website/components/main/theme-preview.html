@@ -1,0 +1,353 @@
+<div x-data :style="$store.themeBuilder.previewStyles"
+    class="p-6 lg:p-10 min-h-full">
+
+    <!-- ==================== COLOR SWATCHES ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Colors</h5>
+
+        <!-- Palette -->
+        <small class="block mb-2 text-content-subtle">Palette</small>
+        <div class="row-wrap gap-2 mb-4">
+            <template x-for="key in ['50','100','200','300','400','500','600','700','800','900','950']" :key="key">
+                <div class="col items-center gap-1">
+                    <div class="w-10 h-10 rounded border border-line" :style="'background-color:var(--color-' + key + ')'"></div>
+                    <small class="font-mono text-content-subtle" x-text="key"></small>
+                </div>
+            </template>
+        </div>
+
+        <!-- Theme colors -->
+        <small class="block mb-2 text-content-subtle">Theme</small>
+        <div class="row-wrap gap-2 mb-4">
+            <template x-for="[label, varName] in [
+                ['Page','page'], ['Surface 1','surface-1'], ['Surface 2','surface-2'], ['Surface 3','surface-3'],
+                ['Stark','content-stark'], ['Neutral','content-neutral'], ['Subtle','content-subtle'],
+                ['Field','field-surface'], ['Field Hover','field-surface-hover'], ['Field Inv.','field-inverse'],
+                ['Popover','popover-surface'], ['Line','line']
+            ]" :key="varName">
+                <div class="col items-center gap-1">
+                    <div class="w-10 h-10 rounded border border-line" :style="'background-color:var(--color-' + varName + ')'"></div>
+                    <small class="font-mono text-content-subtle text-center" style="font-size:0.6rem; max-width:3rem; line-height:1.2;" x-text="label"></small>
+                </div>
+            </template>
+        </div>
+
+        <!-- Semantic colors -->
+        <small class="block mb-2 text-content-subtle">Semantic</small>
+        <div class="row-wrap gap-2">
+            <template x-for="group in ['brand','accent','positive','negative']" :key="group">
+                <div class="row gap-1">
+                    <template x-for="variant in ['surface','surface-hover','inverse','content']" :key="variant">
+                        <div class="col items-center gap-1">
+                            <div class="w-8 h-8 rounded border border-line" :style="'background-color:var(--color-' + group + '-' + variant + ')'"></div>
+                            <small class="font-mono text-content-subtle text-center" style="font-size:0.55rem; max-width:2.5rem; line-height:1.1;" x-text="group.charAt(0).toUpperCase() + ' ' + variant.split('-').map(w => w.charAt(0)).join('')"></small>
+                        </div>
+                    </template>
+                </div>
+            </template>
+        </div>
+    </section>
+
+    <!-- ==================== TYPOGRAPHY ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Typography</h5>
+        <div class="col gap-3 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <h1 contenteditable="true" class="m-0" style="outline:none;">Heading 1</h1>
+            <h2 contenteditable="true" class="m-0" style="outline:none;">Heading 2</h2>
+            <h3 contenteditable="true" class="m-0" style="outline:none;">Heading 3</h3>
+            <h4 contenteditable="true" class="m-0" style="outline:none;">Heading 4</h4>
+            <h5 contenteditable="true" class="m-0" style="outline:none;">Heading 5</h5>
+            <h6 contenteditable="true" class="m-0" style="outline:none;">Heading 6</h6>
+            <hr>
+            <p contenteditable="true" class="m-0" style="outline:none;">Paragraph text. The quick brown fox jumps over the lazy dog.</p>
+            <small contenteditable="true" style="outline:none;">Small text. The quick brown fox jumps over the lazy dog.</small>
+            <figcaption contenteditable="true" style="outline:none;">Caption text. The quick brown fox jumps over the lazy dog.</figcaption>
+        </div>
+    </section>
+
+    <!-- ==================== BUTTONS ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Buttons</h5>
+        <div class="col gap-4 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+
+            <!-- Default variants -->
+            <small class="text-content-subtle">Colors</small>
+            <div class="row-wrap gap-2">
+                <button>Default</button>
+                <button class="brand">Brand</button>
+                <button class="accent">Accent</button>
+                <button class="positive">Positive</button>
+                <button class="negative">Negative</button>
+            </div>
+
+            <!-- Appearances -->
+            <small class="text-content-subtle">Appearances</small>
+            <div class="row-wrap gap-2">
+                <button class="ghost">Ghost</button>
+                <button class="outlined">Outlined</button>
+                <button class="transparent">Transparent</button>
+                <button class="selected">Selected</button>
+            </div>
+
+            <!-- Sizes -->
+            <small class="text-content-subtle">Sizes</small>
+            <div class="row-wrap gap-2 items-center">
+                <button class="sm">Small</button>
+                <button>Default</button>
+                <button class="lg">Large</button>
+            </div>
+
+            <!-- Icon buttons -->
+            <small class="text-content-subtle">With Icons</small>
+            <div class="row-wrap gap-2">
+                <button><span x-icon="lucide:heart"></span> Like</button>
+                <button class="brand"><span x-icon="lucide:download"></span> Download</button>
+                <button class="ghost" x-icon="lucide:settings"></button>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== INPUTS & FORMS ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Inputs</h5>
+        <div class="col gap-4 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+
+            <div class="row-wrap gap-2">
+                <input placeholder="Default" />
+                <input class="brand" placeholder="Brand" />
+                <input class="accent" placeholder="Accent" />
+            </div>
+
+            <div class="row-wrap gap-2 items-center">
+                <input class="sm" placeholder="Small" />
+                <input placeholder="Default" />
+                <input class="lg" placeholder="Large" />
+            </div>
+
+            <div class="row-wrap gap-2">
+                <input class="ghost" placeholder="Ghost" />
+                <input class="outlined" placeholder="Outlined" />
+            </div>
+
+            <!-- Labeled input -->
+            <label>
+                Email
+                <input placeholder="Enter your email" />
+            </label>
+
+            <!-- Search input -->
+            <label role="button">
+                <span x-icon="lucide:search"></span>
+                <input type="search" placeholder="Search" />
+            </label>
+
+            <!-- Input group -->
+            <div role="group">
+                <input placeholder="Enter email" />
+                <button class="brand">Subscribe</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== SELECT ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Selects</h5>
+        <div class="row-wrap gap-4 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <select>
+                <option>Option 1</option>
+                <option>Option 2</option>
+                <option>Option 3</option>
+            </select>
+            <select class="sm">
+                <option>Small</option>
+                <option>Option 2</option>
+            </select>
+        </div>
+    </section>
+
+    <!-- ==================== TEXTAREA ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Textarea</h5>
+        <div class="p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <textarea placeholder="Type your message here..." rows="3"></textarea>
+        </div>
+    </section>
+
+    <!-- ==================== CHECKBOXES, RADIOS, SWITCHES ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Checkboxes, Radios &amp; Switches</h5>
+        <div class="col gap-6 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+
+            <!-- Checkboxes -->
+            <div class="col gap-2">
+                <small class="text-content-subtle">Checkboxes</small>
+                <div class="row-wrap gap-4">
+                    <label><input type="checkbox" checked /> Default</label>
+                    <label><input type="checkbox" class="brand" checked /> Brand</label>
+                    <label><input type="checkbox" class="accent" checked /> Accent</label>
+                    <label><input type="checkbox" class="positive" checked /> Positive</label>
+                    <label><input type="checkbox" class="negative" checked /> Negative</label>
+                </div>
+            </div>
+
+            <!-- Radios -->
+            <div class="col gap-2">
+                <small class="text-content-subtle">Radios</small>
+                <div class="row-wrap gap-4">
+                    <label><input type="radio" name="preview-radio" checked /> Option A</label>
+                    <label><input type="radio" name="preview-radio" /> Option B</label>
+                    <label><input type="radio" name="preview-radio" /> Option C</label>
+                </div>
+            </div>
+
+            <!-- Switches -->
+            <div class="col gap-2">
+                <small class="text-content-subtle">Switches</small>
+                <div class="row-wrap gap-4">
+                    <label><input type="checkbox" role="switch" checked /> Default</label>
+                    <label><input type="checkbox" role="switch" class="brand" checked /> Brand</label>
+                    <label><input type="checkbox" role="switch" class="accent" /> Accent</label>
+                    <label><input type="checkbox" role="switch" class="positive" checked /> Positive</label>
+                    <label><input type="checkbox" role="switch" class="negative" /> Negative</label>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== RANGE ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Range</h5>
+        <div class="col gap-2 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <input type="range" min="0" max="100" value="50" />
+            <input type="range" min="0" max="100" value="75" class="brand" />
+        </div>
+    </section>
+
+    <!-- ==================== BADGES ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Badges</h5>
+        <div class="col gap-3 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <div class="row-wrap gap-2">
+                <mark>Default</mark>
+                <mark class="brand">Brand</mark>
+                <mark class="accent">Accent</mark>
+                <mark class="positive">Positive</mark>
+                <mark class="negative">Negative</mark>
+            </div>
+            <div class="row-wrap gap-2">
+                <mark class="ghost">Ghost</mark>
+                <mark class="outlined">Outlined</mark>
+                <mark class="sm">Small</mark>
+                <mark class="lg">Large</mark>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== TABLE ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Table</h5>
+        <div class="p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Alice Johnson</td>
+                        <td>Engineer</td>
+                        <td><mark class="positive sm">Active</mark></td>
+                    </tr>
+                    <tr>
+                        <td>Bob Smith</td>
+                        <td>Designer</td>
+                        <td><mark class="brand sm">Active</mark></td>
+                    </tr>
+                    <tr>
+                        <td>Carol White</td>
+                        <td>Manager</td>
+                        <td><mark class="negative sm">Inactive</mark></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ==================== ACCORDION ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Accordion</h5>
+        <div class="p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <details name="preview-faq" open>
+                <summary>What is Manifest?</summary>
+                <p>A lightweight framework for building modern web applications with minimal configuration.</p>
+            </details>
+            <details name="preview-faq">
+                <summary>How do I customize the theme?</summary>
+                <p>Edit the CSS custom properties in manifest.theme.css to match your brand.</p>
+            </details>
+            <details name="preview-faq">
+                <summary>Is it free to use?</summary>
+                <p>Yes, Manifest is open source under the MIT license.</p>
+            </details>
+        </div>
+    </section>
+
+    <!-- ==================== TABS ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Tabs</h5>
+        <div class="p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <div class="row gap-2 mb-4">
+                <button x-tab="preview-tab-1">Overview</button>
+                <button x-tab="preview-tab-2">Details</button>
+                <button x-tab="preview-tab-3">Settings</button>
+            </div>
+            <div id="preview-tab-1" x-tabpanel>
+                <p>This is the overview panel content.</p>
+            </div>
+            <div class="preview-tab-2" x-tabpanel>
+                <p>These are the details for the selected item.</p>
+            </div>
+            <div class="preview-tab-3" x-tabpanel>
+                <p>Configure your preferences here.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== DIVIDERS ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Dividers</h5>
+        <div class="col gap-4 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <hr>
+            <div class="divider">Section Break</div>
+        </div>
+    </section>
+
+    <!-- ==================== SURFACES ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Surfaces</h5>
+        <div class="p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <div class="p-4 rounded-lg mb-2" style="background-color: var(--color-surface-1);">
+                <small class="text-content-subtle">Surface 1</small>
+                <div class="p-4 rounded-lg mt-2" style="background-color: var(--color-surface-2);">
+                    <small class="text-content-subtle">Surface 2</small>
+                    <div class="p-4 rounded-lg mt-2" style="background-color: var(--color-surface-3);">
+                        <small class="text-content-subtle">Surface 3</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== TOOLTIPS & TOASTS ==================== -->
+    <section class="mb-10">
+        <h5 class="mb-4 text-content-subtle">Tooltips &amp; Toasts</h5>
+        <div class="row-wrap gap-4 p-6 rounded-lg" style="background-color: var(--color-surface-1);">
+            <button x-tooltip="Hello from a tooltip!">Hover for Tooltip</button>
+            <button x-toast="This is a toast notification">Show Toast</button>
+        </div>
+    </section>
+
+</div>

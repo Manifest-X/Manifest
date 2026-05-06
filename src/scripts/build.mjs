@@ -2,6 +2,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { glob } from 'glob';
 import cssnano from 'cssnano';
 import postcss from 'postcss';
@@ -207,6 +208,7 @@ function copyScriptsToDocs() {
     // List of compiled scripts to copy
     const scriptsToCopy = [
         'manifest.code.js',
+        'manifest.colorpicker.js',
         'manifest.components.js',
         'manifest.data.js',
         'manifest.dropdowns.js',
@@ -215,6 +217,7 @@ function copyScriptsToDocs() {
         'manifest.markdown.js',
         'manifest.resize.js',
         'manifest.router.js',
+        'manifest.svg.js',
         'manifest.tabs.js',
         'manifest.themes.js',
         'manifest.toasts.js',
@@ -262,8 +265,16 @@ async function buildStylesheets() {
     // Step 5: Handle special group-dependent files
     handleGroupDependentFiles();
 
-    // Step 6: Sync starter template to create-starter package
-    syncStarterTemplate();
+    // Step 6: Sync derived files into all publishable packages
+    //   - templates/starter   → packages/create-starter/templates/
+    //   - templates/claude    → packages/create-claude/templates/
+    //   - src/scripts/manifest.render.mjs → packages/render/manifest.render.mjs
+    // Each package owns its own sync logic via scripts/sync-*.mjs and exposes
+    // it as `npm run prepare:source`. Each also has a prepack hook as a safety
+    // net for direct `npm publish`.
+    syncPackage('create-starter', 'starter template');
+    syncPackage('create-claude', 'claude templates');
+    syncPackage('render', 'render source');
 
 }
 
@@ -523,70 +534,17 @@ function handlePopoverDependentFiles() {
     console.log('');
 }
 
-// Sync starter template to create-starter package
-function syncStarterTemplate() {
-    console.log('Syncing starter template to create-starter package...');
-
-    const sourceDir = path.join('..', 'templates', 'starter');
-    const targetDir = path.join('..', 'packages', 'create-starter', 'templates');
-
-    if (!fs.existsSync(sourceDir)) {
-        console.warn('  ⚠ Warning: templates/starter not found, skipping sync');
-        return;
-    }
-
-    if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-    }
-
+// Run a package's own `prepare:source` script — each package owns the truth of
+// what gets synced into it (templates, render source, etc.). Build orchestrates.
+function syncPackage(packageName, label) {
+    console.log(`Syncing ${label} to packages/${packageName}...`);
     try {
-        // Get list of all entries in source
-        const sourceEntries = fs.readdirSync(sourceDir, { withFileTypes: true });
-        const sourceNames = new Set(sourceEntries.map(e => e.name));
-
-        // Get list of all entries in target
-        const targetEntries = fs.readdirSync(targetDir, { withFileTypes: true });
-        const targetNames = new Set(targetEntries.map(e => e.name));
-
-        // Delete files/directories in target that don't exist in source
-        for (const targetName of targetNames) {
-            if (!sourceNames.has(targetName)) {
-                const targetPath = path.join(targetDir, targetName);
-                const stat = fs.statSync(targetPath);
-                if (stat.isDirectory()) {
-                    fs.rmSync(targetPath, { recursive: true, force: true });
-                    console.log(`  ✓ Removed directory: ${targetName}`);
-                } else {
-                    fs.unlinkSync(targetPath);
-                    console.log(`  ✓ Removed file: ${targetName}`);
-                }
-            }
-        }
-
-        // Copy all files from templates/starter to packages/create-starter/templates
-        for (const entry of sourceEntries) {
-            const sourcePath = path.join(sourceDir, entry.name);
-            const targetPath = path.join(targetDir, entry.name);
-
-            if (entry.isDirectory()) {
-                // Recursively copy directories
-                if (fs.existsSync(targetPath)) {
-                    fs.rmSync(targetPath, { recursive: true, force: true });
-                }
-                fs.cpSync(sourcePath, targetPath, { recursive: true });
-                console.log(`  ✓ Synced directory: ${entry.name}`);
-            } else {
-                // Copy files
-                fs.copyFileSync(sourcePath, targetPath);
-                console.log(`  ✓ Synced file: ${entry.name}`);
-            }
-        }
-
-        console.log('  ✓ Starter template synced successfully');
+        const packageDir = path.join('..', 'packages', packageName);
+        execSync('npm run prepare:source', { cwd: packageDir, stdio: 'inherit' });
+        console.log(`  ✓ ${label} synced successfully`);
     } catch (error) {
-        console.warn('  ⚠ Warning: Failed to sync starter template:', error.message);
+        console.warn(`  ⚠ Warning: Failed to sync ${label}:`, error.message);
     }
-
     console.log('');
 }
 
@@ -723,6 +681,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.appwrite.presence.js', dest: '../lib/manifest.appwrite.presence.js' },
         { source: 'scripts/manifest.code.js', dest: '../lib/manifest.code.js' },
         { source: 'scripts/manifest.components.js', dest: '../lib/manifest.components.js' },
+        { source: 'scripts/manifest.colorpicker.js', dest: '../lib/manifest.colorpicker.js' },
         { source: 'scripts/manifest.data.js', dest: '../lib/manifest.data.js' },
         { source: 'scripts/manifest.dropdowns.js', dest: '../lib/manifest.dropdowns.js' },
         { source: 'scripts/manifest.icons.js', dest: '../lib/manifest.icons.js' },
@@ -731,10 +690,12 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.resize.js', dest: '../lib/manifest.resize.js' },
         { source: 'scripts/manifest.router.js', dest: '../lib/manifest.router.js' },
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
+        { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
         { source: 'scripts/manifest.themes.js', dest: '../lib/manifest.themes.js' },
         { source: 'scripts/manifest.toasts.js', dest: '../lib/manifest.toasts.js' },
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
+        { source: 'scripts/manifest.url.parameters.js', dest: '../lib/manifest.url.parameters.js' },
         { source: 'scripts/manifest.utilities.js', dest: '../lib/manifest.utilities.js' },
 
         // Individual CSS files
@@ -742,6 +703,7 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.avatar.css', dest: '../lib/manifest.avatar.css' },
         { source: 'styles/elements/manifest.button.css', dest: '../lib/manifest.button.css' },
         { source: 'styles/elements/manifest.checkbox.css', dest: '../lib/manifest.checkbox.css' },
+        { source: 'styles/elements/manifest.colorpicker.css', dest: '../lib/manifest.colorpicker.css' },
         { source: 'styles/elements/manifest.dialog.css', dest: '../lib/manifest.dialog.css' },
         { source: 'styles/elements/manifest.divider.css', dest: '../lib/manifest.divider.css' },
         { source: 'styles/elements/manifest.dropdown.css', dest: '../lib/manifest.dropdown.css' },

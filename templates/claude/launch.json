@@ -1,0 +1,13 @@
+{
+    "version": "0.0.1",
+    "configurations": [
+        {
+            "name": "Manifest preview",
+            "runtimeExecutable": "npx",
+            "runtimeArgs": [
+                "mnfst-run"
+            ],
+            "port": 5001
+        }
+    ]
+}
