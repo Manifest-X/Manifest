@@ -1,0 +1,52 @@
+name: Sync starter template
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'templates/starter/**'
+      - '.github/workflows/sync-starter.yml'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: sync-starter
+      cancel-in-progress: false
+    steps:
+      - name: Checkout framework
+        uses: actions/checkout@v4
+        with:
+          path: framework
+          fetch-depth: 1
+
+      - name: Checkout starter target
+        uses: actions/checkout@v4
+        with:
+          repository: Manifest-X/Manifest-Template-Starter
+          token: ${{ secrets.STARTER_SYNC_TOKEN }}
+          path: starter
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync templates/starter into target
+        run: |
+          rsync -av --delete \
+            --exclude='.git' \
+            framework/templates/starter/ starter/
+
+      - name: Commit and push if changed
+        working-directory: starter
+        run: |
+          git config user.name 'Manifest Sync'
+          git config user.email 'noreply@github.com'
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to sync."
+            exit 0
+          fi
+          git add -A
+          SHORT=$(cd ../framework && git rev-parse --short HEAD)
+          SUBJECT=$(cd ../framework && git log -1 --pretty=format:'%s')
+          git commit -m "sync: templates/starter from Manifest@${SHORT}" -m "Source: ${SUBJECT}"
+          git push origin main
