@@ -2,19 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
-// Parse args: --claude is a flag; everything else joins into the project name
-// (so "Playcom Platform" still works as a multi-word name).
-const rawArgs = process.argv.slice(2);
-const includeClaude = rawArgs.includes('--claude');
-const projectName = rawArgs.filter(a => !a.startsWith('--')).join(' ').trim();
+// Join args into the project name (so "Playcom Platform" works as a multi-word name).
+const projectName = process.argv.slice(2).join(' ').trim();
 
 if (!projectName) {
-  console.log('Usage: npx mnfst-starter <project-name> [--claude]');
+  console.log('Usage: npx mnfst-starter <project-name>');
   console.log('Example: npx mnfst-starter MyProject');
   console.log('Example: npx mnfst-starter "Playcom Platform"');
-  console.log('Example: npx mnfst-starter MyProject --claude   (also installs Claude Code defaults)');
   process.exit(1);
 }
 
@@ -168,19 +163,6 @@ jspm_packages/
   console.log(`Project created successfully.`);
   console.log(`Location: ${projectPath}`);
   console.log(`See README.md for more details.`);
-
-  if (includeClaude) {
-    console.log('');
-    console.log('Installing Claude Code defaults...');
-    try {
-      execSync('npx -y mnfst-claude', { cwd: projectPath, stdio: 'inherit' });
-      console.log('Installed Claude Code defaults — open the project in Claude Code to use the new commands and skills.');
-    } catch (claudeError) {
-      console.error('');
-      console.error('Warning: Could not install Claude Code defaults automatically.');
-      console.error('Run `npx mnfst-claude` inside the project directory to add them manually.');
-    }
-  }
 
 } catch (error) {
   console.error('Error creating project:', error.message);

@@ -3434,7 +3434,7 @@
             -webkit-appearance: none;
             appearance: none;
             display: none;
-            margin: 0;
+            margin: 0
         }
     }
 
@@ -3507,7 +3507,7 @@
         }
 
         &>a:not(:where(h1, h2, h3, h4, h5, h6, p, small, figcaption, label, li, blockquote, pre code, code, kbd, span, mark, [role=button]) a) {
-            margin-top: calc(1rem * 1.4);
+            margin-top: calc(1rem * 1.4)
         }
 
         &>blockquote {
@@ -3550,7 +3550,7 @@
         }
 
         &>h4+p {
-            margin-top: 0.25rem;
+            margin-top: 0.25rem
         }
 
         &>h5 {
@@ -3565,7 +3565,12 @@
 
         &>hr {
             margin-top: calc(1rem * 3);
-            margin-bottom: calc(1rem * 3)
+            margin-bottom: calc(1rem * 3);
+        }
+
+        &>details+hr:has(+ details) {
+            margin-top: 1rem;
+            margin-bottom: 1rem
         }
 
         &>img,
@@ -3616,7 +3621,7 @@
         --color-field-inverse: var(--color-brand-inverse, #763518);
         --color-content-stark: var(--color-brand-content, #de6618);
         --color-content-neutral: color-mix(in oklch, var(--color-brand-content, #de6618) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, #de6618) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, #de6618) 70%, transparent)
     }
 
     /* Accent colors */
@@ -3626,7 +3631,7 @@
         --color-field-inverse: var(--color-accent-inverse, oklch(100% 0 0));
         --color-content-stark: var(--color-accent-content, oklch(16.6% 0.026 267));
         --color-content-neutral: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 70%, transparent)
     }
 
     /* Negative colors */
@@ -3636,7 +3641,7 @@
         --color-field-inverse: var(--color-negative-inverse, white);
         --color-content-stark: var(--color-negative-content, #ef4444);
         --color-content-neutral: color-mix(in oklch, var(--color-negative-content, #ef4444) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-negative-content, #ef4444) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-negative-content, #ef4444) 70%, transparent)
     }
 
     /* Positive colors */
@@ -3646,19 +3651,19 @@
         --color-field-inverse: var(--color-positive-inverse, white);
         --color-content-stark: var(--color-positive-content, #16a34a);
         --color-content-neutral: color-mix(in oklch, var(--color-positive-content, #16a34a) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-positive-content, #16a34a) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-positive-content, #16a34a) 70%, transparent)
     }
 
     /* Text colors */
     :where(.stark) {
-        color: var(--color-content-stark, oklch(16.6% 0.026 267));
+        color: var(--color-content-stark, oklch(16.6% 0.026 267))
     }
 
     :where(.neutral) {
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
     }
 
     :where(.subtle) {
-        color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27));
+        color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27))
     }
 }

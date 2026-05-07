@@ -267,13 +267,11 @@ async function buildStylesheets() {
 
     // Step 6: Sync derived files into all publishable packages
     //   - templates/starter   → packages/create-starter/templates/
-    //   - templates/claude    → packages/create-claude/templates/
     //   - src/scripts/manifest.render.mjs → packages/render/manifest.render.mjs
     // Each package owns its own sync logic via scripts/sync-*.mjs and exposes
     // it as `npm run prepare:source`. Each also has a prepack hook as a safety
     // net for direct `npm publish`.
     syncPackage('create-starter', 'starter template');
-    syncPackage('create-claude', 'claude templates');
     syncPackage('render', 'render source');
 
 }

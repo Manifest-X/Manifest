@@ -1,6 +1,6 @@
 {
     "name": "mnfst",
-    "version": "0.5.64",
+    "version": "0.5.65",
     "private": false,
     "workspaces": [
         "templates/starter",
@@ -25,10 +25,10 @@
         "prerender:docs": "node src/scripts/manifest.render.mjs --root docs",
         "prerender:starter": "node src/scripts/manifest.render.mjs --root templates/starter",
         "render": "node src/scripts/manifest.render.mjs --root src",
-        "publish:starter": "cd packages/create-starter && npm publish --auth-type=web",
-        "publish:run": "cd packages/run && npm publish --auth-type=web",
-        "publish:render": "cd packages/render && npm publish --auth-type=web",
-        "publish:claude": "cd packages/create-claude && npm publish --auth-type=web",
+        "release": "npm version patch --no-git-tag-version && npm publish",
+        "release:run": "cd packages/run && npm version patch --no-git-tag-version && npm publish --auth-type=web",
+        "release:render": "cd packages/render && npm version patch --no-git-tag-version && npm publish --auth-type=web",
+        "release:starter": "cd packages/create-starter && npm version patch --no-git-tag-version && npm publish --auth-type=web",
         "prepublishOnly": "npm run build",
         "test": "vitest run",
         "lint": "echo 'No linting configured'"
@@ -62,9 +62,9 @@
     "homepage": "https://manifestjs.org",
     "repository": {
         "type": "git",
-        "url": "https://github.com/andrewmatlock/manifest.git"
+        "url": "https://github.com/Manifest-X/Manifest.git"
     },
     "bugs": {
-        "url": "https://github.com/andrewmatlock/manifest/issues"
+        "url": "https://github.com/Manifest-X/Manifest/issues"
     }
 }

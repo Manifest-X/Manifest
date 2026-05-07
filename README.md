@@ -42,6 +42,30 @@ For full documentation visit [manifestjs.org](https://manifestjs.org).
 
 <br>
 
+## 📦 Publishing
+
+Each package publishes independently to npm. The `release:*` scripts auto-bump the patch version (e.g. `0.5.65 → 0.5.66`) and publish — no manual version edits needed. The bump is **not** auto-committed, so it lands in your working tree alongside whatever changes triggered the release.
+
+| Command | Package | Path |
+|---|---|---|
+| `npm run release` | `mnfst` | (root) |
+| `npm run release:run` | `mnfst-run` | `packages/run/` |
+| `npm run release:render` | `mnfst-render` | `packages/render/` |
+| `npm run release:starter` | `mnfst-starter` | `packages/create-starter/` |
+
+Run only the scripts whose package you actually changed.
+
+For a **minor** or **major** bump, run `npm version minor` (or `major`) inside the relevant package directory before publishing:
+```sh
+cd packages/render
+npm version minor --no-git-tag-version
+npm publish --auth-type=web
+```
+
+After publishing, commit the version bump(s) along with your changes and push.
+
+<br>
+
 ## 📄 License
 
 Manifest is provided under MIT license.
