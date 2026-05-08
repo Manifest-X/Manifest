@@ -111,17 +111,17 @@
 
   </main>
 
-  <section class="row-wrap gap-20 p-20" x-data="{col:'linear-gradient(90deg, rgba(0,0,0,0) 0%, #0000ff 100%)'}">
+  <section class="row-wrap gap-20 p-20" x-data="{ col: 'linear-gradient(90deg, rgba(0,0,0,0) 0%, #0000ff 100%)', tab: 'solid' }">
 
     <div class="prose">
 
-      <button x-tab="solid">Solid</button>
-      <button x-tab="gradient">Gradient</button>
-      <button x-tab="library">Library</button>
+      <button @click="tab = 'solid'" :class="{ ghost: tab !== 'solid', 'brand': tab === 'solid' }">Solid</button>
+      <button @click="tab = 'gradient'" :class="{ ghost: tab !== 'gradient', 'brand': tab === 'gradient' }">Gradient</button>
+      <button @click="tab = 'library'" :class="{ ghost: tab !== 'library', 'brand': tab === 'library' }">Library</button>
 
-      <div id="solid" x-tabpanel>First content</div>
-      <div id="gradient" x-tabpanel>Second content</div>
-      <div id="library" x-tabpanel>Third content</div>
+      <div id="solid" x-show="tab === 'solid'">First content</div>
+      <div id="gradient" x-show="tab === 'gradient'">Second content</div>
+      <div id="library" x-show="tab === 'library'">Third content</div>
 
 
       <hr>

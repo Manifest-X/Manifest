@@ -274,7 +274,7 @@ async function runAssertions() {
     await new Promise((r) => setTimeout(r, 200));
     const darkClassOnHtml = await page.$eval('html', (el) => el.className).catch(() => null);
     assert(darkClassOnHtml && darkClassOnHtml.includes('dark'),
-      'x-theme="dark" click switches <html> to .dark',
+      'x-colors="dark" click switches <html> to .dark',
       `initial: ${JSON.stringify(lightInitial)}; after: ${JSON.stringify(darkClassOnHtml)}`);
 
     // The active class on the dark button should update via :class diff

@@ -12,7 +12,7 @@ import './manifest.resize.js';
 import './manifest.router.js';
 import './manifest.slides.js';
 import './manifest.tabs.js';
-import './manifest.themes.js';
+import './manifest.colors.js';
 import './manifest.toasts.js';
 import './manifest.tooltips.js';
 import './manifest.url.parameters.js';

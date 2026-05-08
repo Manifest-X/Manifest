@@ -10,9 +10,13 @@
  *                       npx mnfst-run docs/articles/publishing
  *   --port              Preferred port (default: PORT env var, then 5001).
  *                       Auto-increments if the port is already in use.
- *   --idle-shutdown N   Exit after N seconds with no open browser tabs
- *                       (default 30). Only arms once a tab has connected, so
- *                       the auto-launched browser has time to load.
+ *   --idle-shutdown N   Exit N seconds after the last preview tab closes
+ *                       (default 30). A tab is only considered closed when
+ *                       it fires `pagehide` (real close/navigation) and the
+ *                       browser sends an explicit close beacon — SSE drops
+ *                       from sleep, network blips, or backgrounding do not
+ *                       count, so the server survives e.g. a laptop sleeping
+ *                       overnight with the preview tab still open.
  *   --no-idle-shutdown  Disable auto-shutdown (useful in CI / headless cases
  *                       where no browser will connect).
  *
@@ -57,9 +61,19 @@ const MIME = {
 // - CSS changes       → hot-swaps the matching <link> href (no reload, no flash)
 // - data file changes → dispatches manifest:dev-reload (data plugin re-fetches)
 // - other changes     → full page reload
+//
+// Tab lifecycle:
+//   The script generates a per-tab id and passes it on every SSE connect so
+//   the server can match auto-reconnects (after sleep / network blips) back
+//   to the same tab. On real tab close it fires a `sendBeacon` to
+//   /__mnfst_close__ — that beacon, not the SSE drop, is what tells the
+//   server the tab is gone.
 const LIVE_RELOAD_SCRIPT = `<script>
 (function () {
-  var es = new EventSource('/__mnfst_sse__');
+  var tabId = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+  var es = new EventSource('/__mnfst_sse__?tabId=' + encodeURIComponent(tabId));
   es.onmessage = function (e) {
     var d = JSON.parse(e.data);
     if (d.type === 'css') {
@@ -73,7 +87,19 @@ const LIVE_RELOAD_SCRIPT = `<script>
       location.reload();
     }
   };
-  es.onerror = function () { es.close(); };
+  // Don't close on error — let EventSource auto-reconnect (carries the same
+  // tabId, so the server sees it as the same tab waking back up).
+  function notifyClose() {
+    var url = '/__mnfst_close__?tabId=' + encodeURIComponent(tabId);
+    if (navigator.sendBeacon) navigator.sendBeacon(url);
+    else { try { fetch(url, { method: 'POST', keepalive: true }); } catch (_) {} }
+  }
+  // pagehide w/ persisted=false = real tab close or cross-doc navigation.
+  // persisted=true means BFCache (back/forward may restore) — leave it alone.
+  window.addEventListener('pagehide', function (e) {
+    if (e.persisted) return;
+    notifyClose();
+  });
 })();
 \x3c/script>`;
 
@@ -81,10 +107,12 @@ const LIVE_RELOAD_SCRIPT = `<script>
 const args = process.argv.slice(2);
 let dir  = '.';
 let port = process.env.PORT ? parseInt(process.env.PORT, 10) : 5001;
-// Auto-shutdown: when the last open browser tab disconnects (SSE drops to 0
-// clients) and stays gone for `idleShutdownSec`, the server exits. Cancelled
-// by `--no-idle-shutdown` (e.g. CI, headless smoke tests, or any case where
-// no browser will ever connect).
+// Auto-shutdown: when the last preview tab is explicitly closed (the page's
+// `pagehide` handler beacons /__mnfst_close__) and stays closed for
+// `idleShutdownSec`, the server exits. SSE drops from sleep, network blips,
+// or background-throttling do NOT count as a close — the server is happy to
+// sit idle overnight if the tab is still open. Disabled by
+// `--no-idle-shutdown` for CI / headless cases where no browser will connect.
 let idleShutdownSec = 30;
 let idleShutdownEnabled = true;
 
@@ -105,35 +133,58 @@ function detectMPA(rootDir) {
 }
 const spa = !detectMPA(root);
 
-// --- SSE clients ---
-let clients = [];
+// --- SSE clients & tab presence ---
+// `clients` is the live SSE socket list (used to broadcast reload events).
+// `openTabs` is the durable set of tabs the server thinks are still open —
+// only mutated when a tab connects for the first time, when it sends an
+// explicit close beacon, or when its SSE has been disconnected longer than
+// ORPHAN_GRACE_MS (a safety net for browser crashes / kill -9, not a normal
+// path). `staleTimers` holds the per-tab orphan timers so they can be
+// cancelled on reconnect.
+let clients = [];        // [{ res, tabId }]
+let openTabs = new Set();
+let staleTimers = new Map(); // tabId -> setTimeout handle
 let debounce = null;
+
+// If a tab's SSE drops and never reconnects within this window we give up on
+// it. Long enough to survive overnight sleep, multi-hour breaks, and Chrome
+// background-tab discards; short enough that a server orphaned by a real
+// browser crash eventually exits on its own.
+const ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
 
 function broadcast(data) {
   const msg = `data: ${JSON.stringify(data)}\n\n`;
-  clients.forEach(res => { try { res.write(msg); } catch { /* client gone */ } });
+  clients.forEach(({ res }) => { try { res.write(msg); } catch { /* client gone */ } });
 }
 
 // --- Idle auto-shutdown ---
 // `everConnected` keeps the timer dormant until at least one tab has opened —
-// otherwise the server would exit before the auto-launched browser tab finishes
-// loading. `idleTimer` runs only while clients.length === 0; any new SSE
-// connection cancels it. The grace window also covers hard-reload churn (Cmd+R
-// drops the SSE briefly, then reconnects in well under a second).
+// otherwise the server would exit before the auto-launched browser tab
+// finishes loading. `idleTimer` runs only while openTabs is empty; any new
+// tab (or reconnect) cancels it. The grace window also covers hard-reload
+// churn and same-site navigation: pagehide → close beacon → new page loads
+// and reconnects, all within a second or two.
 let everConnected = false;
 let idleTimer = null;
 
 function armIdleShutdown() {
   if (!idleShutdownEnabled || !everConnected || idleTimer) return;
-  if (clients.length > 0) return;
+  if (openTabs.size > 0) return;
   idleTimer = setTimeout(() => {
-    console.log(`\nmnfst-run: no open tabs for ${idleShutdownSec}s — shutting down.\n`);
+    console.log(`\nmnfst-run: all preview tabs closed for ${idleShutdownSec}s — shutting down.\n`);
     process.exit(0);
   }, idleShutdownSec * 1000);
 }
 
 function cancelIdleShutdown() {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+}
+
+function dropTab(tabId) {
+  if (!tabId) return;
+  openTabs.delete(tabId);
+  const t = staleTimers.get(tabId);
+  if (t) { clearTimeout(t); staleTimers.delete(tabId); }
 }
 
 // --- .env support ---
@@ -234,19 +285,48 @@ const server = createServer((req, res) => {
 
   // SSE endpoint for live reload
   if (urlPath === '/__mnfst_sse__') {
+    const tabId = new URL(req.url, 'http://localhost').searchParams.get('tabId');
     res.writeHead(200, {
       'Content-Type':  'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection':    'keep-alive',
     });
     res.write(':\n\n'); // initial keep-alive comment
-    clients.push(res);
+    clients.push({ res, tabId });
+    if (tabId) {
+      openTabs.add(tabId);
+      const pending = staleTimers.get(tabId);
+      if (pending) { clearTimeout(pending); staleTimers.delete(tabId); }
+    }
     everConnected = true;
     cancelIdleShutdown();
     req.on('close', () => {
-      clients = clients.filter(c => c !== res);
-      if (clients.length === 0) armIdleShutdown();
+      clients = clients.filter(c => c.res !== res);
+      // SSE socket is gone, but the tab itself might just be sleeping. Hold
+      // its slot in openTabs until either the EventSource auto-reconnects
+      // (carrying the same tabId), the tab beacons /__mnfst_close__, or the
+      // orphan grace expires.
+      if (tabId && openTabs.has(tabId) && !staleTimers.has(tabId)) {
+        const t = setTimeout(() => {
+          staleTimers.delete(tabId);
+          openTabs.delete(tabId);
+          if (openTabs.size === 0) armIdleShutdown();
+        }, ORPHAN_GRACE_MS);
+        staleTimers.set(tabId, t);
+      }
     });
+    return;
+  }
+
+  // Close beacon: fired by the injected script's pagehide handler when a tab
+  // is actually being closed/navigated away from. This is the only signal
+  // that drops a tab from openTabs in normal operation.
+  if (urlPath === '/__mnfst_close__') {
+    const tabId = new URL(req.url, 'http://localhost').searchParams.get('tabId');
+    dropTab(tabId);
+    res.writeHead(204);
+    res.end();
+    if (openTabs.size === 0) armIdleShutdown();
     return;
   }
 
