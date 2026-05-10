@@ -3,19 +3,79 @@
 const fs = require('fs');
 const path = require('path');
 
-// Join args into the project name (so "Playcom Platform" works as a multi-word name).
-const projectName = process.argv.slice(2).join(' ').trim();
+// Default Manifest MCP endpoint. Override via --mcp-url for staging/local dev.
+const DEFAULT_MCP_URL = 'https://mcp.manifestx.dev/mcp';
+
+// Parse CLI args: extract flags first, then join remaining tokens as the project name.
+// Supports `--key=xxx` / `--key xxx`, `--mcp-url=xxx` / `--mcp-url xxx`.
+// Falls back to the MANIFEST_API_KEY env var when --key is not given.
+function parseArgs(argv) {
+  let apiKey = process.env.MANIFEST_API_KEY || null;
+  let mcpUrl = DEFAULT_MCP_URL;
+  const remaining = [];
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--key' || arg === '--mcp-url') {
+      const value = argv[i + 1];
+      if (!value || value.startsWith('--')) {
+        console.error(`Error: ${arg} requires a value (e.g. ${arg}=mfst_free_xxx)`);
+        process.exit(1);
+      }
+      if (arg === '--key') apiKey = value;
+      else mcpUrl = value;
+      i++;
+    } else if (arg.startsWith('--key=')) {
+      apiKey = arg.slice('--key='.length);
+    } else if (arg.startsWith('--mcp-url=')) {
+      mcpUrl = arg.slice('--mcp-url='.length);
+    } else if (arg === '--help' || arg === '-h') {
+      printUsage();
+      process.exit(0);
+    } else {
+      remaining.push(arg);
+    }
+  }
+
+  return {
+    apiKey: apiKey ? apiKey.trim() : null,
+    mcpUrl: mcpUrl.trim(),
+    projectName: remaining.join(' ').trim(),
+  };
+}
+
+function printUsage() {
+  console.log('Usage: npx mnfst-starter <project-name> [--key=<api-key>] [--mcp-url=<url>]');
+  console.log('');
+  console.log('Examples:');
+  console.log('  npx mnfst-starter MyProject');
+  console.log('  npx mnfst-starter "Playcom Platform"');
+  console.log('  npx mnfst-starter MyProject --key=mfst_free_abc123');
+  console.log('');
+  console.log('When --key (or MANIFEST_API_KEY env var) is provided, the project is');
+  console.log('initialised with .env (gitignored, holds the key) and .mcp.json');
+  console.log('(checked in, references ${MANIFEST_API_KEY}) so Claude Code can connect');
+  console.log('to the Manifest MCP server on first launch.');
+}
+
+const { apiKey, mcpUrl, projectName } = parseArgs(process.argv.slice(2));
 
 if (!projectName) {
-  console.log('Usage: npx mnfst-starter <project-name>');
-  console.log('Example: npx mnfst-starter MyProject');
-  console.log('Example: npx mnfst-starter "Playcom Platform"');
+  printUsage();
   process.exit(1);
 }
 
 // Validate project name - allow letters, numbers, spaces, dots, underscores, hyphens; prevent path tricks
 if (!/^[a-zA-Z0-9._ -]+$/.test(projectName) || projectName.includes('..') || projectName.startsWith('.') || projectName.endsWith('.') || /^\s|\s$/.test(projectName)) {
   console.error('Error: Project name must contain only letters, numbers, spaces, dots, underscores, and hyphens. Cannot start/end with dots or spaces, or contain consecutive dots.');
+  process.exit(1);
+}
+
+// Validate API key shape if provided (defence-in-depth — wrong key still works at runtime as anonymous,
+// but a typo'd key looking like `--keymfst_xxx` would otherwise silently fail).
+if (apiKey && !/^mfst_(free|live|test)_[A-Za-z0-9]{20,}$/.test(apiKey)) {
+  console.error('Error: API key does not look like a valid Manifest key (expected mfst_<env>_<chars>).');
+  console.error('Got: ' + apiKey.slice(0, 16) + '...');
   process.exit(1);
 }
 
@@ -160,9 +220,50 @@ jspm_packages/
 
   fs.writeFileSync(path.join(projectPath, '.gitignore'), gitignore);
 
+  // If an API key was supplied, scaffold the Manifest MCP integration:
+  //   .env         — gitignored, holds the actual key
+  //   .mcp.json    — checked in, references ${MANIFEST_API_KEY} so Claude Code
+  //                  reads the key from the loaded environment at launch
+  if (apiKey) {
+    const envContent = [
+      '# Manifest MCP — populated by `npx mnfst-starter --key=...`.',
+      '# Treat this like a password. Do NOT commit (already in .gitignore).',
+      '# To rotate, run a new starter or update via the Manifest dashboard.',
+      `MANIFEST_API_KEY=${apiKey}`,
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(projectPath, '.env'), envContent);
+
+    const mcpConfig = {
+      mcpServers: {
+        manifest: {
+          type: 'http',
+          url: mcpUrl,
+          headers: {
+            'X-API-Key': '${MANIFEST_API_KEY}',
+          },
+        },
+      },
+    };
+    fs.writeFileSync(
+      path.join(projectPath, '.mcp.json'),
+      JSON.stringify(mcpConfig, null, 2) + '\n',
+    );
+  }
+
   console.log(`Project created successfully.`);
   console.log(`Location: ${projectPath}`);
-  console.log(`See README.md for more details.`);
+  if (apiKey) {
+    console.log('');
+    console.log('Manifest MCP wired up:');
+    console.log('  .env       — your API key (gitignored)');
+    console.log('  .mcp.json  — MCP server config (safe to commit)');
+    console.log('');
+    console.log('Next: `cd ' + projectName + ' && claude` to open in Claude Code,');
+    console.log('then `/init` to install the curated Manifest skills for your project.');
+  } else {
+    console.log(`See README.md for more details.`);
+  }
 
 } catch (error) {
   console.error('Error creating project:', error.message);
