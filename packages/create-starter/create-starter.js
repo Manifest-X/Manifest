@@ -3,10 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Default Manifest MCP endpoint. Currently the workers.dev hostname while DNS
-// migration to mcp.manifestx.dev is pending; will flip to the branded hostname
-// in a future release once DNS is cut over. Override via --mcp-url for
-// staging/local dev.
+// Default Manifest MCP endpoint. Override via --mcp-url for staging/local dev.
 const DEFAULT_MCP_URL = 'https://manifest-mcp.manifest-c5f.workers.dev/mcp';
 
 // Parse CLI args: extract flags first, then join remaining tokens as the project name.
