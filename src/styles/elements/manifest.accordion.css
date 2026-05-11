@@ -17,8 +17,8 @@
             margin-bottom: calc(var(--spacing, 0.25rem) * 4)
         }
 
-        &> :not(summary) {
-            padding: var(--spacing-field-padding, 0.625rem) 0
+        &>:last-child {
+            margin-bottom: calc(var(--spacing, 0.25rem) * 8)
         }
 
         /* Content */
@@ -27,6 +27,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: var(--spacing-field-padding, 0.625rem) 0;
             font-weight: bold;
             color: var(--color-content-stark, oklch(16.6% 0.026 267));
             user-select: none;

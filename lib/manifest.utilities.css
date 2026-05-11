@@ -220,7 +220,7 @@
     }
 
     /* Prose styles for long-form content */
-    :where(.prose) {
+    :where(.prose, .prose details) {
         width: 65ch;
         max-width: 100%;
 
@@ -259,6 +259,25 @@
             & * {
                 margin: 0
             }
+        }
+
+        &>details,
+        &>hr+details {
+            margin-top: 0
+        }
+
+        &>details:first-child,
+        &> :not(details, hr)+details {
+            margin-top: calc(3rem)
+        }
+
+        &>details:last-child,
+        &>details:not(:last-child):not(:has(+ details, + hr)) {
+            margin-bottom: calc(3rem)
+        }
+
+        &>details+ :not(details, hr) {
+            margin-top: 0
         }
 
         &>figcaption {

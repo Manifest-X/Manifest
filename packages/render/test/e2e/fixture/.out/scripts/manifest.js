@@ -1,6 +1,6 @@
 /*  Manifest JS
 /*  By Andrew Matlock under MIT license
-/*  https://manifestjs.org
+/*  https://manifestx.dev
 /*
 /*  Lightweight loader that dynamically loads Alpine.js and Manifest plugins
 /*  from jsDelivr CDN. Loads all plugins by default, or a subset if specified.
@@ -100,7 +100,7 @@
 				tmp.innerHTML = newHTML;
 				const parsed = tmp.firstElementChild;
 				if (parsed) {
-					try { el.parentNode.replaceChild(parsed, el); } catch (_) {}
+					try { el.parentNode.replaceChild(parsed, el); } catch (_) { }
 				}
 				continue;
 			}
@@ -132,7 +132,7 @@
 			tmp.innerHTML = newHTML;
 			const parsed = tmp.firstElementChild;
 			if (parsed) {
-				try { el.parentNode.replaceChild(parsed, el); } catch (_) {}
+				try { el.parentNode.replaceChild(parsed, el); } catch (_) { }
 			}
 		}
 

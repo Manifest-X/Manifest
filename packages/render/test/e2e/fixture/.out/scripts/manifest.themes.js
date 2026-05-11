@@ -33,7 +33,7 @@ function initializeThemePlugin() {
         cleanup(() => el.removeEventListener('click', handleClick))
     })
 
-    // Add $theme magic method
+    // Add $colors magic method
     Alpine.magic('theme', () => ({
         get current() {
             return theme.current

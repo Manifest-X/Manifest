@@ -1,0 +1,60 @@
+/* Manifest Range */
+
+@layer components {
+
+    input[type=range]:not(.unstyle) {
+        appearance: none;
+        background-color: transparent;
+        border-radius: var(--radius, 0.5rem);
+        cursor: default;
+
+        &::-webkit-slider-runnable-track {
+            height: calc(var(--spacing, 0.25rem) * 2);
+            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+            border-radius: var(--radius, 0.5rem);
+            cursor: pointer;
+            transition: var(--transition)
+        }
+
+        &:hover::-webkit-slider-runnable-track {
+            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
+        }
+
+        &::-webkit-slider-thumb {
+            appearance: none;
+            position: relative;
+            top: 50%;
+            width: calc(var(--spacing-field-height, 2.25rem) * 0.5);
+            height: calc(var(--spacing-field-height, 2.25rem) * 0.5);
+            transform: translateY(-50%);
+            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 60%, var(--color-field-inverse, oklch(16.6% 0.026 267)));
+            border-radius: 200px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            cursor: pointer;
+            transition: var(--transition)
+        }
+
+        &::-webkit-slider-thumb:hover {
+            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 30%, var(--color-field-inverse, oklch(16.6% 0.026 267)));
+        }
+    }
+
+    :where(datalist):not(.unstyle) {
+        display: flex;
+        flex-flow: row nowrap;
+        justify-content: space-between;
+        width: 100%;
+        max-width: 100%;
+
+        & option {
+            width: 2ch;
+            text-align: center;
+            font-size: 0.875rem;
+            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        }
+    }
+
+    label:has(input[type=range]):not(.unstyle) {
+        cursor: default;
+    }
+}

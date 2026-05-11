@@ -1,26 +1,26 @@
-/* Manifest Colors */
+/* Manifest Color */
 
 // Initialize plugin when either DOM is ready or Alpine is ready
-function initializeColorsPlugin() {
+function initializeColorPlugin() {
 
     // Initialize color mode state with Alpine reactivity
-    const colors = Alpine.reactive({
+    const color = Alpine.reactive({
         current: localStorage.getItem('theme') || 'system'
     })
 
     // Apply initial color mode
-    applyColorMode(colors.current)
+    applyColorMode(color.current)
 
     // Setup system color mode listener
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
     mediaQuery.addEventListener('change', () => {
-        if (colors.current === 'system') {
+        if (color.current === 'system') {
             applyColorMode('system')
         }
     })
 
-    // Register colors directive
-    Alpine.directive('colors', (el, { expression }, { evaluate, cleanup }) => {
+    // Register color directive
+    Alpine.directive('color', (el, { expression }, { evaluate, cleanup }) => {
 
         const handleClick = () => {
             const newMode = expression === 'toggle'
@@ -33,10 +33,10 @@ function initializeColorsPlugin() {
         cleanup(() => el.removeEventListener('click', handleClick))
     })
 
-    // Add $colors magic method
-    Alpine.magic('colors', () => ({
+    // Add $color magic method
+    Alpine.magic('color', () => ({
         get current() {
-            return colors.current
+            return color.current
         },
         set current(value) {
             setColorMode(value)
@@ -45,11 +45,11 @@ function initializeColorsPlugin() {
 
     function setColorMode(newMode) {
         if (newMode === 'toggle') {
-            newMode = colors.current === 'light' ? 'dark' : 'light'
+            newMode = color.current === 'light' ? 'dark' : 'light'
         }
 
         // Update color mode state
-        colors.current = newMode
+        color.current = newMode
         localStorage.setItem('theme', newMode)
 
         // Apply color mode
@@ -74,35 +74,35 @@ function initializeColorsPlugin() {
 }
 
 // Track initialization to prevent duplicates
-let colorsPluginInitialized = false;
+let colorPluginInitialized = false;
 
-function ensureColorsPluginInitialized() {
-    if (colorsPluginInitialized) return;
+function ensureColorPluginInitialized() {
+    if (colorPluginInitialized) return;
     if (!window.Alpine || typeof window.Alpine.directive !== 'function') return;
 
-    colorsPluginInitialized = true;
-    initializeColorsPlugin();
+    colorPluginInitialized = true;
+    initializeColorPlugin();
 }
 
 // Expose on window for loader to call if needed
-window.ensureColorsPluginInitialized = ensureColorsPluginInitialized;
+window.ensureColorPluginInitialized = ensureColorPluginInitialized;
 
 // Handle both DOMContentLoaded and alpine:init
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', ensureColorsPluginInitialized);
+    document.addEventListener('DOMContentLoaded', ensureColorPluginInitialized);
 }
 
-document.addEventListener('alpine:init', ensureColorsPluginInitialized);
+document.addEventListener('alpine:init', ensureColorPluginInitialized);
 
 // If Alpine is already initialized when this script loads, initialize immediately
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
-    setTimeout(ensureColorsPluginInitialized, 0);
+    setTimeout(ensureColorPluginInitialized, 0);
 } else {
     // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {
             clearInterval(checkAlpine);
-            ensureColorsPluginInitialized();
+            ensureColorPluginInitialized();
         }
     }, 10);
     setTimeout(() => clearInterval(checkAlpine), 5000);

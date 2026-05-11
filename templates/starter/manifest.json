@@ -1,6 +1,7 @@
 {
+  "$schema": "https://manifestx.dev/manifest.schema.json",
   "name": "My Project",
-  "short_name": "Project name",
+  "short_name": "My Project",
   "description": "Lorem ipsum dolor sit amet.",
   "author": "Universal Exports",
   "email": "universal@exports.com",

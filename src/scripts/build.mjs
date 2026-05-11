@@ -219,7 +219,7 @@ function copyScriptsToDocs() {
         'manifest.router.js',
         'manifest.svg.js',
         'manifest.tabs.js',
-        'manifest.colors.js',
+        'manifest.color.js',
         'manifest.toasts.js',
         'manifest.tooltips.js',
         'manifest.url.parameters.js',
@@ -273,6 +273,7 @@ async function buildStylesheets() {
     // net for direct `npm publish`.
     syncPackage('create-starter', 'starter template');
     syncPackage('render', 'render source');
+    syncPackage('types', 'types template');
 
 }
 
@@ -284,7 +285,7 @@ function buildMainStylesheet() {
     const mainContent = [];
 
     // Add header comment
-    mainContent.push('/*  Manifest CSS\n/*  By Andrew Matlock under MIT license\n/*  https://manifestjs.org\n/*  Modify referenced variables in manifest.theme.css\n*/');
+    mainContent.push('/*  Manifest CSS\n/*  By Andrew Matlock under MIT license\n/*  https://manifestx.dev\n/*  Modify referenced variables in manifest.theme.css\n*/');
 
     // Step 1: Add core files in order
     for (const coreFile of CONFIG.stylesheets.coreFiles) {
@@ -667,6 +668,8 @@ function copyFilesToDist() {
     const filesToCopy = [
         // Main files
         { source: 'scripts/manifest.js', dest: '../lib/manifest.js' },  // Dynamic loader (source)
+        { source: 'scripts/manifest.d.ts', dest: '../lib/manifest.d.ts' },  // Ambient type declarations
+        { source: 'scripts/manifest.schema.json', dest: '../lib/manifest.schema.json' },  // manifest.json JSON Schema
         { source: 'styles/manifest.css', dest: '../lib/manifest.css' },
         { source: 'styles/manifest.min.css', dest: '../lib/manifest.min.css' },
         { source: 'styles/manifest.theme.css', dest: '../lib/manifest.theme.css' },
@@ -690,7 +693,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
-        { source: 'scripts/manifest.colors.js', dest: '../lib/manifest.colors.js' },
+        { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },
         { source: 'scripts/manifest.toasts.js', dest: '../lib/manifest.toasts.js' },
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
         { source: 'scripts/manifest.url.parameters.js', dest: '../lib/manifest.url.parameters.js' },
@@ -708,6 +711,7 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.form.css', dest: '../lib/manifest.form.css' },
         { source: 'styles/elements/manifest.input.css', dest: '../lib/manifest.input.css' },
         { source: 'styles/elements/manifest.radio.css', dest: '../lib/manifest.radio.css' },
+        { source: 'styles/elements/manifest.range.css', dest: '../lib/manifest.range.css' },
         { source: 'styles/elements/manifest.resize.css', dest: '../lib/manifest.resize.css' },
         { source: 'styles/elements/manifest.sidebar.css', dest: '../lib/manifest.sidebar.css' },
         { source: 'styles/elements/manifest.slides.css', dest: '../lib/manifest.slides.css' },

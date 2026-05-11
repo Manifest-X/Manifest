@@ -10,6 +10,14 @@
       "autoPort": true
     },
     {
+      "name": "src-files",
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["packages/run/serve.mjs", "src"],
+      "cwd": "/Users/andrewmatlock/Files/Manifest/Repos/Manifest",
+      "port": 5004,
+      "autoPort": true
+    },
+    {
       "name": "docs",
       "runtimeExecutable": "/usr/local/bin/node",
       "runtimeArgs": ["packages/run/serve.mjs", "docs"],

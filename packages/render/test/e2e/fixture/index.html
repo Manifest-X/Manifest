@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,21 +12,43 @@
        NOT include a <script defer src="alpinejs"> tag here because defer fires
        at DOMContentLoaded, racing against async plugin loads — by the time
        Alpine starts walking the DOM, plugin directives may not yet be
-       registered and `$theme`/`$locale` magics will be undefined. -->
-  <script src="/scripts/manifest.js"
-          data-plugins="components,router,data,icons,localization,themes,markdown,dropdowns"
-          data-plugin-base="/scripts"></script>
+       registered and `$colors`/`$locale` magics will be undefined. -->
+  <script src="/scripts/manifest.js" data-plugins="components,router,data,icons,localization,themes,markdown,dropdowns" data-plugin-base="/scripts"></script>
 
   <style>
-    body { font-family: sans-serif; padding: 1rem; }
-    .active { font-weight: bold; color: red; }
-    .visible { opacity: 1; }
-    .hidden { opacity: 0; pointer-events: none; }
-    .open { display: block; }
-    .closed { display: none; }
-    [x-cloak] { display: none; }
+    body {
+      font-family: sans-serif;
+      padding: 1rem;
+    }
+
+    .active {
+      font-weight: bold;
+      color: red;
+    }
+
+    .visible {
+      opacity: 1;
+    }
+
+    .hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .open {
+      display: block;
+    }
+
+    .closed {
+      display: none;
+    }
+
+    [x-cloak] {
+      display: none;
+    }
   </style>
 </head>
+
 <body>
 
   <x-header></x-header>
@@ -110,4 +133,5 @@
   </div>
 
 </body>
+
 </html>

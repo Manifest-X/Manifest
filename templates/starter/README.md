@@ -53,7 +53,7 @@ project-name/
 
 **Websites**
 - [ ] Replace `favicon.ico`
-- [ ] Run `npx mnfst-render` to build optimized <a href="https://manifestjs.org/publishing/websites" target="_blank">websites</a>
+- [ ] Run `npx mnfst-render` to build optimized <a href="https://manifestx.dev/publishing/websites" target="_blank">websites</a>
 
 **Web apps**
 - [ ] Replace or remove `/icons` images referenced in manifest.json
@@ -64,7 +64,7 @@ project-name/
 
 This project supports routes, components, dynamic data, localization, icons, color themes, and much more.
 
-For comprehensive documentation visit [manifestjs.org](https://manifestjs.org).
+For comprehensive documentation visit [manifestx.dev](https://manifestx.dev).
 
 ---
 

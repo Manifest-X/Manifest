@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { cpus } from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -129,6 +130,37 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
             detail: { from: to, to, normalizedPath },
           }));
           window.dispatchEvent(new PopStateEvent('popstate'));
+
+          // 5b. Eagerly warm up declared local data sources for the current locale.
+          //
+          // Without this, sources are loaded lazily — only when a `$x.foo` access
+          // triggers the proxy.  For static `<template x-for="group in $x.docs">`
+          // patterns the iterator may not run early enough for the load to be
+          // in-flight before checkAndDispatchRenderReady's debounced timer fires,
+          // and the snapshot captures an empty template (no clones for SEO).
+          //
+          // Warming up here forces every declared local source into the loading
+          // state synchronously (loadDataSource sets _<name>_state.loading = true
+          // and registers a promise in loadingPromises before returning), which
+          // gates the render-ready dispatch until all loads settle.  Cloud
+          // sources (Appwrite collections, object-form API URLs) are skipped —
+          // those are typically auth-gated or intentionally dynamic and not
+          // appropriate for SEO-baking; lazy access still works for them.
+          try {
+            const cfg = window.ManifestDataConfig;
+            const main = window.ManifestDataMain;
+            const manifest = await cfg?.ensureManifest?.();
+            if (manifest?.data && typeof main?.loadDataSource === 'function') {
+              const isAppwrite = cfg.isAppwriteCollection;
+              for (const [name, source] of Object.entries(manifest.data)) {
+                if (isAppwrite && isAppwrite(source)) continue;
+                if (source && typeof source === 'object' && source.url) continue;
+                // Fire-and-forget: we just need the loading flag set and the
+                // promise registered.  Failures fall back to lazy behaviour.
+                main.loadDataSource(name, loc).catch(() => { });
+              }
+            }
+          } catch { /* warmup is best-effort; existing lazy access is the fallback */ }
 
           // 6. Run component swapping explicitly so components tied to this route render
           //    and trigger any $x accesses that start on-demand data loads.
@@ -251,6 +283,27 @@ function resolveConfig() {
     // fall back to the timeout.  10s gives slow data plugin pipelines a
     // chance while bounding worst-case per-path overhead.
     pipelineTimeout: 10000,
+    // SEO / AEO meta injection — see metaInjection() and the prerender.meta
+    // section of manifest.json.  Layered precedence (highest first):
+    //   1. <template data-head> per-route (already in DOM at snapshot time)
+    //   2. <head> in index.html (already in DOM at snapshot time)
+    //   3. prerender.meta.* expressions (Alpine-evaluated per route)
+    //   4. prerender.meta.fallback.* (static strings if expression empty)
+    //   5. PWA-style manifest.json fields (name, description, author, icons)
+    //   6. Smart defaults derived from the rendered DOM (h1, first p, etc.)
+    //
+    // Each layer only fills slots not yet present.  An empty <title></title>
+    // or one matching manifest.json "name" counts as missing (placeholder rule).
+    seo: {
+      siteName: manifest.name || null,
+      siteDescription: manifest.description || null,
+      siteAuthor: manifest.author || null,
+      icons: Array.isArray(manifest.icons) ? manifest.icons : [],
+      meta: pre.meta || null,
+      structuredData: pre.structuredData || null,
+      imageSnapshots: pre.meta?.imageSnapshots !== false, // default true
+      defaults: pre.meta?.defaults !== false,             // default true
+    },
   };
 }
 
@@ -676,14 +729,14 @@ function stripDataTailwindAttr(html) {
  * Puppeteer applies `<html class="light">` or `<html class="dark">` based on
  * the build host's system preference at prerender time.  Shipping that baked
  * class to users in the OPPOSITE preference causes a visible flash on every
- * page load (dark→light or light→dark) until the themes plugin re-evaluates.
+ * page load (dark→light or light→dark) until the colors plugin re-evaluates.
  *
  * Fix: strip `light`/`dark` from the baked `<html class>` and inject a tiny
  * synchronous `<script>` at the top of `<head>` that sets the correct class
  * BEFORE the first paint — based on the user's `localStorage.theme` (their
  * saved preference) or `prefers-color-scheme` (their system preference).
  *
- * The colors plugin (`manifest.colors.js`) still runs later for reactivity
+ * The color plugin (`manifest.color.js`) still runs later for reactivity
  * (Alpine bindings, click handlers, system-preference change listener), but
  * the initial paint already has the correct class so there's no flash.
  */
@@ -1686,13 +1739,687 @@ function resolveHeadXBindings(html, xData) {
   });
 }
 
-// --- SEO: robots.txt and sitemap.xml (written to output, use liveUrl for crawlers) ---
+// --- SEO: per-route OG image auto-snapshot --------------------------------
+//
+// When prerender.meta.imageSnapshots is true (the default) and no other source
+// has provided an og:image (data-head, prerender.meta.image, or prerender.meta
+// .fallback.image), capture a 1200×630 PNG of the rendered page and use that as
+// the og:image / twitter:image.  Saved to <output>/og/<sanitized-path>.png.
+//
+// 1200×630 is the OpenGraph / Twitter / LinkedIn recommended dimension.
 
-function writeSeoFiles(outputDir, pathList, liveUrl, locales, defaultLocale) {
+const sha = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
+
+/**
+ * Hash of the project-wide assets that affect every page's visual output
+ * (theme CSS, manifest config, root HTML shell).  Computed once per prerender
+ * run and folded into each route's snapshot-cache key so that touching any of
+ * these invalidates every cached OG image — a more correct behaviour than
+ * per-route source-mtime caching, which would miss shared-chrome changes.
+ *
+ * Files included are conventional Manifest project assets that influence
+ * layout/theme; missing files are recorded as the literal `missing` so the
+ * hash still differs from an installation that has the file present.
+ */
+function computeGlobalAssetSignature(rootDir) {
+  const candidates = [
+    'manifest.json',
+    'manifest.theme.css',
+    'manifest.utilities.css',
+    'index.html',
+  ];
+  const parts = candidates.map((rel) => {
+    const p = join(rootDir, rel);
+    try {
+      return `${rel}:${sha(readFileSync(p, 'utf8'))}`;
+    } catch {
+      return `${rel}:missing`;
+    }
+  });
+  return sha(parts.join('|'));
+}
+
+/**
+ * Snapshot the page at 1200×630 and write to <output>/og/<slug>.png.  Cache
+ * sidecar lives in <root>/.mnfst-cache/og/ — outside the output dir, which is
+ * wiped at the start of every prerender.  On cache hit, the cached PNG is
+ * copied into the output dir and the screenshot is skipped — saves ~0.2–0.5s
+ * per hit, which adds up across hundreds of routes × locales.  Hash inputs:
+ *   - globalAssetSignature (theme CSS / manifest config / root HTML)
+ *   - body outerHTML, normalised to strip non-visual volatile attributes
+ *   - html.className (theme variant: light/dark/etc.)
+ */
+async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, cacheDir) {
+  const fileSeg = pathSeg === '' || pathSeg === '__404__'
+    ? 'index'
+    : pathSeg.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const ogDir = join(outputDir, 'og');
+  try { mkdirSync(ogDir, { recursive: true }); } catch { /* exists */ }
+  const filePath = join(ogDir, `${fileSeg}.png`);
+  // Cache locations — outside the output dir so they survive the per-run
+  // rmSync.  cacheDir is .mnfst-cache/og under the project root.
+  const cachePngPath = cacheDir ? join(cacheDir, `${fileSeg}.png`) : null;
+  const cacheHashPath = cacheDir ? join(cacheDir, `${fileSeg}.hash`) : null;
+
+  // Cache lookup: fingerprint the rendered DOM and check against the stored
+  // hash.  The fingerprint normalises away attribute values assigned in
+  // iteration order (data-hydrate-id, data-component-N) and randomly-generated
+  // CSS anchor-name positioning IDs.  Without normalisation the hash would
+  // never match across runs and the cache would always miss.
+  let contentHash = null;
+  try {
+    const fingerprint = await page.evaluate(() => {
+      const body = document.body?.outerHTML || '';
+      const htmlClass = document.documentElement?.className || '';
+      const normalised = body
+        .replace(/\sdata-hydrate-id="[^"]*"/g, '')
+        .replace(/\sdata-component="[^"]*"/g, '')
+        .replace(/\sdata-pre-rendered="[^"]*"/g, '')
+        .replace(/\sid="(?:tab-|code-)[^"]*"/g, '')
+        .replace(/\saria-controls="(?:code-)[^"]*"/g, '')
+        .replace(/\saria-labelledby="(?:tab-)[^"]*"/g, '')
+        // CSS anchor-positioning IDs (e.g. `--dropdown-zc7nofh3c`) are
+        // regenerated per run by the dropdown/popover system.
+        .replace(/--dropdown-[a-z0-9]+/g, '--dropdown-X')
+        .replace(/--popover-[a-z0-9]+/g, '--popover-X')
+        .replace(/--anchor-[a-z0-9]+/g, '--anchor-X');
+      return normalised + '\n@html:' + htmlClass;
+    });
+    contentHash = sha(`${globalAssetSignature || ''}|${fingerprint}`);
+    if (cachePngPath && existsSync(cachePngPath) && existsSync(cacheHashPath)) {
+      const stored = readFileSync(cacheHashPath, 'utf8').trim();
+      if (stored === contentHash) {
+        // Cache hit — copy the cached PNG into the output dir.  We still need
+        // a copy in /og/ so the served site has it; the cache just lets us
+        // skip the screenshot + PNG-encode work.
+        try {
+          cpSync(cachePngPath, filePath);
+          return `/og/${fileSeg}.png`;
+        } catch { /* copy failure — fall through to fresh snapshot */ }
+      }
+    }
+  } catch { /* hash failure is non-fatal — fall through to fresh snapshot */ }
+
+  try {
+    // Viewport stays at the page-creation default (1200×800).  Clipping a
+    // 1200×630 region from the top gives the OG/Twitter card aspect ratio
+    // without forcing a layout reflow that would invalidate Chromium's
+    // compositor frame — pages whose hero relies on viewport-height (e.g.
+    // body min-h-screen + flex grow) can otherwise screenshot as blank if
+    // the compositor doesn't repaint between setViewport and screenshot.
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: filePath,
+      type: 'png',
+      clip: { x: 0, y: 0, width: 1200, height: 630 },
+      omitBackground: false,
+      captureBeyondViewport: false,
+    });
+    // Sanity check: a blank 1200×630 PNG (header only, white body) is ~8–10KB;
+    // a content-rich page is 50KB+.  When the resulting file is suspiciously
+    // small the snapshot is treated as failed and the renderer falls through
+    // to other og:image sources (manifest icon, first content <img>).  15KB
+    // is a safe floor that catches blank/header-only snapshots without false
+    // positives for legitimately simple pages.
+    try {
+      const sz = statSync(filePath).size;
+      if (sz < 15 * 1024) {
+        unlinkSync(filePath);
+        // Drop the cache too so the next run doesn't trust it.
+        if (cachePngPath) { try { unlinkSync(cachePngPath); } catch { /* missing is fine */ } }
+        if (cacheHashPath) { try { unlinkSync(cacheHashPath); } catch { /* missing is fine */ } }
+        return null;
+      }
+    } catch { /* stat failure is non-fatal */ }
+    // Populate the cache: copy the fresh PNG into the cache dir and write the
+    // content hash sidecar.  Hash failure earlier leaves contentHash null —
+    // in that case we don't cache (correct fallback: prefer to re-snapshot
+    // than to claim a stale cache is valid).
+    if (cacheDir && contentHash) {
+      try { mkdirSync(cacheDir, { recursive: true }); } catch { /* exists */ }
+      try { cpSync(filePath, cachePngPath); } catch { /* ignore */ }
+      try { writeFileSync(cacheHashPath, contentHash, 'utf8'); } catch { /* ignore */ }
+    }
+    return `/og/${fileSeg}.png`;
+  } catch (e) {
+    // Failures here are non-fatal — fall back to whatever other og:image source
+    // is available (manifest icon, first content <img>, etc.).
+    console.error(`prerender: og snapshot failed for /${pathSeg || ''}: ${e?.message || e}`);
+    return null;
+  }
+}
+
+// --- SEO: per-route meta + structured data injection ----------------------
+//
+// Runs in the live page right before HTML serialization.  Layers (highest
+// precedence first; each layer only fills slots not yet present):
+//
+//   1. <template data-head> per-route — already in the head by snapshot time
+//   2. <head> in index.html — already in the head by snapshot time
+//   3. prerender.meta.* expressions — Alpine-evaluated against the live page
+//   4. prerender.meta.fallback.* — static strings used when expressions are empty
+//   5. PWA-style manifest.json fields (name, description, author, icons)
+//   6. Smart defaults from the rendered DOM (h1, first p, first img, etc.)
+//
+// "Slot taken" detection is by selector: <title>, <meta name=>, <meta property=>.
+// An empty <title></title> or one matching manifest.json "name" counts as
+// missing (placeholder rule), so smart defaults can fill route-specific titles
+// without the author having to clear the static <title> in index.html.
+//
+// JSON-LD blocks (WebSite, Article, BreadcrumbList) follow the same pattern:
+// only inject if no <script type="application/ld+json"> already covers that
+// schema type for the route.
+async function injectMetaInDom(page, ctx) {
+  await page.evaluate((ctx) => {
+    const head = document.head;
+    if (!head) return;
+
+    // --- Helpers ---------------------------------------------------------
+
+    const SOCIAL_PREFIXES = /^(og:|twitter:|article:|fb:)/;
+
+    const findMeta = (key) => {
+      // Selectors are case-sensitive in querySelector; meta name/property are case-insensitive
+      // in HTML but always written lowercase by us.  Cover both attribute styles.
+      return head.querySelector(`meta[name="${key}"], meta[property="${key}"]`);
+    };
+
+    // Slots are "open" if missing, OR if their content equals a known site-wide
+    // placeholder (manifest.json's name/description).  Mirrors the title rule so
+    // existing projects with hardcoded site-default meta in index.html still get
+    // route-specific values from smart defaults.  Per-tag placeholder map:
+    const PLACEHOLDER = {
+      description: ctx.seo.siteDescription,
+    };
+    const slotIsOpen = (key, existingEl) => {
+      if (!existingEl) return true;
+      const current = (existingEl.getAttribute('content') || '').trim();
+      if (!current) return true;
+      const placeholder = PLACEHOLDER[key];
+      return placeholder && current === placeholder;
+    };
+    const setMeta = (key, content) => {
+      if (content == null) return false;
+      const str = String(content).trim();
+      if (!str) return false;
+      const existing = findMeta(key);
+      if (!slotIsOpen(key, existing)) return false;
+      if (existing) {
+        existing.setAttribute('content', str);
+      } else {
+        const m = document.createElement('meta');
+        m.setAttribute(SOCIAL_PREFIXES.test(key) ? 'property' : 'name', key);
+        m.setAttribute('content', str);
+        head.appendChild(m);
+      }
+      return true;
+    };
+
+    const getCurrentTitle = () => {
+      const el = head.querySelector('title');
+      return { el, text: el ? (el.textContent || '').trim() : '' };
+    };
+
+    const titleSlotIsOpen = () => {
+      const { text } = getCurrentTitle();
+      if (!text) return true;
+      // Equals manifest.name → treat as placeholder (the static <title>Site</title>
+      // pattern in starter templates).  Allows smart-defaults to inject a
+      // route-specific title without the author having to wipe the static tag.
+      if (ctx.seo.siteName && text === ctx.seo.siteName) return true;
+      return false;
+    };
+
+    const setTitle = (text) => {
+      if (!text) return false;
+      if (!titleSlotIsOpen()) return false;
+      const trimmed = String(text).trim();
+      if (!trimmed) return false;
+      const { el } = getCurrentTitle();
+      if (el) el.textContent = trimmed;
+      else {
+        const t = document.createElement('title');
+        t.textContent = trimmed;
+        head.appendChild(t);
+      }
+      return true;
+    };
+
+    const evalAlpine = (expr) => {
+      if (typeof expr !== 'string' || !expr.trim()) return null;
+      try {
+        const A = window.Alpine;
+        if (!A || typeof A.evaluate !== 'function') return null;
+        const v = A.evaluate(document.body, expr);
+        if (v == null) return null;
+        const s = typeof v === 'string' ? v : String(v);
+        return s.trim() || null;
+      } catch { return null; }
+    };
+
+    const truncate = (s, max) => {
+      const t = String(s).replace(/\s+/g, ' ').trim();
+      if (t.length <= max) return t;
+      // Cut at the last word boundary before max-3 to leave room for ellipsis.
+      const sliced = t.slice(0, max - 1);
+      const lastSpace = sliced.lastIndexOf(' ');
+      const base = lastSpace > max * 0.6 ? sliced.slice(0, lastSpace) : sliced;
+      return base + '…';
+    };
+
+    // --- Smart defaults (DOM derivation) ---------------------------------
+
+    const smartDefaults = (() => {
+      if (!ctx.seo.defaults) return {};
+      // Title source: first <h1> inside <main>/<article>, then any <h1>.
+      const h1El = document.querySelector('main h1, article h1') || document.querySelector('h1');
+      const h1 = h1El ? (h1El.textContent || '').trim() : '';
+      const composedTitle = (() => {
+        if (!h1) return ctx.seo.siteName || null;
+        if (!ctx.seo.siteName || h1 === ctx.seo.siteName) return h1;
+        return `${h1} — ${ctx.seo.siteName}`;
+      })();
+
+      // Description: first non-trivial <p> in main/article content.
+      const descCandidates = document.querySelectorAll('main p, article p, .prose p');
+      let desc = '';
+      for (const p of descCandidates) {
+        const text = (p.textContent || '').trim();
+        if (text.length >= 30) { desc = truncate(text, 160); break; }
+      }
+
+      // Image: snapshot URL if auto-snapshot was taken; else first content
+      // <img> with a non-data src; else largest manifest icon.  Snapshot wins
+      // over content <img> because it represents the rendered page and is
+      // sized for OG/Twitter cards (1200×630), whereas a content image could
+      // be a thumbnail of arbitrary aspect ratio.
+      let imgSrc = ctx.snapshotUrl || '';
+      if (!imgSrc) {
+        const imgCandidates = document.querySelectorAll('main img[src], article img[src]');
+        for (const img of imgCandidates) {
+          const src = img.getAttribute('src') || '';
+          if (src && !src.startsWith('data:')) { imgSrc = src; break; }
+        }
+      }
+      if (!imgSrc && Array.isArray(ctx.seo.icons) && ctx.seo.icons.length) {
+        // Largest icon by area.
+        const sorted = ctx.seo.icons.slice().sort((a, b) => {
+          const area = (s) => {
+            const m = String(s?.sizes || '').match(/(\d+)x(\d+)/);
+            return m ? parseInt(m[1], 10) * parseInt(m[2], 10) : 0;
+          };
+          return area(b) - area(a);
+        });
+        imgSrc = sorted[0]?.src || '';
+      }
+
+      // Type heuristic: 'article' if the page renders an <article> or its path
+      // looks like article content (e.g. /docs/foo, /blog/foo, /articles/foo);
+      // 'website' otherwise.
+      const looksLikeArticle = !!document.querySelector('article')
+        || /^\/(?:docs|blog|articles|posts|guides)\//i.test(location.pathname);
+      const ogType = looksLikeArticle ? 'article' : 'website';
+
+      return {
+        title: composedTitle,
+        description: desc || ctx.seo.siteDescription || null,
+        image: imgSrc || null,
+        ogType,
+      };
+    })();
+
+    // --- Resolve a single meta value through the precedence chain --------
+
+    const resolve = (key) => {
+      // Layer 3: prerender.meta expression
+      const exprMap = ctx.seo.meta || {};
+      const expr = exprMap[key];
+      if (typeof expr === 'string') {
+        const v = evalAlpine(expr);
+        if (v) return v;
+      } else if (typeof expr === 'boolean' || typeof expr === 'number') {
+        return String(expr);
+      }
+      // Layer 4: explicit fallback
+      const fallback = exprMap.fallback?.[key];
+      if (fallback) return String(fallback);
+      // Layer 5: smart defaults from DOM (page-specific — beats generic PWA fields).
+      // For title specifically, the placeholder rule in setTitle() also requires
+      // the static <title>Site</title> to be treated as missing so this wins.
+      if (smartDefaults[key]) return smartDefaults[key];
+      // Layer 6: PWA-style manifest.json fields — last-resort generic fallback
+      if (key === 'title' && ctx.seo.siteName) return ctx.seo.siteName;
+      if (key === 'description' && ctx.seo.siteDescription) return ctx.seo.siteDescription;
+      if (key === 'author' && ctx.seo.siteAuthor) return ctx.seo.siteAuthor;
+      return null;
+    };
+
+    // --- Title -----------------------------------------------------------
+
+    setTitle(resolve('title'));
+
+    // --- Description / author -------------------------------------------
+
+    const description = resolve('description');
+    setMeta('description', description);
+    setMeta('author', resolve('author'));
+
+    // --- Canonical URL (skip — already injected later by buildCanonicalAndHreflang) ---
+
+    // --- OpenGraph / Twitter --------------------------------------------
+
+    const liveBase = (ctx.liveUrl || '').replace(/\/$/, '');
+    const pageUrl = ctx.pathSeg === '' || ctx.pathSeg === '__404__'
+      ? (liveBase ? liveBase + '/' : null)
+      : (liveBase ? `${liveBase}/${ctx.pathSeg}` : null);
+    const finalTitle = getCurrentTitle().text || resolve('title');
+    const ogType = resolve('ogType') || smartDefaults.ogType || 'website';
+    const image = resolve('image');
+
+    setMeta('og:title', finalTitle);
+    setMeta('og:description', description);
+    setMeta('og:type', ogType);
+    setMeta('og:url', pageUrl);
+    setMeta('og:site_name', ctx.seo.siteName);
+    if (image) setMeta('og:image', image);
+
+    setMeta('twitter:card', image ? 'summary_large_image' : 'summary');
+    setMeta('twitter:title', finalTitle);
+    setMeta('twitter:description', description);
+    if (image) setMeta('twitter:image', image);
+
+    // --- JSON-LD structured data ----------------------------------------
+
+    const sd = ctx.seo.structuredData;
+    if (sd && typeof sd === 'object') {
+      const existingLdScripts = head.querySelectorAll('script[type="application/ld+json"]');
+      const existingTypes = new Set();
+      existingLdScripts.forEach((s) => {
+        try {
+          const parsed = JSON.parse(s.textContent || '{}');
+          const t = Array.isArray(parsed) ? parsed.map((x) => x['@type']) : [parsed['@type']];
+          t.forEach((tt) => tt && existingTypes.add(tt));
+        } catch { /* skip malformed */ }
+      });
+
+      const resolveSdField = (v) => {
+        if (typeof v === 'string') {
+          const evaled = evalAlpine(v);
+          return evaled ?? v; // if eval fails, keep literal (lets users write plain strings)
+        }
+        return v;
+      };
+      const resolveSchema = (obj) => {
+        if (obj == null || typeof obj !== 'object') return obj;
+        const out = {};
+        for (const k of Object.keys(obj)) {
+          out[k] = resolveSdField(obj[k]);
+        }
+        return out;
+      };
+
+      const blocks = [];
+      for (const [type, def] of Object.entries(sd)) {
+        if (existingTypes.has(type)) continue;
+        if (def === false) continue;
+        if (type === 'BreadcrumbList' && def === true) {
+          // Auto-derive from URL path segments.
+          const parts = location.pathname.split('/').filter(Boolean);
+          const items = [{
+            '@type': 'ListItem',
+            position: 1,
+            name: ctx.seo.siteName || 'Home',
+            item: liveBase ? liveBase + '/' : '/',
+          }];
+          parts.forEach((seg, i) => {
+            items.push({
+              '@type': 'ListItem',
+              position: i + 2,
+              name: seg.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+              item: liveBase ? `${liveBase}/${parts.slice(0, i + 1).join('/')}` : '/' + parts.slice(0, i + 1).join('/'),
+            });
+          });
+          blocks.push({ '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: items });
+          continue;
+        }
+        if (def === true) {
+          // Bare-true for known schemas: minimal auto-fill
+          if (type === 'WebSite') {
+            blocks.push({
+              '@context': 'https://schema.org',
+              '@type': 'WebSite',
+              name: ctx.seo.siteName || finalTitle || '',
+              url: liveBase || '',
+            });
+          } else if (type === 'Article') {
+            blocks.push({
+              '@context': 'https://schema.org',
+              '@type': 'Article',
+              headline: finalTitle || '',
+              description: description || '',
+              ...(image ? { image } : {}),
+              ...(pageUrl ? { url: pageUrl } : {}),
+              ...(ctx.seo.siteAuthor ? { author: { '@type': 'Person', name: ctx.seo.siteAuthor } } : {}),
+            });
+          }
+          continue;
+        }
+        if (typeof def === 'object') {
+          const resolved = resolveSchema(def);
+          blocks.push({ '@context': 'https://schema.org', '@type': type, ...resolved });
+        }
+      }
+
+      for (const block of blocks) {
+        const s = document.createElement('script');
+        s.setAttribute('type', 'application/ld+json');
+        s.textContent = JSON.stringify(block);
+        head.appendChild(s);
+      }
+    }
+  }, ctx);
+}
+
+// --- SEO: robots.txt, sitemap.xml, llms.txt, llms-full.txt ---------------
+//
+// Written to the prerender output directory.  liveUrl is the canonical public
+// host (https://...), used for absolute URLs in sitemap entries and the llms.txt
+// page index.  llms.txt and llms-full.txt follow the llmstxt.org convention —
+// a plain-markdown index and full-content concatenation specifically for LLM
+// crawlers (ChatGPT, Claude, Perplexity, etc.) that prefer structured plaintext
+// over scraping rendered HTML.
+
+/**
+ * Strip HTML tags + collapse whitespace to plaintext.  Crude but sufficient for
+ * meta description / llms-full content extraction; we run on prerendered HTML
+ * where Alpine bindings have already been resolved to literal values.
+ */
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<template[\s\S]*?<\/template>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Extract <title>, <meta name="description">, and the route's article content
+ * from a prerendered HTML file.  Targets the article body, not the whole page
+ * layout, so the resulting llms-full.txt isn't dominated by repeated nav, TOC,
+ * footer, and other site chrome.
+ *
+ * Selection order (first hit wins):
+ *   1. `.prose` — Manifest convention for rendered markdown article content.
+ *   2. `<article>` — semantic HTML for article bodies.
+ *   3. `<main>` minus chrome — strips [data-static] (nav lists, TOCs marked
+ *      static-bake), <nav>, <header>, <footer>, <aside>.
+ *   4. `<body>` minus same chrome — last resort.
+ */
+function extractRouteContent(filePath) {
+  if (!existsSync(filePath)) return null;
+  const html = readFileSync(filePath, 'utf8');
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+
+  // Find the article-content region using depth-tracked tag matching.  Naive
+  // non-greedy regex breaks on nested same-tag elements (article markdown
+  // typically contains many nested <div>s for code blocks, frames, etc.).
+  // Walks the source from the opening tag, counting open/close pairs of the
+  // same tag, until depth returns to zero.
+  const extractByOpener = (source, openerRx) => {
+    const m = openerRx.exec(source);
+    if (!m) return null;
+    const tagName = m[1];
+    const start = m.index + m[0].length;
+    const open = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+    const close = new RegExp(`</${tagName}\\s*>`, 'gi');
+    let depth = 1;
+    let cursor = start;
+    while (depth > 0) {
+      open.lastIndex = cursor;
+      close.lastIndex = cursor;
+      const nextOpen = open.exec(source);
+      const nextClose = close.exec(source);
+      if (!nextClose) return source.slice(start);
+      if (nextOpen && nextOpen.index < nextClose.index) {
+        depth++;
+        cursor = nextOpen.index + nextOpen[0].length;
+      } else {
+        depth--;
+        if (depth === 0) return source.slice(start, nextClose.index);
+        cursor = nextClose.index + nextClose[0].length;
+      }
+    }
+    return null;
+  };
+
+  // Selection order — first hit wins:
+  //   1. `.prose` — Manifest convention for rendered markdown article content.
+  //      This is the cleanest source: contains only article body, no chrome.
+  //   2. `<article>` — semantic HTML for article bodies.
+  //   3. `<main>` — last resort.  At this layer we additionally strip the
+  //      site-chrome wrappers (data-static nav/TOC, semantic nav/header/footer
+  //      tags).  We do NOT strip <aside> because article content commonly uses
+  //      <aside class="frame"> for example boxes.
+  const proseRegion = extractByOpener(
+    html,
+    /<([a-z][a-z0-9]*)\b[^>]*\bclass=["'][^"']*\bprose\b[^"']*["'][^>]*>/i
+  );
+  let region = '';
+  if (proseRegion) {
+    region = proseRegion;
+  } else {
+    const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+    if (articleMatch) {
+      region = articleMatch[1];
+    } else {
+      const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+      const bodyMatch = mainMatch ? null : html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+      let candidate = mainMatch ? mainMatch[1] : (bodyMatch ? bodyMatch[1] : '');
+      // Strip site chrome: top-level wrappers, not nested article content.
+      // <aside> is intentionally NOT stripped here — articles use <aside
+      // class="frame"> for example boxes that should appear in llms-full.
+      candidate = candidate.replace(/<nav\b[\s\S]*?<\/nav>/gi, ' ');
+      candidate = candidate.replace(/<footer\b[\s\S]*?<\/footer>/gi, ' ');
+      // Strip data-static containers (depth-tracked because nav lists nest).
+      const stripContainer = (s, openerRx) => {
+        let out = s;
+        let m;
+        while ((m = openerRx.exec(out))) {
+          const tagName = m[1];
+          const innerStart = m.index + m[0].length;
+          const open = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+          const close = new RegExp(`</${tagName}\\s*>`, 'gi');
+          let depth = 1;
+          let cursor = innerStart;
+          let endIdx = out.length;
+          while (depth > 0) {
+            open.lastIndex = cursor;
+            close.lastIndex = cursor;
+            const nextOpen = open.exec(out);
+            const nextClose = close.exec(out);
+            if (!nextClose) break;
+            if (nextOpen && nextOpen.index < nextClose.index) {
+              depth++;
+              cursor = nextOpen.index + nextOpen[0].length;
+            } else {
+              depth--;
+              cursor = nextClose.index + nextClose[0].length;
+              if (depth === 0) endIdx = cursor;
+            }
+          }
+          out = out.slice(0, m.index) + ' ' + out.slice(endIdx);
+          openerRx.lastIndex = 0;
+        }
+        return out;
+      };
+      candidate = stripContainer(candidate, /<([a-z][a-z0-9]*)\b[^>]*\bdata-static\b[^>]*>/gi);
+      region = candidate;
+    }
+  }
+
+  return {
+    title: titleMatch ? htmlToText(titleMatch[1]) : '',
+    description: descMatch ? descMatch[1] : '',
+    bodyText: region ? htmlToText(region) : '',
+  };
+}
+
+/** Resolve the per-route output HTML file (matches the layout writePrerenderOutput uses). */
+function routeHtmlPath(outputDir, pathSeg) {
+  if (pathSeg === '') return join(outputDir, 'index.html');
+  if (pathSeg === '__prerender_404__') return join(outputDir, '404.html');
+  return join(outputDir, ...pathSeg.split('/'), 'index.html');
+}
+
+/**
+ * Best-effort per-route lastmod date.  We pick the prerendered HTML file's
+ * mtime — that file IS regenerated on every prerender, so it's no better than
+ * "today" for unchanged content.  Fallback hierarchy: 1) source markdown if
+ * discoverable under articles/<path>.md; 2) prerendered HTML mtime; 3) today.
+ */
+function routeLastModDate(rootDir, outputDir, pathSeg) {
+  // Try common source-file conventions first so the date reflects content
+  // changes rather than the prerender run.  Strip leading section prefix
+  // ("docs/", "blog/", "articles/") since markdown files typically live
+  // under articles/ keyed by the remaining path.
+  const stripPrefix = pathSeg.replace(/^(?:docs|blog|articles|posts|guides)\//, '');
+  const candidates = [
+    join(rootDir, 'articles', `${stripPrefix}.md`),
+    join(rootDir, 'articles', `${pathSeg}.md`),
+    join(rootDir, 'pages', `${pathSeg}.html`),
+    join(rootDir, `${pathSeg}.md`),
+  ];
+  for (const c of candidates) {
+    try {
+      const s = statSync(c);
+      if (s.isFile()) return s.mtime.toISOString().slice(0, 10);
+    } catch { /* not found */ }
+  }
+  // Fallback to the prerendered output mtime (always present).
+  try {
+    const out = routeHtmlPath(outputDir, pathSeg || '');
+    const s = statSync(out);
+    return s.mtime.toISOString().slice(0, 10);
+  } catch { /* ignore */ }
+  return new Date().toISOString().slice(0, 10);
+}
+
+function writeSeoFiles(outputDir, pathList, liveUrl, locales, defaultLocale, ctx = {}) {
   const base = liveUrl.replace(/\/$/, '');
-  const today = new Date().toISOString().slice(0, 10);
   const localeList = Array.isArray(locales) ? locales : [];
   const multiLocale = localeList.length > 1;
+  const rootDir = ctx.rootDir || '';
 
   writeFileSync(
     join(outputDir, 'robots.txt'),
@@ -1718,7 +2445,8 @@ Sitemap: ${base}/sitemap.xml
         body += `\n        <xhtml:link rel="alternate" hreflang="${escapeXmlText(hreflang)}" href="${escapeXmlText(href)}" />`;
       }
     }
-    body += `\n        <lastmod>${today}</lastmod>
+    const lastmod = routeLastModDate(rootDir, outputDir, pathSeg);
+    body += `\n        <lastmod>${lastmod}</lastmod>
         <changefreq>monthly</changefreq>
         <priority>${path === '' ? '1.0' : '0.8'}</priority>`;
     return `    <url>
@@ -1735,6 +2463,81 @@ ${urlEntries.join('\n')}
 `,
     'utf8'
   );
+
+  writeLlmsFiles(outputDir, pathList, base, ctx);
+}
+
+/**
+ * Write llms.txt (curated index) and llms-full.txt (concatenated full content)
+ * per the llmstxt.org convention.  Read each prerendered HTML file in pathList
+ * and extract title / description / body text — these were already filled by
+ * injectMetaInDom + smart defaults, so the output reflects the same layered
+ * precedence (data-head → prerender.meta → smart defaults) without re-deriving.
+ *
+ * Pages are grouped into sections by their first URL segment ("Getting Started"
+ * for /docs/getting-started/*, etc.) so the index is browseable.  The root /
+ * page is treated as the site overview.
+ */
+function writeLlmsFiles(outputDir, pathList, liveBase, ctx = {}) {
+  const siteName = ctx.siteName || 'Site';
+  const siteDescription = ctx.siteDescription || '';
+
+  // Extract content for every route up front so we can build both files in one pass.
+  const entries = [];
+  for (const pathSeg of pathList) {
+    const filePath = routeHtmlPath(outputDir, pathSeg);
+    const extracted = extractRouteContent(filePath);
+    if (!extracted) continue;
+    entries.push({
+      pathSeg,
+      url: pathSeg === '' ? `${liveBase}/` : `${liveBase}/${pathSeg}`,
+      title: extracted.title || pathSeg || siteName,
+      description: extracted.description,
+      bodyText: extracted.bodyText,
+    });
+  }
+
+  // Group entries by section.  For /a/b/c, the section is "a"; for the root,
+  // "Overview".  Sections are presented in first-encounter order to preserve
+  // whatever order the project's manifest.json or yaml index dictated.
+  const sections = new Map();
+  const titleCase = (s) => s.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  for (const entry of entries) {
+    const first = entry.pathSeg.split('/')[0] || '';
+    const sectionKey = first || 'Overview';
+    const sectionLabel = first ? titleCase(first) : 'Overview';
+    if (!sections.has(sectionKey)) sections.set(sectionKey, { label: sectionLabel, entries: [] });
+    sections.get(sectionKey).entries.push(entry);
+  }
+
+  // --- llms.txt: short curated index ---
+  let llms = `# ${siteName}\n`;
+  if (siteDescription) llms += `\n> ${siteDescription}\n`;
+  for (const { label, entries: items } of sections.values()) {
+    llms += `\n## ${label}\n\n`;
+    for (const e of items) {
+      const desc = e.description ? `: ${e.description}` : '';
+      llms += `- [${e.title}](${e.url})${desc}\n`;
+    }
+  }
+  writeFileSync(join(outputDir, 'llms.txt'), llms, 'utf8');
+
+  // --- llms-full.txt: full concatenated text content ---
+  // Description is intentionally omitted per-entry — bodyText typically opens
+  // with the same sentence (smart-default description came from the first
+  // paragraph), so printing both produces a duplicate first line.  llms.txt
+  // already carries descriptions for the curated index.
+  let llmsFull = `# ${siteName}\n`;
+  if (siteDescription) llmsFull += `\n> ${siteDescription}\n`;
+  for (const { label, entries: items } of sections.values()) {
+    llmsFull += `\n\n# ${label}\n`;
+    for (const e of items) {
+      llmsFull += `\n\n## ${e.title}\n`;
+      llmsFull += `\nSource: ${e.url}\n`;
+      if (e.bodyText) llmsFull += `\n${e.bodyText}\n`;
+    }
+  }
+  writeFileSync(join(outputDir, 'llms-full.txt'), llmsFull, 'utf8');
 }
 
 // --- Output protection: keep editors/formatters from rewriting generated HTML ---
@@ -2150,6 +2953,19 @@ async function runPrerender(config) {
 
   process.stdout.write(`Prerendering ${pathTotal} path(s) (${puppeteerTotal} via Puppeteer, ${localeVariantPaths.length} via substitution)...\n`);
 
+  // Asset-wide fingerprint used as a cache-invalidator for OG snapshots:
+  // changes to theme CSS, manifest config, or the root index.html mean every
+  // route's visual chrome has changed, so the snapshot cache must drop.  Per-
+  // route content hashes (in takeOgSnapshot) catch route-specific changes.
+  // The cache lives at <root>/.mnfst-cache/og/ — survives the output-dir
+  // rmSync that fires at the start of every prerender.
+  const globalAssetSig = config.seo?.imageSnapshots
+    ? computeGlobalAssetSignature(config.root)
+    : '';
+  const ogCacheDir = config.seo?.imageSnapshots
+    ? join(config.root, '.mnfst-cache', 'og')
+    : null;
+
   function pushDebug(row) {
     if (!config.debugPrerender) return;
     debugRows.push(row);
@@ -2177,6 +2993,13 @@ async function runPrerender(config) {
     // here instead of throwing "browser not ready".
     await browserReadyPromise;
     const page = await browser.newPage();
+    // Render at a typical desktop viewport so layouts dependent on viewport
+    // width (responsive flex/grid, container queries, media queries) settle
+    // into their desktop variant.  Without this the headless default (often
+    // 800×600) leaves narrower layouts baked into the prerendered HTML and
+    // also produces blank OG screenshots for hero sections that rely on
+    // viewport-driven flex distribution.
+    await page.setViewport({ width: 1200, height: 800, deviceScaleFactor: 1 });
     try {
       // Align <html lang> with the URL being prerendered before any app script runs.
       // initializeDataSourcesPlugin picks locale from document.documentElement.lang first; a mismatch
@@ -2387,6 +3210,20 @@ async function runPrerender(config) {
 
       // Flush any remaining Alpine microtask effects after the render-ready signal.
       await flushAlpineEffects(page);
+
+      // OG image auto-snapshot — captured here, BEFORE the heavy DOM-transform
+      // passes (template removal, hydration contract, route-hidden cleanup)
+      // perturb the rendered visual state.  Skip if og:image is already set
+      // by data-head, prerender.meta config, or an explicit fallback.
+      let earlySnapshotUrl = null;
+      if (config.seo.imageSnapshots) {
+        const ogImageHandled = !!config.seo.meta?.image
+          || !!config.seo.meta?.fallback?.image
+          || await page.evaluate(() => !!document.head.querySelector('meta[property="og:image"]'));
+        if (!ogImageHandled) {
+          earlySnapshotUrl = await takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir);
+        }
+      }
 
       if (config.debugPrerender) {
         const before = await page.evaluate(() => {
@@ -2601,14 +3438,14 @@ async function runPrerender(config) {
         // Interactive Manifest-registered directives that attach click/hover/
         // observer state at runtime and therefore need the live Alpine scope.
         const INTERACTIVE_DIRECTIVES = new Set([
-          'x-colors', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
+          'x-color', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
           'x-toast', 'x-carousel', 'x-resize', 'x-anchors', 'x-model',
           'x-files', 'x-data-files',
         ]);
         // Runtime-only Alpine magics whose values change after the prerender
         // snapshot (e.g. via media query, route change, auth state).  Bindings
         // referencing these must re-evaluate in the live page.
-        const RUNTIME_MAGIC_RX = /(?<!['"])\$(colors|locale|url|auth|search|query|toast)\b/;
+        const RUNTIME_MAGIC_RX = /(?<!['"])\$(color|locale|url|auth|search|query|toast)\b/;
 
         const isDiffBindingAttr = (name) =>
           name === ':class' || name === 'x-bind:class' ||
@@ -2623,6 +3460,13 @@ async function runPrerender(config) {
         const classifyElement = (el) => {
           // Explicit data-hydrate — subtree-wide restoration.
           if (el.hasAttribute('data-hydrate')) return 'explicit';
+
+          // data-static: the author has frozen this subtree post-bake — Alpine
+          // is not re-rendering iteration here, and the baked class/style/etc.
+          // represent the intended final state.  Including these elements in
+          // the hydration contract would null out their baked class (per the
+          // diff-binding rule below), undoing the SEO-baked styling.  Skip.
+          if (el.hasAttribute('data-static') || el.closest('[data-static]')) return null;
 
           const list = el.attributes;
           for (let i = 0; i < list.length; i++) {
@@ -2766,11 +3610,25 @@ async function runPrerender(config) {
           const inferred = xFor.includes('$search') || xFor.includes('$query') ||
             xFor.includes('$url') || xFor.includes('$auth') ||
             /\bin\s+(filtered\w*|results|searchResults)\b/.test(xFor);
-          const forceCollapse = explicit || inferred;
+          // data-static (on template or ancestor) opts the list out of dynamic
+          // collapse and pins it to the static-bake path, even if the x-for
+          // expression looks dynamic.  Mirrors data-hydrate as the alternative:
+          // data-hydrate keeps a subtree live for runtime hydration; data-static
+          // freezes baked clones into the HTML for SEO with no further re-render.
+          const isStatic = tpl.hasAttribute('data-static') || !!tpl.closest('[data-static]');
+          const forceCollapse = !isStatic && (explicit || inferred);
           if (!forceCollapse) {
             tpl.removeAttribute('data-prerender-collapsed');
             tpl.removeAttribute('data-prerender-static-generated');
             // Static mode: if prerender produced concrete siblings, mark template for removal later.
+            //
+            // Default sibling-match check is strict (tag + class) to avoid
+            // capturing unrelated elements that happen to share a tag.  Under
+            // data-static the user has explicitly opted in to baking, so we
+            // relax to tag-only — Alpine's :class evaluation on clones often
+            // differs from the template's static class (e.g. template has no
+            // `class=` and clones have an evaluated string), and the strict
+            // check would miss the clones and leave the template unmarked.
             const first = tpl.content?.firstElementChild;
             if (first) {
               const tag = first.tagName;
@@ -2779,8 +3637,10 @@ async function runPrerender(config) {
               let generatedCount = 0;
               while (next) {
                 if (next.tagName !== tag) break;
-                const sameClass = (next.getAttribute('class') || '') === cls;
-                if (!sameClass) break;
+                if (!isStatic) {
+                  const sameClass = (next.getAttribute('class') || '') === cls;
+                  if (!sameClass) break;
+                }
                 generatedCount++;
                 next = next.nextElementSibling;
               }
@@ -2883,7 +3743,16 @@ async function runPrerender(config) {
       // Strip loop-scope bindings from x-for clones while <template> nodes still exist.
       // (If we remove static templates first, querySelectorAll('template[x-for]') misses them and clones
       // keep x-text/x-bind referencing card/item — Alpine then mutates or errors on the static HTML.)
+      //
+      // Wrapped in Alpine.mutateDom so attribute removals (e.g. removing :class)
+      // don't trigger Alpine's reactive teardown — without this, Alpine sees
+      // the :class attribute disappear, runs its unbind effect, and clears the
+      // bound attribute (class) back to its pre-binding value (empty for clones
+      // whose template had no static class).  mutateDom suppresses the observer
+      // for the duration of the callback.
       await page.evaluate(() => {
+        const A = window.Alpine;
+        const runBatch = typeof A?.mutateDom === 'function' ? (fn) => A.mutateDom(fn) : (fn) => fn();
         const loopVarRegex = /^\s*(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*,\s*([A-Za-z_$][\w$]*))?\s*\)|([A-Za-z_$][\w$]*))\s+in\s+/;
         // Include x-init: expanded clones still had x-init="getDescription(article)" etc.; Alpine then throws (article undefined).
         const bindingAttrRegex = /^(?:x-bind:|:|x-text|x-html|x-show|x-if|x-model|x-effect|x-init|x-icon|x-on:|@)/;
@@ -2919,7 +3788,13 @@ async function runPrerender(config) {
                 if (boundAttr) {
                   const concrete = node.getAttribute(boundAttr);
                   if (concrete != null && String(concrete).trim() !== '') {
+                    // Removing :foo triggers Alpine's binding teardown, which
+                    // restores the bound attribute to its pre-binding value
+                    // (empty for clones whose template had no static class).
+                    // Snapshot the eval'd value and re-set it after removal so
+                    // the baked attribute survives the unbind.
                     node.removeAttribute(name);
+                    node.setAttribute(boundAttr, concrete);
                   }
                   continue;
                 }
@@ -2929,24 +3804,26 @@ async function runPrerender(config) {
           }
         };
 
-        document.querySelectorAll('template[x-for]').forEach((tpl) => {
-          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
-          const xFor = (tpl.getAttribute('x-for') || '').trim();
-          const m = xFor.match(loopVarRegex);
-          const itemVar = m ? (m[1] || m[3] || '') : '';
-          const indexVar = m ? (m[2] || '') : '';
-          if (!itemVar && !indexVar) return;
+        runBatch(() => {
+          document.querySelectorAll('template[x-for]').forEach((tpl) => {
+            if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
+            const xFor = (tpl.getAttribute('x-for') || '').trim();
+            const m = xFor.match(loopVarRegex);
+            const itemVar = m ? (m[1] || m[3] || '') : '';
+            const indexVar = m ? (m[2] || '') : '';
+            if (!itemVar && !indexVar) return;
 
-          const first = tpl.content?.firstElementChild;
-          if (!first) return;
-          const tag = first.tagName;
+            const first = tpl.content?.firstElementChild;
+            if (!first) return;
+            const tag = first.tagName;
 
-          let next = tpl.nextElementSibling;
-          while (next) {
-            if (next.tagName !== tag) break;
-            stripLoopBindings(next, itemVar, indexVar);
-            next = next.nextElementSibling;
-          }
+            let next = tpl.nextElementSibling;
+            while (next) {
+              if (next.tagName !== tag) break;
+              stripLoopBindings(next, itemVar, indexVar);
+              next = next.nextElementSibling;
+            }
+          });
         });
       });
 
@@ -2954,20 +3831,42 @@ async function runPrerender(config) {
       // Alpine registers a cleanup on <template x-for> that removes every node in _x_lookup when the
       // template is detached — so tpl.remove() alone deletes all sibling clones (empty grids in output).
       // Replace each clone with a deep cloneNode first so teardown targets detached nodes; copies stay in DOM.
+      //
+      // Iterate until quiet: when an outer template's siblings are deep-cloned,
+      // any nested templates inside those clones become FRESH DOM nodes that
+      // weren't in the original querySelectorAll snapshot.  We re-query and
+      // re-process until no marked templates remain, so nested static lists
+      // (e.g. <template x-for="group in $x.docs"> with an inner
+      // <template x-for="item in group.items">) are fully baked and removed.
       await page.evaluate(() => {
         const A = window.Alpine;
         const runBatch = typeof A?.mutateDom === 'function' ? (fn) => A.mutateDom(fn) : (fn) => fn();
-        runBatch(() => {
-          document.querySelectorAll('template[x-for][data-prerender-static-generated="1"]').forEach((tpl) => {
+        const SAFETY_PASSES = 8;
+        for (let pass = 0; pass < SAFETY_PASSES; pass++) {
+          const remaining = document.querySelectorAll('template[x-for][data-prerender-static-generated="1"]');
+          if (remaining.length === 0) break;
+          let processed = 0;
+          runBatch(() => {
+            remaining.forEach((tpl) => {
             if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
-            // $x-driven x-for: keep the template so Alpine can re-render the
-            // list at runtime (locale switching, filtering, etc.), but remove
-            // the static clones — Alpine creates fresh clones on init and does
-            // NOT adopt existing DOM nodes, so leaving them produces duplicates.
-            // Individual article/pricing pages still have full baked content
-            // (via x-text/x-html); the x-for list is only the index/grid view.
+            // $x-driven x-for: by default, keep the template so Alpine can
+            // re-render the list at runtime (locale switching, filtering, etc.)
+            // and remove the static clones — Alpine creates fresh clones on
+            // init and does NOT adopt existing DOM nodes, so leaving them
+            // produces duplicates.  Individual article/pricing pages still
+            // have full baked content (via x-text/x-html); the x-for list is
+            // only the index/grid view.
+            //
+            // Opt-in via data-static (on template or ancestor) reverses this:
+            // we keep the baked clones for SEO and remove the template instead,
+            // which freezes the list (Alpine has nothing left to iterate, so
+            // no duplicates and no runtime re-render).  Use this for static
+            // navigation lists or any $x-driven list whose source data does
+            // not change after first paint.  Loop-scope bindings on the kept
+            // clones are stripped earlier in the pipeline.
             const xFor = (tpl.getAttribute('x-for') || '');
-            if (xFor.includes('$x')) {
+            const isStatic = tpl.hasAttribute('data-static') || !!tpl.closest('[data-static]');
+            if (xFor.includes('$x') && !isStatic) {
               const first = tpl.content?.firstElementChild;
               if (first) {
                 const tag = first.tagName;
@@ -2996,14 +3895,20 @@ async function runPrerender(config) {
             const cls = first.getAttribute('class') || '';
             let n = tpl.nextElementSibling;
             while (n && n.tagName === tag) {
-              if ((n.getAttribute('class') || '') !== cls) break;
+              // Same rationale as the marking pass: under data-static, relax
+              // class match (Alpine's :class evaluation on clones often differs
+              // from the template's static class).
+              if (!isStatic && (n.getAttribute('class') || '') !== cls) break;
               const next = n.nextElementSibling;
               n.replaceWith(n.cloneNode(true));
               n = next;
             }
             tpl.remove();
+            processed++;
           });
-        });
+          });
+          if (processed === 0) break;
+        }
       });
 
       // Remove orphan x-for clones that still reference loop-scope vars (e.g. image/index)
@@ -3054,6 +3959,23 @@ async function runPrerender(config) {
         });
       });
 
+      // data-static cleanup: any <template> still inside a [data-static] subtree
+      // is removed.  Plugin-driven templates (x-anchors, custom directives that
+      // insert their rendered output as siblings) leave the rendered DOM behind
+      // and the template intact — at runtime the plugin would re-run and
+      // duplicate the output.  Removing the template here is the equivalent of
+      // the x-for static path: bake the rendered content, drop the source.
+      // x-for templates have their own staged removal earlier in the pipeline;
+      // this catch-all cleans up everything else.
+      await page.evaluate(() => {
+        document.querySelectorAll('[data-static] template, template[data-static]').forEach((tpl) => {
+          // Don't remove templates explicitly marked data-hydrate (those are an
+          // opt-out from any prerender transforms within the data-static subtree).
+          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
+          tpl.remove();
+        });
+      });
+
       const visibilityNormalizedPath = logicalPathToVisibilityNormalizedPath(pathSeg, locales);
       await page.evaluate((np) => {
         try {
@@ -3071,6 +3993,19 @@ async function runPrerender(config) {
         const depth = (el) => { let d = 0; let n = el; while (n && n !== document.body) { d++; n = n.parentElement; } return d; };
         toRemove.sort((a, b) => depth(a) - depth(b)); // remove outer first so subtrees go in one go
         toRemove.forEach((el) => { if (document.contains(el)) el.remove(); });
+      });
+
+      // SEO / AEO meta injection — see resolveConfig().seo for precedence layers.
+      // Runs in the live page so prerender.meta expressions can use Alpine context
+      // (real $x.* evaluation, not yaml-only paths).  Each pass only fills
+      // slots that are still missing; data-head and index.html static head wins.
+      // The og:image snapshot was captured earlier (post-Alpine, pre-transforms);
+      // this pass uses it as the highest smart-default for the image slot.
+      await injectMetaInDom(page, {
+        seo: config.seo,
+        liveUrl: (config.liveUrl || '').replace(/\/$/, ''),
+        pathSeg: is404 ? '__404__' : pathSeg,
+        snapshotUrl: earlySnapshotUrl,
       });
 
       let html = await page.evaluate(() => document.documentElement.outerHTML);
@@ -3379,7 +4314,12 @@ async function runPrerender(config) {
     pathList.filter((p) => p !== NOT_FOUND_PATH),
     config.liveUrl,
     locales,
-    defaultLocale
+    defaultLocale,
+    {
+      rootDir: config.root,
+      siteName: config.seo?.siteName,
+      siteDescription: config.seo?.siteDescription,
+    }
   );
   writeOutputProtectionFiles(config.output);
   validatePrerenderedOutput(config.output, pathList.filter((p) => p !== NOT_FOUND_PATH));

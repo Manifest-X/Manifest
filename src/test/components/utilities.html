@@ -68,8 +68,7 @@
         <h3>:focus</h3>
         <div class="test-item">
             <div class="test-label">Click to focus this input</div>
-            <input type="text" class="focus:outline-2 focus:outline-offset-2 focus:outline-brand-surface"
-                placeholder="Focus me">
+            <input type="text" class="focus:outline-2 focus:outline-offset-2 focus:outline-brand-surface" placeholder="Focus me">
         </div>
 
         <h3>:active</h3>
@@ -153,8 +152,7 @@
         <div class="test-item">
             <div class="test-label">First link should have different margin</div>
             <nav>
-                <a href="#"
-                    class="first-of-type:ml-0 first-of-type:text-brand-content first-of-type:font-bold inline-block mr-4">First
+                <a href="#" class="first-of-type:ml-0 first-of-type:text-brand-content first-of-type:font-bold inline-block mr-4">First
                     Link</a>
                 <a href="#" class="inline-block mr-4">Second Link</a>
                 <a href="#" class="inline-block mr-4">Third Link</a>
@@ -167,8 +165,7 @@
             <nav>
                 <a href="#" class="inline-block mr-4">First Link</a>
                 <a href="#" class="inline-block mr-4">Second Link</a>
-                <a href="#"
-                    class="last-of-type:mr-0 last-of-type:text-brand-content last-of-type:font-bold inline-block mr-4">Last
+                <a href="#" class="last-of-type:mr-0 last-of-type:text-brand-content last-of-type:font-bold inline-block mr-4">Last
                     Link</a>
             </nav>
         </div>
@@ -245,16 +242,13 @@
         <h3>:disabled</h3>
         <div class="test-item">
             <div class="test-label">Disabled input should be faded</div>
-            <input type="text" disabled
-                class="disabled:opacity-50 disabled:cursor-not-allowed border border-line px-3 py-2 rounded"
-                placeholder="Disabled input">
+            <input type="text" disabled class="disabled:opacity-50 disabled:cursor-not-allowed border border-line px-3 py-2 rounded" placeholder="Disabled input">
         </div>
 
         <h3>:enabled</h3>
         <div class="test-item">
             <div class="test-label">Enabled input should have hover effect</div>
-            <input type="text" class="enabled:border-brand-content border border-line px-3 py-2 rounded"
-                placeholder="Enabled input">
+            <input type="text" class="enabled:border-brand-content border border-line px-3 py-2 rounded" placeholder="Enabled input">
         </div>
 
         <h3>:checked</h3>
@@ -267,73 +261,62 @@
         <h3>:indeterminate</h3>
         <div class="test-item">
             <div class="test-label">Indeterminate checkbox (set via JavaScript)</div>
-            <input type="checkbox" id="indeterminate-checkbox"
-                class="indeterminate:bg-brand-surface indeterminate:border-line w-5 h-5">
+            <input type="checkbox" id="indeterminate-checkbox" class="indeterminate:bg-brand-surface indeterminate:border-line w-5 h-5">
             <label for="indeterminate-checkbox" class="ml-2">Indeterminate state</label>
         </div>
 
         <h3>:required</h3>
         <div class="test-item">
             <div class="test-label">Required input should have red border</div>
-            <input type="text" required class="required:border-negative-content border border-line px-3 py-2 rounded"
-                placeholder="Required field">
+            <input type="text" required class="required:border-negative-content border border-line px-3 py-2 rounded" placeholder="Required field">
         </div>
 
         <h3>:optional</h3>
         <div class="test-item">
             <div class="test-label">Optional input should have different border</div>
-            <input type="text" class="optional:border-brand-content border border-line px-3 py-2 rounded"
-                placeholder="Optional field">
+            <input type="text" class="optional:border-brand-content border border-line px-3 py-2 rounded" placeholder="Optional field">
         </div>
 
         <h3>:valid</h3>
         <div class="test-item">
             <div class="test-label">Valid email should have green border</div>
-            <input type="email" required class="valid:border-positive-content border border-line px-3 py-2 rounded"
-                placeholder="email@example.com">
+            <input type="email" required class="valid:border-positive-content border border-line px-3 py-2 rounded" placeholder="email@example.com">
         </div>
 
         <h3>:invalid</h3>
         <div class="test-item">
             <div class="test-label">Invalid email should have red border</div>
-            <input type="email" required class="invalid:border-negative-content border border-line px-3 py-2 rounded"
-                placeholder="not-an-email">
+            <input type="email" required class="invalid:border-negative-content border border-line px-3 py-2 rounded" placeholder="not-an-email">
         </div>
 
         <h3>:in-range</h3>
         <div class="test-item">
             <div class="test-label">Number in range (1-10) should be green</div>
-            <input type="number" min="1" max="10" value="5"
-                class="in-range:border-positive-content border border-line px-3 py-2 rounded">
+            <input type="number" min="1" max="10" value="5" class="in-range:border-positive-content border border-line px-3 py-2 rounded">
         </div>
 
         <h3>:out-of-range</h3>
         <div class="test-item">
             <div class="test-label">Number out of range should be red</div>
-            <input type="number" min="1" max="10" value="15"
-                class="out-of-range:border-negative-content border border-line px-3 py-2 rounded">
+            <input type="number" min="1" max="10" value="15" class="out-of-range:border-negative-content border border-line px-3 py-2 rounded">
         </div>
 
         <h3>:placeholder-shown</h3>
         <div class="test-item">
             <div class="test-label">Input with placeholder shown should have different style</div>
-            <input type="text"
-                class="placeholder-shown:border-line placeholder-shown:bg-surface-1 border border-line px-3 py-2 rounded"
-                placeholder="Type to see change">
+            <input type="text" class="placeholder-shown:border-line placeholder-shown:bg-surface-1 border border-line px-3 py-2 rounded" placeholder="Type to see change">
         </div>
 
         <h3>:read-only</h3>
         <div class="test-item">
             <div class="test-label">Read-only input should have different background</div>
-            <input type="text" readonly value="Read-only value"
-                class="read-only:bg-surface-2 read-only:cursor-default border border-line px-3 py-2 rounded">
+            <input type="text" readonly value="Read-only value" class="read-only:bg-surface-2 read-only:cursor-default border border-line px-3 py-2 rounded">
         </div>
 
         <h3>:read-write</h3>
         <div class="test-item">
             <div class="test-label">Read-write input should have different background</div>
-            <input type="text" class="read-write:bg-surface-1 border border-line px-3 py-2 rounded"
-                placeholder="Read-write input">
+            <input type="text" class="read-write:bg-surface-1 border border-line px-3 py-2 rounded" placeholder="Read-write input">
         </div>
 
         <h3>:default</h3>
@@ -346,24 +329,19 @@
         <h3>:autofill</h3>
         <div class="test-item">
             <div class="test-label">Autofilled input should have different background</div>
-            <input type="email"
-                class="autofill:bg-surface-2 autofill:border-brand-content border border-line px-3 py-2 rounded"
-                placeholder="email@example.com">
+            <input type="email" class="autofill:bg-surface-2 autofill:border-brand-content border border-line px-3 py-2 rounded" placeholder="email@example.com">
         </div>
 
         <h3>:user-valid</h3>
         <div class="test-item">
             <div class="test-label">User-valid input (after interaction) should be green</div>
-            <input type="email" required class="user-valid:border-positive-content border border-line px-3 py-2 rounded"
-                placeholder="Type valid email">
+            <input type="email" required class="user-valid:border-positive-content border border-line px-3 py-2 rounded" placeholder="Type valid email">
         </div>
 
         <h3>:user-invalid</h3>
         <div class="test-item">
             <div class="test-label">User-invalid input (after interaction) should be red</div>
-            <input type="email" required
-                class="user-invalid:border-negative-content border border-line px-3 py-2 rounded"
-                placeholder="Type invalid email">
+            <input type="email" required class="user-invalid:border-negative-content border border-line px-3 py-2 rounded" placeholder="Type invalid email">
         </div>
 
         <h3>:inert</h3>
@@ -398,9 +376,7 @@
         <h3>::placeholder</h3>
         <div class="test-item">
             <div class="test-label">Placeholder text styling</div>
-            <input type="text"
-                class="placeholder:text-content-subtle placeholder:italic border border-line px-3 py-2 rounded"
-                placeholder="Styled placeholder">
+            <input type="text" class="placeholder:text-content-subtle placeholder:italic border border-line px-3 py-2 rounded" placeholder="Styled placeholder">
         </div>
 
         <h3>::selection</h3>
@@ -414,8 +390,7 @@
         <h3>::file</h3>
         <div class="test-item">
             <div class="test-label">File input button styling</div>
-            <input type="file"
-                class="file:bg-500 file:text-50 file:px-4 file:py-2 file:rounded file:border-0 file:cursor-pointer">
+            <input type="file" class="file:bg-500 file:text-50 file:px-4 file:py-2 file:rounded file:border-0 file:cursor-pointer">
         </div>
 
         <h3>::marker</h3>
@@ -447,15 +422,13 @@
         <h3>::backdrop</h3>
         <div class="test-item">
             <div class="test-label">Dialog backdrop styling (open dialog to see)</div>
-            <button onclick="document.getElementById('backdrop-dialog').showModal()"
-                class="bg-brand-surface text-brand-inverse px-4 py-2 rounded">
+            <button onclick="document.getElementById('backdrop-dialog').showModal()" class="bg-brand-surface text-brand-inverse px-4 py-2 rounded">
                 Open Dialog
             </button>
             <dialog id="backdrop-dialog" class="backdrop:bg-black/50 backdrop:backdrop-blur-sm">
                 <div class="bg-surface-1 p-4 rounded">
                     <p>Dialog content</p>
-                    <button onclick="document.getElementById('backdrop-dialog').close()"
-                        class="mt-2 bg-brand-surface text-brand-inverse px-4 py-2 rounded">Close</button>
+                    <button onclick="document.getElementById('backdrop-dialog').close()" class="mt-2 bg-brand-surface text-brand-inverse px-4 py-2 rounded">Close</button>
                 </div>
             </dialog>
         </div>
@@ -463,8 +436,7 @@
         <h3>::details-content</h3>
         <div class="test-item">
             <div class="test-label">Details content styling</div>
-            <details
-                class="details-content:bg-surface-2 details-content:p-4 details-content:rounded border border-line">
+            <details class="details-content:bg-surface-2 details-content:p-4 details-content:rounded border border-line">
                 <summary class="cursor-pointer">Details</summary>
                 <p class="mt-2">This content should be styled</p>
             </details>
@@ -520,9 +492,9 @@
     <section>
         <h2>Media Queries: Dark Mode</h2>
 
-        <button @click="$theme.current = 'dark'">Dark</button>
-        <button @click="$theme.current = 'light'">Light</button>
-        <button @click="$theme.current = 'system'">System</button>
+        <button @click="$colors.current = 'dark'">Dark</button>
+        <button @click="$colors.current = 'light'">Light</button>
+        <button @click="$colors.current = 'system'">System</button>
 
         <h3>dark:</h3>
         <div class="test-item">
@@ -551,8 +523,7 @@
         <h3>prefers-reduced-motion:</h3>
         <div class="test-item">
             <div class="test-label">Enable reduced motion in system settings</div>
-            <div
-                class="transition-all duration-300 prefers-reduced-motion:transition-none bg-surface-2 hover:bg-surface-3 p-4 rounded cursor-pointer">
+            <div class="transition-all duration-300 prefers-reduced-motion:transition-none bg-surface-2 hover:bg-surface-3 p-4 rounded cursor-pointer">
                 Hover me (animation disabled with reduced motion)
             </div>
         </div>
@@ -560,8 +531,7 @@
         <h3>prefers-contrast: / contrast-more:</h3>
         <div class="test-item">
             <div class="test-label">Enable high contrast in system settings</div>
-            <div
-                class="bg-surface-1 prefers-contrast:bg-surface-3 contrast-more:bg-surface-3 text-content-stark prefers-contrast:text-content-stark p-4 rounded border border-line prefers-contrast:border-2">
+            <div class="bg-surface-1 prefers-contrast:bg-surface-3 contrast-more:bg-surface-3 text-content-stark prefers-contrast:text-content-stark p-4 rounded border border-line prefers-contrast:border-2">
                 High contrast styling
             </div>
         </div>
@@ -585,8 +555,7 @@
         <h3>motion-reduce:</h3>
         <div class="test-item">
             <div class="test-label">Animation disabled (motion-reduce)</div>
-            <div
-                class="transition-all motion-reduce:transition-none bg-surface-2 hover:bg-surface-3 p-4 rounded cursor-pointer">
+            <div class="transition-all motion-reduce:transition-none bg-surface-2 hover:bg-surface-3 p-4 rounded cursor-pointer">
                 Hover me (no animation with reduced motion)
             </div>
         </div>
@@ -602,8 +571,7 @@
         <h3>forced-colors:</h3>
         <div class="test-item">
             <div class="test-label">Enable forced colors in system settings</div>
-            <div
-                class="bg-surface-1 forced-colors:bg-buttontext forced-colors:text-buttonface p-4 rounded border border-line">
+            <div class="bg-surface-1 forced-colors:bg-buttontext forced-colors:text-buttonface p-4 rounded border border-line">
                 Forced colors styling
             </div>
         </div>
@@ -619,8 +587,7 @@
         <h3>prefers-color-scheme:</h3>
         <div class="test-item">
             <div class="test-label">System prefers dark color scheme</div>
-            <div
-                class="bg-surface-1 prefers-color-scheme:bg-surface-3 prefers-color-scheme:text-content-stark p-4 rounded">
+            <div class="bg-surface-1 prefers-color-scheme:bg-surface-3 prefers-color-scheme:text-content-stark p-4 rounded">
                 System dark mode preference
             </div>
         </div>
@@ -628,8 +595,7 @@
         <h3>prefers-color-scheme-light:</h3>
         <div class="test-item">
             <div class="test-label">System prefers light color scheme</div>
-            <div
-                class="bg-surface-1 prefers-color-scheme-light:bg-surface-1 prefers-color-scheme-light:text-content-stark p-4 rounded">
+            <div class="bg-surface-1 prefers-color-scheme-light:bg-surface-1 prefers-color-scheme-light:text-content-stark p-4 rounded">
                 System light mode preference
             </div>
         </div>
@@ -637,8 +603,7 @@
         <h3>prefers-contrast-less:</h3>
         <div class="test-item">
             <div class="test-label">System prefers less contrast</div>
-            <div
-                class="bg-surface-1 prefers-contrast-less:bg-surface-2 prefers-contrast-less:text-content-subtle p-4 rounded">
+            <div class="bg-surface-1 prefers-contrast-less:bg-surface-2 prefers-contrast-less:text-content-subtle p-4 rounded">
                 Less contrast styling
             </div>
         </div>
@@ -794,8 +759,7 @@
                 <div data-checked="true" class="data-checked:bg-500 data-checked:text-50 p-4 rounded">
                     Checked state
                 </div>
-                <div data-disabled
-                    class="data-disabled:opacity-50 data-disabled:cursor-not-allowed p-4 rounded bg-surface-2">
+                <div data-disabled class="data-disabled:opacity-50 data-disabled:cursor-not-allowed p-4 rounded bg-surface-2">
                     Disabled state
                 </div>
             </div>
@@ -823,8 +787,7 @@
                 <div aria-invalid="true" class="aria-invalid:bg-900 aria-invalid:text-50 p-4 rounded">
                     aria-invalid="true"
                 </div>
-                <div aria-disabled="true"
-                    class="aria-disabled:opacity-50 aria-disabled:cursor-not-allowed p-4 rounded bg-surface-2">
+                <div aria-disabled="true" class="aria-disabled:opacity-50 aria-disabled:cursor-not-allowed p-4 rounded bg-surface-2">
                     aria-disabled="true"
                 </div>
             </div>
@@ -1091,8 +1054,7 @@
         <h3>Multiple variants combined</h3>
         <div class="test-item">
             <div class="test-label">Hover in dark mode at md breakpoint</div>
-            <button
-                class="bg-surface-2 dark:md:hover:bg-brand-surface text-content-stark dark:md:hover:text-50 px-4 py-2 rounded transition-colors">
+            <button class="bg-surface-2 dark:md:hover:bg-brand-surface text-content-stark dark:md:hover:text-50 px-4 py-2 rounded transition-colors">
                 dark:md:hover: variant
             </button>
         </div>
@@ -1100,8 +1062,7 @@
         <h3>Focus and hover combined</h3>
         <div class="test-item">
             <div class="test-label">Focus and hover states</div>
-            <button
-                class="bg-surface-2 hover:bg-surface-3 focus:outline-2 focus:outline-brand-surface focus:hover:bg-brand-surface px-4 py-2 rounded">
+            <button class="bg-surface-2 hover:bg-surface-3 focus:outline-2 focus:outline-brand-surface focus:hover:bg-brand-surface px-4 py-2 rounded">
                 focus:hover: variant
             </button>
         </div>

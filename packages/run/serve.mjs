@@ -4,10 +4,14 @@
  *
  * Usage:
  *   npx mnfst-run [dir] [--port 5001] [--idle-shutdown 30] [--no-idle-shutdown]
+ *   npx mnfst-run --list
  *
  *   dir                 Directory to serve (default: current directory). Any
  *                       depth of nesting is valid, e.g.
  *                       npx mnfst-run docs/articles/publishing
+ *                       If a server is already running for this directory,
+ *                       prints its URL and exits instead of starting a
+ *                       duplicate. Use `--list` to see everything running.
  *   --port              Preferred port (default: PORT env var, then 5001).
  *                       Auto-increments if the port is already in use.
  *   --idle-shutdown N   Exit N seconds after the last preview tab closes
@@ -19,6 +23,8 @@
  *                       overnight with the preview tab still open.
  *   --no-idle-shutdown  Disable auto-shutdown (useful in CI / headless cases
  *                       where no browser will connect).
+ *   --list              Print all mnfst-run servers currently running on this
+ *                       machine and exit.
  *
  * SPA vs MPA is auto-detected: if the root index.html contains
  * <meta name="manifest:prerendered"> the server disables SPA fallback.
@@ -29,10 +35,16 @@
  *                     sources and updates Alpine store reactively (no reload)
  *   other           → full page reload
  */
-import { createServer }                  from 'http';
-import { readFileSync, statSync, watch } from 'fs';
+import { createServer, get as httpGet }  from 'http';
+import {
+  readFileSync, statSync, watch,
+  existsSync, writeFileSync, unlinkSync,
+  mkdirSync, readdirSync,
+} from 'fs';
 import { join, extname, resolve, basename } from 'path';
 import { exec }                          from 'child_process';
+import { tmpdir }                        from 'os';
+import { createHash }                    from 'crypto';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -116,14 +128,135 @@ let port = process.env.PORT ? parseInt(process.env.PORT, 10) : 5001;
 let idleShutdownSec = 30;
 let idleShutdownEnabled = true;
 
+let listMode = false;
+
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--port' || args[i] === '-p') && args[i + 1]) { port = parseInt(args[++i], 10); continue; }
   if (args[i] === '--no-idle-shutdown') { idleShutdownEnabled = false; continue; }
   if (args[i] === '--idle-shutdown' && args[i + 1]) { idleShutdownSec = parseInt(args[++i], 10); continue; }
+  if (args[i] === '--list' || args[i] === '-l') { listMode = true; continue; }
   if (!args[i].startsWith('-')) dir = args[i];
 }
 
+// --- Running-server registry ---
+// One JSON file per project under `$TMPDIR/mnfst-run/`, keyed by a hash of
+// the absolute root. Each holds `{ root, port, pid, startedAt }`. Used for:
+//   1. Dedup — a second `mnfst-run <dir>` for an already-running project
+//      prints the existing URL instead of spinning up another port.
+//   2. `--list` — show what's currently running across all projects.
+// Cleanup happens on graceful exit (idle-shutdown, Ctrl+C, SIGTERM). Crash
+// recovery is automatic: stale entries are detected by the next startup via
+// PID-alive + identity-endpoint check and unlinked.
+const REGISTRY_DIR = join(tmpdir(), 'mnfst-run');
+const IDENTITY_PATH = '/__mnfst_run__';
+
+function registryFileFor(rootPath) {
+  const hash = createHash('sha1').update(rootPath).digest('hex').slice(0, 16);
+  return join(REGISTRY_DIR, hash + '.json');
+}
+
+function readRegistryEntry(file) {
+  try { return JSON.parse(readFileSync(file, 'utf8')); }
+  catch { return null; }
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// Quick probe of /__mnfst_run__ to confirm the entry isn't stale (PID may
+// have been recycled to an unrelated process). Resolves to the parsed
+// identity object on success, null on timeout / non-mnfst response.
+function probeIdentity(p, timeoutMs = 400) {
+  return new Promise((resolveProbe) => {
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; resolveProbe(v); };
+    const req = httpGet({ host: '127.0.0.1', port: p, path: IDENTITY_PATH, timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; if (body.length > 4096) { res.destroy(); finish(null); } });
+      res.on('end', () => { try { finish(JSON.parse(body)); } catch { finish(null); } });
+    });
+    req.on('error', () => finish(null));
+    req.on('timeout', () => { req.destroy(); finish(null); });
+  });
+}
+
+async function findRunningServer(rootPath) {
+  const file = registryFileFor(rootPath);
+  if (!existsSync(file)) return null;
+  const entry = readRegistryEntry(file);
+  if (!entry || entry.root !== rootPath || !pidAlive(entry.pid)) {
+    try { unlinkSync(file); } catch {}
+    return null;
+  }
+  const id = await probeIdentity(entry.port);
+  if (!id || id.root !== rootPath) {
+    try { unlinkSync(file); } catch {}
+    return null;
+  }
+  return entry;
+}
+
+function writeRegistry(rootPath, p) {
+  try { mkdirSync(REGISTRY_DIR, { recursive: true }); } catch {}
+  try {
+    writeFileSync(registryFileFor(rootPath), JSON.stringify({
+      root: rootPath,
+      port: p,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    }) + '\n');
+  } catch { /* registry is best-effort; serving still works without it */ }
+}
+
+function removeRegistry(rootPath) {
+  try { unlinkSync(registryFileFor(rootPath)); } catch {}
+}
+
+async function listRunningServers() {
+  let files;
+  try { files = readdirSync(REGISTRY_DIR); } catch { files = []; }
+  const rows = [];
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    const file = join(REGISTRY_DIR, f);
+    const entry = readRegistryEntry(file);
+    if (!entry || !pidAlive(entry.pid)) { try { unlinkSync(file); } catch {} continue; }
+    const id = await probeIdentity(entry.port);
+    if (!id || id.root !== entry.root) { try { unlinkSync(file); } catch {} continue; }
+    rows.push(entry);
+  }
+  if (rows.length === 0) { console.log('No mnfst-run servers running.'); return; }
+  const portW = Math.max(4, ...rows.map(r => String(r.port).length));
+  const pidW  = Math.max(3, ...rows.map(r => String(r.pid).length));
+  console.log(`${'PORT'.padEnd(portW)}  ${'PID'.padEnd(pidW)}  URL                          ROOT`);
+  for (const r of rows) {
+    const url = `http://localhost:${r.port}`;
+    console.log(`${String(r.port).padEnd(portW)}  ${String(r.pid).padEnd(pidW)}  ${url.padEnd(28)}  ${r.root}`);
+  }
+}
+
+if (listMode) {
+  await listRunningServers();
+  process.exit(0);
+}
+
 const root = resolve(process.cwd(), dir);
+
+// Dedup: if a server is already serving this exact root, point the user at
+// it (and open the browser, since that's what they were going to do anyway).
+const existing = await findRunningServer(root);
+if (existing) {
+  const url = `http://localhost:${existing.port}`;
+  const label0 = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
+  console.log(`\n${label0} already running at ${url} (pid ${existing.pid})\n`);
+  // Open the browser anyway — matches the experience of starting fresh.
+  const cmd = process.platform === 'win32' ? `start ${url}`
+    : process.platform === 'darwin'        ? `open ${url}`
+    : `xdg-open ${url}`;
+  exec(cmd);
+  process.exit(0);
+}
 
 // --- Auto-detect MPA ---
 function detectMPA(rootDir) {
@@ -262,6 +395,18 @@ function serveFile(res, filePath) {
 const server = createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split('?')[0]);
 
+  // Identity endpoint: lets `mnfst-run` (and `--list`) confirm that a server
+  // on a registered port really is OUR server for the expected root, not
+  // some unrelated process that happened to inherit a recycled PID/port.
+  if (urlPath === IDENTITY_PATH) {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    res.end(JSON.stringify({ name: 'mnfst-run', root, pid: process.pid }));
+    return;
+  }
+
   // Virtual /env.js — generated from .env at the project root.
   // Loaded by HTML before manifest.data.js so window.env is populated for
   // ${VAR} interpolation in manifest.json. Returns an empty no-op if no
@@ -369,6 +514,7 @@ function tryListen(p, attempt = 0) {
   const onListening = () => {
     server.removeListener('error', onError);
     const url = `http://localhost:${p}`;
+    writeRegistry(root, p);
     console.log(`\n${label} running at ${url}\n`);
     openBrowser(url);
   };
@@ -381,5 +527,12 @@ function tryListen(p, attempt = 0) {
   server.once('error', onError);
   server.listen(p);
 }
+
+// Clean up the registry entry on graceful exit. process.exit() (used by
+// idle-shutdown) fires 'exit'; SIGINT/SIGTERM are translated into a
+// process.exit so the same path runs for Ctrl+C and `kill <pid>`.
+process.on('exit', () => removeRegistry(root));
+process.on('SIGINT',  () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));
 
 tryListen(port);

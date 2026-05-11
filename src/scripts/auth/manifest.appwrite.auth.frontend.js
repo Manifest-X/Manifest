@@ -57,7 +57,7 @@ function initializeAuthMagic() {
         return false;
     }
 
-    // Add $auth magic method (like $locale, $theme)
+    // Add $auth magic method (like $locale, $colors)
     Alpine.magic('auth', () => {
         const store = Alpine.store('auth');
         if (!store) {

@@ -12,7 +12,7 @@ window.ManifestComponentsProcessor = {
         }
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
             // Pre-rendered components skip re-fetching, but hydrate-marked content
-            // still needs Alpine initialization (x-data, @click, :class, x-colors etc.).
+            // still needs Alpine initialization (x-data, @click, :class, x-color etc.).
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
                 try { window.Alpine.initTree(element); } catch (e) { /* graceful */ }
             }

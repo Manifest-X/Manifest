@@ -1,0 +1,56 @@
+{
+  "name": "mnfst-test",
+  "version": "0.1.5",
+  "description": "Testing toolkit for Manifest projects — `mnfst-test` CLI for project linting (typo'd tags, dead sources, syntax errors, console errors, a11y, broken links) and `mountManifest()` library for component-level tests with Vitest + happy-dom",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "bin": {
+    "mnfst-test": "./bin/mnfst-test.js"
+  },
+  "files": [
+    "bin",
+    "index.mjs",
+    "manifest.test.mjs",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "manifest",
+    "mnfst",
+    "test",
+    "testing",
+    "lint",
+    "check",
+    "validation",
+    "vitest",
+    "happy-dom",
+    "ai"
+  ],
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "happy-dom": ">=12",
+    "puppeteer": ">=22"
+  },
+  "peerDependenciesMeta": {
+    "happy-dom": {
+      "optional": true
+    },
+    "puppeteer": {
+      "optional": true
+    }
+  },
+  "author": "Andrew Matlock",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Manifest-X/Manifest.git",
+    "directory": "packages/test"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "mnfst-types",
+  "version": "0.1.2",
+  "description": "Generate TypeScript types for a Manifest project from manifest.json and sample data",
+  "type": "module",
+  "bin": {
+    "mnfst-types": "./bin/mnfst-types.js"
+  },
+  "files": [
+    "bin",
+    "manifest.types.mjs",
+    "template",
+    "README.md"
+  ],
+  "scripts": {
+    "prepare:source": "node ./scripts/sync-types.mjs",
+    "prepack": "npm run prepare:source"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "manifest",
+    "mnfst",
+    "typescript",
+    "types",
+    "codegen",
+    "ai",
+    "intellisense"
+  ],
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "author": "Andrew Matlock",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Manifest-X/Manifest.git",
+    "directory": "packages/types"
+  }
+}

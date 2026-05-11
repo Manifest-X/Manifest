@@ -32,13 +32,13 @@
 
             <!-- Color theme menu -->
             <button class="ghost" x-dropdown.bottom="color-theme" aria-label="Color Theme Menu"
-                x-icon="$colors.current === 'light' ? 'lucide:sun' : $colors.current === 'dark' ? 'lucide:moon' : 'lucide:sun-moon'"></button>
+                x-icon="$color.current === 'light' ? 'lucide:sun' : $color.current === 'dark' ? 'lucide:moon' : 'lucide:sun-moon'"></button>
             <menu popover id="color-theme" class="bottom-end min-w-0">
-                <li x-colors="'light'" :class="{ 'brand pointer-events-none': $colors.current === 'light' }"
+                <li x-color="'light'" :class="{ 'brand pointer-events-none': $color.current === 'light' }"
                     x-icon="lucide:sun" :aria-label="$x.content.theme.light"></li>
-                <li x-colors="'dark'" :class="{ 'brand pointer-events-none': $colors.current === 'dark' }"
+                <li x-color="'dark'" :class="{ 'brand pointer-events-none': $color.current === 'dark' }"
                     x-icon="lucide:moon" :aria-label="$x.content.theme.dark"></li>
-                <li x-colors="'system'" :class="{ 'brand pointer-events-none': $colors.current === 'system' }"
+                <li x-color="'system'" :class="{ 'brand pointer-events-none': $color.current === 'system' }"
                     x-icon="lucide:sun-moon" :aria-label="$x.content.theme.system"></li>
             </menu>
 
@@ -59,11 +59,11 @@
             <div class="divider"></div>
 
             <div role="group" class="w-full even">
-                <button x-colors="'light'" :class="{ 'brand pointer-events-none': $colors.current === 'light' }"
+                <button x-color="'light'" :class="{ 'brand pointer-events-none': $color.current === 'light' }"
                     x-icon="lucide:sun" :aria-label="$x.content.theme.light"></button>
-                <button x-colors="'dark'" :class="{ 'brand pointer-events-none': $colors.current === 'dark' }"
+                <button x-color="'dark'" :class="{ 'brand pointer-events-none': $color.current === 'dark' }"
                     x-icon="lucide:moon" :aria-label="$x.content.theme.dark"></button>
-                <button x-colors="'system'" :class="{ 'brand pointer-events-none': $colors.current === 'system' }"
+                <button x-color="'system'" :class="{ 'brand pointer-events-none': $color.current === 'system' }"
                     x-icon="lucide:sun-moon" :aria-label="$x.content.theme.system"></button>
             </div>
 

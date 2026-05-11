@@ -1,10 +1,12 @@
 {
     "name": "mnfst",
-    "version": "0.5.66",
+    "version": "0.5.70",
     "private": false,
     "workspaces": [
         "templates/starter",
-        "packages/render"
+        "packages/render",
+        "packages/types",
+        "packages/test"
     ],
     "main": "lib/manifest.js",
     "style": "lib/manifest.css",
@@ -28,8 +30,10 @@
         "release": "npm version patch --no-git-tag-version && npm publish",
         "release:run": "cd packages/run && npm version patch --no-git-tag-version && npm publish --auth-type=web",
         "release:render": "cd packages/render && npm version patch --no-git-tag-version && npm publish --auth-type=web",
+        "release:types": "cd packages/types && npm version patch --no-git-tag-version && npm publish --auth-type=web",
+        "release:test": "cd packages/test && npm version patch --no-git-tag-version && npm publish --auth-type=web",
         "release:starter": "cd packages/create-starter && npm version patch --no-git-tag-version && npm publish --auth-type=web",
-        "release:all": "npm run release:run && npm run release:render && npm run release:starter && npm run release",
+        "release:all": "npm run release:run && npm run release:render && npm run release:types && npm run release:test && npm run release:starter && npm run release",
         "prepublishOnly": "npm run build",
         "test": "vitest run",
         "lint": "echo 'No linting configured'"
@@ -60,7 +64,7 @@
     "author": "Andrew Matlock",
     "license": "MIT",
     "description": "A modern, lightweight frontend framework with built-in components and utilities",
-    "homepage": "https://manifestjs.org",
+    "homepage": "https://manifestx.dev",
     "repository": {
         "type": "git",
         "url": "https://github.com/Manifest-X/Manifest.git"

@@ -109,11 +109,45 @@ function initializeTabsPlugin() {
                 }
             }
 
-            // Process panels for this group - add x-show attributes
+            // ----- Accessibility wiring (WAI-ARIA Tabs pattern) -----
+            //
+            // Per the ARIA APG, a tabs widget needs:
+            //   - role="tablist" on the tab container (parent of buttons)
+            //   - role="tab" + aria-selected + aria-controls + tabindex on each button
+            //   - role="tabpanel" + aria-labelledby + tabindex="0" on each panel
+            //   - arrow-key navigation between tabs (with roving tabindex)
+            //
+            // We compute the tab-container element as the closest common ancestor of
+            // the relevant buttons (often a <nav> or <div>). Each button is assigned
+            // a stable id if it doesn't have one, so panels can reference it.
+
+            // Assign ids where missing.
+            const buttonIdByTabValue = {};
+            relevantButtons.forEach((button, i) => {
+                const tabValue = button.getAttribute('x-tab');
+                if (!tabValue) return;
+                if (!button.id) {
+                    button.id = `mnfst-tab-${sanitizedPanelSet || 'g'}-${tabValue.replace(/[^a-zA-Z0-9_-]/g, '-')}-${i}`;
+                }
+                buttonIdByTabValue[tabValue] = button.id;
+            });
+
+            // Process panels for this group - add x-show + a11y attributes
             panels.forEach(panel => {
                 // Create condition that checks if tab property matches this panel's identifier
                 const showCondition = `${tabProp} === '${panel.id}'`;
                 panel.element.setAttribute('x-show', showCondition);
+
+                // Ensure panel has an id (Alpine needs one for aria-labelledby on buttons)
+                if (!panel.element.id) panel.element.id = panel.id;
+
+                // ARIA: role + label + focusable
+                panel.element.setAttribute('role', 'tabpanel');
+                if (!panel.element.hasAttribute('tabindex')) {
+                    panel.element.setAttribute('tabindex', '0');
+                }
+                const labelledBy = buttonIdByTabValue[panel.id];
+                if (labelledBy) panel.element.setAttribute('aria-labelledby', labelledBy);
 
                 // Remove x-tabpanel attribute since we've converted it
                 panel.element.removeAttribute('x-tabpanel');
@@ -129,9 +163,56 @@ function initializeTabsPlugin() {
                 const clickHandler = `${tabProp} = '${tabValue}'`;
                 button.setAttribute('x-on:click', clickHandler);
 
+                // ARIA: role, selection state (reactive via :aria-selected), controls
+                button.setAttribute('role', 'tab');
+                button.setAttribute(':aria-selected', `String(${tabProp} === '${tabValue}')`);
+                // Roving tabindex: -1 when not active so arrow keys, not Tab, move between tabs.
+                button.setAttribute(':tabindex', `${tabProp} === '${tabValue}' ? '0' : '-1'`);
+                const panel = panels.find((p) => p.id === tabValue);
+                if (panel && panel.element.id) {
+                    button.setAttribute('aria-controls', panel.element.id);
+                }
+
                 // Remove x-tab attribute since we've converted it
                 button.removeAttribute('x-tab');
             });
+
+            // Find the tablist container — closest common ancestor of all relevant
+            // buttons. If they share a direct parent that's the tablist; otherwise
+            // walk up until one wraps them all. Set role="tablist" + a keydown
+            // handler that walks the focusable tabs on Left/Right/Home/End.
+            if (relevantButtons.length > 0) {
+                let tablistEl = relevantButtons[0].parentElement;
+                while (tablistEl && tablistEl !== document.body) {
+                    if (relevantButtons.every((b) => tablistEl.contains(b))) break;
+                    tablistEl = tablistEl.parentElement;
+                }
+                if (tablistEl) {
+                    tablistEl.setAttribute('role', 'tablist');
+                    if (!tablistEl.__mnfstTabsKeydown) {
+                        tablistEl.__mnfstTabsKeydown = (e) => {
+                            const target = e.target;
+                            if (!target || target.getAttribute('role') !== 'tab') return;
+                            const tabs = Array.from(tablistEl.querySelectorAll('[role="tab"]'));
+                            const idx = tabs.indexOf(target);
+                            if (idx === -1) return;
+                            let nextIdx = null;
+                            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextIdx = (idx + 1) % tabs.length;
+                            else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+                            else if (e.key === 'Home') nextIdx = 0;
+                            else if (e.key === 'End') nextIdx = tabs.length - 1;
+                            if (nextIdx == null) return;
+                            e.preventDefault();
+                            // Automatic activation: focusing a tab selects it. This matches
+                            // the most common APG variant and Manifest's existing click-to-
+                            // activate semantics.
+                            tabs[nextIdx].focus();
+                            tabs[nextIdx].click();
+                        };
+                        tablistEl.addEventListener('keydown', tablistEl.__mnfstTabsKeydown);
+                    }
+                }
+            }
 
             // Ensure Alpine processes the updated x-data and x-show attributes
             if (window.Alpine && typeof window.Alpine.initTree === 'function') {

@@ -14,7 +14,7 @@ Manifest is a frontend framework extending HTML for rapid, feature-rich website 
 
 ## 💾 Setup
 
-Get [CDN links](https://manifestjs.org/getting-started/setup) for existing projects or try the [starter project](https://manifestjs.org/getting-started/starter-project) for new ones.
+Get [CDN links](https://manifestx.dev/getting-started/setup) for existing projects or try the [starter project](https://manifestx.dev/getting-started/starter-project) for new ones.
 
 <br>
 
@@ -38,7 +38,7 @@ Get [CDN links](https://manifestjs.org/getting-started/setup) for existing proje
 
 ## 📚 Documentation
 
-For full documentation visit [manifestjs.org](https://manifestjs.org).
+For full documentation visit [manifestx.dev](https://manifestx.dev).
 
 <br>
 

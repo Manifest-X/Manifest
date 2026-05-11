@@ -401,14 +401,74 @@ async function handleRouteChange() {
         }, 50);
     }
 
-    // Emit route change event
-    window.dispatchEvent(new CustomEvent('manifest:route-change', {
+    // Build the route-change event once so dispatch + transition wrapper share it.
+    const event = new CustomEvent('manifest:route-change', {
         detail: {
             from: prevRoute,
             to: newRoute,
             normalizedPath: newRoute === '/' ? '/' : newRoute.replace(/^\/|\/$/g, '')
         }
-    }));
+    });
+
+    // SPA route changes use the View Transitions API when available so the
+    // visibility-toggle that listeners perform inside this dispatch is
+    // animated. Cross-document MPA navigations are already handled by
+    // `@view-transition { navigation: auto }` in the framework's reset CSS;
+    // the same `::view-transition-group(*)` rule (driven by
+    // `--view-transition-duration` / `--view-transition-easing`) covers both.
+    //
+    // The callback is synchronous: visibility/head/anchor listeners mutate
+    // the DOM inside `dispatchEvent` and return. Returning anything async
+    // here would freeze the rendered frame until the promise resolves,
+    // adding the entirety of Alpine's pending-update queue to the perceived
+    // navigation time (1–2s on busy pages).
+    if (shouldUseViewTransition()) {
+        document.startViewTransition(() => {
+            window.dispatchEvent(event);
+        });
+    } else {
+        window.dispatchEvent(event);
+    }
+}
+
+// Decide whether SPA route changes should run inside a View Transition.
+// Three modes, in priority order:
+//
+//   1. `<html data-no-view-transitions>`  → force OFF
+//   2. `<html data-view-transitions>`     → force ON
+//   3. (neither)                          → auto: ON when the current page is
+//                                            under VT_AUTO_THRESHOLD elements,
+//                                            OFF otherwise
+//
+// The auto threshold exists because the View Transitions API rasterizes the
+// full viewport for the "before" and "after" snapshots; cost scales linearly
+// with DOM size and gets noticeable above a few thousand elements (a 10k-
+// element page measured ~500ms per snapshot in dev). Light pages keep the
+// crossfade; heavy pages stay fast.
+//
+// Cross-document (MPA) navigations are unaffected — those use the browser's
+// native cross-document path (`@view-transition { navigation: auto }`),
+// which rasterizes in parallel with page load and doesn't expose the cost.
+//
+// Per-element opt-out (`data-no-view-transition`, singular) on individual
+// elements is handled by the existing reset CSS rule that sets
+// `view-transition-name: none` on them. `prefers-reduced-motion` is
+// respected automatically — the browser falls back to a snap with no
+// animation when the user has it set.
+const VT_AUTO_THRESHOLD = 3000;
+
+function shouldUseViewTransition() {
+    if (typeof document === 'undefined') return false;
+    if (typeof document.startViewTransition !== 'function') return false;
+    const html = document.documentElement;
+    if (!html) return false;
+    if (html.hasAttribute('data-no-view-transitions')) return false;
+    if (html.hasAttribute('data-view-transitions')) return true;
+    try {
+        return document.querySelectorAll('*').length < VT_AUTO_THRESHOLD;
+    } catch {
+        return false;
+    }
 }
 
 // Resolve internal link to absolute pathname for pushState. Relative hrefs (e.g. "gadget") are resolved against the app base, not the current URL, so we never get additive paths like /src/dist/widget/gadget/widget/...
