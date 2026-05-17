@@ -1,0 +1,54 @@
+# Project Name
+
+## Overview
+
+- [Project Name](https://test.com/)
+
+## About
+
+- [About Us — Project Name](https://test.com/about)
+
+## Blog
+
+- [Blog — Project Name](https://test.com/blog)
+
+## Products
+
+- [Widget — Project Name](https://test.com/products/widget)
+- [Gadget — Project Name](https://test.com/products/gadget)
+- [Tool — Project Name](https://test.com/products/tool)
+- [Device — Project Name](https://test.com/products/device)
+- [Accessory — Project Name](https://test.com/products/accessory)
+
+## Fr
+
+- [Project Name](https://test.com/fr)
+- [À propos de nous — Project Name](https://test.com/fr/about)
+- [Blog — Project Name](https://test.com/fr/blog)
+- [Widget — Project Name](https://test.com/fr/products/widget)
+- [Gadget — Project Name](https://test.com/fr/products/gadget)
+- [Tool — Project Name](https://test.com/fr/products/tool)
+- [Device — Project Name](https://test.com/fr/products/device)
+- [Accessory — Project Name](https://test.com/fr/products/accessory)
+
+## Es
+
+- [Project Name](https://test.com/es)
+- [Sobre nosotros — Project Name](https://test.com/es/about)
+- [Blog — Project Name](https://test.com/es/blog)
+- [Widget — Project Name](https://test.com/es/products/widget)
+- [Gadget — Project Name](https://test.com/es/products/gadget)
+- [Tool — Project Name](https://test.com/es/products/tool)
+- [Device — Project Name](https://test.com/es/products/device)
+- [Accessory — Project Name](https://test.com/es/products/accessory)
+
+## En
+
+- [Project Name](https://test.com/en)
+- [About Us — Project Name](https://test.com/en/about)
+- [Blog — Project Name](https://test.com/en/blog)
+- [Widget — Project Name](https://test.com/en/products/widget)
+- [Gadget — Project Name](https://test.com/en/products/gadget)
+- [Tool — Project Name](https://test.com/en/products/tool)
+- [Device — Project Name](https://test.com/en/products/device)
+- [Accessory — Project Name](https://test.com/en/products/accessory)

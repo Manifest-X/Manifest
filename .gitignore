@@ -99,3 +99,6 @@ jspm_packages/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Manifest Cache
+.mnfst-cache/

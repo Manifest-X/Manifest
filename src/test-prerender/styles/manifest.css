@@ -354,35 +354,24 @@
         }
     }
 
-    /* Routing transitions: pseudo-elements for cross-document and same-document
-       view transitions.  The `@view-transition` at-rule itself is hoisted
-       outside the `@layer base` block below — per spec it only takes effect
-       at the top level. */
+    /* View transition styles */
     ::view-transition-group(*) {
         animation-duration: var(--view-transition-duration, 200ms);
-        animation-timing-function: var(--view-transition-easing, ease);
+        animation-timing-function: var(--view-transition-easing, ease)
     }
 
-    /* Skip live/non-rasterizable content from the rasterized snapshot — the
-       browser would otherwise freeze them mid-transition causing a flicker.
-       Authors can opt their own elements out the same way: `view-transition-
-       name: none` on the element. */
+    /* Skip view transition for live/non-rasterizable content */
     iframe,
     video,
     canvas,
-    .is-webchat,
     [data-no-view-transition] {
-        view-transition-name: none;
+        view-transition-name: none
     }
 }
 
-/* Cross-document view transitions opt-in.  Must be at top level (not inside
-   `@layer base`) per the View Transitions spec.  In supporting browsers,
-   same-origin link navigations between pages that both declare this rule
-   crossfade automatically — no JavaScript required.  Browsers without
-   support fall back to a normal navigation. */
+/* Cross-document view transitions opt-in */
 @view-transition {
-    navigation: auto;
+    navigation: auto
 }
 
 /* Manifest Accordions */
@@ -404,8 +393,8 @@
             margin-bottom: calc(var(--spacing, 0.25rem) * 4)
         }
 
-        &> :not(summary) {
-            padding: var(--spacing-field-padding, 0.625rem) 0
+        &>:last-child {
+            margin-bottom: calc(var(--spacing, 0.25rem) * 8)
         }
 
         /* Content */
@@ -414,6 +403,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: var(--spacing-field-padding, 0.625rem) 0;
             font-weight: bold;
             color: var(--color-content-stark, oklch(16.6% 0.026 267));
             user-select: none;
@@ -1062,7 +1052,10 @@
                     }
                 }
 
-                /* Solid options */
+                /* Per-stop solid panel (inside the open-stop accordion) — keep the
+                   canvas compact so the menu stays well-proportioned even when the
+                   parent picker is gradient-only and the menu inherits its height
+                   from this nested panel. */
                 & [x-colorpicker\.solid] {
                     padding: 0;
 
@@ -3302,14 +3295,13 @@
 
     /* Ghost */
     :where(.ghost) {
-        color: var(--color-content-stark, oklch(16.6% 0.026 267));
         background-color: transparent;
 
         &:hover {
             background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26))
         }
 
-        &.brand:hover {
+        /* &.brand:hover {
             color: var(--color-brand-inverse, #763518)
         }
 
@@ -3319,7 +3311,7 @@
 
         &.negative:hover {
             color: var(--color-negative-inverse, white)
-        }
+        } */
     }
 
     /* Hug */
@@ -3340,11 +3332,6 @@
     /* Dark theme override */
     .dark :where(.outlined) {
         border-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 80%, var(--color-field-inverse, oklch(16.6% 0.026 267)))
-    }
-
-    /* Selected */
-    :where(.selected) {
-        background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26))
     }
 
     /* Transparent */
@@ -3442,7 +3429,7 @@
             -webkit-appearance: none;
             appearance: none;
             display: none;
-            margin: 0;
+            margin: 0
         }
     }
 
@@ -3485,7 +3472,7 @@
     }
 
     /* Prose styles for long-form content */
-    :where(.prose) {
+    :where(.prose, .prose details) {
         width: 65ch;
         max-width: 100%;
 
@@ -3515,7 +3502,7 @@
         }
 
         &>a:not(:where(h1, h2, h3, h4, h5, h6, p, small, figcaption, label, li, blockquote, pre code, code, kbd, span, mark, [role=button]) a) {
-            margin-top: calc(1rem * 1.4);
+            margin-top: calc(1rem * 1.4)
         }
 
         &>blockquote {
@@ -3524,6 +3511,25 @@
             & * {
                 margin: 0
             }
+        }
+
+        &>details,
+        &>hr+details {
+            margin-top: 0
+        }
+
+        &>details:first-child,
+        &> :not(details, hr)+details {
+            margin-top: calc(3rem)
+        }
+
+        &>details:last-child,
+        &>details:not(:last-child):not(:has(+ details, + hr)) {
+            margin-bottom: calc(3rem)
+        }
+
+        &>details+ :not(details, hr) {
+            margin-top: 0
         }
 
         &>figcaption {
@@ -3558,7 +3564,7 @@
         }
 
         &>h4+p {
-            margin-top: 0.25rem;
+            margin-top: 0.25rem
         }
 
         &>h5 {
@@ -3573,7 +3579,12 @@
 
         &>hr {
             margin-top: calc(1rem * 3);
-            margin-bottom: calc(1rem * 3)
+            margin-bottom: calc(1rem * 3);
+        }
+
+        &>details+hr:has(+ details) {
+            margin-top: 1rem;
+            margin-bottom: 1rem
         }
 
         &>img,
@@ -3624,7 +3635,7 @@
         --color-field-inverse: var(--color-brand-inverse, #763518);
         --color-content-stark: var(--color-brand-content, #de6618);
         --color-content-neutral: color-mix(in oklch, var(--color-brand-content, #de6618) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, #de6618) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, #de6618) 70%, transparent)
     }
 
     /* Accent colors */
@@ -3634,7 +3645,7 @@
         --color-field-inverse: var(--color-accent-inverse, oklch(100% 0 0));
         --color-content-stark: var(--color-accent-content, oklch(16.6% 0.026 267));
         --color-content-neutral: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 70%, transparent)
     }
 
     /* Negative colors */
@@ -3644,7 +3655,7 @@
         --color-field-inverse: var(--color-negative-inverse, white);
         --color-content-stark: var(--color-negative-content, #ef4444);
         --color-content-neutral: color-mix(in oklch, var(--color-negative-content, #ef4444) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-negative-content, #ef4444) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-negative-content, #ef4444) 70%, transparent)
     }
 
     /* Positive colors */
@@ -3654,19 +3665,19 @@
         --color-field-inverse: var(--color-positive-inverse, white);
         --color-content-stark: var(--color-positive-content, #16a34a);
         --color-content-neutral: color-mix(in oklch, var(--color-positive-content, #16a34a) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-positive-content, #16a34a) 70%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-positive-content, #16a34a) 70%, transparent)
     }
 
     /* Text colors */
     :where(.stark) {
-        color: var(--color-content-stark, oklch(16.6% 0.026 267));
+        color: var(--color-content-stark, oklch(16.6% 0.026 267))
     }
 
     :where(.neutral) {
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
     }
 
     :where(.subtle) {
-        color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27));
+        color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27))
     }
 }

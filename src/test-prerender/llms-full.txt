@@ -1,0 +1,246 @@
+# Project Name
+
+
+# Overview
+
+
+## Project Name
+
+Source: https://test.com/
+
+Logo Styles Core Appwrite Local Data Utilities Light Dark System English French Spanish
+
+
+# About
+
+
+## About Us — Project Name
+
+Source: https://test.com/about
+
+About Us Tests: localized baked content + data-hydrate island. Baked: About Us (should be locale-correct after prerender) Contact: Email / Phone data-hydrate island — not baked, evaluated at runtime Current locale: en Home title (live): Home Counter: 0 +1 x-markdown test — content below should be visible as static HTML Test Article This is a prerender test article rendered from markdown. Item one Item two Item three Section Two Paragraph content to verify markdown rendering survives prerender. ← Back to Home Popup A Popup B Toggle Channels
+
+
+# Blog
+
+
+## Blog — Project Name
+
+Source: https://test.com/blog
+
+Blog Tests static x-for list prerendering — items should be baked as static HTML for SEO. ← Back to Home Popup A Popup B Toggle Channels
+
+
+# Products
+
+
+## Widget — Project Name
+
+Source: https://test.com/products/widget
+
+Widget Category: Electronics Price: $9.99 A versatile widget, great for everyday use. Get it now! ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Gadget — Project Name
+
+Source: https://test.com/products/gadget
+
+Gadget Category: Electronics Price: $19.99 High-quality gadget with advanced features ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Tool — Project Name
+
+Source: https://test.com/products/tool
+
+Tool Category: Hardware Price: $14.99 Essential tool for your workshop ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Device — Project Name
+
+Source: https://test.com/products/device
+
+Device Category: Electronics Price: $29.99 Premium device with smart capabilities ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Accessory — Project Name
+
+Source: https://test.com/products/accessory
+
+Accessory Category: Electronics Price: $4.99 Affordable accessory for all devices ← Back to Home Popup A Popup B Toggle Channels
+
+
+# Fr
+
+
+## Project Name
+
+Source: https://test.com/fr
+
+Logo Styles Core Appwrite Local Data Utilities Light Dark System English French Spanish
+
+
+## À propos de nous — Project Name
+
+Source: https://test.com/fr/about
+
+À propos de nous Tests: localized baked content + data-hydrate island. Baked: À propos de nous (should be locale-correct after prerender) Contact: Email / Téléphone data-hydrate island — not baked, evaluated at runtime Current locale: en Accueil title (live): Accueil Counter: 0 +1 x-markdown test — content below should be visible as static HTML Test Article This is a prerender test article rendered from markdown. Item one Item two Item three Section Two Paragraph content to verify markdown rendering survives prerender. ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+## Blog — Project Name
+
+Source: https://test.com/fr/blog
+
+Blog Tests static x-for list prerendering — items should be baked as static HTML for SEO. ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+## Widget — Project Name
+
+Source: https://test.com/fr/products/widget
+
+Widget Category: Electronics Price: $9.99 A versatile widget, great for everyday use. Get it now! ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+## Gadget — Project Name
+
+Source: https://test.com/fr/products/gadget
+
+Gadget Category: Electronics Price: $19.99 High-quality gadget with advanced features ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+## Tool — Project Name
+
+Source: https://test.com/fr/products/tool
+
+Tool Category: Hardware Price: $14.99 Essential tool for your workshop ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+## Device — Project Name
+
+Source: https://test.com/fr/products/device
+
+Device Category: Electronics Price: $29.99 Premium device with smart capabilities ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+## Accessory — Project Name
+
+Source: https://test.com/fr/products/accessory
+
+Accessory Category: Electronics Price: $4.99 Affordable accessory for all devices ← Back to Accueil Popup A Popup B Toggle Channels
+
+
+# Es
+
+
+## Project Name
+
+Source: https://test.com/es
+
+Logo Styles Core Appwrite Local Data Utilities Light Dark System English French Spanish
+
+
+## Sobre nosotros — Project Name
+
+Source: https://test.com/es/about
+
+Sobre nosotros Tests: localized baked content + data-hydrate island. Baked: Sobre nosotros (should be locale-correct after prerender) Contacto: Correo / Teléfono data-hydrate island — not baked, evaluated at runtime Current locale: en Inicio title (live): Inicio Counter: 0 +1 x-markdown test — content below should be visible as static HTML Test Article This is a prerender test article rendered from markdown. Item one Item two Item three Section Two Paragraph content to verify markdown rendering survives prerender. ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+## Blog — Project Name
+
+Source: https://test.com/es/blog
+
+Blog Tests static x-for list prerendering — items should be baked as static HTML for SEO. ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+## Widget — Project Name
+
+Source: https://test.com/es/products/widget
+
+Widget Category: Electronics Price: $9.99 A versatile widget, great for everyday use. Get it now! ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+## Gadget — Project Name
+
+Source: https://test.com/es/products/gadget
+
+Gadget Category: Electronics Price: $19.99 High-quality gadget with advanced features ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+## Tool — Project Name
+
+Source: https://test.com/es/products/tool
+
+Tool Category: Hardware Price: $14.99 Essential tool for your workshop ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+## Device — Project Name
+
+Source: https://test.com/es/products/device
+
+Device Category: Electronics Price: $29.99 Premium device with smart capabilities ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+## Accessory — Project Name
+
+Source: https://test.com/es/products/accessory
+
+Accessory Category: Electronics Price: $4.99 Affordable accessory for all devices ← Back to Inicio Popup A Popup B Toggle Channels
+
+
+# En
+
+
+## Project Name
+
+Source: https://test.com/en
+
+Logo Styles Core Appwrite Local Data Utilities Light Dark System English French Spanish
+
+
+## About Us — Project Name
+
+Source: https://test.com/en/about
+
+About Us Tests: localized baked content + data-hydrate island. Baked: About Us (should be locale-correct after prerender) Contact: Email / Phone data-hydrate island — not baked, evaluated at runtime Current locale: en Home title (live): Home Counter: 0 +1 x-markdown test — content below should be visible as static HTML Test Article This is a prerender test article rendered from markdown. Item one Item two Item three Section Two Paragraph content to verify markdown rendering survives prerender. ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Blog — Project Name
+
+Source: https://test.com/en/blog
+
+Blog Tests static x-for list prerendering — items should be baked as static HTML for SEO. ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Widget — Project Name
+
+Source: https://test.com/en/products/widget
+
+Widget Category: Electronics Price: $9.99 A versatile widget, great for everyday use. Get it now! ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Gadget — Project Name
+
+Source: https://test.com/en/products/gadget
+
+Gadget Category: Electronics Price: $19.99 High-quality gadget with advanced features ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Tool — Project Name
+
+Source: https://test.com/en/products/tool
+
+Tool Category: Hardware Price: $14.99 Essential tool for your workshop ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Device — Project Name
+
+Source: https://test.com/en/products/device
+
+Device Category: Electronics Price: $29.99 Premium device with smart capabilities ← Back to Home Popup A Popup B Toggle Channels
+
+
+## Accessory — Project Name
+
+Source: https://test.com/en/products/accessory
+
+Accessory Category: Electronics Price: $4.99 Affordable accessory for all devices ← Back to Home Popup A Popup B Toggle Channels

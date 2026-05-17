@@ -19,13 +19,21 @@ function processIconElement(el, iconValue) {
             // Clear the element
             el.innerHTML = '';
 
-            // Create a temporary element for Iconify to process
-            const tempEl = document.createElement('span');
-            tempEl.className = 'iconify';
-            tempEl.setAttribute('data-icon', iconValue);
-
-            // Add temporary element first
-            el.appendChild(tempEl);
+            // Wrapping <span x-icon> upfront — the list CSS rule
+            // `li:has([x-icon])` needs a DESCENDANT carrying the attribute to
+            // trigger vertical-stack layout.  Building it now (instead of via a
+            // post-Iconify-scan setTimeout) means the wrapper exists from
+            // first paint, so:
+            //   - no row→column flicker on SPA load
+            //   - prerender snapshots capture the correct DOM regardless of
+            //     when Iconify finishes fetching the SVG
+            const wrapper = document.createElement('span');
+            wrapper.setAttribute('x-icon', iconValue);
+            const iconTarget = document.createElement('span');
+            iconTarget.className = 'iconify';
+            iconTarget.setAttribute('data-icon', iconValue);
+            wrapper.appendChild(iconTarget);
+            el.appendChild(wrapper);
 
             // Add text content back
             if (originalText) {
@@ -36,23 +44,11 @@ function processIconElement(el, iconValue) {
             // Mark as processed to prevent re-processing
             el.setAttribute('data-icon-processed', 'true');
 
-            // Use Iconify to process the temporary element
+            // Iconify replaces iconTarget with an inline SVG (sync if cached,
+            // async otherwise).  Either way the wrapper stays put.
             if (window.Iconify && typeof window.Iconify.scan === 'function') {
-                window.Iconify.scan(tempEl);
+                window.Iconify.scan(iconTarget);
             }
-
-            // After a short delay, check if Iconify replaced our element
-            setTimeout(() => {
-                // Check if the temp element was replaced by an SVG
-                const svg = el.querySelector('svg');
-                if (svg && svg.parentNode === el) {
-                    // Iconify replaced our span with SVG, wrap it in a new span
-                    const newSpan = document.createElement('span');
-                    newSpan.setAttribute('x-icon', iconValue);
-                    el.insertBefore(newSpan, svg);
-                    newSpan.appendChild(svg);
-                }
-            }, 50);
             return;
         } else {
             // Update existing icon
@@ -154,7 +150,7 @@ document.addEventListener('alpine:init', ensureIconPluginInitialized);
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     // Small delay to ensure Alpine is fully initialized
     setTimeout(ensureIconPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {

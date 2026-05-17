@@ -696,7 +696,7 @@ if (document.readyState === 'loading') {
 // If Alpine is already initialized when this script loads, initialize immediately
 if (window.Alpine && typeof window.Alpine.magic === 'function') {
     setTimeout(ensureLocalizationPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.magic === 'function') {
             clearInterval(checkAlpine);

@@ -991,6 +991,85 @@ function buildRootAssetPath(routerBasePath, filename) {
 }
 
 /** Inject stylesheet link with root-absolute href (avoids ../ resolving under locale segments like /en/page/). */
+// ---- Static-route runtime stripping ----------------------------------------
+//
+// Prerendered routes that have no runtime-interactive content don't need
+// Alpine or the Manifest plugin scripts. A marketing page, a legal page, a
+// content article — if every directive has been resolved at prerender time
+// and nothing requires hydration, the page can ship as pure HTML/CSS.
+//
+// We detect this per-route in the final post-processing pass: walk every
+// emitted HTML file, scan for any markup that would require runtime
+// behaviour, and if none is found, strip the framework <script> tags from
+// that file. Authors can opt out per-project by setting
+// `prerender.keepRuntime: true` in manifest.json.
+
+// Returns true if the HTML contains any markup that needs Alpine/Manifest at
+// runtime. Conservative: false positives keep the runtime, false negatives
+// would silently break the page, so we err on the side of keeping scripts
+// when uncertain.
+function htmlNeedsRuntime(html) {
+    // Hydration contract — if the renderer recorded any entries, runtime is required.
+    const hydrateBlobMatch = html.match(/<script[^>]*id=["']__manifest_hydrate__["'][^>]*>([\s\S]*?)<\/script>/);
+    if (hydrateBlobMatch) {
+        const blob = hydrateBlobMatch[1].trim();
+        // Empty array literal means no hydration entries.
+        if (blob && blob !== '[]' && blob !== '[ ]') return true;
+    }
+    // Author-marked hydration on any element.
+    if (/\sdata-hydrate(?=[\s=>])/.test(html)) return true;
+    // Alpine reactive directives (anything that runs on init or in response to events/state).
+    if (/\sx-(?:data|init|show|if|for|text|html|model|effect|bind|on|cloak|ignore|ref|transition|teleport|id|modelable|route)(?=[\s:=>])/.test(html)) return true;
+    // Alpine event-handler and bind shorthands as attributes — `@event="..."` and `:attr="..."`.
+    if (/\s@[a-z][a-z0-9-]*(?:\.[a-z]+)*\s*=\s*["']/i.test(html)) return true;
+    if (/\s:[a-z][a-z0-9-]*(?:\.[a-z]+)*\s*=\s*["']/i.test(html)) return true;
+    // Manifest plugin directives that wire runtime behaviour.
+    if (/\sx-(?:icon|svg|tooltip|resize|colors|colorpicker|toast|markdown|code|dropdown|tab|tabpanel|anchors|carousel|files|data-files|files-field|virtual)(?=[\s=>])/.test(html)) return true;
+    // Manifest Web Components — `<x-code>`, `<x-code-group>`, plus any
+    // project custom-element tags the author may have declared.
+    if (/<x-[a-z][a-z0-9-]*[\s>]/i.test(html)) return true;
+    return false;
+}
+
+// Remove Alpine and Manifest framework <script> tags from a static page.
+// Leaves user-authored scripts and inline scripts alone.
+function stripFrameworkScripts(html) {
+    return html
+        // Manifest dynamic loader (CDN and local variants of manifest.js / manifest.min.js).
+        .replace(/<script\b[^>]*\bsrc=["'][^"']*[/]manifest(?:\.min)?\.js(?:\?[^"']*)?["'][^>]*>\s*<\/script>\s*/gi, '')
+        // Manifest plugin scripts: manifest.<name>.js or .min.js with any prefix path.
+        .replace(/<script\b[^>]*\bsrc=["'][^"']*[/]manifest\.[a-z][\w.-]*\.js(?:\?[^"']*)?["'][^>]*>\s*<\/script>\s*/gi, '')
+        // Appwrite plugin scripts (manifest.appwrite.*.js).
+        .replace(/<script\b[^>]*\bsrc=["'][^"']*[/]manifest\.appwrite\.[a-z][\w.-]*\.js(?:\?[^"']*)?["'][^>]*>\s*<\/script>\s*/gi, '')
+        // Alpine.
+        .replace(/<script\b[^>]*\bsrc=["'][^"']*alpinejs[^"']*["'][^>]*>\s*<\/script>\s*/gi, '')
+        // Hydration contract blob — no longer relevant once scripts are gone.
+        .replace(/<script\b[^>]*id=["']__manifest_hydrate__["'][^>]*>[\s\S]*?<\/script>\s*/gi, '')
+        // Manifest:prerendered meta stays — it's a signal, not a script.
+        ;
+}
+
+function postProcessStripStaticRoutes(outputDir) {
+    const files = walkHtmlFiles(outputDir);
+    let stripped = 0;
+    let total = 0;
+    for (const file of files) {
+        total++;
+        let html;
+        try { html = readFileSync(file, 'utf8'); }
+        catch { continue; }
+        if (htmlNeedsRuntime(html)) continue;
+        const slim = stripFrameworkScripts(html);
+        if (slim !== html) {
+            try {
+                writeFileSync(file, slim, 'utf8');
+                stripped++;
+            } catch { /* skip */ }
+        }
+    }
+    return { stripped, total };
+}
+
 function postProcessInjectStylesheetLink(outputDir, filename, routerBasePath) {
   const cssPath = join(outputDir, filename);
   if (!existsSync(cssPath)) return;
@@ -1751,24 +1830,40 @@ function resolveHeadXBindings(html, xData) {
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
 
 /**
- * Hash of the project-wide assets that affect every page's visual output
- * (theme CSS, manifest config, root HTML shell).  Computed once per prerender
- * run and folded into each route's snapshot-cache key so that touching any of
- * these invalidates every cached OG image — a more correct behaviour than
- * per-route source-mtime caching, which would miss shared-chrome changes.
+ * Hash of project-wide assets that affect every page's visual output.
+ * Folded into each route's snapshot-cache key so any of these changing
+ * invalidates every cached OG image at once — far cheaper and more
+ * deterministic than fingerprinting each page's rendered DOM (which races
+ * with plugins, has timing-dependent attribute values, etc.).
  *
- * Files included are conventional Manifest project assets that influence
- * layout/theme; missing files are recorded as the literal `missing` so the
- * hash still differs from an installation that has the file present.
+ * Includes:
+ *   - Conventional layout/theme files (manifest.json, *.theme.css, index.html)
+ *   - All data source files declared in manifest.json's data block — touching
+ *     docs.yaml etc. changes route content (and the docs nav highlight on
+ *     peer pages), so we treat it as a global invalidator.
+ *
+ * Files missing from disk are still recorded (as `missing`) so a project
+ * that lacks the file hashes differently from one that has it.
  */
-function computeGlobalAssetSignature(rootDir) {
-  const candidates = [
+function computeGlobalAssetSignature(rootDir, manifest) {
+  const candidates = new Set([
     'manifest.json',
     'manifest.theme.css',
     'manifest.utilities.css',
     'index.html',
-  ];
-  const parts = candidates.map((rel) => {
+  ]);
+  // Add every declared local data file — yaml/json/csv content drives
+  // per-route data and shared nav structures, so changes invalidate all.
+  if (manifest?.data && typeof manifest.data === 'object') {
+    const collectPath = (v) => {
+      if (typeof v === 'string' && v.startsWith('/')) candidates.add(v.slice(1));
+      else if (v && typeof v === 'object') {
+        for (const inner of Object.values(v)) collectPath(inner);
+      }
+    };
+    for (const v of Object.values(manifest.data)) collectPath(v);
+  }
+  const parts = [...candidates].sort().map((rel) => {
     const p = join(rootDir, rel);
     try {
       return `${rel}:${sha(readFileSync(p, 'utf8'))}`;
@@ -1777,6 +1872,33 @@ function computeGlobalAssetSignature(rootDir) {
     }
   });
   return sha(parts.join('|'));
+}
+
+/**
+ * Per-route content signature derived from source-file mtimes.  Combines
+ * with the global asset signature in takeOgSnapshot.  Reuses the same
+ * markdown-discovery heuristic as routeLastModDate so cache validity tracks
+ * the same source-of-truth as the sitemap's <lastmod> field.
+ *
+ * Returns null when no source file can be identified — in that case
+ * takeOgSnapshot falls back to always re-snapshotting (correct, just slow).
+ */
+function computeRouteSourceSig(rootDir, pathSeg) {
+  if (!pathSeg) return 'root';
+  const stripPrefix = pathSeg.replace(/^(?:docs|blog|articles|posts|guides)\//, '');
+  const candidates = [
+    join(rootDir, 'articles', `${stripPrefix}.md`),
+    join(rootDir, 'articles', `${pathSeg}.md`),
+    join(rootDir, 'pages', `${pathSeg}.html`),
+    join(rootDir, `${pathSeg}.md`),
+  ];
+  for (const c of candidates) {
+    try {
+      const s = statSync(c);
+      if (s.isFile()) return `${c}:${s.mtimeMs}`;
+    } catch { /* not found */ }
+  }
+  return null;
 }
 
 /**
@@ -1789,7 +1911,7 @@ function computeGlobalAssetSignature(rootDir) {
  *   - body outerHTML, normalised to strip non-visual volatile attributes
  *   - html.className (theme variant: light/dark/etc.)
  */
-async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, cacheDir) {
+async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, cacheDir, routeSourceSig) {
   const fileSeg = pathSeg === '' || pathSeg === '__404__'
     ? 'index'
     : pathSeg.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1801,44 +1923,31 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
   const cachePngPath = cacheDir ? join(cacheDir, `${fileSeg}.png`) : null;
   const cacheHashPath = cacheDir ? join(cacheDir, `${fileSeg}.hash`) : null;
 
-  // Cache lookup: fingerprint the rendered DOM and check against the stored
-  // hash.  The fingerprint normalises away attribute values assigned in
-  // iteration order (data-hydrate-id, data-component-N) and randomly-generated
-  // CSS anchor-name positioning IDs.  Without normalisation the hash would
-  // never match across runs and the cache would always miss.
+  // Cache key: global asset signature (theme + manifest + all data files) plus
+  // the per-route source signature (markdown mtime).  When both are unchanged
+  // since the cached snapshot was taken, the visual output for this route is
+  // unchanged — no need to re-screenshot.  Hash inputs come from the file
+  // system, not the rendered DOM, so there's no race with Alpine plugins.
+  // Routes with no discoverable source (no markdown match) miss the cache
+  // and always re-snapshot — correctness over speed for the unknown case.
   let contentHash = null;
-  try {
-    const fingerprint = await page.evaluate(() => {
-      const body = document.body?.outerHTML || '';
-      const htmlClass = document.documentElement?.className || '';
-      const normalised = body
-        .replace(/\sdata-hydrate-id="[^"]*"/g, '')
-        .replace(/\sdata-component="[^"]*"/g, '')
-        .replace(/\sdata-pre-rendered="[^"]*"/g, '')
-        .replace(/\sid="(?:tab-|code-)[^"]*"/g, '')
-        .replace(/\saria-controls="(?:code-)[^"]*"/g, '')
-        .replace(/\saria-labelledby="(?:tab-)[^"]*"/g, '')
-        // CSS anchor-positioning IDs (e.g. `--dropdown-zc7nofh3c`) are
-        // regenerated per run by the dropdown/popover system.
-        .replace(/--dropdown-[a-z0-9]+/g, '--dropdown-X')
-        .replace(/--popover-[a-z0-9]+/g, '--popover-X')
-        .replace(/--anchor-[a-z0-9]+/g, '--anchor-X');
-      return normalised + '\n@html:' + htmlClass;
-    });
-    contentHash = sha(`${globalAssetSignature || ''}|${fingerprint}`);
+  if (routeSourceSig) {
+    contentHash = sha(`${globalAssetSignature || ''}|${routeSourceSig}`);
     if (cachePngPath && existsSync(cachePngPath) && existsSync(cacheHashPath)) {
       const stored = readFileSync(cacheHashPath, 'utf8').trim();
       if (stored === contentHash) {
-        // Cache hit — copy the cached PNG into the output dir.  We still need
-        // a copy in /og/ so the served site has it; the cache just lets us
-        // skip the screenshot + PNG-encode work.
+        // Cache hit — copy the cached PNG into the output dir.  We still
+        // need a copy in /og/ so the served site has it; the cache just
+        // lets us skip the screenshot + PNG-encode work.
         try {
           cpSync(cachePngPath, filePath);
+          if (globalThis.__mnfstCacheHits !== undefined) globalThis.__mnfstCacheHits++;
           return `/og/${fileSeg}.png`;
         } catch { /* copy failure — fall through to fresh snapshot */ }
       }
     }
-  } catch { /* hash failure is non-fatal — fall through to fresh snapshot */ }
+  }
+  if (globalThis.__mnfstCacheMisses !== undefined) globalThis.__mnfstCacheMisses++;
 
   try {
     // Viewport stays at the page-creation default (1200×800).  Clipping a
@@ -2739,7 +2848,12 @@ async function main() {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  process.stdout.write(`prerender: total time ${hours}h ${minutes}m ${seconds}s\n`);
+  const hits = globalThis.__mnfstCacheHits | 0;
+  const misses = globalThis.__mnfstCacheMisses | 0;
+  const cacheSuffix = (hits + misses) > 0
+    ? ` · og cache ${hits}/${hits + misses}`
+    : '';
+  process.stdout.write(`prerender: total time ${hours}h ${minutes}m ${seconds}s${cacheSuffix}\n`);
 }
 
 async function runPrerender(config) {
@@ -2960,11 +3074,14 @@ async function runPrerender(config) {
   // The cache lives at <root>/.mnfst-cache/og/ — survives the output-dir
   // rmSync that fires at the start of every prerender.
   const globalAssetSig = config.seo?.imageSnapshots
-    ? computeGlobalAssetSignature(config.root)
+    ? computeGlobalAssetSignature(config.root, manifest)
     : '';
   const ogCacheDir = config.seo?.imageSnapshots
     ? join(config.root, '.mnfst-cache', 'og')
     : null;
+  // Cache hit/miss counters surfaced at end-of-run for visibility.
+  globalThis.__mnfstCacheHits = 0;
+  globalThis.__mnfstCacheMisses = 0;
 
   function pushDebug(row) {
     if (!config.debugPrerender) return;
@@ -3221,7 +3338,8 @@ async function runPrerender(config) {
           || !!config.seo.meta?.fallback?.image
           || await page.evaluate(() => !!document.head.querySelector('meta[property="og:image"]'));
         if (!ogImageHandled) {
-          earlySnapshotUrl = await takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir);
+          const routeSrcSig = computeRouteSourceSig(config.root, is404 ? '' : pathSeg);
+          earlySnapshotUrl = await takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir, routeSrcSig);
         }
       }
 
@@ -4321,6 +4439,17 @@ async function runPrerender(config) {
       siteDescription: config.seo?.siteDescription,
     }
   );
+
+  // Strip framework scripts from purely-static routes (no Alpine / Manifest
+  // directives, no hydration, no Web Components). Opt out per-project with
+  // manifest.prerender.keepRuntime: true.
+  if (manifest.prerender?.keepRuntime !== true) {
+    const stripResult = postProcessStripStaticRoutes(outputResolved);
+    if (stripResult.stripped > 0) {
+      process.stdout.write(`prerender: stripped Alpine/Manifest runtime from ${stripResult.stripped}/${stripResult.total} static route(s)\n`);
+    }
+  }
+
   writeOutputProtectionFiles(config.output);
   validatePrerenderedOutput(config.output, pathList.filter((p) => p !== NOT_FOUND_PATH));
 

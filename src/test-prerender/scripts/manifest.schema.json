@@ -1,0 +1,212 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://manifestx.dev/manifest.schema.json",
+    "title": "Manifest project configuration",
+    "description": "Combined PWA manifest and Manifest framework configuration. See https://manifestx.dev/docs/getting-started/setup.",
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+        "$schema": {
+            "type": "string",
+            "format": "uri"
+        },
+        "name": {
+            "type": "string",
+            "description": "Full application name shown by the OS and browsers."
+        },
+        "short_name": {
+            "type": "string",
+            "description": "Short name used on home screens and limited-width contexts."
+        },
+        "description": {
+            "type": "string"
+        },
+        "author": {
+            "type": "string"
+        },
+        "email": {
+            "type": "string",
+            "format": "email"
+        },
+        "live_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Production URL — used by the prerender pipeline for canonical/sitemap output."
+        },
+        "start_url": {
+            "type": "string",
+            "default": "/"
+        },
+        "scope": {
+            "type": "string",
+            "default": "/"
+        },
+        "display": {
+            "type": "string",
+            "enum": ["fullscreen", "standalone", "minimal-ui", "browser"]
+        },
+        "orientation": {
+            "type": "string",
+            "enum": ["any", "natural", "landscape", "landscape-primary", "landscape-secondary", "portrait", "portrait-primary", "portrait-secondary"]
+        },
+        "background_color": {
+            "type": "string",
+            "pattern": "^#([0-9A-Fa-f]{3}){1,2}$"
+        },
+        "theme_color": {
+            "type": "string",
+            "pattern": "^#([0-9A-Fa-f]{3}){1,2}$"
+        },
+        "icons": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["src"],
+                "properties": {
+                    "src": { "type": "string" },
+                    "sizes": { "type": "string" },
+                    "type": { "type": "string" },
+                    "purpose": { "type": "string" }
+                }
+            }
+        },
+        "components": {
+            "type": "array",
+            "description": "Component HTML files registered as <x-name> tags.",
+            "items": { "type": "string" }
+        },
+        "preloadedComponents": {
+            "type": "array",
+            "description": "Components loaded eagerly on initial page load (header, logo, etc.).",
+            "items": { "type": "string" }
+        },
+        "data": {
+            "type": "object",
+            "description": "Named data sources made available via $x.<sourceName>. Each value is either a string path/URL or a config object.",
+            "additionalProperties": {
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "description": "Path to a CSV, JSON, or YAML file, or an absolute HTTP URL."
+                    },
+                    {
+                        "type": "object",
+                        "description": "Localized source, HTTP source with config, or Appwrite-backed source.",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "HTTP endpoint URL."
+                            },
+                            "headers": {
+                                "type": "object",
+                                "additionalProperties": { "type": "string" }
+                            },
+                            "params": {
+                                "type": "object"
+                            },
+                            "transform": {
+                                "type": "string",
+                                "description": "Optional dot-path into the response body (e.g. 'data.items')."
+                            },
+                            "defaultValue": {
+                                "description": "Value used while loading or on error."
+                            },
+                            "locales": {
+                                "type": "string",
+                                "description": "Single CSV with locale columns; locale resolution happens internally."
+                            },
+                            "appwriteTableId": { "type": "string" },
+                            "appwriteBucketId": { "type": "string" },
+                            "appwriteDatabaseId": { "type": "string" },
+                            "appwriteProjectId": { "type": "string" },
+                            "appwriteEndpoint": { "type": "string" },
+                            "appwriteDevKey": { "type": "string" },
+                            "scope": {
+                                "oneOf": [
+                                    { "type": "string", "enum": ["user", "team"] },
+                                    { "type": "array", "items": { "type": "string", "enum": ["user", "team"] } }
+                                ]
+                            },
+                            "autoInjectUserId": { "type": "boolean" },
+                            "autoInjectTeamId": { "type": "boolean" },
+                            "queries": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "storage": {
+                                "type": "object",
+                                "description": "Map of storage-bucket source names to the column on this row that holds their file IDs.",
+                                "additionalProperties": { "type": "string" }
+                            },
+                            "throttle": { "type": "number" },
+                            "cleanupInterval": { "type": "number" },
+                            "minChangeThreshold": { "type": "number" },
+                            "idleThreshold": { "type": "number" },
+                            "enableVisualRendering": { "type": "boolean" },
+                            "includeVelocity": { "type": "boolean" }
+                        },
+                        "additionalProperties": true
+                    }
+                ]
+            }
+        },
+        "appwrite": {
+            "type": "object",
+            "description": "Appwrite global configuration. Per-source overrides live on the data entry.",
+            "properties": {
+                "projectId": { "type": "string" },
+                "endpoint": { "type": "string", "format": "uri" },
+                "databaseId": { "type": "string" },
+                "devKey": {
+                    "type": "string",
+                    "description": "May reference an env var via ${VAR_NAME}."
+                },
+                "auth": {
+                    "type": "object",
+                    "properties": {
+                        "methods": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["guest", "guest-manual", "magic", "oauth", "password"]
+                            }
+                        },
+                        "teams": {
+                            "type": "object",
+                            "properties": {
+                                "permanent": { "type": "array", "items": { "type": "string" } },
+                                "template": { "type": "array", "items": { "type": "string" } }
+                            }
+                        },
+                        "roles": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                }
+                            }
+                        },
+                        "creatorRole": { "type": "string" }
+                    }
+                }
+            }
+        },
+        "prerender": {
+            "type": "object",
+            "description": "Static rendering configuration consumed by mnfst-render.",
+            "properties": {
+                "localUrl": { "type": "string", "format": "uri" },
+                "liveUrl": { "type": "string", "format": "uri" },
+                "output": { "type": "string", "default": "dist" },
+                "routerBase": { "type": "string", "default": "" },
+                "locales": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "additionalProperties": true
+        }
+    }
+}

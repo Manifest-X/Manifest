@@ -340,7 +340,10 @@
                     }
                 }
 
-                /* Solid options */
+                /* Per-stop solid panel (inside the open-stop accordion) — keep the
+                   canvas compact so the menu stays well-proportioned even when the
+                   parent picker is gradient-only and the menu inherits its height
+                   from this nested panel. */
                 & [x-colorpicker\.solid] {
                     padding: 0;
 

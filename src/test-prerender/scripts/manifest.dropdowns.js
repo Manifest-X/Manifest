@@ -164,6 +164,32 @@ function initializeDropdownPlugin() {
                     el.style.setProperty('anchor-name', anchorName);
                     menu.style.setProperty('position-anchor', anchorName);
 
+                    // ----- A11y wiring (WAI-ARIA Menu Button pattern) -----
+                    // The trigger needs `aria-haspopup="menu"`, `aria-controls`, and a
+                    // dynamic `aria-expanded` that follows the popover's open state.
+                    // The menu element gets `role="menu"` and each list item gets
+                    // `role="menuitem"` so screen readers announce the relationship.
+                    //
+                    // We don't apply these for `.context` dropdowns invoked by right-
+                    // click — they're not button-triggered popups in the APG sense.
+                    if (!modifiers.includes('context')) {
+                        if (!menu.id) menu.id = 'mnfst-dropdown-' + Math.random().toString(36).slice(2, 9);
+                        el.setAttribute('aria-haspopup', 'menu');
+                        el.setAttribute('aria-controls', menu.id);
+                        el.setAttribute('aria-expanded', menu.matches(':popover-open') ? 'true' : 'false');
+                        if (!menu.hasAttribute('role')) menu.setAttribute('role', 'menu');
+                        menu.querySelectorAll('li').forEach((li) => {
+                            if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
+                        });
+                        // Keep aria-expanded in sync with the popover's state.
+                        if (!menu.__mnfstAriaToggleBound) {
+                            menu.__mnfstAriaToggleBound = true;
+                            menu.addEventListener('toggle', (e) => {
+                                el.setAttribute('aria-expanded', e.newState === 'open' ? 'true' : 'false');
+                            });
+                        }
+                    }
+
                     // Set up hover functionality after menu is ready
                     if (modifiers.includes('hover')) {
                         const handleShowPopover = () => {
@@ -404,7 +430,7 @@ document.addEventListener('alpine:init', ensureDropdownPluginInitialized);
 // If Alpine is already initialized when this script loads, initialize immediately
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     setTimeout(ensureDropdownPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {

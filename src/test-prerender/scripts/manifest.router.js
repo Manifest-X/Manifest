@@ -358,25 +358,6 @@ function pathnameToLogical(pathname) {
 }
 
 // Handle route changes
-// Run a same-document DOM mutation through the View Transitions API when
-// supported, so route changes / theme toggles / locale demos crossfade like
-// cross-document MPA navigations.  Falls back to running the callback
-// directly when the browser lacks support or the user has prefers-reduced-
-// motion.  Authors tune duration/easing via `--view-transition-duration` /
-// `--view-transition-easing` CSS custom properties on `manifest.theme.css`,
-// and can call `window.manifestViewTransition(fn)` from their own code to
-// participate in the same animation system.
-function withViewTransition(updateFn) {
-    if (typeof document.startViewTransition !== 'function') return updateFn();
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return updateFn();
-    return document.startViewTransition(updateFn);
-}
-
-// Expose the helper for other plugins (themes, localization) and authors.
-if (typeof window !== 'undefined' && !window.manifestViewTransition) {
-    window.manifestViewTransition = withViewTransition;
-}
-
 async function handleRouteChange() {
     const pathname = window.location.pathname;
     const newRoute = pathnameToLogical(pathname);
@@ -385,30 +366,17 @@ async function handleRouteChange() {
     const prevRoute = currentRoute;
     currentRoute = newRoute;
 
-    // Wrap the synchronous DOM mutations (route visibility toggle + event
-    // listeners that swap content) in a view transition.  Any async tail
-    // (async component fetching, deferred scroll) is intentionally left
-    // outside the transition — it runs after the crossfade completes.
-    withViewTransition(() => {
-        window.dispatchEvent(new CustomEvent('manifest:route-change', {
-            detail: {
-                from: prevRoute,
-                to: newRoute,
-                normalizedPath: newRoute === '/' ? '/' : newRoute.replace(/^\/|\/$/g, '')
-            }
-        }));
-    });
-
-    // Handle scrolling based on whether this is an anchor link or route change.
-    // Deferred so it runs after the view transition completes (smooth scroll
-    // mid-transition would interfere with the crossfade snapshot).
+    // Handle scrolling based on whether this is an anchor link or route change
     if (!window.location.hash) {
+        // This is a route change - scroll to top
+        // Use a small delay to ensure content has loaded
         setTimeout(() => {
+            // Scroll main page to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
-            // Find and scroll scrollable containers to top.  Generic approach
-            // that works with any CSS framework — only check elements that are
-            // likely to be scrollable containers.
+            // Find and scroll scrollable containers to top
+            // Use a generic approach that works with any CSS framework
+            // Only check elements that are likely to be scrollable containers
             const potentialContainers = document.querySelectorAll('div, main, section, article, aside, nav, header, footer, .prose');
             potentialContainers.forEach(element => {
                 const computedStyle = window.getComputedStyle(element);
@@ -424,6 +392,82 @@ async function handleRouteChange() {
                 }
             });
         }, 50);
+    } else {
+        // This is an anchor link - let the browser handle the scroll naturally
+        // Use a small delay to ensure content has loaded, then let browser scroll to anchor
+        setTimeout(() => {
+            // The browser will automatically scroll to the anchor
+            // We just need to ensure the content is loaded first
+        }, 50);
+    }
+
+    // Build the route-change event once so dispatch + transition wrapper share it.
+    const event = new CustomEvent('manifest:route-change', {
+        detail: {
+            from: prevRoute,
+            to: newRoute,
+            normalizedPath: newRoute === '/' ? '/' : newRoute.replace(/^\/|\/$/g, '')
+        }
+    });
+
+    // SPA route changes use the View Transitions API when available so the
+    // visibility-toggle that listeners perform inside this dispatch is
+    // animated. Cross-document MPA navigations are already handled by
+    // `@view-transition { navigation: auto }` in the framework's reset CSS;
+    // the same `::view-transition-group(*)` rule (driven by
+    // `--view-transition-duration` / `--view-transition-easing`) covers both.
+    //
+    // The callback is synchronous: visibility/head/anchor listeners mutate
+    // the DOM inside `dispatchEvent` and return. Returning anything async
+    // here would freeze the rendered frame until the promise resolves,
+    // adding the entirety of Alpine's pending-update queue to the perceived
+    // navigation time (1–2s on busy pages).
+    if (shouldUseViewTransition()) {
+        document.startViewTransition(() => {
+            window.dispatchEvent(event);
+        });
+    } else {
+        window.dispatchEvent(event);
+    }
+}
+
+// Decide whether SPA route changes should run inside a View Transition.
+// Three modes, in priority order:
+//
+//   1. `<html data-no-view-transitions>`  → force OFF
+//   2. `<html data-view-transitions>`     → force ON
+//   3. (neither)                          → auto: ON when the current page is
+//                                            under VT_AUTO_THRESHOLD elements,
+//                                            OFF otherwise
+//
+// The auto threshold exists because the View Transitions API rasterizes the
+// full viewport for the "before" and "after" snapshots; cost scales linearly
+// with DOM size and gets noticeable above a few thousand elements (a 10k-
+// element page measured ~500ms per snapshot in dev). Light pages keep the
+// crossfade; heavy pages stay fast.
+//
+// Cross-document (MPA) navigations are unaffected — those use the browser's
+// native cross-document path (`@view-transition { navigation: auto }`),
+// which rasterizes in parallel with page load and doesn't expose the cost.
+//
+// Per-element opt-out (`data-no-view-transition`, singular) on individual
+// elements is handled by the existing reset CSS rule that sets
+// `view-transition-name: none` on them. `prefers-reduced-motion` is
+// respected automatically — the browser falls back to a snap with no
+// animation when the user has it set.
+const VT_AUTO_THRESHOLD = 3000;
+
+function shouldUseViewTransition() {
+    if (typeof document === 'undefined') return false;
+    if (typeof document.startViewTransition !== 'function') return false;
+    const html = document.documentElement;
+    if (!html) return false;
+    if (html.hasAttribute('data-no-view-transitions')) return false;
+    if (html.hasAttribute('data-view-transitions')) return true;
+    try {
+        return document.querySelectorAll('*').length < VT_AUTO_THRESHOLD;
+    } catch {
+        return false;
     }
 }
 

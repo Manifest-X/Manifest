@@ -1205,14 +1205,56 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
     }
 };
 
-// Save cache to localStorage
-TailwindCompiler.prototype.savePersistentCache = function () {
-    try {
-        const serialized = JSON.stringify(Object.fromEntries(this.cache));
-        localStorage.setItem('tailwind-cache', serialized);
-    } catch (error) {
-        console.warn('Failed to save cached styles:', error);
+// Cap on persisted cache entries.  Each entry stores a full compiled
+// stylesheet keyed by the union of classes seen on a given page, so on a
+// multi-page MPA this Map grows fast — and localStorage tops out at ~5MB per
+// origin.  20 covers typical hot paths; rarer routes recompile (cheap).
+TailwindCompiler.prototype.MAX_PERSISTED_CACHE_ENTRIES = 20;
+
+// Drop the oldest entries from this.cache until at most `limit` remain.
+// Uses entry.timestamp; entries without one are evicted first.
+TailwindCompiler.prototype.evictOldestCacheEntries = function (limit) {
+    if (this.cache.size <= limit) return;
+    const sorted = Array.from(this.cache.entries())
+        .sort((a, b) => (a[1].timestamp || 0) - (b[1].timestamp || 0));
+    const toRemove = sorted.length - limit;
+    for (let i = 0; i < toRemove; i++) {
+        this.cache.delete(sorted[i][0]);
     }
+};
+
+// Save cache to localStorage with size cap and quota-aware eviction.
+TailwindCompiler.prototype.savePersistentCache = function () {
+    // Proactive cap so we don't write something we know is at risk.
+    this.evictOldestCacheEntries(this.MAX_PERSISTED_CACHE_ENTRIES);
+    let attempts = 0;
+    while (this.cache.size > 0 && attempts < 4) {
+        try {
+            const serialized = JSON.stringify(Object.fromEntries(this.cache));
+            localStorage.setItem('tailwind-cache', serialized);
+            return;
+        } catch (error) {
+            // QuotaExceededError (name varies by browser): drop the oldest
+            // half and retry.  Anything else: bail.
+            const isQuotaError =
+                error && (
+                    error.name === 'QuotaExceededError' ||
+                    error.code === 22 ||
+                    error.code === 1014 // Firefox: NS_ERROR_DOM_QUOTA_REACHED
+                );
+            if (!isQuotaError) {
+                console.warn('Failed to save cached styles:', error);
+                return;
+            }
+            const halved = Math.max(1, Math.floor(this.cache.size / 2));
+            this.evictOldestCacheEntries(halved);
+            attempts++;
+        }
+    }
+    // Last resort: cache is unusable in this origin right now, clear the slot
+    // so the next session starts clean.  This is a perf optimization, not
+    // correctness — drop quietly.
+    try { localStorage.removeItem('tailwind-cache'); } catch (_) {}
 };
 
 // Load cache from localStorage

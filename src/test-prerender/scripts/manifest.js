@@ -20,7 +20,7 @@
 	 * innerHTML) of every element that needs runtime hydration.  This
 	 * function runs once on page load BEFORE any plugin or Alpine starts —
 	 * it walks the contract, restores source state, and removes its own
-	 * markers.  Every downstream plugin (themes, router, data, markdown,
+	 * markers.  Every downstream plugin (colors, router, data, markdown,
 	 * icons, …) then sees exactly the DOM the user authored, exactly as it
 	 * would in a live SPA.  No plugin needs a "prerender mode" branch.
 	 *
@@ -191,14 +191,16 @@
 		'markdown',
 		'svg',
 		'code',
-		'themes',
+		'color',
 		'toasts',
 		'tooltips',
 		'dropdowns',
 		'tabs',
 		'slides',
 		'resize',
-		'colorpicker'
+		'colorpicker',
+		'url-parameters',
+		'virtual'
 	];
 
 	// Appwrite integration plugins (opt-in only, never auto-loaded)
@@ -248,20 +250,16 @@
 	let _pluginBase = null;
 	function setPluginBase(b) { _pluginBase = b || null; }
 	function getPluginUrl(pluginName, version = DEFAULT_VERSION) {
+		// Map hyphenated plugin API names to their dotted file names.
+		// `appwrite-auth` → `manifest.appwrite.auth.js`
+		// `url-parameters` → `manifest.url.parameters.js`
+		const fileName = pluginName.replace(/-/g, '.');
 		if (_pluginBase) {
 			const base = _pluginBase.replace(/\/$/, '');
-			if (pluginName.startsWith('appwrite-')) {
-				const appwriteName = pluginName.replace('appwrite-', 'appwrite.');
-				return `${base}/manifest.${appwriteName}.js`;
-			}
-			return `${base}/manifest.${pluginName}.js`;
+			return `${base}/manifest.${fileName}.js`;
 		}
 		const base = getBaseUrl(version);
-		if (pluginName.startsWith('appwrite-')) {
-			const appwriteName = pluginName.replace('appwrite-', 'appwrite.');
-			return `${base}/manifest.${appwriteName}.min.js`;
-		}
-		return `${base}/manifest.${pluginName}.min.js`;
+		return `${base}/manifest.${fileName}.min.js`;
 	}
 
 	// Resolve Alpine CDN URL from a data-alpine value (version tag or full URL)

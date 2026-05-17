@@ -4569,7 +4569,7 @@ function initializeTeamsConvenience() {
             // CRITICAL: Check if convenience methods exist - use isCreatingTeam as the key check
             // This ensures methods are re-added if the store was replaced or methods were lost after idle
             const needsReinitialization = !store.isCreatingTeam || typeof store.isCreatingTeam !== 'function';
-
+            
             // Ensure cache properties are initialized (methods are already in store)
             if (!store._permissionCache) store._permissionCache = {};
             if (store._userRoleCache === undefined) store._userRoleCache = null;

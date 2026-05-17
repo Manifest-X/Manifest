@@ -16,6 +16,7 @@ const CONFIG = {
         'manifest.components.processor.js',
         'manifest.components.swapping.js',
         'manifest.components.mutation.js',
+        'manifest.components.prefetch.js',
         'manifest.components.main.js'
     ],
 
@@ -698,6 +699,8 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
         { source: 'scripts/manifest.url.parameters.js', dest: '../lib/manifest.url.parameters.js' },
         { source: 'scripts/manifest.utilities.js', dest: '../lib/manifest.utilities.js' },
+        { source: 'scripts/manifest.virtual.js', dest: '../lib/manifest.virtual.js' },
+        { source: 'scripts/manifest.export.js', dest: '../lib/manifest.export.js' },
 
         // Individual CSS files
         { source: 'styles/elements/manifest.accordion.css', dest: '../lib/manifest.accordion.css' },

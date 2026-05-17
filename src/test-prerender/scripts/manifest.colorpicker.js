@@ -497,8 +497,9 @@ function initializeColorpickerPlugin() {
     //     "colorpicker": ["myColors", "brand"]                            // multiple sources
     //   }
     //
-    // The colorpicker plugin reads $x.manifest.colorpicker to know which $x.* sources to
-    // treat as library content, then merges them in listed order. Each source may contain:
+    // The colorpicker plugin scans $x.manifest.data for entries flagged with a
+    // `colorpicker:` key, then merges the loaded $x.<name> values in declaration
+    // order. Each source may contain:
     //   _tailwind:   (optional) replaces the built-in Tailwind group entirely
     //   _ios:        (optional) replaces the built-in iOS group entirely
     //   <Any Name>:  custom groups appended to the library after built-ins
@@ -544,7 +545,7 @@ function initializeColorpickerPlugin() {
         const groups = [];
         if (recent.length) {
             const recentGroup = normalizeGroup(recent, 'Recent');
-            recentGroup._isRecent = true;  // marker for contextmenu binding
+            recentGroup._isRecent = true;  // marker — renderer picks the `library-recent-swatch` template over `library-swatch`
             groups.push(recentGroup);
         }
 
@@ -563,6 +564,58 @@ function initializeColorpickerPlugin() {
             groups.push(...normalizeLibraryInput(buildIosPreset()));
         }
 
+        return groups;
+    }
+
+    // Walk a normalized groups array and resolve any reference-style strings in
+    // user-facing labels (group / palette / swatch names) against Alpine's scope.
+    // Two reference shapes are recognized:
+    //   • Bare path:  "$x.colorLabels.primary"           → Alpine.evaluate(...)
+    //   • Template:   "${$locale.t('brand.primary')}"     → Alpine.evaluate(...) as a literal
+    // Plain strings pass through unchanged. Failed lookups return the original
+    // string so a missing key surfaces as-is rather than rendering empty.
+    //
+    // Reading via Alpine.evaluate inside the surrounding render effect registers
+    // reactive deps on the referenced data — locale switches and content updates
+    // re-trigger the render automatically.
+    function _resolveLibraryRefs(groups) {
+        if (!Array.isArray(groups) || groups.length === 0) return groups;
+        const ctx = document.body;
+        const resolve = (val) => {
+            if (typeof val !== 'string' || val.length === 0) return val;
+            const trimmed = val.trim();
+            const isBareRef = trimmed.startsWith('$x.') || trimmed.startsWith('$locale')
+                || trimmed.startsWith('$x[') || trimmed.startsWith('$locale[');
+            const hasInterp = /\$\{[^}]+\}/.test(trimmed);
+            if (!isBareRef && !hasInterp) return val;
+            try {
+                if (window.Alpine?.evaluate) {
+                    const expr = isBareRef && !hasInterp ? trimmed : '`' + trimmed + '`';
+                    const out = Alpine.evaluate(ctx, expr);
+                    if (out == null) return val;
+                    return typeof out === 'string' ? out : String(out);
+                }
+            } catch {}
+            return val;
+        };
+        for (const g of groups) {
+            if (g && typeof g.name === 'string') g.name = resolve(g.name);
+            if (Array.isArray(g?.palettes)) {
+                for (const p of g.palettes) {
+                    if (p && typeof p.name === 'string') p.name = resolve(p.name);
+                    if (Array.isArray(p?.colors)) {
+                        for (const c of p.colors) {
+                            if (c && typeof c.name === 'string') c.name = resolve(c.name);
+                        }
+                    }
+                }
+            }
+            if (Array.isArray(g?.colors)) {
+                for (const c of g.colors) {
+                    if (c && typeof c.name === 'string') c.name = resolve(c.name);
+                }
+            }
+        }
         return groups;
     }
 
@@ -1587,12 +1640,21 @@ function initializeColorpickerPlugin() {
                         evalFn(v => { this._libraryResolvedData = v; this._doRenderLibrary(); });
                     });
                 } else if (window.Alpine?.effect) {
-                    // Zero-config — read $x.manifest.colorpicker (string or array of source names)
-                    // and auto-merge those $x.* sources into the library. Everything happens
-                    // synchronously inside the effect so Alpine tracks all reactive deps ($locale,
-                    // $x.manifest, each $x.<name>) and re-runs the full pass on any change.
-                    // Evaluate against document.body so $x magic is always in scope (the
-                    // container may be detached/popover content without its own scope chain).
+                    // Zero-config — scan `$x.manifest.data` for entries flagged with a
+                    // `colorpicker:` key (mirroring how `locales:`, `appwriteTableId`, etc.
+                    // self-identify their plugin). Each flagged entry is loaded normally
+                    // by the data plugin; we collect the resulting `$x.<name>` values and
+                    // merge them into the library in declaration order.
+                    //
+                    // Multiple sources are supported — split your default-palette overrides
+                    // (`_tailwind`, `_ios`) and your custom palettes across as many files
+                    // as you like. Order in `manifest.data` determines render order.
+                    //
+                    // Everything happens synchronously inside the effect so Alpine tracks
+                    // all reactive deps ($locale, $x.manifest, each $x.<name>) and re-runs
+                    // the full pass on any change. Evaluate against document.body so $x
+                    // magic is always in scope (the container may be detached/popover
+                    // content without its own scope chain).
                     const evalCtx = document.body;
 
                     // Manifest's data plugin REPLACES the $x.<source> proxy reference on load
@@ -1612,10 +1674,24 @@ function initializeColorpickerPlugin() {
                         catch { return recentKey + '#' + names.join('|') + '::[unserializable]'; }
                     };
                     const readSources = () => {
-                        let flag = null;
-                        try { flag = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.colorpicker'); } catch {}
-                        const raw = !flag ? [] : (Array.isArray(flag) ? flag : [flag]);
-                        const names = raw.filter(n => typeof n === 'string' && n.trim().length > 0);
+                        // Discover names by scanning manifest.data for entries with a
+                        // `colorpicker` key. The key may hold a path string or a locale
+                        // map — the data plugin handles loading either shape; we just
+                        // need the set of names whose loaded data should feed the library.
+                        let dataMap = null;
+                        try { dataMap = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.data'); } catch {}
+                        const names = [];
+                        if (dataMap && typeof dataMap === 'object') {
+                            for (const name of Object.keys(dataMap)) {
+                                if (name.startsWith('$') || name.startsWith('_')) continue;
+                                if (name === 'valueOf' || name === 'toString' || name === 'contentType') continue;
+                                const entry = dataMap[name];
+                                if (entry && typeof entry === 'object' && !Array.isArray(entry)
+                                    && entry.colorpicker !== undefined) {
+                                    names.push(name);
+                                }
+                            }
+                        }
                         const collected = names.map(name => {
                             try { return Alpine.evaluate(evalCtx, '$x.' + name); } catch { return null; }
                         });
@@ -1663,6 +1739,7 @@ function initializeColorpickerPlugin() {
             },
 
             _resolveLibraryGroups() {
+                let groups;
                 if (this.libraryRootValue) {
                     let data = this._libraryResolvedData;
                     if (data == null
@@ -1670,13 +1747,19 @@ function initializeColorpickerPlugin() {
                         || (typeof data === 'object' && !Array.isArray(data) && _cleanLibraryEntries(data).length === 0)) {
                         data = buildDefaultLibrary();
                     }
-                    let groups = normalizeLibraryInput(data);
+                    groups = normalizeLibraryInput(data);
                     const totalSwatches = groups.reduce((n, g) => n + (g.colors?.length || 0)
                         + (g.palettes?.reduce((m, p) => m + (p.colors?.length || 0), 0) || 0), 0);
                     if (totalSwatches === 0) groups = normalizeLibraryInput(buildDefaultLibrary());
-                    return groups;
+                } else {
+                    groups = composeLibraryFromSources(this._libraryDiscoveredData || []);
                 }
-                return composeLibraryFromSources(this._libraryDiscoveredData || []);
+                // Resolve any `$x.<path>` or `${...}` template-literal references in
+                // group / palette / swatch names, so a single colorpicker file can
+                // chain into a separate localization data source without dev-side
+                // template tweaks. Reactive reads inside `Alpine.evaluate` register
+                // deps on the surrounding render effect → locale switches re-render.
+                return _resolveLibraryRefs(groups);
             },
 
             // Render ONE container (used when a new container registers post-mount
@@ -2020,11 +2103,37 @@ function initializeColorpickerPlugin() {
                     this._injectDefaultUI();
                 }
 
-                // Initialize from hidden input value
-                const initVal = this.hiddenInput ? this.hiddenInput.value : '#000000';
+                // Auto-popovers register their picker state BEFORE the swatch hook gets
+                // a chance to set `x-dropdown` on the trigger element, so the early
+                // triggerBtn lookup misses. By mount-time (setTimeout 0) the swatch
+                // wiring has finished, so re-query if we don't have one yet.
+                if (!this.triggerBtn && this.rootEl.id) {
+                    this.triggerBtn = document.querySelector(`[x-dropdown="${this.rootEl.id}"]`);
+                }
+
+                // Initialize the picker state from whatever source has a real value.
+                // Resolution priority matches the retarget flow on swatch-click so the
+                // picker's reactive value reads (`$colorpicker(id)`, .hex, .css, etc.)
+                // are correct from first paint — not just after the user opens the menu.
+                //   1. trigger swatch's x-model getter
+                //   2. trigger swatch's paired hidden input (form-participation flow)
+                //   3. trigger swatch's `value` attribute
+                //   4. picker container's own hidden input child
+                //   5. fallback '#000000'
+                let initVal = '';
+                const tb = this.triggerBtn;
+                if (tb) {
+                    if (tb._cpModelGetter) {
+                        tb._cpModelGetter(v => { if (typeof v === 'string' && v.length) initVal = v; });
+                    }
+                    if (!initVal && tb._cpHiddenInput && tb._cpHiddenInput.value) initVal = tb._cpHiddenInput.value;
+                    if (!initVal && tb.getAttribute('value')) initVal = tb.getAttribute('value');
+                }
+                if (!initVal && this.hiddenInput) initVal = this.hiddenInput.value;
                 this.setFromString(initVal || '#000000');
 
-                // Seed trigger swatch
+                // Seed trigger swatch CSS var so the border-color derivation paints
+                // correctly before any interaction.
                 if (this.triggerBtn) this.triggerBtn.style.setProperty('--color-picker-swatch', this.toSwatchColor());
 
                 // Mount all solid-panel instances (Solid tab + any others)
@@ -2491,6 +2600,20 @@ function initializeColorpickerPlugin() {
 
                 const wireSwatchTo = (target) => {
                     if (!target) return;
+
+                    // Alias the picker's api under the swatch's id so consumers reading
+                    // via `$colorpicker('<swatch-id>')` track the right reactive key
+                    // (otherwise the auto-popover registers under `colorpicker-swatch-N`
+                    // and the consumer effect's tracked dep on `_pickerRegistry['<swatch-id>']`
+                    // would never fire). Run after mount so the api exists.
+                    const aliasToSwatchId = () => {
+                        if (!el.id) return;
+                        const st = target._colorpickerState
+                            || target.querySelector?.('[x-colorpicker]')?._colorpickerState;
+                        if (st && st.api) _pickerRegistry[el.id] = st.api;
+                        else setTimeout(aliasToSwatchId, 0);
+                    };
+                    aliasToSwatchId();
 
                     const isDialog = target.tagName === 'DIALOG';
 
@@ -3027,7 +3150,7 @@ window.ensureColorpickerPluginInitialized = ensureColorpickerPluginInitialized;
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensureColorpickerPluginInitialized);
 document.addEventListener('alpine:init', ensureColorpickerPluginInitialized);
 if (window.Alpine && typeof window.Alpine.directive === 'function') setTimeout(ensureColorpickerPluginInitialized, 0);
-else if (document.readyState === 'complete') {
+else {
     const check = setInterval(() => { if (window.Alpine && typeof window.Alpine.directive === 'function') { clearInterval(check); ensureColorpickerPluginInitialized(); } }, 10);
     setTimeout(() => clearInterval(check), 5000);
 }

@@ -217,10 +217,15 @@ if (document.readyState === 'loading') {
 
 document.addEventListener('alpine:init', ensureUrlParametersPluginInitialized);
 
-// If Alpine is already initialized when this script loads, initialize immediately
+// If Alpine is already initialized when this script loads, initialize immediately.
+// Otherwise ALWAYS poll until Alpine is available — the previous logic gated the
+// polling on `document.readyState === 'complete'`, which produced a dead window
+// when the loader injected this plugin script after DOMContentLoaded but before
+// document complete: alpine:init had already fired, the readyState gate failed,
+// and the plugin sat unregistered for the lifetime of the page.
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     setTimeout(ensureUrlParametersPluginInitialized, 0);
-} else if (document.readyState === 'complete') {
+} else {
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {
             clearInterval(checkAlpine);

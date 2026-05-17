@@ -6,6 +6,17 @@ let markedPromise = null;
 // Cache for fetched markdown files to prevent duplicate requests
 const markdownCache = new Map();
 
+// Invalidate the markdown fetch cache when mnfst-run signals a data file
+// changed on disk. Without this, a saved .md file is re-read by the data
+// plugin but x-markdown still serves the old content from cache; combined
+// with the lastProcessedContent short-circuit in the directive's effect,
+// the article appears blank until the user manually reloads.
+if (typeof window !== 'undefined') {
+    window.addEventListener('manifest:dev-reload', () => {
+        markdownCache.clear();
+    });
+}
+
 // Load marked.js from CDN
 async function loadMarkedJS() {
     if (typeof marked !== 'undefined') {
@@ -527,8 +538,17 @@ async function initializeMarkdownPlugin() {
                         }
                     }
 
-                    // Skip if content hasn't changed (prevents unnecessary re-renders)
+                    // Skip re-render if content hasn't changed, but still restore
+                    // visibility — during a dev-reload the data plugin briefly
+                    // clears its source cache, which makes the expression
+                    // resolve to undefined and pushes opacity to 0; if we
+                    // early-return here without restoring it, the article stays
+                    // hidden even though innerHTML is intact.
                     if (markdownContent === lastProcessedContent) {
+                        if (el.innerHTML && el.innerHTML.trim() !== '') {
+                            hasContent = true;
+                            el.style.opacity = '1';
+                        }
                         return;
                     }
                     lastProcessedContent = markdownContent;
