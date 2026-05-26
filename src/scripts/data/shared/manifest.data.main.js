@@ -1205,7 +1205,10 @@ async function initializeDataSourcesPlugin() {
                 const manifestData = manifest;
                 // Remove internal properties that shouldn't be exposed
                 const { data, appwrite, components, preloadedComponents, ...publicManifest } = manifestData;
-                updateStore('manifest', publicManifest);
+                // allowDuringInit: setIsInitializing(true) is active, so without this
+                // flag updateStore short-circuits and $x.manifest stays unpopulated.
+                window.ManifestDataStore.dataSourceCache.set(`manifest:${locale}`, publicManifest);
+                updateStore('manifest', publicManifest, { loading: false, error: null, ready: true, allowDuringInit: true });
 
                 const store = Alpine.store('data');
                 Alpine.store('data', {

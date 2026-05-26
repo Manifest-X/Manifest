@@ -26,12 +26,34 @@ function isVisible(el) {
 // Anchors functionality
 function initializeAnchors() {
 
-    // Register anchors directive  
+    // Register anchors directive
     Alpine.directive('anchors', (el, { expression, modifiers }, { effect, evaluateLater, Alpine }) => {
 
 
         try {
             const parseExpression = parseAnchorsExpression;
+
+            // Apply an Alpine-style :class binding to the cloned link. Goes
+            // through Alpine.evaluate so the expression runs in Alpine's
+            // sandboxed evaluator (no eval()) and gets anchor as a real scope
+            // variable — not interpolated into source. Supports the three
+            // standard :class shapes: object ({foo: cond}), string, array.
+            const applyClassBinding = (linkElement, classBinding, anchor) => {
+                try {
+                    const result = Alpine.evaluate(linkElement, classBinding, { scope: { anchor } });
+                    if (result && typeof result === 'object' && !Array.isArray(result)) {
+                        Object.entries(result).forEach(([className, active]) => {
+                            if (active) linkElement.classList.add(className);
+                        });
+                    } else if (typeof result === 'string') {
+                        result.split(/\s+/).filter(Boolean).forEach(c => linkElement.classList.add(c));
+                    } else if (Array.isArray(result)) {
+                        result.filter(c => typeof c === 'string').forEach(c => linkElement.classList.add(c));
+                    }
+                } catch (error) {
+                    console.warn('[Manifest Anchors] Could not evaluate class binding:', classBinding, error);
+                }
+            };
 
             // Extract anchors function (only from visible scope containers to avoid prior-route content)
             const extractAnchors = (expr) => {
@@ -141,42 +163,7 @@ function initializeAnchors() {
                                 if (linkElement.hasAttribute(':class')) {
                                     const classBinding = linkElement.getAttribute(':class');
                                     linkElement.removeAttribute(':class');
-
-                                    try {
-                                        // Create a simple evaluator for class bindings
-                                        const evaluateClassBinding = (binding, anchor) => {
-                                            // Replace anchor.property references with actual values
-                                            let evaluated = binding
-                                                .replace(/anchor\.tag/g, `'${anchor.tag}'`)
-                                                .replace(/anchor\.selected/g, anchor.selected ? 'true' : 'false')
-                                                .replace(/anchor\.index/g, anchor.index)
-                                                .replace(/anchor\.id/g, `'${anchor.id}'`)
-                                                .replace(/anchor\.text/g, `'${anchor.text.replace(/'/g, "\\'")}'`)
-                                                .replace(/anchor\.link/g, `'${anchor.link}'`)
-                                                .replace(/anchor\.class/g, `'${anchor.class}'`);
-
-                                            // Simple object evaluation for class bindings
-                                            if (evaluated.includes('{') && evaluated.includes('}')) {
-                                                // Extract the object part
-                                                const objectMatch = evaluated.match(/\{([^}]+)\}/);
-                                                if (objectMatch) {
-                                                    const objectContent = objectMatch[1];
-                                                    const classPairs = objectContent.split(',').map(pair => pair.trim());
-
-                                                    classPairs.forEach(pair => {
-                                                        const [className, condition] = pair.split(':').map(s => s.trim());
-                                                        if (condition && eval(condition)) {
-                                                            linkElement.classList.add(className.replace(/['"]/g, ''));
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        };
-
-                                        evaluateClassBinding(classBinding, anchor);
-                                    } catch (error) {
-                                        console.warn('[Manifest Anchors] Could not evaluate class binding:', classBinding, error);
-                                    }
+                                    applyClassBinding(linkElement, classBinding, anchor);
                                 }
 
                                 containerElement.appendChild(linkElement);
@@ -203,42 +190,7 @@ function initializeAnchors() {
                                 if (linkElement.hasAttribute(':class')) {
                                     const classBinding = linkElement.getAttribute(':class');
                                     linkElement.removeAttribute(':class');
-
-                                    try {
-                                        // Create a simple evaluator for class bindings
-                                        const evaluateClassBinding = (binding, anchor) => {
-                                            // Replace anchor.property references with actual values
-                                            let evaluated = binding
-                                                .replace(/anchor\.tag/g, `'${anchor.tag}'`)
-                                                .replace(/anchor\.selected/g, anchor.selected ? 'true' : 'false')
-                                                .replace(/anchor\.index/g, anchor.index)
-                                                .replace(/anchor\.id/g, `'${anchor.id}'`)
-                                                .replace(/anchor\.text/g, `'${anchor.text.replace(/'/g, "\\'")}'`)
-                                                .replace(/anchor\.link/g, `'${anchor.link}'`)
-                                                .replace(/anchor\.class/g, `'${anchor.class}'`);
-
-                                            // Simple object evaluation for class bindings
-                                            if (evaluated.includes('{') && evaluated.includes('}')) {
-                                                // Extract the object part
-                                                const objectMatch = evaluated.match(/\{([^}]+)\}/);
-                                                if (objectMatch) {
-                                                    const objectContent = objectMatch[1];
-                                                    const classPairs = objectContent.split(',').map(pair => pair.trim());
-
-                                                    classPairs.forEach(pair => {
-                                                        const [className, condition] = pair.split(':').map(s => s.trim());
-                                                        if (condition && eval(condition)) {
-                                                            linkElement.classList.add(className.replace(/['"]/g, ''));
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        };
-
-                                        evaluateClassBinding(classBinding, anchor);
-                                    } catch (error) {
-                                        console.warn('[Manifest Anchors] Could not evaluate class binding:', classBinding, error);
-                                    }
+                                    applyClassBinding(linkElement, classBinding, anchor);
                                 }
 
                                 el.parentElement.insertBefore(linkElement, el);

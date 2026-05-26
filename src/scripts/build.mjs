@@ -3,6 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { glob } from 'glob';
 import cssnano from 'cssnano';
 import postcss from 'postcss';
@@ -162,8 +163,11 @@ const CONFIG = {
         // Directories to process
         sourceDirs: ['styles/core', 'styles/elements', 'styles/utilities'],
 
-        // Output directory
-        outputDir: 'styles'
+        // Output directory — build artifacts are written straight to lib/ to
+        // avoid emitting intermediate copies into src/styles/ that then get
+        // re-copied. lib/ is the canonical home for everything users consume
+        // (npm package + jsDelivr).
+        outputDir: '../lib'
     }
 };
 
@@ -195,60 +199,15 @@ function buildSubscripts() {
     console.log('✓ Subscripts built successfully!\n');
 }
 
-// Copy compiled scripts to docs/temp-scripts
-function copyScriptsToDocs() {
-    console.log('Copying compiled scripts to docs/temp-scripts...\n');
-
-    // Ensure docs/temp-scripts directory exists
-    const docsTempScriptsDir = path.join('..', 'docs', 'temp-scripts');
-    if (!fs.existsSync(docsTempScriptsDir)) {
-        fs.mkdirSync(docsTempScriptsDir, { recursive: true });
-    }
-
-    // List of compiled scripts to copy
-    const scriptsToCopy = [
-        'manifest.code.js',
-        'manifest.colorpicker.js',
-        'manifest.components.js',
-        'manifest.data.js',
-        'manifest.dropdowns.js',
-        'manifest.icons.js',
-        'manifest.localization.js',
-        'manifest.markdown.js',
-        'manifest.resize.js',
-        'manifest.router.js',
-        'manifest.svg.js',
-        'manifest.tabs.js',
-        'manifest.color.js',
-        'manifest.toasts.js',
-        'manifest.tooltips.js',
-        'manifest.url.parameters.js',
-        'manifest.utilities.js',
-        'manifest.appwrite.auth.js',
-        'manifest.appwrite.data.js',
-        'manifest.appwrite.presence.js'
-    ];
-
-    let copiedCount = 0;
-    for (const script of scriptsToCopy) {
-        const sourcePath = path.join('scripts', script);
-        const destPath = path.join(docsTempScriptsDir, script);
-
-        if (fs.existsSync(sourcePath)) {
-            fs.copyFileSync(sourcePath, destPath);
-            console.log(`  ✓ Copied ${script}`);
-            copiedCount++;
-        } else {
-            console.warn(`  ⚠ Warning: ${script} not found, skipping`);
-        }
-    }
-
-    console.log(`\n✓ Copied ${copiedCount} script(s) to docs/temp-scripts\n`);
-}
-
 // Build stylesheets
 async function buildStylesheets() {
     console.log('Building stylesheets...\n');
+
+    // Ensure lib/ exists — stylesheet output now writes there directly.
+    const libDir = path.join('..', 'lib');
+    if (!fs.existsSync(libDir)) {
+        fs.mkdirSync(libDir, { recursive: true });
+    }
 
     // Step 1: Build the main manifest.css file
     buildMainStylesheet();
@@ -565,22 +524,14 @@ function distributeStandaloneFiles() {
             continue;
         }
 
-        // Copy to main styles directory
+        // Copy to output directory (lib/)
         const outputPath = path.join(CONFIG.stylesheets.outputDir, standaloneFile);
         fs.copyFileSync(sourcePath, outputPath);
-        console.log(`  ✓ Copied ${standaloneFile} to styles/`);
+        console.log(`  ✓ Copied ${standaloneFile} → ${outputPath}`);
 
-        // Copy minified version if it exists
-        const minifiedFile = standaloneFile.replace('.css', '.min.css');
-        const minifiedSourcePath = path.join(CONFIG.stylesheets.outputDir, minifiedFile);
-        if (fs.existsSync(minifiedSourcePath)) {
-            const minifiedOutputPath = path.join(CONFIG.stylesheets.outputDir, minifiedFile);
-            fs.copyFileSync(minifiedSourcePath, minifiedOutputPath);
-            console.log(`  ✓ Copied ${minifiedFile} to styles/`);
-        }
-
-        // Note: Files are no longer copied to docs or templates/starter
-        // These directories now maintain their own local file versions
+        // Note: standalone .min.css siblings (e.g. manifest.code.min.css) are
+        // produced by minifyCssFile() writing directly to outputDir; no extra
+        // copy step needed here.
     }
 
     console.log('');
@@ -650,11 +601,6 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
     console.log('');
 }
 
-// Build rollup entry files (no longer needed - keeping function stub for potential future use)
-function buildRollupFiles() {
-    console.log('Skipping rollup build - using dynamic loader (manifest.js) instead\n');
-}
-
 // Copy files to lib directory for clean jsdelivr URLs
 function copyFilesToDist() {
     console.log('Copying files to lib directory...\n');
@@ -670,11 +616,9 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.js', dest: '../lib/manifest.js' },  // Dynamic loader (source)
         { source: 'scripts/manifest.d.ts', dest: '../lib/manifest.d.ts' },  // Ambient type declarations
         { source: 'scripts/manifest.schema.json', dest: '../lib/manifest.schema.json' },  // manifest.json JSON Schema
-        { source: 'styles/manifest.css', dest: '../lib/manifest.css' },
-        { source: 'styles/manifest.min.css', dest: '../lib/manifest.min.css' },
-        { source: 'styles/manifest.theme.css', dest: '../lib/manifest.theme.css' },
-        { source: 'styles/manifest.code.css', dest: '../lib/manifest.code.css' },
-        { source: 'styles/manifest.code.min.css', dest: '../lib/manifest.code.min.css' },
+        // Note: manifest.css, manifest.min.css, manifest.theme.css, manifest.code.css,
+        // and manifest.code.min.css are written directly to ../lib/ by buildStylesheets()
+        // — no intermediate copy in src/styles/ to forward from.
 
         // Individual plugin files
         { source: 'scripts/manifest.appwrite.auth.js', dest: '../lib/manifest.appwrite.auth.js' },
@@ -685,6 +629,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.colorpicker.js', dest: '../lib/manifest.colorpicker.js' },
         { source: 'scripts/manifest.data.js', dest: '../lib/manifest.data.js' },
         { source: 'scripts/manifest.dropdowns.js', dest: '../lib/manifest.dropdowns.js' },
+        { source: 'scripts/manifest.export.js', dest: '../lib/manifest.export.js' },
         { source: 'scripts/manifest.icons.js', dest: '../lib/manifest.icons.js' },
         { source: 'scripts/manifest.localization.js', dest: '../lib/manifest.localization.js' },
         { source: 'scripts/manifest.markdown.js', dest: '../lib/manifest.markdown.js' },
@@ -698,6 +643,12 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
         { source: 'scripts/manifest.url.parameters.js', dest: '../lib/manifest.url.parameters.js' },
         { source: 'scripts/manifest.utilities.js', dest: '../lib/manifest.utilities.js' },
+
+        // Tailwind bundle — loader requests `${base}/manifest.tailwind.min.js`
+        // and jsDelivr auto-minifies, so we only need to ship the unminified
+        // source under the canonical name. Source-of-truth is the versioned
+        // file in src/scripts/ (CONFIG.dependencies.TAILWIND_V4_FILE).
+        { source: `scripts/${CONFIG.dependencies.TAILWIND_V4_FILE}`, dest: '../lib/manifest.tailwind.js' },
 
         // Individual CSS files
         { source: 'styles/elements/manifest.accordion.css', dest: '../lib/manifest.accordion.css' },
@@ -737,6 +688,60 @@ function copyFilesToDist() {
     console.log(`\n✓ Copied ${copiedCount} file(s) to lib directory\n`);
 }
 
+// Compute SHA-384 of every plugin file in lib/, inline the resulting map into
+// the loader (so the loader can apply `script.integrity` when it dynamically
+// injects plugin scripts), and write lib/manifest.integrity.json for users
+// who self-host or want to audit hashes. SRI is the defense against CDN
+// poisoning / npm hijack — without it, a tampered jsDelivr response runs
+// silently. With it, the browser refuses the script and the site breaks
+// loudly (which is the safe failure mode).
+function emitIntegrityMap() {
+    console.log('Emitting SRI integrity map...');
+
+    const libDir = path.join('..', 'lib');
+    const files = fs.readdirSync(libDir).filter(f =>
+        (f.endsWith('.js') || f.endsWith('.min.js')) && f !== 'manifest.js'
+    );
+
+    function hashFile(filePath) {
+        const body = fs.readFileSync(filePath);
+        const digest = createHash('sha384').update(body).digest('base64');
+        return `sha384-${digest}`;
+    }
+
+    const integrity = {};
+    for (const f of files) {
+        integrity[f] = hashFile(path.join(libDir, f));
+    }
+
+    // Inline the map into lib/manifest.js by replacing the placeholder.  The
+    // loader's own hash is then computed AFTER this patch so users can SRI
+    // the loader tag itself from the integrity map.
+    const loaderPath = path.join(libDir, 'manifest.js');
+    const loaderSource = fs.readFileSync(loaderPath, 'utf8');
+    const PLACEHOLDER = 'const INTEGRITY = {};';
+    if (!loaderSource.includes(PLACEHOLDER)) {
+        console.warn(`  ⚠ Loader missing '${PLACEHOLDER}' — SRI map not inlined.`);
+    } else {
+        const inlined = loaderSource.replace(
+            PLACEHOLDER,
+            `const INTEGRITY = ${JSON.stringify(integrity, null, 2)};`
+        );
+        fs.writeFileSync(loaderPath, inlined);
+        console.log(`  ✓ Inlined integrity map (${Object.keys(integrity).length} files) into lib/manifest.js`);
+    }
+
+    // Hash the loader AFTER patching so the value in integrity.json matches
+    // what users actually fetch from CDN.
+    integrity['manifest.js'] = hashFile(loaderPath);
+
+    const mapPath = path.join(libDir, 'manifest.integrity.json');
+    fs.writeFileSync(mapPath, JSON.stringify(integrity, null, 2) + '\n');
+    console.log(`  ✓ Wrote ${mapPath}`);
+    console.log(`\n  Loader integrity (for <script integrity=> on user HTML):`);
+    console.log(`    ${integrity['manifest.js']}\n`);
+}
+
 // Main build function
 async function build() {
     console.log('🚀 Starting Manifest build process...\n');
@@ -751,6 +756,9 @@ async function build() {
         // Step 4: Copy files to lib directory
         copyFilesToDist();
 
+        // Step 5: Emit SRI integrity map + inline into loader
+        emitIntegrityMap();
+
         console.log('✅ Build process completed successfully!');
 
     } catch (error) {
@@ -759,150 +767,5 @@ async function build() {
     }
 }
 
-// Copy specific files to docs directory
-function copyToDocs() {
-    console.log('Copying files to docs...');
-
-    // Ensure docs directories exist
-    const docsScriptsDir = path.join('..', 'docs', 'scripts');
-    const docsStylesDir = path.join('..', 'docs', 'styles');
-
-    if (!fs.existsSync(docsScriptsDir)) {
-        fs.mkdirSync(docsScriptsDir, { recursive: true });
-    }
-    if (!fs.existsSync(docsStylesDir)) {
-        fs.mkdirSync(docsStylesDir, { recursive: true });
-    }
-
-    // Copy manifest.css to docs/styles
-    const cssSource = path.join('styles', 'manifest.css');
-    const cssMinSource = path.join('styles', 'manifest.min.css');
-    const cssDest = path.join(docsStylesDir, 'manifest.css');
-    const cssMinDest = path.join(docsStylesDir, 'manifest.min.css');
-
-    if (fs.existsSync(cssSource)) {
-        fs.copyFileSync(cssSource, cssDest);
-        console.log('  ✓ Copied manifest.css to docs/styles');
-    } else {
-        console.warn('  ⚠ Warning: manifest.css not found');
-    }
-
-    if (fs.existsSync(cssMinSource)) {
-        fs.copyFileSync(cssMinSource, cssMinDest);
-        console.log('  ✓ Copied manifest.min.css to docs/styles');
-    } else {
-        console.warn('  ⚠ Warning: manifest.min.css not found');
-    }
-
-    // Copy standalone files to docs/styles
-    for (const standaloneFile of CONFIG.stylesheets.standaloneFiles) {
-        const source = path.join('styles', standaloneFile);
-        const dest = path.join(docsStylesDir, standaloneFile);
-
-        if (fs.existsSync(source)) {
-            fs.copyFileSync(source, dest);
-            console.log(`  ✓ Copied ${standaloneFile} to docs/styles`);
-        } else {
-            console.warn(`  ⚠ Warning: ${standaloneFile} not found`);
-        }
-
-        // Copy minified version if it exists
-        const minifiedFile = standaloneFile.replace('.css', '.min.css');
-        const minifiedSource = path.join('styles', minifiedFile);
-        const minifiedDest = path.join(docsStylesDir, minifiedFile);
-
-        if (fs.existsSync(minifiedSource)) {
-            fs.copyFileSync(minifiedSource, minifiedDest);
-            console.log(`  ✓ Copied ${minifiedFile} to docs/styles`);
-        }
-    }
-
-    console.log('');
-}
-
-// Copy files to root for clean npm package structure
-function copyFilesToRoot() {
-    console.log('Copying files to root for clean npm package structure...');
-
-    const filesToCopy = [
-        { source: 'scripts/manifest.js', dest: 'manifest.js' },  // Dynamic loader
-        { source: 'styles/manifest.css', dest: 'manifest.css' },
-        { source: 'styles/manifest.min.css', dest: 'manifest.min.css' },
-        { source: 'styles/manifest.theme.css', dest: 'manifest.theme.css' },
-        { source: 'styles/manifest.code.css', dest: 'manifest.code.css' },
-        { source: 'styles/manifest.code.min.css', dest: 'manifest.code.min.css' }
-    ];
-
-    for (const file of filesToCopy) {
-        const sourcePath = path.join('..', file.source);
-        const destPath = path.join('..', file.dest);
-
-        if (fs.existsSync(sourcePath)) {
-            fs.copyFileSync(sourcePath, destPath);
-            console.log(`  ✓ Copied ${file.source} → ${file.dest}`);
-        } else {
-            console.warn(`  ⚠ Warning: ${file.source} not found, skipping`);
-        }
-    }
-
-    console.log('');
-}
-
-// Copy files to package root with clean filenames for npm package
-function createDistDirectory() {
-    console.log('Copying files to package root with clean filenames...');
-
-    const filesToCopy = [
-        { source: 'scripts/manifest.js', dest: 'manifest.js' },  // Dynamic loader
-        { source: 'styles/manifest.css', dest: 'manifest.css' },
-        { source: 'styles/manifest.min.css', dest: 'manifest.min.css' },
-        { source: 'styles/manifest.theme.css', dest: 'manifest.theme.css' },
-        { source: 'styles/manifest.code.css', dest: 'manifest.code.css' },
-        { source: 'styles/manifest.code.min.css', dest: 'manifest.code.min.css' }
-    ];
-
-    for (const file of filesToCopy) {
-        const sourcePath = path.join('..', file.source);
-        const destPath = path.join('..', file.dest);
-
-        if (fs.existsSync(sourcePath)) {
-            fs.copyFileSync(sourcePath, destPath);
-            console.log(`  ✓ Copied ${file.source} → ${file.dest}`);
-        } else {
-            console.warn(`  ⚠ Warning: ${file.source} not found, skipping`);
-        }
-    }
-
-    console.log('');
-}
-
-// Copy files to package root for clean jsdelivr URLs (only during build)
-function copyFilesToPackageRoot() {
-    console.log('Copying files to package root for clean jsdelivr URLs...');
-
-    const filesToCopy = [
-        { source: 'scripts/manifest.js', dest: 'manifest.js' },  // Dynamic loader
-        { source: 'styles/manifest.css', dest: 'manifest.css' },
-        { source: 'styles/manifest.min.css', dest: 'manifest.min.css' },
-        { source: 'styles/manifest.theme.css', dest: 'manifest.theme.css' },
-        { source: 'styles/manifest.code.css', dest: 'manifest.code.css' },
-        { source: 'styles/manifest.code.min.css', dest: 'manifest.code.min.css' }
-    ];
-
-    for (const file of filesToCopy) {
-        const sourcePath = path.join('..', file.source);
-        const destPath = path.join('..', file.dest);
-
-        if (fs.existsSync(sourcePath)) {
-            fs.copyFileSync(sourcePath, destPath);
-            console.log(`  ✓ Copied ${file.source} → ${file.dest}`);
-        } else {
-            console.warn(`  ⚠ Warning: ${file.source} not found, skipping`);
-        }
-    }
-
-    console.log('');
-}
-
 // Run the build
-build(); 
+build();

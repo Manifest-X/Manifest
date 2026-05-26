@@ -8,6 +8,21 @@
 
 /* Auth config */
 
+// Refuse strings that still contain an unresolved ${VAR} reference. The loader
+// runs window.ManifestDataConfig.interpolateManifest at manifest-load time, so
+// by the time we read these fields the env-var substitution has already been
+// applied. Anything still matching ${VAR} is an undefined env var — passing it
+// to Appwrite would either silently fail or, worse, be sent verbatim as an
+// HTTP header value, leaking the env var name. Loud-fail instead.
+function resolvedOrNull(value, fieldName) {
+    if (typeof value !== 'string') return value;
+    if (/\$\{[^}]+\}/.test(value)) {
+        console.error(`[Manifest Auth] manifest.appwrite.${fieldName} references an undefined env var (${value}). Auth disabled.`);
+        return null;
+    }
+    return value;
+}
+
 // Load manifest if not already loaded (loader may set __manifestLoaded / registry.manifest)
 async function ensureManifest() {
     if (window.ManifestComponentsRegistry?.manifest) {
@@ -34,11 +49,20 @@ async function getAppwriteConfig() {
     }
 
     const appwriteConfig = manifest.appwrite;
-    const endpoint = appwriteConfig.endpoint;
-    const projectId = appwriteConfig.projectId;
-    const devKey = appwriteConfig.devKey; // Optional dev key to bypass rate limits in development
+    const endpoint = resolvedOrNull(appwriteConfig.endpoint, 'endpoint');
+    const projectId = resolvedOrNull(appwriteConfig.projectId, 'projectId');
+    // Optional dev key to bypass rate limits in development. The schema
+    // documents `${VAR_NAME}` interpolation for this field specifically —
+    // refuse to forward a literal placeholder as an HTTP header.
+    const devKey = appwriteConfig.devKey ? resolvedOrNull(appwriteConfig.devKey, 'devKey') : undefined;
 
     if (!endpoint || !projectId) {
+        return null;
+    }
+    // devKey is optional: if the user supplied one but it failed to resolve,
+    // resolvedOrNull returned null (and logged) — drop the field rather than
+    // initialize Appwrite with a literal `${VAR}` header.
+    if (appwriteConfig.devKey && devKey === null) {
         return null;
     }
 

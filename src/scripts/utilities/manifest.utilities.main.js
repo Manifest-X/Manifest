@@ -1,6 +1,6 @@
 /* Manifest Utilities */
 
-/** True when prerender wrote utilities to prerender.utilities.css — skip runtime #utility-styles generation. */
+/** True when prerender wrote utilities to prerender.utilities.css — skip runtime #manifest-styles generation. */
 function manifestPageUsesStaticPrerenderUtilities() {
     if (typeof document === 'undefined') return false;
     try {
@@ -21,7 +21,7 @@ class TailwindCompiler {
     constructor(options = {}) {
         this.usesStaticPrerenderUtilities = manifestPageUsesStaticPrerenderUtilities();
 
-        // Prerender already emitted utility CSS; do not inject duplicate #utility-styles / observers.
+        // Prerender already emitted utility CSS; do not inject duplicate #manifest-styles / observers.
         if (this.usesStaticPrerenderUtilities) {
             this.debug = options.debug === true;
             this.startTime = performance.now();
@@ -60,7 +60,7 @@ class TailwindCompiler {
         // Create critical style element FIRST - must be before any rendering
         const criticalStyleStart = performance.now();
         this.criticalStyleElement = document.createElement('style');
-        this.criticalStyleElement.id = 'utility-styles-critical';
+        this.criticalStyleElement.id = 'manifest-styles-critical';
         // Insert at the very beginning of head
         if (document.head) {
             if (document.head.firstChild) {
@@ -130,7 +130,7 @@ class TailwindCompiler {
 
         // Create main style element for generated utilities
         this.styleElement = document.createElement('style');
-        this.styleElement.id = 'utility-styles';
+        this.styleElement.id = 'manifest-styles';
         document.head.appendChild(this.styleElement);
         this.setupUtilityStylesOrderObserver();
 

@@ -2,6 +2,64 @@
 
 const svgCache = new Map();
 
+// Shared DOMPurify loader (only fetched when the .safe modifier is used).
+// SVG natively supports <script>, on* event handlers, javascript: URLs in
+// href, and <foreignObject> with HTML inside — any of which become an XSS
+// vector when the SVG source is user-supplied. The .safe modifier opts into
+// DOMPurify with the SVG profile so authors rendering user-uploaded SVGs
+// (e.g. profile avatars from an Appwrite bucket) don't have to write
+// per-source sanitization.
+//
+// Defined on window so manifest.markdown.js can share the same loader and
+// in-flight promise — otherwise both plugins' top-level `let purifyPromise`
+// declarations collide in the realm's global lexical env and the second
+// script throws SyntaxError ("Identifier 'purifyPromise' has already been
+// declared") at parse time, taking the whole plugin offline.
+if (!window.ManifestDOMPurify) {
+    window.ManifestDOMPurify = {
+        _promise: null,
+        load() {
+            if (typeof window.DOMPurify !== 'undefined') return Promise.resolve(window.DOMPurify);
+            if (this._promise) return this._promise;
+            this._promise = new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@latest/dist/purify.min.js';
+                script.onload = () => {
+                    if (typeof window.DOMPurify !== 'undefined') {
+                        resolve(window.DOMPurify);
+                    } else {
+                        this._promise = null;
+                        reject(new Error('DOMPurify failed to load'));
+                    }
+                };
+                script.onerror = (err) => {
+                    this._promise = null;
+                    reject(err);
+                };
+                document.head.appendChild(script);
+            });
+            return this._promise;
+        }
+    };
+}
+
+// Return a sanitized SVG string when the .safe modifier is on; pass through
+// otherwise. Uses DOMPurify's SVG profile which strips <script>, on* event
+// handlers, javascript: URLs, and dangerous foreignObject HTML — while
+// keeping the visual SVG markup intact.
+async function maybeSanitizeSvg(svgText, safe) {
+    if (!safe) return svgText;
+    try {
+        const DOMPurify = await window.ManifestDOMPurify.load();
+        return DOMPurify.sanitize(svgText, {
+            USE_PROFILES: { svg: true, svgFilters: true }
+        });
+    } catch {
+        console.warn('[Manifest SVG] x-svg.safe: DOMPurify unavailable — skipping injection.');
+        return '';
+    }
+}
+
 function resolveFetchPath(pathOrContent) {
     let resolved = pathOrContent;
     if (!pathOrContent.startsWith('/')) {
@@ -123,10 +181,16 @@ async function initializeSvgPlugin() {
             document.querySelector('meta[name="manifest:prerendered"]').getAttribute('content') !== '0'
         );
 
-        Alpine.directive('svg', (el, { expression }, { effect, evaluateLater }) => {
+        Alpine.directive('svg', (el, { expression, modifiers }, { effect, evaluateLater }) => {
             if (!expression) {
                 return;
             }
+
+            // Opt-in DOMPurify sanitization for user-supplied SVG. Default is
+            // unsanitized — Manifest keeps full SVG fidelity (filters, scripts
+            // used for animations, etc.). Use .safe when the SVG source can
+            // come from untrusted parties (uploaded avatars, third-party APIs).
+            const safe = Array.isArray(modifiers) && modifiers.includes('safe');
 
             const hasBakedContent =
                 isPrerenderedPage &&
@@ -172,13 +236,19 @@ async function initializeSvgPlugin() {
                         return;
                     }
 
-                    const text = resolved.text || '';
-                    if (text === lastText) {
+                    const rawText = resolved.text || '';
+                    if (rawText === lastText) {
                         return;
                     }
-                    lastText = text;
+                    lastText = rawText;
 
-                    if (!text.trim()) {
+                    if (!rawText.trim()) {
+                        el.replaceChildren();
+                        return;
+                    }
+
+                    const text = await maybeSanitizeSvg(rawText, safe);
+                    if (!text || !text.trim()) {
                         el.replaceChildren();
                         return;
                     }

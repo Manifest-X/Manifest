@@ -1,14 +1,14 @@
 // Helper methods
 // Utility functions for extracting, parsing, and processing CSS and classes
 
-// Ensure #utility-styles is last in head so our responsive/variant rules win over Tailwind and any later-injected styles
+// Ensure #manifest-styles is last in head so our responsive/variant rules win over Tailwind and any later-injected styles
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
     if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
         document.head.appendChild(this.styleElement);
     }
 };
 
-// When any element is added to head after ours, move #utility-styles to end. Handles CDN load order (e.g. Tailwind injecting after we run).
+// When any element is added to head after ours, move #manifest-styles to end. Handles CDN load order (e.g. Tailwind injecting after we run).
 TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
     if (!document.head || !this.styleElement) return;
     const self = this;
@@ -70,7 +70,7 @@ TailwindCompiler.prototype.discoverCssFiles = function () {
         }
 
         // Add any inline styles (exclude generated styles)
-        const styleElements = document.querySelectorAll('style:not(#utility-styles)');
+        const styleElements = document.querySelectorAll('style:not(#manifest-styles)');
         for (const style of styleElements) {
             if (style.textContent && style.textContent.trim()) {
                 const id = style.id || `inline-style-${Array.from(styleElements).indexOf(style)}`;
@@ -287,9 +287,41 @@ TailwindCompiler.prototype.getUsedClasses = function () {
     }
 };
 
-// Fetch theme content from CSS files
+// True for Manifest framework stylesheets (the compiled bundle and its plugin
+// partials, on the CDN or self-hosted), false for the developer-overridable
+// theme entry-point, inline <style> blocks, and any non-framework CSS.
+//
+// Used to split fetchThemeContent's output into two buckets: CSS *variables*
+// are read from every sheet (developers can declare custom properties
+// anywhere), but custom utility *class* declarations are only harvested from
+// non-framework sheets — framework semantic classes like .brand / .row / .col
+// already live in the static cascade and re-emitting them at runtime causes
+// duplicate #manifest-styles entries.
+TailwindCompiler.prototype.isFrameworkStylesheet = function (source) {
+    if (typeof source !== 'string' || source.startsWith('inline:')) return false;
+    const lower = source.toLowerCase();
+    // manifest.theme.css ships with the framework but is developer-overridable —
+    // always scan it for class declarations.
+    if (/\/manifest\.theme\.css(?:[?#]|$)/.test(lower)) return false;
+    // Framework CDN bundles (jsdelivr/unpkg/etc. publishing manifestjs or mnfst).
+    if (lower.includes('manifestjs') || lower.includes('mnfst')) return true;
+    // Self-hosted framework files: manifest.css, manifest.min.css,
+    // manifest.<plugin>.css. Heuristic on basename — a developer who names their
+    // own bundle "manifest.foo.css" will get caught by this, which is rare and
+    // easy to work around by renaming.
+    if (/\/manifest(?:\.[\w-]+)*\.css(?:[?#]|$)/.test(lower)) return true;
+    return false;
+};
+
+// Fetch theme content from CSS files.
+//
+// Returns { all, userScannable }:
+// - all: every loaded stylesheet, used for CSS-variable extraction.
+// - userScannable: same minus framework stylesheets (see isFrameworkStylesheet).
+//   Used for custom-utility class extraction.
 TailwindCompiler.prototype.fetchThemeContent = async function () {
-    const themeContents = new Set();
+    const allContents = new Set();
+    const userContents = new Set();
     const fetchPromises = [];
 
     // If we haven't discovered CSS files yet, do it now
@@ -299,6 +331,7 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 
     // Process all files concurrently
     for (const source of this.cssFiles) {
+        const isFramework = this.isFrameworkStylesheet(source);
         const fetchPromise = (async () => {
             try {
                 let content = '';
@@ -357,7 +390,10 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                 }
 
                 if (content) {
-                    themeContents.add(content);
+                    allContents.add(content);
+                    if (!isFramework) {
+                        userContents.add(content);
+                    }
                 }
             } catch (error) {
                 console.warn(`Error fetching CSS from ${source}:`, error);
@@ -369,7 +405,10 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
     // Wait for all fetches to complete
     await Promise.all(fetchPromises);
 
-    return Array.from(themeContents).join('\n');
+    return {
+        all: Array.from(allContents).join('\n'),
+        userScannable: Array.from(userContents).join('\n')
+    };
 };
 
 // Extract CSS variables from CSS text

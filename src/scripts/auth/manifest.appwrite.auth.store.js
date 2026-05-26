@@ -14,6 +14,27 @@ function initializeAuthStore() {
     // Cross-tab synchronization using localStorage events
     const STORAGE_KEY = 'manifest:auth:state';
 
+    // Whitelist of Appwrite Session fields safe to mirror across tabs.
+    // CRITICALLY excludes `secret` (the bearer credential), `providerAccessToken`,
+    // `providerRefreshToken`, and `providerAccessTokenExpiry`. The cookie set
+    // on the Appwrite domain is the actual auth of record; this localStorage
+    // copy only supports UI cross-tab sync ("someone just logged in here").
+    // An XSS on this origin must not be able to lift session secrets out.
+    const SAFE_SESSION_FIELDS = [
+        '$id', 'userId', 'provider', 'expire', 'current',
+        'clientName', 'osName', 'osCode', 'deviceName',
+        'deviceBrand', 'deviceModel', 'countryCode', 'countryName'
+    ];
+
+    function sanitizeSessionForStorage(session) {
+        if (!session || typeof session !== 'object') return session;
+        const safe = {};
+        for (const f of SAFE_SESSION_FIELDS) {
+            if (f in session) safe[f] = session[f];
+        }
+        return safe;
+    }
+
     // Listen for storage events from other tabs
     window.addEventListener('storage', (e) => {
         if (e.key === STORAGE_KEY && e.newValue) {
@@ -43,7 +64,7 @@ function initializeAuthStore() {
                 isAuthenticated: store.isAuthenticated,
                 isAnonymous: store.isAnonymous,
                 user: store.user,
-                session: store.session,
+                session: sanitizeSessionForStorage(store.session),
                 magicLinkSent: store.magicLinkSent,
                 magicLinkExpired: store.magicLinkExpired,
                 error: store.error

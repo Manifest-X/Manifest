@@ -133,9 +133,15 @@ function processElementHeadContent(element, normalizedPath) {
         // Add new head content
         Array.from(headTemplate.content.children).forEach(child => {
             if (child.tagName === 'SCRIPT') {
-                // For scripts, create and execute directly
+                // For scripts, create and execute directly. Preserve all source
+                // attributes (src, type, async, defer, crossorigin, integrity,
+                // nonce, etc.) — copying only textContent silently drops external
+                // src loads and turns type="module" scripts into classic scripts.
                 const script = document.createElement('script');
-                script.textContent = child.textContent;
+                for (const attr of child.attributes) {
+                    script.setAttribute(attr.name, attr.value);
+                }
+                if (child.textContent) script.textContent = child.textContent;
                 script.setAttribute('data-route-head', headId);
                 document.head.appendChild(script);
             } else {

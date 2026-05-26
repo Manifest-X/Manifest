@@ -73,7 +73,7 @@ function shouldSkipStickyLocaleForLogicalSegments(segments) {
     return STICKY_LOCALE_STATIC_FILE_EXT.has(ext);
 }
 
-// manifest.prerender.localeRouteExclude → JSON array in meta; logical path prefixes (after locale).
+// manifest.render.localeRouteExclude → JSON array in meta; logical path prefixes (after locale).
 function parseLocaleRouteExcludePatterns() {
     const meta = document.querySelector('meta[name="manifest:locale-route-exclude"]');
     const raw = meta?.getAttribute('content') || '';
@@ -309,6 +309,21 @@ function shouldUseViewTransition() {
         return document.querySelectorAll('*').length < VT_AUTO_THRESHOLD;
     } catch {
         return false;
+    }
+}
+
+// Headless automation (Puppeteer / Playwright / Selenium / WebDriver-driven
+// Chromium) frequently captures screenshots mid-transition, producing blank
+// frames. Real browsers report `navigator.webdriver === false` — including
+// when DevTools is open, when launched via `open <url>`, or on mobile — so
+// this check exclusively affects automation tooling and leaves end-user
+// behavior identical. Authors who want transitions in their automation tests
+// can force them on with `<html data-view-transitions>`, which takes priority
+// over this attribute via `shouldUseViewTransition()` above.
+if (typeof navigator !== 'undefined' && navigator.webdriver === true) {
+    const html = document.documentElement;
+    if (html && !html.hasAttribute('data-view-transitions')) {
+        html.setAttribute('data-no-view-transitions', '');
     }
 }
 

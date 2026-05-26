@@ -135,7 +135,7 @@
         }
     },
     "colorpicker": "colors",
-    "prerender": {
+    "render": {
         "localUrl": "http://localhost:5001",
         "liveUrl": "https://test.com",
         "output": "test-prerender",

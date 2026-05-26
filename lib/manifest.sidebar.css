@@ -31,17 +31,16 @@
 
 @layer components {
 
-    :where(aside[popover]) {
+    :where(nav[popover]) {
         inset-inline-start: auto;
         inset-inline-end: 0;
         width: fit-content;
         min-width: 20vw;
         max-width: 80vw;
-        max-width: 100%;
         height: 100%;
         overflow-y: auto;
         z-index: 200;
-        background-color: var(--color-popover-surface, oklch(100% 0 0));
+        background-color: var(--color-popover-surface, white);
         transition: opacity .15s ease-in, transform .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;
 
@@ -71,7 +70,7 @@
         }
     }
 
-    :where(aside[popover].appear-start) {
+    :where(nav[popover].appear-start) {
         inset-inline-start: 0;
         inset-inline-end: auto;
 
@@ -96,7 +95,7 @@
     }
 
     /* Dark mode override */
-    .dark :where(aside[popover]) {
-        background-color: var(--color-surface-1, oklch(98.17% 0.0005 95.87))
+    .dark :where(nav[popover]) {
+        background-color: var(--color-surface-1, whitesmoke)
     }
 }

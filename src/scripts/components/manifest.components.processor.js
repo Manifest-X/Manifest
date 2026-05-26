@@ -1,4 +1,26 @@
 // Components processor
+
+// Escape a string so it's safe to interpolate inside a single-quoted JS
+// string AND inside backtick template literals. The original escape covered
+// the single-quote + whitespace cases but missed three vectors that matter
+// when component templates use backtick literals (e.g. x-text="`Hi $modify('n')`"):
+//   - `\`  → a trailing backslash would escape the closing quote
+//   - `` ` `` → terminates a backtick template literal
+//   - `${` → opens an interpolation that Alpine evaluates as JS
+// Without escaping those, a bound value like `${alert(1)}` from a data
+// source becomes code execution inside the wrapping template literal.
+// Backslash must be escaped FIRST so the other replacements don't compound.
+function escapeForSingleQuotedJsString(s) {
+    return String(s)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/`/g, '\\`')
+        .replace(/\$\{/g, '\\${')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n')
+        .replace(/\t/g, '\\t');
+}
+
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
@@ -145,7 +167,7 @@ window.ManifestComponentsProcessor = {
                                             return val;
                                         }
                                         // Always quote string values to ensure they're treated as strings, not variables
-                                        return `'${val.replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}'`;
+                                        return `'${escapeForSingleQuotedJsString(val)}'`;
                                     }
                                 );
                                 el.setAttribute(attr.name, newValue);
@@ -160,7 +182,7 @@ window.ManifestComponentsProcessor = {
                                         el.setAttribute(attr.name, propValue);
                                     } else {
                                         // Always quote string values and escape special characters
-                                        const quotedValue = `'${propValue.replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}'`;
+                                        const quotedValue = `'${escapeForSingleQuotedJsString(propValue)}'`;
                                         el.setAttribute(attr.name, quotedValue);
                                     }
                                 }

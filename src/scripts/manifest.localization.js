@@ -633,6 +633,61 @@ function registerLocaleMagic() {
                             }
                         };
                     }
+                    // $locale.reset([href]) — strip any leading locale segment from
+                    // the URL (or from a passed-in href) and navigate there. Pairs
+                    // with the router's sticky-locale rewriter: that adds the
+                    // current locale to outgoing same-origin links automatically,
+                    // and this method is the opt-out for a developer who wants to
+                    // surface a "go to default locale" action without hard-coding
+                    // the default's language code.
+                    //
+                    // Behaviour:
+                    //   $locale.reset()           → reset current URL to no prefix
+                    //   $locale.reset('/foo')     → strip prefix from /foo (no-op
+                    //                                if there isn't one) and navigate
+                    //   $locale.reset('/fr/foo')  → 'fr' is stripped → /foo
+                    //
+                    // Routing path: if Manifest's SPA navigation is active
+                    // (`history.pushState` + `manifest:route-change` event), this
+                    // is a SPA hop with no full reload. In prerendered MPA mode
+                    // we use `window.location.assign` so the new URL's
+                    // prerendered HTML loads from disk.
+                    if (prop === 'reset') {
+                        return (href) => {
+                            const store = Alpine.store('locale');
+                            const available = store?.available || [document.documentElement.lang || 'en'];
+
+                            // Resolve target URL: passed-in href, or current URL
+                            let target;
+                            try {
+                                target = new URL(href || window.location.href, window.location.href);
+                            } catch {
+                                return false;
+                            }
+
+                            // Strip leading locale segment if present
+                            const segs = target.pathname.split('/').filter(Boolean);
+                            if (segs.length && available.includes(segs[0])) {
+                                segs.shift();
+                            }
+                            target.pathname = '/' + segs.join('/');
+
+                            // Same-origin navigation only — external URLs are
+                            // passed through unchanged via window.location.assign.
+                            const isSameOrigin = target.origin === window.location.origin;
+                            const isPrerendered = !!document.querySelector('meta[name="manifest:prerendered"]:not([content="0"]):not([content="false"])');
+
+                            if (isSameOrigin && !isPrerendered && typeof history?.pushState === 'function') {
+                                // SPA hop: keep the in-memory app, fire route-change.
+                                history.pushState(null, '', target.pathname + target.search + target.hash);
+                                window.dispatchEvent(new PopStateEvent('popstate'));
+                            } else {
+                                // MPA hop: load the prerendered HTML for the new URL.
+                                window.location.assign(target.toString());
+                            }
+                            return true;
+                        };
+                    }
                     return undefined;
                 }
             });

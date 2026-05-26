@@ -66,7 +66,6 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 let selector = `.${escapeClassName(variantClass)}`;
                 let hasMediaQuery = false;
                 let mediaQueryRule = '';
-                let nestedSelector = null; // For variants that end with & (CSS nesting)
 
                 for (const variant of parsed.variants) {
                     if (variant.isArbitrary) {
@@ -84,18 +83,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                             selector = { baseClass: selector, arbitrarySelector };
                         }
                     } else if (variant.selector.includes('&')) {
-                        // Check if selector ends with & (indicates CSS nesting)
-                        if (variant.selector.trim().endsWith('&')) {
-                            // This is a nested selector - move & to the beginning for CSS nesting
-                            const selectorWithoutAmpersand = variant.selector.trim().slice(0, -1).trim();
-                            const nestedSelectorText = `&${selectorWithoutAmpersand}`;
-                            nestedSelector = nestedSelector ? `${nestedSelector} ${nestedSelectorText}` : nestedSelectorText;
-                        } else {
-                            // Handle variants like .dark &, .light &, .group &, etc.
-                            // Replace & with the actual selector
-                            const replacedSelector = variant.selector.replace(/&/g, selector);
-                            selector = replacedSelector;
-                        }
+                        // Substitute & with the current selector. This produces flat CSS that
+                        // works for both ancestor patterns (`.dark &` → `.dark .X`) and
+                        // self-extending patterns (`& > p` → `.X > p`).
+                        selector = variant.selector.replace(/&/g, selector);
                     } else if (variant.selector.startsWith(':')) {
                         // For pseudo-classes, append to selector
                         selector = `${selector}${variant.selector}`;
@@ -111,9 +102,6 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 if (typeof selector === 'object' && selector.arbitrarySelector) {
                     // Handle arbitrary selectors with nested CSS (for non-& selectors)
                     rule = `${selector.baseClass} {\n    ${selector.arbitrarySelector} {\n        ${cssContent}\n    }\n}`;
-                } else if (nestedSelector) {
-                    // Handle nested selectors (variants ending with &)
-                    rule = `${selector} {\n    ${nestedSelector} {\n        ${cssContent}\n    }\n}`;
                 } else {
                     // Regular selector
                     rule = `${selector} { ${cssContent} }`;
@@ -386,7 +374,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 let selector = `.${escapeClassName(variantClass)}`;
                 let hasMediaQuery = false;
                 let mediaQueryRule = '';
-                let nestedSelector = null; // For variants that end with & (CSS nesting)
+                let nestedSelector = null;
 
                 for (const variant of parsed.variants) {
                     if (variant.isArbitrary) {
@@ -404,18 +392,10 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                             selector = { baseClass: selector, arbitrarySelector };
                         }
                     } else if (variant.selector.includes('&')) {
-                        // Check if selector ends with & (indicates CSS nesting)
-                        if (variant.selector.trim().endsWith('&')) {
-                            // This is a nested selector - move & to the beginning for CSS nesting
-                            const selectorWithoutAmpersand = variant.selector.trim().slice(0, -1).trim();
-                            const nestedSelectorText = `&${selectorWithoutAmpersand}`;
-                            nestedSelector = nestedSelector ? `${nestedSelector} ${nestedSelectorText}` : nestedSelectorText;
-                        } else {
-                            // Handle variants like .dark &, .light &, .group &, etc.
-                            // Replace & with the actual selector
-                            const replacedSelector = variant.selector.replace(/&/g, selector);
-                            selector = replacedSelector;
-                        }
+                        // Substitute & with the current selector. This produces flat CSS that
+                        // works for both ancestor patterns (`.dark &` → `.dark .X`) and
+                        // self-extending patterns (`& > p` → `.X > p`).
+                        selector = variant.selector.replace(/&/g, selector);
                     } else if (variant.selector.startsWith(':')) {
                         // For pseudo-classes, append to selector
                         selector = `${selector}${variant.selector}`;
@@ -768,14 +748,18 @@ TailwindCompiler.prototype.compile = async function () {
 
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
-            if (themeCss) {
-                // Extract and cache custom utilities
-                const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
+            if (themeCss && themeCss.all) {
+                // Extract custom utility classes from non-framework CSS only.
+                // Framework semantic classes (.brand, .row, .col, etc.) already
+                // live in the compiled manifest.css; re-emitting them here would
+                // duplicate rules in #manifest-styles.
+                const discoveredCustomUtilities = this.extractCustomUtilities(themeCss.userScannable);
                 for (const [name, value] of discoveredCustomUtilities.entries()) {
                     this.customUtilities.set(name, value);
                 }
 
-                const variables = this.extractThemeVariables(themeCss);
+                // CSS variables can live in any stylesheet — scan everything.
+                const variables = this.extractThemeVariables(themeCss.all);
                 for (const [name, value] of variables.entries()) {
                     this.currentThemeVars.set(name, value);
                 }
@@ -796,7 +780,7 @@ TailwindCompiler.prototype.compile = async function () {
                 }
 
                 // Generate both variable-based and custom utilities
-                const varUtilities = this.generateUtilitiesFromVars(themeCss, staticUsedData);
+                const varUtilities = this.generateUtilitiesFromVars(themeCss.all, staticUsedData);
                 const customUtilitiesGenerated = this.generateCustomUtilities(staticUsedData);
 
                 let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
@@ -825,7 +809,7 @@ TailwindCompiler.prototype.compile = async function () {
                     this.lastClassesHash = staticUsedData.classes.sort().join(',');
 
                     // Save to cache for next page load
-                    const themeHash = this.generateThemeHash(themeCss);
+                    const themeHash = this.generateThemeHash(themeCss.all);
                     const cacheKey = `${this.lastClassesHash}-${themeHash}`;
                     this.cache.set(cacheKey, {
                         css: finalCss,
@@ -852,19 +836,20 @@ TailwindCompiler.prototype.compile = async function () {
         if (dynamicClassesHash !== this.lastClassesHash || !this.hasInitialized) {
             // Fetch CSS content for dynamic compilation
             const themeCss = await this.fetchThemeContent();
-            if (!themeCss) {
+            if (!themeCss || !themeCss.all) {
                 this.isCompiling = false;
                 return;
             }
 
-            // Update custom utilities cache if needed
-            const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
+            // Update custom utilities cache from non-framework CSS only — see
+            // first compile path for rationale.
+            const discoveredCustomUtilities = this.extractCustomUtilities(themeCss.userScannable);
             for (const [name, value] of discoveredCustomUtilities.entries()) {
                 this.customUtilities.set(name, value);
             }
 
             // Check for variable changes
-            const variables = this.extractThemeVariables(themeCss);
+            const variables = this.extractThemeVariables(themeCss.all);
             let hasVariableChanges = false;
             for (const [name, value] of variables.entries()) {
                 const currentValue = this.currentThemeVars.get(name);
@@ -878,7 +863,7 @@ TailwindCompiler.prototype.compile = async function () {
             if (hasVariableChanges || dynamicClassesHash !== this.lastClassesHash) {
 
                 // Generate both variable-based and custom utilities
-                const varUtilities = this.generateUtilitiesFromVars(themeCss, usedData);
+                const varUtilities = this.generateUtilitiesFromVars(themeCss.all, usedData);
                 const customUtilitiesGenerated = this.generateCustomUtilities(usedData);
 
                 let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
@@ -907,7 +892,7 @@ TailwindCompiler.prototype.compile = async function () {
                     this.lastClassesHash = dynamicClassesHash;
 
                     // Save to cache for next page load
-                    const themeHash = this.generateThemeHash(themeCss);
+                    const themeHash = this.generateThemeHash(themeCss.all);
                     const cacheKey = `${this.lastClassesHash}-${themeHash}`;
                     this.cache.set(cacheKey, {
                         css: finalCss,

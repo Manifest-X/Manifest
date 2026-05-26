@@ -306,6 +306,47 @@ function initializeTooltipPlugin() {
         if (t.classList && t.classList.contains('tooltip') && t.getAttribute('popover') === 'hint') return;
         hideAnySingleton();
     }, true);
+
+    // ---- Public programmatic-show API ----
+    //
+    // Flash a tooltip in response to an action (e.g. the code plugin's inline
+    // copy confirmation) without requiring the trigger to carry an x-tooltip
+    // directive. The trigger element acts as the anchor; the singleton is
+    // reused, so this respects chain mode / focus behaviour just like a
+    // hover-shown tooltip would. Auto-hides after `durationMs`.
+    //
+    // `positions` accepts the same vocabulary as the x-tooltip directive's
+    // modifiers — array of any subset of ['top','bottom','start','end',
+    // 'center','corner']. Joined with '-' to form the position class
+    // (e.g. ['top','end'] → '.top-end'), matching what `x-tooltip.top.end`
+    // would emit.
+    window.ManifestTooltips = window.ManifestTooltips || {};
+    window.ManifestTooltips.showTransient = function (triggerEl, contentHtml, durationMs, positions) {
+        if (!triggerEl) return;
+        const duration = typeof durationMs === 'number' ? durationMs : 1500;
+        const validPositions = ['top', 'bottom', 'start', 'end', 'center', 'corner'];
+        let resolvedPositions = [];
+        if (Array.isArray(positions)) {
+            resolvedPositions = positions.filter(p => validPositions.includes(p));
+        } else if (typeof positions === 'string' && positions) {
+            resolvedPositions = positions.split(/[.\-\s]+/).filter(p => validPositions.includes(p));
+        }
+        cancelPendingShow();
+        cancelPendingHide();
+        showSingletonFor(triggerEl, contentHtml || '', resolvedPositions);
+        clearTimeout(triggerEl._tooltipTransientTimer);
+        triggerEl._tooltipTransientTimer = setTimeout(() => {
+            triggerEl._tooltipTransientTimer = null;
+            const host = getTooltipHostForTrigger(triggerEl);
+            const s = _singletons.get(host);
+            if (s && s.activeTrigger === triggerEl && s.el.matches(':popover-open')) {
+                try { s.el.hidePopover(); } catch { /* popover already closed */ }
+                s.activeTrigger = null;
+                markTooltipHidden();
+                scheduleAnchorRestore(triggerEl);
+            }
+        }, duration);
+    };
 }
 
 // ---- Plugin init boilerplate ----

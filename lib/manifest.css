@@ -174,7 +174,7 @@
     :where(hr) {
         height: 1px;
         color: inherit;
-        background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+        background-color: var(--color-line, color-mix(darkslategray 12%, transparent));
         border: 0 none
     }
 
@@ -357,7 +357,7 @@
     /* View transition styles */
     ::view-transition-group(*) {
         animation-duration: var(--view-transition-duration, 200ms);
-        animation-timing-function: var(--view-transition-easing, ease)
+        animation-timing-function: var(--view-transition-easing, cubic-bezier(0.4, 0, 0.2, 1))
     }
 
     /* Skip view transition for live/non-rasterizable content */
@@ -405,7 +405,7 @@
             align-items: center;
             padding: var(--spacing-field-padding, 0.625rem) 0;
             font-weight: bold;
-            color: var(--color-content-stark, oklch(16.6% 0.026 267));
+            color: var(--color-content-stark, darkslategray);
             user-select: none;
             cursor: pointer;
             transition: var(--transition, all .05s ease-in-out);
@@ -418,11 +418,11 @@
             }
 
             &:hover {
-                color: color-mix(in oklch, var(--color-surface-1, oklch(98.17% 0.0005 95.87)) 40%, var(--color-content-stark, oklch(16.6% 0.026 267)))
+                color: color-mix(in oklch, var(--color-surface-1, whitesmoke) 40%, var(--color-content-stark, darkslategray))
             }
 
             &:active {
-                color: color-mix(in oklch, var(--color-surface-1, oklch(98.17% 0.0005 95.87)) 50%, var(--color-content-stark, oklch(16.6% 0.026 267)))
+                color: color-mix(in oklch, var(--color-surface-1, whitesmoke) 50%, var(--color-content-stark, darkslategray))
             }
 
             /* Add custom icon */
@@ -431,7 +431,7 @@
                 order: 1;
                 width: 1rem;
                 height: 1rem;
-                background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 50%, var(--color-field-inverse, oklch(16.6% 0.026 267)));
+                background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 50%, var(--color-field-inverse, darkslategray));
                 -webkit-mask-image: var(--icon-accordion, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E"));
                 mask-image: var(--icon-accordion, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E"));
                 -webkit-mask-repeat: no-repeat;
@@ -473,8 +473,8 @@
         font-weight: bold;
         text-align: center;
         text-transform: uppercase;
-        color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-        background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+        color: var(--color-field-inverse, darkslategray);
+        background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
         background-clip: content-box;
         background-size: cover;
         background-position: center;
@@ -482,7 +482,7 @@
 
         /* Icon */
         &[x-icon] {
-            color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27))
+            color: var(--color-content-subtle, darkgray)
         }
 
         /* Profile pic */
@@ -506,8 +506,8 @@
             width: 9px;
             height: 9px;
             z-index: 1;
-            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
-            border: 1px solid var(--color-page, oklch(100% 0 0));
+            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
+            border: 1px solid var(--color-page, white);
             border-radius: 50%
         }
     }
@@ -518,7 +518,7 @@
         background-blend-mode: normal;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
             background-blend-mode: multiply;
 
             & img {
@@ -553,7 +553,7 @@
         padding-inline-end: 1.5ch;
 
         &:hover .avatar {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
             transition: var(--transition, all .05s ease-in-out)
         }
     }
@@ -566,7 +566,7 @@
 
         :where(.avatar) {
             margin-inline-end: calc(var(--spacing-field-height, 2.25rem) * -0.3);
-            box-shadow: 0 0 0 3px var(--color-page, oklch(100% 0 0))
+            box-shadow: 0 0 0 3px var(--color-page, white)
         }
     }
 }
@@ -575,7 +575,7 @@
 
 @layer components {
 
-    :where(button:not(.link), [role=button], [type=button], [type=reset], [type=submit], select):not(.unstyle) {
+    :where(button:not(.link), [role=button], [type=button], [type=reset], [type=submit], select):not(code, .unstyle) {
         display: inline-flex;
         flex-flow: row;
         justify-content: center;
@@ -590,13 +590,13 @@
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;
-        color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-        background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+        color: var(--color-field-inverse, darkslategray);
+        background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
         border-width: 0;
         border-style: solid;
         border-color: transparent;
         border-radius: var(--radius, 0.5rem);
-        outline-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+        outline-color: var(--color-line, color-mix(darkslategray 10%, transparent));
         cursor: pointer;
         transition: var(--transition, all .05s ease-in-out);
         appearance: button;
@@ -625,15 +625,15 @@
         }
 
         &:hover {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
         }
 
         &:active {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
         }
 
         &:focus-visible {
-            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26))
+            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent))
         }
     }
 
@@ -669,13 +669,13 @@
         &:checked {
 
             &:hover {
-                background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
-                border-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+                background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
+                border-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
             }
 
             &:active {
-                background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
-                border-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+                background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
+                border-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
             }
         }
 
@@ -687,7 +687,7 @@
             left: 50%;
             width: 60%;
             height: 60%;
-            background-color: var(--color-field-inverse, oklch(16.6% 0.026 267));
+            background-color: var(--color-field-inverse, darkslategray);
             -webkit-mask-image: var(--icon-checkbox, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
             mask-image: var(--icon-checkbox, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
             -webkit-mask-repeat: no-repeat;
@@ -713,7 +713,7 @@
 /* Manifest Color Picker */
 
 :root {
-    --color-picker-swatch: var(--color-line);
+    --color-picker-swatch: var(--color-line, color-mix(darkslategray 10%, transparent));
     --icon-color-solid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-paint-roller-icon lucide-paint-roller'%3E%3Crect width='16' height='6' x='2' y='2' rx='2'/%3E%3Cpath d='M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2'/%3E%3Crect width='4' height='6' x='8' y='16' rx='1'/%3E%3C/svg%3E");
     --icon-color-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-blend-icon lucide-blend'%3E%3Ccircle cx='9' cy='9' r='7'/%3E%3Ccircle cx='15' cy='15' r='7'/%3E%3C/svg%3E");
     --icon-color-library: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-swatch-book-icon lucide-swatch-book'%3E%3Cpath d='M11 17a4 4 0 0 1-8 0V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2Z'/%3E%3Cpath d='M16.7 13H19a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H7'/%3E%3Cpath d='M 7 17h.01'/%3E%3Cpath d='m11 8 2.3-2.3a2.4 2.4 0 0 1 3.404.004L18.6 7.6a2.4 2.4 0 0 1 .026 3.434L9.9 19.8'/%3E%3C/svg%3E");
@@ -758,7 +758,7 @@
         border-radius: var(--radius, 0.5rem);
         cursor: pointer;
         overflow: hidden;
-        transition: var(--transition);
+        transition: var(--transition, all .05s ease-in-out);
 
         &:hover,
         &:active,
@@ -795,7 +795,7 @@
             display: flex;
             width: 100%;
             padding: 2px;
-            border-bottom: 1px solid var(--color-line, oklch(80% 0.0029 264.26));
+            border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
 
             /* Distribute button widths equally */
             & button {
@@ -970,7 +970,7 @@
 
             /* Gradient layers */
             & :where(.layer-options-wrapper) {
-                border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(16.6% 0.026 267) 11%, transparent));
+                border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
 
                 /* Layer options inputs */
                 & :where(.layer-options-inputs) {
@@ -1007,7 +1007,7 @@
                             position: absolute;
                             top: 0;
                             right: 0.25rem;
-                            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+                            color: var(--color-content-neutral, gray)
                         }
                     }
 
@@ -1020,7 +1020,7 @@
                         margin-inline-end: 0.5rem;
                         border-radius: 1rem;
                         cursor: pointer;
-                        background: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+                        background: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
 
                         /* Stop handle */
                         & :where(.stop-handle) {
@@ -1112,7 +1112,7 @@
 
                     /* Only apply border to all except last library-group */
                     &:not(:last-child) {
-                        border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(16.6% 0.026 267) 11%, transparent));
+                        border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
                     }
 
                     /* Palette wrapper */
@@ -1153,7 +1153,7 @@
         padding: 0;
 
         & .tabs-wrapper button {
-            border: 1px solid var(--color-popover-surface, oklch(100% 0 0))
+            border: 1px solid var(--color-popover-surface, white)
         }
     }
 
@@ -1202,17 +1202,17 @@
     }
 
     .gradient-layer-icon-linear {
-        background: linear-gradient(to right, var(--color-content-neutral, oklch(48.26% 0.0365 255.09)), color-mix(in oklch, var(--color-content-neutral, oklch(48.26% 0.0365 255.09)) 0%, transparent 100%));
+        background: linear-gradient(to right, var(--color-content-neutral, gray), color-mix(in oklch, var(--color-content-neutral, gray) 0%, transparent 100%));
         border-radius: 50%
     }
 
     .gradient-layer-icon-radial {
-        background: radial-gradient(var(--color-content-neutral, oklch(48.26% 0.0365 255.09)), color-mix(in oklch, var(--color-content-neutral, oklch(48.26% 0.0365 255.09)) 0%, transparent 100%));
+        background: radial-gradient(var(--color-content-neutral, gray), color-mix(in oklch, var(--color-content-neutral, gray) 0%, transparent 100%));
         border-radius: 50%
     }
 
     .gradient-layer-icon-conic {
-        background: conic-gradient(var(--color-content-neutral, oklch(48.26% 0.0365 255.09)), color-mix(in oklch, var(--color-content-neutral, oklch(48.26% 0.0365 255.09)) 0%, transparent 100%));
+        background: conic-gradient(var(--color-content-neutral, gray), color-mix(in oklch, var(--color-content-neutral, gray) 0%, transparent 100%));
         border-radius: 50%
     }
 }
@@ -1231,8 +1231,8 @@
         min-height: 200px;
         max-height: 90vh;
         margin: auto;
-        color: var(--color-content-stark, oklch(16.6% 0.026 267));
-        background-color: var(--color-popover-surface, oklch(100% 0 0));
+        color: var(--color-content-stark, darkslategray);
+        background-color: var(--color-popover-surface, white);
         border: 0 none;
         border-radius: calc(var(--radius, 0.5rem) * 2);
         box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
@@ -1333,7 +1333,7 @@
         margin: var(--spacing-field-padding, 0.625rem) 0;
         white-space: nowrap;
         font-size: 0.875rem;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        color: var(--color-content-neutral, gray);
 
         /* Lines before and after content */
         &:before,
@@ -1343,7 +1343,7 @@
             flex: 1;
             width: auto;
             height: 1px;
-            background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15))
+            background-color: var(--color-line, color-mix(darkslategray 10%, transparent))
         }
 
         /* Space between lines and content */
@@ -1415,7 +1415,7 @@
         padding: 0.25rem;
         z-index: 50;
         list-style: none;
-        background: var(--color-popover-surface, oklch(100% 0 0));
+        background: var(--color-popover-surface, white);
         border: 0 none;
         border-radius: var(--radius, 0.5rem);
         box-shadow: rgba(15, 15, 15, 0.05) 0px 0px 0px 1px, rgba(15, 15, 15, 0.1) 0px 3px 6px, rgba(15, 15, 15, 0.2) 0px 9px 24px;
@@ -1433,7 +1433,7 @@
             padding-inline-start: 0.5rem;
             padding-inline-end: 0.5rem;
             font-weight: normal;
-            color: var(--color-content-stark, oklch(16.6% 0.026 267));
+            color: var(--color-content-stark, darkslategray);
             text-align: start;
             text-decoration: none;
             text-overflow: ellipsis;
@@ -1445,14 +1445,14 @@
             user-select: none;
 
             &:hover {
-                color: var(--color-field-inverse, oklch(16.6% 0.026 267));
+                color: var(--color-field-inverse, darkslategray);
                 text-decoration: inherit;
-                background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+                background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
             }
 
             &:active {
-                color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-                background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+                color: var(--color-field-inverse, darkslategray);
+                background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
             }
 
             & span,
@@ -1469,7 +1469,7 @@
         /* Titles */
         & small {
             padding: 0.25rem 0.5rem;
-            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+            color: var(--color-content-neutral, gray);
         }
 
         /* Horizontal rules (offset to ignore menu padding) */
@@ -1479,7 +1479,7 @@
             margin-inline-start: calc(0.25rem * -1);
             margin-top: 0.25rem;
             margin-bottom: 0.25rem;
-            background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+            background-color: var(--color-line, color-mix(darkslategray 10%, transparent));
         }
 
         /* Labels */
@@ -1516,7 +1516,7 @@
 
     /* Dark theme */
     :where(.dark menu[popover]) :where(li, a, button, label):hover {
-        background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
+        background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
     }
 
     /* Nested menu alignment */
@@ -1695,7 +1695,7 @@
     :where(form):not(.unstyle) {
         display: flex;
         flex-direction: column;
-        gap: calc(var(--spacing) * 4);
+        gap: calc(var(--spacing, 0.25rem) * 4);
         width: 100%
     }
 
@@ -1703,25 +1703,25 @@
     :where(fieldset):not(.unstyle) {
         display: flex;
         flex-direction: column;
-        gap: 0.375ch calc(var(--spacing) * 2);
+        gap: 0.375ch calc(var(--spacing, 0.25rem) * 2);
         width: 100%;
 
         &:has([type=radio], [type=checkbox]) {
-            gap: calc(var(--spacing) * 2);
+            gap: calc(var(--spacing, 0.25rem) * 2);
         }
     }
 
     :where(fieldset:has(legend)):not(.unstyle) {
         padding: 1ch 1.5ch 1.5ch 1.5ch;
         border-radius: var(--radius, 0.5rem);
-        border-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+        border-color: var(--color-line, color-mix(darkslategray 10%, transparent));
         border-style: solid;
         border-width: 1px;
 
         & :where(legend) {
             padding: 0 1.5ch;
             font-size: 0.875rem;
-            color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27));
+            color: var(--color-content-subtle, darkgray);
         }
     }
 
@@ -1745,7 +1745,7 @@
         flex-direction: column;
         gap: 0.2ch;
         width: 100%;
-        text-indent: calc(var(--radius) / 2);
+        text-indent: calc(var(--radius, 0.5rem) / 2);
         cursor: pointer;
 
         /* Prevent text indentation of bare label text nodes from being inherited */
@@ -1755,7 +1755,7 @@
 
         /* Indent label text in spans */
         :where(span:first-of-type) {
-            padding-inline-start: calc(var(--radius) / 2)
+            padding-inline-start: calc(var(--radius, 0.5rem) / 2)
         }
 
         :where(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea) {
@@ -1784,13 +1784,13 @@
 
         /* Size buttons and inputs */
         & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea) {
-            width: calc(var(--spacing-field-height) * 8);
+            width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }
 
         /* Focus state for .label wrapper for search and file inputs */
         & .label:focus-within {
-            box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark) 35%, transparent)
+            box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark, darkslategray) 35%, transparent)
         }
 
         /* Align textarea label to top */
@@ -1798,7 +1798,7 @@
             align-items: start;
 
             :where(data) {
-                padding-top: calc(var(--spacing))
+                padding-top: calc(var(--spacing, 0.25rem))
             }
         }
     }
@@ -1823,8 +1823,8 @@
     :where(input:not([type=range], [type=color]), textarea, label:has([type=search], [type=file]), .label:has([type=search], [type=file])):not(.unstyle) {
         width: 100%;
         max-width: 100%;
-        color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-        background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+        color: var(--color-field-inverse, darkslategray);
+        background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
         border-width: 0;
         border-style: solid;
         border-color: transparent;
@@ -1834,23 +1834,23 @@
         appearance: none;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
         }
 
         &:active {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
         }
 
         &:focus-visible {
-            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26))
+            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent))
         }
 
         &::placeholder {
-            color: color-mix(in oklch, var(--color-field-inverse, oklch(16.6% 0.026 267)) 65%, transparent)
+            color: color-mix(in oklch, var(--color-field-inverse, darkslategray) 65%, transparent)
         }
 
         &::selection {
-            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 80%, var(--color-field-inverse, oklch(16.6% 0.026 267)))
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 80%, var(--color-field-inverse, darkslategray))
         }
 
         &[type=file] {
@@ -1909,7 +1909,7 @@
     /* Additional styles for label with file input */
     :where(label, .label):has([type=file]):not(.unstyle) {
         justify-content: center;
-        gap: var(--spacing, 0.5rem);
+        gap: var(--spacing, 0.25rem);
         height: var(--spacing-field-height, 2.25rem);
         cursor: pointer
     }
@@ -1926,7 +1926,7 @@
             width: var(--spacing-field-height, 2.25rem);
             height: 100%;
             margin-inline-end: 0;
-            color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27))
+            color: var(--color-content-subtle, darkgray)
         }
     }
 
@@ -2099,7 +2099,7 @@
             left: 50%;
             width: 60%;
             height: 60%;
-            background-color: var(--color-field-inverse, oklch(16.6% 0.026 267));
+            background-color: var(--color-field-inverse, darkslategray);
             border-radius: 50%;
             transform-origin: center;
             transition: var(--transition, all .05s ease-in-out);
@@ -2129,14 +2129,14 @@
 
         &::-webkit-slider-runnable-track {
             height: calc(var(--spacing, 0.25rem) * 2);
-            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
             border-radius: var(--radius, 0.5rem);
             cursor: pointer;
-            transition: var(--transition)
+            transition: var(--transition, all .05s ease-in-out)
         }
 
         &:hover::-webkit-slider-runnable-track {
-            background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
+            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
         }
 
         &::-webkit-slider-thumb {
@@ -2146,15 +2146,15 @@
             width: calc(var(--spacing-field-height, 2.25rem) * 0.5);
             height: calc(var(--spacing-field-height, 2.25rem) * 0.5);
             transform: translateY(-50%);
-            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 60%, var(--color-field-inverse, oklch(16.6% 0.026 267)));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 60%, var(--color-field-inverse, darkslategray));
             border-radius: 200px;
             box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
             cursor: pointer;
-            transition: var(--transition)
+            transition: var(--transition, all .05s ease-in-out)
         }
 
         &::-webkit-slider-thumb:hover {
-            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 30%, var(--color-field-inverse, oklch(16.6% 0.026 267)));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 30%, var(--color-field-inverse, darkslategray));
         }
     }
 
@@ -2169,7 +2169,7 @@
             width: 2ch;
             text-align: center;
             font-size: 0.875rem;
-            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+            color: var(--color-content-neutral, gray);
         }
     }
 
@@ -2212,7 +2212,7 @@
 
             &:hover::before,
             &:active::before {
-                background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+                background-color: var(--color-line, color-mix(darkslategray 10%, transparent));
             }
         }
 
@@ -2416,17 +2416,16 @@
 
 @layer components {
 
-    :where(aside[popover]) {
+    :where(nav[popover]) {
         inset-inline-start: auto;
         inset-inline-end: 0;
         width: fit-content;
         min-width: 20vw;
         max-width: 80vw;
-        max-width: 100%;
         height: 100%;
         overflow-y: auto;
         z-index: 200;
-        background-color: var(--color-popover-surface, oklch(100% 0 0));
+        background-color: var(--color-popover-surface, white);
         transition: opacity .15s ease-in, transform .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;
 
@@ -2456,7 +2455,7 @@
         }
     }
 
-    :where(aside[popover].appear-start) {
+    :where(nav[popover].appear-start) {
         inset-inline-start: 0;
         inset-inline-end: auto;
 
@@ -2481,8 +2480,8 @@
     }
 
     /* Dark mode override */
-    .dark :where(aside[popover]) {
-        background-color: var(--color-surface-1, oklch(98.17% 0.0005 95.87))
+    .dark :where(nav[popover]) {
+        background-color: var(--color-surface-1, whitesmoke)
     }
 }
 
@@ -2519,24 +2518,24 @@
         }
 
         & button[\@click="prev()"] {
-            left: calc(var(--spacing) * 4)
+            left: calc(var(--spacing, 0.25rem) * 4)
         }
 
         & button[\@click="next()"] {
             left: auto;
-            right: calc(var(--spacing) * 4)
+            right: calc(var(--spacing, 0.25rem) * 4)
         }
 
         /* Dots container */
         .carousel-dots {
             position: absolute;
-            bottom: calc(var(--spacing) * 4);
+            bottom: calc(var(--spacing, 0.25rem) * 4);
             left: 50%;
             transform: translateX(-50%);
             display: flex;
-            gap: calc(var(--spacing) * 2);
+            gap: calc(var(--spacing, 0.25rem) * 2);
             max-width: 100%;
-            padding: 0 calc(var(--spacing) * 4);
+            padding: 0 calc(var(--spacing, 0.25rem) * 4);
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
@@ -2590,23 +2589,23 @@
             width: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             height: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             border-radius: 50%;
-            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 60%, var(--color-field-inverse, oklch(16.6% 0.026 267)));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 60%, var(--color-field-inverse, darkslategray));
             box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
             transition: var(--transition, all .05s ease-in-out)
         }
 
         /* Checked */
         &:checked {
-            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
 
             /* Marker */
             &::before {
                 left: calc(100% - (var(--spacing-field-height, 2.25rem) * 0.65) + 0.125rem);
-                background-color: var(--color-field-inverse, oklch(16.6% 0.026 267))
+                background-color: var(--color-field-inverse, darkslategray)
             }
 
             &:hover {
-                background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48))
+                background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
             }
         }
     }
@@ -2631,8 +2630,8 @@
 
         /* Header row */
         :where(thead, .grid-header > *) {
-            background-color: var(--color-surface-1, oklch(98.17% 0.0005 95.87));
-            border-bottom: 1px solid var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15))
+            background-color: var(--color-surface-1, whitesmoke);
+            border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent))
         }
 
         /* Header cell */
@@ -2642,7 +2641,7 @@
 
         /* Row */
         :where(tr, .grid-row > *) {
-            border-bottom: 1px solid var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15))
+            border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent))
         }
 
         /* Cell */
@@ -2673,7 +2672,7 @@
         /* Striped utility class */
         &.striped {
             :where(tr:nth-child(even), .grid-row:nth-child(even)) {
-                background-color: var(--color-surface-1, oklch(98.17% 0.0005 95.87))
+                background-color: var(--color-surface-1, whitesmoke)
             }
 
             :where(tr:nth-child(odd), .grid-row:nth-child(odd)) {
@@ -2706,8 +2705,8 @@
     :where(.toast) {
         display: flex;
         max-width: 90vw;
-        background-color: var(--color-popover-surface, oklch(100% 0 0));
-        border: 1px solid var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+        background-color: var(--color-popover-surface, white);
+        border: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
         border-radius: calc(var(--radius, 0.5rem) * 2);
         box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
         overflow: hidden;
@@ -2736,7 +2735,7 @@
         /* Dismiss button */
         :where(.toast-dismiss-button) {
             position: relative;
-            border-inline-start: 1px solid color-mix(in oklch, var(--color-content-stark, oklch(16.6% 0.026 267)) 20%, transparent);
+            border-inline-start: 1px solid color-mix(in oklch, var(--color-content-stark, darkslategray) 20%, transparent);
             border-radius: 0;
 
             /* Icon */
@@ -2747,7 +2746,7 @@
                 left: 50%;
                 width: 50%;
                 height: 50%;
-                background-color: var(--color-field-inverse, oklch(16.6% 0.026 267));
+                background-color: var(--color-field-inverse, darkslategray);
                 mask-image: var(--icon-toast-dismiss, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E"));
                 mask-repeat: no-repeat;
                 mask-size: 100% 100%;
@@ -2759,11 +2758,11 @@
 
     /* Brand, accent, positive, negative utility class overrides (see Utilities) */
     :where(.toast.brand, .toast.accent, .toast.positive, .toast.negative) {
-        color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-        background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+        color: var(--color-field-inverse, darkslategray);
+        background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
 
         :where(.toast-dismiss-button) {
-            border-inline-start: 1px solid color-mix(in oklch, var(--color-field-inverse, oklch(16.6% 0.026 267)) 20%, transparent);
+            border-inline-start: 1px solid color-mix(in oklch, var(--color-field-inverse, darkslategray) 20%, transparent);
         }
     }
 
@@ -2795,14 +2794,14 @@
         margin: var(--spacing-popover-offset, 0.5rem) 0;
         padding: calc(var(--spacing, 0.25rem) * .5) calc(var(--spacing, 0.25rem) * 2);
         font-size: 0.875rem;
-        color: var(--color-page, oklch(100% 0 0));
-        background-color: var(--color-content-stark, oklch(16.6% 0.026 267));
+        color: var(--color-page, white);
+        background-color: var(--color-content-stark, darkslategray);
         border: 0 none;
         border-radius: var(--radius, 0.5rem);
         box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
 
         &:hover {
-            transition-delay: var(--tooltip-hover-delay, 1s)
+            transition-delay: var(--tooltip-hover-delay, .5s)
         }
 
         /* Leading icon */
@@ -2913,7 +2912,7 @@
 @layer base {
 
     /* All text elements */
-    :where(a, abbr, address, blockquote, code, del, figcaption, h1, h2, h3, h4, h5, h6, ins, label:not(.avatar, :has([type=file], [type=search])), legend, p, small, cite, q):not(.unstyle),
+    :where(abbr, address, blockquote, code, del, figcaption, h1, h2, h3, h4, h5, h6, ins, label:not(.avatar, :has([type=file], [type=search])), legend, p, small, cite, q):not(.unstyle),
     .h1,
     .h2,
     .h3,
@@ -2924,22 +2923,18 @@
     .small,
     .caption,
     .label {
-        color: var(--color-content-stark);
+        color: var(--color-content-stark, darkslategray);
 
-        /* Support inline icons */
-        &:where(:has([x-icon])) {
-            display: inline-flex;
-            align-items: center;
-
-            /* Inline icon spacing */
-            & [x-icon] {
-                margin-inline-end: 0.5ch;
-            }
+        /* Inline links */
+        & a:not(.unstyle),
+        & .link {
+            text-decoration: underline;
+            text-underline-offset: 2px
         }
 
-        /* Inline span alignment */
-        & span {
-            vertical-align: inherit
+        /* Inline icons */
+        & [x-icon] {
+            margin-inline-end: 0.25em
         }
     }
 
@@ -2951,16 +2946,8 @@
     .h4,
     .h5,
     .h6 {
-        font-weight: bolder;
+        font-weight: 550;
         word-wrap: break-word
-    }
-
-    :where(h1, h2, h3, h4):not(.unstyle),
-    .h1,
-    .h2,
-    .h3,
-    .h4 {
-        font-weight: 700;
     }
 
     :where(h1, h2, h3):not(.unstyle),
@@ -2972,18 +2959,18 @@
 
     :where(h1):not(.unstyle),
     .h1 {
-        font-size: 2.25rem;
+        font-size: 3rem;
         line-height: 1.25
     }
 
     :where(h2):not(.unstyle),
     .h2 {
-        font-size: 1.5rem
+        font-size: 2.25rem
     }
 
     :where(h3):not(.unstyle),
     .h3 {
-        font-size: 1.25rem;
+        font-size: 1.75rem;
         line-height: 1.4
     }
 
@@ -2994,18 +2981,20 @@
 
     :where(h5):not(.unstyle),
     .h5 {
-        font-weight: 600;
-        font-size: .875rem;
+        font-size: 1rem;
         line-height: 1rem;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+        color: var(--color-content-neutral, gray);
+
+        & a:hover {
+            color: var(--color-content-stark, darkslategray)
+        }
     }
 
     :where(h6):not(.unstyle),
     .h6 {
-        font-weight: 600;
         font-size: 0.8125rem;
         line-height: 1.4;
-        text-transform: uppercase;
+        color: var(--color-brand-content, goldenrod)
     }
 
     /* Paragraphs */
@@ -3015,18 +3004,51 @@
     }
 
     /* Links */
-    :where(a:not([role=button]), button.link):not(.unstyle) {
-        text-decoration: underline;
-        text-underline-offset: 2px;
+    :where(a:not([role=button])):not(.unstyle),
+    .link {
+        text-align: unset;
+        text-decoration: none;
+        color: var(--color-content-stark, darkslategray);
         cursor: pointer;
         transition: var(--transition, all .05s ease-in-out);
 
         &:hover {
-            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+            color: var(--color-content-neutral, gray)
         }
 
-        &:active {
-            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+        &:where(:has([x-icon])) {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25em
+        }
+    }
+
+    /* Asides */
+    :where(aside):not(.unstyle) {
+        padding: calc(var(--spacing, 0.25rem) * 4);
+        border: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+        border-radius: var(--radius, 0.5rem)
+    }
+
+    /* Badges */
+    :where(.badge) {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        gap: 0.25rem;
+        width: fit-content;
+        height: fit-content;
+        padding: 0.35ch 0.65ch;
+        font-weight: 500;
+        font-size: 0.75rem;
+        line-height: 1;
+        color: var(--color-field-inverse, darkslategray);
+        background-color: var(--color-surface-2, gainsboro);
+        border-radius: 100px;
+
+        /* Solo icons */
+        &:has(svg:only-child) {
+            padding: 0.35ch
         }
     }
 
@@ -3037,8 +3059,8 @@
         max-width: 100%;
         margin: calc(var(--spacing, 0.25rem) * 4) 0;
         padding: 0 calc(var(--spacing, 0.25rem) * 4);
-        color: var(--color-content-stark, oklch(16.6% 0.026 267));
-        border-inline-start: 0.25rem solid color-mix(in oklch, var(--color-content-stark, oklch(16.6% 0.026 267)) 25%, transparent);
+        color: var(--color-content-stark, darkslategray);
+        border-inline-start: 0.25rem solid color-mix(in oklch, var(--color-content-stark, darkslategray) 25%, transparent);
         border-inline-end: none;
 
         & * {
@@ -3046,29 +3068,37 @@
         }
     }
 
-    /* Inline code */
+    /* Code */
     :where(code):not(.unstyle) {
         display: inline-block;
         width: fit-content;
         height: fit-content;
-        padding: 0.1ch 0.5ch;
+        padding: 0 0.7ch;
         font-size: 82.5%;
+        line-height: 1.4;
         word-wrap: break-word;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
-        background-color: color-mix(in oklch, var(--color-content-neutral, oklch(48.26% 0.0365 255.09)) 10%, transparent);
-        border: 1px solid color-mix(in oklch, var(--color-content-subtle, oklch(67.4% 0.0318 251.27)) 10%, transparent);
-        border-radius: var(--radius, 0.5rem)
+        color: var(--color-content-neutral, gray);
+        background-color: color-mix(in oklch, var(--color-content-neutral, gray) 10%, transparent);
+        border: 1px solid color-mix(in oklch, var(--color-content-subtle, darkgray) 10%, transparent);
+        border-radius: var(--radius, 0.5rem);
+
+        &[role=button] {
+            cursor: pointer
+        }
     }
 
     /* Captions */
     :where(figcaption):not(.unstyle),
     .caption {
         font-size: 0.8125rem;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        color: var(--color-content-neutral, gray);
 
-        & a {
-            font-weight: inherit;
-            color: inherit
+        & a:not([role=button]) {
+            color: inherit;
+
+            &:hover {
+                color: var(--color-content-stark, white)
+            }
         }
     }
 
@@ -3081,7 +3111,15 @@
     :where(small):not(.unstyle),
     .small {
         font-size: 0.875rem;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+        color: var(--color-content-neutral, gray);
+
+        & a:not([role=button]) {
+            color: inherit;
+
+            &:hover {
+                color: var(--color-content-stark, white)
+            }
+        }
     }
 
     /* Icons */
@@ -3108,8 +3146,8 @@
         font-weight: 600;
         line-height: 1;
         text-align: center;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
-        background-color: color-mix(in oklch, var(--color-content-neutral, oklch(48.26% 0.0365 255.09)) 10%, transparent);
+        color: var(--color-content-neutral, gray);
+        background-color: color-mix(in oklch, var(--color-content-neutral, gray) 10%, transparent);
         border-radius: calc(var(--radius, 0.5rem) / 1.5);
 
         &:not(:last-of-type) {
@@ -3139,43 +3177,21 @@
         white-space: normal
     }
 
-    /* Badges */
-    :where(mark):not(.unstyle),
-    .badge {
-        display: inline-flex;
-        justify-content: center;
-        align-items: center;
-        gap: 0.25rem;
-        width: fit-content;
-        height: fit-content;
-        padding: var(--spacing, 0.25rem) calc(var(--spacing, 0.25rem) * 1.5);
-        font-weight: 500;
-        font-size: 0.75rem;
-        line-height: 1;
-        color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-        background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
-        border-radius: 100px;
-
-        /* Solo icons */
-        &:has(svg:only-child) {
-            padding: var(--spacing, 0.25rem) calc(var(--spacing, 0.25rem) * 1);
-        }
-    }
-
     /* Lists */
-    :where(ol):not(nav ol):not(menu ol):not(.unstyle) {
+    :where(ol):not(.unstyle) {
         list-style-type: decimal;
     }
 
-    :where(ul):not(nav ul):not(menu ul):not(.unstyle) {
+    :where(ul):not(.unstyle) {
         list-style-type: disc;
     }
 
-    :where(ol):not(nav ol):not(menu ol):not(.unstyle),
-    :where(ul):not(nav ul):not(menu ul):not(.unstyle) {
+    :where(ol):not(.unstyle),
+    :where(ul):not(.unstyle) {
+        padding-inline-start: 1.75ch;
 
-        &:not(:has(input[type=checkbox])) {
-            padding-inline-start: 1.75ch;
+        &:has(input[type=checkbox]) {
+            padding-inline-start: 0
         }
 
         /* Offset items so markers align inside the element frame  */
@@ -3215,6 +3231,18 @@
         }
     }
 
+    :where(nav, menu):not(.unstyle) ul,
+    :where(nav, menu):not(.unstyle) ol {
+        list-style: none;
+        padding: 0;
+
+        & li,
+        li:not(:last-of-type) {
+            margin: 0;
+            padding: 0
+        }
+    }
+
     /* RTL list overrides */
     [dir=rtl] :where(ol):not(nav ol):not(menu ol):not(.unstyle),
     [dir=rtl] :where(ul):not(nav ul):not(menu ul):not(.unstyle) {
@@ -3244,9 +3272,44 @@
         }
     }
 
-    /* Spans */
-    :where(span):not(.unstyle) {
-        vertical-align: middle
+    /* Pre code blocks */
+    :where(pre):not(.unstyle) {
+        display: flex;
+        flex-flow: row wrap;
+        font-size: 0.8125rem;
+        line-height: 1.7;
+        background-color: var(--color-page, white);
+        border: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+        border-radius: var(--radius, 0.5rem);
+        overflow: hidden;
+        tab-size: 4;
+        white-space: pre;
+        white-space-collapse: preserve;
+        overflow: hidden;
+
+        & code {
+            flex-grow: 1;
+            display: inline-block;
+            height: auto;
+            padding: calc(var(--spacing, 0.25rem) * 4);
+            padding-inline-end: calc(var(--spacing, 0.25rem) * 12);
+            font-size: inherit;
+            line-height: inherit;
+            background-color: transparent;
+            border: 0 none;
+            box-shadow: none;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+
+            &::-webkit-scrollbar {
+                display: none
+            }
+        }
+
+        &:not(:has(code)) {
+            padding: calc(var(--spacing, 0.25rem) * 4)
+        }
     }
 }
 
@@ -3287,7 +3350,7 @@
 
     /* Content width & horizontal centering */
     :where(.content) {
-        width: var(--spacing-content-width, 68.75rem);
+        width: var(--spacing-content-width, 74rem);
         max-width: 100%;
         margin-inline-start: auto;
         margin-inline-end: auto
@@ -3298,20 +3361,8 @@
         background-color: transparent;
 
         &:hover {
-            background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26))
+            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent))
         }
-
-        /* &.brand:hover {
-            color: var(--color-brand-inverse, #763518)
-        }
-
-        &.accent:hover {
-            color: var(--color-accent-inverse, oklch(100% 0 0))
-        }
-
-        &.negative:hover {
-            color: var(--color-negative-inverse, white)
-        } */
     }
 
     /* Hug */
@@ -3326,21 +3377,21 @@
     :where(.outlined) {
         border-width: 1px;
         border-style: solid;
-        border-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 90%, var(--color-field-inverse, oklch(16.6% 0.026 267)))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 90%, var(--color-field-inverse, darkslategray))
     }
 
     /* Dark theme override */
     .dark :where(.outlined) {
-        border-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 80%, var(--color-field-inverse, oklch(16.6% 0.026 267)))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 80%, var(--color-field-inverse, darkslategray))
     }
 
     /* Transparent */
     :where(.transparent) {
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        color: var(--color-content-neutral, gray);
         background-color: transparent !important;
 
         &:hover {
-            color: var(--color-content-stark, oklch(16.6% 0.026 267))
+            color: var(--color-content-stark, darkslategray)
         }
     }
 
@@ -3387,10 +3438,10 @@
         }
 
         /* Width and horizontal centering for content wrappers */
-        &>header nav,
-        &>footer nav,
+        &>header nav:not([popover]),
+        &>footer nav:not([popover]),
         &>main>section:not(.banner, .overlay-dark, .overlay-light) {
-            width: var(--spacing-content-width, 68.75rem);
+            width: var(--spacing-content-width, 74rem);
             max-width: 100%;
             margin-inline-start: auto;
             margin-inline-end: auto
@@ -3473,17 +3524,17 @@
 
     /* Prose styles for long-form content */
     :where(.prose, .prose details) {
-        width: 65ch;
+        width: 42rem;
         max-width: 100%;
 
         /* Asides inside a prose element are used as callouts */
-        & aside:not([popover]) {
+        & aside:not([popover]):not(:where([x-code-group] *)) {
             margin-top: calc(1rem * 1.4);
             padding: 1rem;
             border-radius: calc(var(--radius, 0.5rem) * 2);
-            color: var(--color-content-stark, oklch(16.6% 0.026 267));
-            background-color: color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 20%, transparent);
-            border: 1px solid color-mix(in oklch, var(--color-field-surface, oklch(91.79% 0.0029 264.26)) 30%, transparent);
+            color: var(--color-content-stark, darkslategray);
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 20%, transparent);
+            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 15%, transparent);
 
             &:not(.frame) * {
                 color: inherit
@@ -3499,6 +3550,10 @@
                     font-size: 1.25rem
                 }
             }
+        }
+
+        & aside.frame {
+            font-family: var(--font-sans)
         }
 
         &>a:not(:where(h1, h2, h3, h4, h5, h6, p, small, figcaption, label, li, blockquote, pre code, code, kbd, span, mark, [role=button]) a) {
@@ -3544,18 +3599,24 @@
             }
         }
 
+        &>h1 {
+            font-size: 2.25rem
+        }
+
         &>h1+p {
             margin-top: 0.625rem;
             font-size: 1.125rem;
-            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+            color: var(--color-content-neutral, gray)
         }
 
         &>h2 {
+            font-size: 1.75rem;
             margin-top: 1rem;
             margin-bottom: calc(1rem * 0.6667)
         }
 
         &>h3 {
+            font-size: 1.25rem;
             margin-top: calc(1rem * 2.4)
         }
 
@@ -3625,59 +3686,59 @@
     :where(.trailing) {
         display: inline-block;
         margin-inline-start: auto;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+        color: var(--color-content-neutral, gray)
     }
 
     /* Brand colors */
     :where(.brand) {
-        --color-field-surface: var(--color-brand-surface, #f6c07b);
-        --color-field-surface-hover: var(--color-brand-surface-hover, #f19b46);
-        --color-field-inverse: var(--color-brand-inverse, #763518);
-        --color-content-stark: var(--color-brand-content, #de6618);
-        --color-content-neutral: color-mix(in oklch, var(--color-brand-content, #de6618) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, #de6618) 70%, transparent)
+        --color-field-surface: var(--color-brand-surface, goldenrod);
+        --color-field-surface-hover: var(--color-brand-surface-hover, darkgoldenrod);
+        --color-field-inverse: var(--color-brand-inverse, white);
+        --color-content-stark: var(--color-brand-content, goldenrod);
+        --color-content-neutral: color-mix(in oklch, var(--color-brand-content, goldenrod) 85%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, goldenrod) 70%, transparent)
     }
 
     /* Accent colors */
     :where(.accent) {
-        --color-field-surface: var(--color-accent-surface, oklch(16.6% 0.026 267));
-        --color-field-surface-hover: var(--color-accent-surface-hover, oklch(28.7% 0.030787 270.1));
-        --color-field-inverse: var(--color-accent-inverse, oklch(100% 0 0));
-        --color-content-stark: var(--color-accent-content, oklch(16.6% 0.026 267));
-        --color-content-neutral: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, oklch(16.6% 0.026 267)) 70%, transparent)
+        --color-field-surface: var(--color-accent-surface, darkslategray);
+        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(darkslategray 90%, white));
+        --color-field-inverse: var(--color-accent-inverse, white);
+        --color-content-stark: var(--color-accent-content, darkslategray);
+        --color-content-neutral: color-mix(in oklch, var(--color-accent-content, darkslategray) 85%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, darkslategray) 70%, transparent)
     }
 
     /* Negative colors */
     :where(.negative) {
-        --color-field-surface: var(--color-negative-surface, #ef4444);
-        --color-field-surface-hover: var(--color-negative-surface-hover, #dc2626);
-        --color-field-inverse: var(--color-negative-inverse, white);
-        --color-content-stark: var(--color-negative-content, #ef4444);
-        --color-content-neutral: color-mix(in oklch, var(--color-negative-content, #ef4444) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-negative-content, #ef4444) 70%, transparent)
+        --color-field-surface: var(--color-negative-surface, salmon);
+        --color-field-surface-hover: var(--color-negative-surface-hover, lightcoral);
+        --color-field-inverse: var(--color-negative-inverse, maroon);
+        --color-content-stark: var(--color-negative-content, crimson);
+        --color-content-neutral: color-mix(in oklch, var(--color-negative-content, crimson) 85%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-negative-content, crimson) 70%, transparent)
     }
 
     /* Positive colors */
     :where(.positive) {
-        --color-field-surface: var(--color-positive-surface, #16a34a);
-        --color-field-surface-hover: var(--color-positive-surface-hover, #166534);
-        --color-field-inverse: var(--color-positive-inverse, white);
-        --color-content-stark: var(--color-positive-content, #16a34a);
-        --color-content-neutral: color-mix(in oklch, var(--color-positive-content, #16a34a) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-positive-content, #16a34a) 70%, transparent)
+        --color-field-surface: var(--color-positive-surface, palegreen);
+        --color-field-surface-hover: var(--color-positive-surface-hover, lightgreen);
+        --color-field-inverse: var(--color-positive-inverse, darkgreen);
+        --color-content-stark: var(--color-positive-content, limegreen);
+        --color-content-neutral: color-mix(in oklch, var(--color-positive-content, limegreen) 85%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-positive-content, limegreen) 70%, transparent)
     }
 
     /* Text colors */
     :where(.stark) {
-        color: var(--color-content-stark, oklch(16.6% 0.026 267))
+        color: var(--color-content-stark, darkslategray)
     }
 
     :where(.neutral) {
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09))
+        color: var(--color-content-neutral, gray)
     }
 
     :where(.subtle) {
-        color: var(--color-content-subtle, oklch(67.4% 0.0318 251.27))
+        color: var(--color-content-subtle, darkgray)
     }
 }

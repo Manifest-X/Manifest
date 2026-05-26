@@ -8,7 +8,7 @@ window.getManifestBase = function getManifestBase() {
 };
 
 // Absolute pathname prefix for the app root (e.g. "/src/dist"). Used by router for links and route matching.
-// Prerender injects <meta name="manifest:router-base" content="/path"> from manifest.prerender.routerBase or root+output. If present, use it; else fall back to depth or manifest link.
+// Prerender injects <meta name="manifest:router-base" content="/path"> from manifest.render.routerBase or root+output. If present, use it; else fall back to depth or manifest link.
 window.getManifestBasePath = function getManifestBasePath() {
     const baseMeta = document.querySelector('meta[name="manifest:router-base"]');
     const content = baseMeta?.getAttribute('content');

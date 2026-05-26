@@ -1,5 +1,12 @@
 /* Manifest Data Sources - File Loaders */
 
+// Key names that would walk into Object's prototype chain if used as nested-
+// path segments. Rejecting them in setNestedValue and deepMergeWithFallback
+// prevents a CSV row like `__proto__.polluted, true` (or a malicious JSON
+// locale file containing `{"__proto__": {...}}`) from polluting
+// Object.prototype and silently affecting every plain object on the page.
+const POLLUTING_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 // Dynamic js-yaml loader
 let jsyaml = null;
 let yamlLoadingPromise = null;
@@ -134,6 +141,7 @@ function deepMergeWithFallback(currentData, fallbackData) {
         !Array.isArray(currentData) && !Array.isArray(fallbackData)) {
         const merged = { ...fallbackData };
         for (const key in currentData) {
+            if (POLLUTING_KEYS.has(key)) continue;
             if (key.startsWith('_')) {
                 // Preserve metadata from current locale
                 merged[key] = currentData[key];
@@ -161,6 +169,9 @@ function deepMergeWithFallback(currentData, fallbackData) {
 // Numeric path segments (e.g. cards.0.title) create real arrays so x-for="card in $x....cards" works.
 function setNestedValue(obj, path, value) {
     const keys = path.split('.');
+    // Drop the whole row if any segment would walk into the prototype chain.
+    // `foo.constructor.prototype.polluted` is just as dangerous as `__proto__.polluted`.
+    if (keys.some(k => POLLUTING_KEYS.has(k))) return;
     let current = obj;
 
     for (let i = 0; i < keys.length - 1; i++) {

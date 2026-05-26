@@ -264,13 +264,11 @@ function initializeMagicLinks() {
                     );
 
                     if (isRateLimit) {
-                        // Store callback for retry
-                        try {
-                            sessionStorage.setItem('manifest:magic-link:callback', JSON.stringify({ userId, secret }));
-                        } catch (e) {
-                            // Ignore
-                        }
-                        this.error = 'Rate limit exceeded. Please wait a moment and refresh the page.';
+                        // Don't persist {userId, secret} for retry — the secret is a
+                        // bearer credential that any same-origin XSS could lift. On
+                        // rate limit the user must re-request the magic link from
+                        // their email (cleanupUrl has already stripped URL params).
+                        this.error = 'Rate limit exceeded. Please wait a moment and request a new magic link.';
                         this.isAuthenticated = false;
                         this.isAnonymous = false;
                         this.magicLinkExpired = false;
@@ -395,15 +393,10 @@ function handleMagicLinkCallbacks() {
 
         const callbackInfo = event.detail;
 
-        // Store callback for retry if rate limited
-        try {
-            sessionStorage.setItem('manifest:magic-link:callback', JSON.stringify({
-                userId: callbackInfo.userId,
-                secret: callbackInfo.secret
-            }));
-        } catch (e) {
-            // Could not store callback
-        }
+        // Note: we deliberately do NOT persist {userId, secret} to sessionStorage
+        // as a retry safety net. The secret is a single-use bearer credential
+        // that any same-origin XSS could read; UX of "refresh to retry on rate
+        // limit" isn't worth the credential-exfil risk.
 
         // Handle the callback
         await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);

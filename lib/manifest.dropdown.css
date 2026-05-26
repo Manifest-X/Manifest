@@ -45,7 +45,7 @@
         padding: 0.25rem;
         z-index: 50;
         list-style: none;
-        background: var(--color-popover-surface, oklch(100% 0 0));
+        background: var(--color-popover-surface, white);
         border: 0 none;
         border-radius: var(--radius, 0.5rem);
         box-shadow: rgba(15, 15, 15, 0.05) 0px 0px 0px 1px, rgba(15, 15, 15, 0.1) 0px 3px 6px, rgba(15, 15, 15, 0.2) 0px 9px 24px;
@@ -63,7 +63,7 @@
             padding-inline-start: 0.5rem;
             padding-inline-end: 0.5rem;
             font-weight: normal;
-            color: var(--color-content-stark, oklch(16.6% 0.026 267));
+            color: var(--color-content-stark, darkslategray);
             text-align: start;
             text-decoration: none;
             text-overflow: ellipsis;
@@ -75,14 +75,14 @@
             user-select: none;
 
             &:hover {
-                color: var(--color-field-inverse, oklch(16.6% 0.026 267));
+                color: var(--color-field-inverse, darkslategray);
                 text-decoration: inherit;
-                background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+                background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
             }
 
             &:active {
-                color: var(--color-field-inverse, oklch(16.6% 0.026 267));
-                background-color: var(--color-field-surface, oklch(91.79% 0.0029 264.26));
+                color: var(--color-field-inverse, darkslategray);
+                background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
             }
 
             & span,
@@ -99,7 +99,7 @@
         /* Titles */
         & small {
             padding: 0.25rem 0.5rem;
-            color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+            color: var(--color-content-neutral, gray);
         }
 
         /* Horizontal rules (offset to ignore menu padding) */
@@ -109,7 +109,7 @@
             margin-inline-start: calc(0.25rem * -1);
             margin-top: 0.25rem;
             margin-bottom: 0.25rem;
-            background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+            background-color: var(--color-line, color-mix(darkslategray 10%, transparent));
         }
 
         /* Labels */
@@ -146,7 +146,7 @@
 
     /* Dark theme */
     :where(.dark menu[popover]) :where(li, a, button, label):hover {
-        background-color: var(--color-field-surface-hover, oklch(89.24% 0.0024 12.48));
+        background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
     }
 
     /* Nested menu alignment */

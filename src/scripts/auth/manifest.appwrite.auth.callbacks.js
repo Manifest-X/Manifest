@@ -16,26 +16,21 @@ function initializeCallbacks() {
         const secret = urlParams.get('secret');
         const expire = urlParams.get('expire');
 
-        // Check for stored callback (from rate limit retry)
-        let storedCallback = null;
-        try {
-            const stored = sessionStorage.getItem('manifest:magic-link:callback');
-            if (stored) {
-                storedCallback = JSON.parse(stored);
-            }
-        } catch (e) {
-            // Ignore parse errors
-        }
+        // Eagerly clear any stale magic-link credentials left in sessionStorage
+        // by an earlier (pre-fix) Manifest version. We no longer persist them,
+        // and reading stale ones could resurrect a credential that should have
+        // been forgotten.
+        try { sessionStorage.removeItem('manifest:magic-link:callback'); } catch (e) {}
 
         // Check OAuth redirect flag
         const isOAuthCallback = sessionStorage.getItem('manifest:oauth:redirect') === 'true';
 
         return {
-            userId: userId || storedCallback?.userId,
-            secret: secret || storedCallback?.secret,
+            userId: userId,
+            secret: secret,
             expire: expire,
             isOAuth: isOAuthCallback,
-            hasCallback: !!(userId || storedCallback?.userId) && !!(secret || storedCallback?.secret),
+            hasCallback: !!userId && !!secret,
             hasExpired: !!expire && !userId && !secret
         };
     }

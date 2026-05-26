@@ -193,7 +193,7 @@
                 }
             }
         },
-        "prerender": {
+        "render": {
             "type": "object",
             "description": "Static rendering configuration consumed by mnfst-render.",
             "properties": {

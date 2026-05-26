@@ -17,8 +17,8 @@
 
         /* Header row */
         :where(thead, .grid-header > *) {
-            background-color: var(--color-surface-1, oklch(98.17% 0.0005 95.87));
-            border-bottom: 1px solid var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15))
+            background-color: var(--color-surface-1, whitesmoke);
+            border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent))
         }
 
         /* Header cell */
@@ -28,7 +28,7 @@
 
         /* Row */
         :where(tr, .grid-row > *) {
-            border-bottom: 1px solid var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15))
+            border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent))
         }
 
         /* Cell */
@@ -59,7 +59,7 @@
         /* Striped utility class */
         &.striped {
             :where(tr:nth-child(even), .grid-row:nth-child(even)) {
-                background-color: var(--color-surface-1, oklch(98.17% 0.0005 95.87))
+                background-color: var(--color-surface-1, whitesmoke)
             }
 
             :where(tr:nth-child(odd), .grid-row:nth-child(odd)) {

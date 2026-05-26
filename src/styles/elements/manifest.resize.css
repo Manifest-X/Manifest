@@ -32,7 +32,7 @@
 
             &:hover::before,
             &:active::before {
-                background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+                background-color: var(--color-line, color-mix(darkslategray 10%, transparent));
             }
         }
 

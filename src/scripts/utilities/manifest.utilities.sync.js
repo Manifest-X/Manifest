@@ -11,7 +11,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         const cssVariables = new Map();
 
         // 1. From inline style elements (already in DOM)
-        const inlineStyles = document.querySelectorAll('style:not(#utility-styles):not(#utility-styles-critical)');
+        const inlineStyles = document.querySelectorAll('style:not(#manifest-styles):not(#manifest-styles-critical)');
         for (const styleEl of inlineStyles) {
             if (styleEl.textContent) {
                 const variables = this.extractThemeVariables(styleEl.textContent);
@@ -278,7 +278,7 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         const commonColorClasses = new Set();
 
         // Method 1: Extract from inline style elements
-        const inlineStyles = document.querySelectorAll('style:not(#utility-styles)');
+        const inlineStyles = document.querySelectorAll('style:not(#manifest-styles)');
         for (const styleEl of inlineStyles) {
             if (styleEl.textContent) {
                 const variables = this.extractThemeVariables(styleEl.textContent);

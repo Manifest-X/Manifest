@@ -168,7 +168,7 @@
     :where(hr) {
         height: 1px;
         color: inherit;
-        background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15));
+        background-color: var(--color-line, color-mix(darkslategray 12%, transparent));
         border: 0 none
     }
 
@@ -351,7 +351,7 @@
     /* View transition styles */
     ::view-transition-group(*) {
         animation-duration: var(--view-transition-duration, 200ms);
-        animation-timing-function: var(--view-transition-easing, ease)
+        animation-timing-function: var(--view-transition-easing, cubic-bezier(0.4, 0, 0.2, 1))
     }
 
     /* Skip view transition for live/non-rasterizable content */

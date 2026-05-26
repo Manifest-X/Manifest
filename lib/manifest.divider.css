@@ -12,7 +12,7 @@
         margin: var(--spacing-field-padding, 0.625rem) 0;
         white-space: nowrap;
         font-size: 0.875rem;
-        color: var(--color-content-neutral, oklch(48.26% 0.0365 255.09));
+        color: var(--color-content-neutral, gray);
 
         /* Lines before and after content */
         &:before,
@@ -22,7 +22,7 @@
             flex: 1;
             width: auto;
             height: 1px;
-            background-color: var(--color-line, oklch(48.3% 0.006422 17.4 / 0.15))
+            background-color: var(--color-line, color-mix(darkslategray 10%, transparent))
         }
 
         /* Space between lines and content */

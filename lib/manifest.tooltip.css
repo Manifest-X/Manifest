@@ -42,14 +42,14 @@
         margin: var(--spacing-popover-offset, 0.5rem) 0;
         padding: calc(var(--spacing, 0.25rem) * .5) calc(var(--spacing, 0.25rem) * 2);
         font-size: 0.875rem;
-        color: var(--color-page, oklch(100% 0 0));
-        background-color: var(--color-content-stark, oklch(16.6% 0.026 267));
+        color: var(--color-page, white);
+        background-color: var(--color-content-stark, darkslategray);
         border: 0 none;
         border-radius: var(--radius, 0.5rem);
         box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
 
         &:hover {
-            transition-delay: var(--tooltip-hover-delay, 1s)
+            transition-delay: var(--tooltip-hover-delay, .5s)
         }
 
         /* Leading icon */

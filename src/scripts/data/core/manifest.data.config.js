@@ -12,7 +12,9 @@ async function ensureManifest() {
     try {
         const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
         const response = await fetch(manifestUrl);
-        return await response.json();
+        const manifest = await response.json();
+        interpolateManifest(manifest);
+        return manifest;
     } catch (error) {
         console.error('[Manifest Data] Failed to load manifest:', error);
         return null;
@@ -34,6 +36,33 @@ function interpolateEnvVars(str) {
         // Return original if not found
         return match;
     });
+}
+
+// Recursively walk a manifest object and interpolate every string value in
+// place. Object keys are left untouched. Called once at manifest-load time so
+// downstream consumers (auth, data, appwrite) read already-resolved values.
+function interpolateManifest(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) {
+            const v = obj[i];
+            if (typeof v === 'string') {
+                obj[i] = interpolateEnvVars(v);
+            } else if (v !== null && typeof v === 'object') {
+                interpolateManifest(v);
+            }
+        }
+        return obj;
+    }
+    for (const key of Object.keys(obj)) {
+        const v = obj[key];
+        if (typeof v === 'string') {
+            obj[key] = interpolateEnvVars(v);
+        } else if (v !== null && typeof v === 'object') {
+            interpolateManifest(v);
+        }
+    }
+    return obj;
 }
 
 // Helper to get nested value from object
@@ -179,6 +208,7 @@ function getQueries(dataSource) {
 window.ManifestDataConfig = {
     ensureManifest,
     interpolateEnvVars,
+    interpolateManifest,
     getNestedValue,
     getDefaultLocale,
     parseContentPath,

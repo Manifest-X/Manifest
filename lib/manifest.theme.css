@@ -8,19 +8,19 @@
 ::selection {
 
     /* Default palette */
-    --color-50: oklch(100% 0 0);
-    --color-100: oklch(98.17% 0.0005 95.87);
-    --color-200: oklch(96.27% 0.0026 252.34);
-    --color-300: oklch(91.79% 0.0029 264.26);
-    --color-400: oklch(89.24% 0.0024 12.48);
-    --color-500: oklch(67.4% 0.0318 251.27);
-    --color-600: oklch(48.26% 0.0365 255.09);
-    --color-700: oklch(28.7% 0.030787 270.1);
-    --color-800: oklch(20.7% 0.026326 268.7);
-    --color-900: oklch(16.6% 0.026 267);
-    --color-950: oklch(3.89% 0.0181 262.25);
+    --color-50: white;
+    --color-100: whitesmoke;
+    --color-200: gainsboro;
+    --color-300: lightgray;
+    --color-400: silver;
+    --color-500: darkgray;
+    --color-600: gray;
+    --color-700: slategray;
+    --color-800: dimgray;
+    --color-900: darkslategray;
+    --color-950: black;
 
-    /* Light theme */
+    /* Light mode */
     --color-page: var(--color-50);
     --color-surface-1: var(--color-100);
     --color-surface-2: var(--color-200);
@@ -28,35 +28,35 @@
     --color-content-stark: var(--color-900);
     --color-content-neutral: var(--color-600);
     --color-content-subtle: var(--color-500);
-    --color-field-surface: var(--color-300);
-    --color-field-surface-hover: var(--color-400);
+    --color-field-surface: color-mix(var(--color-content-stark) 10%, transparent);
+    --color-field-surface-hover: color-mix(var(--color-content-stark) 15%, transparent);
     --color-field-inverse: var(--color-content-stark);
     --color-popover-surface: var(--color-page);
-    --color-line: color-mix(in oklch, var(--color-content-stark) 11%, transparent);
-    --color-brand-surface: #f6c07b;
-    --color-brand-surface-hover: #f19b46;
-    --color-brand-inverse: #763518;
-    --color-brand-content: #de6618;
-    --color-accent-surface: #ffccd3;
-    --color-accent-surface-hover: #ffa1ad;
-    --color-accent-inverse: #a50036;
-    --color-accent-content: #ff637e;
-    --color-positive-surface: #16a34a;
-    --color-positive-surface-hover: #166534;
-    --color-positive-inverse: white;
-    --color-positive-content: var(--color-positive-surface);
-    --color-negative-surface: #ef4444;
-    --color-negative-surface-hover: #dc2626;
-    --color-negative-inverse: white;
-    --color-negative-content: var(--color-negative-surface);
+    --color-line: color-mix(var(--color-content-stark) 12%, transparent);
+    --color-brand-surface: goldenrod;
+    --color-brand-surface-hover: darkgoldenrod;
+    --color-brand-inverse: white;
+    --color-brand-content: goldenrod;
+    --color-accent-surface: var(--color-content-stark);
+    --color-accent-surface-hover: color-mix(var(--color-content-stark) 90%, var(--color-page));
+    --color-accent-inverse: var(--color-page);
+    --color-accent-content: var(--color-content-stark);
+    --color-positive-surface: palegreen;
+    --color-positive-surface-hover: lightgreen;
+    --color-positive-inverse: darkgreen;
+    --color-positive-content: limegreen;
+    --color-negative-surface: salmon;
+    --color-negative-surface-hover: lightcoral;
+    --color-negative-inverse: maroon;
+    --color-negative-content: crimson;
 
     /* Fonts */
-    --font-sans: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-sans: Inter, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
 
     /* Sizes */
     --radius: 0.5rem;
     --spacing: 0.25rem;
-    --spacing-content-width: 68.75rem;
+    --spacing-content-width: 74rem;
     --spacing-field-padding: calc(var(--spacing) * 2.5);
     --spacing-field-height: calc(var(--spacing) * 9);
     --spacing-popover-offset: calc(var(--spacing) * 2);
@@ -75,7 +75,7 @@
     --icon-toast-dismiss: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E");
 }
 
-/* Dark theme overrides */
+/* Dark mode overrides */
 .dark {
     --color-page: var(--color-950);
     --color-surface-1: var(--color-900);
@@ -83,18 +83,23 @@
     --color-surface-3: var(--color-700);
     --color-field-surface: var(--color-700);
     --color-field-surface-hover: var(--color-600);
-    --color-popover-surface: var(--color-700);
+    --color-popover-surface: var(--color-900);
     --color-content-stark: var(--color-50);
     --color-content-neutral: var(--color-400);
     --color-content-subtle: var(--color-500);
-    --color-brand-content: #f6c07b;
-    --color-accent-content: #ffa1ad;
 
     /* Popover form elements */
     :where([popover]) {
-        --color-field-surface: color-mix(in oklch, var(--color-600) 60%, var(--color-700));
-        --color-field-surface-hover: color-mix(in oklch, var(--color-600) 80%, var(--color-700));
+        --color-field-surface: color-mix(var(--color-600) 60%, var(--color-700));
+        --color-field-surface-hover: color-mix(var(--color-600) 80%, var(--color-700))
     }
+}
+
+@font-face {
+    font-family: 'Inter';
+    src: url('/assets/fonts/Inter.woff2') format('woff2');
+    font-weight: 400 500 600 700;
+    font-display: swap
 }
 
 @layer base {
@@ -110,12 +115,12 @@
 
     /* Text selection */
     ::selection {
-        background-color: color-mix(in oklch, var(--color-content-stark) 90%, transparent);
+        background-color: color-mix(currentColor 25%, transparent)
     }
 
     /* Focus state */
     :where(:focus-visible, label:has(input[type=search], input[type=file]):focus-within) {
         outline: none;
-        box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark) 35%, transparent);
+        box-shadow: 0 0 0 2px color-mix(var(--color-content-stark) 30%, transparent)
     }
 }

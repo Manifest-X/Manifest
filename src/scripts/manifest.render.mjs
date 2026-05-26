@@ -769,18 +769,18 @@ function debakeThemeClass(html) {
   return out;
 }
 
-/** Manifest utilities plugin: <style id="utility-styles"> and <style id="utility-styles-critical"> */
+/** Manifest utilities plugin: <style id="manifest-styles"> and <style id="manifest-styles-critical"> */
 function extractUtilityStyleBlocks(html) {
   const blocks = [];
   let out = html.replace(
-    /<style[^>]*\bid=["']utility-styles-critical["'][^>]*>([\s\S]*?)<\/style>/gi,
+    /<style[^>]*\bid=["']manifest-styles-critical["'][^>]*>([\s\S]*?)<\/style>/gi,
     (_, css) => {
       const t = (css || '').trim();
       if (t) blocks.push({ kind: 'critical', css: t });
       return '';
     }
   );
-  out = out.replace(/<style[^>]*\bid=["']utility-styles["'][^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
+  out = out.replace(/<style[^>]*\bid=["']manifest-styles["'][^>]*>([\s\S]*?)<\/style>/gi, (_, css) => {
     const t = (css || '').trim();
     if (t) blocks.push({ kind: 'main', css: t });
     return '';
