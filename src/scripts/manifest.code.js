@@ -88,6 +88,17 @@ function injectScript(src) {
     });
 }
 
+// Sentinel used by both loaders to detect whether `window.hljs` is already
+// the FULL bundle (which registers ~190 languages) vs the lean core (which
+// starts with very few). Threshold of 50 separates the two reliably —
+// neither the lean core nor any realistic per-language top-up will reach
+// 50 languages before the full bundle does, and the full bundle always
+// ships well above that.
+function hljsIsFullBundle() {
+    return typeof window.hljs?.listLanguages === 'function'
+        && window.hljs.listLanguages().length > 50;
+}
+
 async function loadHighlightFull() {
     if (hljsFullPromise) return hljsFullPromise;
     hljsFullPromise = injectScript(HLJS_FULL_URL).then(() => {
@@ -98,6 +109,15 @@ async function loadHighlightFull() {
 }
 
 async function loadHighlightCore() {
+    // Don't downgrade. If the full bundle is already loaded on window.hljs
+    // (because the hero editor — or any other caller — asked for full mode
+    // first), returning the lean core would mean OVERWRITING window.hljs
+    // with a 4-language instance, deleting the full bundle's grammars.
+    // Per-block callers downstream would then re-request languages,
+    // re-fire reactive bumps, and feed an Alpine re-eval loop. Just hand
+    // back the full instance — registerLanguage's "already includes"
+    // check below makes the rest of the lean path a no-op.
+    if (hljsIsFullBundle()) return window.hljs;
     if (hljsCorePromise) return hljsCorePromise;
     hljsCorePromise = import(HLJS_CORE_URL).then(mod => {
         // esm.run's CJS→ESM shim exposes hljs as the default export. Mirror
@@ -105,6 +125,10 @@ async function loadHighlightCore() {
         // editor, etc.) that read `hljs` as a global keep working.
         const hl = mod.default;
         if (!hl) throw new Error('hljs undefined after core ESM import');
+        // Second guard: even after we awaited the dynamic import, the full
+        // bundle may have arrived in the meantime (its <script> tag races
+        // our ESM fetch). Don't clobber it with the lean core.
+        if (hljsIsFullBundle()) return window.hljs;
         window.hljs = hl;
         return hl;
     });
