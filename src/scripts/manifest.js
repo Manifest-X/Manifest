@@ -199,7 +199,8 @@
 		'slides',
 		'resize',
 		'colorpicker',
-		'url-parameters'
+		'url-parameters',
+		'export'
 	];
 
 	// Appwrite integration plugins (opt-in only, never auto-loaded)

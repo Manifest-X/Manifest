@@ -6,7 +6,8 @@
         "templates/starter",
         "packages/render",
         "packages/types",
-        "packages/test"
+        "packages/test",
+        "packages/export"
     ],
     "main": "lib/manifest.js",
     "style": "lib/manifest.css",
@@ -32,8 +33,9 @@
         "release:render": "cd packages/render && npm version patch --no-git-tag-version && npm publish --auth-type=web",
         "release:types": "cd packages/types && npm version patch --no-git-tag-version && npm publish --auth-type=web",
         "release:test": "cd packages/test && npm version patch --no-git-tag-version && npm publish --auth-type=web",
+        "release:export": "cd packages/export && npm version patch --no-git-tag-version && npm publish --auth-type=web",
         "release:starter": "cd packages/create-starter && npm version patch --no-git-tag-version && npm publish --auth-type=web",
-        "release:all": "npm run release:run && npm run release:render && npm run release:types && npm run release:test && npm run release:starter && npm run release",
+        "release:all": "npm run release:run && npm run release:render && npm run release:types && npm run release:test && npm run release:export && npm run release:starter && npm run release",
         "prepublishOnly": "npm run build",
         "test": "vitest run",
         "lint": "echo 'No linting configured'"

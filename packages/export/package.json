@@ -1,0 +1,42 @@
+{
+  "name": "mnfst-export",
+  "version": "0.1.0",
+  "description": "Batch and CI exports for Manifest projects — PDF, PNG, JPEG, WebP, CSV, JSON, RSS",
+  "type": "module",
+  "bin": {
+    "mnfst-export": "./bin/mnfst-export.js"
+  },
+  "files": [
+    "bin",
+    "manifest.export.mjs",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "manifest",
+    "mnfst",
+    "export",
+    "pdf",
+    "screenshot",
+    "csv",
+    "rss",
+    "static",
+    "ci"
+  ],
+  "dependencies": {},
+  "peerDependencies": {
+    "puppeteer": ">=22"
+  },
+  "peerDependenciesMeta": {
+    "puppeteer": { "optional": true }
+  },
+  "author": "Andrew Matlock",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrewmatlock/Manifest.git",
+    "directory": "packages/export"
+  }
+}
