@@ -1,6 +1,6 @@
 {
   "name": "mnfst-starter",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "Create a Manifest (mnfst) starter application",
   "main": "index.html",
   "bin": {

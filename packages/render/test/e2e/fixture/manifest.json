@@ -20,7 +20,7 @@
       "fr": "data/content.fr.yaml"
     }
   },
-  "prerender": {
+  "render": {
     "localUrl": "http://localhost:5099",
     "liveUrl": "https://fixture.test",
     "output": ".out",

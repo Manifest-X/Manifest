@@ -8,4 +8,4 @@ Static renderer for Manifest projects.
 npx mnfst-render --root .
 ```
 
-The command reads `manifest.json` and writes rendered pages to `manifest.prerender.output` (default `website`).
+The command reads `manifest.json` and writes rendered pages to `manifest.render.output` (default `website`).

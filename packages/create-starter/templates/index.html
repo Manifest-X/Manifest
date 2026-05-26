@@ -19,44 +19,26 @@
   <link rel="manifest" href="/manifest.json">
 
   <!-- Styles -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mnfst@0.5.83/lib/manifest.min.css">
   <link rel="stylesheet" href="/manifest.theme.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.css">
 
   <!-- Scripts -->
-  <script src="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.js" data-tailwind data-version="latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mnfst@0.5.83/lib/manifest.min.js" data-tailwind data-version="0.5.83"></script>
 
 </head>
 
-<!-- Page class applies classic web/app layout -->
-
 <body class="page">
-
-  <!-- Localized SEO Head content -->
-  <template data-head>
-    <meta name="author" :content="$x.manifest.author">
-    <meta name="description" :content="$x.content.description">
-    <meta property="og:title" :content="$x.manifest.name">
-    <meta property="og:description" :content="$x.content.description">
-    <meta property="og:url" :content="$x.manifest.live_url">
-    <meta property="og:site_name" :content="$x.manifest.name">
-    <meta property="og:image:alt" :content="$x.manifest.name">
-    <meta property="og:image" content="/icons/opengraph.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta property="og:type" content="website">
-    <meta property="og:locale" content="en-us">
-  </template>
 
   <!-- header.html component -->
   <x-header></x-header>
 
   <!-- Content area -->
-  <main class="[&>section]:py-10">
+  <main class="pt-10 pb-40">
 
     <x-test-localization x-route="test"></x-test-localization>
 
     <!-- Home -->
-    <section x-route="/" class="prose w-full mb-40" x-markdown="README.md"></section>
+    <section x-route="/" class="prose w-full" x-markdown="README.md"></section>
 
     <!-- Page 1 -->
     <section x-route="page-1">
@@ -69,10 +51,10 @@
     </section>
 
     <!-- License -->
-    <section x-route="license" class="prose w-full mb-40" x-markdown="LICENSE.md"></section>
+    <section x-route="license" class="prose w-full" x-markdown="LICENSE.md"></section>
 
     <!-- Privacy -->
-    <section x-route="privacy" class="prose w-full mb-40" x-markdown="privacy.md"></section>
+    <section x-route="privacy" class="prose w-full" x-markdown="privacy.md"></section>
 
     <!-- 404 -->
     <section x-route="!*">

@@ -1,13 +1,13 @@
-key,en,ar,zh
-descrpition,Lorem ipsum dolor sit amet.,لوريم ايبسوم دولار سيت أميت.,洛雷姆·伊普瑟姆·多洛尔·西特·阿梅特。
-page1,Page 1,الصفحة 1,页面 1
-page2,Page 2,الصفحة 2,页面 2
-license,License,الترخيص,许可证
-privacy,Privacy,الخصوصية,隐私
-notFound,404 Page Not Found,404 الصفحة غير موجودة,404 页面未找到
-footer.copyright,Copyright © 2025,حقوق النشر © 2025,版权 © 2025
-footer.madeWith,Made with Manifest,صُنع بـ Manifest,使用 Manifest 制作
-footer.privacy,Privacy,الخصوصية,隐私
-theme.light,Light,فاتح,浅色
-theme.dark,Dark,داكن,深色
-theme.system,System,النظام,系统
+key,en,es,ar,zh
+description,Lorem ipsum dolor sit amet.,Lorem ipsum dolor sit amet.,لوريم ايبسوم دولار سيت أميت.,洛雷姆·伊普瑟姆·多洛尔·西特·阿梅特。
+page1,Page 1,Página 1,الصفحة 1,页面 1
+page2,Page 2,Página 2,الصفحة 2,页面 2
+license,License,Licencia,الترخيص,许可证
+privacy,Privacy,Privacidad,الخصوصية,隐私
+notFound,404 Page Not Found,Página 404 No Encontrada,404 الصفحة غير موجودة,404 页面未找到
+footer.copyright,Copyright © 2026,Derechos de autor © 2026,حقوق النشر © 2026,版权 © 2026
+footer.madeWith,Made with Manifest,Hecho con Manifest,صُنع بـ Manifest,使用 Manifest 制作
+footer.privacy,Privacy,Privacidad,الخصوصية,隐私
+theme.light,Light,Claro,فاتح,浅色
+theme.dark,Dark,Oscuro,داكن,深色
+theme.system,System,Sistema,النظام,系统

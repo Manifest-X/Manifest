@@ -9,7 +9,7 @@
 // JSON via --json so AI agents can validate their own generated projects.
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve, relative, basename, extname, isAbsolute } from 'node:path';
+import { dirname, join, resolve, relative, basename, extname, isAbsolute, sep } from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -150,20 +150,20 @@ async function collectProject(root, manifest, opts) {
 
     const dataSources = manifest.data && typeof manifest.data === 'object' ? manifest.data : {};
 
-    // Compute skip directories: defaults + prerender output + user --ignore.
+    // Compute skip directories: defaults + render output + user --ignore.
     const skip = new Set(DEFAULT_HTML_SKIP_DIRS);
-    if (manifest.prerender && typeof manifest.prerender.output === 'string') {
-        skip.add(manifest.prerender.output);
+    if (manifest.render && typeof manifest.render.output === 'string') {
+        skip.add(manifest.render.output);
     }
     if (opts && Array.isArray(opts.ignore)) {
         for (const i of opts.ignore) skip.add(i);
     }
 
-    // Compute locale prefixes for route matching: from prerender.locales,
+    // Compute locale prefixes for route matching: from render.locales,
     // from any data source with per-locale string keys, or with `locales:` key.
     const localePrefixes = new Set();
-    if (Array.isArray(manifest.prerender?.locales)) {
-        for (const l of manifest.prerender.locales) localePrefixes.add(l);
+    if (Array.isArray(manifest.render?.locales)) {
+        for (const l of manifest.render.locales) localePrefixes.add(l);
     }
     for (const config of Object.values(dataSources)) {
         if (!config || typeof config !== 'object') continue;
@@ -1299,12 +1299,29 @@ async function startStaticServer(root) {
     const http = await import('node:http');
     const fs = await import('node:fs/promises');
     const url = await import('node:url');
+    const rootResolved = resolve(root);
+    // Refuse requests that would escape `root` via `..` or NUL injection.
+    // `path.join` doesn't block `..` — only `path.resolve` + a prefix check
+    // does. Bound to 127.0.0.1 below, so the realistic threat is another
+    // local user reading test-time files on a shared host.
+    function safeResolve(urlPath) {
+        if (urlPath.includes('\0')) return null;
+        const candidate = resolve(rootResolved, '.' + urlPath);
+        if (candidate !== rootResolved && !candidate.startsWith(rootResolved + sep)) return null;
+        return candidate;
+    }
     const server = http.createServer(async (req, res) => {
         try {
             const parsed = url.parse(req.url);
             let p = decodeURIComponent(parsed.pathname || '/');
             if (p.endsWith('/')) p += 'index.html';
-            const full = join(root, p.replace(/^\/+/, ''));
+            if (!p.startsWith('/')) p = '/' + p;
+            const full = safeResolve(p);
+            if (!full) {
+                res.writeHead(403);
+                res.end();
+                return;
+            }
             const buf = await fs.readFile(full);
             res.writeHead(200, { 'Content-Type': mime(full) });
             res.end(buf);

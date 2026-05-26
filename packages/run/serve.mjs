@@ -41,7 +41,7 @@ import {
   existsSync, writeFileSync, unlinkSync,
   mkdirSync, readdirSync,
 } from 'fs';
-import { join, extname, resolve, basename } from 'path';
+import { join, extname, resolve, basename, sep } from 'path';
 import { exec }                          from 'child_process';
 import { tmpdir }                        from 'os';
 import { createHash }                    from 'crypto';
@@ -126,7 +126,17 @@ let port = process.env.PORT ? parseInt(process.env.PORT, 10) : 5001;
 // sit idle overnight if the tab is still open. Disabled by
 // `--no-idle-shutdown` for CI / headless cases where no browser will connect.
 let idleShutdownSec = 30;
-let idleShutdownEnabled = true;
+// Auto-disable idle shutdown when running under CI or Claude Code, where the
+// host browser (puppeteer / headless Chromium) does not produce the normal
+// `pagehide` beacon + SSE heartbeats that the live-tab tracker relies on.
+// Without this, the server would self-exit 30s after launch even while the
+// automation is actively driving it. Manual override still works via the
+// `--no-idle-shutdown` / `--idle-shutdown <sec>` flags below.
+let idleShutdownEnabled = !(
+  process.env.CI === 'true' ||
+  process.env.CLAUDE_CODE_ENTRYPOINT ||
+  process.env.CLAUDECODE
+);
 
 let listMode = false;
 
@@ -320,29 +330,6 @@ function dropTab(tabId) {
   if (t) { clearTimeout(t); staleTimers.delete(tabId); }
 }
 
-// --- .env support ---
-// Minimal dotenv parser. Skips comments/blank lines, splits on first `=`,
-// trims whitespace, strips wrapping single/double quotes. No multiline values,
-// no `${VAR}` substitution within .env itself — we just want plain KEY=VALUE.
-function parseDotenv(text) {
-  const out = {};
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    if (!key) continue;
-    let value = line.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    out[key] = value;
-  }
-  return out;
-}
-
 // --- File watcher ---
 const IGNORE = /node_modules|\.git/;
 try {
@@ -351,10 +338,7 @@ try {
     clearTimeout(debounce);
     debounce = setTimeout(() => {
       const ext = extname(filename).toLowerCase();
-      const base = basename(filename);
-      if (base === '.env') {
-        broadcast({ type: 'reload' });
-      } else if (ext === '.css') {
+      if (ext === '.css') {
         broadcast({ type: 'css', file: '/' + filename.replace(/\\/g, '/') });
       } else if (['.csv', '.json', '.yaml', '.yml', '.md'].includes(ext)) {
         broadcast({ type: 'data' });
@@ -370,6 +354,18 @@ try {
 // --- File serving ---
 function isFile(p) {
   try { return statSync(p).isFile(); } catch { return false; }
+}
+
+// Resolve a request path against `root` and refuse anything that escapes.
+// `path.join` does NOT prevent `..` traversal — `join('/a/b', '/../../etc/passwd')`
+// returns `/etc/passwd`. Use `path.resolve` + an explicit prefix check.
+// Returns the absolute path on success, or null if the request would escape root
+// (or contains a NUL byte).
+function safeResolve(urlPath) {
+  if (urlPath.includes('\0')) return null;
+  const candidate = resolve(root, '.' + urlPath);
+  if (candidate !== root && !candidate.startsWith(root + sep)) return null;
+  return candidate;
 }
 
 function serveFile(res, filePath) {
@@ -391,9 +387,48 @@ function serveFile(res, filePath) {
   res.end(body);
 }
 
+// DNS-rebinding defence. Even though the server binds 127.0.0.1, a malicious
+// public page (attacker.com) can perform DNS rebinding: initial resolution
+// returns the attacker's IP so the dev visits it, then DNS is flipped to
+// 127.0.0.1 so subsequent fetches reach mnfst-run while the browser still
+// treats the page origin as attacker.com (giving attacker JS read access).
+// The browser sends `Host: attacker.com` after the rebind — so reject any
+// request whose Host header isn't a known-local form on our listening port.
+function isLocalHostHeader(host, port) {
+  if (!host || typeof host !== 'string') return false;
+  const allowed = new Set([
+    `127.0.0.1:${port}`,
+    `localhost:${port}`,
+    `[::1]:${port}`,
+  ]);
+  return allowed.has(host.toLowerCase());
+}
+
+// Stricter check used by state-changing endpoints (close beacon). Same
+// allowlist applied to the Origin header.
+function isLocalOrigin(origin, port) {
+  if (!origin || typeof origin !== 'string') return false;
+  const allowed = new Set([
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+    `http://[::1]:${port}`,
+  ]);
+  return allowed.has(origin.toLowerCase());
+}
+
 // --- HTTP server ---
 const server = createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split('?')[0]);
+
+  // Reject any request whose Host header doesn't match our listening origin —
+  // closes DNS-rebinding even though we're bound to loopback. server.address()
+  // is the source of truth for the actual port (auto-port may have shifted).
+  const listenPort = server.address()?.port;
+  if (listenPort && !isLocalHostHeader(req.headers.host, listenPort)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('403 Forbidden — invalid Host header');
+    return;
+  }
 
   // Identity endpoint: lets `mnfst-run` (and `--list`) confirm that a server
   // on a registered port really is OUR server for the expected root, not
@@ -404,27 +439,6 @@ const server = createServer((req, res) => {
       'Cache-Control': 'no-store',
     });
     res.end(JSON.stringify({ name: 'mnfst-run', root, pid: process.pid }));
-    return;
-  }
-
-  // Virtual /env.js — generated from .env at the project root.
-  // Loaded by HTML before manifest.data.js so window.env is populated for
-  // ${VAR} interpolation in manifest.json. Returns an empty no-op if no
-  // .env exists, so the <script src="/env.js"> tag is always safe to include.
-  if (urlPath === '/env.js') {
-    const envPath = join(root, '.env');
-    let body = 'window.env = window.env || {};';
-    try {
-      if (isFile(envPath)) {
-        const env = parseDotenv(readFileSync(envPath, 'utf8'));
-        body = `window.env = Object.assign(window.env || {}, ${JSON.stringify(env)});`;
-      }
-    } catch { /* fall through to no-op */ }
-    res.writeHead(200, {
-      'Content-Type': 'application/javascript; charset=utf-8',
-      'Cache-Control': 'no-store',
-    });
-    res.end(body);
     return;
   }
 
@@ -466,7 +480,21 @@ const server = createServer((req, res) => {
   // Close beacon: fired by the injected script's pagehide handler when a tab
   // is actually being closed/navigated away from. This is the only signal
   // that drops a tab from openTabs in normal operation.
+  // Locked to POST + same-origin: the live-reload script already POSTs (both
+  // sendBeacon and the fetch fallback), so no DX cost; this closes the
+  // CSRF-via-GET surface where a third-party page could fire <img src=...>
+  // to nuke tabs (would still need an unguessable tabId, but defence in depth).
   if (urlPath === '/__mnfst_close__') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Allow': 'POST' });
+      res.end();
+      return;
+    }
+    if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
     const tabId = new URL(req.url, 'http://localhost').searchParams.get('tabId');
     dropTab(tabId);
     res.writeHead(204);
@@ -475,11 +503,11 @@ const server = createServer((req, res) => {
     return;
   }
 
-  const exact = join(root, urlPath);
-  if (isFile(exact)) return serveFile(res, exact);
+  const exact = safeResolve(urlPath);
+  if (exact && isFile(exact)) return serveFile(res, exact);
 
-  const index = join(root, urlPath.replace(/\/$/, ''), 'index.html');
-  if (isFile(index)) return serveFile(res, index);
+  const indexPath = safeResolve(urlPath.replace(/\/$/, '') + '/index.html');
+  if (indexPath && isFile(indexPath)) return serveFile(res, indexPath);
 
   if (spa) {
     const fallback = join(root, 'index.html');
@@ -525,7 +553,10 @@ function tryListen(p, attempt = 0) {
   };
   server.once('listening', onListening);
   server.once('error', onError);
-  server.listen(p);
+  // Bind to loopback only. Without an explicit host Node listens on `::` (all
+  // interfaces), which exposes the dev server — and every file under `root` —
+  // to anyone sharing the network (café, hotel, conference, coworking).
+  server.listen(p, '127.0.0.1');
 }
 
 // Clean up the registry entry on graceful exit. process.exit() (used by
