@@ -3849,11 +3849,20 @@ async function runPrerender(config) {
       await page.evaluate(() => {
         const A = window.Alpine;
         const runBatch = typeof A?.mutateDom === 'function' ? (fn) => A.mutateDom(fn) : (fn) => fn();
-        const loopVarRegex = /^\s*(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*,\s*([A-Za-z_$][\w$]*))?\s*\)|([A-Za-z_$][\w$]*))\s+in\s+/;
+        // Collect every loop-scope identifier from the x-for LHS, including
+        // destructuring forms — `item`, `(item, index)`, `[key, val]`,
+        // `{ a, b }`.  The old single/paren-only regex skipped destructured
+        // loops entirely, leaving bindings like x-text="file?.label" on baked
+        // clones; at runtime Alpine evaluated them outside the iteration scope
+        // and threw "file is not defined".
+        const extractLoopVars = (xForExpr) => {
+          const m = String(xForExpr || '').match(/^([\s\S]*?)\s+(?:in|of)\s+/);
+          return m ? (m[1].match(/[A-Za-z_$][\w$]*/g) || []) : [];
+        };
         // Include x-init: expanded clones still had x-init="getDescription(article)" etc.; Alpine then throws (article undefined).
         const bindingAttrRegex = /^(?:x-bind:|:|x-text|x-html|x-show|x-if|x-model|x-effect|x-init|x-icon|x-on:|@)/;
         const hasVar = (expr, varName) => varName && new RegExp(`\\b${varName}\\b`).test(expr || '');
-        const stripLoopBindings = (el, itemVar, indexVar) => {
+        const stripLoopBindings = (el, loopVars) => {
           const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
           for (const node of nodes) {
             // Skip elements inside data-hydrate islands — their bindings must remain live
@@ -3862,7 +3871,7 @@ async function runPrerender(config) {
             for (const attr of attrs) {
               if (!bindingAttrRegex.test(attr.name)) continue;
               const expr = attr.value || '';
-              if (hasVar(expr, itemVar) || hasVar(expr, indexVar)) {
+              if (loopVars.some((v) => hasVar(expr, v))) {
                 const name = attr.name;
                 if (name === 'x-text' || name === 'x-html') {
                   if ((node.textContent || '').trim() || (node.innerHTML || '').trim()) {
@@ -3904,10 +3913,8 @@ async function runPrerender(config) {
           document.querySelectorAll('template[x-for]').forEach((tpl) => {
             if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
             const xFor = (tpl.getAttribute('x-for') || '').trim();
-            const m = xFor.match(loopVarRegex);
-            const itemVar = m ? (m[1] || m[3] || '') : '';
-            const indexVar = m ? (m[2] || '') : '';
-            if (!itemVar && !indexVar) return;
+            const loopVars = extractLoopVars(xFor);
+            if (!loopVars.length) return;
 
             const first = tpl.content?.firstElementChild;
             if (!first) return;
@@ -3916,7 +3923,7 @@ async function runPrerender(config) {
             let next = tpl.nextElementSibling;
             while (next) {
               if (next.tagName !== tag) break;
-              stripLoopBindings(next, itemVar, indexVar);
+              stripLoopBindings(next, loopVars);
               next = next.nextElementSibling;
             }
           });
@@ -4010,10 +4017,13 @@ async function runPrerender(config) {
       // Remove orphan x-for clones that still reference loop-scope vars (e.g. image/index)
       // outside their template scope. These throw Alpine errors in live static hosting.
       await page.evaluate(() => {
-        const loopVarRegex = /^\s*(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*,\s*([A-Za-z_$][\w$]*))?\s*\)|([A-Za-z_$][\w$]*))\s+in\s+/;
+        const extractLoopVars = (xForExpr) => {
+          const m = String(xForExpr || '').match(/^([\s\S]*?)\s+(?:in|of)\s+/);
+          return m ? (m[1].match(/[A-Za-z_$][\w$]*/g) || []) : [];
+        };
         const bindingAttrRegex = /^(?:x-bind:|:|x-text|x-html|x-show|x-if|x-model|x-effect|x-init|x-icon|x-on:|@)/;
         const hasVar = (expr, varName) => varName && new RegExp(`\\b${varName}\\b`).test(expr || '');
-        const elementReferencesLoopScope = (el, itemVar, indexVar) => {
+        const elementReferencesLoopScope = (el, loopVars) => {
           if (!el) return false;
           const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
           for (const node of nodes) {
@@ -4021,7 +4031,7 @@ async function runPrerender(config) {
             for (const attr of attrs) {
               if (!bindingAttrRegex.test(attr.name)) continue;
               const expr = attr.value || '';
-              if (hasVar(expr, itemVar) || hasVar(expr, indexVar)) return true;
+              if (loopVars.some((v) => hasVar(expr, v))) return true;
             }
           }
           return false;
@@ -4031,10 +4041,8 @@ async function runPrerender(config) {
         // Running this on all x-for templates can remove valid prerendered list items.
         document.querySelectorAll('template[x-for][data-prerender-collapsed="1"]').forEach((tpl) => {
           const xFor = (tpl.getAttribute('x-for') || '').trim();
-          const m = xFor.match(loopVarRegex);
-          const itemVar = m ? (m[1] || m[3] || '') : '';
-          const indexVar = m ? (m[2] || '') : '';
-          if (!itemVar && !indexVar) return;
+          const loopVars = extractLoopVars(xFor);
+          if (!loopVars.length) return;
 
           const first = tpl.content?.firstElementChild;
           if (!first) return;
@@ -4045,7 +4053,7 @@ async function runPrerender(config) {
             const sameTag = next.tagName === tag;
             if (!sameTag) break;
 
-            const referencesLoopScope = elementReferencesLoopScope(next, itemVar, indexVar);
+            const referencesLoopScope = elementReferencesLoopScope(next, loopVars);
 
             const toRemove = next;
             next = next.nextElementSibling;
