@@ -888,21 +888,57 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         throw new Error(`[Manifest Data] File "${actualFileId}" not found or not accessible: ${error.message}`);
                     }
 
-                    // Get view URL using Appwrite SDK (returns authenticated URL)
-                    // Using 'view' instead of 'download' since we're re-uploading, not downloading to device
-                    let viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
+                    // Get view URL using Appwrite SDK (a URL STRING, not the
+                    // file content). Using 'view' rather than 'download' since
+                    // we're re-uploading rather than saving to disk.
+                    const viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
 
-                    // Temporarily append ?mode=admin for localhost testing (cross-domain issues)
-                    // Remove this in production - it should work without it
-                    const urlObj = new URL(viewUrl);
-                    urlObj.searchParams.set('mode', 'admin');
-                    viewUrl = urlObj.toString();
+                    // Authenticate the fetch for permissioned buckets.
+                    //
+                    // Storage's /view, /download and /preview endpoints check
+                    // the USER SESSION — not API/dev keys (those work only on
+                    // JSON endpoints like /storage/buckets/.../files/.../).
+                    // In localhost dev the browser blocks the cross-domain
+                    // session cookie (SameSite=Lax on plain HTTP), so the
+                    // request lands at Appwrite as anonymous and a permissioned
+                    // file returns 404 storage_file_not_found.
+                    //
+                    // The Appwrite Web SDK works around this by writing the
+                    // session token to localStorage under `cookieFallback`
+                    // and replaying it as the `X-Fallback-Cookies` header on
+                    // every SDK request. That's why SDK calls (getFile metadata
+                    // above, listRows, $create, etc.) succeed cross-domain
+                    // while raw fetch() doesn't — raw fetch doesn't know to
+                    // read that localStorage key.
+                    //
+                    // We do exactly what the SDK does: read cookieFallback
+                    // and attach it as X-Fallback-Cookies. This is more
+                    // reliable than JWT:
+                    //   - no createJWT round-trip (and dev-key-configured
+                    //     clients 501 on createJWT)
+                    //   - no 15-min expiry or rate limit (10/hour/account)
+                    //   - matches whatever auth the SDK is already using
+                    //
+                    // Falls through to credentials-only when the user isn't
+                    // signed in (no cookieFallback in storage) — that path
+                    // still works in production with a SameSite=None cookie.
+                    const fetchHeaders = {};
+                    if (appwriteConfig.projectId) {
+                        fetchHeaders['X-Appwrite-Project'] = appwriteConfig.projectId;
+                    }
+                    try {
+                        const cookieFallback = typeof localStorage !== 'undefined'
+                            ? localStorage.getItem('cookieFallback')
+                            : null;
+                        if (cookieFallback) {
+                            fetchHeaders['X-Fallback-Cookies'] = cookieFallback;
+                        }
+                    } catch { /* localStorage access denied — fall through */ }
 
-                    // Fetch file content using the view URL with credentials
-                    // The URL from getFileURL is already authenticated, just need to include cookies
                     const response = await fetch(viewUrl, {
                         method: 'GET',
-                        credentials: 'include' // Include cookies for authentication
+                        credentials: 'include', // Carry session cookie when available
+                        headers: fetchHeaders
                     });
 
                     if (!response.ok) {

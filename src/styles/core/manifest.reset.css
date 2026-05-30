@@ -168,7 +168,7 @@
     :where(hr) {
         height: 1px;
         color: inherit;
-        background-color: var(--color-line, color-mix(darkslategray 12%, transparent));
+        background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 12%, transparent));
         border: 0 none
     }
 

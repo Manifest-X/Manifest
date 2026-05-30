@@ -287,41 +287,9 @@ TailwindCompiler.prototype.getUsedClasses = function () {
     }
 };
 
-// True for Manifest framework stylesheets (the compiled bundle and its plugin
-// partials, on the CDN or self-hosted), false for the developer-overridable
-// theme entry-point, inline <style> blocks, and any non-framework CSS.
-//
-// Used to split fetchThemeContent's output into two buckets: CSS *variables*
-// are read from every sheet (developers can declare custom properties
-// anywhere), but custom utility *class* declarations are only harvested from
-// non-framework sheets — framework semantic classes like .brand / .row / .col
-// already live in the static cascade and re-emitting them at runtime causes
-// duplicate #manifest-styles entries.
-TailwindCompiler.prototype.isFrameworkStylesheet = function (source) {
-    if (typeof source !== 'string' || source.startsWith('inline:')) return false;
-    const lower = source.toLowerCase();
-    // manifest.theme.css ships with the framework but is developer-overridable —
-    // always scan it for class declarations.
-    if (/\/manifest\.theme\.css(?:[?#]|$)/.test(lower)) return false;
-    // Framework CDN bundles (jsdelivr/unpkg/etc. publishing manifestjs or mnfst).
-    if (lower.includes('manifestjs') || lower.includes('mnfst')) return true;
-    // Self-hosted framework files: manifest.css, manifest.min.css,
-    // manifest.<plugin>.css. Heuristic on basename — a developer who names their
-    // own bundle "manifest.foo.css" will get caught by this, which is rare and
-    // easy to work around by renaming.
-    if (/\/manifest(?:\.[\w-]+)*\.css(?:[?#]|$)/.test(lower)) return true;
-    return false;
-};
-
-// Fetch theme content from CSS files.
-//
-// Returns { all, userScannable }:
-// - all: every loaded stylesheet, used for CSS-variable extraction.
-// - userScannable: same minus framework stylesheets (see isFrameworkStylesheet).
-//   Used for custom-utility class extraction.
+// Fetch theme content from CSS files
 TailwindCompiler.prototype.fetchThemeContent = async function () {
-    const allContents = new Set();
-    const userContents = new Set();
+    const themeContents = new Set();
     const fetchPromises = [];
 
     // If we haven't discovered CSS files yet, do it now
@@ -331,7 +299,6 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 
     // Process all files concurrently
     for (const source of this.cssFiles) {
-        const isFramework = this.isFrameworkStylesheet(source);
         const fetchPromise = (async () => {
             try {
                 let content = '';
@@ -390,10 +357,7 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                 }
 
                 if (content) {
-                    allContents.add(content);
-                    if (!isFramework) {
-                        userContents.add(content);
-                    }
+                    themeContents.add(content);
                 }
             } catch (error) {
                 console.warn(`Error fetching CSS from ${source}:`, error);
@@ -405,10 +369,7 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
     // Wait for all fetches to complete
     await Promise.all(fetchPromises);
 
-    return {
-        all: Array.from(allContents).join('\n'),
-        userScannable: Array.from(userContents).join('\n')
-    };
+    return Array.from(themeContents).join('\n');
 };
 
 // Extract CSS variables from CSS text
@@ -881,6 +842,32 @@ TailwindCompiler.prototype.extractCustomUtilities = function (cssText) {
         }
     } catch (e) {
         // Tolerate parsing errors; this is best-effort
+    }
+
+    // Dedupe captured entries per class. The four parser passes above (flat
+    // regex, :where() extractor, compound-selector fallback, universal nested
+    // resolver) can each capture the same source rule with slightly different
+    // whitespace or selector ordering. Without this, the generator emits
+    // duplicate variant blocks at runtime (e.g. four `.\!brand { … }` rules
+    // where one suffices). Normalize whitespace before comparing so trivial
+    // formatting differences collapse.
+    for (const [className, value] of utilities.entries()) {
+        if (!Array.isArray(value)) continue;
+        const seen = new Set();
+        const deduped = [];
+        for (const entry of value) {
+            if (!entry || typeof entry !== 'object') continue;
+            const sel = String(entry.selector || '').replace(/\s+/g, ' ').trim();
+            const css = String(entry.css || '').replace(/\s+/g, ' ').trim();
+            if (!css) continue;
+            const key = `${sel} ${css}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            deduped.push(entry);
+        }
+        if (deduped.length > 0) {
+            utilities.set(className, deduped);
+        }
     }
 
     return utilities;

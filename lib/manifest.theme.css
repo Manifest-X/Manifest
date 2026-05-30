@@ -7,51 +7,38 @@
 :root,
 ::selection {
 
-    /* Default palette */
-    --color-50: white;
-    --color-100: whitesmoke;
-    --color-200: gainsboro;
-    --color-300: lightgray;
-    --color-400: silver;
-    --color-500: darkgray;
-    --color-600: gray;
-    --color-700: slategray;
-    --color-800: dimgray;
-    --color-900: darkslategray;
-    --color-950: black;
-
     /* Light mode */
-    --color-page: var(--color-50);
-    --color-surface-1: var(--color-100);
-    --color-surface-2: var(--color-200);
-    --color-surface-3: var(--color-300);
-    --color-content-stark: var(--color-900);
-    --color-content-neutral: var(--color-600);
-    --color-content-subtle: var(--color-500);
-    --color-field-surface: color-mix(var(--color-content-stark) 10%, transparent);
-    --color-field-surface-hover: color-mix(var(--color-content-stark) 15%, transparent);
+    --color-page: var(--color-neutral-50);
+    --color-surface-1: var(--color-neutral-100);
+    --color-surface-2: var(--color-neutral-200);
+    --color-surface-3: var(--color-neutral-300);
+    --color-content-stark: var(--color-neutral-900);
+    --color-content-neutral: var(--color-neutral-600);
+    --color-content-subtle: var(--color-neutral-500);
+    --color-field-surface: var(--color-neutral-300);
+    --color-field-surface-hover: var(--color-neutral-400);
     --color-field-inverse: var(--color-content-stark);
     --color-popover-surface: var(--color-page);
-    --color-line: color-mix(var(--color-content-stark) 12%, transparent);
-    --color-brand-surface: goldenrod;
-    --color-brand-surface-hover: darkgoldenrod;
-    --color-brand-inverse: white;
-    --color-brand-content: goldenrod;
-    --color-accent-surface: var(--color-content-stark);
-    --color-accent-surface-hover: color-mix(var(--color-content-stark) 90%, var(--color-page));
-    --color-accent-inverse: var(--color-page);
-    --color-accent-content: var(--color-content-stark);
-    --color-positive-surface: palegreen;
-    --color-positive-surface-hover: lightgreen;
-    --color-positive-inverse: darkgreen;
-    --color-positive-content: limegreen;
-    --color-negative-surface: salmon;
-    --color-negative-surface-hover: lightcoral;
-    --color-negative-inverse: maroon;
-    --color-negative-content: crimson;
+    --color-line: color-mix(var(--color-content-stark) 11%, transparent);
+    --color-brand-surface: var(--color-yellow-300);
+    --color-brand-surface-hover: var(--color-yellow-400);
+    --color-brand-inverse: var(--color-yellow-700);
+    --color-brand-content: var(--color-yellow-600);
+    --color-accent-surface: var(--color-neutral-900);
+    --color-accent-surface-hover: var(--color-neutral-700);
+    --color-accent-inverse: var(--color-neutral-50);
+    --color-accent-content: var(--color-neutral-900);
+    --color-positive-surface: var(--color-green-300);
+    --color-positive-surface-hover: var(--color-green-400);
+    --color-positive-inverse: var(--color-green-800);
+    --color-positive-content: var(--color-green-600);
+    --color-negative-surface: var(--color-red-300);
+    --color-negative-surface-hover: var(--color-red-400);
+    --color-negative-inverse: var(--color-red-800);
+    --color-negative-content: var(--color-red-600);
 
     /* Fonts */
-    --font-sans: Inter, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-sans: Manrope, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
 
     /* Sizes */
     --radius: 0.5rem;
@@ -61,7 +48,7 @@
     --spacing-field-height: calc(var(--spacing) * 9);
     --spacing-popover-offset: calc(var(--spacing) * 2);
     --spacing-resize-handle: 1rem;
-    --spacing-viewport-padding: 5vw;
+    --spacing-viewport-padding: 2rem;
 
     /* Effects */
     --transition: all .05s ease-in-out;
@@ -77,22 +64,32 @@
 
 /* Dark mode overrides */
 .dark {
-    --color-page: var(--color-950);
-    --color-surface-1: var(--color-900);
-    --color-surface-2: var(--color-800);
-    --color-surface-3: var(--color-700);
-    --color-field-surface: var(--color-700);
-    --color-field-surface-hover: var(--color-600);
-    --color-popover-surface: var(--color-900);
-    --color-content-stark: var(--color-50);
-    --color-content-neutral: var(--color-400);
-    --color-content-subtle: var(--color-500);
-
-    /* Popover form elements */
-    :where([popover]) {
-        --color-field-surface: color-mix(var(--color-600) 60%, var(--color-700));
-        --color-field-surface-hover: color-mix(var(--color-600) 80%, var(--color-700))
-    }
+    --color-page: var(--color-neutral-950);
+    --color-surface-1: var(--color-neutral-900);
+    --color-surface-2: var(--color-neutral-800);
+    --color-surface-3: var(--color-neutral-700);
+    --color-field-surface: var(--color-neutral-700);
+    --color-field-surface-hover: var(--color-neutral-600);
+    --color-popover-surface: var(--color-neutral-800);
+    --color-content-stark: var(--color-neutral-50);
+    --color-content-neutral: var(--color-neutral-400);
+    --color-content-subtle: var(--color-neutral-500);
+    --color-brand-surface: var(--color-yellow-400);
+    --color-brand-surface-hover: var(--color-yellow-500);
+    --color-brand-inverse: var(--color-yellow-800);
+    --color-brand-content: var(--color-yellow-500);
+    --color-accent-surface: var(--color-neutral-50);
+    --color-accent-surface-hover: var(--color-neutral-200);
+    --color-accent-inverse: var(--color-neutral-900);
+    --color-accent-content: var(--color-neutral-50);
+    --color-positive-surface: var(--color-green-400);
+    --color-positive-surface-hover: var(--color-green-500);
+    --color-positive-inverse: var(--color-green-900);
+    --color-positive-content: var(--color-green-500);
+    --color-negative-surface: var(--color-red-400);
+    --color-negative-surface-hover: var(--color-red-500);
+    --color-negative-inverse: var(--color-red-900);
+    --color-negative-content: var(--color-red-500);
 }
 
 @font-face {

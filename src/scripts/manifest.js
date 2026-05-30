@@ -491,6 +491,41 @@
 		];
 		const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
 
+		// Substitute ${VAR} placeholders against window.env in every string
+		// value of the parsed manifest, in place. Called once before the
+		// manifest is cached on window so every downstream consumer
+		// (auth, data, components, etc.) sees resolved values. Inlined in
+		// the loader rather than borrowed from the data plugin because the
+		// data plugin's script may not have finished executing yet at the
+		// point we cache the manifest. window.env is populated by either
+		// the mnfst-run dev server (which reads .env at startup) or a
+		// developer-supplied <script>window.env = {…}</script> block.
+		const interpolateManifestEnv = (obj) => {
+			if (obj === null || typeof obj !== 'object') return;
+			const subst = (str) => str.replace(/\$\{([^}]+)\}/g, (m, name) => {
+				if (typeof window !== 'undefined' && window.env && window.env[name] !== undefined) {
+					return window.env[name];
+				}
+				return m;
+			});
+			const walk = (o) => {
+				if (Array.isArray(o)) {
+					for (let i = 0; i < o.length; i++) {
+						const v = o[i];
+						if (typeof v === 'string') o[i] = subst(v);
+						else if (v && typeof v === 'object') walk(v);
+					}
+				} else {
+					for (const k of Object.keys(o)) {
+						const v = o[k];
+						if (typeof v === 'string') o[k] = subst(v);
+						else if (v && typeof v === 'object') walk(v);
+					}
+				}
+			};
+			walk(obj);
+		};
+
 		const loadPlugins = async () => {
 			let manifest = null;
 			let pluginsToLoad = config.plugins;
@@ -521,6 +556,12 @@
 				manifest = await manifestPromise;
 			}
 			if (manifest && typeof window !== 'undefined') {
+				// Resolve ${VAR} placeholders once, here, before any
+				// downstream plugin reads the cached manifest. Plugins like
+				// appwrite-auth read window.__manifestLoaded directly and
+				// would otherwise see literal `${APPWRITE_DEV_KEY}` strings
+				// even when window.env is populated.
+				interpolateManifestEnv(manifest);
 				window.__manifestLoaded = manifest;
 				if (window.ManifestComponentsRegistry) {
 					window.ManifestComponentsRegistry.manifest = manifest;

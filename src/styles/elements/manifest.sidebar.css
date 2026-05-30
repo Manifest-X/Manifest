@@ -40,7 +40,7 @@
         height: 100%;
         overflow-y: auto;
         z-index: 200;
-        background-color: var(--color-popover-surface, white);
+        background-color: var(--color-popover-surface, oklch(98.5% 0 0));
         transition: opacity .15s ease-in, transform .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;
 
@@ -96,6 +96,6 @@
 
     /* Dark mode override */
     .dark :where(nav[popover]) {
-        background-color: var(--color-surface-1, whitesmoke)
+        background-color: var(--color-surface-1, oklch(97% 0 0))
     }
 }

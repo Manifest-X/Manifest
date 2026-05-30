@@ -346,8 +346,16 @@ function applyInlineCodeAttributes(html) {
     // Be conservative: only rewrite when the brace block immediately follows
     // a `<code>` close tag (no whitespace), so prose like "foo `bar` {note}" is
     // untouched.
+    //
+    // Body capture is `[^<]*` (not `[\s\S]*?`) so the match can't span across
+    // intermediate `<` characters — without this guard, an unmatched
+    // `<code>foo</code>` followed later by `<code>bar</code>{copy}` would be
+    // captured as ONE big match with body = "foo</code><…><code>bar". That
+    // bug surfaces noticeably in tables, where multiple codespans per row mix
+    // marked and unmarked instances. Marked HTML-escapes any literal `<` in
+    // codespan content to `&lt;`, so the restriction is safe.
     return html.replace(
-        /<code>([\s\S]*?)<\/code>\{([^}\n]+)\}/g,
+        /<code>([^<]*)<\/code>\{([^}\n]+)\}/g,
         (_, body, attrString) => {
             const tokens = attrString.trim().split(/\s+/).filter(Boolean);
             let language = '';
@@ -367,7 +375,16 @@ function applyInlineCodeAttributes(html) {
                     language = tok;
                 }
             }
-            let attrs = ` x-code="${escapeForAttribute(language)}"`;
+            // Only emit x-code when the author actually requested a language.
+            // `inline`{copy} should produce `<code copy>` — copy is a UI flag,
+            // not a request for syntax highlighting. Previously we always
+            // wrote `x-code=""`, which the code plugin treated as auto-detect
+            // and ran hljs.highlightElement on the codespan, colouring
+            // identifiers like `x-code` themselves as tokens. Authors who
+            // want highlighting opt in explicitly via `code`{bash} or by
+            // hand-writing `<code x-code="bash">…</code>`.
+            let attrs = '';
+            if (language) attrs += ` x-code="${escapeForAttribute(language)}"`;
             for (const flag of flags) attrs += ` ${flag}`;
             if (classes.length) attrs += ` class="${escapeForAttribute(classes.join(' '))}"`;
             for (const [k, v] of kv) attrs += ` ${k}="${escapeForAttribute(v)}"`;

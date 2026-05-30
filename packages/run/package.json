@@ -1,6 +1,6 @@
 {
   "name": "mnfst-run",
-  "version": "1.0.12",
+  "version": "1.0.14",
   "description": "Zero-dependency dev server for Manifest projects",
   "type": "module",
   "bin": {

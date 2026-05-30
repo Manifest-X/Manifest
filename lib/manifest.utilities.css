@@ -46,7 +46,7 @@
         background-color: transparent;
 
         &:hover {
-            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent))
+            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
         }
     }
 
@@ -62,21 +62,21 @@
     :where(.outlined) {
         border-width: 1px;
         border-style: solid;
-        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 90%, var(--color-field-inverse, darkslategray))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 90%, var(--color-field-inverse, oklch(43.9% 0 0)))
     }
 
     /* Dark theme override */
     .dark :where(.outlined) {
-        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 80%, var(--color-field-inverse, darkslategray))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
     }
 
     /* Transparent */
     :where(.transparent) {
-        color: var(--color-content-neutral, gray);
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
         background-color: transparent !important;
 
         &:hover {
-            color: var(--color-content-stark, darkslategray)
+            color: var(--color-content-stark, oklch(43.9% 0 0))
         }
     }
 
@@ -97,6 +97,13 @@
         &::picker-icon {
             line-height: 0.2
         }
+    }
+
+    /* Disabled */
+    :where(.disabled) {
+        opacity: .5;
+        cursor: default;
+        pointer-events: none
     }
 
     /* Page content layout */
@@ -200,7 +207,7 @@
 
     /* Light overlay */
     :where(.overlay-light) {
-        color: black !important;
+        color: oklch(14.5% 0 0) !important;
 
         &::after {
             background: oklch(100% 0 0 / 75%)
@@ -213,19 +220,16 @@
         max-width: 100%;
 
         /* Asides inside a prose element are used as callouts */
-        & aside:not([popover]):not(:where([x-code-group] *)) {
+        & aside:not([popover]) {
             margin-top: calc(1rem * 1.4);
-            padding: 1rem;
+            padding: calc(var(--spacing, 0.25rem) * 4);
             border-radius: calc(var(--radius, 0.5rem) * 2);
-            color: var(--color-content-stark, darkslategray);
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 20%, transparent);
-            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 15%, transparent);
+            color: var(--color-content-stark, oklch(43.9% 0 0));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 20%, transparent);
+            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
 
-            &:not(.frame) * {
-                color: inherit
-            }
-
-            &:has([x-icon]):not(.frame) {
+            /* Auto format asides with icons */
+            &:has([x-icon]):not([x-code-group] aside, aside.frame) {
                 display: flex;
                 flex-direction: row;
                 gap: 1rem;
@@ -237,8 +241,14 @@
             }
         }
 
-        & aside.frame {
-            font-family: var(--font-sans)
+        & [x-code-group] aside.frame {
+            margin-top: 0;
+            padding: calc(var(--spacing, 0.25rem) * 4);
+            font-family: var(--font-sans);
+            font-size: initial;
+            background-color: color-mix(var(--color-surface-1, oklch(97% 0 0)) 65%, transparent);
+            border: 0 none;
+            border-radius: 0
         }
 
         &>a:not(:where(h1, h2, h3, h4, h5, h6, p, small, figcaption, label, li, blockquote, pre code, code, kbd, span, mark, [role=button]) a) {
@@ -291,7 +301,7 @@
         &>h1+p {
             margin-top: 0.625rem;
             font-size: 1.125rem;
-            color: var(--color-content-neutral, gray)
+            color: var(--color-content-neutral, oklch(43.9% 0 0))
         }
 
         &>h2 {
@@ -349,19 +359,19 @@
             margin-bottom: calc(1rem * 2)
         }
 
-        &>x-code-group,
-        &>x-code,
+        &>[x-code-group],
+        &>[x-code],
         &>pre {
             margin-top: 2rem;
             margin-bottom: 2rem
         }
 
-        &>x-code-group x-code {
+        &>[x-code-group] [x-code] {
             margin-top: 0;
             margin-bottom: 0
         }
 
-        &>x-code pre {
+        &>[x-code] pre {
             margin-top: 0;
             margin-bottom: 0
         }
@@ -371,27 +381,27 @@
     :where(.trailing) {
         display: inline-block;
         margin-inline-start: auto;
-        color: var(--color-content-neutral, gray)
+        color: var(--color-content-neutral, oklch(43.9% 0 0))
     }
 
     /* Brand colors */
     :where(.brand) {
-        --color-field-surface: var(--color-brand-surface, goldenrod);
-        --color-field-surface-hover: var(--color-brand-surface-hover, darkgoldenrod);
-        --color-field-inverse: var(--color-brand-inverse, white);
-        --color-content-stark: var(--color-brand-content, goldenrod);
-        --color-content-neutral: color-mix(in oklch, var(--color-brand-content, goldenrod) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, goldenrod) 70%, transparent)
+        --color-field-surface: var(--color-brand-surface, oklch(85.2% 0.199 91.936));
+        --color-field-surface-hover: var(--color-brand-surface-hover, oklch(90.5% 0.182 98.111));
+        --color-field-inverse: var(--color-brand-inverse, oklch(98.5% 0 0));
+        --color-content-stark: var(--color-brand-content, oklch(68.1% 0.162 75.834));
+        --color-content-neutral: color-mix(in oklch, var(--color-brand-content, oklch(68.1% 0.162 75.834)) 85%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-brand-content, oklch(68.1% 0.162 75.834)) 70%, transparent)
     }
 
     /* Accent colors */
     :where(.accent) {
-        --color-field-surface: var(--color-accent-surface, darkslategray);
-        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(darkslategray 90%, white));
-        --color-field-inverse: var(--color-accent-inverse, white);
-        --color-content-stark: var(--color-accent-content, darkslategray);
-        --color-content-neutral: color-mix(in oklch, var(--color-accent-content, darkslategray) 85%, transparent);
-        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, darkslategray) 70%, transparent)
+        --color-field-surface: var(--color-accent-surface, oklch(43.9% 0 0));
+        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(oklch(20.5% 0 0) 90%, oklch(98.5% 0 0)));
+        --color-field-inverse: var(--color-accent-inverse, oklch(98.5% 0 0));
+        --color-content-stark: var(--color-accent-content, oklch(43.9% 0 0));
+        --color-content-neutral: color-mix(in oklch, var(--color-accent-content, oklch(43.9% 0 0)) 85%, transparent);
+        --color-content-subtle: color-mix(in oklch, var(--color-accent-content, oklch(43.9% 0 0)) 70%, transparent)
     }
 
     /* Negative colors */
@@ -416,14 +426,14 @@
 
     /* Text colors */
     :where(.stark) {
-        color: var(--color-content-stark, darkslategray)
+        color: var(--color-content-stark, oklch(43.9% 0 0))
     }
 
     :where(.neutral) {
-        color: var(--color-content-neutral, gray)
+        color: var(--color-content-neutral, oklch(43.9% 0 0))
     }
 
     :where(.subtle) {
-        color: var(--color-content-subtle, darkgray)
+        color: var(--color-content-subtle, oklch(55.6% 0 0))
     }
 }

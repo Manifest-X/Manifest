@@ -59,7 +59,7 @@
         }
 
         &.negative:hover {
-            color: var(--color-negative-inverse, white)
+            color: var(--color-negative-inverse, oklch(98.5% 0 0))
         }
     }
 
@@ -209,7 +209,8 @@
 
     /* Dark overlay */
     :where(.overlay-dark) {
-        color: white !important;
+        color: oklch(98.5% 0 0);
+        !important;
 
         &::after {
             background: oklch(0% 0 0 / 50%)
@@ -218,7 +219,7 @@
 
     /* Light overlay */
     :where(.overlay-light) {
-        color: black !important;
+        color: oklch(14.5% 0 0) !important;
 
         &::after {
             background: oklch(100% 0 0 / 75%)
@@ -382,7 +383,7 @@
     :where(.negative) {
         --color-field-surface: var(--color-negative-surface, #ef4444);
         --color-field-surface-hover: var(--color-negative-surface-hover, #dc2626);
-        --color-field-inverse: var(--color-negative-inverse, white);
+        --color-field-inverse: var(--color-negative-inverse, oklch(98.5% 0 0));
         --color-content-stark: var(--color-negative-content, #ef4444);
         --color-content-neutral: color-mix(in oklch, var(--color-negative-content, #ef4444) 85%, transparent);
         --color-content-subtle: color-mix(in oklch, var(--color-negative-content, #ef4444) 70%, transparent);
@@ -392,7 +393,7 @@
     :where(.positive) {
         --color-field-surface: var(--color-positive-surface, #16a34a);
         --color-field-surface-hover: var(--color-positive-surface-hover, #166534);
-        --color-field-inverse: var(--color-positive-inverse, white);
+        --color-field-inverse: var(--color-positive-inverse, oklch(98.5% 0 0));
         --color-content-stark: var(--color-positive-content, #16a34a);
         --color-content-neutral: color-mix(in oklch, var(--color-positive-content, #16a34a) 85%, transparent);
         --color-content-subtle: color-mix(in oklch, var(--color-positive-content, #16a34a) 70%, transparent);

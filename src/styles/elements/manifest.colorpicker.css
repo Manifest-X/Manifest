@@ -1,7 +1,7 @@
 /* Manifest Color Picker */
 
 :root {
-    --color-picker-swatch: var(--color-line, color-mix(darkslategray 10%, transparent));
+    --color-picker-swatch: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
     --icon-color-solid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-paint-roller-icon lucide-paint-roller'%3E%3Crect width='16' height='6' x='2' y='2' rx='2'/%3E%3Cpath d='M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2'/%3E%3Crect width='4' height='6' x='8' y='16' rx='1'/%3E%3C/svg%3E");
     --icon-color-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-blend-icon lucide-blend'%3E%3Ccircle cx='9' cy='9' r='7'/%3E%3Ccircle cx='15' cy='15' r='7'/%3E%3C/svg%3E");
     --icon-color-library: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-swatch-book-icon lucide-swatch-book'%3E%3Cpath d='M11 17a4 4 0 0 1-8 0V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2Z'/%3E%3Cpath d='M16.7 13H19a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H7'/%3E%3Cpath d='M 7 17h.01'/%3E%3Cpath d='m11 8 2.3-2.3a2.4 2.4 0 0 1 3.404.004L18.6 7.6a2.4 2.4 0 0 1 .026 3.434L9.9 19.8'/%3E%3C/svg%3E");
@@ -83,7 +83,7 @@
             display: flex;
             width: 100%;
             padding: 2px;
-            border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+            border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
 
             /* Distribute button widths equally */
             & button {
@@ -258,7 +258,7 @@
 
             /* Gradient layers */
             & :where(.layer-options-wrapper) {
-                border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+                border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
 
                 /* Layer options inputs */
                 & :where(.layer-options-inputs) {
@@ -295,7 +295,7 @@
                             position: absolute;
                             top: 0;
                             right: 0.25rem;
-                            color: var(--color-content-neutral, gray)
+                            color: var(--color-content-neutral, oklch(43.9% 0 0))
                         }
                     }
 
@@ -308,7 +308,7 @@
                         margin-inline-end: 0.5rem;
                         border-radius: 1rem;
                         cursor: pointer;
-                        background: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
+                        background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
 
                         /* Stop handle */
                         & :where(.stop-handle) {
@@ -400,7 +400,7 @@
 
                     /* Only apply border to all except last library-group */
                     &:not(:last-child) {
-                        border-bottom: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+                        border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
                     }
 
                     /* Palette wrapper */
@@ -441,7 +441,7 @@
         padding: 0;
 
         & .tabs-wrapper button {
-            border: 1px solid var(--color-popover-surface, white)
+            border: 1px solid var(--color-popover-surface, oklch(98.5% 0 0))
         }
     }
 
@@ -490,17 +490,17 @@
     }
 
     .gradient-layer-icon-linear {
-        background: linear-gradient(to right, var(--color-content-neutral, gray), color-mix(in oklch, var(--color-content-neutral, gray) 0%, transparent 100%));
+        background: linear-gradient(to right, var(--color-content-neutral, oklch(43.9% 0 0)), color-mix(in oklch, var(--color-content-neutral, oklch(43.9% 0 0)) 0%, transparent 100%));
         border-radius: 50%
     }
 
     .gradient-layer-icon-radial {
-        background: radial-gradient(var(--color-content-neutral, gray), color-mix(in oklch, var(--color-content-neutral, gray) 0%, transparent 100%));
+        background: radial-gradient(var(--color-content-neutral, oklch(43.9% 0 0)), color-mix(in oklch, var(--color-content-neutral, oklch(43.9% 0 0)) 0%, transparent 100%));
         border-radius: 50%
     }
 
     .gradient-layer-icon-conic {
-        background: conic-gradient(var(--color-content-neutral, gray), color-mix(in oklch, var(--color-content-neutral, gray) 0%, transparent 100%));
+        background: conic-gradient(var(--color-content-neutral, oklch(43.9% 0 0)), color-mix(in oklch, var(--color-content-neutral, oklch(43.9% 0 0)) 0%, transparent 100%));
         border-radius: 50%
     }
 }

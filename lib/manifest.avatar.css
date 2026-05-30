@@ -14,8 +14,8 @@
         font-weight: bold;
         text-align: center;
         text-transform: uppercase;
-        color: var(--color-field-inverse, darkslategray);
-        background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
+        color: var(--color-field-inverse, oklch(43.9% 0 0));
+        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
         background-clip: content-box;
         background-size: cover;
         background-position: center;
@@ -23,7 +23,7 @@
 
         /* Icon */
         &[x-icon] {
-            color: var(--color-content-subtle, darkgray)
+            color: var(--color-content-subtle, oklch(55.6% 0 0))
         }
 
         /* Profile pic */
@@ -47,8 +47,8 @@
             width: 9px;
             height: 9px;
             z-index: 1;
-            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
-            border: 1px solid var(--color-page, white);
+            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            border: 1px solid var(--color-page, oklch(98.5% 0 0));
             border-radius: 50%
         }
     }
@@ -59,7 +59,7 @@
         background-blend-mode: normal;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
             background-blend-mode: multiply;
 
             & img {
@@ -94,7 +94,7 @@
         padding-inline-end: 1.5ch;
 
         &:hover .avatar {
-            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
             transition: var(--transition, all .05s ease-in-out)
         }
     }
@@ -107,7 +107,7 @@
 
         :where(.avatar) {
             margin-inline-end: calc(var(--spacing-field-height, 2.25rem) * -0.3);
-            box-shadow: 0 0 0 3px var(--color-page, white)
+            box-shadow: 0 0 0 3px var(--color-page, oklch(98.5% 0 0))
         }
     }
 }

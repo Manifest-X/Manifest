@@ -29,7 +29,7 @@
             align-items: center;
             padding: var(--spacing-field-padding, 0.625rem) 0;
             font-weight: bold;
-            color: var(--color-content-stark, darkslategray);
+            color: var(--color-content-stark, oklch(43.9% 0 0));
             user-select: none;
             cursor: pointer;
             transition: var(--transition, all .05s ease-in-out);
@@ -42,11 +42,11 @@
             }
 
             &:hover {
-                color: color-mix(in oklch, var(--color-surface-1, whitesmoke) 40%, var(--color-content-stark, darkslategray))
+                color: color-mix(in oklch, var(--color-surface-1, oklch(97% 0 0)) 40%, var(--color-content-stark, oklch(43.9% 0 0)))
             }
 
             &:active {
-                color: color-mix(in oklch, var(--color-surface-1, whitesmoke) 50%, var(--color-content-stark, darkslategray))
+                color: color-mix(in oklch, var(--color-surface-1, oklch(97% 0 0)) 50%, var(--color-content-stark, oklch(43.9% 0 0)))
             }
 
             /* Add custom icon */
@@ -55,7 +55,7 @@
                 order: 1;
                 width: 1rem;
                 height: 1rem;
-                background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 50%, var(--color-field-inverse, darkslategray));
+                background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 50%, var(--color-field-inverse, oklch(43.9% 0 0)));
                 -webkit-mask-image: var(--icon-accordion, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E"));
                 mask-image: var(--icon-accordion, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E"));
                 -webkit-mask-repeat: no-repeat;

@@ -210,15 +210,30 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach client-side $query (overridden by Appwrite if source is Appwrite)
     // Always attach even if dataSourceName empty (enables method chaining: .$search().$query())
+    //
+    // IMPORTANT: use the SYNCHRONOUS manifest accessor, not ensureManifest().
+    // ensureManifest() is `async function` — calling it without `await` returns
+    // a Promise, and `Promise.data` is undefined, so the Appwrite-detection
+    // block silently fell through and isAppwriteSource stayed `false` for
+    // EVERY source — including real Appwrite collections. That caused the
+    // client-side $query to be attached to Appwrite arrays. The client-side
+    // $query sorts/filters in-memory and returns the result (without mutating
+    // the source), while demo code calls $query as a fire-and-forget store
+    // mutation. Result: sort buttons silently no-op'd.
+    //
+    // window.__manifestLoaded and window.ManifestComponentsRegistry.manifest
+    // are populated synchronously by the loader after the manifest fetch
+    // resolves (see manifest.js loader: `window.__manifestLoaded = manifest`).
+    // By the time any data source is being attached, they're available.
     let isAppwriteSource = false;
     if (dataSourceName) {
         try {
-            const manifest = window.ManifestDataConfig?.ensureManifest?.();
-            if (manifest?.data) {
-                const dataSource = manifest.data[dataSourceName];
-                if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                    isAppwriteSource = true;
-                }
+            const manifest = window.__manifestLoaded
+                || window.ManifestComponentsRegistry?.manifest
+                || null;
+            const dataSource = manifest?.data?.[dataSourceName];
+            if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                isAppwriteSource = true;
             }
         } catch (e) {
             // Manifest not ready yet - will attach client-side version, Appwrite can override later
@@ -341,15 +356,20 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach Appwrite methods ($create, $update, $delete, etc.)
     if (dataSourceName) {
-        // Check if this is an Appwrite source (reuse check from above if available)
+        // Check if this is an Appwrite source. Same sync-manifest fix as
+        // the block above — ensureManifest() is async and returned a Promise
+        // here too, so isAppwriteSource was always false and the Appwrite
+        // $query was never attached, leaving sort/query buttons to silently
+        // fall through to the client-side $query that returns a discarded
+        // sorted array.
         let isAppwriteSource = false;
         try {
-            const manifest = window.ManifestDataConfig?.ensureManifest?.();
-            if (manifest?.data) {
-                const dataSource = manifest.data[dataSourceName];
-                if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                    isAppwriteSource = true;
-                }
+            const manifest = window.__manifestLoaded
+                || window.ManifestComponentsRegistry?.manifest
+                || null;
+            const dataSource = manifest?.data?.[dataSourceName];
+            if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                isAppwriteSource = true;
             }
         } catch (e) {
             // Manifest not ready yet - assume not Appwrite

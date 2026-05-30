@@ -1,6 +1,6 @@
 {
   "name": "mnfst-export",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Batch and CI exports for Manifest projects — PDF, PNG, JPEG, WebP, CSV, JSON, RSS",
   "type": "module",
   "bin": {
@@ -30,7 +30,9 @@
     "puppeteer": ">=22"
   },
   "peerDependenciesMeta": {
-    "puppeteer": { "optional": true }
+    "puppeteer": {
+      "optional": true
+    }
   },
   "author": "Andrew Matlock",
   "license": "MIT",

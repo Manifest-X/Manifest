@@ -41,8 +41,8 @@
         min-height: 200px;
         max-height: 90vh;
         margin: auto;
-        color: var(--color-content-stark, darkslategray);
-        background-color: var(--color-popover-surface, white);
+        color: var(--color-content-stark, oklch(43.9% 0 0));
+        background-color: var(--color-popover-surface, oklch(98.5% 0 0));
         border: 0 none;
         border-radius: calc(var(--radius, 0.5rem) * 2);
         box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);

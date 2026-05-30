@@ -259,12 +259,16 @@ function deepSeal(obj) {
             }
         }
     } else {
-        for (const key in obj) {
-            if (obj.hasOwnProperty(key)) {
-                const value = obj[key];
-                if (value !== null && typeof value === 'object') {
-                    deepSeal(value);
-                }
+        // Iterate own enumerable keys via Object.keys instead of for…in +
+        // .hasOwnProperty(). The latter throws "hasOwnProperty is not a
+        // function" on any object that either lacks the Object prototype
+        // (e.g. Object.create(null)) or has a column literally named
+        // `hasOwnProperty` shadowing the prototype method — both of which
+        // can happen with payloads from Appwrite / arbitrary backends.
+        for (const key of Object.keys(obj)) {
+            const value = obj[key];
+            if (value !== null && typeof value === 'object') {
+                deepSeal(value);
             }
         }
     }
@@ -387,14 +391,20 @@ function createReactiveReferences(data, dataSourceName = null) {
     }
 
     if (typeof data === 'object') {
-        // Create new object with new references for each property
+        // Create new object with new references for each property.
+        // Iterate via Object.keys() (own enumerable, no prototype walk)
+        // rather than for…in + .hasOwnProperty(). The latter pattern
+        // throws "hasOwnProperty is not a function" on any payload that
+        // either has a column literally named `hasOwnProperty` shadowing
+        // the prototype, or lacks the Object prototype entirely
+        // (Object.create(null), some SDK response shapes). This is the
+        // hot path for every Appwrite mutation result and realtime event,
+        // so it must be defensive about arbitrary backend payloads.
         const newObj = {};
-        for (const key in data) {
-            if (data.hasOwnProperty(key)) {
-                const value = data[key];
-                // Recursively create new references for nested objects/arrays
-                newObj[key] = createReactiveReferences(value, dataSourceName);
-            }
+        for (const key of Object.keys(data)) {
+            const value = data[key];
+            // Recursively create new references for nested objects/arrays
+            newObj[key] = createReactiveReferences(value, dataSourceName);
         }
 
         // Detect file objects (have mimeType or sizeOriginal)
@@ -3362,15 +3372,30 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach client-side $query (overridden by Appwrite if source is Appwrite)
     // Always attach even if dataSourceName empty (enables method chaining: .$search().$query())
+    //
+    // IMPORTANT: use the SYNCHRONOUS manifest accessor, not ensureManifest().
+    // ensureManifest() is `async function` — calling it without `await` returns
+    // a Promise, and `Promise.data` is undefined, so the Appwrite-detection
+    // block silently fell through and isAppwriteSource stayed `false` for
+    // EVERY source — including real Appwrite collections. That caused the
+    // client-side $query to be attached to Appwrite arrays. The client-side
+    // $query sorts/filters in-memory and returns the result (without mutating
+    // the source), while demo code calls $query as a fire-and-forget store
+    // mutation. Result: sort buttons silently no-op'd.
+    //
+    // window.__manifestLoaded and window.ManifestComponentsRegistry.manifest
+    // are populated synchronously by the loader after the manifest fetch
+    // resolves (see manifest.js loader: `window.__manifestLoaded = manifest`).
+    // By the time any data source is being attached, they're available.
     let isAppwriteSource = false;
     if (dataSourceName) {
         try {
-            const manifest = window.ManifestDataConfig?.ensureManifest?.();
-            if (manifest?.data) {
-                const dataSource = manifest.data[dataSourceName];
-                if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                    isAppwriteSource = true;
-                }
+            const manifest = window.__manifestLoaded
+                || window.ManifestComponentsRegistry?.manifest
+                || null;
+            const dataSource = manifest?.data?.[dataSourceName];
+            if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                isAppwriteSource = true;
             }
         } catch (e) {
             // Manifest not ready yet - will attach client-side version, Appwrite can override later
@@ -3493,15 +3518,20 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach Appwrite methods ($create, $update, $delete, etc.)
     if (dataSourceName) {
-        // Check if this is an Appwrite source (reuse check from above if available)
+        // Check if this is an Appwrite source. Same sync-manifest fix as
+        // the block above — ensureManifest() is async and returned a Promise
+        // here too, so isAppwriteSource was always false and the Appwrite
+        // $query was never attached, leaving sort/query buttons to silently
+        // fall through to the client-side $query that returns a discarded
+        // sorted array.
         let isAppwriteSource = false;
         try {
-            const manifest = window.ManifestDataConfig?.ensureManifest?.();
-            if (manifest?.data) {
-                const dataSource = manifest.data[dataSourceName];
-                if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                    isAppwriteSource = true;
-                }
+            const manifest = window.__manifestLoaded
+                || window.ManifestComponentsRegistry?.manifest
+                || null;
+            const dataSource = manifest?.data?.[dataSourceName];
+            if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                isAppwriteSource = true;
             }
         } catch (e) {
             // Manifest not ready yet - assume not Appwrite
@@ -7568,21 +7598,57 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         throw new Error(`[Manifest Data] File "${actualFileId}" not found or not accessible: ${error.message}`);
                     }
 
-                    // Get view URL using Appwrite SDK (returns authenticated URL)
-                    // Using 'view' instead of 'download' since we're re-uploading, not downloading to device
-                    let viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
+                    // Get view URL using Appwrite SDK (a URL STRING, not the
+                    // file content). Using 'view' rather than 'download' since
+                    // we're re-uploading rather than saving to disk.
+                    const viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
 
-                    // Temporarily append ?mode=admin for localhost testing (cross-domain issues)
-                    // Remove this in production - it should work without it
-                    const urlObj = new URL(viewUrl);
-                    urlObj.searchParams.set('mode', 'admin');
-                    viewUrl = urlObj.toString();
+                    // Authenticate the fetch for permissioned buckets.
+                    //
+                    // Storage's /view, /download and /preview endpoints check
+                    // the USER SESSION — not API/dev keys (those work only on
+                    // JSON endpoints like /storage/buckets/.../files/.../).
+                    // In localhost dev the browser blocks the cross-domain
+                    // session cookie (SameSite=Lax on plain HTTP), so the
+                    // request lands at Appwrite as anonymous and a permissioned
+                    // file returns 404 storage_file_not_found.
+                    //
+                    // The Appwrite Web SDK works around this by writing the
+                    // session token to localStorage under `cookieFallback`
+                    // and replaying it as the `X-Fallback-Cookies` header on
+                    // every SDK request. That's why SDK calls (getFile metadata
+                    // above, listRows, $create, etc.) succeed cross-domain
+                    // while raw fetch() doesn't — raw fetch doesn't know to
+                    // read that localStorage key.
+                    //
+                    // We do exactly what the SDK does: read cookieFallback
+                    // and attach it as X-Fallback-Cookies. This is more
+                    // reliable than JWT:
+                    //   - no createJWT round-trip (and dev-key-configured
+                    //     clients 501 on createJWT)
+                    //   - no 15-min expiry or rate limit (10/hour/account)
+                    //   - matches whatever auth the SDK is already using
+                    //
+                    // Falls through to credentials-only when the user isn't
+                    // signed in (no cookieFallback in storage) — that path
+                    // still works in production with a SameSite=None cookie.
+                    const fetchHeaders = {};
+                    if (appwriteConfig.projectId) {
+                        fetchHeaders['X-Appwrite-Project'] = appwriteConfig.projectId;
+                    }
+                    try {
+                        const cookieFallback = typeof localStorage !== 'undefined'
+                            ? localStorage.getItem('cookieFallback')
+                            : null;
+                        if (cookieFallback) {
+                            fetchHeaders['X-Fallback-Cookies'] = cookieFallback;
+                        }
+                    } catch { /* localStorage access denied — fall through */ }
 
-                    // Fetch file content using the view URL with credentials
-                    // The URL from getFileURL is already authenticated, just need to include cookies
                     const response = await fetch(viewUrl, {
                         method: 'GET',
-                        credentials: 'include' // Include cookies for authentication
+                        credentials: 'include', // Carry session cookie when available
+                        headers: fetchHeaders
                     });
 
                     if (!response.ok) {
@@ -8732,6 +8798,29 @@ function registerXMagicMethod(loadDataSource) {
                                                         if (key in target && typeof target[key] === 'function') {
                                                             return target[key].bind(target);
                                                         }
+                                                        // Appwrite sources intentionally skip the client-side
+                                                        // $query attachment (see attachArrayMethods comment:
+                                                        // "Appwrite sources will get their $query from the
+                                                        // Appwrite plugin"). Delegate to the Appwrite methods
+                                                        // handler so the click hits the backend instead of
+                                                        // silently falling through to `undefined` or, in some
+                                                        // proxy paths, a no-op `() => []`. Without this, demo
+                                                        // sort/query buttons appear to do nothing — no console
+                                                        // error, no network request — because the call resolves
+                                                        // to the chaining fallback's stub `queryFn`.
+                                                        if (key === '$query' || key === '$search') {
+                                                            const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+                                                            if (createAppwriteMethodsHandler) {
+                                                                try {
+                                                                    const manifest = window.ManifestComponentsRegistry?.manifest || null;
+                                                                    const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
+                                                                    if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                                                                        const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                                        return methodsHandler.bind(null, key);
+                                                                    }
+                                                                } catch { /* fall through */ }
+                                                            }
+                                                        }
                                                     }
                                                     // Forward all other property access to the target array
                                                     const value = target[key];
@@ -9048,6 +9137,22 @@ function registerXMagicMethod(loadDataSource) {
                                             if (key === '$search' || key === '$query') {
                                                 if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                     return target[key].bind(target);
+                                                }
+                                                // Appwrite-source delegation: $query is intentionally
+                                                // not attached to Appwrite arrays by attachArrayMethods
+                                                // (it requires a backend round-trip). Route to the
+                                                // Appwrite methods handler instead of the no-op fallback
+                                                // so sort/query/search buttons actually fire requests.
+                                                const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+                                                if (createAppwriteMethodsHandler) {
+                                                    try {
+                                                        const manifest = window.ManifestComponentsRegistry?.manifest || null;
+                                                        const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
+                                                        if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                                                            const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                            return methodsHandler.bind(null, key);
+                                                        }
+                                                    } catch { /* fall through */ }
                                                 }
                                                 // Fallback: return safe function that returns empty array
                                                 return function () {

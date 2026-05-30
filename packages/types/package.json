@@ -1,6 +1,6 @@
 {
   "name": "mnfst-types",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Generate TypeScript types for a Manifest project from manifest.json and sample data",
   "type": "module",
   "bin": {

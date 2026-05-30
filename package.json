@@ -1,6 +1,6 @@
 {
     "name": "mnfst",
-    "version": "0.5.90",
+    "version": "0.5.115",
     "private": false,
     "workspaces": [
         "templates/starter",

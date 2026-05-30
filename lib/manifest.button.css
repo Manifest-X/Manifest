@@ -17,13 +17,13 @@
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;
-        color: var(--color-field-inverse, darkslategray);
-        background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
+        color: var(--color-field-inverse, oklch(43.9% 0 0));
+        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
         border-width: 0;
         border-style: solid;
         border-color: transparent;
         border-radius: var(--radius, 0.5rem);
-        outline-color: var(--color-line, color-mix(darkslategray 10%, transparent));
+        outline-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
         cursor: pointer;
         transition: var(--transition, all .05s ease-in-out);
         appearance: button;
@@ -52,15 +52,15 @@
         }
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
+            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
         }
 
         &:active {
-            background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
+            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
         }
 
         &:focus-visible {
-            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent))
+            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
         }
     }
 

@@ -748,18 +748,20 @@ TailwindCompiler.prototype.compile = async function () {
 
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
-            if (themeCss && themeCss.all) {
-                // Extract custom utility classes from non-framework CSS only.
-                // Framework semantic classes (.brand, .row, .col, etc.) already
-                // live in the compiled manifest.css; re-emitting them here would
-                // duplicate rules in #manifest-styles.
-                const discoveredCustomUtilities = this.extractCustomUtilities(themeCss.userScannable);
+            if (themeCss) {
+                // Extract and cache custom utilities. We scan framework CSS too
+                // because the generator needs to know about semantic classes
+                // like .brand / .row / .col to emit their responsive/state
+                // variants (e.g. md:row, hover:brand). Base-form re-emission is
+                // suppressed in generateCustomUtilities ("Skip generating base
+                // utility - it already exists in the CSS"); duplicate captures
+                // are collapsed at the end of extractCustomUtilities.
+                const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
                 for (const [name, value] of discoveredCustomUtilities.entries()) {
                     this.customUtilities.set(name, value);
                 }
 
-                // CSS variables can live in any stylesheet — scan everything.
-                const variables = this.extractThemeVariables(themeCss.all);
+                const variables = this.extractThemeVariables(themeCss);
                 for (const [name, value] of variables.entries()) {
                     this.currentThemeVars.set(name, value);
                 }
@@ -780,7 +782,7 @@ TailwindCompiler.prototype.compile = async function () {
                 }
 
                 // Generate both variable-based and custom utilities
-                const varUtilities = this.generateUtilitiesFromVars(themeCss.all, staticUsedData);
+                const varUtilities = this.generateUtilitiesFromVars(themeCss, staticUsedData);
                 const customUtilitiesGenerated = this.generateCustomUtilities(staticUsedData);
 
                 let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
@@ -809,7 +811,7 @@ TailwindCompiler.prototype.compile = async function () {
                     this.lastClassesHash = staticUsedData.classes.sort().join(',');
 
                     // Save to cache for next page load
-                    const themeHash = this.generateThemeHash(themeCss.all);
+                    const themeHash = this.generateThemeHash(themeCss);
                     const cacheKey = `${this.lastClassesHash}-${themeHash}`;
                     this.cache.set(cacheKey, {
                         css: finalCss,
@@ -836,20 +838,19 @@ TailwindCompiler.prototype.compile = async function () {
         if (dynamicClassesHash !== this.lastClassesHash || !this.hasInitialized) {
             // Fetch CSS content for dynamic compilation
             const themeCss = await this.fetchThemeContent();
-            if (!themeCss || !themeCss.all) {
+            if (!themeCss) {
                 this.isCompiling = false;
                 return;
             }
 
-            // Update custom utilities cache from non-framework CSS only — see
-            // first compile path for rationale.
-            const discoveredCustomUtilities = this.extractCustomUtilities(themeCss.userScannable);
+            // Update custom utilities cache if needed
+            const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
             for (const [name, value] of discoveredCustomUtilities.entries()) {
                 this.customUtilities.set(name, value);
             }
 
             // Check for variable changes
-            const variables = this.extractThemeVariables(themeCss.all);
+            const variables = this.extractThemeVariables(themeCss);
             let hasVariableChanges = false;
             for (const [name, value] of variables.entries()) {
                 const currentValue = this.currentThemeVars.get(name);
@@ -863,7 +864,7 @@ TailwindCompiler.prototype.compile = async function () {
             if (hasVariableChanges || dynamicClassesHash !== this.lastClassesHash) {
 
                 // Generate both variable-based and custom utilities
-                const varUtilities = this.generateUtilitiesFromVars(themeCss.all, usedData);
+                const varUtilities = this.generateUtilitiesFromVars(themeCss, usedData);
                 const customUtilitiesGenerated = this.generateCustomUtilities(usedData);
 
                 let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
@@ -892,7 +893,7 @@ TailwindCompiler.prototype.compile = async function () {
                     this.lastClassesHash = dynamicClassesHash;
 
                     // Save to cache for next page load
-                    const themeHash = this.generateThemeHash(themeCss.all);
+                    const themeHash = this.generateThemeHash(themeCss);
                     const cacheKey = `${this.lastClassesHash}-${themeHash}`;
                     this.cache.set(cacheKey, {
                         css: finalCss,

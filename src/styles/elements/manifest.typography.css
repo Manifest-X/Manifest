@@ -14,7 +14,7 @@
     .small,
     .caption,
     .label {
-        color: var(--color-content-stark, darkslategray);
+        color: var(--color-content-stark, oklch(43.9% 0 0));
 
         /* Inline links */
         & a:not(.unstyle),
@@ -74,10 +74,10 @@
     .h5 {
         font-size: 1rem;
         line-height: 1rem;
-        color: var(--color-content-neutral, gray);
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
 
         & a:hover {
-            color: var(--color-content-stark, darkslategray)
+            color: var(--color-content-stark, oklch(43.9% 0 0))
         }
     }
 
@@ -85,7 +85,7 @@
     .h6 {
         font-size: 0.8125rem;
         line-height: 1.4;
-        color: var(--color-brand-content, goldenrod)
+        color: var(--color-brand-content, oklch(68.1% 0.162 75.834))
     }
 
     /* Paragraphs */
@@ -99,12 +99,12 @@
     .link {
         text-align: unset;
         text-decoration: none;
-        color: var(--color-content-stark, darkslategray);
+        color: var(--color-content-stark, oklch(43.9% 0 0));
         cursor: pointer;
         transition: var(--transition, all .05s ease-in-out);
 
         &:hover {
-            color: var(--color-content-neutral, gray)
+            color: var(--color-content-neutral, oklch(43.9% 0 0))
         }
 
         &:where(:has([x-icon])) {
@@ -117,7 +117,7 @@
     /* Asides */
     :where(aside):not(.unstyle) {
         padding: calc(var(--spacing, 0.25rem) * 4);
-        border: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
         border-radius: var(--radius, 0.5rem)
     }
 
@@ -133,12 +133,12 @@
         font-weight: 500;
         font-size: 0.75rem;
         line-height: 1;
-        color: var(--color-field-inverse, darkslategray);
-        background-color: var(--color-surface-2, gainsboro);
+        color: var(--color-field-inverse, oklch(43.9% 0 0));
+        background-color: var(--color-field-surface, color-mix(oklch(97% 0 0) 10%, transparent));
         border-radius: 100px;
 
         /* Solo icons */
-        &:has(svg:only-child) {
+        &:only-child[x-icon] {
             padding: 0.35ch
         }
     }
@@ -150,8 +150,8 @@
         max-width: 100%;
         margin: calc(var(--spacing, 0.25rem) * 4) 0;
         padding: 0 calc(var(--spacing, 0.25rem) * 4);
-        color: var(--color-content-stark, darkslategray);
-        border-inline-start: 0.25rem solid color-mix(in oklch, var(--color-content-stark, darkslategray) 25%, transparent);
+        color: var(--color-content-stark, oklch(43.9% 0 0));
+        border-inline-start: 0.25rem solid color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 25%, transparent);
         border-inline-end: none;
 
         & * {
@@ -168,9 +168,9 @@
         font-size: 82.5%;
         line-height: 1.4;
         word-wrap: break-word;
-        color: var(--color-content-neutral, gray);
-        background-color: color-mix(in oklch, var(--color-content-neutral, gray) 10%, transparent);
-        border: 1px solid color-mix(in oklch, var(--color-content-subtle, darkgray) 10%, transparent);
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
+        background-color: color-mix(in oklch, var(--color-content-neutral, oklch(43.9% 0 0)) 10%, transparent);
+        border: 1px solid color-mix(in oklch, var(--color-content-subtle, oklch(55.6% 0 0)) 10%, transparent);
         border-radius: var(--radius, 0.5rem);
 
         &[role=button] {
@@ -182,13 +182,13 @@
     :where(figcaption):not(.unstyle),
     .caption {
         font-size: 0.8125rem;
-        color: var(--color-content-neutral, gray);
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
 
         & a:not([role=button]) {
             color: inherit;
 
             &:hover {
-                color: var(--color-content-stark, white)
+                color: var(--color-content-stark, oklch(98.5% 0 0))
             }
         }
     }
@@ -202,13 +202,13 @@
     :where(small):not(.unstyle),
     .small {
         font-size: 0.875rem;
-        color: var(--color-content-neutral, gray);
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
 
         & a:not([role=button]) {
             color: inherit;
 
             &:hover {
-                color: var(--color-content-stark, white)
+                color: var(--color-content-stark, oklch(98.5% 0 0))
             }
         }
     }
@@ -237,8 +237,8 @@
         font-weight: 600;
         line-height: 1;
         text-align: center;
-        color: var(--color-content-neutral, gray);
-        background-color: color-mix(in oklch, var(--color-content-neutral, gray) 10%, transparent);
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
+        background-color: color-mix(in oklch, var(--color-content-neutral, oklch(43.9% 0 0)) 10%, transparent);
         border-radius: calc(var(--radius, 0.5rem) / 1.5);
 
         &:not(:last-of-type) {
@@ -292,6 +292,13 @@
             /* Space out items */
             &:not(:last-of-type) {
                 margin-bottom: 1.25ch
+            }
+
+            /* Inline links */
+            & a:not(.unstyle),
+            & .link {
+                text-decoration: underline;
+                text-underline-offset: 2px
             }
 
             /* Allow icons to replace markers */
@@ -369,8 +376,8 @@
         flex-flow: row wrap;
         font-size: 0.8125rem;
         line-height: 1.7;
-        background-color: var(--color-page, white);
-        border: 1px solid var(--color-line, color-mix(darkslategray 10%, transparent));
+        background-color: var(--color-page, oklch(98.5% 0 0));
+        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
         border-radius: var(--radius, 0.5rem);
         overflow: hidden;
         tab-size: 4;
@@ -378,7 +385,7 @@
         white-space-collapse: preserve;
         overflow: hidden;
 
-        & code {
+        &>code {
             flex-grow: 1;
             display: inline-block;
             height: auto;

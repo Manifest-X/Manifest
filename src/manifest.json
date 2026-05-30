@@ -19,26 +19,8 @@
             "type": "image/png"
         }
     ],
-    "components": [
-        "test/components/appwrite.html",
-        "test/components/appwrite-databases.html",
-        "test/components/appwrite-presence.html",
-        "test/components/appwrite-projects.html",
-        "test/components/appwrite-storage.html",
-        "test/components/appwrite-teams.html",
-        "test/components/appwrite-users.html",
-        "test/components/core.html",
-        "test/components/local-data.html",
-        "test/components/options.html",
-        "test/components/utilities.html",
-        "test/components/test.html",
-        "test/components/styles.html"
-    ],
-    "preloadedComponents": [
-        "test/components/header.html",
-        "test/components/logo.html",
-        "test/components/popup.html"
-    ],
+    "components": [],
+    "preloadedComponents": [],
     "data": {
         "manifest": "/manifest.json",
         "colors": {

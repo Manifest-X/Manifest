@@ -254,6 +254,7 @@ function resolveConfig() {
     serve,
     output: resolve(root, cli.output ?? pre.output ?? 'website'),
     root,
+    manifest,
     routerBase: pre.routerBase ?? null,
     /** Logical path prefixes (after locale) that skip sticky locale prefix; see manifest:locale-route-exclude */
     localeRouteExclude: normalizeLocaleRouteExclude(
@@ -2383,29 +2384,123 @@ function routeHtmlPath(outputDir, pathSeg) {
 }
 
 /**
- * Best-effort per-route lastmod date.  We pick the prerendered HTML file's
- * mtime — that file IS regenerated on every prerender, so it's no better than
- * "today" for unchanged content.  Fallback hierarchy: 1) source markdown if
- * discoverable under articles/<path>.md; 2) prerendered HTML mtime; 3) today.
+ * Collect filesystem paths for all local-file data sources declared in
+ * `manifest.json` that are relevant to the given locale. Caller stats them.
+ *
+ * Skips remote sources (URLs, Appwrite databases / storage) since they have
+ * no local mtime. Locale-keyed JSON/YAML sources include only the matching
+ * locale's file. Multilingual CSVs (`locales` key) include every listed file
+ * because any column edit can affect the routed page.
  */
-function routeLastModDate(rootDir, outputDir, pathSeg) {
-  // Try common source-file conventions first so the date reflects content
-  // changes rather than the prerender run.  Strip leading section prefix
-  // ("docs/", "blog/", "articles/") since markdown files typically live
-  // under articles/ keyed by the remaining path.
-  const stripPrefix = pathSeg.replace(/^(?:docs|blog|articles|posts|guides)\//, '');
+function collectDataSourceFiles(manifest, rootDir, effectiveLocale) {
+  const files = [];
+  const data = manifest?.data;
+  if (!data || typeof data !== 'object') return files;
+
+  const isLocaleKey = (key) =>
+    /^[a-z]{2,3}(?:-[A-Z][a-zA-Z]{1,7})?$/.test(key);
+
+  const localeMatches = (key) => {
+    if (!isLocaleKey(key)) return false;
+    if (effectiveLocale) return key === effectiveLocale;
+    // No locale context: include any locale-shaped key.
+    return true;
+  };
+
+  const isLocalPath = (s) => typeof s === 'string' && !/^https?:\/\//i.test(s);
+  const toAbs = (p) => join(rootDir, p.replace(/^\//, ''));
+
+  for (const value of Object.values(data)) {
+    // Plain string path → single locale-agnostic file.
+    if (isLocalPath(value)) {
+      files.push(toAbs(value));
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    // Skip cloud / remote sources — they have no local file to stat.
+    if (value.url || value.appwriteDatabaseId || value.appwriteTableId || value.appwriteBucketId) continue;
+
+    for (const [key, v] of Object.entries(value)) {
+      // Multilingual CSV: { locales: "/p.csv" } or { locales: ["/a.csv", "/b.csv"] }
+      if (key === 'locales') {
+        if (isLocalPath(v)) files.push(toAbs(v));
+        else if (Array.isArray(v)) {
+          for (const p of v) if (isLocalPath(p)) files.push(toAbs(p));
+        }
+        continue;
+      }
+      // Colorpicker palette: { colorpicker: "/p.yaml" } or { colorpicker: { en: ..., fr: ... } }
+      if (key === 'colorpicker') {
+        if (isLocalPath(v)) files.push(toAbs(v));
+        else if (v && typeof v === 'object') {
+          for (const [k, p] of Object.entries(v)) {
+            if (localeMatches(k) && isLocalPath(p)) files.push(toAbs(p));
+          }
+        }
+        continue;
+      }
+      // Locale-keyed JSON/YAML: { en: "/p.en.json", fr: "/p.fr.json" }
+      if (localeMatches(key) && isLocalPath(v)) {
+        files.push(toAbs(v));
+      }
+    }
+  }
+
+  return files;
+}
+
+/**
+ * Best-effort per-route lastmod date. Takes the most recent mtime across:
+ *   1. Backing source-file conventions (markdown under articles/, pages/<path>.html)
+ *      so direct content edits are reflected.
+ *   2. Data-source files registered in `manifest.json` that are relevant to the
+ *      route's locale, so changes to JSON/YAML/CSV content driving the page
+ *      bump the date too (important for translated sites).
+ *
+ * Falls back to the prerendered HTML's own mtime only when nothing else is
+ * statable — the HTML mtime reflects rebuild time rather than content change
+ * time, so we prefer source/data mtimes when any exist.
+ */
+function routeLastModDate(rootDir, outputDir, pathSeg, manifest, localeList, defaultLocale) {
+  // Detect a locale prefix on the path (e.g. "fr/about" → locale "fr",
+  // unlocalized "about"). For unprefixed paths in a multi-locale site we
+  // fall back to the default locale when matching data-source locale keys.
+  let locale = null;
+  let unlocalizedPath = pathSeg;
+  if (Array.isArray(localeList) && localeList.length) {
+    const first = pathSeg.split('/')[0];
+    if (localeList.includes(first)) {
+      locale = first;
+      unlocalizedPath = pathSeg.slice(first.length + 1);
+    }
+  }
+  const effectiveLocale = locale || defaultLocale || null;
+
+  // Source-file candidates from common conventions, keyed on the unlocalized
+  // path (markdown files typically aren't per-locale duplicates).
+  const stripPrefix = unlocalizedPath.replace(/^(?:docs|blog|articles|posts|guides)\//, '');
   const candidates = [
     join(rootDir, 'articles', `${stripPrefix}.md`),
-    join(rootDir, 'articles', `${pathSeg}.md`),
-    join(rootDir, 'pages', `${pathSeg}.html`),
-    join(rootDir, `${pathSeg}.md`),
+    join(rootDir, 'articles', `${unlocalizedPath}.md`),
+    join(rootDir, 'pages', `${unlocalizedPath}.html`),
+    join(rootDir, `${unlocalizedPath}.md`),
   ];
+
+  // Add data-source files relevant to this locale.
+  if (manifest) {
+    candidates.push(...collectDataSourceFiles(manifest, rootDir, effectiveLocale));
+  }
+
+  // Take the max mtime across all source / data candidates.
+  let latest = null;
   for (const c of candidates) {
     try {
       const s = statSync(c);
-      if (s.isFile()) return s.mtime.toISOString().slice(0, 10);
+      if (s.isFile() && (!latest || s.mtime > latest)) latest = s.mtime;
     } catch { /* not found */ }
   }
+  if (latest) return latest.toISOString().slice(0, 10);
+
   // Fallback to the prerendered output mtime (always present).
   try {
     const out = routeHtmlPath(outputDir, pathSeg || '');
@@ -2420,6 +2515,7 @@ function writeSeoFiles(outputDir, pathList, liveUrl, locales, defaultLocale, ctx
   const localeList = Array.isArray(locales) ? locales : [];
   const multiLocale = localeList.length > 1;
   const rootDir = ctx.rootDir || '';
+  const manifest = ctx.manifest || null;
 
   writeFileSync(
     join(outputDir, 'robots.txt'),
@@ -2445,7 +2541,7 @@ Sitemap: ${base}/sitemap.xml
         body += `\n        <xhtml:link rel="alternate" hreflang="${escapeXmlText(hreflang)}" href="${escapeXmlText(href)}" />`;
       }
     }
-    const lastmod = routeLastModDate(rootDir, outputDir, pathSeg);
+    const lastmod = routeLastModDate(rootDir, outputDir, pathSeg, manifest, localeList, defaultLocale);
     body += `\n        <lastmod>${lastmod}</lastmod>
         <changefreq>monthly</changefreq>
         <priority>${path === '' ? '1.0' : '0.8'}</priority>`;
@@ -4317,6 +4413,7 @@ async function runPrerender(config) {
     defaultLocale,
     {
       rootDir: config.root,
+      manifest: config.manifest,
       siteName: config.seo?.siteName,
       siteDescription: config.seo?.siteDescription,
     }

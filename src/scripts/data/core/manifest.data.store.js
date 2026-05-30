@@ -34,12 +34,16 @@ function deepSeal(obj) {
             }
         }
     } else {
-        for (const key in obj) {
-            if (obj.hasOwnProperty(key)) {
-                const value = obj[key];
-                if (value !== null && typeof value === 'object') {
-                    deepSeal(value);
-                }
+        // Iterate own enumerable keys via Object.keys instead of for…in +
+        // .hasOwnProperty(). The latter throws "hasOwnProperty is not a
+        // function" on any object that either lacks the Object prototype
+        // (e.g. Object.create(null)) or has a column literally named
+        // `hasOwnProperty` shadowing the prototype method — both of which
+        // can happen with payloads from Appwrite / arbitrary backends.
+        for (const key of Object.keys(obj)) {
+            const value = obj[key];
+            if (value !== null && typeof value === 'object') {
+                deepSeal(value);
             }
         }
     }
@@ -162,14 +166,20 @@ function createReactiveReferences(data, dataSourceName = null) {
     }
 
     if (typeof data === 'object') {
-        // Create new object with new references for each property
+        // Create new object with new references for each property.
+        // Iterate via Object.keys() (own enumerable, no prototype walk)
+        // rather than for…in + .hasOwnProperty(). The latter pattern
+        // throws "hasOwnProperty is not a function" on any payload that
+        // either has a column literally named `hasOwnProperty` shadowing
+        // the prototype, or lacks the Object prototype entirely
+        // (Object.create(null), some SDK response shapes). This is the
+        // hot path for every Appwrite mutation result and realtime event,
+        // so it must be defensive about arbitrary backend payloads.
         const newObj = {};
-        for (const key in data) {
-            if (data.hasOwnProperty(key)) {
-                const value = data[key];
-                // Recursively create new references for nested objects/arrays
-                newObj[key] = createReactiveReferences(value, dataSourceName);
-            }
+        for (const key of Object.keys(data)) {
+            const value = data[key];
+            // Recursively create new references for nested objects/arrays
+            newObj[key] = createReactiveReferences(value, dataSourceName);
         }
 
         // Detect file objects (have mimeType or sizeOriginal)

@@ -310,7 +310,7 @@
                 /* Selected tab */
                 &.selected {
                     position: relative;
-                    color: var(--color-brand-content, #de6618);
+                    color: var(--color-brand-content, oklch(68.1% 0.162 75.834));
                     background: transparent;
 
                     &:hover {
@@ -326,7 +326,7 @@
                         transform: translateX(-50%);
                         width: calc(100% - var(--spacing, 0.25rem) * 4);
                         height: 2px;
-                        background: color-mix(in oklch, var(--color-brand-content, #de6618) 50%, transparent);
+                        background: color-mix(in oklch, var(--color-brand-content, oklch(68.1% 0.162 75.834)) 50%, transparent);
                         border-radius: 0.5rem
                     }
                 }

@@ -115,6 +115,60 @@ const LIVE_RELOAD_SCRIPT = `<script>
 })();
 \x3c/script>`;
 
+// Read a dotenv-style file from the project root and return a plain object.
+// Used to populate `window.env` in served HTML so manifest.json's `${VAR}`
+// placeholders resolve at runtime — matching the documented developer-facing
+// behaviour without requiring a build step. Returns {} when the file is
+// absent or fails to parse.
+//
+// Supported subset (intentionally minimal, no expansion / multiline / etc.):
+//   - KEY=value                  (whitespace around `=` ok)
+//   - KEY="quoted"  /  KEY='…'   (surrounding quotes stripped)
+//   - # comments and blank lines ignored
+//   - lines without `=` ignored
+//
+// Production note: env injection happens ONLY through this dev server.
+// Static deploys (Netlify/Vercel/Cloudflare Pages/S3/etc.) serve manifest.json
+// verbatim, so any `${VAR}` placeholder that needs a value in production must
+// be hardcoded in manifest.json, baked in at prerender time, or substituted
+// by the host. See the Appwrite setup doc for the full pattern.
+function loadEnvFile(rootDir) {
+  const envPath = join(rootDir, '.env');
+  if (!existsSync(envPath)) return {};
+  const env = {};
+  try {
+    const text = readFileSync(envPath, 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      if (!key) continue;
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      env[key] = value;
+    }
+  } catch (error) {
+    console.warn('[mnfst-run] Failed to parse .env:', error.message);
+  }
+  return env;
+}
+
+// Build a `<script>window.env = {…};</script>` tag from a parsed env map.
+// Returns '' when there are no vars (so the injection is a no-op for projects
+// without a .env). Escapes any `</script` substring inside string values so an
+// env value can't break out of the script tag.
+function buildEnvInjectScript(envVars) {
+  const keys = Object.keys(envVars);
+  if (keys.length === 0) return '';
+  const json = JSON.stringify(envVars).replace(/<\/script/gi, '<\\/script');
+  return `<script>window.env = ${json};</script>`;
+}
+
 // --- CLI args ---
 const args = process.argv.slice(2);
 let dir  = '.';
@@ -253,6 +307,17 @@ if (listMode) {
 
 const root = resolve(process.cwd(), dir);
 
+// Load .env from the serving root (if present) and pre-build the inject
+// script. Kept as a single string so serveFile doesn't re-stringify on every
+// HTML response. Empty string when no .env exists — the injection step
+// becomes a no-op for projects that don't use env vars.
+const envVars = loadEnvFile(root);
+const envInjectScript = buildEnvInjectScript(envVars);
+const envCount = Object.keys(envVars).length;
+if (envCount > 0) {
+  console.log(`Loaded ${envCount} env var(s) from .env into window.env`);
+}
+
 // Dedup: if a server is already serving this exact root, point the user at
 // it (and open the browser, since that's what they were going to do anyway).
 const existing = await findRunningServer(root);
@@ -377,9 +442,21 @@ function serveFile(res, filePath) {
     // Only inject into full HTML documents — not component fragments
     const isFullDoc = /<!doctype\s/i.test(html) || /<html[\s>]/i.test(html);
     if (isFullDoc) {
-      const injected = html.includes('</body>')
-        ? html.replace('</body>', LIVE_RELOAD_SCRIPT + '</body>')
-        : html + LIVE_RELOAD_SCRIPT;
+      // 1) Inject window.env into <head> (when .env present) so the
+      //    framework's manifest.json env-var substitution can resolve
+      //    `${VAR}` placeholders before any plugin reads the manifest.
+      //    Must come BEFORE framework scripts execute — <head> insertion
+      //    guarantees that ordering regardless of where script tags sit.
+      let injected = html;
+      if (envInjectScript) {
+        injected = injected.includes('</head>')
+          ? injected.replace('</head>', envInjectScript + '</head>')
+          : envInjectScript + injected;
+      }
+      // 2) Inject the live-reload script before </body> (or at end).
+      injected = injected.includes('</body>')
+        ? injected.replace('</body>', LIVE_RELOAD_SCRIPT + '</body>')
+        : injected + LIVE_RELOAD_SCRIPT;
       body = Buffer.from(injected, 'utf8');
     }
   }

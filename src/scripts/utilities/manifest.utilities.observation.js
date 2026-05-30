@@ -151,54 +151,19 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     });
 };
 
-// Start processing with initial compilation and observer setup
+// Start processing with initial compilation. DOM observation is owned by
+// setupComponentLoadListener (called separately from main.js init) — that one
+// uses an incremental staticClassCache lookup per mutation, which scales to
+// thousands of elements. A previous version of this method also installed its
+// own MutationObserver here that called getUsedClasses() on EVERY mutation
+// (a full document-wide O(N) DOM scan), so on a busy page with N≥3000 the
+// scan cost exceeded the inter-mutation interval and the main thread froze
+// (~100% CPU on docs site, 3042 elements). That observer was redundant with
+// the incremental one and has been removed.
 TailwindCompiler.prototype.startProcessing = async function () {
     if (this.usesStaticPrerenderUtilities) return;
     try {
-        // Start initial compilation immediately
-        const initialCompilation = this.compile();
-
-        // Set up observer while compilation is running
-        this.observer = new MutationObserver((mutations) => {
-            const relevantMutations = mutations.filter(mutation => {
-                if (mutation.type === 'attributes' &&
-                    mutation.attributeName === 'class') {
-                    return true;
-                }
-                if (mutation.type === 'childList') {
-                    return Array.from(mutation.addedNodes).some(node =>
-                        node.nodeType === Node.ELEMENT_NODE);
-                }
-                return false;
-            });
-
-            if (relevantMutations.length === 0) return;
-
-            // Check if there are any new classes that need processing
-            const newClasses = this.getUsedClasses();
-            if (newClasses.classes.length === 0) return;
-
-            if (this.compileTimeout) {
-                clearTimeout(this.compileTimeout);
-            }
-            this.compileTimeout = setTimeout(() => {
-                if (!this.isCompiling) {
-                    this.compile();
-                }
-            }, this.options.debounceTime);
-        });
-
-        // Start observing immediately
-        this.observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['class']
-        });
-
-        // Wait for initial compilation
-        await initialCompilation;
-
+        await this.compile();
         this.hasInitialized = true;
     } catch (error) {
         console.error('Error starting Tailwind compiler:', error);

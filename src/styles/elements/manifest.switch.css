@@ -21,23 +21,23 @@
             width: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             height: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             border-radius: 50%;
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(darkslategray 10%, transparent)) 60%, var(--color-field-inverse, darkslategray));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
             box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
             transition: var(--transition, all .05s ease-in-out)
         }
 
         /* Checked */
         &:checked {
-            background-color: var(--color-field-surface, color-mix(darkslategray 10%, transparent));
+            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
 
             /* Marker */
             &::before {
                 left: calc(100% - (var(--spacing-field-height, 2.25rem) * 0.65) + 0.125rem);
-                background-color: var(--color-field-inverse, darkslategray)
+                background-color: var(--color-field-inverse, oklch(43.9% 0 0))
             }
 
             &:hover {
-                background-color: var(--color-field-surface-hover, color-mix(darkslategray 15%, transparent))
+                background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
             }
         }
     }

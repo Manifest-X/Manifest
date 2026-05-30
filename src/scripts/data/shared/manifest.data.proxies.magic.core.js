@@ -413,6 +413,29 @@ function registerXMagicMethod(loadDataSource) {
                                                         if (key in target && typeof target[key] === 'function') {
                                                             return target[key].bind(target);
                                                         }
+                                                        // Appwrite sources intentionally skip the client-side
+                                                        // $query attachment (see attachArrayMethods comment:
+                                                        // "Appwrite sources will get their $query from the
+                                                        // Appwrite plugin"). Delegate to the Appwrite methods
+                                                        // handler so the click hits the backend instead of
+                                                        // silently falling through to `undefined` or, in some
+                                                        // proxy paths, a no-op `() => []`. Without this, demo
+                                                        // sort/query buttons appear to do nothing — no console
+                                                        // error, no network request — because the call resolves
+                                                        // to the chaining fallback's stub `queryFn`.
+                                                        if (key === '$query' || key === '$search') {
+                                                            const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+                                                            if (createAppwriteMethodsHandler) {
+                                                                try {
+                                                                    const manifest = window.ManifestComponentsRegistry?.manifest || null;
+                                                                    const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
+                                                                    if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                                                                        const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                                        return methodsHandler.bind(null, key);
+                                                                    }
+                                                                } catch { /* fall through */ }
+                                                            }
+                                                        }
                                                     }
                                                     // Forward all other property access to the target array
                                                     const value = target[key];
@@ -729,6 +752,22 @@ function registerXMagicMethod(loadDataSource) {
                                             if (key === '$search' || key === '$query') {
                                                 if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                     return target[key].bind(target);
+                                                }
+                                                // Appwrite-source delegation: $query is intentionally
+                                                // not attached to Appwrite arrays by attachArrayMethods
+                                                // (it requires a backend round-trip). Route to the
+                                                // Appwrite methods handler instead of the no-op fallback
+                                                // so sort/query/search buttons actually fire requests.
+                                                const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+                                                if (createAppwriteMethodsHandler) {
+                                                    try {
+                                                        const manifest = window.ManifestComponentsRegistry?.manifest || null;
+                                                        const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
+                                                        if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                                                            const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                            return methodsHandler.bind(null, key);
+                                                        }
+                                                    } catch { /* fall through */ }
                                                 }
                                                 // Fallback: return safe function that returns empty array
                                                 return function () {

@@ -43,11 +43,11 @@
     --color-accent-content: #ff637e;
     --color-positive-surface: #16a34a;
     --color-positive-surface-hover: #166534;
-    --color-positive-inverse: white;
+    --color-positive-inverse: oklch(98.5% 0 0);
     --color-positive-content: var(--color-positive-surface);
     --color-negative-surface: #ef4444;
     --color-negative-surface-hover: #dc2626;
-    --color-negative-inverse: white;
+    --color-negative-inverse: oklch(98.5% 0 0);
     --color-negative-content: var(--color-negative-surface);
 
     /* Fonts */

@@ -671,7 +671,8 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.toast.css', dest: '../lib/manifest.toast.css' },
         { source: 'styles/elements/manifest.tooltip.css', dest: '../lib/manifest.tooltip.css' },
         { source: 'styles/elements/manifest.typography.css', dest: '../lib/manifest.typography.css' },
-        { source: 'styles/utilities/manifest.utilities.css', dest: '../lib/manifest.utilities.css' }
+        { source: 'styles/utilities/manifest.utilities.css', dest: '../lib/manifest.utilities.css' },
+        { source: 'styles/utilities/manifest.colors.css', dest: '../lib/manifest.colors.css' }
     ];
 
     let copiedCount = 0;
