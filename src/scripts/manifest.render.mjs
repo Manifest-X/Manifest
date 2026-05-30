@@ -4163,6 +4163,52 @@ async function runPrerender(config) {
         toRemove.forEach((el) => { if (document.contains(el)) el.remove(); });
       });
 
+      // Tag baked x-for/x-if clones that Alpine produced during prerender but
+      // whose <template> is still in the output (so Alpine WILL re-render the
+      // list/conditional at runtime).  Without this, the runtime shows both the
+      // baked copy AND Alpine's fresh render — a duplicate (the hero file tabs,
+      // the docs eyebrow + article, etc.).  We KEEP the baked copies in the
+      // shipped HTML so crawlers see the content, and tag them so the loader can
+      // remove them right before Alpine boots — giving exactly one live render.
+      //
+      // Identify clones via Alpine's own bookkeeping rather than DOM heuristics:
+      // x-for tracks its generated elements in template._x_lookup, and x-if in
+      // template._x_currentIfEl.  Templates already removed earlier (static-bake
+      // freeze) or whose clones were already stripped (dynamic collapse) simply
+      // have nothing to tag here.  data-hydrate islands are left untouched.
+      await page.evaluate(() => {
+        const tag = (el) => {
+          if (!el || el.nodeType !== 1 || !el.setAttribute) return;
+          if (el.closest('[data-hydrate]')) return;
+          el.setAttribute('data-mnfst-prerender-clone', '1');
+        };
+        document.querySelectorAll('template[x-for]').forEach((tpl) => {
+          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
+          // Prefer Alpine's own lookup when populated; otherwise fall back to
+          // walking the consecutive same-tag siblings Alpine emitted right after
+          // the template (the pattern the collapse passes already use).
+          let tagged = false;
+          const lookup = tpl._x_lookup;
+          if (lookup) {
+            try { Object.values(lookup).forEach((el) => { if (el) { tag(el); tagged = true; } }); } catch { /* not iterable */ }
+          }
+          if (tagged) return;
+          const first = tpl.content && tpl.content.firstElementChild;
+          if (!first) return;
+          const cloneTag = first.tagName;
+          let n = tpl.nextElementSibling;
+          while (n && n.tagName === cloneTag) {
+            const next = n.nextElementSibling;
+            tag(n);
+            n = next;
+          }
+        });
+        document.querySelectorAll('template[x-if]').forEach((tpl) => {
+          if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
+          tag(tpl._x_currentIfEl);
+        });
+      });
+
       // SEO / AEO meta injection — see resolveConfig().seo for precedence layers.
       // Runs in the live page so prerender.meta expressions can use Alpine context
       // (real $x.* evaluation, not yaml-only paths).  Each pass only fills
