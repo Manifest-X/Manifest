@@ -51,22 +51,23 @@ window.ManifestComponentsRegistry = {
     manifest: null,
     registered: new Set(),
     preloaded: [],
-    initialize() {
-        // Use loader-provided manifest if set; otherwise load synchronously (standalone)
+    async initialize() {
+        // Use loader-provided manifest if set; otherwise fetch it (standalone
+        // usage, or a boot race where the loader/data plugin hasn't cached the
+        // manifest on window yet).  This must be async — a synchronous XHR on
+        // the main thread is deprecated and was flagged by PageSpeed.
         let manifest = window.__manifestLoaded || this.manifest;
         if (!manifest) {
             try {
                 const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
-                const req = new XMLHttpRequest();
-                req.open('GET', manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + 't=' + Date.now(), false);
-                req.setRequestHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                req.setRequestHeader('Pragma', 'no-cache');
-                req.setRequestHeader('Expires', '0');
-                req.send(null);
-                if (req.status === 200) {
-                    manifest = JSON.parse(req.responseText);
+                const res = await fetch(manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + 't=' + Date.now(), {
+                    cache: 'no-store',
+                    headers: { 'Cache-Control': 'no-cache' }
+                });
+                if (res.ok) {
+                    manifest = await res.json();
                 } else {
-                    console.warn('[Manifest] Failed to load manifest.json (HTTP', req.status + ')');
+                    console.warn('[Manifest] Failed to load manifest.json (HTTP', res.status + ')');
                 }
             } catch (e) {
                 console.warn('[Manifest] Failed to load manifest.json:', e.message);

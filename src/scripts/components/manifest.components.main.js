@@ -1,6 +1,8 @@
 // Main initialization for Manifest Components
-function initializeComponents() {
-    if (window.ManifestComponentsRegistry) window.ManifestComponentsRegistry.initialize();
+async function initializeComponents() {
+    // Registry.initialize() may fetch manifest.json (async) when the loader
+    // hasn't cached it yet; await it so the steps below see registry.manifest.
+    if (window.ManifestComponentsRegistry) await window.ManifestComponentsRegistry.initialize();
     if (window.ManifestComponentsLoader) window.ManifestComponentsLoader.initialize();
     if (window.ManifestComponentsProcessor) window.ManifestComponentsProcessor.initialize();
     if (window.ManifestComponentsSwapping) window.ManifestComponentsSwapping.initialize();
