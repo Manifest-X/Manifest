@@ -2824,6 +2824,42 @@ function copyProjectIntoDist(rootResolved, outputResolved) {
   COPY_EXCLUDE.delete(outputDirName);
 }
 
+/** Remove bare `@import "tailwindcss"` (and `tailwindcss/*` sub-imports) from
+ * CSS files copied into the output.
+ *
+ * Tailwind v4 conventions put `@import "tailwindcss";` at the top of a
+ * project's main CSS so the build tool pulls in the framework.  When that same
+ * file is also linked directly in the browser (as Manifest's
+ * `manifest.theme.css` convention does), the browser's native CSS loader
+ * resolves the bare specifier against the page origin and fetches
+ * `/tailwindcss` — which 404s to the SPA shell (text/html), tripping
+ * "Refused to apply style … is not a supported stylesheet MIME type" (flagged
+ * by PageSpeed Best Practices).  Manifest supplies Tailwind its own way
+ * (compiled `prerender.tailwind.css` for MPA, the Play-CDN style engine for
+ * SPA), so a raw import in a browser-served stylesheet is always redundant and
+ * harmful.  Strip it from the emitted copies only; source files are untouched. */
+function stripTailwindCssImportsFromOutput(outputDir) {
+  const importRx = /@import\s+(?:url\(\s*)?["']tailwindcss(?:\/[^"']*)?["']\s*\)?[^;\n]*;?[ \t]*\r?\n?/gi;
+  const walk = (dir) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      if (ent.name.startsWith('.')) continue;
+      const p = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === 'node_modules') continue;
+        walk(p);
+      } else if (ent.name.endsWith('.css') && ent.name !== 'prerender.tailwind.css') {
+        try {
+          const css = readFileSync(p, 'utf8');
+          if (!/tailwindcss/i.test(css)) continue;
+          const next = css.replace(importRx, '');
+          if (next !== css) writeFileSync(p, next, 'utf8');
+        } catch { /* unreadable file — skip */ }
+      }
+    }
+  };
+  walk(outputDir);
+}
+
 // --- Main --------------------------------------------------------------------
 
 async function main() {
@@ -2927,6 +2963,14 @@ async function runPrerender(config) {
   }
   mkdirSync(outputResolved, { recursive: true });
   copyProjectIntoDist(rootResolved, outputResolved);
+  // Projects that use data-tailwind get their Tailwind from Manifest (compiled
+  // prerender.tailwind.css below, or the runtime style engine).  A leftover
+  // `@import "tailwindcss"` in a browser-linked stylesheet (e.g. the
+  // manifest.theme.css convention) would make the browser fetch /tailwindcss
+  // and fail; strip those imports from the copied CSS.
+  if (indexHtmlUsesTailwind(rootResolved)) {
+    stripTailwindCssImportsFromOutput(outputResolved);
+  }
 
   const pre = manifest.prerender ?? {};
   const bundleUtilities = pre.utilitiesBundle !== false;
