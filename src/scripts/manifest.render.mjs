@@ -725,6 +725,18 @@ function stripDataTailwindAttr(html) {
   return html.replace(/\sdata-tailwind(?:=(["']).*?\1)?/gi, '');
 }
 
+/** Prepend `<!DOCTYPE html>` unless one is already present.
+ *
+ * The snapshot is captured via `document.documentElement.outerHTML`, which
+ * serializes only the <html> subtree and drops the document's doctype.
+ * Shipping that doctype-less HTML triggers quirks mode in browsers and is
+ * flagged by Lighthouse/PageSpeed.  Re-add it at write time so every emitted
+ * page (Puppeteer-rendered base pages and substituted locale variants) is in
+ * standards mode. */
+function ensureDoctype(html) {
+  return /^\s*<!doctype\b/i.test(html) ? html : `<!DOCTYPE html>\n${html}`;
+}
+
 /** Theme class de-bake + synchronous bootstrap.
  *
  * Puppeteer applies `<html class="light">` or `<html class="dark">` based on
@@ -4190,6 +4202,7 @@ async function runPrerender(config) {
       );
       // (Hydration contract was already injected into the raw HTML before
       // the Node.js post-processing pipeline ran, so it's already present.)
+      html = ensureDoctype(html);
       mkdirSync(outDir, { recursive: true });
       writeFileSync(outFile, html, 'utf8');
       pushDebug({
@@ -4372,7 +4385,7 @@ async function runPrerender(config) {
         const fileSegments = pathToFileSegments(pathSeg ? '/' + pathSeg : '/');
         const outDir = join(config.output, ...fileSegments);
         mkdirSync(outDir, { recursive: true });
-        writeFileSync(join(outDir, 'index.html'), html, 'utf8');
+        writeFileSync(join(outDir, 'index.html'), ensureDoctype(html), 'utf8');
       } catch (err) {
         failedPaths.push({ path: displayPath, message: err?.message ?? String(err) });
         process.stderr.write(`prerender: substitution failed ${displayPath}: ${failedPaths[failedPaths.length - 1].message}\n`);
