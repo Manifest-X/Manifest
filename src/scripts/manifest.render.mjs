@@ -4181,9 +4181,24 @@ async function runPrerender(config) {
         };
         document.querySelectorAll('template[x-for]').forEach((tpl) => {
           if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
+          // Prefer Alpine's own lookup when populated; otherwise fall back to
+          // walking the consecutive same-tag siblings Alpine emitted right after
+          // the template (the pattern the collapse passes already use).
+          let tagged = false;
           const lookup = tpl._x_lookup;
-          if (!lookup) return;
-          try { Object.values(lookup).forEach(tag); } catch { /* not iterable */ }
+          if (lookup) {
+            try { Object.values(lookup).forEach((el) => { if (el) { tag(el); tagged = true; } }); } catch { /* not iterable */ }
+          }
+          if (tagged) return;
+          const first = tpl.content && tpl.content.firstElementChild;
+          if (!first) return;
+          const cloneTag = first.tagName;
+          let n = tpl.nextElementSibling;
+          while (n && n.tagName === cloneTag) {
+            const next = n.nextElementSibling;
+            tag(n);
+            n = next;
+          }
         });
         document.querySelectorAll('template[x-if]').forEach((tpl) => {
           if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
