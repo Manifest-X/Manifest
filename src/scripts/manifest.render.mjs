@@ -1211,7 +1211,8 @@ function stripPrerenderBakedRadioCheckedForXModel(html) {
 
 // --- Canonical and hreflang (per-page injection) ---
 
-function buildCanonicalAndHreflang(pathSeg, locales, defaultLocale, base) {
+function buildCanonicalAndHreflang(pathSeg, locales, defaultLocale, base, opts = {}) {
+  const { skipCanonical = false } = opts;
   const baseClean = base.replace(/\/$/, '');
   const defaultLoc = defaultLocale || locales[0];
   const isDefaultLocalePrefixed =
@@ -1224,7 +1225,10 @@ function buildCanonicalAndHreflang(pathSeg, locales, defaultLocale, base) {
       : pathSeg;
   const canonicalHref = canonicalPath === '' ? `${baseClean}/` : `${baseClean}/${canonicalPath}`;
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-  let out = `<link rel="canonical" href="${esc(canonicalHref)}">\n`;
+  // Skip the canonical <link> when the source head already declares one
+  // (first-wins, per seo-aeo.md); hreflang alternates are still emitted since
+  // those are framework-derived and rarely authored by hand.
+  let out = skipCanonical ? '' : `<link rel="canonical" href="${esc(canonicalHref)}">\n`;
   if (locales.length > 1) {
     const currentLocale = locales.find((l) => pathSeg === l || pathSeg.startsWith(l + '/')) || defaultLoc;
     const logicalRoute =
@@ -1582,7 +1586,8 @@ function generateLocaleVariantHtml({
   html = rewriteHtmlAssetPaths(html, fileSegments.length);
 
   const liveBase = config.liveUrl.replace(/\/$/, '');
-  const canonicalHreflang = buildCanonicalAndHreflang(pathSeg, locales, defaultLocale, liveBase);
+  const hasSourceCanonical = /<link\b[^>]*\brel=(["'])\s*canonical\s*\1/i.test(html);
+  const canonicalHreflang = buildCanonicalAndHreflang(pathSeg, locales, defaultLocale, liveBase, { skipCanonical: hasSourceCanonical });
   const ogLocale = buildOgLocale(pathSeg, locales, defaultLocale);
   const injectOgLocale = ogLocale && hasOtherOgMeta(html);
   if (injectOgLocale) html = stripOgLocaleFromHead(html);
@@ -4168,7 +4173,8 @@ async function runPrerender(config) {
 
       html = rewriteHtmlAssetPaths(html, fileSegments.length);
       const liveBase = config.liveUrl.replace(/\/$/, '');
-      const canonicalHreflang = buildCanonicalAndHreflang(is404 ? '' : pathSeg, locales, defaultLocale, liveBase);
+      const hasSourceCanonical = /<link\b[^>]*\brel=(["'])\s*canonical\s*\1/i.test(html);
+      const canonicalHreflang = buildCanonicalAndHreflang(is404 ? '' : pathSeg, locales, defaultLocale, liveBase, { skipCanonical: hasSourceCanonical });
       const ogLocale = buildOgLocale(is404 ? '' : pathSeg, locales, defaultLocale);
       const injectOgLocale = ogLocale && hasOtherOgMeta(html);
       if (injectOgLocale) html = stripOgLocaleFromHead(html);
