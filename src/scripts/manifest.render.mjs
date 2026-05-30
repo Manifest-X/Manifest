@@ -238,7 +238,10 @@ function resolveConfig() {
   const cwd = process.cwd();
   const root = resolve(cwd, cli.root ?? '.');
   const manifest = loadConfig(root);
-  const pre = manifest.prerender ?? {};
+  // Render config lives under manifest.render (per schema + docs). Older
+  // projects used manifest.prerender — keep reading it as a fallback so they
+  // don't silently lose their config.
+  const pre = manifest.render ?? manifest.prerender ?? {};
 
   const localUrl = (cli.localUrl ?? cli.baseUrl ?? process.env.PRERENDER_BASE ?? pre.localUrl ?? pre.baseUrl)?.replace(/\/$/, '');
   const serve = cli.localUrl ? false : (cli.serve !== undefined ? !!cli.serve : true);
@@ -2977,7 +2980,7 @@ async function runPrerender(config) {
     stripTailwindCssImportsFromOutput(outputResolved);
   }
 
-  const pre = manifest.prerender ?? {};
+  const pre = manifest.render ?? manifest.prerender ?? {};
   const bundleUtilities = pre.utilitiesBundle !== false;
   const tailwindBuilt = runTailwindCliForPrerender(rootResolved, outputResolved, pre);
   const utilityBlocks = [];
