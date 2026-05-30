@@ -2894,6 +2894,41 @@ async function main() {
   process.stdout.write(`prerender: total time ${hours}h ${minutes}m ${seconds}s\n`);
 }
 
+/** Remove unresolved `${VAR}` env-var placeholders from the output manifest.json.
+ *
+ * Env interpolation is runtime-only: the loader's interpolateManifestEnv resolves
+ * `${VAR}` against window.env, which the mnfst-run dev server fills from .env (or
+ * a developer's inline <script>window.env={…}</script>). A prerendered static
+ * site has no window.env, so an unresolved placeholder ships literally and any
+ * plugin reading it errors. Such placeholders are dev-only by definition (a
+ * production value would be hard-coded), so delete object keys and drop array
+ * items whose string value still contains a `${VAR}` reference. We never
+ * substitute from process.env — that would risk baking a dev secret (e.g. an
+ * Appwrite devKey) into the public manifest.json. */
+function stripUnresolvedEnvFromOutputManifest(outputDir) {
+  const manifestPath = join(outputDir, 'manifest.json');
+  if (!existsSync(manifestPath)) return;
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch { return; }
+  const unresolved = (v) => typeof v === 'string' && /\$\{[^}]+\}/.test(v);
+  let changed = false;
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      for (let i = node.length - 1; i >= 0; i--) {
+        if (unresolved(node[i])) { node.splice(i, 1); changed = true; }
+        else if (node[i] && typeof node[i] === 'object') walk(node[i]);
+      }
+    } else if (node && typeof node === 'object') {
+      for (const key of Object.keys(node)) {
+        if (unresolved(node[key])) { delete node[key]; changed = true; }
+        else if (node[key] && typeof node[key] === 'object') walk(node[key]);
+      }
+    }
+  };
+  walk(manifest);
+  if (changed) writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+}
+
 async function runPrerender(config) {
   const manifest = loadConfig(config.root);
   const localesConfig = config.locales;
@@ -2971,6 +3006,12 @@ async function runPrerender(config) {
   }
   mkdirSync(outputResolved, { recursive: true });
   copyProjectIntoDist(rootResolved, outputResolved);
+  // Env placeholders (${VAR}) only resolve at runtime via window.env (populated
+  // by the mnfst-run dev server from .env). A static prod build has no
+  // window.env, so any ${VAR} left in the shipped manifest.json stays literal
+  // and plugins that read it (e.g. appwrite-auth) log a console error. Strip the
+  // unresolved placeholders from the copy.
+  stripUnresolvedEnvFromOutputManifest(outputResolved);
   // Projects that use data-tailwind get their Tailwind from Manifest (compiled
   // prerender.tailwind.css below, or the runtime style engine).  A leftover
   // `@import "tailwindcss"` in a browser-linked stylesheet (e.g. the
