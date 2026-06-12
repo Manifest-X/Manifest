@@ -42,6 +42,7 @@ function initializeTooltipPlugin() {
     const TOOLTIP_CHAIN_GRACE_MS = 250;
     let _lastTooltipHideTime = 0;
     const markTooltipHidden = () => { _lastTooltipHideTime = Date.now(); };
+    const clearChainWindow = () => { _lastTooltipHideTime = 0; };
     const isInChainWindow = () => (Date.now() - _lastTooltipHideTime) < TOOLTIP_CHAIN_GRACE_MS;
 
     // ---- Singletons per host ----
@@ -148,10 +149,10 @@ function initializeTooltipPlugin() {
             trigger._tooltipAnchorName = `--tooltip-trigger-${code}`;
         }
         const anchorName = trigger._tooltipAnchorName;
-        // Compose with --mnfst-anchor so stylesheet anchors (e.g. the tablist
-        // slider's --manifest-tab on the selected tab) survive this inline
+        // Compose with --anchor so stylesheet anchors (e.g. the tablist
+        // slider's --selected-tab on the selected tab) survive this inline
         // override — the var re-resolves reactively as selection changes.
-        trigger.style.setProperty('anchor-name', `${anchorName}, var(--mnfst-anchor, --mnfst-none)`);
+        trigger.style.setProperty('anchor-name', `${anchorName}, var(--anchor, --none)`);
         void trigger.offsetHeight; // reflow so anchor-name registers
         s.el.style.setProperty('position-anchor', anchorName);
 
@@ -302,6 +303,10 @@ function initializeTooltipPlugin() {
         const hideAndScheduleRestore = () => {
             cancelPendingShow();
             hideAnySingleton();
+            // A click is a deliberate dismissal — clear the chain window so a
+            // synthetic re-hover (e.g. content shifting under the cursor after
+            // navigation) waits the full delay instead of showing instantly.
+            clearChainWindow();
             scheduleAnchorRestore(el);
         };
         el.addEventListener('mousedown', hideAndScheduleRestore);

@@ -38,15 +38,6 @@
 		const prerenderMeta = document.querySelector('meta[name="manifest:prerendered"]');
 		if (!prerenderMeta || prerenderMeta.getAttribute('content') === '0') return;
 
-		// Remove baked x-for/x-if clones the prerender kept for crawlers.  Their
-		// <template> is still live, so Alpine re-renders the list/conditional on
-		// boot; dropping the baked copies first (before Alpine runs) avoids a
-		// duplicate render.  data-hydrate islands keep their baked DOM.
-		document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
-			if (el.closest && el.closest('[data-hydrate]')) return;
-			el.remove();
-		});
-
 		const blob = document.getElementById('__manifest_hydrate__');
 		if (!blob) return;
 		let entries;
@@ -147,6 +138,31 @@
 		}
 
 		blob.remove();
+	}
+
+	/*
+	 * Remove baked x-for/x-if clones the prerender kept for crawlers.  Their
+	 * <template> is still live, so Alpine re-renders the list/conditional on
+	 * boot; dropping the baked copies first avoids a duplicate render.
+	 * data-hydrate islands keep their baked DOM.
+	 *
+	 * Deliberately NOT part of hydratePrerenderedPage(): this wipe is
+	 * destructive, so it runs at the last safe moment — `alpine:init`, which
+	 * Alpine dispatches after its script has arrived and executed but BEFORE
+	 * it walks the DOM and re-renders x-for/x-if from their live templates.
+	 * If Alpine never arrives (CDN failure, offline), the listener never
+	 * fires and the page keeps its complete baked content instead of losing
+	 * the clones with nothing to re-render them.
+	 */
+	function removePrerenderClones() {
+		if (typeof document === 'undefined' || !document.querySelectorAll) return;
+		document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
+			if (el.closest && el.closest('[data-hydrate]')) return;
+			el.remove();
+		});
+	}
+	if (typeof document !== 'undefined') {
+		document.addEventListener('alpine:init', removePrerenderClones, { once: true });
 	}
 
 	// Run hydration BEFORE Alpine's deferred script executes.
@@ -284,32 +300,67 @@
 		return `https://cdn.jsdelivr.net/npm/alpinejs@${dataAlpine}/dist/cdn.min.js`;
 	}
 
+	// Has DOMContentLoaded already fired?  readyState alone can't tell:
+	// 'interactive' covers both "deferred scripts still running" (DCL pending)
+	// and "DCL done, subresources still loading".  Disambiguate via the
+	// navigation timing entry, which records the event the moment it runs.
+	function domContentLoadedFired() {
+		if (document.readyState === 'complete') return true;
+		if (document.readyState === 'loading') return false;
+		try {
+			const nav = performance.getEntriesByType('navigation')[0];
+			if (nav) return nav.domContentLoadedEventEnd > 0;
+		} catch (_) { /* fall through */ }
+		return false;
+	}
+
+	// Run fn once the document's deferred scripts have all executed (i.e. at
+	// or after DOMContentLoaded).  The window 'load' listener is a belt-and-
+	// braces fallback for environments where the navigation entry is missing.
+	function whenDomReady(fn) {
+		if (domContentLoadedFired()) {
+			fn();
+			return;
+		}
+		let done = false;
+		const run = () => { if (!done) { done = true; fn(); } };
+		document.addEventListener('DOMContentLoaded', run, { once: true });
+		window.addEventListener('load', run, { once: true });
+	}
+
 	// Load Alpine.js from CDN.  Called by the loader AFTER all plugin scripts
-	// have finished loading and registered their directives/magics.  We do
-	// NOT use `defer` here — defer fires at DOMContentLoaded, which may race
-	// the plugin loads; instead we wait for every plugin script's load event
-	// explicitly and then append Alpine synchronously (the script downloads
-	// but Alpine's `auto-start` hooks DOMContentLoaded if still loading, or
-	// runs immediately if past it).
+	// have finished loading and registered their directives/magics.
+	//
+	// Gated on DOMContentLoaded: the page's own deferred scripts register
+	// x-data components and magics via `alpine:init`, and the defer queue
+	// spins the event loop while a script is still in flight — so on a warm
+	// cache an injected Alpine script can load and EXECUTE between two
+	// deferred scripts, firing `alpine:init` before the page's registrations
+	// exist.  Waiting for DCL (which fires only after every deferred script
+	// has run) makes the ordering deterministic.  In the common cold-cache
+	// case DCL has long passed by the time the plugin loads settle, so the
+	// gate adds no delay.
 	function loadAlpine(alpineUrl = ALPINE_CDN_URL) {
-		// Fast check: Alpine already initialized
-		if (window.Alpine) {
-			return;
-		}
+		whenDomReady(() => {
+			// Fast check: Alpine already initialized
+			if (window.Alpine) {
+				return;
+			}
 
-		// Fallback: if an existing Alpine <script> tag is already in the DOM
-		// (e.g. the fixture explicitly added one), wait for it — don't inject
-		// a second copy.
-		const existingAlpine = document.querySelector('script[src*="alpinejs"]');
-		if (existingAlpine) {
-			return;
-		}
+			// Fallback: if an existing Alpine <script> tag is already in the DOM
+			// (e.g. the fixture explicitly added one), wait for it — don't inject
+			// a second copy.
+			const existingAlpine = document.querySelector('script[src*="alpinejs"]');
+			if (existingAlpine) {
+				return;
+			}
 
-		const script = document.createElement('script');
-		script.src = alpineUrl;
-		// No `defer` — we're already past plugin registration, so Alpine
-		// should load and execute as soon as it arrives.
-		document.head.appendChild(script);
+			const script = document.createElement('script');
+			script.src = alpineUrl;
+			// No `defer` — we're past plugin registration and past DCL, so
+			// Alpine should load and execute as soon as it arrives.
+			document.head.appendChild(script);
+		});
 	}
 
 	// Add a script tag to the head and wait for it to load and execute

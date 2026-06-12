@@ -80,7 +80,10 @@
             @supports (anchor-name: --tab) {
 
                 &>:is(.selected, [aria-selected=true], [aria-current]) {
+                    /* --mnfst-anchor lets inline anchor-name writers (e.g. tooltips)
+                       compose with the slider anchor instead of clobbering it */
                     anchor-name: --manifest-tab;
+                    --mnfst-anchor: --manifest-tab;
                     background-color: transparent;
                     box-shadow: none;
                 }
