@@ -30,6 +30,54 @@
 
 function initializeColorpickerPlugin() {
 
+    // ---- Shared global: ManifestUI (universal `_ui` resolver) ----
+    // Defined guarded so the color picker localizes its default-menu chrome
+    // whether or not the date picker / charts (which also define it) are loaded.
+    // Kept byte-identical across those copies.
+    //
+    // `_ui` is a reserved, self-identifying key: any loaded data source may carry a
+    // top-level `_ui` object, namespaced per element (`_ui.colorpicker`, `_ui.datepicker`).
+    // No manifest flag — overrides piggyback on the normal local-data/localization model
+    // and can be colocated with author content. resolve() deep-merges every loaded
+    // source's `_ui[component]` onto the caller's English fallbacks.
+    if (!window.ManifestUI) {
+        window.ManifestUI = {
+            // Names of data sources that have loaded (current locale). Enumerates loaded
+            // sources only — never force-loads others just to scan them for `_ui`.
+            _loadedSourceNames() {
+                try {
+                    const store = window.ManifestDataStore && window.ManifestDataStore.rawDataStore;
+                    if (store && typeof store.keys === 'function') return [...store.keys()];
+                } catch (_) { }
+                return [];
+            },
+            // Deep-merge every loaded source's `_ui[component]` onto `fallbacks`.
+            // Read inside the caller's Alpine effect so $x/$locale stay reactive.
+            resolve(component, fallbacks) {
+                const merged = JSON.parse(JSON.stringify(fallbacks || {}));
+                try {
+                    if (!window.Alpine || typeof Alpine.evaluate !== 'function') return merged;
+                    try { Alpine.evaluate(document.body, '$locale && $locale.current'); } catch (_) { } // dep → re-resolve on locale switch
+                    for (const name of this._loadedSourceNames()) {
+                        let ui;
+                        try { ui = Alpine.evaluate(document.body, `$x['${name}'] && $x['${name}']._ui && $x['${name}']._ui['${component}']`); } catch (_) { ui = null; }
+                        if (ui && typeof ui === 'object' && !Array.isArray(ui)) this._deepOverlay(merged, ui);
+                    }
+                } catch (_) { }
+                return merged;
+            },
+            _deepOverlay(target, src) {
+                for (const k of Object.keys(src)) {
+                    if (k.startsWith('$') || k === 'contentType' || k === 'valueOf' || k === 'toString') continue;
+                    const v = src[k];
+                    if (typeof v === 'function') continue;
+                    if (v && typeof v === 'object' && !Array.isArray(v)) { if (!target[k] || typeof target[k] !== 'object') target[k] = {}; this._deepOverlay(target[k], v); }
+                    else if (v !== undefined && v !== null && v !== '') target[k] = v;
+                }
+            }
+        };
+    }
+
     // ---- Parse any CSS color string via the browser ----
 
     const parseCtx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
@@ -578,26 +626,30 @@ function initializeColorpickerPlugin() {
     // Reading via Alpine.evaluate inside the surrounding render effect registers
     // reactive deps on the referenced data — locale switches and content updates
     // re-trigger the render automatically.
+    // Resolve a single `$x.`/`$locale`/`${…}` reference string against document.body
+    // scope. Plain strings pass through unchanged; returns the original on any failure.
+    // Reading via Alpine.evaluate inside a render effect registers the locale dep.
+    function _resolveRefString(val) {
+        if (typeof val !== 'string' || val.length === 0) return val;
+        const trimmed = val.trim();
+        const isBareRef = trimmed.startsWith('$x.') || trimmed.startsWith('$locale')
+            || trimmed.startsWith('$x[') || trimmed.startsWith('$locale[');
+        const hasInterp = /\$\{[^}]+\}/.test(trimmed);
+        if (!isBareRef && !hasInterp) return val;
+        try {
+            if (window.Alpine?.evaluate) {
+                const expr = isBareRef && !hasInterp ? trimmed : '`' + trimmed + '`';
+                const out = Alpine.evaluate(document.body, expr);
+                if (out == null) return val;
+                return typeof out === 'string' ? out : String(out);
+            }
+        } catch {}
+        return val;
+    }
+
     function _resolveLibraryRefs(groups) {
         if (!Array.isArray(groups) || groups.length === 0) return groups;
-        const ctx = document.body;
-        const resolve = (val) => {
-            if (typeof val !== 'string' || val.length === 0) return val;
-            const trimmed = val.trim();
-            const isBareRef = trimmed.startsWith('$x.') || trimmed.startsWith('$locale')
-                || trimmed.startsWith('$x[') || trimmed.startsWith('$locale[');
-            const hasInterp = /\$\{[^}]+\}/.test(trimmed);
-            if (!isBareRef && !hasInterp) return val;
-            try {
-                if (window.Alpine?.evaluate) {
-                    const expr = isBareRef && !hasInterp ? trimmed : '`' + trimmed + '`';
-                    const out = Alpine.evaluate(ctx, expr);
-                    if (out == null) return val;
-                    return typeof out === 'string' ? out : String(out);
-                }
-            } catch {}
-            return val;
-        };
+        const resolve = _resolveRefString;
         for (const g of groups) {
             if (g && typeof g.name === 'string') g.name = resolve(g.name);
             if (Array.isArray(g?.palettes)) {
@@ -863,7 +915,7 @@ function initializeColorpickerPlugin() {
                         <li x-colorpicker.set-color-space="hsl">HSL</li>
                         <li x-colorpicker.set-color-space="oklch">OKLCH</li>
                         <hr>
-                        <li x-colorpicker.grab-color><span x-icon class="color-icon-grab"></span><span>Grab color</span></li>
+                        <li x-colorpicker.grab-color><span x-icon class="color-icon-grab"></span><span data-cp-ui-text="grabColor">Grab color</span></li>
                     </menu>
                     <input type="text" x-colorpicker.set-color-value class="ghost sm" onClick="this.select()" />
                     <input type="number" x-colorpicker.set-alpha-value class="ghost sm no-spinner" min="0" max="100" step="1" onClick="this.select()" />
@@ -883,26 +935,26 @@ function initializeColorpickerPlugin() {
                     <button class="ghost sm" x-dropdown="gradient-layer-options" aria-label="Layer options"><span :class="'gradient-layer-icon-' + layerType" x-icon></span></button>
                     <menu popover id="gradient-layer-options">
                         <li x-colorpicker.set-gradient-type="linear">
-                            <span x-icon class="gradient-layer-icon-linear"></span><span>Linear Gradient</span>
+                            <span x-icon class="gradient-layer-icon-linear"></span><span data-cp-ui-text="gradientTypes.linear">Linear Gradient</span>
                         </li>
                         <li x-colorpicker.set-gradient-type="radial">
-                            <span x-icon class="gradient-layer-icon-radial"></span><span>Radial Gradient</span>
+                            <span x-icon class="gradient-layer-icon-radial"></span><span data-cp-ui-text="gradientTypes.radial">Radial Gradient</span>
                         </li>
                         <li x-colorpicker.set-gradient-type="conic">
-                            <span x-icon class="gradient-layer-icon-conic"></span><span>Conic Gradient</span>
+                            <span x-icon class="gradient-layer-icon-conic"></span><span data-cp-ui-text="gradientTypes.conic">Conic Gradient</span>
                         </li>
                         <hr>
-                        <li x-colorpicker.rotate-layer>Rotate 90°</li>
-                        <li x-colorpicker.flip-layer>Flip Direction</li>
+                        <li x-colorpicker.rotate-layer data-cp-ui-text="layerActions.rotate">Rotate 90°</li>
+                        <li x-colorpicker.flip-layer data-cp-ui-text="layerActions.flip">Flip Direction</li>
                         <hr>
-                        <li x-colorpicker.add-layer-above>Add Above</li>
-                        <li x-colorpicker.add-layer-below>Add Below</li>
-                        <li x-colorpicker.duplicate-layer>Duplicate</li>
+                        <li x-colorpicker.add-layer-above data-cp-ui-text="layerActions.addAbove">Add Above</li>
+                        <li x-colorpicker.add-layer-below data-cp-ui-text="layerActions.addBelow">Add Below</li>
+                        <li x-colorpicker.duplicate-layer data-cp-ui-text="layerActions.duplicate">Duplicate</li>
                         <hr>
-                        <li x-colorpicker.move-layer-up :disabled="layerIndex === 0">Move Up</li>
-                        <li x-colorpicker.move-layer-down :disabled="layerIndex === layerCount - 1">Move Down</li>
+                        <li x-colorpicker.move-layer-up :disabled="layerIndex === 0" data-cp-ui-text="layerActions.moveUp">Move Up</li>
+                        <li x-colorpicker.move-layer-down :disabled="layerIndex === layerCount - 1" data-cp-ui-text="layerActions.moveDown">Move Down</li>
                         <hr>
-                        <li x-colorpicker.remove-layer :disabled="layerCount === 1" class="negative">Remove</li>
+                        <li x-colorpicker.remove-layer :disabled="layerCount === 1" class="negative" data-cp-ui-text="layerActions.remove">Remove</li>
                     </menu>
 
                     <div class="layer-angle-wrapper">
@@ -912,8 +964,8 @@ function initializeColorpickerPlugin() {
 
                     <div x-colorpicker.layer-stops-bar class="gradient-layer" x-dropdown.context="stop-context-menu"></div>
                     <menu popover id="stop-context-menu" class="stop-context-menu">
-                        <li x-colorpicker.duplicate-stop>Duplicate</li>
-                        <li x-colorpicker.delete-stop class="negative">Delete</li>
+                        <li x-colorpicker.duplicate-stop data-cp-ui-text="stopActions.duplicate">Duplicate</li>
+                        <li x-colorpicker.delete-stop class="negative" data-cp-ui-text="stopActions.delete">Delete</li>
                         <hr>
                         <div x-colorpicker.library></div>
                     </menu>
@@ -945,9 +997,9 @@ function initializeColorpickerPlugin() {
         <div x-data="{ tab: 'solid' }">
 
             <div class="tabs-wrapper" data-cp-tabs>
-                <button data-cp-tab="solid" class="ghost sm" :class="tab === 'solid' && 'selected'" @click="tab = 'solid'" x-tooltip="Solid" aria-label="Solid"><span x-icon class="color-icon-solid"></span></button>
-                <button data-cp-tab="gradient" class="ghost sm" :class="tab === 'gradient' && 'selected'" @click="tab = 'gradient'" x-tooltip="Gradient" aria-label="Gradient"><span x-icon class="color-icon-gradient"></span></button>
-                <button data-cp-tab="library" class="ghost sm" :class="tab === 'library' && 'selected'" @click="tab = 'library'" x-tooltip="Library" aria-label="Library"><span x-icon class="color-icon-library"></span></button>
+                <button data-cp-tab="solid" data-cp-ui-label="tabs.solid" class="ghost sm" :class="tab === 'solid' && 'selected'" @click="tab = 'solid'" x-tooltip="Solid" aria-label="Solid"><span x-icon class="color-icon-solid"></span></button>
+                <button data-cp-tab="gradient" data-cp-ui-label="tabs.gradient" class="ghost sm" :class="tab === 'gradient' && 'selected'" @click="tab = 'gradient'" x-tooltip="Gradient" aria-label="Gradient"><span x-icon class="color-icon-gradient"></span></button>
+                <button data-cp-tab="library" data-cp-ui-label="tabs.library" class="ghost sm" :class="tab === 'library' && 'selected'" @click="tab = 'library'" x-tooltip="Library" aria-label="Library"><span x-icon class="color-icon-library"></span></button>
             </div>
 
             <div data-cp-panel="solid" x-colorpicker.solid x-show="tab === 'solid'"></div>
@@ -1000,7 +1052,7 @@ function initializeColorpickerPlugin() {
                                 <div>
                                     <button x-colorpicker.apply-color x-dropdown.context="recent-menu" :style="\`background: \${swatch.value}\`" x-tooltip="\`\${swatch.name || swatch.value}\`"></button>
                                     <menu popover id="recent-menu">
-                                        <li x-colorpicker.remove-recent>Remove</li>
+                                        <li x-colorpicker.remove-recent data-cp-ui-text="recent.remove">Remove</li>
                                     </menu>
                                 </div>
                             </template>
@@ -1013,6 +1065,66 @@ function initializeColorpickerPlugin() {
         </div>
     `;
     const _defaultLibraryLayoutTpl = parseOnce(DEFAULT_LIBRARY_LAYOUT_HTML);
+
+    // ---- Default-menu text (localizable via `_ui`) ----
+    //
+    // English defaults for the chrome baked into the default menu. A project
+    // overrides any subset by flagging a data source with a `colorpicker` key and
+    // giving it a top-level `_ui` object (see colorpickers.md → Text & Localization).
+    // window.ManifestUI.resolve deep-overlays those overrides onto these fallbacks;
+    // values may be plain strings or `$x`/`$locale` references. The English text also
+    // lives verbatim in the templates above, so the menu still reads correctly if the
+    // resolver never runs (e.g. ManifestUI absent). Key shape matches the docs exactly.
+    const UI_FALLBACK = {
+        tabs: { solid: 'Solid', gradient: 'Gradient', library: 'Library' },
+        grabColor: 'Grab color',
+        gradientTypes: { linear: 'Linear Gradient', radial: 'Radial Gradient', conic: 'Conic Gradient' },
+        layerActions: {
+            rotate: 'Rotate 90°', flip: 'Flip Direction',
+            addAbove: 'Add Above', addBelow: 'Add Below', duplicate: 'Duplicate',
+            moveUp: 'Move Up', moveDown: 'Move Down', remove: 'Remove'
+        },
+        stopActions: { duplicate: 'Duplicate', delete: 'Delete' },
+        recent: { remove: 'Remove' }
+    };
+
+    function _uiByPath(obj, path) {
+        let o = obj;
+        for (const k of path.split('.')) { if (o == null) return undefined; o = o[k]; }
+        return o;
+    }
+
+    // Deep-resolve `$x`/`$locale`/`${…}` reference strings in a resolved `_ui`
+    // object (same treatment as library swatch names). Mutates in place; reading
+    // via _resolveRefString inside a render effect registers the locale dep.
+    function _deepResolveUiRefs(ui) {
+        if (!ui || typeof ui !== 'object') return ui;
+        for (const k of Object.keys(ui)) {
+            const v = ui[k];
+            if (v && typeof v === 'object') _deepResolveUiRefs(v);
+            else if (typeof v === 'string') ui[k] = _resolveRefString(v);
+        }
+        return ui;
+    }
+
+    // Stamp a resolved `_ui` object onto a freshly-cloned default-template subtree.
+    // Text nodes carry data-cp-ui-text="dotted.path"; icon-only buttons whose only
+    // label is a tooltip/aria carry data-cp-ui-label="dotted.path". Dev-authored
+    // custom templates have no markers, so this is a no-op for them.
+    function _applyDefaultUiText(scopeEl, ui) {
+        if (!scopeEl || !ui) return;
+        scopeEl.querySelectorAll('[data-cp-ui-text]').forEach(el => {
+            const v = _uiByPath(ui, el.getAttribute('data-cp-ui-text'));
+            if (typeof v === 'string' && v) el.textContent = v;
+        });
+        scopeEl.querySelectorAll('[data-cp-ui-label]').forEach(el => {
+            const v = _uiByPath(ui, el.getAttribute('data-cp-ui-label'));
+            if (typeof v === 'string' && v) {
+                el.setAttribute('aria-label', v);
+                if (el.hasAttribute('x-tooltip')) el.setAttribute('x-tooltip', v);
+            }
+        });
+    }
 
     // ---- Per-picker state ----
 
@@ -1674,17 +1786,28 @@ function initializeColorpickerPlugin() {
                         catch { return recentKey + '#' + names.join('|') + '::[unserializable]'; }
                     };
                     const readSources = () => {
-                        // Discover names by scanning manifest.data for entries with a
-                        // `colorpicker` key. The key may hold a path string or a locale
-                        // map — the data plugin handles loading either shape; we just
-                        // need the set of names whose loaded data should feed the library.
+                        // Discover palette sources two ways:
+                        //  1. Preferred: a top-level manifest `"colorpicker"` pointer
+                        //     naming one or more NORMAL data sources ("colors" or
+                        //     ["colors","brand"]). The sources register as plain
+                        //     (optionally localized) data — loading, locale reloads,
+                        //     and `_ui` piggybacking all work untouched.
+                        //  2. Legacy: a `colorpicker` key flagged on the data entry
+                        //     itself. Kept for back-compat; note the flag-wrapped
+                        //     locale-map shape is NOT loadable by the data plugin.
+                        const names = [];
+                        try {
+                            const ptr = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.colorpicker');
+                            if (typeof ptr === 'string' && ptr) names.push(ptr);
+                            else if (Array.isArray(ptr)) ptr.forEach(n => { if (typeof n === 'string' && n) names.push(n); });
+                        } catch {}
                         let dataMap = null;
                         try { dataMap = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.data'); } catch {}
-                        const names = [];
                         if (dataMap && typeof dataMap === 'object') {
                             for (const name of Object.keys(dataMap)) {
                                 if (name.startsWith('$') || name.startsWith('_')) continue;
                                 if (name === 'valueOf' || name === 'toString' || name === 'contentType') continue;
+                                if (names.includes(name)) continue;
                                 const entry = dataMap[name];
                                 if (entry && typeof entry === 'object' && !Array.isArray(entry)
                                     && entry.colorpicker !== undefined) {
@@ -1711,6 +1834,9 @@ function initializeColorpickerPlugin() {
                             this._libraryDiscoveredKey = key;
                             this._libraryDiscoveredData = collected;
                             this._doRenderLibrary();
+                            // A `_ui` source loading late (poller-driven) won't change
+                            // $locale, so re-localize the rest of the picker here too.
+                            this._applyUi(this.rootEl);
                         }
                         return ready;
                     };
@@ -1720,6 +1846,10 @@ function initializeColorpickerPlugin() {
                         try { Alpine.evaluate(evalCtx, '$locale && $locale.current'); } catch {}
                         try { Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest._loadedFrom'); } catch {}
                         runDiscovery();
+                        // Re-localize the whole picker (tabs + any mounted menus) on
+                        // locale switch — this effect re-runs when $locale.current changes,
+                        // and _applyUi re-resolves $x/$locale references inside it.
+                        this._applyUi(this.rootEl);
                         // Kick the poller only until data is ready — it re-checks every 150ms
                         // but skips actual re-render when the content is unchanged.
                         if (!this._libraryPollTimer) {
@@ -1780,6 +1910,9 @@ function initializeColorpickerPlugin() {
                     for (const g of groups) container.appendChild(renderDefaultGroup(g));
                 }
                 if (window.Alpine?.initTree) Alpine.initTree(container);
+                // Localize default chrome inside freshly-cloned swatches (Recent's
+                // "Remove" context-menu item).
+                this._applyUi(container);
                 // Newly-rendered swatches need active + gradient-disable state applied.
                 this._updateActiveSwatches();
             },
@@ -1823,6 +1956,19 @@ function initializeColorpickerPlugin() {
             _getLayerClone(li) {
                 if (!this.layersContainer) return null;
                 return this.layersContainer.querySelectorAll(':scope > [data-cp-layer-clone]')[li] || null;
+            },
+
+            // Resolve the default-menu chrome text (English fallbacks overlaid with
+            // any project `_ui` overrides) and stamp it onto a cloned default-template
+            // subtree. Called at each clone site and re-run inside the library locale
+            // effect, so switching locale (or a late data load) re-renders the labels.
+            // Custom dev templates carry no markers → no-op.
+            _applyUi(scopeEl) {
+                if (!scopeEl || !window.ManifestUI) return;
+                let ui;
+                try { ui = _deepResolveUiRefs(window.ManifestUI.resolve('colorpicker', UI_FALLBACK)); }
+                catch { ui = UI_FALLBACK; }
+                _applyDefaultUiText(scopeEl, ui);
             },
 
             // ---- Layer rendering ----
@@ -1889,6 +2035,10 @@ function initializeColorpickerPlugin() {
                     }
 
                     this.layersContainer.appendChild(root);
+
+                    // Localize this clone's default menu chrome (gradient types, layer
+                    // actions, stop actions). No-op for dev-supplied layer templates.
+                    this._applyUi(root);
 
                     // Let Alpine/Manifest process the clone (x-dropdown, x-icon, and nested x-colorpicker directives)
                     if (window.Alpine?.initTree) {
@@ -1974,6 +2124,9 @@ function initializeColorpickerPlugin() {
                 // pickers on the same page don't share the same popover element.
                 uniquifyDropdownIdsIn(frag, this.pickerUid + '-solid');
                 containerEl.appendChild(frag);
+
+                // Localize the default solid panel's chrome (the "Grab color" item).
+                this._applyUi(containerEl);
 
                 const refs = this._collectSolidRefs(containerEl);
                 this._wireSolidControls(refs);
@@ -2258,6 +2411,10 @@ function initializeColorpickerPlugin() {
                         if (lone) lone.removeAttribute('x-show');
                     }
                 }
+
+                // Localize the tab chrome before initTree so x-tooltip caches the
+                // resolved label rather than the English default.
+                this._applyUi(this.rootEl);
 
                 // Alpine.initTree fires all x-* directives in the newly injected content,
                 // which will register solidTemplate/layerTemplate/solidInstances/layersContainer
@@ -3135,13 +3292,23 @@ function initializeColorpickerPlugin() {
 
 // Track initialization
 let colorpickerPluginInitialized = false;
+
+// True once Alpine has completed its initial DOM walk. Listener is bound at
+// module load so we never miss the event, whatever the script order.
+let colorpickerAlpineHasWalked = false;
+document.addEventListener('alpine:initialized', () => { colorpickerAlpineHasWalked = true; });
+
 function ensureColorpickerPluginInitialized() {
     if (colorpickerPluginInitialized) return;
     if (!window.Alpine || typeof window.Alpine.directive !== 'function') return;
     colorpickerPluginInitialized = true;
     initializeColorpickerPlugin();
-    // Process any x-colorpicker elements already in the DOM
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
+    // Only walk existing [x-colorpicker] subtrees ourselves when Alpine has
+    // ALREADY finished its initial walk (i.e. this plugin loaded late).
+    // Otherwise the directive is registered during `alpine:init` and Alpine's
+    // one boot walk processes every element with all sibling directives present;
+    // walking here during boot would drop nested plugin content.
+    if (colorpickerAlpineHasWalked && typeof window.Alpine.initTree === 'function') {
         document.querySelectorAll('[x-colorpicker]').forEach(el => { if (!el.__x) window.Alpine.initTree(el); });
     }
 }

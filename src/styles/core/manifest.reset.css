@@ -266,29 +266,22 @@
         }
     }
 
-    /* Base popover styles */
+    @keyframes mnfst-popover-in {
+        from {
+            transform: scale(.9);
+        }
+
+        to {
+            transform: none;
+        }
+    }
+
     :where([popover]) {
         display: none;
-        transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
-        transition-behavior: allow-discrete;
 
         &:popover-open {
-            display: flex
-        }
-
-        /* Opening state */
-        @starting-style {
-            scale: .9;
-            opacity: 0;
-        }
-
-        /* Closing state */
-        &:not(:popover-open) {
-            display: none !important;
-            scale: 1;
-            opacity: 0;
-            transition-duration: .15s;
-            transition-timing-function: ease-out
+            display: flex;
+            animation: mnfst-popover-in .15s ease-in both;
         }
     }
 

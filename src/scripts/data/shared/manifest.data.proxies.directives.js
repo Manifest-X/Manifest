@@ -503,48 +503,26 @@ function registerFilesDirective() {
         let cleanupCallbacks = [];
         let watchCreated = false; // Track if watch has been created to prevent duplicates
 
-        // CRITICAL: Always create a NEW isolated x-data scope for this directive element
-        // This ensures complete isolation - each directive instance has its own scope
-        // We MUST do this even if a parent scope exists, to prevent property conflicts
         const directiveInstanceId = `directive-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-        // Create a unique x-data object for this directive instance
-        // This ensures Alpine creates a completely new scope for this element
+        // Isolated reactive scope for this directive instance. Alpine never
+        // re-reads x-data attributes on initialized elements, so editing the
+        // attribute would resolve $data(el) to the ANCESTOR scope and pollute
+        // it — addScopeToNode attaches a fresh scope layer to this node.
         const isolatedData = Alpine.reactive({
             files: [],
             loadingFiles: false,
             filesError: null
         });
+        const removeIsolatedScope = Alpine.addScopeToNode(el, isolatedData);
+        cleanupCallbacks.push(removeIsolatedScope);
 
-        // Set x-data attribute with a unique object reference
-        // Alpine will create a new scope from this, completely isolated from parent scopes
-        el.setAttribute('x-data', `{}`);
-
-        // Get the scope AFTER setting x-data (Alpine creates it when x-data is set)
-        let scope;
-        try {
-            scope = Alpine.$data(el);
-        } catch (e) {
-            // If Alpine hasn't initialized yet, create scope manually
-            scope = {};
-            Alpine.initTree(el);
-            scope = Alpine.$data(el);
-        }
-
-        // CRITICAL: Directly assign properties to the scope object
-        // Since this is a NEW isolated scope, we can safely assign directly without conflicts
-        scope.files = isolatedData.files;
-        scope.loadingFiles = isolatedData.loadingFiles;
-        scope.filesError = isolatedData.filesError;
+        // Merged scope view: writes to files/loadingFiles/filesError land on
+        // isolatedData (top of stack), magics like $watch resolve from ancestors
+        const scope = Alpine.$data(el);
 
         // Store reference in WeakMap for access in closures
         dataFilesNamespaces.set(el, isolatedData);
-
-        // DIAGNOSTIC: Log scope identity and element info
-        const scopeId = `scope-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        scope._debugScopeId = scopeId;
-        scope._debugDirectiveId = directiveInstanceId;
-        scope._debugElement = el;
 
         // Initialize local references
         files = isolatedData.files;
@@ -910,7 +888,6 @@ function registerFilesDirective() {
                     watchCreated = true; // Mark watch as created to prevent duplicates
                     const projectId = currentProjectId; // Capture project ID for closure
                     let isProcessing = false; // Guard against multiple simultaneous updates
-                    let isInitializing = true; // Skip first evaluation (initialization)
 
                     // Initialize lastFileIds with current value from the store to prevent false positives
                     const store = Alpine.store('data');
@@ -942,12 +919,6 @@ function registerFilesDirective() {
                             return JSON.stringify(currentProject.fileIds || []);
                         },
                         (currentFileIdsJson) => {
-                            // Skip first evaluation (initialization) - we already loaded files above
-                            if (isInitializing) {
-                                isInitializing = false;
-                                return;
-                            }
-
                             // Guard against processing multiple updates simultaneously
                             if (isProcessing) {
                                 return;

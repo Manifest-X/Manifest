@@ -2,6 +2,32 @@
 # IDENTICAL key structure to colors.en.yaml. Only `_group`, `_name`, and value
 # strings differ.
 
+_ui:
+  colorpicker:
+    tabs:
+      solid: Plein
+      gradient: Dégradé
+      library: Bibliothèque
+    grabColor: Pipette à l'écran
+    gradientTypes:
+      linear: Linéaire
+      radial: Radial
+      conic: Conique
+    layerActions:
+      rotate: Pivoter
+      flip: Inverser
+      addAbove: Ajouter au-dessus
+      addBelow: Ajouter en dessous
+      duplicate: Dupliquer
+      moveUp: Monter
+      moveDown: Descendre
+      remove: Supprimer le calque
+    stopActions:
+      duplicate: Dupliquer l'arrêt
+      delete: Supprimer l'arrêt
+    recent:
+      remove: Retirer des récents
+
 Brand:
   _group: Palette de la marque
   Primary:

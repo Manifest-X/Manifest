@@ -23,11 +23,13 @@
     "preloadedComponents": [],
     "data": {
         "manifest": "/manifest.json",
+        "statusLabels": {
+            "en": "/test/data/status.en.yaml",
+            "fr": "/test/data/status.fr.yaml"
+        },
         "colors": {
-            "colorpicker": {
-                "en": "/test/data/colors.en.yaml",
-                "fr": "/test/data/colors.fr.yaml"
-            }
+            "en": "/test/data/colors.en.yaml",
+            "fr": "/test/data/colors.fr.yaml"
         },
         "allLocales": {
             "locales": "/test/data/test.csv"
@@ -52,6 +54,8 @@
         "products": "/test/data/products.csv",
         "blogPosts": "/test/data/blog-posts.csv",
         "json": "/test/data/test.json",
+        "chartSales": "/test/data/chart-sales.json",
+        "dpUi": { "locales": "/test/data/dp-ui.csv" },
         "yaml": "/test/data/test.yaml",
         "yamlArray": "/test/data/test-array.yaml",
         "projects": {
@@ -78,6 +82,12 @@
             "enableVisualRendering": true,
             "includeVelocity": false
         }
+    },
+    "colorpicker": "colors",
+    "payments": {
+        "provider": "mockpay",
+        "endpoint": "https://fn.test/pay",
+        "state": { "url": "https://fn.test/state" }
     },
     "appwrite": {
         "projectId": "68cfcc610014415b6f9a",
@@ -116,6 +126,40 @@
                 }
             },
             "creatorRole": "Admin"
+        }
+    },
+    "status": {
+        "Website": {
+            "signals": [
+                {
+                    "url": "/manifest.json",
+                    "label": "home"
+                },
+                {
+                    "url": "/index.html",
+                    "label": "app"
+                }
+            ],
+            "rollup": "worst",
+            "refresh": 15000
+        },
+        "API": {
+            "url": "/manifest.json",
+            "degradedAbove": 1,
+            "label": "api",
+            "refresh": 15000
+        },
+        "Database": {
+            "static": "operational"
+        },
+        "CDN": {
+            "static": "operational"
+        },
+        "Search": {
+            "static": "maintenance"
+        },
+        "Workers": {
+            "static": "major_outage"
         }
     },
     "render": {

@@ -669,10 +669,19 @@ async function loadDataSource(dataSourceName, locale = 'en') {
     const cacheKey = `${dataSourceName}:${locale}`;
     const { dataSourceCache, loadingPromises, isInitializing, updateStore } = window.ManifestDataStore;
 
-    // Check memory cache first
+    // Check memory cache first. The store write is guarded against stale
+    // locales: a caller that resolved its locale before a switch (or an effect
+    // re-running mid-switch) can request `name:en` after the locale-change
+    // reload already wrote `name:fr` — serving the cached data is fine, but
+    // writing it to the live store would clobber the current locale. Localized
+    // data carries a `_locale` stamp; unstamped (non-localized) data writes
+    // unconditionally.
     if (dataSourceCache.has(cacheKey)) {
         const cachedData = dataSourceCache.get(cacheKey);
-        if (!isInitializing) {
+        const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
+            || document.documentElement.lang || locale;
+        const staleLocaleHit = locale !== liveLocale && !!(cachedData && cachedData._locale);
+        if (!isInitializing && !staleLocaleHit) {
             updateStore(dataSourceName, cachedData, { loading: false, error: null, ready: true });
         }
         return cachedData;
@@ -937,12 +946,25 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 enhancedData = [];
             }
 
-            // Update cache (store unsealed version for our use)
+            // Update cache (store unsealed version for our use).
+            // Always safe — the cache key carries the locale this load was for.
             dataSourceCache.set(cacheKey, enhancedData);
+
+            // Stale-locale guard: if the app's locale changed while this load was
+            // in flight, a LOCALIZED source's result is stale — the locale-change
+            // listener has already reloaded (or is reloading) the right locale,
+            // and writing this one would clobber it. Non-localized sources are
+            // locale-independent and must still write (the listener never reloads
+            // them, so skipping would orphan an initial load).
+            const localeSensitive = !!(dataSource && typeof dataSource === 'object'
+                && (dataSource.locales || dataSource[locale]));
+            const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
+                || document.documentElement.lang || locale;
+            const staleLocale = localeSensitive && liveLocale !== locale;
 
             // Update store only if not initializing
             // Note: updateStore will seal the data to prevent Alpine from proxying it
-            if (!isInitializing) {
+            if (!isInitializing && !staleLocale) {
                 updateStore(dataSourceName, enhancedData, { loading: false, error: null, ready: true });
             }
 

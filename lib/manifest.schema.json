@@ -193,6 +193,51 @@
                 }
             }
         },
+        "status": {
+            "type": "object",
+            "description": "Named, top-level-addressable status signals exposed via $status.<name>. Each entry rolls up one or more underlying signals into a single health state. Signal layer only — the author renders their own UI.",
+            "additionalProperties": {
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "description": "Shorthand: an HTTP URL probed for reachability/latency."
+                    },
+                    {
+                        "type": "array",
+                        "description": "Multiple signals rolled up (worst-of by default).",
+                        "items": { "$ref": "#/definitions/statusSignal" }
+                    },
+                    {
+                        "type": "object",
+                        "description": "A single signal, or an aggregate via `signals` with rollup options.",
+                        "properties": {
+                            "signals": {
+                                "type": "array",
+                                "items": { "$ref": "#/definitions/statusSignal" }
+                            },
+                            "rollup": {
+                                "type": "string",
+                                "enum": ["worst", "best"],
+                                "default": "worst"
+                            },
+                            "refresh": {
+                                "type": "number",
+                                "description": "Poll interval in milliseconds (default 30000)."
+                            },
+                            "confirmations": {
+                                "type": "number",
+                                "description": "Consecutive observations required before a state change (hysteresis)."
+                            },
+                            "staleAfter": {
+                                "type": "number",
+                                "description": "Milliseconds without a known signal before the entry reads as stale (default refresh × 3)."
+                            }
+                        },
+                        "additionalProperties": true
+                    }
+                ]
+            }
+        },
         "render": {
             "type": "object",
             "description": "Static rendering configuration consumed by mnfst-render.",
@@ -207,6 +252,38 @@
                 }
             },
             "additionalProperties": true
+        }
+    },
+    "definitions": {
+        "statusSignal": {
+            "description": "One health input. Provider is inferred by which field is present.",
+            "oneOf": [
+                {
+                    "type": "string",
+                    "description": "An HTTP URL probed for reachability/latency."
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                        "label": { "type": "string" },
+                        "url": { "type": "string", "description": "HTTP probe target." },
+                        "expect": { "type": "number", "description": "Exact status code to treat as operational (default: any 2xx)." },
+                        "degradedAbove": { "type": "number", "description": "Latency in ms above which the probe reads as degraded." },
+                        "method": { "type": "string" },
+                        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+                        "timeout": { "type": "number" },
+                        "static": { "type": "string", "description": "Literal state (operational | degraded | partial_outage | major_outage | maintenance)." },
+                        "feed": { "type": "string", "description": "URL returning JSON whose state field is read." },
+                        "path": { "type": "string", "description": "Dot-path into a feed response to the state value." },
+                        "mirror": { "type": "string", "description": "Named upstream whose own status feed is reflected (e.g. 'appwrite')." },
+                        "appwriteService": { "type": "string", "description": "Resolves against the global appwrite endpoint's /health." },
+                        "mcp": { "type": "string", "description": "Hosted (Manifest MCP) signal; a feed URL when self-resolving." },
+                        "heartbeat": { "type": "string", "description": "Dead-man's-switch key; call $status.beat(key) to pulse." },
+                        "expectEvery": { "type": "number", "description": "Heartbeat window in ms before it reads as down." }
+                    }
+                }
+            ]
         }
     }
 }

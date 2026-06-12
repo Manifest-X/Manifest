@@ -1,0 +1,11 @@
+# Localized UI labels for the status plugin (Français).
+# Keys must match status.en.yaml exactly — only values translate.
+_ui:
+  status:
+    label:
+      operational: Opérationnel
+      degraded: Dégradé
+      partial_outage: Panne Partielle
+      major_outage: Panne Majeure
+      maintenance: Maintenance
+      unknown: Inconnu

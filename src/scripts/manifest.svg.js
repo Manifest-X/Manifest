@@ -264,6 +264,11 @@ async function initializeSvgPlugin() {
 
 let svgPluginInitialized = false;
 
+// True once Alpine has completed its initial DOM walk. Listener is bound at
+// module load so we never miss the event, whatever the script order.
+let svgAlpineHasWalked = false;
+document.addEventListener('alpine:initialized', () => { svgAlpineHasWalked = true; });
+
 async function ensureSvgPluginInitialized() {
     if (svgPluginInitialized) {
         return;
@@ -275,7 +280,12 @@ async function ensureSvgPluginInitialized() {
     svgPluginInitialized = true;
     await initializeSvgPlugin();
 
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
+    // Only walk existing [x-svg] subtrees ourselves when Alpine has ALREADY
+    // finished its initial walk (i.e. this plugin loaded late). Otherwise we
+    // register the directive during `alpine:init` and let Alpine's one boot walk
+    // process every element with all sibling directives already registered —
+    // walking here during boot would drop nested plugin content.
+    if (svgAlpineHasWalked && typeof window.Alpine.initTree === 'function') {
         const existing = document.querySelectorAll('[x-svg]');
         existing.forEach((el) => {
             if (!el.__x) {

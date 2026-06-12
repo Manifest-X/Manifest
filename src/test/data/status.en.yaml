@@ -1,0 +1,11 @@
+# Localized UI labels for the status plugin (English).
+# `_ui` is harvested from any loaded source; keys stay identical across locales.
+_ui:
+  status:
+    label:
+      operational: Operational
+      degraded: Degraded
+      partial_outage: Partial Outage
+      major_outage: Major Outage
+      maintenance: Maintenance
+      unknown: Unknown

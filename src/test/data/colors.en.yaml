@@ -16,6 +16,34 @@
 # This test file only defines a custom "Brand" group so the full built-in
 # Tailwind + iOS presets remain visible in the library.
 
+# Localizes the default-menu chrome (colocated with the palette content above).
+# `_ui` is harvested from any loaded source; overrides are namespaced per element.
+_ui:
+  colorpicker:
+    tabs:
+      solid: Solid
+      gradient: Gradient
+      library: Library
+    grabColor: Grab color from screen
+    gradientTypes:
+      linear: Linear
+      radial: Radial
+      conic: Conic
+    layerActions:
+      rotate: Rotate
+      flip: Flip
+      addAbove: Add layer above
+      addBelow: Add layer below
+      duplicate: Duplicate
+      moveUp: Move up
+      moveDown: Move down
+      remove: Remove layer
+    stopActions:
+      duplicate: Duplicate stop
+      delete: Delete stop
+    recent:
+      remove: Remove from recent
+
 Brand:
   _group: My Brand
   Primary:

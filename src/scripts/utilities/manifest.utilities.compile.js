@@ -147,8 +147,18 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         generateUtility(className, css);
                     }
 
-                    // Check for opacity variants of this utility
-                    const opacityVariants = usedClasses.filter(cls => {
+                    // Check for opacity variants of this utility. Collect the
+                    // bare opacity base class (e.g. `bg-black/10`) rather than the
+                    // full prefixed class (e.g. `backdrop:bg-black/10`). generateUtility
+                    // discovers and applies variant prefixes itself by matching the
+                    // trailing segment after the last `:`, so passing it the bare base
+                    // lets its variant loop emit the correct selector
+                    // (`.backdrop\:bg-black\/10::backdrop`). Passing the prefixed class
+                    // instead made generateUtility treat it as a plain base class and
+                    // emit a malformed `.backdrop\:bg-black\/10 { … }` rule with no
+                    // `::backdrop` pseudo-element.
+                    const opacityBaseClasses = new Set();
+                    for (const cls of usedClasses) {
                         // Parse the class to extract the base utility name
                         const parsed = this.parseClassName(cls);
                         const baseClass = parsed.baseClass;
@@ -159,18 +169,19 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                             if (baseWithoutOpacity === className) {
                                 const opacity = baseClass.split('/')[1];
                                 // Validate that the opacity is a number between 0-100
-                                return !isNaN(opacity) && opacity >= 0 && opacity <= 100;
+                                if (!isNaN(opacity) && opacity >= 0 && opacity <= 100) {
+                                    opacityBaseClasses.add(baseClass);
+                                }
                             }
                         }
-                        return false;
-                    });
+                    }
 
-                    // Generate opacity utilities for each variant found
-                    for (const variant of opacityVariants) {
-                        const opacity = variant.split('/')[1];
+                    // Generate opacity utilities for each opacity value found
+                    for (const opacityBaseClass of opacityBaseClasses) {
+                        const opacity = opacityBaseClass.split('/')[1];
                         const opacityValue = `color-mix(in oklch, ${value} ${opacity}%, transparent)`;
                         const opacityCss = css.replace(value, opacityValue);
-                        generateUtility(variant, opacityCss);
+                        generateUtility(opacityBaseClass, opacityCss);
                     }
                 }
             }

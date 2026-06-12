@@ -1,6 +1,6 @@
 {
   "name": "mnfst-export",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Batch and CI exports for Manifest projects — PDF, PNG, JPEG, WebP, CSV, JSON, RSS",
   "type": "module",
   "bin": {

@@ -27,8 +27,10 @@
   <link rel="stylesheet" href="/styles/elements/manifest.avatar.css">
   <link rel="stylesheet" href="/styles/elements/manifest.button.css">
   <link rel="stylesheet" href="/styles/elements/manifest.checkbox.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.chart.css">
   <link rel="stylesheet" href="/styles/elements/manifest.code.css">
   <link rel="stylesheet" href="/styles/elements/manifest.colorpicker.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.datepicker.css">
   <link rel="stylesheet" href="/styles/elements/manifest.dialog.css">
   <link rel="stylesheet" href="/styles/elements/manifest.divider.css">
   <link rel="stylesheet" href="/styles/elements/manifest.dropdown.css">
@@ -45,13 +47,10 @@
   <link rel="stylesheet" href="/styles/elements/manifest.toast.css">
   <link rel="stylesheet" href="/styles/elements/manifest.tooltip.css">
   <link rel="stylesheet" href="/styles/elements/manifest.typography.css">
+  <link rel="stylesheet" href="/styles/utilities/manifest.colors.css">
   <link rel="stylesheet" href="/styles/utilities/manifest.utilities.css">
 
   <!-- Scripts -->
-  <!-- Local-only env injection (gitignored; populates window.env with secrets
-       like APPWRITE_DEV_KEY for testing). The onerror swallows the 404 when
-       the file is absent, so contributors without an APPWRITE_DEV_KEY can
-       still run the dev page. -->
   <script src="/env.local.js" onerror="this.remove()"></script>
 
   <!-- Alpine & Tailwind -->
@@ -61,6 +60,8 @@
   <!-- Core plugins-->
   <script src="/scripts/manifest.code.js"></script>
   <script src="/scripts/manifest.data.js"></script>
+  <script src="/scripts/manifest.datepicker.js"></script>
+  <script src="/scripts/manifest.charts.js"></script>
   <script src="/scripts/manifest.color.js"></script>
   <script src="/scripts/manifest.components.js"></script>
   <script src="/scripts/manifest.dropdowns.js"></script>
@@ -68,9 +69,11 @@
   <script src="/scripts/manifest.localization.js"></script>
   <script src="/scripts/manifest.markdown.js"></script>
   <script src="/scripts/manifest.svg.js"></script>
+  <script src="/scripts/manifest.payments.js"></script>
   <script src="/scripts/manifest.resize.js"></script>
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
+  <script src="/scripts/manifest.status.js"></script>
   <script src="/scripts/manifest.tabs.js"></script>
   <script src="/scripts/manifest.toasts.js"></script>
   <script src="/scripts/manifest.tooltips.js"></script>
@@ -86,7 +89,14 @@
 
 </head>
 
-<body class="page">
+<body class="page p-20">
+
+  <div role="tablist" class="w-100 [&_a]:flex-1">
+    <a role="button" href="/" :class="$route === '/' && 'selected'" aria-label="AI copilot" x-tooltip="AI copilot ⌘␣" x-icon="lucide:home"></a>
+    <a role="button" href="/helpdesk" :class="$route.startsWith('/helpdesk') && 'selected'" x-icon="lucide:message-square" aria-label="Helpdesk" x-tooltip="Helpdesk"></a>
+    <a role="button" href="/database" :class="$route.startsWith('/database') && 'selected'" x-icon="lucide:sheet" aria-label="Database" x-tooltip="Database"></a>
+    <a role="button" href="/analytics" :class="$route.startsWith('/analytics') && 'selected'" x-icon="lucide:chart-candlestick" aria-label="Analytics" x-tooltip="Analytics"></a>
+  </div>
 
 </body>
 

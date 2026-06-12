@@ -1,12 +1,22 @@
 /* Manifest Dropdowns */
 
+// Track the user's most recent input modality so we only move focus into a menu
+// (and surface a :focus-visible ring) for keyboard opens. Capture-phase so we
+// see the event before any handler can stop it. This mirrors the heuristic the
+// browser uses for :focus-visible, but lets us decide whether to focus at all.
+let lastInputModality = 'mouse';
+document.addEventListener('keydown', () => { lastInputModality = 'keyboard'; }, true);
+document.addEventListener('pointerdown', () => { lastInputModality = 'mouse'; }, true);
+
 // Initialize plugin when either DOM is ready or Alpine is ready
 function initializeDropdownPlugin() {
-    // Ensure Alpine.js context exists for directives to work
+    // Ensure Alpine.js context exists for directives to work. Keep the scope
+    // empty — seeding properties here collides with author state and the
+    // tabs plugin's page-level `tab` property.
     function ensureAlpineContext() {
         const body = document.body;
         if (!body.hasAttribute('x-data')) {
-            body.setAttribute('x-data', '{ tab: \'local-data\' }');
+            body.setAttribute('x-data', '{}');
         }
     }
 
@@ -342,16 +352,29 @@ function initializeDropdownPlugin() {
                         if (e.newState === 'open') {
                             // Set up li elements for keyboard navigation
                             const liElements = menu.querySelectorAll('li');
-                            liElements.forEach((li, index) => {
+                            liElements.forEach((li) => {
                                 if (!li.hasAttribute('tabindex')) {
                                     li.setAttribute('tabindex', '-1');
                                 }
-                                // Focus first li element if no other focusable elements
-                                if (index === 0 && !menu.querySelector('button, [href], input, select, textarea, [tabindex="0"]')) {
-                                    li.setAttribute('tabindex', '0');
-                                    li.focus();
-                                }
                             });
+                            // When the menu has no natively focusable control, make the
+                            // first item the keyboard entry point.
+                            const firstLi = liElements[0];
+                            if (firstLi && !menu.querySelector('button, [href], input, select, textarea, [tabindex="0"]')) {
+                                firstLi.setAttribute('tabindex', '0');
+                                if (lastInputModality === 'keyboard') {
+                                    // Keyboard open (APG menu pattern): focus the first item;
+                                    // :focus-visible correctly paints the ring.
+                                    firstLi.focus();
+                                } else {
+                                    // Pointer open: park focus on the menu itself so arrow
+                                    // keys still enter the list, without forcing a
+                                    // focus-visible ring on an item the user didn't reach
+                                    // by keyboard.
+                                    if (!menu.hasAttribute('tabindex')) menu.setAttribute('tabindex', '-1');
+                                    menu.focus();
+                                }
+                            }
                         }
                     });
 
@@ -395,6 +418,11 @@ function initializeDropdownPlugin() {
 // Track initialization to prevent duplicates
 let dropdownPluginInitialized = false;
 
+// True once Alpine has completed its initial DOM walk. Listener is bound at
+// module load so we never miss the event, whatever the script order.
+let alpineHasWalked = false;
+document.addEventListener('alpine:initialized', () => { alpineHasWalked = true; });
+
 function ensureDropdownPluginInitialized() {
     if (dropdownPluginInitialized) {
         return;
@@ -406,10 +434,15 @@ function ensureDropdownPluginInitialized() {
     dropdownPluginInitialized = true;
     initializeDropdownPlugin();
 
-    // If elements with x-dropdown already exist, process them
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
-        const existingDropdownElements = document.querySelectorAll('[x-dropdown]');
-        existingDropdownElements.forEach(el => {
+    // Only walk existing [x-dropdown] subtrees ourselves when Alpine has ALREADY
+    // finished its initial walk (i.e. this plugin loaded late). In the normal
+    // flow we register the directive during `alpine:init`, before Alpine's one
+    // boot walk — so Alpine processes every dropdown with all sibling directives
+    // (x-icon, x-tooltip, …) already registered. Walking here during boot would
+    // re-init those subtrees before the other directives exist, permanently
+    // dropping nested plugin content (e.g. a trailing x-icon in a menu button).
+    if (alpineHasWalked && typeof window.Alpine.initTree === 'function') {
+        document.querySelectorAll('[x-dropdown]').forEach(el => {
             if (!el.__x) {
                 window.Alpine.initTree(el);
             }

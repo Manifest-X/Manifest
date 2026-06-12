@@ -4,6 +4,7 @@
  *
  * Usage:
  *   npx mnfst-run [dir] [--port 5001] [--idle-shutdown 30] [--no-idle-shutdown]
+ *                 [--open | --no-open]
  *   npx mnfst-run --list
  *
  *   dir                 Directory to serve (default: current directory). Any
@@ -23,6 +24,13 @@
  *                       overnight with the preview tab still open.
  *   --no-idle-shutdown  Disable auto-shutdown (useful in CI / headless cases
  *                       where no browser will connect).
+ *   --open / --no-open  Force / suppress auto-opening an OS browser tab on
+ *                       start. Default: open for manual runs, but SUPPRESSED
+ *                       under CI and Claude Code (CLAUDECODE /
+ *                       CLAUDE_CODE_ENTRYPOINT) — there the LLM app's preview
+ *                       panel already shows the page, so a second browser tab
+ *                       is just noise. Put `--no-open` in an LLM preview's
+ *                       launch config to guarantee suppression.
  *   --list              Print all mnfst-run servers currently running on this
  *                       machine and exit.
  *
@@ -192,12 +200,26 @@ let idleShutdownEnabled = !(
   process.env.CLAUDECODE
 );
 
+// Auto-open a browser tab on start — a convenience for manual terminal/IDE
+// runs (saves copy-pasting the URL). Suppressed by default under CI / Claude
+// Code, where an LLM app's preview panel IS the browser and already shows the
+// page — popping a second OS browser tab is just noise. Override either way
+// with `--open` / `--no-open` (and `--no-open` belongs in an LLM preview's
+// launch config to guarantee suppression regardless of env detection).
+let openBrowserEnabled = !(
+  process.env.CI === 'true' ||
+  process.env.CLAUDE_CODE_ENTRYPOINT ||
+  process.env.CLAUDECODE
+);
+
 let listMode = false;
 
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--port' || args[i] === '-p') && args[i + 1]) { port = parseInt(args[++i], 10); continue; }
   if (args[i] === '--no-idle-shutdown') { idleShutdownEnabled = false; continue; }
   if (args[i] === '--idle-shutdown' && args[i + 1]) { idleShutdownSec = parseInt(args[++i], 10); continue; }
+  if (args[i] === '--no-open') { openBrowserEnabled = false; continue; }
+  if (args[i] === '--open')    { openBrowserEnabled = true;  continue; }
   if (args[i] === '--list' || args[i] === '-l') { listMode = true; continue; }
   if (!args[i].startsWith('-')) dir = args[i];
 }
@@ -326,10 +348,13 @@ if (existing) {
   const label0 = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
   console.log(`\n${label0} already running at ${url} (pid ${existing.pid})\n`);
   // Open the browser anyway — matches the experience of starting fresh.
-  const cmd = process.platform === 'win32' ? `start ${url}`
-    : process.platform === 'darwin'        ? `open ${url}`
-    : `xdg-open ${url}`;
-  exec(cmd);
+  // (Skipped under --no-open / Claude Code, where the preview panel is the browser.)
+  if (openBrowserEnabled) {
+    const cmd = process.platform === 'win32' ? `start ${url}`
+      : process.platform === 'darwin'        ? `open ${url}`
+      : `xdg-open ${url}`;
+    exec(cmd);
+  }
   process.exit(0);
 }
 
@@ -621,7 +646,7 @@ function tryListen(p, attempt = 0) {
     const url = `http://localhost:${p}`;
     writeRegistry(root, p);
     console.log(`\n${label} running at ${url}\n`);
-    openBrowser(url);
+    if (openBrowserEnabled) openBrowser(url);
   };
   const onError = err => {
     server.removeListener('listening', onListening);

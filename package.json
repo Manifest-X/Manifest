@@ -1,6 +1,6 @@
 {
     "name": "mnfst",
-    "version": "0.5.115",
+    "version": "0.5.124",
     "private": false,
     "workspaces": [
         "templates/starter",
@@ -37,6 +37,8 @@
         "release:all": "npm run release:run && npm run release:render && npm run release:types && npm run release:test && npm run release:export && npm run release:starter && npm run release",
         "prepublishOnly": "npm run build",
         "test": "vitest run",
+        "test:e2e": "node tests/e2e/payments.e2e.mjs",
+        "test:e2e:sdk": "node tests/e2e/payments.sdk.e2e.mjs",
         "lint": "echo 'No linting configured'"
     },
     "devDependencies": {

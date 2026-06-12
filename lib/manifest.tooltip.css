@@ -1,16 +1,68 @@
 /* Manifest Tooltips */
 
+/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
+   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
+   in any cascade layer, in any cherry-picked bundle. Only the closed state is
+   forced; an open popover's display is left to its layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
 @layer base {
 
-    /* Base popover styles */
-    :where([popover]):not(.unstyle) {
-        display: none;
+    @keyframes mnfst-popover-in {
+        from {
+            transform: scale(.9);
+        }
+
+        to {
+            transform: none;
+        }
+    }
+
+    :where([popover]):not(.unstyle):popover-open {
+        display: flex;
+        animation: mnfst-popover-in .15s ease-in both;
+    }
+}
+
+@layer utilities {
+
+    /* Shared chrome — anchored x-tooltip popovers AND non-popover tooltips
+       (e.g. the charts plugin's cursor-following tip) */
+    :where(.tooltip) {
+        width: fit-content;
+        padding: calc(var(--spacing, 0.25rem) * .5) calc(var(--spacing, 0.25rem) * 2);
+        font-size: 0.875rem;
+        color: var(--color-page, oklch(98.5% 0 0));
+        background-color: var(--color-content-stark, oklch(43.9% 0 0));
+        border: 0 none;
+        border-radius: var(--radius, 0.5rem);
+        box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+
+        /* Leading icon */
+        & [x-icon]:first-child {
+            margin-inline-end: 0.25rem
+        }
+    }
+
+    /* Anchored popover positioning + open/close behavior */
+    :where(.tooltip[popover]) {
+        position: absolute;
+        position-try-fallbacks: flip-inline, flip-block, flip-start;
+        position-area: bottom;
+        inset: auto;
+        display: block;
+        max-width: 200px;
+        margin: var(--spacing-popover-offset, 0.5rem) 0;
+
+        /* Tooltips keep their original transition-based fade/scale rather than the
+           shared scale-pop: the hover delay below needs a transition to act on,
+           and the `display: none` close (overriding `display: block` above) is
+           what hides them on mouse-off. */
+        animation: none;
         transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;
-
-        &:popover-open {
-            display: flex
-        }
 
         /* Opening state */
         @starting-style {
@@ -26,35 +78,9 @@
             transition-duration: .15s;
             transition-timing-function: ease-out
         }
-    }
-}
-
-@layer utilities {
-
-    :where(.tooltip[popover]) {
-        position: absolute;
-        position-try-fallbacks: flip-inline, flip-block, flip-start;
-        position-area: bottom;
-        inset: auto;
-        display: block;
-        width: fit-content;
-        max-width: 200px;
-        margin: var(--spacing-popover-offset, 0.5rem) 0;
-        padding: calc(var(--spacing, 0.25rem) * .5) calc(var(--spacing, 0.25rem) * 2);
-        font-size: 0.875rem;
-        color: var(--color-page, oklch(98.5% 0 0));
-        background-color: var(--color-content-stark, oklch(43.9% 0 0));
-        border: 0 none;
-        border-radius: var(--radius, 0.5rem);
-        box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
 
         &:hover {
             transition-delay: var(--tooltip-hover-delay, .5s)
-        }
-
-        /* Leading icon */
-        & [x-icon]:first-child {
-            margin-inline-end: 0.25rem
         }
     }
 

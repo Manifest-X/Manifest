@@ -1,0 +1,11 @@
+{
+  "name": "manifest-payments-function",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Manifest payments function template (Appwrite Function) — Revolut reference adapter",
+  "main": "src/main.js",
+  "dependencies": {
+    "node-appwrite": "^14.0.0"
+  }
+}

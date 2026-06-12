@@ -148,7 +148,10 @@ function initializeTooltipPlugin() {
             trigger._tooltipAnchorName = `--tooltip-trigger-${code}`;
         }
         const anchorName = trigger._tooltipAnchorName;
-        trigger.style.setProperty('anchor-name', anchorName);
+        // Compose with --mnfst-anchor so stylesheet anchors (e.g. the tablist
+        // slider's --manifest-tab on the selected tab) survive this inline
+        // override — the var re-resolves reactively as selection changes.
+        trigger.style.setProperty('anchor-name', `${anchorName}, var(--mnfst-anchor, --mnfst-none)`);
         void trigger.offsetHeight; // reflow so anchor-name registers
         s.el.style.setProperty('position-anchor', anchorName);
 
@@ -173,7 +176,9 @@ function initializeTooltipPlugin() {
 
     // Hide the singleton that's currently showing (if any), regardless of host.
     function hideAnySingleton() {
+        let wasOpen = false;
         document.querySelectorAll('.tooltip[popover="hint"]:popover-open').forEach(el => {
+            wasOpen = true;
             try { el.hidePopover(); } catch {}
         });
         // Restore each tooltip's prior aria-describedby on the trigger it had been
@@ -186,7 +191,9 @@ function initializeTooltipPlugin() {
             else el.removeAttribute('aria-describedby');
             el._tooltipPriorDescribedBy = undefined;
         });
-        markTooltipHidden();
+        // Only arm the chain window when something was actually open — marking
+        // unconditionally let a plain click fast-track the next focus show.
+        if (wasOpen) markTooltipHidden();
     }
 
     // ---- Directive ----
@@ -283,7 +290,10 @@ function initializeTooltipPlugin() {
 
         // Keyboard / focus interactions — WCAG 2.1 SC 1.4.13 requires tooltip
         // content to be accessible to keyboard users via focus, not hover only.
-        el.addEventListener('focus', requestShow);
+        // Gated on :focus-visible so mouse-click focus doesn't flash the tooltip.
+        el.addEventListener('focus', () => {
+            if (el.matches(':focus-visible')) requestShow();
+        });
         el.addEventListener('blur', requestHide);
 
         // Mousedown/click: always hide immediately; scheduleAnchorRestore so the

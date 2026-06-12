@@ -954,6 +954,11 @@ async function initializeMarkdownPlugin() {
 // Track initialization to prevent duplicates
 let markdownPluginInitialized = false;
 
+// True once Alpine has completed its initial DOM walk. Listener is bound at
+// module load so we never miss the event, whatever the script order.
+let markdownAlpineHasWalked = false;
+document.addEventListener('alpine:initialized', () => { markdownAlpineHasWalked = true; });
+
 async function ensureMarkdownPluginInitialized() {
     if (markdownPluginInitialized) {
         return;
@@ -965,9 +970,14 @@ async function ensureMarkdownPluginInitialized() {
     markdownPluginInitialized = true;
     await initializeMarkdownPlugin();
 
-    // If elements with x-markdown already exist, process them
-    // This handles the case where the plugin loads after components are swapped in
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
+    // Only walk existing [x-markdown] subtrees ourselves when Alpine has ALREADY
+    // finished its initial walk (i.e. this plugin loaded late, e.g. after a
+    // component was swapped in). In the normal flow we register the directive
+    // during `alpine:init`, before Alpine's one boot walk — so Alpine processes
+    // every element with all sibling directives (x-icon, x-tooltip, …) already
+    // registered. Walking here during boot would re-init those subtrees before
+    // the other directives exist, dropping nested plugin content.
+    if (markdownAlpineHasWalked && typeof window.Alpine.initTree === 'function') {
         const existingMarkdownElements = document.querySelectorAll('[x-markdown]');
         existingMarkdownElements.forEach(el => {
             // Only process if not already processed by Alpine

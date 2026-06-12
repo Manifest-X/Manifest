@@ -1,31 +1,28 @@
 /* Manifest Dialogs */
 
+/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
+   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
+   in any cascade layer, in any cherry-picked bundle. Only the closed state is
+   forced; an open popover's display is left to its layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
 @layer base {
 
-    /* Base popover styles */
-    :where([popover]):not(.unstyle) {
-        display: none;
-        transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
-        transition-behavior: allow-discrete;
-
-        &:popover-open {
-            display: flex
+    @keyframes mnfst-popover-in {
+        from {
+            transform: scale(.9);
         }
 
-        /* Opening state */
-        @starting-style {
-            scale: .9;
-            opacity: 0
+        to {
+            transform: none;
         }
+    }
 
-        /* Closing state */
-        &:not(:popover-open) {
-            display: none !important;
-            scale: 1;
-            opacity: 0;
-            transition-duration: .15s;
-            transition-timing-function: ease-out
-        }
+    :where([popover]):not(.unstyle):popover-open {
+        display: flex;
+        animation: mnfst-popover-in .15s ease-in both;
     }
 }
 

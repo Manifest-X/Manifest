@@ -272,29 +272,22 @@
         }
     }
 
-    /* Base popover styles */
+    @keyframes mnfst-popover-in {
+        from {
+            transform: scale(.9);
+        }
+
+        to {
+            transform: none;
+        }
+    }
+
     :where([popover]) {
         display: none;
-        transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
-        transition-behavior: allow-discrete;
 
         &:popover-open {
-            display: flex
-        }
-
-        /* Opening state */
-        @starting-style {
-            scale: .9;
-            opacity: 0;
-        }
-
-        /* Closing state */
-        &:not(:popover-open) {
-            display: none !important;
-            scale: 1;
-            opacity: 0;
-            transition-duration: .15s;
-            transition-timing-function: ease-out
+            display: flex;
+            animation: mnfst-popover-in .15s ease-in both;
         }
     }
 
@@ -651,6 +644,202 @@
     }
 }
 
+/* Manifest Charts */
+
+:root {
+    /* Chart guidance */
+    --color-chart-grid: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+    --color-chart-label: var(--color-content-subtle, oklch(55.6% 0 0));
+
+    /* Chart data segments */
+    --color-chart-1: var(--color-yellow-400, oklch(85.2% 0.199 91.936));
+    --color-chart-2: var(--color-yellow-500, oklch(79.5% 0.184 86.047));
+    --color-chart-3: var(--color-yellow-600, oklch(68.1% 0.162 75.834));
+    --color-chart-4: var(--color-amber-400, oklch(82.8% 0.189 84.429));
+    --color-chart-5: var(--color-amber-500, oklch(76.9% 0.188 70.08));
+    --color-chart-6: var(--color-amber-600, oklch(66.6% 0.179 58.318));
+    --color-chart-7: var(--color-orange-400, oklch(75% 0.183 55.934));
+    --color-chart-8: var(--color-orange-500, oklch(70.5% 0.213 47.604));
+    --color-chart-9: var(--color-orange-600, oklch(64.6% 0.222 41.116));
+}
+
+@layer utilities {
+
+    :where([x-chart], .chart):not(.unstyle) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        width: 100%;
+        position: relative;
+
+        & svg {
+            display: block;
+            width: 100%;
+            overflow: visible
+        }
+
+        /* Grid lines */
+        & svg line {
+            stroke: var(--color-chart-grid);
+            stroke-width: 1;
+            shape-rendering: crispEdges
+        }
+
+        /* Axis labels */
+        & svg text {
+            fill: var(--color-chart-label);
+            font-size: 0.6875rem;
+            font-family: inherit
+        }
+
+        /* Line series */
+        & path.line {
+            stroke: var(--color-chart-color, var(--color-chart-1));
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round
+        }
+
+        /* Area series */
+        & path.area {
+            fill: var(--color-chart-color, var(--color-chart-1));
+            opacity: 0.15
+        }
+
+        /* Points */
+        & circle {
+            fill: var(--color-chart-color, var(--color-chart-1));
+            stroke: var(--color-page, oklch(98.5% 0 0));
+            stroke-width: 1.5;
+            transition: r var(--transition-duration, .1s) ease;
+
+            &:hover {
+                r: 5
+            }
+        }
+
+        & circle.scatter {
+            opacity: 0.85
+        }
+
+        /* Bars */
+        & rect {
+            fill: var(--color-chart-color, var(--color-chart-1));
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        /* Candlesticks — wick <line> + body <rect> in a positive/negative <g> */
+        & g.positive,
+        & g.negative {
+            & line {
+                stroke: var(--color-chart-candle);
+                stroke-width: 1.5
+            }
+
+            & rect {
+                fill: var(--color-chart-candle)
+            }
+        }
+
+        & g.positive {
+            --color-chart-candle: var(--color-positive-content, oklch(60% 0.13 150))
+        }
+
+        & g.negative {
+            --color-chart-candle: var(--color-negative-content, oklch(60% 0.18 25))
+        }
+
+        /* Pie / donut slices */
+        & path.slice {
+            fill: var(--color-chart-color, var(--color-chart-1));
+            stroke: var(--color-page, oklch(98.5% 0 0));
+            stroke-width: 2;
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.85
+            }
+        }
+
+        /* Value labels drawn on/above segments */
+        & text.value {
+            fill: var(--color-content-stark, oklch(20.5% 0 0));
+            font-size: 0.6875rem;
+            font-weight: 600;
+            pointer-events: none;
+
+            /* On a filled segment (bar/slice center) — read against the fill */
+            &.inverse {
+                fill: black;
+                paint-order: stroke;
+                stroke: rgba(255, 255, 255, 0.75);
+                stroke-width: 1.5px
+            }
+        }
+
+        /* Legend — <footer> sibling below the SVG; <span> items, <i> swatches */
+        & footer {
+            display: flex;
+            flex-flow: row wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 0.875rem;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--color-content-neutral, oklch(43.9% 0 0));
+
+            &>span {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.375rem
+            }
+
+            & i {
+                width: 0.625rem;
+                height: 0.625rem;
+                border-radius: 2px;
+                background: var(--color-chart-color, var(--color-chart-1))
+            }
+        }
+
+        /* Cursor-following tooltip — chrome comes from manifest.tooltip.css
+           (.tooltip); only the pointer-tracking positioning lives here */
+        & .tooltip {
+            position: absolute;
+            left: 0;
+            top: 0;
+            z-index: 50;
+            transform: translate(-50%, calc(-100% - 0.625rem));
+            font-size: 0.75rem;
+            line-height: 1.3;
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity .1s ease;
+
+            &.active {
+                opacity: 1
+            }
+        }
+
+        /* Empty / error state */
+        &>small,
+        label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 6rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--color-content-subtle, oklch(55.6% 0 0))
+        }
+    }
+}
+
 /* Manifest Checkboxes */
 
 @layer components {
@@ -688,8 +877,8 @@
             width: 60%;
             height: 60%;
             background-color: var(--color-field-inverse, oklch(43.9% 0 0));
-            -webkit-mask-image: var(--icon-checkbox, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
-            mask-image: var(--icon-checkbox, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
+            -webkit-mask-image: var(--icon-check, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
+            mask-image: var(--icon-check, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
             -webkit-mask-repeat: no-repeat;
             mask-repeat: no-repeat;
             -webkit-mask-size: 100% 100%;
@@ -1217,7 +1406,520 @@
     }
 }
 
+/* Manifest Date Picker */
+
+@layer utilities {
+
+    :where([x-date], .date-picker):not(.unstyle) {
+        width: fit-content;
+        min-width: 17rem;
+        background: var(--color-popover-surface, oklch(98.5% 0 0));
+        color: var(--color-content-stark, oklch(20.5% 0 0));
+        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border-radius: var(--radius, 0.5rem);
+
+        /* Shell */
+        &>[role=group] {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            padding: 0.5rem;
+        }
+
+        /* Header */
+        & header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.25rem;
+            width: 100%;
+
+            & button {
+                width: var(--spacing-field-height, 2.25rem);
+                min-width: var(--spacing-field-height, 2.25rem);
+                height: var(--spacing-field-height, 2.25rem);
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0;
+                background: transparent;
+                border: none;
+                border-radius: var(--radius, 0.5rem);
+                color: var(--color-content-neutral, oklch(43.9% 0 0));
+                cursor: pointer;
+                transition: var(--transition, all .05s ease-in-out);
+
+                &:hover {
+                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                    color: var(--color-content-stark, oklch(20.5% 0 0))
+                }
+            }
+
+            /* Heading (between nav arrows) — clickable view jump */
+            & button:nth-child(2) {
+                flex: 1;
+                width: auto;
+                padding: 0 0.5rem;
+                text-align: center;
+                font-weight: 600;
+                color: inherit
+            }
+
+            /* Previous / next chevrons — baked-in masks, no icons plugin */
+            & button:first-child::before,
+            & button:last-child::before {
+                content: "";
+                width: 1rem;
+                height: 1rem;
+                background-color: currentColor;
+                mask-repeat: no-repeat;
+                mask-size: 100% 100%
+            }
+
+            & button:first-child::before {
+                mask-image: var(--icon-previous, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m15 18-6-6 6-6'/%3E%3C/svg%3E"))
+            }
+
+            & button:last-child::before {
+                mask-image: var(--icon-next, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m9 18 6-6-6-6'/%3E%3C/svg%3E"))
+            }
+        }
+
+        /* Months row — one <section> per visible month, side by side */
+        & div:has(> section) {
+            display: flex;
+            flex-flow: row nowrap;
+            gap: 1rem
+        }
+
+        & section {
+            flex: 1;
+            min-width: 14rem;
+
+            /* Month label (multi-month) */
+            &>small {
+                display: block;
+                padding: 0.25rem 0;
+                text-align: center;
+                font-size: 0.8125rem;
+                font-weight: 600;
+                color: var(--color-content-neutral, oklch(43.9% 0 0))
+            }
+        }
+
+        /* Day grid */
+        & [role=grid] {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            gap: 0;
+            padding: 0.5rem 0;
+
+            /* Day names */
+            & abbr {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 1.75rem;
+                font-size: 0.75rem;
+                font-weight: 500;
+                text-decoration: none;
+                color: var(--color-content-subtle, oklch(55.6% 0 0))
+            }
+
+            /* Day buttons */
+            & button {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                aspect-ratio: 1 / 1;
+                padding: 0;
+                font-size: 0.875rem;
+                background: transparent;
+                color: var(--color-content-stark, oklch(20.5% 0 0));
+                border: 1px solid transparent;
+                border-radius: var(--radius, 0.5rem);
+                cursor: pointer;
+                transition: var(--transition, all .05s ease-in-out);
+
+                &:hover:not(:disabled):not([aria-selected=true]) {
+                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                }
+
+                &:focus-visible {
+                    outline: 2px solid var(--color-brand-content, oklch(60% 0.13 80));
+                    outline-offset: -2px
+                }
+
+                /* Other-month days */
+                &.outside {
+                    color: var(--color-content-subtle, oklch(55.6% 0 0));
+                    opacity: 0.55
+                }
+
+                /* Today marker */
+                &[aria-current=date]:not([aria-selected=true]) {
+                    border-color: var(--color-line, color-mix(oklch(20.5% 0 0) 18%, transparent));
+                    font-weight: 600
+                }
+
+                /* Selected day (also range endpoints) */
+                &[aria-selected=true] {
+                    background: var(--color-brand-surface, var(--color-accent-surface, oklch(20.5% 0 0)));
+                    color: var(--color-brand-inverse, var(--color-accent-inverse, oklch(98.5% 0 0)));
+                    font-weight: 600
+                }
+
+                /* Days between range endpoints */
+                &.in-range {
+                    background: color-mix(in oklch, var(--color-brand-surface, var(--color-accent-surface, oklch(20.5% 0 0))) 30%, transparent);
+                    border-radius: 0
+                }
+
+                /* Square inner edges so endpoints connect to the band */
+                &.range-start:not(.range-end) {
+                    border-start-end-radius: 0;
+                    border-end-end-radius: 0
+                }
+
+                &.range-end:not(.range-start) {
+                    border-start-start-radius: 0;
+                    border-end-start-radius: 0
+                }
+
+                &:disabled {
+                    color: var(--color-content-subtle, oklch(55.6% 0 0));
+                    opacity: 0.35;
+                    cursor: not-allowed;
+                    text-decoration: line-through
+                }
+            }
+        }
+
+        /* Month / year jump grid */
+        & [role=listbox] {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.25rem;
+            width: 100%;
+            padding: 0.25rem 0;
+
+            & button {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 2.75rem;
+                width: 100%;
+                padding: 0;
+                font-size: 0.875rem;
+                background: transparent;
+                color: var(--color-content-stark, oklch(20.5% 0 0));
+                border: 1px solid transparent;
+                border-radius: var(--radius, 0.5rem);
+                cursor: pointer;
+                transition: var(--transition, all .05s ease-in-out);
+
+                &:hover:not(:disabled) {
+                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                }
+
+                &[aria-current=true] {
+                    border-color: var(--color-line, color-mix(oklch(20.5% 0 0) 18%, transparent));
+                    font-weight: 600
+                }
+
+                &[aria-selected=true] {
+                    background: var(--color-brand-surface, var(--color-accent-surface, oklch(20.5% 0 0)));
+                    color: var(--color-brand-inverse, var(--color-accent-inverse, oklch(98.5% 0 0)));
+                    font-weight: 600
+                }
+
+                &.outside {
+                    color: var(--color-content-subtle, oklch(55.6% 0 0));
+                    opacity: 0.55
+                }
+
+                &:disabled {
+                    opacity: 0.35;
+                    cursor: not-allowed
+                }
+            }
+        }
+
+        /* Time-of-day row */
+        & fieldset {
+            display: flex;
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+            width: 100%;
+            min-width: 0;
+            padding-top: 0.5rem;
+            padding-bottom: 0.5rem;
+            padding-inline-start: 0.5rem;
+            border: none;
+            border-top: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+
+            /* "Time" label — native invoker for the columns popover (for= the
+               chevron button), so it needs width/height resets against
+               dropdown.css's menu-item label styling */
+            &>label {
+                flex: none;
+                width: auto;
+                min-height: 0;
+                padding: 0;
+                font-size: 0.75rem;
+                color: var(--color-content-subtle, oklch(55.6% 0 0));
+                cursor: pointer;
+
+                &:hover {
+                    color: var(--color-content-stark, oklch(20.5% 0 0));
+                    background: transparent
+                }
+            }
+
+            /* Segment group */
+            &>[role=group] {
+                display: flex;
+                align-items: center;
+                justify-content: end;
+                height: var(--spacing-field-height, 2.25rem);
+                padding-inline-start: 0.5rem;
+                background: transparent;
+                border: none;
+                border-radius: var(--radius, 0.5rem);
+                cursor: text;
+                transition: var(--transition, all .05s ease-in-out);
+
+                /* Hour / minute segments */
+                & input {
+                    box-sizing: content-box;
+                    width: 2ch;
+                    min-width: 0;
+                    margin: 0;
+                    padding: 0 0.25rem;
+                    font-size: 0.875rem;
+                    line-height: 1.5rem;
+                    font-variant-numeric: tabular-nums;
+                    text-align: center;
+                    background: transparent;
+                    color: var(--color-content-stark, oklch(20.5% 0 0));
+                    border: none;
+                    border-radius: calc(var(--radius, 0.5rem) / 2);
+                    outline: none;
+                    appearance: none;
+
+                    &:hover,
+                    &:focus {
+                        background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                    }
+                }
+
+                /* Separator */
+                &>span {
+                    line-height: 1.5rem;
+                    color: var(--color-content-subtle, oklch(55.6% 0 0))
+                }
+
+                /* AM/PM toggle */
+                &>button {
+                    width: auto;
+                    min-width: 0;
+                    height: 1.5rem;
+                    padding: 0 0.375rem;
+                    font-size: 0.875rem;
+                    line-height: 1.5rem;
+                    background: transparent;
+                    color: var(--color-content-stark, oklch(20.5% 0 0));
+                    border: none;
+                    border-radius: calc(var(--radius, 0.5rem) / 2);
+                    cursor: pointer;
+                    transition: var(--transition, all .05s ease-in-out);
+
+                    &:hover {
+                        background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                    }
+                }
+
+                /* Chevron that invokes the columns popover — same glyph as
+                   select buttons (see buttons.css ::picker-icon) */
+                &>button[popovertarget] {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 1.5rem;
+                    padding: 0;
+                    color: var(--color-content-subtle, oklch(55.6% 0 0));
+
+                    &:hover {
+                        color: var(--color-content-stark, oklch(20.5% 0 0))
+                    }
+
+                    &::before {
+                        content: "⌄";
+                        height: calc(var(--spacing-field-height, 2.25rem) * 0.5);
+                        transform: scaleY(0.7);
+                        font-size: 20px;
+                        line-height: 0.4
+                    }
+                }
+            }
+        }
+
+        /* Standalone time picker — columns inline in the calendar */
+        & div.time-options {
+            display: flex;
+            justify-content: center;
+            width: 100%;
+            max-height: 14rem;
+        }
+
+        /* Footer */
+        & footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.25rem;
+            width: 100%;
+            padding: 0.5rem 0;
+            border-top: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+
+            /* Today | Clear buttons */
+            & button {
+                width: fit-content
+            }
+
+            /* Preset chips */
+            &>div {
+                flex: 1;
+                display: flex;
+                flex-flow: row wrap;
+                align-items: center;
+                justify-content: center;
+                gap: 0.25rem;
+
+                & button {
+                    height: auto;
+                    min-height: 0;
+                    padding: 0.25rem 0.625rem;
+                    font-size: 0.75rem;
+                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                    color: var(--color-content-stark, oklch(20.5% 0 0));
+                    border: none;
+                    border-radius: calc(var(--radius, 0.5rem) * 2);
+                    cursor: pointer;
+                    transition: var(--transition, all .05s ease-in-out);
+
+                    &:hover {
+                        background: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 16%, transparent))
+                    }
+                }
+            }
+        }
+    }
+
+    /* Time dropdown */
+    :where(menu.time-options):not(.unstyle) {
+        position-area: end center;
+        position-try-fallbacks: flip-block;
+        width: max-content;
+        min-width: 0;
+        margin: 0;
+        padding: 0.25rem;
+        list-style: none;
+    }
+
+    /* Time columns — hours / minutes / (AM-PM + actions) */
+    .time-options {
+        flex-flow: row nowrap;
+        gap: 0.25rem;
+
+        /* Column */
+        &>div {
+            flex: 1;
+            min-width: 2.75rem;
+            max-height: 13rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            scrollbar-width: thin;
+        }
+
+        /* Option */
+        & button {
+            flex: none;
+            width: auto;
+            min-width: 0;
+            height: auto;
+            min-height: 0;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.8125rem;
+            font-variant-numeric: tabular-nums;
+            text-align: center;
+            justify-content: center;
+            background: transparent;
+            color: var(--color-content-stark, oklch(20.5% 0 0));
+            border: none;
+            border-radius: calc(var(--radius, 0.5rem) / 2);
+            cursor: pointer;
+            transition: var(--transition, all .05s ease-in-out);
+
+            &:hover {
+                background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            }
+
+            &[aria-selected=true] {
+                background: var(--color-brand-surface, var(--color-accent-surface, oklch(20.5% 0 0)));
+                color: var(--color-brand-inverse, var(--color-accent-inverse, oklch(98.5% 0 0)));
+                font-weight: 600
+            }
+        }
+
+        /* Now / Clear actions */
+        & button:not([value]) {
+            font-size: 0.75rem;
+            font-variant-numeric: normal;
+            color: var(--color-content-subtle, oklch(55.6% 0 0));
+
+            &:hover {
+                color: var(--color-content-stark, oklch(20.5% 0 0))
+            }
+        }
+
+        /* First action in a column drops to the bottom */
+        & button[value]+button:not([value]),
+        & button:not([value]):first-child {
+            margin-top: auto
+        }
+    }
+
+    /* Popover menu presentation */
+    :where(menu[popover][x-date], menu[popover].date-picker):not(.unstyle) {
+        margin: 0;
+        padding: 0;
+        list-style: none
+    }
+
+    /* RTL support */
+    [dir=rtl] :where([x-date], .date-picker):not(.unstyle) header {
+
+        & button:first-child::before,
+        & button:last-child::before {
+            transform: scaleX(-1)
+        }
+    }
+}
+
 /* Manifest Dialogs */
+/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
+   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
+   in any cascade layer, in any cherry-picked bundle. Only the closed state is
+   forced; an open popover's display is left to its layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
 
 @layer components {
 
@@ -1398,11 +2100,19 @@
 }
 
 /* Manifest Dropdowns */
+/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
+   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
+   in any cascade layer, in any cherry-picked bundle. Only the closed state is
+   forced; an open popover's display is left to its layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
 
 @layer components {
 
     :where(menu[popover], .dropdown-menu):where(:not(.unstyle)) {
-        position-try-fallbacks: flip-inline, flip-block, flip-start;
+        position-try-fallbacks: flip-inline, flip-block;
         position-area: end span-end;
         inset: auto;
         flex-flow: column nowrap;
@@ -1423,7 +2133,7 @@
         overflow-x: hidden;
 
         /* Options */
-        & :where(li, a, button, label) {
+        & :where(li, a, button, label):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -1519,9 +2229,7 @@
         background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
     }
 
-    /* Nested menu alignment. Same specificity-flattening trick as the base
-       rule above — keeps the per-class position rules below the nested
-       default in source order so they win when both apply. */
+    /* Nested menu alignment */
     :where(menu menu):where(:not(.unstyle)) {
         position-area: span-end end;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
@@ -1652,8 +2360,9 @@
 
 @layer components {
 
-    /* Group wrapper */
-    :where([role=group]:has(button, input, select)):not(.unstyle) {
+    /* Group & tab bar wrappers */
+    :where([role=group]:has(button, [role=button], input, select),
+        [role=tablist]:not(:has(>:not(button, a, [role=button], [role=tab], template)))):not(.unstyle) {
         display: flex;
         flex-flow: row nowrap;
         align-items: center;
@@ -1670,20 +2379,6 @@
             }
         }
 
-        &>*:first-child {
-            border-start-end-radius: 0;
-            border-end-end-radius: 0
-        }
-
-        &>*:not(:first-child):not(:last-child) {
-            border-radius: 0
-        }
-
-        &>*:last-child {
-            border-start-start-radius: 0;
-            border-end-start-radius: 0
-        }
-
         &.even>* {
             flex-shrink: initial;
             width: 100%
@@ -1691,6 +2386,78 @@
 
         & input {
             width: fit-content
+        }
+
+        /* Groups connect children with shared borders */
+        &:where([role=group]) {
+
+            &>*:first-child {
+                border-start-end-radius: 0;
+                border-end-end-radius: 0
+            }
+
+            &>*:not(:first-child):not(:last-child) {
+                border-radius: 0
+            }
+
+            &>*:last-child {
+                border-start-start-radius: 0;
+                border-end-start-radius: 0
+            }
+        }
+
+        /* Tab bar track */
+        &[role=tablist] {
+            position: relative;
+            isolation: isolate;
+            gap: calc(var(--spacing, 0.25rem) * 0.5);
+            height: var(--spacing-field-height, calc(var(--spacing) * 9));
+            padding: calc(var(--spacing, 0.25rem) / 2);
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+            border-radius: var(--radius, 0.5rem);
+            anchor-scope: --manifest-tab;
+
+            /* Concentric corners: child radius = track radius minus track padding */
+            &>* {
+                height: 100%;
+                background-color: transparent;
+                border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
+
+                &:hover:not(.selected, [aria-selected=true], [aria-current]) {
+                    background-color: color-mix(in oklch, var(--color-field-surface-hover, oklch(37.1% 0 0)) 40%, transparent)
+                }
+            }
+
+            /* Selected tab */
+            &>:is(.selected, [aria-selected=true], [aria-current]) {
+                background-color: var(--color-page, oklch(98.5% 0 0));
+                box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+            }
+
+            /* Background slider for selected tab */
+            @supports (anchor-name: --tab) {
+
+                &>:is(.selected, [aria-selected=true], [aria-current]) {
+                    anchor-name: --manifest-tab;
+                    background-color: transparent;
+                    box-shadow: none;
+                }
+
+                &:has(>:is(.selected, [aria-selected=true], [aria-current]))::before {
+                    content: "";
+                    position: absolute;
+                    z-index: -1;
+                    position-anchor: --manifest-tab;
+                    top: anchor(top);
+                    left: anchor(left);
+                    width: anchor-size(width);
+                    height: anchor-size(height);
+                    background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 75%, var(--color-field-inverse, oklch(43.9% 0 0)));
+                    border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
+                    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+                    transition: all 0.15s ease-in-out;
+                }
+            }
         }
     }
 
@@ -2415,6 +3182,14 @@
 }
 
 /* Manifest Sidebars */
+/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
+   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
+   in any cascade layer, in any cherry-picked bundle. Only the closed state is
+   forced; an open popover's display is left to its layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
 
 @layer components {
 
@@ -2428,6 +3203,8 @@
         overflow-y: auto;
         z-index: 200;
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
+        /* Opt out of the base scale-pop; sidebars slide instead. */
+        animation: none;
         transition: opacity .15s ease-in, transform .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;
 
@@ -2749,7 +3526,7 @@
                 width: 50%;
                 height: 50%;
                 background-color: var(--color-field-inverse, oklch(43.9% 0 0));
-                mask-image: var(--icon-toast-dismiss, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E"));
+                mask-image: var(--icon-dismiss, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E"));
                 mask-repeat: no-repeat;
                 mask-size: 100% 100%;
                 transform-origin: center;
@@ -2782,18 +3559,21 @@
 }
 
 /* Manifest Tooltips */
+/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
+   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
+   in any cascade layer, in any cherry-picked bundle. Only the closed state is
+   forced; an open popover's display is left to its layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
 
 @layer utilities {
 
-    :where(.tooltip[popover]) {
-        position: absolute;
-        position-try-fallbacks: flip-inline, flip-block, flip-start;
-        position-area: bottom;
-        inset: auto;
-        display: block;
+    /* Shared chrome — anchored x-tooltip popovers AND non-popover tooltips
+       (e.g. the charts plugin's cursor-following tip) */
+    :where(.tooltip) {
         width: fit-content;
-        max-width: 200px;
-        margin: var(--spacing-popover-offset, 0.5rem) 0;
         padding: calc(var(--spacing, 0.25rem) * .5) calc(var(--spacing, 0.25rem) * 2);
         font-size: 0.875rem;
         color: var(--color-page, oklch(98.5% 0 0));
@@ -2802,13 +3582,47 @@
         border-radius: var(--radius, 0.5rem);
         box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
 
-        &:hover {
-            transition-delay: var(--tooltip-hover-delay, .5s)
-        }
-
         /* Leading icon */
         & [x-icon]:first-child {
             margin-inline-end: 0.25rem
+        }
+    }
+
+    /* Anchored popover positioning + open/close behavior */
+    :where(.tooltip[popover]) {
+        position: absolute;
+        position-try-fallbacks: flip-inline, flip-block, flip-start;
+        position-area: bottom;
+        inset: auto;
+        display: block;
+        max-width: 200px;
+        margin: var(--spacing-popover-offset, 0.5rem) 0;
+
+        /* Tooltips keep their original transition-based fade/scale rather than the
+           shared scale-pop: the hover delay below needs a transition to act on,
+           and the `display: none` close (overriding `display: block` above) is
+           what hides them on mouse-off. */
+        animation: none;
+        transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
+        transition-behavior: allow-discrete;
+
+        /* Opening state */
+        @starting-style {
+            scale: .9;
+            opacity: 0
+        }
+
+        /* Closing state */
+        &:not(:popover-open) {
+            display: none !important;
+            scale: 1;
+            opacity: 0;
+            transition-duration: .15s;
+            transition-timing-function: ease-out
+        }
+
+        &:hover {
+            transition-delay: var(--tooltip-hover-delay, .5s)
         }
     }
 
@@ -3661,10 +4475,11 @@
 
     /* Ghost */
     :where(.ghost) {
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
         background-color: transparent;
 
         &:hover {
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            background-color: color-mix(in oklch, var(--color-field-surface, oklch(37.1% 0 0)) 50%, transparent)
         }
     }
 
@@ -3864,7 +4679,7 @@
             padding: calc(var(--spacing, 0.25rem) * 4);
             font-family: var(--font-sans);
             font-size: initial;
-            background-color: color-mix(var(--color-surface-1, oklch(97% 0 0)) 65%, transparent);
+            background-color: color-mix(in oklch, var(--color-surface-1, oklch(97% 0 0)) 65%, transparent);
             border: 0 none;
             border-radius: 0
         }

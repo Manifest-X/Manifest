@@ -795,8 +795,19 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         }
 
         // 4. From computed styles (if :root is available)
+        // Run even while document.readyState === 'loading'. This method is the
+        // constructor's only origin-independent variable source: getComputedStyle
+        // reads the resolved cascade regardless of stylesheet origin, whereas
+        // method 3 (CSSOM cssRules) throws on cross-origin sheets (e.g. the CDN
+        // build at cdn.jsdelivr.net). The classic <script> blocks on preceding
+        // stylesheets, so :root variables are already resolved here. Skipping
+        // this during 'loading' meant a CDN-hosted page captured zero variables
+        // synchronously, so the critical "all colors" fallback never ran and
+        // variable-derived utilities (bg-line, border-line, …) fell back to
+        // currentColor — pure white in dark mode / black in light — until the
+        // async compile finished.
         try {
-            if (document.documentElement && document.readyState !== 'loading') {
+            if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
                 let computedVars = 0;
                 for (let i = 0; i < rootStyles.length; i++) {
@@ -1021,8 +1032,13 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         }
 
         // Method 3: Check computed styles from :root (if available)
+        // Run even during readyState === 'loading' — getComputedStyle resolves
+        // the cascade from cross-origin stylesheets (CDN builds) that the CSSOM
+        // methods above cannot read. See addCriticalBlockingStylesSync for the
+        // full rationale: without this, CDN-hosted pages capture no variables
+        // synchronously and variable-derived utilities flash as currentColor.
         try {
-            if (document.readyState !== 'loading') {
+            if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
                 // Extract all CSS variables, not just color ones
                 const allProps = rootStyles.length;
@@ -2506,8 +2522,18 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         generateUtility(className, css);
                     }
 
-                    // Check for opacity variants of this utility
-                    const opacityVariants = usedClasses.filter(cls => {
+                    // Check for opacity variants of this utility. Collect the
+                    // bare opacity base class (e.g. `bg-black/10`) rather than the
+                    // full prefixed class (e.g. `backdrop:bg-black/10`). generateUtility
+                    // discovers and applies variant prefixes itself by matching the
+                    // trailing segment after the last `:`, so passing it the bare base
+                    // lets its variant loop emit the correct selector
+                    // (`.backdrop\:bg-black\/10::backdrop`). Passing the prefixed class
+                    // instead made generateUtility treat it as a plain base class and
+                    // emit a malformed `.backdrop\:bg-black\/10 { … }` rule with no
+                    // `::backdrop` pseudo-element.
+                    const opacityBaseClasses = new Set();
+                    for (const cls of usedClasses) {
                         // Parse the class to extract the base utility name
                         const parsed = this.parseClassName(cls);
                         const baseClass = parsed.baseClass;
@@ -2518,18 +2544,19 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                             if (baseWithoutOpacity === className) {
                                 const opacity = baseClass.split('/')[1];
                                 // Validate that the opacity is a number between 0-100
-                                return !isNaN(opacity) && opacity >= 0 && opacity <= 100;
+                                if (!isNaN(opacity) && opacity >= 0 && opacity <= 100) {
+                                    opacityBaseClasses.add(baseClass);
+                                }
                             }
                         }
-                        return false;
-                    });
+                    }
 
-                    // Generate opacity utilities for each variant found
-                    for (const variant of opacityVariants) {
-                        const opacity = variant.split('/')[1];
+                    // Generate opacity utilities for each opacity value found
+                    for (const opacityBaseClass of opacityBaseClasses) {
+                        const opacity = opacityBaseClass.split('/')[1];
                         const opacityValue = `color-mix(in oklch, ${value} ${opacity}%, transparent)`;
                         const opacityCss = css.replace(value, opacityValue);
-                        generateUtility(variant, opacityCss);
+                        generateUtility(opacityBaseClass, opacityCss);
                     }
                 }
             }

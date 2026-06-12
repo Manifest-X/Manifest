@@ -104,6 +104,25 @@ const CONFIG = {
         'appwrite/manifest.data.pagination.js'
     ],
 
+    // Payments subscripts order (provider-agnostic x-pay / $pay)
+    paymentsSubscripts: [
+        'manifest.payments.config.js',
+        'manifest.payments.adapters.js',
+        'manifest.payments.store.js',
+        'manifest.payments.core.js',
+        'manifest.payments.magic.js',
+        'manifest.payments.directive.js',
+        'manifest.payments.main.js'
+    ],
+
+    // Status subscripts order (signal layer — no UI)
+    statusSubscripts: [
+        'manifest.status.config.js',
+        'manifest.status.store.js',
+        'manifest.status.signals.js',
+        'manifest.status.main.js'
+    ],
+
     // Data Appwrite presence subscripts (for manifest.appwrite.presence.js)
     dataAppwritePresenceSubscripts: [
         'presence/manifest.data.presence.utils.js',
@@ -124,6 +143,8 @@ const CONFIG = {
         'scripts/router/**',
         'scripts/auth/**',
         'scripts/data/**',
+        'scripts/status/**',
+        'scripts/payments/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
@@ -195,6 +216,12 @@ function buildSubscripts() {
 
     // Build Appwrite presence
     combineSubscripts(CONFIG.dataAppwritePresenceSubscripts, 'manifest.appwrite.presence.js', 'data');
+
+    // Build payments
+    combineSubscripts(CONFIG.paymentsSubscripts, 'manifest.payments.js', 'payments');
+
+    // Build status
+    combineSubscripts(CONFIG.statusSubscripts, 'manifest.status.js', 'status');
 
     console.log('✓ Subscripts built successfully!\n');
 }
@@ -627,15 +654,19 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.code.js', dest: '../lib/manifest.code.js' },
         { source: 'scripts/manifest.components.js', dest: '../lib/manifest.components.js' },
         { source: 'scripts/manifest.colorpicker.js', dest: '../lib/manifest.colorpicker.js' },
+        { source: 'scripts/manifest.datepicker.js', dest: '../lib/manifest.datepicker.js' },
+        { source: 'scripts/manifest.charts.js', dest: '../lib/manifest.charts.js' },
         { source: 'scripts/manifest.data.js', dest: '../lib/manifest.data.js' },
         { source: 'scripts/manifest.dropdowns.js', dest: '../lib/manifest.dropdowns.js' },
         { source: 'scripts/manifest.export.js', dest: '../lib/manifest.export.js' },
         { source: 'scripts/manifest.icons.js', dest: '../lib/manifest.icons.js' },
         { source: 'scripts/manifest.localization.js', dest: '../lib/manifest.localization.js' },
         { source: 'scripts/manifest.markdown.js', dest: '../lib/manifest.markdown.js' },
+        { source: 'scripts/manifest.payments.js', dest: '../lib/manifest.payments.js' },
         { source: 'scripts/manifest.resize.js', dest: '../lib/manifest.resize.js' },
         { source: 'scripts/manifest.router.js', dest: '../lib/manifest.router.js' },
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
+        { source: 'scripts/manifest.status.js', dest: '../lib/manifest.status.js' },
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
         { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },
@@ -654,8 +685,10 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.accordion.css', dest: '../lib/manifest.accordion.css' },
         { source: 'styles/elements/manifest.avatar.css', dest: '../lib/manifest.avatar.css' },
         { source: 'styles/elements/manifest.button.css', dest: '../lib/manifest.button.css' },
+        { source: 'styles/elements/manifest.chart.css', dest: '../lib/manifest.chart.css' },
         { source: 'styles/elements/manifest.checkbox.css', dest: '../lib/manifest.checkbox.css' },
         { source: 'styles/elements/manifest.colorpicker.css', dest: '../lib/manifest.colorpicker.css' },
+        { source: 'styles/elements/manifest.datepicker.css', dest: '../lib/manifest.datepicker.css' },
         { source: 'styles/elements/manifest.dialog.css', dest: '../lib/manifest.dialog.css' },
         { source: 'styles/elements/manifest.divider.css', dest: '../lib/manifest.divider.css' },
         { source: 'styles/elements/manifest.dropdown.css', dest: '../lib/manifest.dropdown.css' },

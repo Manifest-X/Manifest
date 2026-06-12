@@ -209,8 +209,11 @@
 		'slides',
 		'resize',
 		'colorpicker',
+		'datepicker',
+		'charts',
 		'url-parameters',
-		'export'
+		'export',
+		'status'
 	];
 
 	// Appwrite integration plugins (opt-in only, never auto-loaded)
@@ -245,10 +248,12 @@
 			}
 			return false;
 		})();
+		const hasStatus = manifest.status && typeof manifest.status === 'object' && Object.keys(manifest.status).length > 0;
 		return AVAILABLE_PLUGINS.filter(p => {
 			if (p === 'data') return hasData;
 			if (p === 'localization') return hasLocalization;
 			if (p === 'components') return hasComponents;
+			if (p === 'status') return hasStatus;
 			return true;
 		});
 	}
@@ -388,6 +393,14 @@
 		return plugins;
 	}
 
+	// Detect the payments plugin from manifest.json content.
+	// Opt-in / auto-loaded only when a `payments` config block is present.
+	function detectPaymentsPlugins(manifest) {
+		if (!manifest || typeof manifest !== 'object') return [];
+		if (manifest.payments && typeof manifest.payments === 'object') return ['payments'];
+		return [];
+	}
+
 	// Parse data attributes
 	function parseDataAttributes() {
 		// Try to get current script first, then fall back to querySelector
@@ -469,7 +482,7 @@
 	// Expose API
 	window.Manifest = {
 		loadPlugin: function (pluginName, version = DEFAULT_VERSION) {
-			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS];
+			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, 'payments'];
 			if (!allPlugins.includes(pluginName)) {
 				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
 				return Promise.reject(new Error(`Unknown plugin: ${pluginName}`));
@@ -497,7 +510,7 @@
 
 		const MANIFEST_DEPENDENT_PLUGINS = [
 			'data', 'localization', 'components',
-			'appwrite-auth', 'appwrite-data', 'appwrite-presence'
+			'appwrite-auth', 'appwrite-data', 'appwrite-presence', 'payments'
 		];
 		const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
 
@@ -545,7 +558,8 @@
 				manifest = await fetch(manifestUrl).then(r => r.ok ? r.json() : null).catch(() => null);
 				const corePlugins = getDefaultPluginsFromManifest(manifest);
 				const appwritePlugins = detectAppwritePlugins(manifest);
-				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins]);
+				const paymentsPlugins = detectPaymentsPlugins(manifest);
+				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins, ...paymentsPlugins]);
 			} else {
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {

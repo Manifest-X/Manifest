@@ -80,8 +80,19 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         }
 
         // 4. From computed styles (if :root is available)
+        // Run even while document.readyState === 'loading'. This method is the
+        // constructor's only origin-independent variable source: getComputedStyle
+        // reads the resolved cascade regardless of stylesheet origin, whereas
+        // method 3 (CSSOM cssRules) throws on cross-origin sheets (e.g. the CDN
+        // build at cdn.jsdelivr.net). The classic <script> blocks on preceding
+        // stylesheets, so :root variables are already resolved here. Skipping
+        // this during 'loading' meant a CDN-hosted page captured zero variables
+        // synchronously, so the critical "all colors" fallback never ran and
+        // variable-derived utilities (bg-line, border-line, …) fell back to
+        // currentColor — pure white in dark mode / black in light — until the
+        // async compile finished.
         try {
-            if (document.documentElement && document.readyState !== 'loading') {
+            if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
                 let computedVars = 0;
                 for (let i = 0; i < rootStyles.length; i++) {
@@ -306,8 +317,13 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         }
 
         // Method 3: Check computed styles from :root (if available)
+        // Run even during readyState === 'loading' — getComputedStyle resolves
+        // the cascade from cross-origin stylesheets (CDN builds) that the CSSOM
+        // methods above cannot read. See addCriticalBlockingStylesSync for the
+        // full rationale: without this, CDN-hosted pages capture no variables
+        // synchronously and variable-derived utilities flash as currentColor.
         try {
-            if (document.readyState !== 'loading') {
+            if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
                 // Extract all CSS variables, not just color ones
                 const allProps = rootStyles.length;

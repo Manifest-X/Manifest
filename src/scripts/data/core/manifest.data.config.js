@@ -1,11 +1,17 @@
 /* Manifest Data Sources - Configuration */
 
-// Load manifest if not already loaded (loader may set __manifestLoaded / registry.manifest)
+// Load manifest if not already loaded (loader may set __manifestLoaded / registry.manifest).
+// Only trust a cached global if it looks like a real Manifest config — another plugin
+// doing `window.__manifestLoaded.foo = …` before the loader populates it (or in a
+// no-loader setup) can leave a stub without `data`/`components`, which would otherwise
+// mask every data source. Fall through to fetching the real manifest in that case.
 async function ensureManifest() {
-    if (window.ManifestComponentsRegistry?.manifest) {
+    const looksComplete = (m) => m && typeof m === 'object' &&
+        (m.data || m.components || m.preloadedComponents || m.appwrite || m.render);
+    if (looksComplete(window.ManifestComponentsRegistry?.manifest)) {
         return window.ManifestComponentsRegistry.manifest;
     }
-    if (window.__manifestLoaded) {
+    if (looksComplete(window.__manifestLoaded)) {
         return window.__manifestLoaded;
     }
 
