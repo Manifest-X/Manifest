@@ -12,23 +12,34 @@ const DEFAULT_MCP_URL = 'https://manifest-mcp.manifest-c5f.workers.dev/mcp';
 function parseArgs(argv) {
   let apiKey = process.env.MANIFEST_API_KEY || null;
   let mcpUrl = DEFAULT_MCP_URL;
+  let projectId = null;    // --project-id: non-secret id for the committed .mcp.json
+  let here = false;        // --here: install into the current directory, no subfolder
+  let displayName = null;  // --name: project display name when using --here
   const remaining = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--key' || arg === '--mcp-url') {
+    if (arg === '--key' || arg === '--mcp-url' || arg === '--name' || arg === '--project-id') {
       const value = argv[i + 1];
       if (!value || value.startsWith('--')) {
-        console.error(`Error: ${arg} requires a value (e.g. ${arg}=mfst_free_xxx)`);
+        console.error(`Error: ${arg} requires a value (e.g. ${arg}=value)`);
         process.exit(1);
       }
       if (arg === '--key') apiKey = value;
-      else mcpUrl = value;
+      else if (arg === '--mcp-url') mcpUrl = value;
+      else if (arg === '--project-id') projectId = value;
+      else displayName = value;
       i++;
     } else if (arg.startsWith('--key=')) {
       apiKey = arg.slice('--key='.length);
     } else if (arg.startsWith('--mcp-url=')) {
       mcpUrl = arg.slice('--mcp-url='.length);
+    } else if (arg.startsWith('--project-id=')) {
+      projectId = arg.slice('--project-id='.length);
+    } else if (arg.startsWith('--name=')) {
+      displayName = arg.slice('--name='.length);
+    } else if (arg === '--here' || arg === '.') {
+      here = true;
     } else if (arg === '--help' || arg === '-h') {
       printUsage();
       process.exit(0);
@@ -40,16 +51,21 @@ function parseArgs(argv) {
   return {
     apiKey: apiKey ? apiKey.trim() : null,
     mcpUrl: mcpUrl.trim(),
+    projectId: projectId ? projectId.trim() : null,
+    here,
+    displayName: displayName ? displayName.trim() : null,
     projectName: remaining.join(' ').trim(),
   };
 }
 
 function printUsage() {
-  console.log('Usage: npx mnfst-starter <project-name> [--key=<api-key>] [--mcp-url=<url>]');
+  console.log('Usage: npx mnfst-starter [<project-name> | --here] [--name "<name>"] [--key=<api-key>] [--mcp-url=<url>]');
   console.log('');
   console.log('Examples:');
-  console.log('  npx mnfst-starter MyProject');
+  console.log('  npx mnfst-starter MyProject                 # scaffold into ./MyProject');
   console.log('  npx mnfst-starter "Playcom Platform"');
+  console.log('  npx mnfst-starter --here                    # scaffold into the current folder');
+  console.log('  npx mnfst-starter --here --name "My Site"   # current folder, explicit name');
   console.log('  npx mnfst-starter MyProject --key=mfst_free_abc123');
   console.log('');
   console.log('When --key (or MANIFEST_API_KEY env var) is provided, the project is');
@@ -58,15 +74,19 @@ function printUsage() {
   console.log('to the Manifest MCP server on first launch.');
 }
 
-const { apiKey, mcpUrl, projectName } = parseArgs(process.argv.slice(2));
+const { apiKey, mcpUrl, projectId, here, displayName, projectName } = parseArgs(process.argv.slice(2));
 
-if (!projectName) {
+// In --here mode the project name comes from --name or the current folder's name;
+// otherwise it's the positional argument (which also becomes the subfolder name).
+const name = here ? (displayName || path.basename(process.cwd())) : projectName;
+
+if (!name) {
   printUsage();
   process.exit(1);
 }
 
 // Validate project name - allow letters, numbers, spaces, dots, underscores, hyphens; prevent path tricks
-if (!/^[a-zA-Z0-9._ -]+$/.test(projectName) || projectName.includes('..') || projectName.startsWith('.') || projectName.endsWith('.') || /^\s|\s$/.test(projectName)) {
+if (!/^[a-zA-Z0-9._ -]+$/.test(name) || name.includes('..') || name.startsWith('.') || name.endsWith('.') || /^\s|\s$/.test(name)) {
   console.error('Error: Project name must contain only letters, numbers, spaces, dots, underscores, and hyphens. Cannot start/end with dots or spaces, or contain consecutive dots.');
   process.exit(1);
 }
@@ -79,15 +99,21 @@ if (apiKey && !/^mfst_(free|live|test)_[A-Za-z0-9]{20,}$/.test(apiKey)) {
   process.exit(1);
 }
 
-const projectPath = path.resolve(process.cwd(), projectName);
+const projectPath = here ? process.cwd() : path.resolve(process.cwd(), name);
 
-// Check if directory already exists
-if (fs.existsSync(projectPath)) {
-  console.error(`Error: Directory "${projectName}" already exists`);
+if (here) {
+  // In-place: refuse only if this is already a Manifest project, to avoid
+  // clobbering one. Otherwise scaffold into the (possibly non-empty) folder.
+  if (fs.existsSync(path.join(projectPath, 'manifest.json'))) {
+    console.error('Error: this folder already contains a manifest.json — it looks like a Manifest project already. Aborting to avoid overwriting it.');
+    process.exit(1);
+  }
+} else if (fs.existsSync(projectPath)) {
+  console.error(`Error: Directory "${name}" already exists`);
   process.exit(1);
 }
 
-console.log(`Creating Manifest project: ${projectName}`);
+console.log(here ? `Creating Manifest project "${name}" in the current folder` : `Creating Manifest project: ${name}`);
 
 try {
   // Create project directory
@@ -97,7 +123,7 @@ try {
   const starterDir = path.join(__dirname, 'templates');
   const filesToCopy = [
     'components',
-    'icons',
+    'assets',
     '_redirects',
     '.gitignore',
     'favicon.ico',
@@ -107,9 +133,7 @@ try {
     'manifest.json',
     'manifest.theme.css',
     'privacy.md',
-    'README.md',
-    'robots.txt',
-    'sitemap.xml'
+    'README.md'
   ];
 
   filesToCopy.forEach(file => {
@@ -124,6 +148,19 @@ try {
       }
     }
   });
+
+  // Apply the project name to manifest.json (template ships a placeholder name).
+  const manifestPath = path.join(projectPath, 'manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const mf = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      mf.name = name;
+      mf.short_name = name.length > 12 ? name.slice(0, 12) : name;
+      fs.writeFileSync(manifestPath, JSON.stringify(mf, null, 2) + '\n');
+    } catch {
+      // Non-fatal: ship the template manifest.json as-is rather than break setup.
+    }
+  }
 
   // Create .gitignore
   const gitignore = `# Dependencies (if you add them later)
@@ -220,49 +257,72 @@ jspm_packages/
 
   fs.writeFileSync(path.join(projectPath, '.gitignore'), gitignore);
 
-  // If an API key was supplied, scaffold the Manifest MCP integration:
-  //   .env         — gitignored, holds the actual key
-  //   .mcp.json    — checked in, references ${MANIFEST_API_KEY} so Claude Code
-  //                  reads the key from the loaded environment at launch
-  if (apiKey) {
-    const envContent = [
-      '# Manifest MCP — populated by `npx mnfst-starter --key=...`.',
-      '# Treat this like a password. Do NOT commit (already in .gitignore).',
-      '# To rotate, run a new starter or update via the Manifest dashboard.',
-      `MANIFEST_API_KEY=${apiKey}`,
-      '',
-    ].join('\n');
-    fs.writeFileSync(path.join(projectPath, '.env'), envContent);
+  // Scaffold the Manifest MCP integration ONLY when this came through the
+  // MCP/AI flow — signalled by --project-id (preferred) or --key. A plain
+  // `npx mnfst-starter MyProject` (general framework users) writes none of this.
+  //
+  //   .mcp.json  — checked in. Carries the NON-SECRET project_id
+  //                (X-Manifest-Project); teammates connect via their own
+  //                sign-in + team membership, no shared key. (Legacy: if only a
+  //                key is given, falls back to the X-API-Key header form.)
+  //   .env       — gitignored, holds the actual key for headless/automation use
+  //                (scheduled agents, CI). Optional.
+  //   .claude/settings.json — pre-approves the manifest MCP tools.
+  const mcpWiring = Boolean(projectId || apiKey);
+  if (mcpWiring) {
+    if (apiKey) {
+      const envContent = [
+        '# Manifest API key — for headless/automation use (scheduled agents, CI).',
+        '# Treat this like a password. Do NOT commit (already in .gitignore).',
+        '# Interactive contributors connect via sign-in + team membership instead.',
+        `MANIFEST_API_KEY=${apiKey}`,
+        '',
+      ].join('\n');
+      fs.writeFileSync(path.join(projectPath, '.env'), envContent);
+    }
 
-    const mcpConfig = {
-      mcpServers: {
-        manifest: {
-          type: 'http',
-          url: mcpUrl,
-          headers: {
-            'X-API-Key': '${MANIFEST_API_KEY}',
-          },
-        },
-      },
-    };
+    const headers = projectId
+      ? { 'X-Manifest-Project': projectId }
+      : { 'X-API-Key': '${MANIFEST_API_KEY}' };
+    const mcpConfig = { mcpServers: { manifest: { type: 'http', url: mcpUrl, headers } } };
     fs.writeFileSync(
       path.join(projectPath, '.mcp.json'),
       JSON.stringify(mcpConfig, null, 2) + '\n',
+    );
+
+    // Pre-approve the Manifest MCP tools, and wire the design-guard hook. The
+    // hook script (.claude/hooks/ui-guard.mjs) is delivered by
+    // manifest_install_skills; here we only register it (no-ops until present).
+    const claudeDir = path.join(projectPath, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const guardCommand = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/ui-guard.mjs"';
+    const settings = {
+      permissions: { allow: ['mcp__manifest'] },
+      hooks: {
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: guardCommand }] }],
+        PreToolUse: [
+          { matcher: 'Write|Edit|MultiEdit', hooks: [{ type: 'command', command: guardCommand }] },
+        ],
+      },
+    };
+    fs.writeFileSync(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify(settings, null, 2) + '\n',
     );
   }
 
   console.log(`Project created successfully.`);
   console.log(`Location: ${projectPath}`);
-  if (apiKey) {
+  if (mcpWiring) {
     console.log('');
     console.log('Manifest MCP wired up:');
-    console.log('  .env       — your API key (gitignored)');
-    console.log('  .mcp.json  — MCP server config (safe to commit)');
+    console.log('  .mcp.json  — connects this project (safe to commit)');
+    if (apiKey) console.log('  .env       — API key for headless/automation (gitignored)');
     console.log('');
-    console.log('Next: `cd ' + projectName + ' && claude` to open in Claude Code,');
-    console.log('then `/init` to install the curated Manifest skills for your project.');
+    console.log('Next: preview it locally with `npx mnfst-run` (http://localhost:5001),');
+    console.log('or open the folder in Claude Code and ask it to build your site.');
   } else {
-    console.log(`See README.md for more details.`);
+    console.log(`See README.md for more details, or run \`npx mnfst-run\` to preview locally.`);
   }
 
 } catch (error) {
