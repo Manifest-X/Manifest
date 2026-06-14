@@ -1,0 +1,36 @@
+{
+  "name": "mnfst-publish",
+  "version": "0.1.0",
+  "description": "One-command managed publishing for Manifest projects — render, zip, upload, live URL.",
+  "type": "module",
+  "bin": {
+    "mnfst-publish": "./bin/mnfst-publish.js"
+  },
+  "files": [
+    "bin",
+    "manifest.publish.mjs",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "manifest",
+    "mnfst",
+    "publish",
+    "deploy",
+    "hosting",
+    "static",
+    "ci"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Andrew Matlock",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrewmatlock/Manifest.git",
+    "directory": "packages/publish"
+  }
+}
