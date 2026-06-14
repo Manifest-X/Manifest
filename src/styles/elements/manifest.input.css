@@ -92,7 +92,7 @@
     :where(label, .label):has([type=file]):not(.unstyle) {
         justify-content: center;
         gap: var(--spacing, 0.25rem);
-        height: var(--spacing-field-height, 2.25rem);
+        min-height: var(--spacing-field-height, 2.25rem);
         cursor: pointer
     }
 

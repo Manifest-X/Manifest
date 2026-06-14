@@ -169,9 +169,10 @@ function initializeDropdownPlugin() {
                     // conflicts with multi-touch trackpad right-click
                     menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
 
-                    // Set up anchor positioning
+                    // Anchor positioning ( --trigger-anchor is the reuse slot )
                     const anchorName = `--dropdown-${anchorCode}`;
-                    el.style.setProperty('anchor-name', anchorName);
+                    el.style.setProperty('anchor-name', `${anchorName}, var(--co-anchor, --no-anchor)`);
+                    el.style.setProperty('--trigger-anchor', anchorName);
                     menu.style.setProperty('position-anchor', anchorName);
 
                     // ----- A11y wiring (WAI-ARIA Menu Button pattern) -----

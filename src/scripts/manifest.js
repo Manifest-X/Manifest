@@ -197,6 +197,20 @@
 		}
 	}
 
+	// Mark <html> with .window-resizing while the viewport is being resized so
+	// CSS can suspend layout-tracking transitions (e.g. the tab bar slider)
+	if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+		let resizeIdleTimer = null;
+		window.addEventListener('resize', () => {
+			document.documentElement.classList.add('window-resizing');
+			if (resizeIdleTimer) clearTimeout(resizeIdleTimer);
+			resizeIdleTimer = setTimeout(() => {
+				document.documentElement.classList.remove('window-resizing');
+				resizeIdleTimer = null;
+			}, 200);
+		}, { passive: true });
+	}
+
 	// Configuration
 	const DEFAULT_VERSION = 'latest';
 	const ALPINE_CDN_URL = 'https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js';

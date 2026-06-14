@@ -1044,8 +1044,14 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             }
         }
 
-        // If no match found, warn and return null
-        console.warn(`Unknown variant: ${variant}`);
+        // If no match found, warn once per unique token and return null.
+        // Deduped so unsupported variants (e.g. container queries like
+        // `@[10rem]:`) don't flood the console on every compile pass.
+        if (!this._warnedVariants) this._warnedVariants = new Set();
+        if (!this._warnedVariants.has(variant)) {
+            this._warnedVariants.add(variant);
+            console.warn(`Unknown variant: ${variant}`);
+        }
         return null;
     }).filter(Boolean);
 

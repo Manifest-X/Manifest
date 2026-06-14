@@ -12,13 +12,8 @@
         width: fit-content;
         max-width: 100%;
 
-        &>* {
-            flex-basis: auto;
-            flex-shrink: 0;
-
-            &:focus {
-                z-index: 1
-            }
+        &>*:focus {
+            z-index: 1
         }
 
         &.even>* {
@@ -55,12 +50,14 @@
             gap: calc(var(--spacing, 0.25rem) * 0.5);
             height: var(--spacing-field-height, calc(var(--spacing) * 9));
             padding: calc(var(--spacing, 0.25rem) / 2);
-            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+            background-color: color-mix(in oklch, var(--color-field-surface, oklch(20.5% 0 0)) 50%, transparent);
             border-radius: var(--radius, 0.5rem);
             anchor-scope: --selected-tab;
 
-            /* Concentric corners: child radius = track radius minus track padding */
+            /* Concentric corners */
             &>* {
+                flex-grow: 1;
+                min-height: 0;
                 height: 100%;
                 background-color: transparent;
                 border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
@@ -72,18 +69,18 @@
 
             /* Selected tab */
             &>:is(.selected, [aria-selected=true], [aria-current]) {
-                background-color: var(--color-page, oklch(98.5% 0 0));
+                color: var(--color-page, oklch(98.5% 0 0));
+                background-color: var(--color-content-stark, oklch(20.5% 0 0));
                 box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
             }
 
-            /* Background slider for selected tab */
-            @supports (anchor-name: --tab) {
+            /* Background slider for selected tab) */
+            @supports (anchor-scope: --tab) {
 
                 &>:is(.selected, [aria-selected=true], [aria-current]) {
-                    /* --anchor lets inline anchor-name writers (e.g. tooltips)
-                       compose with the slider anchor instead of clobbering it */
+                    /* --co-anchor lets inline anchor-name writers (e.g. tooltips) compose with the slider anchor */
                     anchor-name: --selected-tab;
-                    --anchor: --selected-tab;
+                    --co-anchor: --selected-tab;
                     background-color: transparent;
                     box-shadow: none;
                 }
@@ -97,10 +94,16 @@
                     left: anchor(left);
                     width: anchor-size(width);
                     height: anchor-size(height);
-                    background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 75%, var(--color-field-inverse, oklch(43.9% 0 0)));
+                    background-color: var(--color-content-stark, oklch(20.5% 0 0));
                     border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
                     box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
-                    transition: all 0.15s ease-in-out;
+                    transition: var(--tab-slide-transition, all 0.15s ease-in-out);
+                }
+
+                /* Track the tab rigidly during continuous reflow (drag-to-resize, window resize) */
+                :where(.resizable-dragging) &,
+                :where(.window-resizing) & {
+                    --tab-slide-transition: none
                 }
             }
         }
@@ -197,7 +200,7 @@
         }
 
         /* Size buttons and inputs */
-        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea) {
+        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist]) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }

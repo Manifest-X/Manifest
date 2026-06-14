@@ -1241,10 +1241,7 @@
                     }
                 }
 
-                /* Per-stop solid panel (inside the open-stop accordion) — keep the
-                   canvas compact so the menu stays well-proportioned even when the
-                   parent picker is gradient-only and the menu inherits its height
-                   from this nested panel. */
+                /* Per-stop solid panel */
                 & [x-colorpicker\.solid] {
                     padding: 0;
 
@@ -1912,10 +1909,6 @@
 }
 
 /* Manifest Dialogs */
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -2100,10 +2093,6 @@
 }
 
 /* Manifest Dropdowns */
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -2133,7 +2122,7 @@
         overflow-x: hidden;
 
         /* Options */
-        & :where(li, a, button, label):not(.unstyle) {
+        & :where(li, a, button, [role=button], label):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -2213,6 +2202,17 @@
 
             &:not(:first-child) {
                 margin-top: var(--spacing, 0.25rem)
+            }
+        }
+
+        /* Groups and tablists */
+        & :where([role=group], [role=tablist]) {
+            min-width: calc(100% - var(--spacing-field-padding));
+            margin-left: auto;
+            margin-right: auto;
+
+            & :where(a, button, [role=button]) {
+                justify-content: center
             }
         }
 
@@ -2370,13 +2370,8 @@
         width: fit-content;
         max-width: 100%;
 
-        &>* {
-            flex-basis: auto;
-            flex-shrink: 0;
-
-            &:focus {
-                z-index: 1
-            }
+        &>*:focus {
+            z-index: 1
         }
 
         &.even>* {
@@ -2413,12 +2408,14 @@
             gap: calc(var(--spacing, 0.25rem) * 0.5);
             height: var(--spacing-field-height, calc(var(--spacing) * 9));
             padding: calc(var(--spacing, 0.25rem) / 2);
-            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+            background-color: color-mix(in oklch, var(--color-field-surface, oklch(20.5% 0 0)) 50%, transparent);
             border-radius: var(--radius, 0.5rem);
-            anchor-scope: --manifest-tab;
+            anchor-scope: --selected-tab;
 
-            /* Concentric corners: child radius = track radius minus track padding */
+            /* Concentric corners */
             &>* {
+                flex-grow: 1;
+                min-height: 0;
                 height: 100%;
                 background-color: transparent;
                 border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
@@ -2430,18 +2427,18 @@
 
             /* Selected tab */
             &>:is(.selected, [aria-selected=true], [aria-current]) {
-                background-color: var(--color-page, oklch(98.5% 0 0));
+                color: var(--color-page, oklch(98.5% 0 0));
+                background-color: var(--color-content-stark, oklch(20.5% 0 0));
                 box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
             }
 
-            /* Background slider for selected tab */
-            @supports (anchor-name: --tab) {
+            /* Background slider for selected tab) */
+            @supports (anchor-scope: --tab) {
 
                 &>:is(.selected, [aria-selected=true], [aria-current]) {
-                    /* --mnfst-anchor lets inline anchor-name writers (e.g. tooltips)
-                       compose with the slider anchor instead of clobbering it */
-                    anchor-name: --manifest-tab;
-                    --mnfst-anchor: --manifest-tab;
+                    /* --co-anchor lets inline anchor-name writers (e.g. tooltips) compose with the slider anchor */
+                    anchor-name: --selected-tab;
+                    --co-anchor: --selected-tab;
                     background-color: transparent;
                     box-shadow: none;
                 }
@@ -2450,15 +2447,21 @@
                     content: "";
                     position: absolute;
                     z-index: -1;
-                    position-anchor: --manifest-tab;
+                    position-anchor: --selected-tab;
                     top: anchor(top);
                     left: anchor(left);
                     width: anchor-size(width);
                     height: anchor-size(height);
-                    background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 75%, var(--color-field-inverse, oklch(43.9% 0 0)));
+                    background-color: var(--color-content-stark, oklch(20.5% 0 0));
                     border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
                     box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
-                    transition: all 0.15s ease-in-out;
+                    transition: var(--tab-slide-transition, all 0.15s ease-in-out);
+                }
+
+                /* Track the tab rigidly during continuous reflow (drag-to-resize, window resize) */
+                :where(.resizable-dragging) &,
+                :where(.window-resizing) & {
+                    --tab-slide-transition: none
                 }
             }
         }
@@ -2555,7 +2558,7 @@
         }
 
         /* Size buttons and inputs */
-        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea) {
+        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist]) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }
@@ -2682,7 +2685,7 @@
     :where(label, .label):has([type=file]):not(.unstyle) {
         justify-content: center;
         gap: var(--spacing, 0.25rem);
-        height: var(--spacing-field-height, 2.25rem);
+        min-height: var(--spacing-field-height, 2.25rem);
         cursor: pointer
     }
 
@@ -3185,10 +3188,6 @@
 }
 
 /* Manifest Sidebars */
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -3562,10 +3561,6 @@
 }
 
 /* Manifest Tooltips */
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -3600,11 +3595,6 @@
         display: block;
         max-width: 200px;
         margin: var(--spacing-popover-offset, 0.5rem) 0;
-
-        /* Tooltips keep their original transition-based fade/scale rather than the
-           shared scale-pop: the hover delay below needs a transition to act on,
-           and the `display: none` close (overriding `display: block` above) is
-           what hides them on mouse-off. */
         animation: none;
         transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;
@@ -4817,7 +4807,7 @@
     :where(.trailing) {
         display: inline-block;
         margin-inline-start: auto;
-        color: var(--color-content-neutral, oklch(43.9% 0 0))
+        color: var(--color-content-subtle, oklch(55.6% 0 0))
     }
 
     /* Brand colors */
@@ -4872,4 +4862,42 @@
     :where(.subtle) {
         color: var(--color-content-subtle, oklch(55.6% 0 0))
     }
+
+    /* Visibility — viewport */
+    @media (min-width: 640px) {
+        .mobile-only { display: none !important }
+    }
+
+    @media (max-width: 639.98px) {
+        .desktop-only { display: none !important }
+    }
+
+    /* Visibility — input device (independent of viewport) */
+    @media (pointer: fine) {
+        .touch-only { display: none !important }
+    }
+
+    @media not all and (pointer: fine) and (hover: hover) {
+        .cursor-only { display: none !important }
+    }
+
+    @media not all and (any-pointer: fine) {
+        .pointer-only { display: none !important }
+    }
+
+    /* Visibility — operating system (html[data-os] set by the utilities plugin) */
+    html:not([data-os="macos"]) .mac-only { display: none !important }
+    html:not([data-os="windows"]) .windows-only { display: none !important }
+    html:not([data-os="linux"]) .linux-only { display: none !important }
+    html:not([data-os="ios"]) .ios-only { display: none !important }
+    html:not([data-os="android"]) .android-only { display: none !important }
+    html:not([data-os="macos"]):not([data-os="ios"]) .apple-only { display: none !important }
+
+    /* Visibility — operating system omission */
+    html[data-os="macos"] .no-mac { display: none !important }
+    html[data-os="windows"] .no-windows { display: none !important }
+    html[data-os="linux"] .no-linux { display: none !important }
+    html[data-os="ios"] .no-ios { display: none !important }
+    html[data-os="android"] .no-android { display: none !important }
+    html[data-os="macos"] .no-apple, html[data-os="ios"] .no-apple { display: none !important }
 }

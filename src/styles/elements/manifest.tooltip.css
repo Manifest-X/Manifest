@@ -1,9 +1,5 @@
 /* Manifest Tooltips */
 
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -55,11 +51,6 @@
         display: block;
         max-width: 200px;
         margin: var(--spacing-popover-offset, 0.5rem) 0;
-
-        /* Tooltips keep their original transition-based fade/scale rather than the
-           shared scale-pop: the hover delay below needs a transition to act on,
-           and the `display: none` close (overriding `display: block` above) is
-           what hides them on mouse-off. */
         animation: none;
         transition: opacity .15s ease-in, scale .15s ease-in, display .15s ease-in;
         transition-behavior: allow-discrete;

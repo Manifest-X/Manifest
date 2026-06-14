@@ -1,9 +1,5 @@
 /* Manifest Dropdowns */
 
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -50,7 +46,7 @@
         overflow-x: hidden;
 
         /* Options */
-        & :where(li, a, button, label):not(.unstyle) {
+        & :where(li, a, button, [role=button], label):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -130,6 +126,17 @@
 
             &:not(:first-child) {
                 margin-top: var(--spacing, 0.25rem)
+            }
+        }
+
+        /* Groups and tablists */
+        & :where([role=group], [role=tablist]) {
+            min-width: calc(100% - var(--spacing-field-padding));
+            margin-left: auto;
+            margin-right: auto;
+
+            & :where(a, button, [role=button]) {
+                justify-content: center
             }
         }
 

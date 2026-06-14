@@ -1,9 +1,5 @@
 /* Manifest Dialogs */
 
-/* A closed popover stays hidden even when a layout utility (.col/.row/.grid,
-   Tailwind flex) sets display on it — UNLAYERED so it outranks those utilities
-   in any cascade layer, in any cherry-picked bundle. Only the closed state is
-   forced; an open popover's display is left to its layout classes. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }

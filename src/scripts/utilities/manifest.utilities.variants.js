@@ -199,6 +199,19 @@ function createVariants() {
         // Starting style
         'starting': '@starting-style',
 
+        // Device / input modality (breakpoint-independent, pure media queries)
+        'touch': '@media (pointer: coarse)',
+        'cursor': '@media (pointer: fine) and (hover: hover)',
+        'pointer': '@media (any-pointer: fine)',
+
+        // Operating system (html[data-os] is set by the utilities plugin)
+        'mac': 'html[data-os="macos"] &',
+        'windows': 'html[data-os="windows"] &',
+        'linux': 'html[data-os="linux"] &',
+        'ios': 'html[data-os="ios"] &',
+        'android': 'html[data-os="android"] &',
+        'apple': 'html[data-os="macos"] &, html[data-os="ios"] &',
+
         // Data attribute variants (common patterns)
         'data-open': '[data-state="open"] &',
         'data-closed': '[data-state="closed"] &',
@@ -262,6 +275,8 @@ function createVariantGroups() {
         'pseudo': ['before', 'after', 'first-letter', 'first-line', 'marker', 'selection', 'file', 'backdrop'],
         'media': ['dark', 'light', 'motion-safe', 'motion-reduce', 'print', 'portrait', 'landscape', 'rtl', 'ltr', 'can-hover', 'can-not-hover', 'any-hover', 'any-hover-none', 'color', 'monochrome', 'inverted-colors', 'inverted-colors-none', 'update', 'update-slow', 'update-none', 'overflow-block', 'overflow-block-paged', 'overflow-inline', 'overflow-inline-auto', 'prefers-color-scheme', 'prefers-color-scheme-light', 'prefers-contrast', 'prefers-contrast-less', 'prefers-contrast-no-preference', 'prefers-reduced-motion', 'prefers-reduced-motion-no-preference', 'prefers-reduced-transparency', 'prefers-reduced-transparency-no-preference', 'resolution', 'resolution-low', 'resolution-high', 'scan', 'scan-interlace', 'scripting', 'scripting-none', 'scripting-initial-only', 'forced-colors', 'contrast-more', 'contrast-less', 'pointer-fine', 'pointer-coarse', 'pointer-none', 'any-pointer-fine', 'any-pointer-coarse', 'any-pointer-none', 'scripting-enabled'],
         'responsive': ['sm', 'md', 'lg', 'xl', '2xl'],
+        'device': ['touch', 'cursor', 'pointer'],
+        'os': ['mac', 'windows', 'linux', 'ios', 'android', 'apple'],
         'group': ['group', 'group-hover', 'group-focus', 'group-active', 'group-disabled', 'group-checked', 'group-required', 'group-valid', 'group-invalid'],
         'peer': ['peer', 'peer-hover', 'peer-focus', 'peer-active', 'peer-disabled', 'peer-checked', 'peer-required', 'peer-valid', 'peer-invalid'],
         'data': ['data-open', 'data-closed', 'data-checked', 'data-unchecked', 'data-visible', 'data-hidden', 'data-disabled', 'data-loading', 'data-error', 'data-success', 'data-warning', 'data-selected', 'data-highlighted', 'data-pressed', 'data-expanded', 'data-collapsed', 'data-active', 'data-inactive', 'data-valid', 'data-invalid', 'data-required', 'data-optional', 'data-readonly', 'data-write'],

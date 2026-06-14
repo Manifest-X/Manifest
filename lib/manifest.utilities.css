@@ -382,7 +382,7 @@
     :where(.trailing) {
         display: inline-block;
         margin-inline-start: auto;
-        color: var(--color-content-neutral, oklch(43.9% 0 0))
+        color: var(--color-content-subtle, oklch(55.6% 0 0))
     }
 
     /* Brand colors */
@@ -437,4 +437,42 @@
     :where(.subtle) {
         color: var(--color-content-subtle, oklch(55.6% 0 0))
     }
+
+    /* Visibility — viewport */
+    @media (min-width: 640px) {
+        .mobile-only { display: none !important }
+    }
+
+    @media (max-width: 639.98px) {
+        .desktop-only { display: none !important }
+    }
+
+    /* Visibility — input device (independent of viewport) */
+    @media (pointer: fine) {
+        .touch-only { display: none !important }
+    }
+
+    @media not all and (pointer: fine) and (hover: hover) {
+        .cursor-only { display: none !important }
+    }
+
+    @media not all and (any-pointer: fine) {
+        .pointer-only { display: none !important }
+    }
+
+    /* Visibility — operating system (html[data-os] set by the utilities plugin) */
+    html:not([data-os="macos"]) .mac-only { display: none !important }
+    html:not([data-os="windows"]) .windows-only { display: none !important }
+    html:not([data-os="linux"]) .linux-only { display: none !important }
+    html:not([data-os="ios"]) .ios-only { display: none !important }
+    html:not([data-os="android"]) .android-only { display: none !important }
+    html:not([data-os="macos"]):not([data-os="ios"]) .apple-only { display: none !important }
+
+    /* Visibility — operating system omission */
+    html[data-os="macos"] .no-mac { display: none !important }
+    html[data-os="windows"] .no-windows { display: none !important }
+    html[data-os="linux"] .no-linux { display: none !important }
+    html[data-os="ios"] .no-ios { display: none !important }
+    html[data-os="android"] .no-android { display: none !important }
+    html[data-os="macos"] .no-apple, html[data-os="ios"] .no-apple { display: none !important }
 }
