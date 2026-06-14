@@ -27,19 +27,38 @@ async function ensureManifest() {
     }
 }
 
-// Helper to interpolate environment variables
+// Interpolate ${VAR} placeholders in a string against window.env. Only
+// PUBLIC_-prefixed vars reach window.env (the mnfst-run dev server filters
+// .env by that prefix to keep server-side secrets like MANIFEST_API_KEY out
+// of the browser). Misses warn once per name so a missing var doesn't fail
+// silently downstream as an empty URL / endpoint.
+const _warnedMissingEnv = new Set();
 function interpolateEnvVars(str) {
     if (typeof str !== 'string') return str;
     return str.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-        // Check for environment variables (in browser, these would be set by build process)
         if (typeof process !== 'undefined' && process.env && process.env[varName]) {
             return process.env[varName];
         }
-        // Check for window.env (common pattern for client-side env vars)
         if (typeof window !== 'undefined' && window.env && window.env[varName]) {
             return window.env[varName];
         }
-        // Return original if not found
+        if (!_warnedMissingEnv.has(varName)) {
+            _warnedMissingEnv.add(varName);
+            if (!varName.startsWith('PUBLIC_')) {
+                console.warn(
+                    `[Manifest Data] data source references \${${varName}}, but only ` +
+                    `PUBLIC_-prefixed env vars are injected into window.env by mnfst-run. ` +
+                    `Rename to PUBLIC_${varName}, hardcode the value, or supply it via ` +
+                    `<script>window.env = {…}</script>. Leaving placeholder literal.`
+                );
+            } else {
+                console.warn(
+                    `[Manifest Data] data source references \${${varName}}, but it is not ` +
+                    `present in window.env. Add ${varName}=… to .env (read by mnfst-run) ` +
+                    `or set it via <script>window.env = {…}</script>. Leaving placeholder literal.`
+                );
+            }
+        }
         return match;
     });
 }

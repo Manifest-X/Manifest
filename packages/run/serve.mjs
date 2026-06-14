@@ -123,13 +123,23 @@ const LIVE_RELOAD_SCRIPT = `<script>
 })();
 \x3c/script>`;
 
-// Read a dotenv-style file from the project root and return a plain object.
-// Used to populate `window.env` in served HTML so manifest.json's `${VAR}`
-// placeholders resolve at runtime — matching the documented developer-facing
-// behaviour without requiring a build step. Returns {} when the file is
-// absent or fails to parse.
+// Read a dotenv-style file from the project root and return two maps: `public`
+// (vars eligible to ship to the browser) and `private` (vars kept server-side).
+// Only the public map is injected into `window.env`; the private map is logged
+// at startup so devs can see what was withheld, but never reaches HTML.
 //
-// Supported subset (intentionally minimal, no expansion / multiline / etc.):
+// Public/private split is by name prefix — matching the established convention
+// (Astro `PUBLIC_`, SvelteKit `PUBLIC_`, Vite `VITE_`, Next `NEXT_PUBLIC_`):
+//   - PUBLIC_FOO=…   → exposed via window.env.PUBLIC_FOO
+//   - MANIFEST_API_KEY=…, STRIPE_SECRET=…, anything else → server-side only
+//
+// Rationale: prior versions injected the entire .env, so the scaffold's own
+// MANIFEST_API_KEY (which create-starter writes with a "treat like a password"
+// comment) was visible in view-source on every served page. The prefix gate
+// makes the rule explicit at the call site rather than relying on devs to know
+// that .env values reach the browser.
+//
+// Supported parse subset (intentionally minimal, no expansion / multiline):
 //   - KEY=value                  (whitespace around `=` ok)
 //   - KEY="quoted"  /  KEY='…'   (surrounding quotes stripped)
 //   - # comments and blank lines ignored
@@ -142,8 +152,9 @@ const LIVE_RELOAD_SCRIPT = `<script>
 // by the host. See the Appwrite setup doc for the full pattern.
 function loadEnvFile(rootDir) {
   const envPath = join(rootDir, '.env');
-  if (!existsSync(envPath)) return {};
-  const env = {};
+  if (!existsSync(envPath)) return { public: {}, private: [] };
+  const publicEnv = {};
+  const privateNames = [];
   try {
     const text = readFileSync(envPath, 'utf8');
     for (const line of text.split(/\r?\n/)) {
@@ -158,22 +169,24 @@ function loadEnvFile(rootDir) {
           (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);
       }
-      env[key] = value;
+      if (key.startsWith('PUBLIC_')) publicEnv[key] = value;
+      else privateNames.push(key);
     }
   } catch (error) {
     console.warn('[mnfst-run] Failed to parse .env:', error.message);
   }
-  return env;
+  return { public: publicEnv, private: privateNames };
 }
 
-// Build a `<script>window.env = {…};</script>` tag from a parsed env map.
-// Returns '' when there are no vars (so the injection is a no-op for projects
-// without a .env). Escapes any `</script` substring inside string values so an
-// env value can't break out of the script tag.
-function buildEnvInjectScript(envVars) {
-  const keys = Object.keys(envVars);
+// Build a `<script>window.env = {…};</script>` tag from the public env map.
+// Returns '' when there are no public vars (so the injection is a no-op for
+// projects whose .env contains only server-side secrets). Escapes any
+// `</script` substring inside string values so an env value can't break out
+// of the script tag.
+function buildEnvInjectScript(publicEnv) {
+  const keys = Object.keys(publicEnv);
   if (keys.length === 0) return '';
-  const json = JSON.stringify(envVars).replace(/<\/script/gi, '<\\/script');
+  const json = JSON.stringify(publicEnv).replace(/<\/script/gi, '<\\/script');
   return `<script>window.env = ${json};</script>`;
 }
 
@@ -331,13 +344,22 @@ const root = resolve(process.cwd(), dir);
 
 // Load .env from the serving root (if present) and pre-build the inject
 // script. Kept as a single string so serveFile doesn't re-stringify on every
-// HTML response. Empty string when no .env exists — the injection step
-// becomes a no-op for projects that don't use env vars.
-const envVars = loadEnvFile(root);
-const envInjectScript = buildEnvInjectScript(envVars);
-const envCount = Object.keys(envVars).length;
-if (envCount > 0) {
-  console.log(`Loaded ${envCount} env var(s) from .env into window.env`);
+// HTML response. Empty string when no public vars exist — the injection step
+// becomes a no-op for projects whose .env holds only server-side secrets.
+const { public: publicEnv, private: privateEnvNames } = loadEnvFile(root);
+const envInjectScript = buildEnvInjectScript(publicEnv);
+const publicCount = Object.keys(publicEnv).length;
+if (publicCount > 0) {
+  console.log(`Loaded ${publicCount} PUBLIC_ env var(s) into window.env`);
+}
+if (privateEnvNames.length > 0) {
+  // Loud about what was withheld so devs notice when something they expected
+  // in the browser is server-side only — and so a misplaced PUBLIC_ prefix is
+  // obvious from the startup log.
+  console.log(
+    `[mnfst-run] ${privateEnvNames.length} non-PUBLIC_ var(s) NOT injected ` +
+    `into window.env (kept server-side): ${privateEnvNames.join(', ')}`
+  );
 }
 
 // Dedup: if a server is already serving this exact root, point the user at
@@ -467,11 +489,12 @@ function serveFile(res, filePath) {
     // Only inject into full HTML documents — not component fragments
     const isFullDoc = /<!doctype\s/i.test(html) || /<html[\s>]/i.test(html);
     if (isFullDoc) {
-      // 1) Inject window.env into <head> (when .env present) so the
+      // 1) Inject window.env into <head> (when public env vars exist) so the
       //    framework's manifest.json env-var substitution can resolve
       //    `${VAR}` placeholders before any plugin reads the manifest.
       //    Must come BEFORE framework scripts execute — <head> insertion
       //    guarantees that ordering regardless of where script tags sit.
+      //    ONLY PUBLIC_-prefixed vars are eligible; see loadEnvFile().
       let injected = html;
       if (envInjectScript) {
         injected = injected.includes('</head>')

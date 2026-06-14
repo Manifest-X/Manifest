@@ -275,6 +275,11 @@ jspm_packages/
         '# Manifest API key — for headless/automation use (scheduled agents, CI).',
         '# Treat this like a password. Do NOT commit (already in .gitignore).',
         '# Interactive contributors connect via sign-in + team membership instead.',
+        '',
+        '# Server-side only: NOT prefixed with PUBLIC_, so mnfst-run does NOT inject',
+        '# it into window.env. Only PUBLIC_* vars reach the browser — any other env',
+        '# var you add here stays server-side. To expose a value to manifest.json',
+        '# (e.g. a public API URL), name it PUBLIC_… and reference it as ${PUBLIC_…}.',
         `MANIFEST_API_KEY=${apiKey}`,
         '',
       ].join('\n');
