@@ -125,7 +125,8 @@ try {
     'components',
     'assets',
     '_redirects',
-    '.gitignore',
+    // .gitignore is handled separately (merge-not-clobber) so --here into an
+    // existing repo preserves the user's own ignore rules.
     'favicon.ico',
     'index.html',
     'LICENSE.md',
@@ -255,7 +256,26 @@ jspm_packages/
 .dynamodb/
 `;
 
-  fs.writeFileSync(path.join(projectPath, '.gitignore'), gitignore);
+  // Write .gitignore WITHOUT clobbering an existing one (--here may scaffold
+  // into a folder that's already a git repo with the user's own rules). If it
+  // exists, append only the entries it's missing — critically `.env*`, so the
+  // API key never gets committed — under a clear header, preserving everything
+  // the user already had.
+  const gitignorePath = path.join(projectPath, '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const existing = fs.readFileSync(gitignorePath, 'utf8');
+    const have = new Set(existing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+    const missing = gitignore
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && !have.has(l));
+    if (missing.length) {
+      const addition = '\n# Added by Manifest\n' + missing.join('\n') + '\n';
+      fs.appendFileSync(gitignorePath, (existing.endsWith('\n') ? '' : '\n') + addition);
+    }
+  } else {
+    fs.writeFileSync(gitignorePath, gitignore);
+  }
 
   // Scaffold the Manifest MCP integration ONLY when this came through the
   // MCP/AI flow — signalled by --project-id (preferred) or --key. A plain

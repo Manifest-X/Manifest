@@ -244,46 +244,63 @@ function initializeDropdownPlugin() {
                             if (menu.matches(':popover-open')) menu.hidePopover();
                         };
 
-                        el.addEventListener('contextmenu', (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
+                        // Bind the right-click trigger once per element. Without
+                        // the guard, reprocessing (router re-walks, re-init) would
+                        // stack duplicate handlers.
+                        if (!el.__mnfstContextTriggerBound) {
+                            el.__mnfstContextTriggerBound = true;
+                            el.addEventListener('contextmenu', (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
 
-                            // Stash the actual right-clicked element so menu items can act on it.
-                            // (e.target is the deepest hit; el is the directive-bearing ancestor.)
-                            menu._triggerEl = e.target.closest('[data-cp-value], [x-data]') || el;
-                            menu._triggerHost = el;
+                                // Stash the actual right-clicked element so menu items can act on it.
+                                // (e.target is the deepest hit; el is the directive-bearing ancestor.)
+                                menu._triggerEl = e.target.closest('[data-cp-value], [x-data]') || el;
+                                menu._triggerHost = el;
 
-                            // Position at cursor, overriding anchor positioning
-                            menu.style.position = 'fixed';
-                            menu.style.positionAnchor = 'unset';
-                            menu.style.positionArea = 'unset';
-                            menu.style.inset = 'auto';
-                            menu.style.left = e.clientX + 'px';
-                            menu.style.top = e.clientY + 'px';
-                            menu.style.margin = '0';
+                                // Position at cursor, overriding anchor positioning
+                                menu.style.position = 'fixed';
+                                menu.style.positionAnchor = 'unset';
+                                menu.style.positionArea = 'unset';
+                                menu.style.inset = 'auto';
+                                menu.style.left = e.clientX + 'px';
+                                menu.style.top = e.clientY + 'px';
+                                menu.style.margin = '0';
 
-                            if (!menu.matches(':popover-open')) menu.showPopover();
+                                if (!menu.matches(':popover-open')) menu.showPopover();
 
-                            // Adjust if menu overflows viewport
-                            requestAnimationFrame(() => {
-                                const rect = menu.getBoundingClientRect();
-                                if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
-                                if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
+                                // Adjust if menu overflows viewport
+                                requestAnimationFrame(() => {
+                                    const rect = menu.getBoundingClientRect();
+                                    if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
+                                    if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
+                                });
                             });
-                        });
+                        }
 
-                        // Manual dismiss: click outside or Escape
-                        document.addEventListener('pointerdown', (e) => {
-                            if (menu.matches(':popover-open') && !menu.contains(e.target)) closeContext();
-                        });
-                        document.addEventListener('keydown', (e) => {
-                            if (e.key === 'Escape' && menu.matches(':popover-open')) { closeContext(); el.focus(); }
-                        });
+                        // Document-level dismiss listeners are GLOBAL — re-binding
+                        // them on every reprocess leaks listeners on `document`.
+                        // Bind once per menu, tied to an AbortController so they
+                        // share one removable signal.
+                        if (!menu.__mnfstContextDismissBound) {
+                            menu.__mnfstContextDismissBound = true;
+                            const ctxAbort = new AbortController();
+                            menu.__mnfstContextAbort = ctxAbort;
+                            const { signal } = ctxAbort;
 
-                        // Close after clicking a menu item
-                        menu.addEventListener('click', (e) => {
-                            if (e.target.closest('li, a, button')) closeContext();
-                        });
+                            // Manual dismiss: click outside or Escape
+                            document.addEventListener('pointerdown', (e) => {
+                                if (menu.matches(':popover-open') && !menu.contains(e.target)) closeContext();
+                            }, { signal });
+                            document.addEventListener('keydown', (e) => {
+                                if (e.key === 'Escape' && menu.matches(':popover-open')) { closeContext(); el.focus(); }
+                            }, { signal });
+
+                            // Close after clicking a menu item
+                            menu.addEventListener('click', (e) => {
+                                if (e.target.closest('li, a, button')) closeContext();
+                            }, { signal });
+                        }
                     }
 
                     // Add keyboard navigation handling

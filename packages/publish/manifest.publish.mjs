@@ -94,6 +94,19 @@ function detectSource(root, explicit) {
   return existsSync(join(root, 'website')) ? 'render' : 'spa';
 }
 
+// The prerender output directory (where mnfst-render writes), honouring
+// manifest.prerender.output / manifest.render.output; defaults to "website".
+function prerenderOutputDir(root) {
+  try {
+    const mf = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+    const out = mf?.prerender?.output ?? mf?.render?.output;
+    if (typeof out === 'string' && out.trim()) return out.trim().replace(/^\/+|\/+$/g, '');
+  } catch {
+    /* ignore */
+  }
+  return 'website';
+}
+
 // --- MCP JSON-RPC over Streamable HTTP -------------------------------------
 
 async function mcp(url, key, method, params, sessionId) {
@@ -142,18 +155,32 @@ async function callTool(url, key, name, args) {
 
 // --- File collection (gitignore-aware) -------------------------------------
 
-function collectFiles(root) {
+// Never ship local config or secrets — matched at ANY depth (by path segment /
+// basename), not just the project root. A nested `api/.env` or `sub/.claude/…`
+// must be excluded too.
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.claude']);
+export function isExcludedPath(rel) {
+  const parts = rel.split('/');
+  if (parts.some((p) => EXCLUDED_DIRS.has(p))) return true;
+  const base = parts[parts.length - 1];
+  if (base === '.env' || base.startsWith('.env.')) return true; // .env, .env.local, .env.prod …
+  if (base === '.npmrc' || base === '.dev.vars' || base === 'id_rsa' || base === '.DS_Store') return true;
+  if (base === '.mnfst-render-complete') return true; // internal render sentinel — not part of the site
+  if (/\.(pem|key|p12|pfx)$/i.test(base)) return true;
+  return false;
+}
+
+export function collectFiles(root) {
   const git = spawnSync('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root, encoding: 'utf8' });
   let rels;
   if (git.status === 0) {
     rels = git.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
   } else {
-    // Not a git repo — walk, skipping the usual heavy/secret dirs.
-    const skip = new Set(['.git', 'node_modules', '.claude']);
+    // Not a git repo — walk, skipping excluded dirs as we go.
     rels = [];
     const walk = (dir) => {
       for (const name of readdirSync(dir)) {
-        if (skip.has(name)) continue;
+        if (EXCLUDED_DIRS.has(name)) continue;
         const abs = join(dir, name);
         const st = statSync(abs);
         if (st.isDirectory()) walk(abs);
@@ -162,8 +189,8 @@ function collectFiles(root) {
     };
     walk(root);
   }
-  // Never ship local config or secrets.
-  return rels.filter((r) => !r.startsWith('.claude/') && r !== '.env' && !r.startsWith('.env.') && r !== '.env');
+  // Final guard — drops nested secret files the git/walk lists may include.
+  return rels.filter((r) => !isExcludedPath(r));
 }
 
 // --- Minimal ZIP writer (DEFLATE), pure Node, no deps ----------------------
@@ -178,10 +205,19 @@ function crc32(buf) {
 }
 
 function buildZip(root, rels) {
+  // This packer writes classic (non-Zip64) ZIP records: file count is a uint16
+  // and offsets are uint32. Fail loudly rather than emit a silently-corrupt
+  // archive past those limits.
+  if (rels.length > 0xffff) {
+    fail(`too many files to package (${rels.length} > 65535). Split the project or contact support.`);
+  }
   const chunks = [];
   const central = [];
   let offset = 0;
   for (const rel of rels) {
+    if (offset > 0xffffffff) {
+      fail('project is too large to package (>4 GB). Contact support.');
+    }
     const data = readFileSync(join(root, rel));
     const nameBuf = Buffer.from(rel, 'utf8');
     const crc = crc32(data);
@@ -262,11 +298,37 @@ export async function main() {
     if (r.status !== 0) fail('render failed — fix the errors above and try again.');
   }
 
+  // For a render project, confirm the output is a COMPLETE render before shipping
+  // it. mnfst-render writes a .mnfst-render-complete sentinel as its final step
+  // (atomic swap), so its absence means the dir is stale or half-built — refuse
+  // rather than publish a broken/empty site.
+  if (source === 'render') {
+    const outDir = prerenderOutputDir(root);
+    if (!existsSync(join(root, outDir, '.mnfst-render-complete'))) {
+      fail(
+        `the "${outDir}" directory isn't a complete render` +
+          (opts.render === false ? ' — re-run without --no-render.' : ' — run `npx mnfst-render` and try again.'),
+      );
+    }
+  }
+
   log(`Preparing ${opts.env} deploy…`);
   const handshake = await callTool(url, key, 'manifest_publish', { env: opts.env, source, via_cli: true });
   if (handshake.already_pro) { /* not applicable */ }
   const uploadUrl = handshake.upload_url;
   if (!uploadUrl) fail(handshake._text || 'could not start the publish (no upload URL returned).');
+  // The upload carries the whole project. Only POST it to an HTTPS endpoint on
+  // the SAME host as the MCP server — never to an arbitrary URL a tampered
+  // response or misconfigured .mcp.json could inject.
+  try {
+    const u = new URL(uploadUrl);
+    const mcpHost = new URL(url).host;
+    if (u.protocol !== 'https:' || u.host !== mcpHost) {
+      fail(`refusing to upload to an unexpected endpoint (${u.protocol}//${u.host}); expected https://${mcpHost}.`);
+    }
+  } catch {
+    fail('the upload URL returned by the server was malformed.');
+  }
 
   const rels = collectFiles(root);
   if (!rels.length) fail('nothing to publish (no files found).');

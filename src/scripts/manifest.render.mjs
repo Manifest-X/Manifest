@@ -2,7 +2,7 @@
 
 /* Manifest Render */
 
-import { readFileSync, readSync, mkdirSync, writeFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync } from 'node:fs';
+import { readFileSync, readSync, mkdirSync, writeFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync, renameSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve, dirname, relative, basename, sep } from 'node:path';
 import { createServer } from 'node:http';
@@ -2989,7 +2989,7 @@ async function runPrerender(config) {
     return;
   }
 
-  const outputResolved = resolve(config.output);
+  const finalOutput = resolve(config.output);
   const rootResolved = resolve(config.root);
   // Router base = URL pathname to the app root. When dist is deployed as site root (e.g. Appwrite), use "".
   // Set manifest.prerender.routerBase only when the app is served from a subpath (e.g. /app).
@@ -3001,11 +3001,27 @@ async function runPrerender(config) {
     routerBasePath = '';
   }
 
-  if (existsSync(outputResolved)) {
-    rmSync(outputResolved, { recursive: true });
+  // Atomic output: build into a sibling staging dir, then swap it into place
+  // only after every step below succeeds (see the end of this function). A
+  // crashed or interrupted render therefore never leaves a half-written or empty
+  // output dir for mnfst-publish to ship — the previous good build stays put
+  // until the new one is complete.
+  const stagingOutput = finalOutput + '.mnfst-staging';
+  if (existsSync(stagingOutput)) rmSync(stagingOutput, { recursive: true });
+  mkdirSync(stagingOutput, { recursive: true });
+  // Redirect ALL downstream writes (both config.output and outputResolved) to
+  // the staging dir for the remainder of the build.
+  config.output = stagingOutput;
+  const outputResolved = stagingOutput;
+  // Don't copy the previous build (the final output dir) into staging — only the
+  // staging dir's own basename is excluded by copyProjectIntoDist.
+  const finalBasename = basename(finalOutput);
+  COPY_EXCLUDE.add(finalBasename);
+  try {
+    copyProjectIntoDist(rootResolved, outputResolved);
+  } finally {
+    COPY_EXCLUDE.delete(finalBasename);
   }
-  mkdirSync(outputResolved, { recursive: true });
-  copyProjectIntoDist(rootResolved, outputResolved);
   // Env placeholders (${VAR}) only resolve at runtime via window.env (populated
   // by the mnfst-run dev server from .env). A static prod build has no
   // window.env, so any ${VAR} left in the shipped manifest.json stays literal
@@ -4593,6 +4609,21 @@ async function runPrerender(config) {
     writeFileSync(join(config.output, '_redirects'), lines.join('\n'), 'utf8');
   }
 
+  // Success sentinel — written LAST, only after every step above succeeded.
+  // mnfst-publish checks for it to confirm the output is a complete render
+  // rather than a stale or half-built directory.
+  writeFileSync(
+    join(outputResolved, '.mnfst-render-complete'),
+    JSON.stringify({ completedAt: new Date().toISOString(), routes: pathList.length, version: 1 }) + '\n',
+    'utf8',
+  );
+
+  // Atomic swap: replace the previous output with the freshly built staging dir.
+  // rename() is atomic on the same filesystem (staging is a sibling of output),
+  // so a consumer never sees a partially written output directory.
+  if (existsSync(finalOutput)) rmSync(finalOutput, { recursive: true });
+  renameSync(stagingOutput, finalOutput);
+  config.output = finalOutput;
 }
 
 // Auto-run main() when this file is the direct entry point (node manifest.render.mjs)

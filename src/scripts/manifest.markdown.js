@@ -43,7 +43,13 @@ if (!window.ManifestDOMPurify) {
             if (this._promise) return this._promise;
             this._promise = new Promise((resolve, reject) => {
                 const script = document.createElement('script');
-                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@latest/dist/purify.min.js';
+                // Pinned + Subresource Integrity: a moving `@latest` (or a
+                // tampered CDN file) would otherwise run arbitrary JS in the
+                // user's page. The browser rejects the script if the bytes don't
+                // match the hash. Bump version AND integrity together.
+                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@3.4.10/dist/purify.min.js';
+                script.integrity = 'sha384-eguRoJERj8ghOpzO//Rl7+ScQsQIR1cH+ajll7+fG+IpbNPlkZsQn9h8ccr+wPXx';
+                script.crossOrigin = 'anonymous';
                 script.onload = () => {
                     if (typeof window.DOMPurify !== 'undefined') {
                         resolve(window.DOMPurify);
@@ -96,7 +102,11 @@ async function loadMarkedJS() {
 
     markedPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+        // Pinned + Subresource Integrity (see DOMPurify loader above) — a
+        // floating version or tampered CDN file can't inject arbitrary JS.
+        script.src = 'https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js';
+        script.integrity = 'sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+';
+        script.crossOrigin = 'anonymous';
         script.onload = () => {
             // Initialize marked.js
             if (typeof marked !== 'undefined') {

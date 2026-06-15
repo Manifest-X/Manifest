@@ -23,7 +23,11 @@ if (!window.ManifestDOMPurify) {
             if (this._promise) return this._promise;
             this._promise = new Promise((resolve, reject) => {
                 const script = document.createElement('script');
-                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@latest/dist/purify.min.js';
+                // Pinned + Subresource Integrity (see manifest.markdown.js) — a
+                // floating `@latest` or tampered CDN file can't inject JS here.
+                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@3.4.10/dist/purify.min.js';
+                script.integrity = 'sha384-eguRoJERj8ghOpzO//Rl7+ScQsQIR1cH+ajll7+fG+IpbNPlkZsQn9h8ccr+wPXx';
+                script.crossOrigin = 'anonymous';
                 script.onload = () => {
                     if (typeof window.DOMPurify !== 'undefined') {
                         resolve(window.DOMPurify);
