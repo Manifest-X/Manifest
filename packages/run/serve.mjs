@@ -31,6 +31,13 @@
  *                       panel already shows the page, so a second browser tab
  *                       is just noise. Put `--no-open` in an LLM preview's
  *                       launch config to guarantee suppression.
+ *   --attach            Supervised/agent mode (e.g. an LLM preview panel).
+ *                       Guarantees a live FOREGROUND server on the requested
+ *                       --port: if that port is already serving this project it
+ *                       stays attached (doesn't exit); a server the user started
+ *                       on another port is left alone. Never touches the
+ *                       running-server registry. Pair with `--no-open` in a
+ *                       preview launch config.
  *   --list              Print all mnfst-run servers currently running on this
  *                       machine and exit.
  *
@@ -226,6 +233,12 @@ let openBrowserEnabled = !(
 );
 
 let listMode = false;
+// --attach: supervised/agent mode (e.g. Claude Code's preview panel). Guarantees
+// a live server in the FOREGROUND on the requested --port: if that exact port is
+// already serving this root, stay attached to it (don't exit) instead of bailing;
+// a separate server the user started on another port is left alone. Never writes
+// or deletes the running-server registry, so it can't clobber the user's entry.
+let attachMode = false;
 
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--port' || args[i] === '-p') && args[i + 1]) { port = parseInt(args[++i], 10); continue; }
@@ -233,6 +246,7 @@ for (let i = 0; i < args.length; i++) {
   if (args[i] === '--idle-shutdown' && args[i + 1]) { idleShutdownSec = parseInt(args[++i], 10); continue; }
   if (args[i] === '--no-open') { openBrowserEnabled = false; continue; }
   if (args[i] === '--open')    { openBrowserEnabled = true;  continue; }
+  if (args[i] === '--attach') { attachMode = true; continue; }
   if (args[i] === '--list' || args[i] === '-l') { listMode = true; continue; }
   if (!args[i].startsWith('-')) dir = args[i];
 }
@@ -362,22 +376,28 @@ if (privateEnvNames.length > 0) {
   );
 }
 
-// Dedup: if a server is already serving this exact root, point the user at
-// it (and open the browser, since that's what they were going to do anyway).
-const existing = await findRunningServer(root);
-if (existing) {
-  const url = `http://localhost:${existing.port}`;
-  const label0 = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
-  console.log(`\n${label0} already running at ${url} (pid ${existing.pid})\n`);
-  // Open the browser anyway — matches the experience of starting fresh.
-  // (Skipped under --no-open / Claude Code, where the preview panel is the browser.)
-  if (openBrowserEnabled) {
-    const cmd = process.platform === 'win32' ? `start ${url}`
-      : process.platform === 'darwin'        ? `open ${url}`
-      : `xdg-open ${url}`;
-    exec(cmd);
+// Dedup (manual use): if a server is already serving this exact root, point the
+// user at it and exit. Skipped under --attach — a supervisor (e.g. Claude Code's
+// preview panel) needs a live process on the requested port, so attach mode
+// instead falls through to bind that port, and only attaches (staying alive) if
+// the requested port is already ours (handled in tryListen on EADDRINUSE). A
+// server the user started on a DIFFERENT port is deliberately left alone.
+if (!attachMode) {
+  const existing = await findRunningServer(root);
+  if (existing) {
+    const url = `http://localhost:${existing.port}`;
+    const label0 = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
+    console.log(`\n${label0} already running at ${url} (pid ${existing.pid})\n`);
+    // Open the browser anyway — matches the experience of starting fresh.
+    // (Skipped under --no-open / Claude Code, where the preview panel is the browser.)
+    if (openBrowserEnabled) {
+      const cmd = process.platform === 'win32' ? `start ${url}`
+        : process.platform === 'darwin'        ? `open ${url}`
+        : `xdg-open ${url}`;
+      exec(cmd);
+    }
+    process.exit(0);
   }
-  process.exit(0);
 }
 
 // --- Auto-detect MPA ---
@@ -654,6 +674,28 @@ function openBrowser(url) {
   exec(cmd);
 }
 
+// Whether THIS process owns the running-server registry entry for `root`.
+// Stays false in --attach mode (we never claim the entry), so the exit handler
+// can't delete an entry belonging to the user's own server for the same root.
+let weOwnServer = false;
+
+// --attach: the requested port is already serving this root. Stay in the
+// foreground so the supervising preview panel keeps tracking this process,
+// without owning the server — never touch its registry; just re-probe and exit
+// once it goes away.
+function attachToExisting(p) {
+  const url = `http://localhost:${p}`;
+  console.log(`\n${label} already running at ${url} — attached.\n`);
+  if (openBrowserEnabled) openBrowser(url);
+  setInterval(async () => {
+    const id = await probeIdentity(p);
+    if (!id || id.root !== root) {
+      console.log('\nmnfst-run: the server it attached to has stopped — exiting.\n');
+      process.exit(0);
+    }
+  }, 5000);
+}
+
 function tryListen(p, attempt = 0) {
   if (attempt > 20) {
     console.error('mnfst-run: could not find a free port after 20 attempts.');
@@ -667,14 +709,25 @@ function tryListen(p, attempt = 0) {
   const onListening = () => {
     server.removeListener('error', onError);
     const url = `http://localhost:${p}`;
-    writeRegistry(root, p);
+    // In --attach mode we deliberately don't register — the registry is one
+    // entry per root and the user's own server may own it.
+    if (!attachMode) { writeRegistry(root, p); weOwnServer = true; }
     console.log(`\n${label} running at ${url}\n`);
     if (openBrowserEnabled) openBrowser(url);
   };
   const onError = err => {
     server.removeListener('listening', onListening);
-    if (err.code === 'EADDRINUSE') tryListen(p + 1, attempt + 1);
-    else throw err;
+    if (err.code !== 'EADDRINUSE') { throw err; }
+    // Under --attach, if the requested port is already OUR project, attach to it
+    // (stay alive) rather than spawn a duplicate on the next port up.
+    if (attachMode && attempt === 0) {
+      probeIdentity(p).then((id) => {
+        if (id && id.root === root) attachToExisting(p);
+        else tryListen(p + 1, attempt + 1);
+      });
+      return;
+    }
+    tryListen(p + 1, attempt + 1);
   };
   server.once('listening', onListening);
   server.once('error', onError);
@@ -684,10 +737,11 @@ function tryListen(p, attempt = 0) {
   server.listen(p, '127.0.0.1');
 }
 
-// Clean up the registry entry on graceful exit. process.exit() (used by
-// idle-shutdown) fires 'exit'; SIGINT/SIGTERM are translated into a
-// process.exit so the same path runs for Ctrl+C and `kill <pid>`.
-process.on('exit', () => removeRegistry(root));
+// Clean up the registry entry on graceful exit — but only if we actually own it
+// (never in --attach mode, where the entry may belong to the user's server).
+// process.exit() (used by idle-shutdown) fires 'exit'; SIGINT/SIGTERM are
+// translated into a process.exit so the same path runs for Ctrl+C and `kill`.
+process.on('exit', () => { if (weOwnServer) removeRegistry(root); });
 process.on('SIGINT',  () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
 
