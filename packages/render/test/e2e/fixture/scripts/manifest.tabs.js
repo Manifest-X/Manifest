@@ -74,46 +74,99 @@ function initializeTabsPlugin() {
                 }
             }
 
-            // Ensure x-data exists
-            if (!commonParent.hasAttribute('x-data')) {
-                commonParent.setAttribute('x-data', '{}');
-            }
+            // Default tab value (first panel's id)
+            const defaultValue = panels.length > 0 ? panels[0].id : 'a';
 
-            // Set up x-data with default value
-            const existingXData = commonParent.getAttribute('x-data') || '{}';
-            let newXData = existingXData;
+            // When Alpine has already initialized the scope (content injected at
+            // runtime, e.g. by the markdown plugin), x-data attribute edits are
+            // never re-read — write the property into the live scope instead.
+            const scopeHost = commonParent.hasAttribute('x-data') ? commonParent : commonParent.closest('[x-data]');
+            const liveData = scopeHost && scopeHost._x_dataStack && window.Alpine && typeof window.Alpine.$data === 'function'
+                ? window.Alpine.$data(scopeHost)
+                : null;
 
-            // Check if the tab property already exists
-            // Escape special regex characters in tabProp
-            const escapedTabProp = tabProp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const propertyRegex = new RegExp(`${escapedTabProp}\\s*:\\s*'[^']*'`, 'g');
-            if (!propertyRegex.test(newXData)) {
-                // Add the tab property with default value (first panel's id)
-                const defaultValue = panels.length > 0 ? panels[0].id : 'a';
-                const tabProperty = `${tabProp}: '${defaultValue}'`;
+            if (liveData) {
+                if (!(tabProp in liveData)) liveData[tabProp] = defaultValue;
+            } else {
+                // Ensure x-data exists
+                if (!commonParent.hasAttribute('x-data')) {
+                    commonParent.setAttribute('x-data', '{}');
+                }
 
-                if (newXData === '{}') {
-                    newXData = `{ ${tabProperty} }`;
-                } else {
-                    const lastBraceIndex = newXData.lastIndexOf('}');
-                    if (lastBraceIndex > 0) {
-                        const beforeBrace = newXData.substring(0, lastBraceIndex);
-                        const afterBrace = newXData.substring(lastBraceIndex);
-                        const separator = beforeBrace.trim().endsWith(',') ? '' : ', ';
-                        newXData = beforeBrace + separator + tabProperty + afterBrace;
+                // Set up x-data with default value
+                const existingXData = commonParent.getAttribute('x-data') || '{}';
+                let newXData = existingXData;
+
+                // Check if the tab property already exists
+                // Escape special regex characters in tabProp
+                const escapedTabProp = tabProp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const propertyRegex = new RegExp(`${escapedTabProp}\\s*:\\s*'[^']*'`, 'g');
+                if (!propertyRegex.test(newXData)) {
+                    const tabProperty = `${tabProp}: '${defaultValue}'`;
+
+                    if (newXData === '{}') {
+                        newXData = `{ ${tabProperty} }`;
+                    } else {
+                        const lastBraceIndex = newXData.lastIndexOf('}');
+                        if (lastBraceIndex > 0) {
+                            const beforeBrace = newXData.substring(0, lastBraceIndex);
+                            const afterBrace = newXData.substring(lastBraceIndex);
+                            const separator = beforeBrace.trim().endsWith(',') ? '' : ', ';
+                            newXData = beforeBrace + separator + tabProperty + afterBrace;
+                        }
+                    }
+
+                    if (newXData !== existingXData) {
+                        commonParent.setAttribute('x-data', newXData);
                     }
                 }
-
-                if (newXData !== existingXData) {
-                    commonParent.setAttribute('x-data', newXData);
-                }
             }
 
-            // Process panels for this group - add x-show attributes
+            // ----- Accessibility wiring (WAI-ARIA Tabs pattern) -----
+            //
+            // The full APG tabs pattern (role="tab"/"tabpanel", aria-controls,
+            // roving tabindex, arrow-key navigation) is applied only when the
+            // author wraps the buttons in an element with role="tablist" —
+            // those roles are only valid inside one, and inferring a container
+            // risks claiming the wrong element. Without a tablist, buttons stay
+            // plain buttons and panels plain regions; :aria-selected still
+            // syncs as the selected-state hook.
+            const tablists = new Set();
+            relevantButtons.forEach((b) => {
+                const t = b.closest('[role=tablist]');
+                if (t) tablists.add(t);
+            });
+            const wireAria = tablists.size > 0;
+
+            // Assign ids where missing (needed for aria-labelledby/controls).
+            const buttonIdByTabValue = {};
+            relevantButtons.forEach((button, i) => {
+                const tabValue = button.getAttribute('x-tab');
+                if (!tabValue) return;
+                if (!button.id && wireAria) {
+                    button.id = `mnfst-tab-${sanitizedPanelSet || 'g'}-${tabValue.replace(/[^a-zA-Z0-9_-]/g, '-')}-${i}`;
+                }
+                if (button.id) buttonIdByTabValue[tabValue] = button.id;
+            });
+
+            // Process panels for this group - add x-show + a11y attributes
             panels.forEach(panel => {
                 // Create condition that checks if tab property matches this panel's identifier
                 const showCondition = `${tabProp} === '${panel.id}'`;
                 panel.element.setAttribute('x-show', showCondition);
+
+                // Ensure panel has an id (Alpine needs one for aria-labelledby on buttons)
+                if (!panel.element.id) panel.element.id = panel.id;
+
+                // ARIA: role + label + focusable
+                if (wireAria) {
+                    panel.element.setAttribute('role', 'tabpanel');
+                    if (!panel.element.hasAttribute('tabindex')) {
+                        panel.element.setAttribute('tabindex', '0');
+                    }
+                    const labelledBy = buttonIdByTabValue[panel.id];
+                    if (labelledBy) panel.element.setAttribute('aria-labelledby', labelledBy);
+                }
 
                 // Remove x-tabpanel attribute since we've converted it
                 panel.element.removeAttribute('x-tabpanel');
@@ -129,9 +182,50 @@ function initializeTabsPlugin() {
                 const clickHandler = `${tabProp} = '${tabValue}'`;
                 button.setAttribute('x-on:click', clickHandler);
 
+                // Selection state (reactive via :aria-selected) — always synced;
+                // it doubles as the documented selected-state styling hook
+                button.setAttribute(':aria-selected', `String(${tabProp} === '${tabValue}')`);
+
+                // ARIA: role, roving tabindex, controls — only inside an author tablist
+                if (button.closest('[role=tablist]')) {
+                    button.setAttribute('role', 'tab');
+                    // Roving tabindex: -1 when not active so arrow keys, not Tab, move between tabs.
+                    button.setAttribute(':tabindex', `${tabProp} === '${tabValue}' ? '0' : '-1'`);
+                    const panel = panels.find((p) => p.id === tabValue);
+                    if (panel && panel.element.id) {
+                        button.setAttribute('aria-controls', panel.element.id);
+                    }
+                }
+
                 // Remove x-tab attribute since we've converted it
                 button.removeAttribute('x-tab');
             });
+
+            // Arrow-key navigation (Left/Right/Home/End) on each author tablist.
+            tablists.forEach((tablistEl) => {
+                if (!tablistEl.__mnfstTabsKeydown) {
+                    tablistEl.__mnfstTabsKeydown = (e) => {
+                        const target = e.target;
+                        if (!target || target.getAttribute('role') !== 'tab') return;
+                        const tabs = Array.from(tablistEl.querySelectorAll('[role="tab"]'));
+                        const idx = tabs.indexOf(target);
+                        if (idx === -1) return;
+                        let nextIdx = null;
+                        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextIdx = (idx + 1) % tabs.length;
+                        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+                        else if (e.key === 'Home') nextIdx = 0;
+                        else if (e.key === 'End') nextIdx = tabs.length - 1;
+                        if (nextIdx == null) return;
+                        e.preventDefault();
+                        // Automatic activation: focusing a tab selects it. This matches
+                        // the most common APG variant and Manifest's existing click-to-
+                        // activate semantics.
+                        tabs[nextIdx].focus();
+                        tabs[nextIdx].click();
+                    };
+                    tablistEl.addEventListener('keydown', tablistEl.__mnfstTabsKeydown);
+                }
+            })
 
             // Ensure Alpine processes the updated x-data and x-show attributes
             if (window.Alpine && typeof window.Alpine.initTree === 'function') {

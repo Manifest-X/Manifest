@@ -175,6 +175,17 @@ function initializeDropdownPlugin() {
                     el.style.setProperty('--trigger-anchor', anchorName);
                     menu.style.setProperty('position-anchor', anchorName);
 
+                    // Re-point the shared menu at whichever trigger opens it (multi-trigger)
+                    const pointMenuHere = () => {
+                        const a = el.style.getPropertyValue('--trigger-anchor');
+                        if (a) menu.style.setProperty('position-anchor', a);
+                    };
+                    if (!modifiers.includes('context') && !el.__mnfstAnchorSwapBound) {
+                        el.__mnfstAnchorSwapBound = true;
+                        el.addEventListener('pointerdown', pointMenuHere);
+                        el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') pointMenuHere(); });
+                    }
+
                     // ----- A11y wiring (WAI-ARIA Menu Button pattern) -----
                     // The trigger needs `aria-haspopup="menu"`, `aria-controls`, and a
                     // dynamic `aria-expanded` that follows the popover's open state.
@@ -192,11 +203,12 @@ function initializeDropdownPlugin() {
                         menu.querySelectorAll('li').forEach((li) => {
                             if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
                         });
-                        // Keep aria-expanded in sync with the popover's state.
+                        // Keep aria-expanded in sync across every trigger of this menu.
                         if (!menu.__mnfstAriaToggleBound) {
                             menu.__mnfstAriaToggleBound = true;
                             menu.addEventListener('toggle', (e) => {
-                                el.setAttribute('aria-expanded', e.newState === 'open' ? 'true' : 'false');
+                                const expanded = e.newState === 'open' ? 'true' : 'false';
+                                document.querySelectorAll(`[aria-controls="${menu.id}"]`).forEach(t => t.setAttribute('aria-expanded', expanded));
                             });
                         }
                     }
@@ -208,6 +220,7 @@ function initializeDropdownPlugin() {
                                 clearTimeout(hoverTimeout);
                                 clearTimeout(autoCloseTimeout);
 
+                                pointMenuHere();
                                 menu.showPopover();
                             }
                         };

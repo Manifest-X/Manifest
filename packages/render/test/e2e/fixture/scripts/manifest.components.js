@@ -8,7 +8,7 @@ window.getManifestBase = function getManifestBase() {
 };
 
 // Absolute pathname prefix for the app root (e.g. "/src/dist"). Used by router for links and route matching.
-// Prerender injects <meta name="manifest:router-base" content="/path"> from manifest.prerender.routerBase or root+output. If present, use it; else fall back to depth or manifest link.
+// Prerender injects <meta name="manifest:router-base" content="/path"> from manifest.render.routerBase or root+output. If present, use it; else fall back to depth or manifest link.
 window.getManifestBasePath = function getManifestBasePath() {
     const baseMeta = document.querySelector('meta[name="manifest:router-base"]');
     const content = baseMeta?.getAttribute('content');
@@ -51,22 +51,23 @@ window.ManifestComponentsRegistry = {
     manifest: null,
     registered: new Set(),
     preloaded: [],
-    initialize() {
-        // Use loader-provided manifest if set; otherwise load synchronously (standalone)
+    async initialize() {
+        // Use loader-provided manifest if set; otherwise fetch it (standalone
+        // usage, or a boot race where the loader/data plugin hasn't cached the
+        // manifest on window yet).  This must be async — a synchronous XHR on
+        // the main thread is deprecated and was flagged by PageSpeed.
         let manifest = window.__manifestLoaded || this.manifest;
         if (!manifest) {
             try {
                 const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
-                const req = new XMLHttpRequest();
-                req.open('GET', manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + 't=' + Date.now(), false);
-                req.setRequestHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                req.setRequestHeader('Pragma', 'no-cache');
-                req.setRequestHeader('Expires', '0');
-                req.send(null);
-                if (req.status === 200) {
-                    manifest = JSON.parse(req.responseText);
+                const res = await fetch(manifestUrl + (manifestUrl.includes('?') ? '&' : '?') + 't=' + Date.now(), {
+                    cache: 'no-store',
+                    headers: { 'Cache-Control': 'no-cache' }
+                });
+                if (res.ok) {
+                    manifest = await res.json();
                 } else {
-                    console.warn('[Manifest] Failed to load manifest.json (HTTP', req.status + ')');
+                    console.warn('[Manifest] Failed to load manifest.json (HTTP', res.status + ')');
                 }
             } catch (e) {
                 console.warn('[Manifest] Failed to load manifest.json:', e.message);
@@ -149,6 +150,28 @@ window.ManifestComponentsLoader = {
 }; 
 
 // Components processor
+
+// Escape a string so it's safe to interpolate inside a single-quoted JS
+// string AND inside backtick template literals. The original escape covered
+// the single-quote + whitespace cases but missed three vectors that matter
+// when component templates use backtick literals (e.g. x-text="`Hi $modify('n')`"):
+//   - `\`  → a trailing backslash would escape the closing quote
+//   - `` ` `` → terminates a backtick template literal
+//   - `${` → opens an interpolation that Alpine evaluates as JS
+// Without escaping those, a bound value like `${alert(1)}` from a data
+// source becomes code execution inside the wrapping template literal.
+// Backslash must be escaped FIRST so the other replacements don't compound.
+function escapeForSingleQuotedJsString(s) {
+    return String(s)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/`/g, '\\`')
+        .replace(/\$\{/g, '\\${')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n')
+        .replace(/\t/g, '\\t');
+}
+
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
@@ -162,7 +185,7 @@ window.ManifestComponentsProcessor = {
         }
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
             // Pre-rendered components skip re-fetching, but hydrate-marked content
-            // still needs Alpine initialization (x-data, @click, :class, x-theme etc.).
+            // still needs Alpine initialization (x-data, @click, :class, x-color etc.).
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
                 try { window.Alpine.initTree(element); } catch (e) { /* graceful */ }
             }
@@ -295,7 +318,7 @@ window.ManifestComponentsProcessor = {
                                             return val;
                                         }
                                         // Always quote string values to ensure they're treated as strings, not variables
-                                        return `'${val.replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}'`;
+                                        return `'${escapeForSingleQuotedJsString(val)}'`;
                                     }
                                 );
                                 el.setAttribute(attr.name, newValue);
@@ -310,7 +333,7 @@ window.ManifestComponentsProcessor = {
                                         el.setAttribute(attr.name, propValue);
                                     } else {
                                         // Always quote string values and escape special characters
-                                        const quotedValue = `'${propValue.replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}'`;
+                                        const quotedValue = `'${escapeForSingleQuotedJsString(propValue)}'`;
                                         el.setAttribute(attr.name, quotedValue);
                                     }
                                 }
@@ -777,8 +800,10 @@ window.ManifestComponentsMutation = {
 }; 
 
 // Main initialization for Manifest Components
-function initializeComponents() {
-    if (window.ManifestComponentsRegistry) window.ManifestComponentsRegistry.initialize();
+async function initializeComponents() {
+    // Registry.initialize() may fetch manifest.json (async) when the loader
+    // hasn't cached it yet; await it so the steps below see registry.manifest.
+    if (window.ManifestComponentsRegistry) await window.ManifestComponentsRegistry.initialize();
     if (window.ManifestComponentsLoader) window.ManifestComponentsLoader.initialize();
     if (window.ManifestComponentsProcessor) window.ManifestComponentsProcessor.initialize();
     if (window.ManifestComponentsSwapping) window.ManifestComponentsSwapping.initialize();

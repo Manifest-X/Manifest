@@ -6,19 +6,19 @@
 
 @layer base {
 
-    @keyframes mnfst-popover-in {
+    @keyframes popover-in {
         from {
-            transform: scale(.9);
+            transform: scale(.9)
         }
 
         to {
-            transform: none;
+            transform: none
         }
     }
 
     :where([popover]):not(.unstyle):popover-open {
         display: flex;
-        animation: mnfst-popover-in .15s ease-in both;
+        animation: popover-in .15s ease-in both
     }
 }
 

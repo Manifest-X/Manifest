@@ -17,6 +17,78 @@ if (typeof window !== 'undefined') {
     });
 }
 
+// DOMPurify config tuned for Manifest's markdown output. The markdown
+// extensions emit <x-icon> custom elements and `x-*` directive attributes that must
+// survive sanitization, so custom-element handling is enabled with a
+// tag-name allowlist (x-*) and an attribute filter that rejects event
+// handlers (on*). DOMPurify's defaults handle <script>, javascript: URLs,
+// srcdoc, and the usual XSS vectors for standard HTML tags.
+const MARKDOWN_PURIFY_CONFIG = {
+    CUSTOM_ELEMENT_HANDLING: {
+        tagNameCheck: /^x-[a-z][\w-]*$/,
+        attributeNameCheck: /^(?!on)[a-z][\w\-:]*$/i,
+        allowCustomizedBuiltInElements: false
+    }
+};
+
+// DOMPurify loader is defined on window by whichever of svg/markdown loads
+// first (see manifest.svg.js). Declaring `let purifyPromise` here at top
+// level collides with svg.js's identical declaration in the realm's shared
+// global lexical environment, so we use the shared loader instead.
+if (!window.ManifestDOMPurify) {
+    window.ManifestDOMPurify = {
+        _promise: null,
+        load() {
+            if (typeof window.DOMPurify !== 'undefined') return Promise.resolve(window.DOMPurify);
+            if (this._promise) return this._promise;
+            this._promise = new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                // Pinned + Subresource Integrity: a moving `@latest` (or a
+                // tampered CDN file) would otherwise run arbitrary JS in the
+                // user's page. The browser rejects the script if the bytes don't
+                // match the hash. Bump version AND integrity together.
+                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@3.4.10/dist/purify.min.js';
+                script.integrity = 'sha384-eguRoJERj8ghOpzO//Rl7+ScQsQIR1cH+ajll7+fG+IpbNPlkZsQn9h8ccr+wPXx';
+                script.crossOrigin = 'anonymous';
+                script.onload = () => {
+                    if (typeof window.DOMPurify !== 'undefined') {
+                        resolve(window.DOMPurify);
+                    } else {
+                        this._promise = null;
+                        reject(new Error('DOMPurify failed to load'));
+                    }
+                };
+                script.onerror = (err) => {
+                    this._promise = null;
+                    reject(err);
+                };
+                document.head.appendChild(script);
+            });
+            return this._promise;
+        }
+    };
+}
+
+// Sanitize HTML if the .safe modifier was used; pass-through otherwise.
+// Manifest's default is unsanitized so authors can render arbitrary HTML and
+// the markdown custom-element extensions work — but the .safe opt-in lets
+// authors render data-source content (e.g. user-submitted markdown from
+// Appwrite) without an XSS sink.
+async function maybeSanitizeMarkdownHtml(html, safe) {
+    if (!safe) return html;
+    try {
+        const DOMPurify = await window.ManifestDOMPurify.load();
+        return DOMPurify.sanitize(html, MARKDOWN_PURIFY_CONFIG);
+    } catch {
+        // Loader failure — fall back to escaping rather than silently emitting
+        // un-sanitized HTML. The author asked for safe; honour that.
+        const escaped = String(html)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        console.warn('[Manifest Markdown] x-markdown.safe: DOMPurify unavailable — emitting escaped text.');
+        return escaped;
+    }
+}
+
 // Load marked.js from CDN
 async function loadMarkedJS() {
     if (typeof marked !== 'undefined') {
@@ -30,7 +102,11 @@ async function loadMarkedJS() {
 
     markedPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+        // Pinned + Subresource Integrity (see DOMPurify loader above) — a
+        // floating version or tampered CDN file can't inject arbitrary JS.
+        script.src = 'https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js';
+        script.integrity = 'sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+';
+        script.crossOrigin = 'anonymous';
         script.onload = () => {
             // Initialize marked.js
             if (typeof marked !== 'undefined') {
@@ -52,45 +128,65 @@ async function loadMarkedJS() {
     return markedPromise;
 }
 
+// HTML-escape a string for safe interpolation inside an attribute value.
+// Used by the code-fence renderer below — title/language strings come from
+// the markdown source, so without escaping a fence like ```js " onclick=alert(1) x="
+// could inject arbitrary attributes onto the <pre> element.
+function escapeForAttribute(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// Escape a literal HTML fragment so it displays as source text when placed
+// inside a <code> element. Used for the ::: frame demo modifier, where the
+// same content is rendered live AND shown below as its own source.
+function escapeForText(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 // Configure marked to preserve full language strings
 async function configureMarked(marked) {
     marked.use({
         renderer: {
+            // Render fenced code blocks as <pre x-code="…"><code>…</code></pre>.
+            // The code plugin's directive then handles highlighting, copy
+            // buttons, collapse, line numbers, etc. — same code path whether
+            // the block was authored in HTML or markdown.
             code(token) {
                 const lang = token.lang || '';
                 const text = token.text || '';
-                const escaped = token.escaped || false;
 
-                // Parse the language string to extract attributes
-                const attributes = parseLanguageString(lang);
+                const attrs = parseLanguageString(lang);
 
-                // Build attributes for the x-code element
-                let xCodeAttributes = '';
-                if (attributes.title) {
-                    xCodeAttributes += ` name="${attributes.title}"`;
+                let preAttrs = '';
+                // x-code carries the language as its value (empty string for
+                // "no explicit language; auto-detect")
+                preAttrs += ` x-code="${attrs.language ? escapeForAttribute(attrs.language) : ''}"`;
+                if (attrs.title)    preAttrs += ` name="${escapeForAttribute(attrs.title)}"`;
+                if (attrs.lines)    preAttrs += ' lines';
+                if (attrs.copy)     preAttrs += ' copy';
+                if (attrs.edit)     preAttrs += ' edit';
+                if (attrs.collapse !== null) {
+                    preAttrs += attrs.collapse === ''
+                        ? ' collapse'
+                        : ` collapse="${escapeForAttribute(attrs.collapse)}"`;
                 }
-                if (attributes.language) {
-                    xCodeAttributes += ` language="${attributes.language}"`;
-                }
-                if (attributes.numbers) {
-                    xCodeAttributes += ' numbers';
-                }
-                if (attributes.copy) {
-                    xCodeAttributes += ' copy';
-                }
+                if (attrs.from) preAttrs += ` from="${escapeForAttribute(attrs.from)}"`;
 
-                // For x-code elements, use the raw text to preserve formatting
-                let code = text;
-                let preserveOriginal = '';
-
-                // For HTML language code blocks, preserve the original raw text to maintain indentation
-                if (attributes.language === 'html' || text.includes('<!DOCTYPE') || (text.includes('<html') && text.includes('<head') && text.includes('<body'))) {
-                    // Store the original content in a data attribute to preserve indentation
-                    preserveOriginal = ` data-original-content="${text.replace(/"/g, '&quot;')}"`;
-                }
-
-                // Always create an x-code element, with or without attributes
-                return `<x-code${xCodeAttributes}${preserveOriginal}>${code}</x-code>\n`;
+                // Escape the fence body before injection. Newer marked versions
+                // pass `token.text` raw, and if we leave it unescaped an HTML
+                // fence like ```html <script>…</script>``` becomes a live
+                // element in the document instead of source text. Escaping
+                // here keeps the <code> body as pure text — the code plugin's
+                // resolveSource reads textContent which decodes the entities
+                // back to the original source.
+                return `<pre${preAttrs}><code>${escapeForText(text)}</code></pre>\n`;
             }
         },
         // Configure marked to allow custom HTML tags
@@ -111,10 +207,16 @@ async function configureMarked(marked) {
                 const openMatch = src.match(/^:::(.*?)(?:\n|$)/);
                 if (!openMatch) return;
 
-                // Parse the opening line for classes and icon
+                // Parse the opening line for classes, icon, and an optional
+                // quoted name. The name follows the same convention as the
+                // fenced-code info-string (`::: frame "header.html"`) — it
+                // becomes the `name` attribute on the rendered <aside>, which
+                // lets the code plugin pair the frame with a fenced block
+                // sharing the same name inside an <x-code-group>.
                 const openingLine = openMatch[1].trim();
                 let classes = '';
                 let iconValue = '';
+                let nameValue = '';
 
                 // Match icon="value" pattern
                 const iconMatch = openingLine.match(/icon="([^"]+)"/);
@@ -122,8 +224,15 @@ async function configureMarked(marked) {
                     iconValue = iconMatch[1];
                 }
 
-                // Get all class names (remove icon attribute first)
-                classes = openingLine.replace(/\s*icon="[^"]+"\s*/, '').trim();
+                // Match the first quoted string (skipping the icon="…" pair).
+                const withoutIcon = openingLine.replace(/\s*icon="[^"]+"\s*/, ' ');
+                const nameMatch = withoutIcon.match(/"([^"]+)"/);
+                if (nameMatch) {
+                    nameValue = nameMatch[1];
+                }
+
+                // Get all class names (remove icon attribute and quoted name first)
+                classes = withoutIcon.replace(/\s*"[^"]+"\s*/, ' ').replace(/\s+/g, ' ').trim();
 
                 const startPos = openMatch[0].length;
 
@@ -140,13 +249,23 @@ async function configureMarked(marked) {
                         raw: raw,
                         classes: classes,
                         iconValue: iconValue,
+                        nameValue: nameValue,
                         text: content.trim()
                     };
                 }
             },
             renderer(token) {
-                const classes = token.classes || '';
+                let classes = token.classes || '';
                 const iconValue = token.iconValue || '';
+                const nameValue = token.nameValue || '';
+
+                // `::: frame demo` — render the frame contents live AND emit
+                // a sibling <pre x-code="html"> showing the same source. Lets
+                // authors write the example once and have it both rendered
+                // and documented. Strip `demo` from the class list so the
+                // resulting <aside> has just `frame`.
+                const isDemo = /\bframe\b/.test(classes) && /\bdemo\b/.test(classes);
+                if (isDemo) classes = classes.replace(/\bdemo\b/, '').replace(/\s+/g, ' ').trim();
 
                 // For frame callouts, don't parse as markdown to avoid wrapping HTML in <p> tags
                 let parsedContent;
@@ -158,7 +277,7 @@ async function configureMarked(marked) {
                     parsedContent = marked.parse(token.text);
                 }
 
-                const iconHtml = iconValue ? `<span x-icon="${iconValue}"></span>` : '';
+                const iconHtml = iconValue ? `<span x-icon="${escapeForAttribute(iconValue)}"></span>` : '';
 
                 // Create a temporary div to count top-level elements
                 const temp = document.createElement('div');
@@ -173,7 +292,12 @@ async function configureMarked(marked) {
                     `<div>${parsedContent}</div>` :
                     parsedContent;
 
-                return `<aside${classes ? ` class="${classes}"` : ''}>${iconHtml}${wrappedContent}</aside>\n`;
+                const nameAttr = nameValue ? ` name="${escapeForAttribute(nameValue)}"` : '';
+                const aside = `<aside${classes ? ` class="${classes}"` : ''}${nameAttr}>${iconHtml}${wrappedContent}</aside>`;
+                if (isDemo) {
+                    return `${aside}\n<pre x-code="html" copy${nameAttr}><code>${escapeForText(token.text.trim())}</code></pre>\n`;
+                }
+                return `${aside}\n`;
             }
         }]
     });
@@ -185,17 +309,16 @@ async function configureMarked(marked) {
     });
 }
 
-// Custom renderer for x-code-group to handle line breaks properly
+// Markdown preprocessor: ensure that block-level HTML containers (the
+// wrappers authors use to group fenced code blocks into tabs, frames, etc.)
+// have a blank line after their opening tag so marked treats the contents
+// as block-level markdown rather than raw inline HTML. Without this, a
+// fenced ```js immediately after `<div x-code-group>` is treated as text.
 function renderXCodeGroup(markdown) {
-    // Find x-code-group blocks and process them specially
-    const xCodeGroupRegex = /<x-code-group[^>]*>([\s\S]*?)<\/x-code-group>/g;
-
-    return markdown.replace(xCodeGroupRegex, (match, content) => {
-        // Ensure there's a line break after the opening tag if there isn't one
-        const processedContent = content.replace(/^(?!\s*\n)/, '\n');
-
-        return `<x-code-group>${processedContent}</x-code-group>`;
-    });
+    return markdown.replace(
+        /(<(?:div|section|article|aside)[^>]*\bx-code-group\b[^>]*>)(?!\s*\n)/g,
+        '$1\n'
+    );
 }
 
 // Post-process HTML to enable checkboxes by removing disabled attribute
@@ -213,6 +336,73 @@ function enableCheckboxes(html) {
     return temp.innerHTML;
 }
 
+// Apply trailing `{…}` attribute lists to inline `<code>` elements emitted
+// by marked. Authors write ``` `npm i mnfst`{copy} ``` or ``` `code`{bash copy} ```
+// in markdown; marked's default codespan handling drops the trailing brace
+// block as literal text. We rewrite it post-parse so the code plugin's
+// directive sees the attributes and wires copy / syntax highlighting.
+//
+// Supported tokens inside the braces:
+//   copy                        → adds the `copy` attribute (click-to-copy)
+//   <language>                  → bareword like `bash`, `js`, `html` becomes
+//                                 the `x-code="…"` value (drives highlighting)
+//   .class                      → appended to the element's class list
+//   key=value, key="quoted"     → arbitrary attribute (rarely needed)
+//
+// Multiple tokens separate by whitespace: `cmd`{bash copy} works.
+function applyInlineCodeAttributes(html) {
+    // marked emits `<code>…</code>` for codespans (no attributes). When we see
+    // `<code>X</code>{tokens}` we rewrite into `<code x-code[=lang] tokens>X</code>`.
+    // Be conservative: only rewrite when the brace block immediately follows
+    // a `<code>` close tag (no whitespace), so prose like "foo `bar` {note}" is
+    // untouched.
+    //
+    // Body capture is `[^<]*` (not `[\s\S]*?`) so the match can't span across
+    // intermediate `<` characters — without this guard, an unmatched
+    // `<code>foo</code>` followed later by `<code>bar</code>{copy}` would be
+    // captured as ONE big match with body = "foo</code><…><code>bar". That
+    // bug surfaces noticeably in tables, where multiple codespans per row mix
+    // marked and unmarked instances. Marked HTML-escapes any literal `<` in
+    // codespan content to `&lt;`, so the restriction is safe.
+    return html.replace(
+        /<code>([^<]*)<\/code>\{([^}\n]+)\}/g,
+        (_, body, attrString) => {
+            const tokens = attrString.trim().split(/\s+/).filter(Boolean);
+            let language = '';
+            const classes = [];
+            const flags = new Set();
+            const kv = [];
+            for (const tok of tokens) {
+                if (tok === 'copy' || tok === 'lines' || tok === 'edit') {
+                    flags.add(tok);
+                } else if (tok.startsWith('.')) {
+                    classes.push(tok.slice(1));
+                } else if (tok.includes('=')) {
+                    const [k, ...rest] = tok.split('=');
+                    const v = rest.join('=').replace(/^["']|["']$/g, '');
+                    kv.push([k, v]);
+                } else if (/^[a-z][\w-]*$/i.test(tok) && !language) {
+                    language = tok;
+                }
+            }
+            // Only emit x-code when the author actually requested a language.
+            // `inline`{copy} should produce `<code copy>` — copy is a UI flag,
+            // not a request for syntax highlighting. Previously we always
+            // wrote `x-code=""`, which the code plugin treated as auto-detect
+            // and ran hljs.highlightElement on the codespan, colouring
+            // identifiers like `x-code` themselves as tokens. Authors who
+            // want highlighting opt in explicitly via `code`{bash} or by
+            // hand-writing `<code x-code="bash">…</code>`.
+            let attrs = '';
+            if (language) attrs += ` x-code="${escapeForAttribute(language)}"`;
+            for (const flag of flags) attrs += ` ${flag}`;
+            if (classes.length) attrs += ` class="${escapeForAttribute(classes.join(' '))}"`;
+            for (const [k, v] of kv) attrs += ` ${k}="${escapeForAttribute(v)}"`;
+            return `<code${attrs}>${body}</code>`;
+        }
+    );
+}
+
 // Check if highlight.js is available
 function isHighlightJsAvailable() {
     return typeof window.hljs !== 'undefined';
@@ -222,68 +412,69 @@ function isHighlightJsAvailable() {
 
 
 
-// Parse language string to extract title and attributes
+// Parse a fence's info-string into an attributes bag. Supported tokens:
+//   javascript            language (first non-flag bareword)
+//   "Tab name"            quoted name → name attribute (tabs / title bar)
+//   lines                 line numbers gutter
+//   copy                  copy button
+//   edit                  CodeJar editor
+//   collapse              collapse with default threshold (20 lines)
+//   collapse=10           collapse to first 10 lines
+//   from=#demo            pull source from referenced element
 function parseLanguageString(languageString) {
-    if (!languageString || languageString.trim() === '') {
-        return { title: null, language: null, numbers: false, copy: false };
-    }
-
-    const parts = languageString.split(/\s+/);
-
     const attributes = {
         title: null,
         language: null,
-        numbers: false,
-        copy: false
+        lines: false,
+        copy: false,
+        edit: false,
+        collapse: null,   // null = not collapsible; '' = default threshold; '10' = explicit
+        from: null
     };
+    if (!languageString || languageString.trim() === '') return attributes;
 
+    const parts = languageString.split(/\s+/);
     let i = 0;
     while (i < parts.length) {
         const part = parts[i];
 
-        // Check for attributes
-        if (part === 'numbers') {
-            attributes.numbers = true;
-            i++;
-            continue;
+        if (part === 'lines')   { attributes.lines = true;   i++; continue; }
+        if (part === 'copy')    { attributes.copy = true;    i++; continue; }
+        if (part === 'edit')    { attributes.edit = true;    i++; continue; }
+        if (part === 'collapse') { attributes.collapse = ''; i++; continue; }
+        if (part.startsWith('collapse=')) {
+            attributes.collapse = part.slice('collapse='.length).replace(/^"|"$/g, '');
+            i++; continue;
+        }
+        if (part.startsWith('from=')) {
+            attributes.from = part.slice('from='.length).replace(/^"|"$/g, '');
+            i++; continue;
         }
 
-        if (part === 'copy') {
-            attributes.copy = true;
-            i++;
-            continue;
-        }
-
-        // Check for quoted names (e.g., "Example")
-        if (part.startsWith('"') && part.endsWith('"')) {
-            // Single word quoted name
+        // Quoted name handling — single-word "Foo" or multi-word "Foo Bar Baz"
+        if (part.startsWith('"') && part.endsWith('"') && part.length > 1) {
             attributes.title = part.slice(1, -1);
-            i++;
-            continue;
-        } else if (part.startsWith('"')) {
-            // Multi-word quoted name
+            i++; continue;
+        }
+        if (part.startsWith('"')) {
             let fullName = part.slice(1);
             i++;
             while (i < parts.length) {
-                const nextPart = parts[i];
-                if (nextPart.endsWith('"')) {
-                    fullName += ' ' + nextPart.slice(0, -1);
+                const next = parts[i];
+                if (next.endsWith('"')) {
+                    fullName += ' ' + next.slice(0, -1);
                     attributes.title = fullName;
                     i++;
                     break;
-                } else {
-                    fullName += ' ' + nextPart;
-                    i++;
                 }
+                fullName += ' ' + next;
+                i++;
             }
             continue;
         }
 
-        // Store language identifiers (e.g., "css", "javascript", etc.)
-        // Use the first language identifier found
-        if (!attributes.language) {
-            attributes.language = part;
-        }
+        // Unrecognized bareword → treat as language (first one wins)
+        if (!attributes.language) attributes.language = part;
         i++;
     }
 
@@ -336,6 +527,16 @@ async function initializeMarkdownPlugin() {
             if (!expression) {
                 return;
             }
+
+            // Opt-in sanitization. When `.safe` is on the directive
+            // (`x-markdown.safe="$x.user.bio"`), parsed HTML is run through
+            // DOMPurify before injection. Default is unsanitized — Manifest's
+            // design lets authors render raw HTML and custom-element extensions
+            // (x-icon, callouts) and directive attributes (x-code, etc.) freely.
+            // Use .safe when the markdown
+            // source can contain content from untrusted parties (Appwrite
+            // collections, API responses, crowdsourced translations, etc.).
+            const safe = Array.isArray(modifiers) && modifiers.includes('safe');
 
             // Prerender idempotency: if the page is a prerendered MPA and this
             // element already has rendered HTML children, the content was baked
@@ -394,6 +595,13 @@ async function initializeMarkdownPlugin() {
                     // Post-process HTML to enable checkboxes (remove disabled attribute)
                     html = enableCheckboxes(html);
 
+                    // Promote inline code attribute blocks (`foo`{copy}) to
+                    // real attributes so the code plugin can wire copy/highlight.
+                    html = applyInlineCodeAttributes(html);
+
+                    // Apply opt-in DOMPurify sanitization for x-markdown.safe
+                    html = await maybeSanitizeMarkdownHtml(html, safe);
+
                     // Only update if content has changed and isn't empty
                     if (element.innerHTML !== html && html.trim() !== '') {
                         // Create a temporary container to hold the HTML
@@ -405,6 +613,18 @@ async function initializeMarkdownPlugin() {
                         while (temp.firstChild) {
                             element.appendChild(temp.firstChild);
                         }
+
+                        // Notify the code plugin to scan the new subtree —
+                        // fenced blocks and `inline`{copy} elements are added
+                        // outside Alpine's initial walk and won't otherwise
+                        // be picked up by the IntersectionObserver.
+                        if (window.ManifestCode?.observeAll) {
+                            window.ManifestCode.observeAll(element);
+                        }
+                        document.dispatchEvent(new CustomEvent('manifest:code-blocks-converted', {
+                            bubbles: true,
+                            detail: { root: element }
+                        }));
 
                         // Show element with content
                         hasContent = true;
@@ -567,6 +787,13 @@ async function initializeMarkdownPlugin() {
                     // Post-process HTML to enable checkboxes (remove disabled attribute)
                     html = enableCheckboxes(html);
 
+                    // Promote inline code attribute blocks (`foo`{copy}) to
+                    // real attributes so the code plugin can wire copy/highlight.
+                    html = applyInlineCodeAttributes(html);
+
+                    // Apply opt-in DOMPurify sanitization for x-markdown.safe
+                    html = await maybeSanitizeMarkdownHtml(html, safe);
+
                     // Only update DOM if HTML actually changed
                     if (el.innerHTML !== html) {
                         // Create temporary container
@@ -648,6 +875,9 @@ async function initializeMarkdownPlugin() {
 
                         // Post-process HTML to enable checkboxes (remove disabled attribute)
                         html = html.replace(/<input type="checkbox"([^>]*?)disabled([^>]*?)>/g, '<input type="checkbox"$1$2>');
+
+                        // Apply opt-in DOMPurify sanitization for x-markdown.safe
+                        html = await maybeSanitizeMarkdownHtml(html, safe);
 
                         // Create temporary container
                         const temp = document.createElement('div');
@@ -734,6 +964,11 @@ async function initializeMarkdownPlugin() {
 // Track initialization to prevent duplicates
 let markdownPluginInitialized = false;
 
+// True once Alpine has completed its initial DOM walk. Listener is bound at
+// module load so we never miss the event, whatever the script order.
+let markdownAlpineHasWalked = false;
+document.addEventListener('alpine:initialized', () => { markdownAlpineHasWalked = true; });
+
 async function ensureMarkdownPluginInitialized() {
     if (markdownPluginInitialized) {
         return;
@@ -745,9 +980,14 @@ async function ensureMarkdownPluginInitialized() {
     markdownPluginInitialized = true;
     await initializeMarkdownPlugin();
 
-    // If elements with x-markdown already exist, process them
-    // This handles the case where the plugin loads after components are swapped in
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
+    // Only walk existing [x-markdown] subtrees ourselves when Alpine has ALREADY
+    // finished its initial walk (i.e. this plugin loaded late, e.g. after a
+    // component was swapped in). In the normal flow we register the directive
+    // during `alpine:init`, before Alpine's one boot walk — so Alpine processes
+    // every element with all sibling directives (x-icon, x-tooltip, …) already
+    // registered. Walking here during boot would re-init those subtrees before
+    // the other directives exist, dropping nested plugin content.
+    if (markdownAlpineHasWalked && typeof window.Alpine.initTree === 'function') {
         const existingMarkdownElements = document.querySelectorAll('[x-markdown]');
         existingMarkdownElements.forEach(el => {
             // Only process if not already processed by Alpine

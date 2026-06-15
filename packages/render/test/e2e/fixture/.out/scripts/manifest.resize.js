@@ -225,6 +225,7 @@ function initializeResizablePlugin() {
 
             let startX, startY, startWidth, startHeight;
             let currentSnap = null;
+            let lastWidth, lastHeight;
 
             // Convert constraints to pixels for calculations
             const pixelConstraints = {
@@ -254,10 +255,17 @@ function initializeResizablePlugin() {
                 e.preventDefault();
                 e.stopPropagation();
 
+                el.classList.add('resizable-dragging');
+
                 startX = e.clientX;
                 startY = e.clientY;
                 startWidth = el.getBoundingClientRect().width;
                 startHeight = el.getBoundingClientRect().height;
+
+                // Each drag starts with clean snap state
+                currentSnap = null;
+                lastWidth = startWidth;
+                lastHeight = startHeight;
 
                 // Show overlay
                 const overlay = document.querySelector('.resize-overlay') || createOverlay();
@@ -293,31 +301,60 @@ function initializeResizablePlugin() {
                 }
 
                 // Handle snap-close behavior for width
-                if (pixelConstraints.closeX !== null) {
-                    // Close when element becomes smaller than threshold (dragging toward inside)
-                    if (newWidth <= pixelConstraints.closeX) {
+                if (pixelConstraints.closeX !== null && newWidth <= pixelConstraints.closeX) {
+                    // Close only while shrinking toward the close edge
+                    if (newWidth < lastWidth || currentSnap === 'closing') {
                         el.classList.add('resizable-closing');
                         currentSnap = 'closing';
 
                         if (toggle) {
                             config.evaluate(`${toggle} = false`);
                         }
-                        return; // Exit early to prevent further width calculations
+
+                        el.dispatchEvent(new CustomEvent('resize', {
+                            detail: {
+                                width: newWidth,
+                                height: newHeight,
+                                unit: 'px',
+                                snap: currentSnap,
+                                closing: true
+                            }
+                        }));
                     }
+                    lastWidth = newWidth;
+                    lastHeight = newHeight;
+                    return; // Exit early to prevent further width calculations
                 }
 
                 // Handle snap-close behavior for height
-                if (pixelConstraints.closeY !== null) {
-                    // Close when element becomes smaller than threshold (dragging toward inside)
-                    if (newHeight <= pixelConstraints.closeY) {
+                if (pixelConstraints.closeY !== null && newHeight <= pixelConstraints.closeY) {
+                    // Close only while shrinking toward the close edge
+                    if (newHeight < lastHeight || currentSnap === 'closing') {
                         el.classList.add('resizable-closing');
                         currentSnap = 'closing';
 
                         if (toggle) {
                             config.evaluate(`${toggle} = false`);
                         }
-                        return; // Exit early to prevent further height calculations
+
+                        el.dispatchEvent(new CustomEvent('resize', {
+                            detail: {
+                                width: newWidth,
+                                height: newHeight,
+                                unit: 'px',
+                                snap: currentSnap,
+                                closing: true
+                            }
+                        }));
                     }
+                    lastWidth = newWidth;
+                    lastHeight = newHeight;
+                    return; // Exit early to prevent further height calculations
+                }
+
+                // Above close thresholds: clear any closing state
+                if (currentSnap === 'closing') {
+                    currentSnap = null;
                 }
 
                 // Apply constraints only if we're not closing
@@ -350,6 +387,8 @@ function initializeResizablePlugin() {
                 // Convert back to original unit for display
                 el.style.width = `${newWidth}px`;
                 el.style.height = `${newHeight}px`;
+                lastWidth = newWidth;
+                lastHeight = newHeight;
                 el.classList.remove('resizable-closing', 'resizable-closed');
                 if (toggle) {
                     config.evaluate(`${toggle} = true`);
@@ -381,6 +420,8 @@ function initializeResizablePlugin() {
             const handleMouseUp = () => {
                 document.removeEventListener('mousemove', handleMouseMove);
                 document.removeEventListener('mouseup', handleMouseUp);
+
+                el.classList.remove('resizable-dragging');
 
                 // Hide overlay
                 const overlay = document.querySelector('.resize-overlay');

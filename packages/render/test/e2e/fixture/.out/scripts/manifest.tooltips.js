@@ -42,6 +42,7 @@ function initializeTooltipPlugin() {
     const TOOLTIP_CHAIN_GRACE_MS = 250;
     let _lastTooltipHideTime = 0;
     const markTooltipHidden = () => { _lastTooltipHideTime = Date.now(); };
+    const clearChainWindow = () => { _lastTooltipHideTime = 0; };
     const isInChainWindow = () => (Date.now() - _lastTooltipHideTime) < TOOLTIP_CHAIN_GRACE_MS;
 
     // ---- Singletons per host ----
@@ -70,27 +71,19 @@ function initializeTooltipPlugin() {
         return s;
     }
 
-    // Restore a trigger's original anchor-name (captured before we overrode it).
-    // Scheduled with a long delay so the anchor stays valid through popover transitions.
-    const _pendingAnchorRestores = new WeakMap();  // trigger → timeoutId
-    const ANCHOR_RESTORE_DELAY_MS = 2000;
-
-    function scheduleAnchorRestore(trigger) {
-        const existing = _pendingAnchorRestores.get(trigger);
-        if (existing) clearTimeout(existing);
-        const id = setTimeout(() => {
-            _pendingAnchorRestores.delete(trigger);
-            if (trigger._tooltipOriginalAnchor) {
-                trigger.style.setProperty('anchor-name', trigger._tooltipOriginalAnchor);
-            } else {
-                trigger.style.removeProperty('anchor-name');
-            }
-        }, ANCHOR_RESTORE_DELAY_MS);
-        _pendingAnchorRestores.set(trigger, id);
-    }
-    function cancelAnchorRestore(trigger) {
-        const id = _pendingAnchorRestores.get(trigger);
-        if (id) { clearTimeout(id); _pendingAnchorRestores.delete(trigger); }
+    // Reuse the trigger's own anchor (--trigger-anchor) or assign one once;
+    // never overwrite or restore another plugin's anchor-name
+    function resolveTriggerAnchor(trigger) {
+        const owned = trigger.style.getPropertyValue('--trigger-anchor').trim();
+        if (owned) return owned;
+        if (!trigger._tooltipAnchorSet) {
+            const code = Math.random().toString(36).slice(2, 9);
+            trigger._tooltipAnchorName = `--tooltip-${code}`;
+            trigger.style.setProperty('anchor-name', `${trigger._tooltipAnchorName}, var(--co-anchor, --no-anchor)`);
+            trigger._tooltipAnchorSet = true;
+            void trigger.offsetHeight;
+        }
+        return trigger._tooltipAnchorName;
     }
 
     // ---- Controller ----
@@ -119,7 +112,7 @@ function initializeTooltipPlugin() {
     // Update the singleton to point at a trigger (anchor, content, classes) and show it.
     // Switches between triggers happen by re-anchoring — no positional animation. Any
     // previous transform state is cleared so the tooltip sits squarely at its anchor.
-    function showSingletonFor(trigger, contentHtml, positions) {
+    function showSingletonFor(trigger, contentHtml, positions, allowHtml = true) {
         const host = getTooltipHostForTrigger(trigger);
         const s = getSingleton(host);
 
@@ -127,43 +120,61 @@ function initializeTooltipPlugin() {
         s.el.style.transition = '';
         s.el.style.translate = '';
 
-        // Capture the trigger's original anchor-name so we can restore it later.
-        if (!trigger._tooltipOriginalAnchorCaptured) {
-            trigger._tooltipOriginalAnchor = trigger.style.getPropertyValue('anchor-name') || '';
-            trigger._tooltipOriginalAnchorCaptured = true;
-        }
-        cancelAnchorRestore(trigger);
-
         // Update position classes on the singleton. These drive the CSS positioning
         // variants (top, bottom-end, etc.) defined in manifest.tooltip.css.
         if (s.currentPositions.length) s.el.classList.remove(s.currentPositions.join('-'));
         if (positions.length) s.el.classList.add(positions.join('-'));
         s.currentPositions = positions;
 
-        s.el.innerHTML = contentHtml || '';
+        // Escape by default: dynamic ($x / runtime) content can carry attacker
+        // markup, so it goes in as TEXT. Author-authored literal HTML and the
+        // explicit `.html`/`.safe` opt-in render as markup (allowHtml=true).
+        if (allowHtml) s.el.innerHTML = contentHtml || '';
+        else s.el.textContent = contentHtml || '';
 
-        // Anchor binding: give the trigger a unique anchor-name, point the singleton at it.
-        if (!trigger._tooltipAnchorName) {
-            const code = Math.random().toString(36).slice(2, 9);
-            trigger._tooltipAnchorName = `--tooltip-trigger-${code}`;
-        }
-        const anchorName = trigger._tooltipAnchorName;
-        trigger.style.setProperty('anchor-name', anchorName);
-        void trigger.offsetHeight; // reflow so anchor-name registers
+        // Anchor binding: reuse or assign the trigger's anchor, point the singleton at it.
+        const anchorName = resolveTriggerAnchor(trigger);
         s.el.style.setProperty('position-anchor', anchorName);
 
         s.activeTrigger = trigger;
         s.currentAnchorName = anchorName;
+
+        // A11y: link the trigger to the tooltip so screen readers announce the
+        // tooltip text as a description when the trigger receives focus or hover.
+        // Per WAI-ARIA, aria-describedby is the standard for this relationship.
+        if (!s.el.id) s.el.id = 'mnfst-tooltip-' + Math.random().toString(36).slice(2, 9);
+        s.el.setAttribute('role', 'tooltip');
+        // Preserve any author-provided aria-describedby so we don't stomp it.
+        if (!trigger._tooltipPriorDescribedBy) {
+            trigger._tooltipPriorDescribedBy = trigger.getAttribute('aria-describedby') || '';
+        }
+        const prior = trigger._tooltipPriorDescribedBy;
+        const merged = prior ? `${prior} ${s.el.id}` : s.el.id;
+        trigger.setAttribute('aria-describedby', merged);
 
         if (!s.el.matches(':popover-open')) s.el.showPopover();
     }
 
     // Hide the singleton that's currently showing (if any), regardless of host.
     function hideAnySingleton() {
+        let wasOpen = false;
         document.querySelectorAll('.tooltip[popover="hint"]:popover-open').forEach(el => {
+            wasOpen = true;
             try { el.hidePopover(); } catch {}
         });
-        markTooltipHidden();
+        // Restore each tooltip's prior aria-describedby on the trigger it had been
+        // bound to. We can't reach the trigger from the popover alone, so we walk
+        // the tooltipped triggers and remove our id from their describedby list.
+        document.querySelectorAll('[aria-describedby]').forEach((el) => {
+            if (!el._tooltipPriorDescribedBy && el._tooltipPriorDescribedBy !== '') return;
+            const prior = el._tooltipPriorDescribedBy;
+            if (prior) el.setAttribute('aria-describedby', prior);
+            else el.removeAttribute('aria-describedby');
+            el._tooltipPriorDescribedBy = undefined;
+        });
+        // Only arm the chain window when something was actually open — marking
+        // unconditionally let a plain click fast-track the next focus show.
+        if (wasOpen) markTooltipHidden();
     }
 
     // ---- Directive ----
@@ -176,6 +187,12 @@ function initializeTooltipPlugin() {
             expression.startsWith('$x.') ||
             (expression.includes('+') || expression.includes('`') || expression.includes('${'));
 
+        // Whether to render the resolved content as HTML. Default false (escape):
+        // dynamic/runtime content can carry attacker markup. Author-authored
+        // literal HTML in the attribute, or an explicit `.html`/`.safe` modifier,
+        // opts into raw markup.
+        let allowHtml = modifiers.includes('html') || modifiers.includes('safe');
+
         if (expression.startsWith('$x.')) {
             const path = expression.substring(3);
             const [contentType] = path.split('.');
@@ -187,7 +204,9 @@ function initializeTooltipPlugin() {
                 }
             });
         } else if (expression.includes('<') && expression.includes('>')) {
-            // Literal HTML string
+            // Literal HTML string typed into the attribute — author-authored, as
+            // trusted as the surrounding template, so render it as markup.
+            allowHtml = true;
             const escaped = expression.replace(/'/g, "\\'");
             getContent = evaluateLater(`'${escaped}'`);
         } else if (expression.includes('+') || expression.includes('`') || expression.includes('${')) {
@@ -231,7 +250,7 @@ function initializeTooltipPlugin() {
                     if (t && t.matches && t.matches(':popover-open')) return;
                 }
                 resolveContent(html => {
-                    showSingletonFor(el, html, positions);
+                    showSingletonFor(el, html, positions, allowHtml);
                 });
             }, delay);
         };
@@ -249,7 +268,6 @@ function initializeTooltipPlugin() {
                     s.el.hidePopover();
                     s.activeTrigger = null;
                     markTooltipHidden();
-                    scheduleAnchorRestore(el);
                 }
             }, HIDE_DEFER_MS);
         };
@@ -258,16 +276,24 @@ function initializeTooltipPlugin() {
         el.addEventListener('mouseenter', requestShow);
         el.addEventListener('mouseleave', requestHide);
 
-        // Mousedown/click: always hide immediately; scheduleAnchorRestore so the
-        // trigger's anchor-name stays valid long enough for any dropdown popover
-        // it launches to position itself correctly.
-        const hideAndScheduleRestore = () => {
+        // Keyboard / focus interactions — WCAG 2.1 SC 1.4.13 requires tooltip
+        // content to be accessible to keyboard users via focus, not hover only.
+        // Gated on :focus-visible so mouse-click focus doesn't flash the tooltip.
+        el.addEventListener('focus', () => {
+            if (el.matches(':focus-visible')) requestShow();
+        });
+        el.addEventListener('blur', requestHide);
+
+        // Mousedown/click hides immediately and clears the chain window so a
+        // synthetic re-hover (e.g. content shifting under the cursor after
+        // navigation) waits the full delay instead of showing instantly.
+        const hideOnInteraction = () => {
             cancelPendingShow();
             hideAnySingleton();
-            scheduleAnchorRestore(el);
+            clearChainWindow();
         };
-        el.addEventListener('mousedown', hideAndScheduleRestore);
-        el.addEventListener('click', hideAndScheduleRestore);
+        el.addEventListener('mousedown', hideOnInteraction);
+        el.addEventListener('click', hideOnInteraction);
     });
 
     // Global: when ANY other popover opens, close the singleton(s). Dropdowns and
@@ -278,6 +304,46 @@ function initializeTooltipPlugin() {
         if (t.classList && t.classList.contains('tooltip') && t.getAttribute('popover') === 'hint') return;
         hideAnySingleton();
     }, true);
+
+    // ---- Public programmatic-show API ----
+    //
+    // Flash a tooltip in response to an action (e.g. the code plugin's inline
+    // copy confirmation) without requiring the trigger to carry an x-tooltip
+    // directive. The trigger element acts as the anchor; the singleton is
+    // reused, so this respects chain mode / focus behaviour just like a
+    // hover-shown tooltip would. Auto-hides after `durationMs`.
+    //
+    // `positions` accepts the same vocabulary as the x-tooltip directive's
+    // modifiers — array of any subset of ['top','bottom','start','end',
+    // 'center','corner']. Joined with '-' to form the position class
+    // (e.g. ['top','end'] → '.top-end'), matching what `x-tooltip.top.end`
+    // would emit.
+    window.ManifestTooltips = window.ManifestTooltips || {};
+    window.ManifestTooltips.showTransient = function (triggerEl, contentHtml, durationMs, positions) {
+        if (!triggerEl) return;
+        const duration = typeof durationMs === 'number' ? durationMs : 1500;
+        const validPositions = ['top', 'bottom', 'start', 'end', 'center', 'corner'];
+        let resolvedPositions = [];
+        if (Array.isArray(positions)) {
+            resolvedPositions = positions.filter(p => validPositions.includes(p));
+        } else if (typeof positions === 'string' && positions) {
+            resolvedPositions = positions.split(/[.\-\s]+/).filter(p => validPositions.includes(p));
+        }
+        cancelPendingShow();
+        cancelPendingHide();
+        showSingletonFor(triggerEl, contentHtml || '', resolvedPositions);
+        clearTimeout(triggerEl._tooltipTransientTimer);
+        triggerEl._tooltipTransientTimer = setTimeout(() => {
+            triggerEl._tooltipTransientTimer = null;
+            const host = getTooltipHostForTrigger(triggerEl);
+            const s = _singletons.get(host);
+            if (s && s.activeTrigger === triggerEl && s.el.matches(':popover-open')) {
+                try { s.el.hidePopover(); } catch { /* popover already closed */ }
+                s.activeTrigger = null;
+                markTooltipHidden();
+            }
+        }, duration);
+    };
 }
 
 // ---- Plugin init boilerplate ----

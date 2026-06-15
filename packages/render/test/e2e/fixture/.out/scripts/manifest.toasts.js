@@ -32,7 +32,14 @@ function initializeToastPlugin() {
 
         // Create toast element
         const toast = document.createElement('div');
-        toast.setAttribute('role', 'alert');
+        // A11y: route by type. "negative" (and forward-compat "error" / "warning")
+        // interrupt with role="alert" (assertive live region). All other types —
+        // default, "brand", "accent", "positive" — use role="status" (polite)
+        // so screen readers finish what they're saying before announcing,
+        // matching the toast's intent as a non-urgent confirmation.
+        const isAssertive = type === 'negative' || type === 'error' || type === 'warning';
+        toast.setAttribute('role', isAssertive ? 'alert' : 'status');
+        if (!isAssertive) toast.setAttribute('aria-live', 'polite');
         toast.setAttribute('class', type ? `toast ${type}` : 'toast');
 
         // Create content with optional icon

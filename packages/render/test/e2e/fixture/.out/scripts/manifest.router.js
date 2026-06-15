@@ -88,41 +88,6 @@ window.ManifestRouting = {
 
 // Router position
 
-// Capture initial body order from index.html
-function captureBodyOrder() {
-    if (window.__manifestBodyOrder) return; // Already captured
-
-    try {
-        const req = new XMLHttpRequest();
-        req.open('GET', '/index.html', false);
-        req.send(null);
-        if (req.status === 200) {
-            let html = req.responseText;
-
-            // Handle self-closing tags if components plugin isn't available
-            if (!window.ManifestComponents) {
-                html = html.replace(/<x-([a-z0-9-]+)([^>]*)\s*\/?>/gi, (match, tag, attrs) => `<x-${tag}${attrs}></x-${tag}>`);
-            }
-
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-            const bodyChildren = Array.from(doc.body.children);
-
-            window.__manifestBodyOrder = bodyChildren.map((el, index) => ({
-                index,
-                tag: el.tagName.toLowerCase().trim(),
-                isComponent: el.tagName.toLowerCase().startsWith('x-'),
-                attrs: Array.from(el.attributes).map(attr => [attr.name, attr.value]),
-                key: el.getAttribute('data-component-id') || (el.tagName.toLowerCase().startsWith('x-') ? el.tagName.toLowerCase().replace('x-', '').trim() : null),
-                position: index,
-                content: el.tagName.toLowerCase().startsWith('x-') ? null : el.innerHTML
-            }));
-        }
-    } catch (e) {
-        // Failed to load index.html for body order snapshot
-    }
-}
-
 // Assign data-order attributes to all top-level elements
 function assignDataPositions() {
     if (!document.body) return;
@@ -136,10 +101,6 @@ function assignDataPositions() {
 
 // Initialize position management
 function initializePositionManagement() {
-    // Capture body order first
-    captureBodyOrder();
-
-    // Assign data-order attributes
     assignDataPositions();
 }
 
@@ -153,7 +114,6 @@ if (document.readyState === 'loading') {
 // Export position management interface
 window.ManifestRoutingPosition = {
     initialize: initializePositionManagement,
-    captureBodyOrder,
     assignDataPositions
 }; 
 
@@ -232,7 +192,7 @@ function shouldSkipStickyLocaleForLogicalSegments(segments) {
     return STICKY_LOCALE_STATIC_FILE_EXT.has(ext);
 }
 
-// manifest.prerender.localeRouteExclude → JSON array in meta; logical path prefixes (after locale).
+// manifest.render.localeRouteExclude → JSON array in meta; logical path prefixes (after locale).
 function parseLocaleRouteExcludePatterns() {
     const meta = document.querySelector('meta[name="manifest:locale-route-exclude"]');
     const raw = meta?.getAttribute('content') || '';
@@ -401,14 +361,89 @@ async function handleRouteChange() {
         }, 50);
     }
 
-    // Emit route change event
-    window.dispatchEvent(new CustomEvent('manifest:route-change', {
+    // Build the route-change event once so dispatch + transition wrapper share it.
+    const event = new CustomEvent('manifest:route-change', {
         detail: {
             from: prevRoute,
             to: newRoute,
             normalizedPath: newRoute === '/' ? '/' : newRoute.replace(/^\/|\/$/g, '')
         }
-    }));
+    });
+
+    // SPA route changes use the View Transitions API when available so the
+    // visibility-toggle that listeners perform inside this dispatch is
+    // animated. Cross-document MPA navigations are already handled by
+    // `@view-transition { navigation: auto }` in the framework's reset CSS;
+    // the same `::view-transition-group(*)` rule (driven by
+    // `--view-transition-duration` / `--view-transition-easing`) covers both.
+    //
+    // The callback is synchronous: visibility/head/anchor listeners mutate
+    // the DOM inside `dispatchEvent` and return. Returning anything async
+    // here would freeze the rendered frame until the promise resolves,
+    // adding the entirety of Alpine's pending-update queue to the perceived
+    // navigation time (1–2s on busy pages).
+    if (shouldUseViewTransition()) {
+        document.startViewTransition(() => {
+            window.dispatchEvent(event);
+        });
+    } else {
+        window.dispatchEvent(event);
+    }
+}
+
+// Decide whether SPA route changes should run inside a View Transition.
+// Three modes, in priority order:
+//
+//   1. `<html data-no-view-transitions>`  → force OFF
+//   2. `<html data-view-transitions>`     → force ON
+//   3. (neither)                          → auto: ON when the current page is
+//                                            under VT_AUTO_THRESHOLD elements,
+//                                            OFF otherwise
+//
+// The auto threshold exists because the View Transitions API rasterizes the
+// full viewport for the "before" and "after" snapshots; cost scales linearly
+// with DOM size and gets noticeable above a few thousand elements (a 10k-
+// element page measured ~500ms per snapshot in dev). Light pages keep the
+// crossfade; heavy pages stay fast.
+//
+// Cross-document (MPA) navigations are unaffected — those use the browser's
+// native cross-document path (`@view-transition { navigation: auto }`),
+// which rasterizes in parallel with page load and doesn't expose the cost.
+//
+// Per-element opt-out (`data-no-view-transition`, singular) on individual
+// elements is handled by the existing reset CSS rule that sets
+// `view-transition-name: none` on them. `prefers-reduced-motion` is
+// respected automatically — the browser falls back to a snap with no
+// animation when the user has it set.
+const VT_AUTO_THRESHOLD = 3000;
+
+function shouldUseViewTransition() {
+    if (typeof document === 'undefined') return false;
+    if (typeof document.startViewTransition !== 'function') return false;
+    const html = document.documentElement;
+    if (!html) return false;
+    if (html.hasAttribute('data-no-view-transitions')) return false;
+    if (html.hasAttribute('data-view-transitions')) return true;
+    try {
+        return document.querySelectorAll('*').length < VT_AUTO_THRESHOLD;
+    } catch {
+        return false;
+    }
+}
+
+// Headless automation (Puppeteer / Playwright / Selenium / WebDriver-driven
+// Chromium) frequently captures screenshots mid-transition, producing blank
+// frames. Real browsers report `navigator.webdriver === false` — including
+// when DevTools is open, when launched via `open <url>`, or on mobile — so
+// this check exclusively affects automation tooling and leaves end-user
+// behavior identical. Authors who want transitions in their automation tests
+// can force them on with `<html data-view-transitions>`, which takes priority
+// over this attribute via `shouldUseViewTransition()` above.
+if (typeof navigator !== 'undefined' && navigator.webdriver === true) {
+    const html = document.documentElement;
+    if (html && !html.hasAttribute('data-view-transitions')) {
+        html.setAttribute('data-no-view-transitions', '');
+    }
 }
 
 // Resolve internal link to absolute pathname for pushState. Relative hrefs (e.g. "gadget") are resolved against the app base, not the current URL, so we never get additive paths like /src/dist/widget/gadget/widget/...
@@ -511,6 +546,20 @@ function interceptLinkClicks() {
 
         // Handle pure anchor links normally - don't intercept them
         if (href.startsWith('#')) return;
+
+        // Don't intercept blob: or data: URLs. The export plugin creates a
+        // throwaway <a href="blob:…" download="…"> and programmatically
+        // clicks it to trigger a file save; if the router treats it as a
+        // SPA link, `new URL("blob:http://localhost/UUID", origin).pathname`
+        // resolves to "http://localhost/UUID" which then pushState pushes
+        // as a same-origin path, producing /http://localhost/UUID and
+        // landing the user on a 404 instead of downloading.
+        if (href.startsWith('blob:') || href.startsWith('data:')) return;
+
+        // Honor `download` — the link is opting out of SPA navigation in
+        // favor of letting the browser save its target. Same intent as
+        // blob:/data:, just expressed via the standard HTML attribute.
+        if (link.hasAttribute('download')) return;
 
         // Check if it's an external link FIRST (before any other processing)
         let isExternalLink = false;
@@ -943,9 +992,15 @@ function processElementHeadContent(element, normalizedPath) {
         // Add new head content
         Array.from(headTemplate.content.children).forEach(child => {
             if (child.tagName === 'SCRIPT') {
-                // For scripts, create and execute directly
+                // For scripts, create and execute directly. Preserve all source
+                // attributes (src, type, async, defer, crossorigin, integrity,
+                // nonce, etc.) — copying only textContent silently drops external
+                // src loads and turns type="module" scripts into classic scripts.
                 const script = document.createElement('script');
-                script.textContent = child.textContent;
+                for (const attr of child.attributes) {
+                    script.setAttribute(attr.name, attr.value);
+                }
+                if (child.textContent) script.textContent = child.textContent;
                 script.setAttribute('data-route-head', headId);
                 document.head.appendChild(script);
             } else {
@@ -1165,12 +1220,34 @@ function isVisible(el) {
 // Anchors functionality
 function initializeAnchors() {
 
-    // Register anchors directive  
+    // Register anchors directive
     Alpine.directive('anchors', (el, { expression, modifiers }, { effect, evaluateLater, Alpine }) => {
 
 
         try {
             const parseExpression = parseAnchorsExpression;
+
+            // Apply an Alpine-style :class binding to the cloned link. Goes
+            // through Alpine.evaluate so the expression runs in Alpine's
+            // sandboxed evaluator (no eval()) and gets anchor as a real scope
+            // variable — not interpolated into source. Supports the three
+            // standard :class shapes: object ({foo: cond}), string, array.
+            const applyClassBinding = (linkElement, classBinding, anchor) => {
+                try {
+                    const result = Alpine.evaluate(linkElement, classBinding, { scope: { anchor } });
+                    if (result && typeof result === 'object' && !Array.isArray(result)) {
+                        Object.entries(result).forEach(([className, active]) => {
+                            if (active) linkElement.classList.add(className);
+                        });
+                    } else if (typeof result === 'string') {
+                        result.split(/\s+/).filter(Boolean).forEach(c => linkElement.classList.add(c));
+                    } else if (Array.isArray(result)) {
+                        result.filter(c => typeof c === 'string').forEach(c => linkElement.classList.add(c));
+                    }
+                } catch (error) {
+                    console.warn('[Manifest Anchors] Could not evaluate class binding:', classBinding, error);
+                }
+            };
 
             // Extract anchors function (only from visible scope containers to avoid prior-route content)
             const extractAnchors = (expr) => {
@@ -1280,42 +1357,7 @@ function initializeAnchors() {
                                 if (linkElement.hasAttribute(':class')) {
                                     const classBinding = linkElement.getAttribute(':class');
                                     linkElement.removeAttribute(':class');
-
-                                    try {
-                                        // Create a simple evaluator for class bindings
-                                        const evaluateClassBinding = (binding, anchor) => {
-                                            // Replace anchor.property references with actual values
-                                            let evaluated = binding
-                                                .replace(/anchor\.tag/g, `'${anchor.tag}'`)
-                                                .replace(/anchor\.selected/g, anchor.selected ? 'true' : 'false')
-                                                .replace(/anchor\.index/g, anchor.index)
-                                                .replace(/anchor\.id/g, `'${anchor.id}'`)
-                                                .replace(/anchor\.text/g, `'${anchor.text.replace(/'/g, "\\'")}'`)
-                                                .replace(/anchor\.link/g, `'${anchor.link}'`)
-                                                .replace(/anchor\.class/g, `'${anchor.class}'`);
-
-                                            // Simple object evaluation for class bindings
-                                            if (evaluated.includes('{') && evaluated.includes('}')) {
-                                                // Extract the object part
-                                                const objectMatch = evaluated.match(/\{([^}]+)\}/);
-                                                if (objectMatch) {
-                                                    const objectContent = objectMatch[1];
-                                                    const classPairs = objectContent.split(',').map(pair => pair.trim());
-
-                                                    classPairs.forEach(pair => {
-                                                        const [className, condition] = pair.split(':').map(s => s.trim());
-                                                        if (condition && eval(condition)) {
-                                                            linkElement.classList.add(className.replace(/['"]/g, ''));
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        };
-
-                                        evaluateClassBinding(classBinding, anchor);
-                                    } catch (error) {
-                                        console.warn('[Manifest Anchors] Could not evaluate class binding:', classBinding, error);
-                                    }
+                                    applyClassBinding(linkElement, classBinding, anchor);
                                 }
 
                                 containerElement.appendChild(linkElement);
@@ -1342,42 +1384,7 @@ function initializeAnchors() {
                                 if (linkElement.hasAttribute(':class')) {
                                     const classBinding = linkElement.getAttribute(':class');
                                     linkElement.removeAttribute(':class');
-
-                                    try {
-                                        // Create a simple evaluator for class bindings
-                                        const evaluateClassBinding = (binding, anchor) => {
-                                            // Replace anchor.property references with actual values
-                                            let evaluated = binding
-                                                .replace(/anchor\.tag/g, `'${anchor.tag}'`)
-                                                .replace(/anchor\.selected/g, anchor.selected ? 'true' : 'false')
-                                                .replace(/anchor\.index/g, anchor.index)
-                                                .replace(/anchor\.id/g, `'${anchor.id}'`)
-                                                .replace(/anchor\.text/g, `'${anchor.text.replace(/'/g, "\\'")}'`)
-                                                .replace(/anchor\.link/g, `'${anchor.link}'`)
-                                                .replace(/anchor\.class/g, `'${anchor.class}'`);
-
-                                            // Simple object evaluation for class bindings
-                                            if (evaluated.includes('{') && evaluated.includes('}')) {
-                                                // Extract the object part
-                                                const objectMatch = evaluated.match(/\{([^}]+)\}/);
-                                                if (objectMatch) {
-                                                    const objectContent = objectMatch[1];
-                                                    const classPairs = objectContent.split(',').map(pair => pair.trim());
-
-                                                    classPairs.forEach(pair => {
-                                                        const [className, condition] = pair.split(':').map(s => s.trim());
-                                                        if (condition && eval(condition)) {
-                                                            linkElement.classList.add(className.replace(/['"]/g, ''));
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        };
-
-                                        evaluateClassBinding(classBinding, anchor);
-                                    } catch (error) {
-                                        console.warn('[Manifest Anchors] Could not evaluate class binding:', classBinding, error);
-                                    }
+                                    applyClassBinding(linkElement, classBinding, anchor);
                                 }
 
                                 el.parentElement.insertBefore(linkElement, el);

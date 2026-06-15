@@ -20,7 +20,7 @@
 	 * innerHTML) of every element that needs runtime hydration.  This
 	 * function runs once on page load BEFORE any plugin or Alpine starts —
 	 * it walks the contract, restores source state, and removes its own
-	 * markers.  Every downstream plugin (themes, router, data, markdown,
+	 * markers.  Every downstream plugin (colors, router, data, markdown,
 	 * icons, …) then sees exactly the DOM the user authored, exactly as it
 	 * would in a live SPA.  No plugin needs a "prerender mode" branch.
 	 *
@@ -37,6 +37,7 @@
 		// Only run on pages the prerender marked as static MPA output.
 		const prerenderMeta = document.querySelector('meta[name="manifest:prerendered"]');
 		if (!prerenderMeta || prerenderMeta.getAttribute('content') === '0') return;
+
 		const blob = document.getElementById('__manifest_hydrate__');
 		if (!blob) return;
 		let entries;
@@ -139,6 +140,31 @@
 		blob.remove();
 	}
 
+	/*
+	 * Remove baked x-for/x-if clones the prerender kept for crawlers.  Their
+	 * <template> is still live, so Alpine re-renders the list/conditional on
+	 * boot; dropping the baked copies first avoids a duplicate render.
+	 * data-hydrate islands keep their baked DOM.
+	 *
+	 * Deliberately NOT part of hydratePrerenderedPage(): this wipe is
+	 * destructive, so it runs at the last safe moment — `alpine:init`, which
+	 * Alpine dispatches after its script has arrived and executed but BEFORE
+	 * it walks the DOM and re-renders x-for/x-if from their live templates.
+	 * If Alpine never arrives (CDN failure, offline), the listener never
+	 * fires and the page keeps its complete baked content instead of losing
+	 * the clones with nothing to re-render them.
+	 */
+	function removePrerenderClones() {
+		if (typeof document === 'undefined' || !document.querySelectorAll) return;
+		document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
+			if (el.closest && el.closest('[data-hydrate]')) return;
+			el.remove();
+		});
+	}
+	if (typeof document !== 'undefined') {
+		document.addEventListener('alpine:init', removePrerenderClones, { once: true });
+	}
+
 	// Run hydration BEFORE Alpine's deferred script executes.
 	//
 	// Timing: `<script defer>` runs AFTER HTML parsing finishes but BEFORE
@@ -171,6 +197,20 @@
 		}
 	}
 
+	// Mark <html> with .window-resizing while the viewport is being resized so
+	// CSS can suspend layout-tracking transitions (e.g. the tab bar slider)
+	if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+		let resizeIdleTimer = null;
+		window.addEventListener('resize', () => {
+			document.documentElement.classList.add('window-resizing');
+			if (resizeIdleTimer) clearTimeout(resizeIdleTimer);
+			resizeIdleTimer = setTimeout(() => {
+				document.documentElement.classList.remove('window-resizing');
+				resizeIdleTimer = null;
+			}, 200);
+		}, { passive: true });
+	}
+
 	// Configuration
 	const DEFAULT_VERSION = 'latest';
 	const ALPINE_CDN_URL = 'https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js';
@@ -191,6 +231,7 @@
 		'markdown',
 		'svg',
 		'code',
+		'color',
 		'toasts',
 		'tooltips',
 		'dropdowns',
@@ -198,7 +239,11 @@
 		'slides',
 		'resize',
 		'colorpicker',
-		'url-parameters'
+		'datepicker',
+		'charts',
+		'url-parameters',
+		'export',
+		'status'
 	];
 
 	// Appwrite integration plugins (opt-in only, never auto-loaded)
@@ -233,10 +278,12 @@
 			}
 			return false;
 		})();
+		const hasStatus = manifest.status && typeof manifest.status === 'object' && Object.keys(manifest.status).length > 0;
 		return AVAILABLE_PLUGINS.filter(p => {
 			if (p === 'data') return hasData;
 			if (p === 'localization') return hasLocalization;
 			if (p === 'components') return hasComponents;
+			if (p === 'status') return hasStatus;
 			return true;
 		});
 	}
@@ -267,32 +314,67 @@
 		return `https://cdn.jsdelivr.net/npm/alpinejs@${dataAlpine}/dist/cdn.min.js`;
 	}
 
+	// Has DOMContentLoaded already fired?  readyState alone can't tell:
+	// 'interactive' covers both "deferred scripts still running" (DCL pending)
+	// and "DCL done, subresources still loading".  Disambiguate via the
+	// navigation timing entry, which records the event the moment it runs.
+	function domContentLoadedFired() {
+		if (document.readyState === 'complete') return true;
+		if (document.readyState === 'loading') return false;
+		try {
+			const nav = performance.getEntriesByType('navigation')[0];
+			if (nav) return nav.domContentLoadedEventEnd > 0;
+		} catch (_) { /* fall through */ }
+		return false;
+	}
+
+	// Run fn once the document's deferred scripts have all executed (i.e. at
+	// or after DOMContentLoaded).  The window 'load' listener is a belt-and-
+	// braces fallback for environments where the navigation entry is missing.
+	function whenDomReady(fn) {
+		if (domContentLoadedFired()) {
+			fn();
+			return;
+		}
+		let done = false;
+		const run = () => { if (!done) { done = true; fn(); } };
+		document.addEventListener('DOMContentLoaded', run, { once: true });
+		window.addEventListener('load', run, { once: true });
+	}
+
 	// Load Alpine.js from CDN.  Called by the loader AFTER all plugin scripts
-	// have finished loading and registered their directives/magics.  We do
-	// NOT use `defer` here — defer fires at DOMContentLoaded, which may race
-	// the plugin loads; instead we wait for every plugin script's load event
-	// explicitly and then append Alpine synchronously (the script downloads
-	// but Alpine's `auto-start` hooks DOMContentLoaded if still loading, or
-	// runs immediately if past it).
+	// have finished loading and registered their directives/magics.
+	//
+	// Gated on DOMContentLoaded: the page's own deferred scripts register
+	// x-data components and magics via `alpine:init`, and the defer queue
+	// spins the event loop while a script is still in flight — so on a warm
+	// cache an injected Alpine script can load and EXECUTE between two
+	// deferred scripts, firing `alpine:init` before the page's registrations
+	// exist.  Waiting for DCL (which fires only after every deferred script
+	// has run) makes the ordering deterministic.  In the common cold-cache
+	// case DCL has long passed by the time the plugin loads settle, so the
+	// gate adds no delay.
 	function loadAlpine(alpineUrl = ALPINE_CDN_URL) {
-		// Fast check: Alpine already initialized
-		if (window.Alpine) {
-			return;
-		}
+		whenDomReady(() => {
+			// Fast check: Alpine already initialized
+			if (window.Alpine) {
+				return;
+			}
 
-		// Fallback: if an existing Alpine <script> tag is already in the DOM
-		// (e.g. the fixture explicitly added one), wait for it — don't inject
-		// a second copy.
-		const existingAlpine = document.querySelector('script[src*="alpinejs"]');
-		if (existingAlpine) {
-			return;
-		}
+			// Fallback: if an existing Alpine <script> tag is already in the DOM
+			// (e.g. the fixture explicitly added one), wait for it — don't inject
+			// a second copy.
+			const existingAlpine = document.querySelector('script[src*="alpinejs"]');
+			if (existingAlpine) {
+				return;
+			}
 
-		const script = document.createElement('script');
-		script.src = alpineUrl;
-		// No `defer` — we're already past plugin registration, so Alpine
-		// should load and execute as soon as it arrives.
-		document.head.appendChild(script);
+			const script = document.createElement('script');
+			script.src = alpineUrl;
+			// No `defer` — we're past plugin registration and past DCL, so
+			// Alpine should load and execute as soon as it arrives.
+			document.head.appendChild(script);
+		});
 	}
 
 	// Add a script tag to the head and wait for it to load and execute
@@ -376,6 +458,14 @@
 		return plugins;
 	}
 
+	// Detect the payments plugin from manifest.json content.
+	// Opt-in / auto-loaded only when a `payments` config block is present.
+	function detectPaymentsPlugins(manifest) {
+		if (!manifest || typeof manifest !== 'object') return [];
+		if (manifest.payments && typeof manifest.payments === 'object') return ['payments'];
+		return [];
+	}
+
 	// Parse data attributes
 	function parseDataAttributes() {
 		// Try to get current script first, then fall back to querySelector
@@ -457,7 +547,7 @@
 	// Expose API
 	window.Manifest = {
 		loadPlugin: function (pluginName, version = DEFAULT_VERSION) {
-			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS];
+			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, 'payments'];
 			if (!allPlugins.includes(pluginName)) {
 				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
 				return Promise.reject(new Error(`Unknown plugin: ${pluginName}`));
@@ -485,9 +575,68 @@
 
 		const MANIFEST_DEPENDENT_PLUGINS = [
 			'data', 'localization', 'components',
-			'appwrite-auth', 'appwrite-data', 'appwrite-presence'
+			'appwrite-auth', 'appwrite-data', 'appwrite-presence', 'payments'
 		];
 		const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
+
+		// Substitute ${VAR} placeholders against window.env in every string
+		// value of the parsed manifest, in place. Called once before the
+		// manifest is cached on window so every downstream consumer
+		// (auth, data, components, etc.) sees resolved values. Inlined in
+		// the loader rather than borrowed from the data plugin because the
+		// data plugin's script may not have finished executing yet at the
+		// point we cache the manifest. window.env is populated by either
+		// the mnfst-run dev server (which reads PUBLIC_-prefixed vars from
+		// .env at startup) or a developer-supplied
+		// <script>window.env = {…}</script> block.
+		//
+		// Misses are warned, not silently dropped: a missing var almost
+		// always means the dev forgot the PUBLIC_ prefix or hasn't set the
+		// var at all, and an empty substitution downstream (e.g. an empty
+		// API URL) tends to fail far from the cause.
+		const warnedMissingEnv = new Set();
+		const interpolateManifestEnv = (obj) => {
+			if (obj === null || typeof obj !== 'object') return;
+			const subst = (str) => str.replace(/\$\{([^}]+)\}/g, (m, name) => {
+				if (typeof window !== 'undefined' && window.env && window.env[name] !== undefined) {
+					return window.env[name];
+				}
+				if (!warnedMissingEnv.has(name)) {
+					warnedMissingEnv.add(name);
+					if (!name.startsWith('PUBLIC_')) {
+						console.warn(
+							`[Manifest] manifest.json references \${${name}}, but only PUBLIC_-prefixed ` +
+							`env vars are injected into window.env by mnfst-run. Rename to ` +
+							`PUBLIC_${name}, hardcode the value, or supply it via ` +
+							`<script>window.env = {…}</script>. Leaving placeholder literal.`
+						);
+					} else {
+						console.warn(
+							`[Manifest] manifest.json references \${${name}}, but it is not present ` +
+							`in window.env. Add ${name}=… to .env (read by mnfst-run) or ` +
+							`set it via <script>window.env = {…}</script>. Leaving placeholder literal.`
+						);
+					}
+				}
+				return m;
+			});
+			const walk = (o) => {
+				if (Array.isArray(o)) {
+					for (let i = 0; i < o.length; i++) {
+						const v = o[i];
+						if (typeof v === 'string') o[i] = subst(v);
+						else if (v && typeof v === 'object') walk(v);
+					}
+				} else {
+					for (const k of Object.keys(o)) {
+						const v = o[k];
+						if (typeof v === 'string') o[k] = subst(v);
+						else if (v && typeof v === 'object') walk(v);
+					}
+				}
+			};
+			walk(obj);
+		};
 
 		const loadPlugins = async () => {
 			let manifest = null;
@@ -498,7 +647,8 @@
 				manifest = await fetch(manifestUrl).then(r => r.ok ? r.json() : null).catch(() => null);
 				const corePlugins = getDefaultPluginsFromManifest(manifest);
 				const appwritePlugins = detectAppwritePlugins(manifest);
-				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins]);
+				const paymentsPlugins = detectPaymentsPlugins(manifest);
+				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins, ...paymentsPlugins]);
 			} else {
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {
@@ -519,6 +669,12 @@
 				manifest = await manifestPromise;
 			}
 			if (manifest && typeof window !== 'undefined') {
+				// Resolve ${VAR} placeholders once, here, before any
+				// downstream plugin reads the cached manifest. Plugins like
+				// appwrite-auth read window.__manifestLoaded directly and
+				// would otherwise see literal `${APPWRITE_DEV_KEY}` strings
+				// even when window.env is populated.
+				interpolateManifestEnv(manifest);
 				window.__manifestLoaded = manifest;
 				if (window.ManifestComponentsRegistry) {
 					window.ManifestComponentsRegistry.manifest = manifest;

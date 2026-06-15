@@ -1,39 +1,93 @@
 /* Manifest Data Sources - Configuration */
 
-// Load manifest if not already loaded (loader may set __manifestLoaded / registry.manifest)
+// Load manifest if not already loaded (loader may set __manifestLoaded / registry.manifest).
+// Only trust a cached global if it looks like a real Manifest config — another plugin
+// doing `window.__manifestLoaded.foo = …` before the loader populates it (or in a
+// no-loader setup) can leave a stub without `data`/`components`, which would otherwise
+// mask every data source. Fall through to fetching the real manifest in that case.
 async function ensureManifest() {
-    if (window.ManifestComponentsRegistry?.manifest) {
+    const looksComplete = (m) => m && typeof m === 'object' &&
+        (m.data || m.components || m.preloadedComponents || m.appwrite || m.render);
+    if (looksComplete(window.ManifestComponentsRegistry?.manifest)) {
         return window.ManifestComponentsRegistry.manifest;
     }
-    if (window.__manifestLoaded) {
+    if (looksComplete(window.__manifestLoaded)) {
         return window.__manifestLoaded;
     }
 
     try {
         const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
         const response = await fetch(manifestUrl);
-        return await response.json();
+        const manifest = await response.json();
+        interpolateManifest(manifest);
+        return manifest;
     } catch (error) {
         console.error('[Manifest Data] Failed to load manifest:', error);
         return null;
     }
 }
 
-// Helper to interpolate environment variables
+// Interpolate ${VAR} placeholders in a string against window.env. Only
+// PUBLIC_-prefixed vars reach window.env (the mnfst-run dev server filters
+// .env by that prefix to keep server-side secrets like MANIFEST_API_KEY out
+// of the browser). Misses warn once per name so a missing var doesn't fail
+// silently downstream as an empty URL / endpoint.
+const _warnedMissingEnv = new Set();
 function interpolateEnvVars(str) {
     if (typeof str !== 'string') return str;
     return str.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-        // Check for environment variables (in browser, these would be set by build process)
         if (typeof process !== 'undefined' && process.env && process.env[varName]) {
             return process.env[varName];
         }
-        // Check for window.env (common pattern for client-side env vars)
         if (typeof window !== 'undefined' && window.env && window.env[varName]) {
             return window.env[varName];
         }
-        // Return original if not found
+        if (!_warnedMissingEnv.has(varName)) {
+            _warnedMissingEnv.add(varName);
+            if (!varName.startsWith('PUBLIC_')) {
+                console.warn(
+                    `[Manifest Data] data source references \${${varName}}, but only ` +
+                    `PUBLIC_-prefixed env vars are injected into window.env by mnfst-run. ` +
+                    `Rename to PUBLIC_${varName}, hardcode the value, or supply it via ` +
+                    `<script>window.env = {…}</script>. Leaving placeholder literal.`
+                );
+            } else {
+                console.warn(
+                    `[Manifest Data] data source references \${${varName}}, but it is not ` +
+                    `present in window.env. Add ${varName}=… to .env (read by mnfst-run) ` +
+                    `or set it via <script>window.env = {…}</script>. Leaving placeholder literal.`
+                );
+            }
+        }
         return match;
     });
+}
+
+// Recursively walk a manifest object and interpolate every string value in
+// place. Object keys are left untouched. Called once at manifest-load time so
+// downstream consumers (auth, data, appwrite) read already-resolved values.
+function interpolateManifest(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) {
+            const v = obj[i];
+            if (typeof v === 'string') {
+                obj[i] = interpolateEnvVars(v);
+            } else if (v !== null && typeof v === 'object') {
+                interpolateManifest(v);
+            }
+        }
+        return obj;
+    }
+    for (const key of Object.keys(obj)) {
+        const v = obj[key];
+        if (typeof v === 'string') {
+            obj[key] = interpolateEnvVars(v);
+        } else if (v !== null && typeof v === 'object') {
+            interpolateManifest(v);
+        }
+    }
+    return obj;
 }
 
 // Helper to get nested value from object
@@ -179,6 +233,7 @@ function getQueries(dataSource) {
 window.ManifestDataConfig = {
     ensureManifest,
     interpolateEnvVars,
+    interpolateManifest,
     getNestedValue,
     getDefaultLocale,
     parseContentPath,
@@ -229,12 +284,16 @@ function deepSeal(obj) {
             }
         }
     } else {
-        for (const key in obj) {
-            if (obj.hasOwnProperty(key)) {
-                const value = obj[key];
-                if (value !== null && typeof value === 'object') {
-                    deepSeal(value);
-                }
+        // Iterate own enumerable keys via Object.keys instead of for…in +
+        // .hasOwnProperty(). The latter throws "hasOwnProperty is not a
+        // function" on any object that either lacks the Object prototype
+        // (e.g. Object.create(null)) or has a column literally named
+        // `hasOwnProperty` shadowing the prototype method — both of which
+        // can happen with payloads from Appwrite / arbitrary backends.
+        for (const key of Object.keys(obj)) {
+            const value = obj[key];
+            if (value !== null && typeof value === 'object') {
+                deepSeal(value);
             }
         }
     }
@@ -357,14 +416,20 @@ function createReactiveReferences(data, dataSourceName = null) {
     }
 
     if (typeof data === 'object') {
-        // Create new object with new references for each property
+        // Create new object with new references for each property.
+        // Iterate via Object.keys() (own enumerable, no prototype walk)
+        // rather than for…in + .hasOwnProperty(). The latter pattern
+        // throws "hasOwnProperty is not a function" on any payload that
+        // either has a column literally named `hasOwnProperty` shadowing
+        // the prototype, or lacks the Object prototype entirely
+        // (Object.create(null), some SDK response shapes). This is the
+        // hot path for every Appwrite mutation result and realtime event,
+        // so it must be defensive about arbitrary backend payloads.
         const newObj = {};
-        for (const key in data) {
-            if (data.hasOwnProperty(key)) {
-                const value = data[key];
-                // Recursively create new references for nested objects/arrays
-                newObj[key] = createReactiveReferences(value, dataSourceName);
-            }
+        for (const key of Object.keys(data)) {
+            const value = data[key];
+            // Recursively create new references for nested objects/arrays
+            newObj[key] = createReactiveReferences(value, dataSourceName);
         }
 
         // Detect file objects (have mimeType or sizeOriginal)
@@ -1202,6 +1267,13 @@ window.ManifestDataStore = {
 
 /* Manifest Data Sources - File Loaders */
 
+// Key names that would walk into Object's prototype chain if used as nested-
+// path segments. Rejecting them in setNestedValue and deepMergeWithFallback
+// prevents a CSV row like `__proto__.polluted, true` (or a malicious JSON
+// locale file containing `{"__proto__": {...}}`) from polluting
+// Object.prototype and silently affecting every plain object on the page.
+const POLLUTING_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 // Dynamic js-yaml loader
 let jsyaml = null;
 let yamlLoadingPromise = null;
@@ -1244,7 +1316,11 @@ async function loadYamlLibrary() {
 
     yamlLoadingPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/js-yaml/dist/js-yaml.min.js';
+        // Pinned + Subresource Integrity — a floating version or tampered CDN
+        // file can't inject arbitrary JS into the user's page.
+        script.src = 'https://cdn.jsdelivr.net/npm/js-yaml@4.2.0/dist/js-yaml.min.js';
+        script.integrity = 'sha384-hyhT0yrWXjngXhDa5wpJTU0pt/Djmlx4KtZECqqS6ZHf3ah4fWkFeW/2eWX9cX5J';
+        script.crossOrigin = 'anonymous';
         script.onload = () => {
             if (typeof window.jsyaml !== 'undefined') {
                 jsyaml = window.jsyaml;
@@ -1279,7 +1355,11 @@ async function loadCSVParser() {
 
     csvLoadingPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/papaparse@latest/papaparse.min.js';
+        // Pinned + Subresource Integrity — a floating version or tampered CDN
+        // file can't inject arbitrary JS into the user's page.
+        script.src = 'https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js';
+        script.integrity = 'sha384-Jd2/X5FXVKahwaY2nivvw4LfSTg9idSj8yNXWtT4qef0fHSYr6M7M8bJAfbFYoMc';
+        script.crossOrigin = 'anonymous';
         script.onload = () => {
             if (typeof window.Papa !== 'undefined') {
                 papaparse = window.Papa;
@@ -1336,6 +1416,7 @@ function deepMergeWithFallback(currentData, fallbackData) {
         !Array.isArray(currentData) && !Array.isArray(fallbackData)) {
         const merged = { ...fallbackData };
         for (const key in currentData) {
+            if (POLLUTING_KEYS.has(key)) continue;
             if (key.startsWith('_')) {
                 // Preserve metadata from current locale
                 merged[key] = currentData[key];
@@ -1363,6 +1444,9 @@ function deepMergeWithFallback(currentData, fallbackData) {
 // Numeric path segments (e.g. cards.0.title) create real arrays so x-for="card in $x....cards" works.
 function setNestedValue(obj, path, value) {
     const keys = path.split('.');
+    // Drop the whole row if any segment would walk into the prototype chain.
+    // `foo.constructor.prototype.polluted` is just as dangerous as `__proto__.polluted`.
+    if (keys.some(k => POLLUTING_KEYS.has(k))) return;
     let current = obj;
 
     for (let i = 0; i < keys.length - 1; i++) {
@@ -3321,15 +3405,30 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach client-side $query (overridden by Appwrite if source is Appwrite)
     // Always attach even if dataSourceName empty (enables method chaining: .$search().$query())
+    //
+    // IMPORTANT: use the SYNCHRONOUS manifest accessor, not ensureManifest().
+    // ensureManifest() is `async function` — calling it without `await` returns
+    // a Promise, and `Promise.data` is undefined, so the Appwrite-detection
+    // block silently fell through and isAppwriteSource stayed `false` for
+    // EVERY source — including real Appwrite collections. That caused the
+    // client-side $query to be attached to Appwrite arrays. The client-side
+    // $query sorts/filters in-memory and returns the result (without mutating
+    // the source), while demo code calls $query as a fire-and-forget store
+    // mutation. Result: sort buttons silently no-op'd.
+    //
+    // window.__manifestLoaded and window.ManifestComponentsRegistry.manifest
+    // are populated synchronously by the loader after the manifest fetch
+    // resolves (see manifest.js loader: `window.__manifestLoaded = manifest`).
+    // By the time any data source is being attached, they're available.
     let isAppwriteSource = false;
     if (dataSourceName) {
         try {
-            const manifest = window.ManifestDataConfig?.ensureManifest?.();
-            if (manifest?.data) {
-                const dataSource = manifest.data[dataSourceName];
-                if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                    isAppwriteSource = true;
-                }
+            const manifest = window.__manifestLoaded
+                || window.ManifestComponentsRegistry?.manifest
+                || null;
+            const dataSource = manifest?.data?.[dataSourceName];
+            if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                isAppwriteSource = true;
             }
         } catch (e) {
             // Manifest not ready yet - will attach client-side version, Appwrite can override later
@@ -3452,15 +3551,20 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach Appwrite methods ($create, $update, $delete, etc.)
     if (dataSourceName) {
-        // Check if this is an Appwrite source (reuse check from above if available)
+        // Check if this is an Appwrite source. Same sync-manifest fix as
+        // the block above — ensureManifest() is async and returned a Promise
+        // here too, so isAppwriteSource was always false and the Appwrite
+        // $query was never attached, leaving sort/query buttons to silently
+        // fall through to the client-side $query that returns a discarded
+        // sorted array.
         let isAppwriteSource = false;
         try {
-            const manifest = window.ManifestDataConfig?.ensureManifest?.();
-            if (manifest?.data) {
-                const dataSource = manifest.data[dataSourceName];
-                if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                    isAppwriteSource = true;
-                }
+            const manifest = window.__manifestLoaded
+                || window.ManifestComponentsRegistry?.manifest
+                || null;
+            const dataSource = manifest?.data?.[dataSourceName];
+            if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                isAppwriteSource = true;
             }
         } catch (e) {
             // Manifest not ready yet - assume not Appwrite
@@ -7527,21 +7631,57 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         throw new Error(`[Manifest Data] File "${actualFileId}" not found or not accessible: ${error.message}`);
                     }
 
-                    // Get view URL using Appwrite SDK (returns authenticated URL)
-                    // Using 'view' instead of 'download' since we're re-uploading, not downloading to device
-                    let viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
+                    // Get view URL using Appwrite SDK (a URL STRING, not the
+                    // file content). Using 'view' rather than 'download' since
+                    // we're re-uploading rather than saving to disk.
+                    const viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
 
-                    // Temporarily append ?mode=admin for localhost testing (cross-domain issues)
-                    // Remove this in production - it should work without it
-                    const urlObj = new URL(viewUrl);
-                    urlObj.searchParams.set('mode', 'admin');
-                    viewUrl = urlObj.toString();
+                    // Authenticate the fetch for permissioned buckets.
+                    //
+                    // Storage's /view, /download and /preview endpoints check
+                    // the USER SESSION — not API/dev keys (those work only on
+                    // JSON endpoints like /storage/buckets/.../files/.../).
+                    // In localhost dev the browser blocks the cross-domain
+                    // session cookie (SameSite=Lax on plain HTTP), so the
+                    // request lands at Appwrite as anonymous and a permissioned
+                    // file returns 404 storage_file_not_found.
+                    //
+                    // The Appwrite Web SDK works around this by writing the
+                    // session token to localStorage under `cookieFallback`
+                    // and replaying it as the `X-Fallback-Cookies` header on
+                    // every SDK request. That's why SDK calls (getFile metadata
+                    // above, listRows, $create, etc.) succeed cross-domain
+                    // while raw fetch() doesn't — raw fetch doesn't know to
+                    // read that localStorage key.
+                    //
+                    // We do exactly what the SDK does: read cookieFallback
+                    // and attach it as X-Fallback-Cookies. This is more
+                    // reliable than JWT:
+                    //   - no createJWT round-trip (and dev-key-configured
+                    //     clients 501 on createJWT)
+                    //   - no 15-min expiry or rate limit (10/hour/account)
+                    //   - matches whatever auth the SDK is already using
+                    //
+                    // Falls through to credentials-only when the user isn't
+                    // signed in (no cookieFallback in storage) — that path
+                    // still works in production with a SameSite=None cookie.
+                    const fetchHeaders = {};
+                    if (appwriteConfig.projectId) {
+                        fetchHeaders['X-Appwrite-Project'] = appwriteConfig.projectId;
+                    }
+                    try {
+                        const cookieFallback = typeof localStorage !== 'undefined'
+                            ? localStorage.getItem('cookieFallback')
+                            : null;
+                        if (cookieFallback) {
+                            fetchHeaders['X-Fallback-Cookies'] = cookieFallback;
+                        }
+                    } catch { /* localStorage access denied — fall through */ }
 
-                    // Fetch file content using the view URL with credentials
-                    // The URL from getFileURL is already authenticated, just need to include cookies
                     const response = await fetch(viewUrl, {
                         method: 'GET',
-                        credentials: 'include' // Include cookies for authentication
+                        credentials: 'include', // Carry session cookie when available
+                        headers: fetchHeaders
                     });
 
                     if (!response.ok) {
@@ -8691,6 +8831,29 @@ function registerXMagicMethod(loadDataSource) {
                                                         if (key in target && typeof target[key] === 'function') {
                                                             return target[key].bind(target);
                                                         }
+                                                        // Appwrite sources intentionally skip the client-side
+                                                        // $query attachment (see attachArrayMethods comment:
+                                                        // "Appwrite sources will get their $query from the
+                                                        // Appwrite plugin"). Delegate to the Appwrite methods
+                                                        // handler so the click hits the backend instead of
+                                                        // silently falling through to `undefined` or, in some
+                                                        // proxy paths, a no-op `() => []`. Without this, demo
+                                                        // sort/query buttons appear to do nothing — no console
+                                                        // error, no network request — because the call resolves
+                                                        // to the chaining fallback's stub `queryFn`.
+                                                        if (key === '$query' || key === '$search') {
+                                                            const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+                                                            if (createAppwriteMethodsHandler) {
+                                                                try {
+                                                                    const manifest = window.ManifestComponentsRegistry?.manifest || null;
+                                                                    const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
+                                                                    if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                                                                        const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                                        return methodsHandler.bind(null, key);
+                                                                    }
+                                                                } catch { /* fall through */ }
+                                                            }
+                                                        }
                                                     }
                                                     // Forward all other property access to the target array
                                                     const value = target[key];
@@ -9007,6 +9170,22 @@ function registerXMagicMethod(loadDataSource) {
                                             if (key === '$search' || key === '$query') {
                                                 if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                     return target[key].bind(target);
+                                                }
+                                                // Appwrite-source delegation: $query is intentionally
+                                                // not attached to Appwrite arrays by attachArrayMethods
+                                                // (it requires a backend round-trip). Route to the
+                                                // Appwrite methods handler instead of the no-op fallback
+                                                // so sort/query/search buttons actually fire requests.
+                                                const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+                                                if (createAppwriteMethodsHandler) {
+                                                    try {
+                                                        const manifest = window.ManifestComponentsRegistry?.manifest || null;
+                                                        const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
+                                                        if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
+                                                            const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                            return methodsHandler.bind(null, key);
+                                                        }
+                                                    } catch { /* fall through */ }
                                                 }
                                                 // Fallback: return safe function that returns empty array
                                                 return function () {
@@ -10025,48 +10204,26 @@ function registerFilesDirective() {
         let cleanupCallbacks = [];
         let watchCreated = false; // Track if watch has been created to prevent duplicates
 
-        // CRITICAL: Always create a NEW isolated x-data scope for this directive element
-        // This ensures complete isolation - each directive instance has its own scope
-        // We MUST do this even if a parent scope exists, to prevent property conflicts
         const directiveInstanceId = `directive-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-        // Create a unique x-data object for this directive instance
-        // This ensures Alpine creates a completely new scope for this element
+        // Isolated reactive scope for this directive instance. Alpine never
+        // re-reads x-data attributes on initialized elements, so editing the
+        // attribute would resolve $data(el) to the ANCESTOR scope and pollute
+        // it — addScopeToNode attaches a fresh scope layer to this node.
         const isolatedData = Alpine.reactive({
             files: [],
             loadingFiles: false,
             filesError: null
         });
+        const removeIsolatedScope = Alpine.addScopeToNode(el, isolatedData);
+        cleanupCallbacks.push(removeIsolatedScope);
 
-        // Set x-data attribute with a unique object reference
-        // Alpine will create a new scope from this, completely isolated from parent scopes
-        el.setAttribute('x-data', `{}`);
-
-        // Get the scope AFTER setting x-data (Alpine creates it when x-data is set)
-        let scope;
-        try {
-            scope = Alpine.$data(el);
-        } catch (e) {
-            // If Alpine hasn't initialized yet, create scope manually
-            scope = {};
-            Alpine.initTree(el);
-            scope = Alpine.$data(el);
-        }
-
-        // CRITICAL: Directly assign properties to the scope object
-        // Since this is a NEW isolated scope, we can safely assign directly without conflicts
-        scope.files = isolatedData.files;
-        scope.loadingFiles = isolatedData.loadingFiles;
-        scope.filesError = isolatedData.filesError;
+        // Merged scope view: writes to files/loadingFiles/filesError land on
+        // isolatedData (top of stack), magics like $watch resolve from ancestors
+        const scope = Alpine.$data(el);
 
         // Store reference in WeakMap for access in closures
         dataFilesNamespaces.set(el, isolatedData);
-
-        // DIAGNOSTIC: Log scope identity and element info
-        const scopeId = `scope-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        scope._debugScopeId = scopeId;
-        scope._debugDirectiveId = directiveInstanceId;
-        scope._debugElement = el;
 
         // Initialize local references
         files = isolatedData.files;
@@ -10432,7 +10589,6 @@ function registerFilesDirective() {
                     watchCreated = true; // Mark watch as created to prevent duplicates
                     const projectId = currentProjectId; // Capture project ID for closure
                     let isProcessing = false; // Guard against multiple simultaneous updates
-                    let isInitializing = true; // Skip first evaluation (initialization)
 
                     // Initialize lastFileIds with current value from the store to prevent false positives
                     const store = Alpine.store('data');
@@ -10464,12 +10620,6 @@ function registerFilesDirective() {
                             return JSON.stringify(currentProject.fileIds || []);
                         },
                         (currentFileIdsJson) => {
-                            // Skip first evaluation (initialization) - we already loaded files above
-                            if (isInitializing) {
-                                isInitializing = false;
-                                return;
-                            }
-
                             // Guard against processing multiple updates simultaneously
                             if (isProcessing) {
                                 return;
@@ -11277,10 +11427,19 @@ async function loadDataSource(dataSourceName, locale = 'en') {
     const cacheKey = `${dataSourceName}:${locale}`;
     const { dataSourceCache, loadingPromises, isInitializing, updateStore } = window.ManifestDataStore;
 
-    // Check memory cache first
+    // Check memory cache first. The store write is guarded against stale
+    // locales: a caller that resolved its locale before a switch (or an effect
+    // re-running mid-switch) can request `name:en` after the locale-change
+    // reload already wrote `name:fr` — serving the cached data is fine, but
+    // writing it to the live store would clobber the current locale. Localized
+    // data carries a `_locale` stamp; unstamped (non-localized) data writes
+    // unconditionally.
     if (dataSourceCache.has(cacheKey)) {
         const cachedData = dataSourceCache.get(cacheKey);
-        if (!isInitializing) {
+        const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
+            || document.documentElement.lang || locale;
+        const staleLocaleHit = locale !== liveLocale && !!(cachedData && cachedData._locale);
+        if (!isInitializing && !staleLocaleHit) {
             updateStore(dataSourceName, cachedData, { loading: false, error: null, ready: true });
         }
         return cachedData;
@@ -11545,12 +11704,25 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 enhancedData = [];
             }
 
-            // Update cache (store unsealed version for our use)
+            // Update cache (store unsealed version for our use).
+            // Always safe — the cache key carries the locale this load was for.
             dataSourceCache.set(cacheKey, enhancedData);
+
+            // Stale-locale guard: if the app's locale changed while this load was
+            // in flight, a LOCALIZED source's result is stale — the locale-change
+            // listener has already reloaded (or is reloading) the right locale,
+            // and writing this one would clobber it. Non-localized sources are
+            // locale-independent and must still write (the listener never reloads
+            // them, so skipping would orphan an initial load).
+            const localeSensitive = !!(dataSource && typeof dataSource === 'object'
+                && (dataSource.locales || dataSource[locale]));
+            const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
+                || document.documentElement.lang || locale;
+            const staleLocale = localeSensitive && liveLocale !== locale;
 
             // Update store only if not initializing
             // Note: updateStore will seal the data to prevent Alpine from proxying it
-            if (!isInitializing) {
+            if (!isInitializing && !staleLocale) {
                 updateStore(dataSourceName, enhancedData, { loading: false, error: null, ready: true });
             }
 
@@ -11813,7 +11985,10 @@ async function initializeDataSourcesPlugin() {
                 const manifestData = manifest;
                 // Remove internal properties that shouldn't be exposed
                 const { data, appwrite, components, preloadedComponents, ...publicManifest } = manifestData;
-                updateStore('manifest', publicManifest);
+                // allowDuringInit: setIsInitializing(true) is active, so without this
+                // flag updateStore short-circuits and $x.manifest stays unpopulated.
+                window.ManifestDataStore.dataSourceCache.set(`manifest:${locale}`, publicManifest);
+                updateStore('manifest', publicManifest, { loading: false, error: null, ready: true, allowDuringInit: true });
 
                 const store = Alpine.store('data');
                 Alpine.store('data', {

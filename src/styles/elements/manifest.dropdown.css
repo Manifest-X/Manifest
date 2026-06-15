@@ -6,19 +6,19 @@
 
 @layer base {
 
-    @keyframes mnfst-popover-in {
+    @keyframes popover-in {
         from {
-            transform: scale(.9);
+            transform: scale(.9)
         }
 
         to {
-            transform: none;
+            transform: none
         }
     }
 
     :where([popover]):not(.unstyle):popover-open {
         display: flex;
-        animation: mnfst-popover-in .15s ease-in both;
+        animation: popover-in .15s ease-in both
     }
 }
 
@@ -66,16 +66,17 @@
             border-radius: 6px;
             cursor: pointer;
             user-select: none;
+            transition: none;
 
             &:hover {
                 color: var(--color-field-inverse, oklch(43.9% 0 0));
                 text-decoration: inherit;
-                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
             }
 
             &:active {
                 color: var(--color-field-inverse, oklch(43.9% 0 0));
-                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
             }
 
             & span,
@@ -92,7 +93,7 @@
         /* Titles */
         & small {
             padding: 0.25rem 0.5rem;
-            color: var(--color-content-neutral, oklch(43.9% 0 0));
+            color: var(--color-content-neutral, oklch(43.9% 0 0))
         }
 
         /* Horizontal rules (offset to ignore menu padding) */
@@ -102,7 +103,7 @@
             margin-inline-start: calc(0.25rem * -1);
             margin-top: 0.25rem;
             margin-bottom: 0.25rem;
-            background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Labels */
@@ -150,7 +151,7 @@
 
     /* Dark theme */
     :where(.dark menu[popover]) :where(li, a, button, label):hover {
-        background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
+        background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
     }
 
     /* Nested menu alignment */
@@ -161,7 +162,7 @@
 
     /* Center alignment */
     :where(menu.center) {
-        position-area: center;
+        position-area: center
     }
 
     /* Top alignment */

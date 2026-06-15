@@ -1,12 +1,22 @@
 /* Manifest Dropdowns */
 
+// Track the user's most recent input modality so we only move focus into a menu
+// (and surface a :focus-visible ring) for keyboard opens. Capture-phase so we
+// see the event before any handler can stop it. This mirrors the heuristic the
+// browser uses for :focus-visible, but lets us decide whether to focus at all.
+let lastInputModality = 'mouse';
+document.addEventListener('keydown', () => { lastInputModality = 'keyboard'; }, true);
+document.addEventListener('pointerdown', () => { lastInputModality = 'mouse'; }, true);
+
 // Initialize plugin when either DOM is ready or Alpine is ready
 function initializeDropdownPlugin() {
-    // Ensure Alpine.js context exists for directives to work
+    // Ensure Alpine.js context exists for directives to work. Keep the scope
+    // empty — seeding properties here collides with author state and the
+    // tabs plugin's page-level `tab` property.
     function ensureAlpineContext() {
         const body = document.body;
         if (!body.hasAttribute('x-data')) {
-            body.setAttribute('x-data', '{ tab: \'local-data\' }');
+            body.setAttribute('x-data', '{}');
         }
     }
 
@@ -159,10 +169,37 @@ function initializeDropdownPlugin() {
                     // conflicts with multi-touch trackpad right-click
                     menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
 
-                    // Set up anchor positioning
+                    // Anchor positioning ( --trigger-anchor is the reuse slot )
                     const anchorName = `--dropdown-${anchorCode}`;
-                    el.style.setProperty('anchor-name', anchorName);
+                    el.style.setProperty('anchor-name', `${anchorName}, var(--co-anchor, --no-anchor)`);
+                    el.style.setProperty('--trigger-anchor', anchorName);
                     menu.style.setProperty('position-anchor', anchorName);
+
+                    // ----- A11y wiring (WAI-ARIA Menu Button pattern) -----
+                    // The trigger needs `aria-haspopup="menu"`, `aria-controls`, and a
+                    // dynamic `aria-expanded` that follows the popover's open state.
+                    // The menu element gets `role="menu"` and each list item gets
+                    // `role="menuitem"` so screen readers announce the relationship.
+                    //
+                    // We don't apply these for `.context` dropdowns invoked by right-
+                    // click — they're not button-triggered popups in the APG sense.
+                    if (!modifiers.includes('context')) {
+                        if (!menu.id) menu.id = 'mnfst-dropdown-' + Math.random().toString(36).slice(2, 9);
+                        el.setAttribute('aria-haspopup', 'menu');
+                        el.setAttribute('aria-controls', menu.id);
+                        el.setAttribute('aria-expanded', menu.matches(':popover-open') ? 'true' : 'false');
+                        if (!menu.hasAttribute('role')) menu.setAttribute('role', 'menu');
+                        menu.querySelectorAll('li').forEach((li) => {
+                            if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
+                        });
+                        // Keep aria-expanded in sync with the popover's state.
+                        if (!menu.__mnfstAriaToggleBound) {
+                            menu.__mnfstAriaToggleBound = true;
+                            menu.addEventListener('toggle', (e) => {
+                                el.setAttribute('aria-expanded', e.newState === 'open' ? 'true' : 'false');
+                            });
+                        }
+                    }
 
                     // Set up hover functionality after menu is ready
                     if (modifiers.includes('hover')) {
@@ -207,46 +244,63 @@ function initializeDropdownPlugin() {
                             if (menu.matches(':popover-open')) menu.hidePopover();
                         };
 
-                        el.addEventListener('contextmenu', (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
+                        // Bind the right-click trigger once per element. Without
+                        // the guard, reprocessing (router re-walks, re-init) would
+                        // stack duplicate handlers.
+                        if (!el.__mnfstContextTriggerBound) {
+                            el.__mnfstContextTriggerBound = true;
+                            el.addEventListener('contextmenu', (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
 
-                            // Stash the actual right-clicked element so menu items can act on it.
-                            // (e.target is the deepest hit; el is the directive-bearing ancestor.)
-                            menu._triggerEl = e.target.closest('[data-cp-value], [x-data]') || el;
-                            menu._triggerHost = el;
+                                // Stash the actual right-clicked element so menu items can act on it.
+                                // (e.target is the deepest hit; el is the directive-bearing ancestor.)
+                                menu._triggerEl = e.target.closest('[data-cp-value], [x-data]') || el;
+                                menu._triggerHost = el;
 
-                            // Position at cursor, overriding anchor positioning
-                            menu.style.position = 'fixed';
-                            menu.style.positionAnchor = 'unset';
-                            menu.style.positionArea = 'unset';
-                            menu.style.inset = 'auto';
-                            menu.style.left = e.clientX + 'px';
-                            menu.style.top = e.clientY + 'px';
-                            menu.style.margin = '0';
+                                // Position at cursor, overriding anchor positioning
+                                menu.style.position = 'fixed';
+                                menu.style.positionAnchor = 'unset';
+                                menu.style.positionArea = 'unset';
+                                menu.style.inset = 'auto';
+                                menu.style.left = e.clientX + 'px';
+                                menu.style.top = e.clientY + 'px';
+                                menu.style.margin = '0';
 
-                            if (!menu.matches(':popover-open')) menu.showPopover();
+                                if (!menu.matches(':popover-open')) menu.showPopover();
 
-                            // Adjust if menu overflows viewport
-                            requestAnimationFrame(() => {
-                                const rect = menu.getBoundingClientRect();
-                                if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
-                                if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
+                                // Adjust if menu overflows viewport
+                                requestAnimationFrame(() => {
+                                    const rect = menu.getBoundingClientRect();
+                                    if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
+                                    if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
+                                });
                             });
-                        });
+                        }
 
-                        // Manual dismiss: click outside or Escape
-                        document.addEventListener('pointerdown', (e) => {
-                            if (menu.matches(':popover-open') && !menu.contains(e.target)) closeContext();
-                        });
-                        document.addEventListener('keydown', (e) => {
-                            if (e.key === 'Escape' && menu.matches(':popover-open')) { closeContext(); el.focus(); }
-                        });
+                        // Document-level dismiss listeners are GLOBAL — re-binding
+                        // them on every reprocess leaks listeners on `document`.
+                        // Bind once per menu, tied to an AbortController so they
+                        // share one removable signal.
+                        if (!menu.__mnfstContextDismissBound) {
+                            menu.__mnfstContextDismissBound = true;
+                            const ctxAbort = new AbortController();
+                            menu.__mnfstContextAbort = ctxAbort;
+                            const { signal } = ctxAbort;
 
-                        // Close after clicking a menu item
-                        menu.addEventListener('click', (e) => {
-                            if (e.target.closest('li, a, button')) closeContext();
-                        });
+                            // Manual dismiss: click outside or Escape
+                            document.addEventListener('pointerdown', (e) => {
+                                if (menu.matches(':popover-open') && !menu.contains(e.target)) closeContext();
+                            }, { signal });
+                            document.addEventListener('keydown', (e) => {
+                                if (e.key === 'Escape' && menu.matches(':popover-open')) { closeContext(); el.focus(); }
+                            }, { signal });
+
+                            // Close after clicking a menu item
+                            menu.addEventListener('click', (e) => {
+                                if (e.target.closest('li, a, button')) closeContext();
+                            }, { signal });
+                        }
                     }
 
                     // Add keyboard navigation handling
@@ -316,16 +370,29 @@ function initializeDropdownPlugin() {
                         if (e.newState === 'open') {
                             // Set up li elements for keyboard navigation
                             const liElements = menu.querySelectorAll('li');
-                            liElements.forEach((li, index) => {
+                            liElements.forEach((li) => {
                                 if (!li.hasAttribute('tabindex')) {
                                     li.setAttribute('tabindex', '-1');
                                 }
-                                // Focus first li element if no other focusable elements
-                                if (index === 0 && !menu.querySelector('button, [href], input, select, textarea, [tabindex="0"]')) {
-                                    li.setAttribute('tabindex', '0');
-                                    li.focus();
-                                }
                             });
+                            // When the menu has no natively focusable control, make the
+                            // first item the keyboard entry point.
+                            const firstLi = liElements[0];
+                            if (firstLi && !menu.querySelector('button, [href], input, select, textarea, [tabindex="0"]')) {
+                                firstLi.setAttribute('tabindex', '0');
+                                if (lastInputModality === 'keyboard') {
+                                    // Keyboard open (APG menu pattern): focus the first item;
+                                    // :focus-visible correctly paints the ring.
+                                    firstLi.focus();
+                                } else {
+                                    // Pointer open: park focus on the menu itself so arrow
+                                    // keys still enter the list, without forcing a
+                                    // focus-visible ring on an item the user didn't reach
+                                    // by keyboard.
+                                    if (!menu.hasAttribute('tabindex')) menu.setAttribute('tabindex', '-1');
+                                    menu.focus();
+                                }
+                            }
                         }
                     });
 
@@ -369,6 +436,11 @@ function initializeDropdownPlugin() {
 // Track initialization to prevent duplicates
 let dropdownPluginInitialized = false;
 
+// True once Alpine has completed its initial DOM walk. Listener is bound at
+// module load so we never miss the event, whatever the script order.
+let alpineHasWalked = false;
+document.addEventListener('alpine:initialized', () => { alpineHasWalked = true; });
+
 function ensureDropdownPluginInitialized() {
     if (dropdownPluginInitialized) {
         return;
@@ -380,10 +452,15 @@ function ensureDropdownPluginInitialized() {
     dropdownPluginInitialized = true;
     initializeDropdownPlugin();
 
-    // If elements with x-dropdown already exist, process them
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
-        const existingDropdownElements = document.querySelectorAll('[x-dropdown]');
-        existingDropdownElements.forEach(el => {
+    // Only walk existing [x-dropdown] subtrees ourselves when Alpine has ALREADY
+    // finished its initial walk (i.e. this plugin loaded late). In the normal
+    // flow we register the directive during `alpine:init`, before Alpine's one
+    // boot walk — so Alpine processes every dropdown with all sibling directives
+    // (x-icon, x-tooltip, …) already registered. Walking here during boot would
+    // re-init those subtrees before the other directives exist, permanently
+    // dropping nested plugin content (e.g. a trailing x-icon in a menu button).
+    if (alpineHasWalked && typeof window.Alpine.initTree === 'function') {
+        document.querySelectorAll('[x-dropdown]').forEach(el => {
             if (!el.__x) {
                 window.Alpine.initTree(el);
             }

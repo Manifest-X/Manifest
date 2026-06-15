@@ -337,6 +337,19 @@ function createVariants() {
         // Starting style
         'starting': '@starting-style',
 
+        // Device / input modality (breakpoint-independent, pure media queries)
+        'touch': '@media (pointer: coarse)',
+        'cursor': '@media (pointer: fine) and (hover: hover)',
+        'pointer': '@media (any-pointer: fine)',
+
+        // Operating system (html[data-os] is set by the utilities plugin)
+        'mac': 'html[data-os="macos"] &',
+        'windows': 'html[data-os="windows"] &',
+        'linux': 'html[data-os="linux"] &',
+        'ios': 'html[data-os="ios"] &',
+        'android': 'html[data-os="android"] &',
+        'apple': 'html[data-os="macos"] &, html[data-os="ios"] &',
+
         // Data attribute variants (common patterns)
         'data-open': '[data-state="open"] &',
         'data-closed': '[data-state="closed"] &',
@@ -400,6 +413,8 @@ function createVariantGroups() {
         'pseudo': ['before', 'after', 'first-letter', 'first-line', 'marker', 'selection', 'file', 'backdrop'],
         'media': ['dark', 'light', 'motion-safe', 'motion-reduce', 'print', 'portrait', 'landscape', 'rtl', 'ltr', 'can-hover', 'can-not-hover', 'any-hover', 'any-hover-none', 'color', 'monochrome', 'inverted-colors', 'inverted-colors-none', 'update', 'update-slow', 'update-none', 'overflow-block', 'overflow-block-paged', 'overflow-inline', 'overflow-inline-auto', 'prefers-color-scheme', 'prefers-color-scheme-light', 'prefers-contrast', 'prefers-contrast-less', 'prefers-contrast-no-preference', 'prefers-reduced-motion', 'prefers-reduced-motion-no-preference', 'prefers-reduced-transparency', 'prefers-reduced-transparency-no-preference', 'resolution', 'resolution-low', 'resolution-high', 'scan', 'scan-interlace', 'scripting', 'scripting-none', 'scripting-initial-only', 'forced-colors', 'contrast-more', 'contrast-less', 'pointer-fine', 'pointer-coarse', 'pointer-none', 'any-pointer-fine', 'any-pointer-coarse', 'any-pointer-none', 'scripting-enabled'],
         'responsive': ['sm', 'md', 'lg', 'xl', '2xl'],
+        'device': ['touch', 'cursor', 'pointer'],
+        'os': ['mac', 'windows', 'linux', 'ios', 'android', 'apple'],
         'group': ['group', 'group-hover', 'group-focus', 'group-active', 'group-disabled', 'group-checked', 'group-required', 'group-valid', 'group-invalid'],
         'peer': ['peer', 'peer-hover', 'peer-focus', 'peer-active', 'peer-disabled', 'peer-checked', 'peer-required', 'peer-valid', 'peer-invalid'],
         'data': ['data-open', 'data-closed', 'data-checked', 'data-unchecked', 'data-visible', 'data-hidden', 'data-disabled', 'data-loading', 'data-error', 'data-success', 'data-warning', 'data-selected', 'data-highlighted', 'data-pressed', 'data-expanded', 'data-collapsed', 'data-active', 'data-inactive', 'data-valid', 'data-invalid', 'data-required', 'data-optional', 'data-readonly', 'data-write'],
@@ -411,7 +426,7 @@ function createVariantGroups() {
 
 /* Manifest Utilities */
 
-/** True when prerender wrote utilities to prerender.utilities.css — skip runtime #utility-styles generation. */
+/** True when prerender wrote utilities to prerender.utilities.css — skip runtime #manifest-styles generation. */
 function manifestPageUsesStaticPrerenderUtilities() {
     if (typeof document === 'undefined') return false;
     try {
@@ -432,7 +447,7 @@ class TailwindCompiler {
     constructor(options = {}) {
         this.usesStaticPrerenderUtilities = manifestPageUsesStaticPrerenderUtilities();
 
-        // Prerender already emitted utility CSS; do not inject duplicate #utility-styles / observers.
+        // Prerender already emitted utility CSS; do not inject duplicate #manifest-styles / observers.
         if (this.usesStaticPrerenderUtilities) {
             this.debug = options.debug === true;
             this.startTime = performance.now();
@@ -471,7 +486,7 @@ class TailwindCompiler {
         // Create critical style element FIRST - must be before any rendering
         const criticalStyleStart = performance.now();
         this.criticalStyleElement = document.createElement('style');
-        this.criticalStyleElement.id = 'utility-styles-critical';
+        this.criticalStyleElement.id = 'manifest-styles-critical';
         // Insert at the very beginning of head
         if (document.head) {
             if (document.head.firstChild) {
@@ -541,7 +556,7 @@ class TailwindCompiler {
 
         // Create main style element for generated utilities
         this.styleElement = document.createElement('style');
-        this.styleElement.id = 'utility-styles';
+        this.styleElement.id = 'manifest-styles';
         document.head.appendChild(this.styleElement);
         this.setupUtilityStylesOrderObserver();
 
@@ -726,7 +741,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         const cssVariables = new Map();
 
         // 1. From inline style elements (already in DOM)
-        const inlineStyles = document.querySelectorAll('style:not(#utility-styles):not(#utility-styles-critical)');
+        const inlineStyles = document.querySelectorAll('style:not(#manifest-styles):not(#manifest-styles-critical)');
         for (const styleEl of inlineStyles) {
             if (styleEl.textContent) {
                 const variables = this.extractThemeVariables(styleEl.textContent);
@@ -795,8 +810,19 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         }
 
         // 4. From computed styles (if :root is available)
+        // Run even while document.readyState === 'loading'. This method is the
+        // constructor's only origin-independent variable source: getComputedStyle
+        // reads the resolved cascade regardless of stylesheet origin, whereas
+        // method 3 (CSSOM cssRules) throws on cross-origin sheets (e.g. the CDN
+        // build at cdn.jsdelivr.net). The classic <script> blocks on preceding
+        // stylesheets, so :root variables are already resolved here. Skipping
+        // this during 'loading' meant a CDN-hosted page captured zero variables
+        // synchronously, so the critical "all colors" fallback never ran and
+        // variable-derived utilities (bg-line, border-line, …) fell back to
+        // currentColor — pure white in dark mode / black in light — until the
+        // async compile finished.
         try {
-            if (document.documentElement && document.readyState !== 'loading') {
+            if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
                 let computedVars = 0;
                 for (let i = 0; i < rootStyles.length; i++) {
@@ -993,7 +1019,7 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         const commonColorClasses = new Set();
 
         // Method 1: Extract from inline style elements
-        const inlineStyles = document.querySelectorAll('style:not(#utility-styles)');
+        const inlineStyles = document.querySelectorAll('style:not(#manifest-styles)');
         for (const styleEl of inlineStyles) {
             if (styleEl.textContent) {
                 const variables = this.extractThemeVariables(styleEl.textContent);
@@ -1021,8 +1047,13 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         }
 
         // Method 3: Check computed styles from :root (if available)
+        // Run even during readyState === 'loading' — getComputedStyle resolves
+        // the cascade from cross-origin stylesheets (CDN builds) that the CSSOM
+        // methods above cannot read. See addCriticalBlockingStylesSync for the
+        // full rationale: without this, CDN-hosted pages capture no variables
+        // synchronously and variable-derived utilities flash as currentColor.
         try {
-            if (document.readyState !== 'loading') {
+            if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
                 // Extract all CSS variables, not just color ones
                 const allProps = rootStyles.length;
@@ -1205,14 +1236,56 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
     }
 };
 
-// Save cache to localStorage
-TailwindCompiler.prototype.savePersistentCache = function () {
-    try {
-        const serialized = JSON.stringify(Object.fromEntries(this.cache));
-        localStorage.setItem('tailwind-cache', serialized);
-    } catch (error) {
-        console.warn('Failed to save cached styles:', error);
+// Cap on persisted cache entries.  Each entry stores a full compiled
+// stylesheet keyed by the union of classes seen on a given page, so on a
+// multi-page MPA this Map grows fast — and localStorage tops out at ~5MB per
+// origin.  20 covers typical hot paths; rarer routes recompile (cheap).
+TailwindCompiler.prototype.MAX_PERSISTED_CACHE_ENTRIES = 20;
+
+// Drop the oldest entries from this.cache until at most `limit` remain.
+// Uses entry.timestamp; entries without one are evicted first.
+TailwindCompiler.prototype.evictOldestCacheEntries = function (limit) {
+    if (this.cache.size <= limit) return;
+    const sorted = Array.from(this.cache.entries())
+        .sort((a, b) => (a[1].timestamp || 0) - (b[1].timestamp || 0));
+    const toRemove = sorted.length - limit;
+    for (let i = 0; i < toRemove; i++) {
+        this.cache.delete(sorted[i][0]);
     }
+};
+
+// Save cache to localStorage with size cap and quota-aware eviction.
+TailwindCompiler.prototype.savePersistentCache = function () {
+    // Proactive cap so we don't write something we know is at risk.
+    this.evictOldestCacheEntries(this.MAX_PERSISTED_CACHE_ENTRIES);
+    let attempts = 0;
+    while (this.cache.size > 0 && attempts < 4) {
+        try {
+            const serialized = JSON.stringify(Object.fromEntries(this.cache));
+            localStorage.setItem('tailwind-cache', serialized);
+            return;
+        } catch (error) {
+            // QuotaExceededError (name varies by browser): drop the oldest
+            // half and retry.  Anything else: bail.
+            const isQuotaError =
+                error && (
+                    error.name === 'QuotaExceededError' ||
+                    error.code === 22 ||
+                    error.code === 1014 // Firefox: NS_ERROR_DOM_QUOTA_REACHED
+                );
+            if (!isQuotaError) {
+                console.warn('Failed to save cached styles:', error);
+                return;
+            }
+            const halved = Math.max(1, Math.floor(this.cache.size / 2));
+            this.evictOldestCacheEntries(halved);
+            attempts++;
+        }
+    }
+    // Last resort: cache is unusable in this origin right now, clear the slot
+    // so the next session starts clean.  This is a perf optimization, not
+    // correctness — drop quietly.
+    try { localStorage.removeItem('tailwind-cache'); } catch (_) {}
 };
 
 // Load cache from localStorage
@@ -1260,14 +1333,14 @@ TailwindCompiler.prototype.cleanupCache = function () {
 // Helper methods
 // Utility functions for extracting, parsing, and processing CSS and classes
 
-// Ensure #utility-styles is last in head so our responsive/variant rules win over Tailwind and any later-injected styles
+// Ensure #manifest-styles is last in head so our responsive/variant rules win over Tailwind and any later-injected styles
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
     if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
         document.head.appendChild(this.styleElement);
     }
 };
 
-// When any element is added to head after ours, move #utility-styles to end. Handles CDN load order (e.g. Tailwind injecting after we run).
+// When any element is added to head after ours, move #manifest-styles to end. Handles CDN load order (e.g. Tailwind injecting after we run).
 TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
     if (!document.head || !this.styleElement) return;
     const self = this;
@@ -1329,7 +1402,7 @@ TailwindCompiler.prototype.discoverCssFiles = function () {
         }
 
         // Add any inline styles (exclude generated styles)
-        const styleElements = document.querySelectorAll('style:not(#utility-styles)');
+        const styleElements = document.querySelectorAll('style:not(#manifest-styles)');
         for (const style of styleElements) {
             if (style.textContent && style.textContent.trim()) {
                 const id = style.id || `inline-style-${Array.from(styleElements).indexOf(style)}`;
@@ -2103,6 +2176,32 @@ TailwindCompiler.prototype.extractCustomUtilities = function (cssText) {
         // Tolerate parsing errors; this is best-effort
     }
 
+    // Dedupe captured entries per class. The four parser passes above (flat
+    // regex, :where() extractor, compound-selector fallback, universal nested
+    // resolver) can each capture the same source rule with slightly different
+    // whitespace or selector ordering. Without this, the generator emits
+    // duplicate variant blocks at runtime (e.g. four `.\!brand { … }` rules
+    // where one suffices). Normalize whitespace before comparing so trivial
+    // formatting differences collapse.
+    for (const [className, value] of utilities.entries()) {
+        if (!Array.isArray(value)) continue;
+        const seen = new Set();
+        const deduped = [];
+        for (const entry of value) {
+            if (!entry || typeof entry !== 'object') continue;
+            const sel = String(entry.selector || '').replace(/\s+/g, ' ').trim();
+            const css = String(entry.css || '').replace(/\s+/g, ' ').trim();
+            if (!css) continue;
+            const key = `${sel} ${css}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            deduped.push(entry);
+        }
+        if (deduped.length > 0) {
+            utilities.set(className, deduped);
+        }
+    }
+
     return utilities;
 };
 
@@ -2277,8 +2376,14 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             }
         }
 
-        // If no match found, warn and return null
-        console.warn(`Unknown variant: ${variant}`);
+        // If no match found, warn once per unique token and return null.
+        // Deduped so unsupported variants (e.g. container queries like
+        // `@[10rem]:`) don't flood the console on every compile pass.
+        if (!this._warnedVariants) this._warnedVariants = new Set();
+        if (!this._warnedVariants.has(variant)) {
+            this._warnedVariants.add(variant);
+            console.warn(`Unknown variant: ${variant}`);
+        }
         return null;
     }).filter(Boolean);
 
@@ -2357,7 +2462,6 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 let selector = `.${escapeClassName(variantClass)}`;
                 let hasMediaQuery = false;
                 let mediaQueryRule = '';
-                let nestedSelector = null; // For variants that end with & (CSS nesting)
 
                 for (const variant of parsed.variants) {
                     if (variant.isArbitrary) {
@@ -2375,18 +2479,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                             selector = { baseClass: selector, arbitrarySelector };
                         }
                     } else if (variant.selector.includes('&')) {
-                        // Check if selector ends with & (indicates CSS nesting)
-                        if (variant.selector.trim().endsWith('&')) {
-                            // This is a nested selector - move & to the beginning for CSS nesting
-                            const selectorWithoutAmpersand = variant.selector.trim().slice(0, -1).trim();
-                            const nestedSelectorText = `&${selectorWithoutAmpersand}`;
-                            nestedSelector = nestedSelector ? `${nestedSelector} ${nestedSelectorText}` : nestedSelectorText;
-                        } else {
-                            // Handle variants like .dark &, .light &, .group &, etc.
-                            // Replace & with the actual selector
-                            const replacedSelector = variant.selector.replace(/&/g, selector);
-                            selector = replacedSelector;
-                        }
+                        // Substitute & with the current selector. This produces flat CSS that
+                        // works for both ancestor patterns (`.dark &` → `.dark .X`) and
+                        // self-extending patterns (`& > p` → `.X > p`).
+                        selector = variant.selector.replace(/&/g, selector);
                     } else if (variant.selector.startsWith(':')) {
                         // For pseudo-classes, append to selector
                         selector = `${selector}${variant.selector}`;
@@ -2402,9 +2498,6 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 if (typeof selector === 'object' && selector.arbitrarySelector) {
                     // Handle arbitrary selectors with nested CSS (for non-& selectors)
                     rule = `${selector.baseClass} {\n    ${selector.arbitrarySelector} {\n        ${cssContent}\n    }\n}`;
-                } else if (nestedSelector) {
-                    // Handle nested selectors (variants ending with &)
-                    rule = `${selector} {\n    ${nestedSelector} {\n        ${cssContent}\n    }\n}`;
                 } else {
                     // Regular selector
                     rule = `${selector} { ${cssContent} }`;
@@ -2450,8 +2543,18 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         generateUtility(className, css);
                     }
 
-                    // Check for opacity variants of this utility
-                    const opacityVariants = usedClasses.filter(cls => {
+                    // Check for opacity variants of this utility. Collect the
+                    // bare opacity base class (e.g. `bg-black/10`) rather than the
+                    // full prefixed class (e.g. `backdrop:bg-black/10`). generateUtility
+                    // discovers and applies variant prefixes itself by matching the
+                    // trailing segment after the last `:`, so passing it the bare base
+                    // lets its variant loop emit the correct selector
+                    // (`.backdrop\:bg-black\/10::backdrop`). Passing the prefixed class
+                    // instead made generateUtility treat it as a plain base class and
+                    // emit a malformed `.backdrop\:bg-black\/10 { … }` rule with no
+                    // `::backdrop` pseudo-element.
+                    const opacityBaseClasses = new Set();
+                    for (const cls of usedClasses) {
                         // Parse the class to extract the base utility name
                         const parsed = this.parseClassName(cls);
                         const baseClass = parsed.baseClass;
@@ -2462,18 +2565,19 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                             if (baseWithoutOpacity === className) {
                                 const opacity = baseClass.split('/')[1];
                                 // Validate that the opacity is a number between 0-100
-                                return !isNaN(opacity) && opacity >= 0 && opacity <= 100;
+                                if (!isNaN(opacity) && opacity >= 0 && opacity <= 100) {
+                                    opacityBaseClasses.add(baseClass);
+                                }
                             }
                         }
-                        return false;
-                    });
+                    }
 
-                    // Generate opacity utilities for each variant found
-                    for (const variant of opacityVariants) {
-                        const opacity = variant.split('/')[1];
+                    // Generate opacity utilities for each opacity value found
+                    for (const opacityBaseClass of opacityBaseClasses) {
+                        const opacity = opacityBaseClass.split('/')[1];
                         const opacityValue = `color-mix(in oklch, ${value} ${opacity}%, transparent)`;
                         const opacityCss = css.replace(value, opacityValue);
-                        generateUtility(variant, opacityCss);
+                        generateUtility(opacityBaseClass, opacityCss);
                     }
                 }
             }
@@ -2677,7 +2781,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 let selector = `.${escapeClassName(variantClass)}`;
                 let hasMediaQuery = false;
                 let mediaQueryRule = '';
-                let nestedSelector = null; // For variants that end with & (CSS nesting)
+                let nestedSelector = null;
 
                 for (const variant of parsed.variants) {
                     if (variant.isArbitrary) {
@@ -2695,18 +2799,10 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                             selector = { baseClass: selector, arbitrarySelector };
                         }
                     } else if (variant.selector.includes('&')) {
-                        // Check if selector ends with & (indicates CSS nesting)
-                        if (variant.selector.trim().endsWith('&')) {
-                            // This is a nested selector - move & to the beginning for CSS nesting
-                            const selectorWithoutAmpersand = variant.selector.trim().slice(0, -1).trim();
-                            const nestedSelectorText = `&${selectorWithoutAmpersand}`;
-                            nestedSelector = nestedSelector ? `${nestedSelector} ${nestedSelectorText}` : nestedSelectorText;
-                        } else {
-                            // Handle variants like .dark &, .light &, .group &, etc.
-                            // Replace & with the actual selector
-                            const replacedSelector = variant.selector.replace(/&/g, selector);
-                            selector = replacedSelector;
-                        }
+                        // Substitute & with the current selector. This produces flat CSS that
+                        // works for both ancestor patterns (`.dark &` → `.dark .X`) and
+                        // self-extending patterns (`& > p` → `.X > p`).
+                        selector = variant.selector.replace(/&/g, selector);
                     } else if (variant.selector.startsWith(':')) {
                         // For pseudo-classes, append to selector
                         selector = `${selector}${variant.selector}`;
@@ -3060,7 +3156,13 @@ TailwindCompiler.prototype.compile = async function () {
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
             if (themeCss) {
-                // Extract and cache custom utilities
+                // Extract and cache custom utilities. We scan framework CSS too
+                // because the generator needs to know about semantic classes
+                // like .brand / .row / .col to emit their responsive/state
+                // variants (e.g. md:row, hover:brand). Base-form re-emission is
+                // suppressed in generateCustomUtilities ("Skip generating base
+                // utility - it already exists in the CSS"); duplicate captures
+                // are collapsed at the end of extractCustomUtilities.
                 const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
                 for (const [name, value] of discoveredCustomUtilities.entries()) {
                     this.customUtilities.set(name, value);
@@ -3372,54 +3474,19 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     });
 };
 
-// Start processing with initial compilation and observer setup
+// Start processing with initial compilation. DOM observation is owned by
+// setupComponentLoadListener (called separately from main.js init) — that one
+// uses an incremental staticClassCache lookup per mutation, which scales to
+// thousands of elements. A previous version of this method also installed its
+// own MutationObserver here that called getUsedClasses() on EVERY mutation
+// (a full document-wide O(N) DOM scan), so on a busy page with N≥3000 the
+// scan cost exceeded the inter-mutation interval and the main thread froze
+// (~100% CPU on docs site, 3042 elements). That observer was redundant with
+// the incremental one and has been removed.
 TailwindCompiler.prototype.startProcessing = async function () {
     if (this.usesStaticPrerenderUtilities) return;
     try {
-        // Start initial compilation immediately
-        const initialCompilation = this.compile();
-
-        // Set up observer while compilation is running
-        this.observer = new MutationObserver((mutations) => {
-            const relevantMutations = mutations.filter(mutation => {
-                if (mutation.type === 'attributes' &&
-                    mutation.attributeName === 'class') {
-                    return true;
-                }
-                if (mutation.type === 'childList') {
-                    return Array.from(mutation.addedNodes).some(node =>
-                        node.nodeType === Node.ELEMENT_NODE);
-                }
-                return false;
-            });
-
-            if (relevantMutations.length === 0) return;
-
-            // Check if there are any new classes that need processing
-            const newClasses = this.getUsedClasses();
-            if (newClasses.classes.length === 0) return;
-
-            if (this.compileTimeout) {
-                clearTimeout(this.compileTimeout);
-            }
-            this.compileTimeout = setTimeout(() => {
-                if (!this.isCompiling) {
-                    this.compile();
-                }
-            }, this.options.debounceTime);
-        });
-
-        // Start observing immediately
-        this.observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['class']
-        });
-
-        // Wait for initial compilation
-        await initialCompilation;
-
+        await this.compile();
         this.hasInitialized = true;
     } catch (error) {
         console.error('Error starting Tailwind compiler:', error);
@@ -3430,6 +3497,64 @@ TailwindCompiler.prototype.startProcessing = async function () {
 
 // Utilities initialization
 // Initialize compiler and set up event listeners
+
+// Detect operating system and stamp it on <html data-os> so OS variants
+// (mac:, ios:, windows:, …) and the *-only visibility classes can resolve in
+// pure CSS. There is no CSS media feature for OS, so this one-time read is the
+// minimum required. Runs synchronously at script load (documentElement exists
+// during head parsing) to set the marker before first paint. Honors a value
+// already present (e.g. written by the prerenderer or set manually).
+function detectOS() {
+    try {
+        const html = document.documentElement;
+        if (!html || html.getAttribute('data-os')) return;
+        const ua = navigator.userAgent || '';
+        const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+        const touch = (navigator.maxTouchPoints || 0) > 1;
+        let os = '';
+        if (/Android/i.test(ua)) os = 'android';
+        // iPadOS reports as "Mac" — disambiguate by the presence of touch points.
+        else if (/iPhone|iPad|iPod/i.test(ua) || (/Mac/i.test(platform) && touch)) os = 'ios';
+        else if (/Mac/i.test(platform) || /Mac OS X/i.test(ua)) os = 'macos';
+        else if (/Win/i.test(platform) || /Windows/i.test(ua)) os = 'windows';
+        else if (/Linux|X11|CrOS/i.test(platform) || /Linux/i.test(ua)) os = 'linux';
+        if (os) html.setAttribute('data-os', os);
+    } catch (e) {
+        // Non-fatal: OS-scoped utilities simply won't match.
+    }
+}
+detectOS();
+
+// Register the device/OS variants with Tailwind too. The Manifest compiler
+// applies these variants to its own theme-derived/semantic utilities, but
+// standard Tailwind utilities (px-4, flex, …) are emitted by Tailwind's own
+// engine, which only knows its built-in variants. A `<style type="text/tailwindcss">`
+// carrying @custom-variant definitions teaches Tailwind the same variants, so
+// touch:px-4 / mac:flex / cursor:gap-2 resolve like sm:/hover:. Tailwind's
+// browser build reprocesses when this style is added, so load order is moot.
+function injectTailwindVariants() {
+    try {
+        if (document.getElementById('manifest-tailwind-variants')) return;
+        const style = document.createElement('style');
+        style.id = 'manifest-tailwind-variants';
+        style.setAttribute('type', 'text/tailwindcss');
+        style.textContent = [
+            '@custom-variant touch (@media (pointer: coarse));',
+            '@custom-variant cursor (@media (pointer: fine) and (hover: hover));',
+            '@custom-variant pointer (@media (any-pointer: fine));',
+            '@custom-variant mac (&:where([data-os="macos"] *));',
+            '@custom-variant windows (&:where([data-os="windows"] *));',
+            '@custom-variant linux (&:where([data-os="linux"] *));',
+            '@custom-variant ios (&:where([data-os="ios"] *));',
+            '@custom-variant android (&:where([data-os="android"] *));',
+            '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    } catch (e) {
+        // Non-fatal: Tailwind-utility variants simply won't be available.
+    }
+}
+injectTailwindVariants();
 
 // Initialize immediately without waiting for DOMContentLoaded
 const compiler = new TailwindCompiler();

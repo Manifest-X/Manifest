@@ -121,6 +121,9 @@ function startStaticServer(rootDir, port) {
       try {
         const url = new URL(req.url, `http://localhost:${port}`);
         let pathname = decodeURIComponent(url.pathname);
+        // Browsers auto-request /favicon.ico; answer it so the absence of one
+        // doesn't surface as a spurious 404 in the console-error assertion.
+        if (pathname === '/favicon.ico') { res.statusCode = 204; res.end(); return; }
         if (pathname.endsWith('/')) pathname += 'index.html';
         let filePath = join(rootDir, pathname);
         if (!existsSync(filePath)) {
@@ -184,17 +187,14 @@ async function runAssertions() {
   log.head('Running browser assertions');
   const puppeteer = require('puppeteer-core');
 
-  // Find a Chrome binary
-  const chromeCandidates = [
-    '/Users/andrewmatlock/.cache/puppeteer/chrome-headless-shell/mac-131.0.6778.204/chrome-headless-shell-mac-x64/chrome-headless-shell',
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-  ].filter(Boolean);
-  let chromePath = null;
-  for (const p of chromeCandidates) {
-    if (existsSync(p)) { chromePath = p; break; }
-  }
+  // Find a Chrome binary — honor an explicit override, otherwise let the full
+  // puppeteer package resolve its own bundled download dynamically.
+  let chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || null;
   if (!chromePath) {
-    throw new Error('No Chrome binary found.  Set PUPPETEER_EXECUTABLE_PATH or install chrome-headless-shell via `npx puppeteer browsers install chrome-headless-shell`.');
+    try { chromePath = require('puppeteer').executablePath(); } catch { /* full puppeteer not installed */ }
+  }
+  if (!chromePath || !existsSync(chromePath)) {
+    throw new Error('No Chrome binary found.  Set PUPPETEER_EXECUTABLE_PATH or install Chrome via `npx puppeteer browsers install chrome`.');
   }
 
   const browser = await puppeteer.launch({

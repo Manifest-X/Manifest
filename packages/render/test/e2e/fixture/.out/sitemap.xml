@@ -4,7 +4,7 @@
         <loc>https://fixture.test/</loc>
         <xhtml:link rel="alternate" hreflang="x-default" href="https://fixture.test" />
         <xhtml:link rel="alternate" hreflang="fr" href="https://fixture.test/fr" />
-        <lastmod>2026-05-03</lastmod>
+        <lastmod>2026-05-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>1.0</priority>
     </url>
@@ -12,7 +12,7 @@
         <loc>https://fixture.test/about</loc>
         <xhtml:link rel="alternate" hreflang="x-default" href="https://fixture.test/about" />
         <xhtml:link rel="alternate" hreflang="fr" href="https://fixture.test/fr/about" />
-        <lastmod>2026-05-03</lastmod>
+        <lastmod>2026-05-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.8</priority>
     </url>
@@ -20,7 +20,7 @@
         <loc>https://fixture.test/fr</loc>
         <xhtml:link rel="alternate" hreflang="x-default" href="https://fixture.test" />
         <xhtml:link rel="alternate" hreflang="fr" href="https://fixture.test/fr" />
-        <lastmod>2026-05-03</lastmod>
+        <lastmod>2026-05-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.8</priority>
     </url>
@@ -28,7 +28,7 @@
         <loc>https://fixture.test/fr/about</loc>
         <xhtml:link rel="alternate" hreflang="x-default" href="https://fixture.test/about" />
         <xhtml:link rel="alternate" hreflang="fr" href="https://fixture.test/fr/about" />
-        <lastmod>2026-05-03</lastmod>
+        <lastmod>2026-05-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.8</priority>
     </url>
@@ -36,7 +36,7 @@
         <loc>https://fixture.test/en</loc>
         <xhtml:link rel="alternate" hreflang="x-default" href="https://fixture.test" />
         <xhtml:link rel="alternate" hreflang="fr" href="https://fixture.test/fr" />
-        <lastmod>2026-05-03</lastmod>
+        <lastmod>2026-05-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.8</priority>
     </url>
@@ -44,7 +44,7 @@
         <loc>https://fixture.test/en/about</loc>
         <xhtml:link rel="alternate" hreflang="x-default" href="https://fixture.test/about" />
         <xhtml:link rel="alternate" hreflang="fr" href="https://fixture.test/fr/about" />
-        <lastmod>2026-05-03</lastmod>
+        <lastmod>2026-05-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.8</priority>
     </url>

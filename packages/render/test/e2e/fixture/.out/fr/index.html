@@ -1,10 +1,9 @@
-<html lang="fr">
-
-<head>
-  <script id="manifest-theme-bootstrap">(function () { try { var t = localStorage.getItem('theme') || 'system'; var d = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches); document.documentElement.classList.add(d ? 'dark' : 'light'); } catch (e) { document.documentElement.classList.add('light'); } })();</script>
+<!DOCTYPE html>
+<html lang="fr" data-no-view-transitions=""><head>
+  <script id="manifest-theme-bootstrap">(function(){try{var t=localStorage.getItem('theme')||'system';var d=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.add(d?'dark':'light');}catch(e){document.documentElement.classList.add('light');}})();</script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Prerender E2E Fixture</title>
+  <title>Home — Prerender E2E Fixture</title>
   <link rel="manifest" href="../manifest.json">
 
   <!-- Load Manifest locally.  The loader orchestrates plugin loading then
@@ -13,7 +12,7 @@
        at DOMContentLoaded, racing against async plugin loads — by the time
        Alpine starts walking the DOM, plugin directives may not yet be
        registered and `$colors`/`$locale` magics will be undefined. -->
-  <script src="../scripts/manifest.js" data-plugins="components,router,data,icons,localization,themes,markdown,dropdowns" data-plugin-base="/scripts"></script>
+  <script src="../scripts/manifest.js" data-plugins="components,router,data,icons,localization,color,markdown,dropdowns" data-plugin-base="/scripts"></script>
 
   <style>
     body {
@@ -47,25 +46,27 @@
       display: none;
     }
   </style>
-  <link rel="canonical" href="https://fixture.test/fr">
+<meta name="description" content="Exercises every interactive Manifest directive to validate prerender hydration."><meta property="og:title" content="Home — Prerender E2E Fixture"><meta property="og:description" content="Exercises every interactive Manifest directive to validate prerender hydration."><meta property="og:type" content="website"><meta property="og:url" content="https://fixture.test/fr"><meta property="og:site_name" content="Prerender E2E Fixture"><meta property="og:image" content="/og/fr.png"><meta property="twitter:card" content="summary_large_image"><meta property="twitter:title" content="Home — Prerender E2E Fixture"><meta property="twitter:description" content="Exercises every interactive Manifest directive to validate prerender hydration."><meta property="twitter:image" content="/og/fr.png"><link rel="canonical" href="https://fixture.test/fr">
   <link rel="alternate" hreflang="x-default" href="https://fixture.test">
   <link rel="alternate" hreflang="fr" href="https://fixture.test/fr">
-  <meta name="manifest:router-base" content="">
-  <meta name="manifest:prerender-locales" content="en,fr">
-  <meta name="manifest:prerendered" content="1">
-  <meta name="manifest:router-base-depth" content="1">
+<meta property="og:locale" content="fr">
+  <meta property="og:locale:alternate" content="en">
+<meta name="manifest:router-base" content="">
+<meta name="manifest:prerender-locales" content="en,fr">
+<meta name="manifest:prerendered" content="1">
+<meta name="manifest:router-base-depth" content="1">
 </head>
 
-<body x-data="{ tab: 'local-data' }">
+<body x-data="{}">
 
   <header data-order="0" data-component="header-1">
     <span id="greeting">Bonjour</span>
-    <button id="theme-light" x-theme="'light'" :class="{ 'active': $colors.current === 'light' }">Light</button>
-    <button id="theme-dark" x-theme="'dark'" :class="{ 'active': $colors.current === 'dark' }">Dark</button>
-    <button id="theme-system" x-theme="'system'" :class="{ 'active': $colors.current === 'system' }" class="active" data-hydrate-id="h0">System</button>
+    <button id="theme-light" x-color="'light'" :class="{ 'active': $color.current === 'light' }" type="button" data-hydrate-id="h0">Light</button>
+    <button id="theme-dark" x-color="'dark'" :class="{ 'active': $color.current === 'dark' }" type="button" data-hydrate-id="h1">Dark</button>
+    <button id="theme-system" x-color="'system'" :class="{ 'active': $color.current === 'system' }" class="active" type="button" data-hydrate-id="h2">System</button>
     <button id="locale-en" @click="$locale.set('en')">EN</button>
     <button id="locale-fr" @click="$locale.set('fr')">FR</button>
-  </header>
+</header>
 
   <!-- Bare unregistered component placeholder.  The components plugin
        leaves this in the DOM as-is (no template registered), so it reaches
@@ -82,35 +83,31 @@
     <!-- x-markdown baked content: should render at prerender time and NOT
          flicker/hide on load.  The plugin has an idempotency guard that
          detects prerendered MPA pages with already-rendered content. -->
-    <div id="markdown-container" style="opacity: 1">
-      <h1 id="test-article">Test Article</h1>
-      <p>This is <strong>baked</strong> markdown content that should survive prerendering.</p>
-      <ul>
-        <li>One</li>
-        <li>Two</li>
-        <li>Three</li>
-      </ul>
-    </div>
+    <div id="markdown-container" style="opacity: 1"><h1 id="test-article">Test Article</h1><p>This is <strong>baked</strong> markdown content that should survive prerendering.</p>
+<ul>
+<li>One</li>
+<li>Two</li>
+<li>Three</li>
+</ul>
+</div>
 
     <!-- Second x-markdown using a proper expression reference.  The prerender
          strips x-markdown from elements with baked content AND cleans any
          leftover opacity:0 the plugin set during initial render. -->
-    <div id="markdown-dynamic" x-data="{ articlePath: 'data/article.md' }" style="opacity: 1">
-      <h1 id="test-article">Test Article</h1>
-      <p>This is <strong>baked</strong> markdown content that should survive prerendering.</p>
-      <ul>
-        <li>One</li>
-        <li>Two</li>
-        <li>Three</li>
-      </ul>
-    </div>
+    <div id="markdown-dynamic" x-data="{ articlePath: 'data/article.md' }" style="opacity: 1"><h1 id="test-article">Test Article</h1><p>This is <strong>baked</strong> markdown content that should survive prerendering.</p>
+<ul>
+<li>One</li>
+<li>Two</li>
+<li>Three</li>
+</ul>
+</div>
   </section>
 
   <!-- Route: about -->
-
+  
 
   <!-- Explicit data-hydrate island: counter that must work at runtime -->
-  <div id="counter-island" data-hydrate="" x-data="{ count: 0 }" data-order="4" data-hydrate-id="h1">
+  <div id="counter-island" data-hydrate="" x-data="{ count: 0 }" data-order="4" data-hydrate-id="h3">
     <button id="counter-btn" @click="count++">Inc</button>
     <span id="counter-value" x-text="count">0</span>
   </div>
@@ -138,10 +135,10 @@
 
   <!-- Lazy component with diff-binding children and toggle sibling -->
   <div id="popup-root" class="fixed-bottom" x-data="{ showChannels: false }" data-order="6" data-component="popup-1">
-    <a id="popup-a" href="#a" class="base-class hidden closed" :class="showChannels ? 'visible open' : 'hidden closed'" data-hydrate="" data-hydrate-id="h2">Popup A</a>
-    <button id="popup-b" type="button" class="base-class hidden closed" :class="showChannels ? 'visible open' : 'hidden closed'" data-hydrate="" data-hydrate-id="h3">Popup B</button>
+    <a id="popup-a" href="#a" class="base-class hidden closed" :class="showChannels ? 'visible open' : 'hidden closed'" data-hydrate="" data-hydrate-id="h4">Popup A</a>
+    <button id="popup-b" type="button" class="base-class hidden closed" :class="showChannels ? 'visible open' : 'hidden closed'" data-hydrate="" data-hydrate-id="h5">Popup B</button>
     <button id="popup-toggle" type="button" @click="showChannels = !showChannels">Toggle</button>
-  </div>
+</div>
 
   <!-- x-show visibility: elements hidden by x-show must stay hidden after hydration.
        Regression test for the bug where the hydration contract emitted "style": null
@@ -165,7 +162,5 @@
 
 
 
-  <script type="application/json" id="__manifest_hydrate__">[{"id":"h0","attrs":{"class":null}},{"id":"h1","attrs":{"data-order":null}},{"id":"h2","attrs":{"class":"base-class"}},{"id":"h3","attrs":{"class":"base-class"}}]</script>
-</body>
-
-</html>
+<script type="application/json" id="__manifest_hydrate__">[{"id":"h0","attrs":{"type":null}},{"id":"h1","attrs":{"type":null}},{"id":"h2","attrs":{"class":null,"type":null}},{"id":"h3","attrs":{"data-order":null}},{"id":"h4","attrs":{"class":"base-class"}},{"id":"h5","attrs":{"class":"base-class"}}]</script>
+</body></html>
