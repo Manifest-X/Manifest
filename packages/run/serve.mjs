@@ -32,12 +32,13 @@
  *                       is just noise. Put `--no-open` in an LLM preview's
  *                       launch config to guarantee suppression.
  *   --attach            Supervised/agent mode (e.g. an LLM preview panel).
- *                       Guarantees a live FOREGROUND server on the requested
- *                       --port: if that port is already serving this project it
- *                       stays attached (doesn't exit); a server the user started
- *                       on another port is left alone. Never touches the
- *                       running-server registry. Pair with `--no-open` in a
- *                       preview launch config.
+ *                       Provides a live FOREGROUND process the supervisor can
+ *                       track, while NEVER starting a second server for a
+ *                       project that's already running: if a server for this
+ *                       root already exists (on ANY port) it stays attached to
+ *                       it and prints that URL; otherwise it starts one normally.
+ *                       Relies on the launch config's `autoPort` to follow the
+ *                       printed URL. Pair with `--no-open`.
  *   --list              Print all mnfst-run servers currently running on this
  *                       machine and exit.
  *
@@ -376,28 +377,32 @@ if (privateEnvNames.length > 0) {
   );
 }
 
-// Dedup (manual use): if a server is already serving this exact root, point the
-// user at it and exit. Skipped under --attach — a supervisor (e.g. Claude Code's
-// preview panel) needs a live process on the requested port, so attach mode
-// instead falls through to bind that port, and only attaches (staying alive) if
-// the requested port is already ours (handled in tryListen on EADDRINUSE). A
-// server the user started on a DIFFERENT port is deliberately left alone.
-if (!attachMode) {
-  const existing = await findRunningServer(root);
-  if (existing) {
-    const url = `http://localhost:${existing.port}`;
-    const label0 = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
-    console.log(`\n${label0} already running at ${url} (pid ${existing.pid})\n`);
-    // Open the browser anyway — matches the experience of starting fresh.
-    // (Skipped under --no-open / Claude Code, where the preview panel is the browser.)
-    if (openBrowserEnabled) {
-      const cmd = process.platform === 'win32' ? `start ${url}`
-        : process.platform === 'darwin'        ? `open ${url}`
-        : `xdg-open ${url}`;
-      exec(cmd);
-    }
-    process.exit(0);
+const label = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
+
+// If a server is already serving this exact root, REUSE it — never start a
+// second one for the same project.
+//   - manual use: print the URL and exit.
+//   - --attach (supervisor, e.g. Claude Code's preview panel): stay alive
+//     attached to it on WHATEVER port it's already on, so the panel tracks this
+//     process and points at the existing server. `autoPort` in the launch config
+//     follows the URL we print, so the port needn't match the configured one.
+const existing = await findRunningServer(root);
+if (existing) {
+  if (attachMode) {
+    attachToExisting(existing.port);   // prints the URL + keep-alive
+    await new Promise(() => {});       // block here — never fall through and start a duplicate
   }
+  const url = `http://localhost:${existing.port}`;
+  console.log(`\n${label} already running at ${url} (pid ${existing.pid})\n`);
+  // Open the browser anyway — matches the experience of starting fresh.
+  // (Skipped under --no-open / Claude Code, where the preview panel is the browser.)
+  if (openBrowserEnabled) {
+    const cmd = process.platform === 'win32' ? `start ${url}`
+      : process.platform === 'darwin'        ? `open ${url}`
+      : `xdg-open ${url}`;
+    exec(cmd);
+  }
+  process.exit(0);
 }
 
 // --- Auto-detect MPA ---
@@ -664,8 +669,7 @@ const server = createServer((req, res) => {
 });
 
 // --- Auto-port ---
-// Human-readable label: the dir arg as given, or the cwd folder name if serving '.'
-const label = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
+// (`label` is defined earlier, before the reuse/dedup check.)
 
 function openBrowser(url) {
   const cmd = process.platform === 'win32' ? `start ${url}`
@@ -709,9 +713,12 @@ function tryListen(p, attempt = 0) {
   const onListening = () => {
     server.removeListener('error', onError);
     const url = `http://localhost:${p}`;
-    // In --attach mode we deliberately don't register — the registry is one
-    // entry per root and the user's own server may own it.
-    if (!attachMode) { writeRegistry(root, p); weOwnServer = true; }
+    // A successful fresh bind means WE are the server for this root — register it
+    // (so a later manual `mnfst-run` for the same project reuses it instead of
+    // starting another). In --attach we only reach here when nothing was already
+    // running, so there's no entry to clobber.
+    writeRegistry(root, p);
+    weOwnServer = true;
     console.log(`\n${label} running at ${url}\n`);
     if (openBrowserEnabled) openBrowser(url);
   };
