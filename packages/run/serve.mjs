@@ -31,14 +31,15 @@
  *                       panel already shows the page, so a second browser tab
  *                       is just noise. Put `--no-open` in an LLM preview's
  *                       launch config to guarantee suppression.
- *   --attach            Supervised/agent mode (e.g. an LLM preview panel).
- *                       Provides a live FOREGROUND process the supervisor can
- *                       track, while NEVER starting a second server for a
- *                       project that's already running: if a server for this
- *                       root already exists (on ANY port) it stays attached to
- *                       it and prints that URL; otherwise it starts one normally.
- *                       Relies on the launch config's `autoPort` to follow the
- *                       printed URL. Pair with `--no-open`.
+ *   --attach            Supervised/agent mode (e.g. an LLM preview panel that
+ *                       assigns a port and tracks the process it spawns). Never
+ *                       starts a SECOND dev server for a project already running:
+ *                       if a server for this root exists on another port, it
+ *                       binds the assigned port and reverse-proxies to that real
+ *                       server (live reload included); if it's already on the
+ *                       assigned port it just attaches; otherwise it starts one
+ *                       normally. Let the supervisor pick the port (no --port;
+ *                       it's read from PORT). Pair with `--no-open`.
  *   --list              Print all mnfst-run servers currently running on this
  *                       machine and exit.
  *
@@ -51,7 +52,7 @@
  *                     sources and updates Alpine store reactively (no reload)
  *   other           → full page reload
  */
-import { createServer, get as httpGet }  from 'http';
+import { createServer, get as httpGet, request as httpRequest }  from 'http';
 import {
   readFileSync, statSync, watch,
   existsSync, writeFileSync, unlinkSync,
@@ -380,16 +381,19 @@ if (privateEnvNames.length > 0) {
 const label = dir === '.' ? basename(process.cwd()) : dir.replace(/\\/g, '/');
 
 // If a server is already serving this exact root, REUSE it — never start a
-// second one for the same project.
+// second dev server for the same project.
 //   - manual use: print the URL and exit.
-//   - --attach (supervisor, e.g. Claude Code's preview panel): stay alive
-//     attached to it on WHATEVER port it's already on, so the panel tracks this
-//     process and points at the existing server. `autoPort` in the launch config
-//     follows the URL we print, so the port needn't match the configured one.
+//   - --attach (supervisor, e.g. Claude Code's preview panel): the panel only
+//     uses a server on the port it assigned us, and can't point at a server it
+//     didn't spawn. So if the existing server is on OUR port, just attach; if
+//     it's on a different port, bind our port and reverse-proxy to it — the
+//     existing server stays the only real dev server (file-watch, live reload),
+//     and the proxy is a thin pass-through the panel can track.
 const existing = await findRunningServer(root);
 if (existing) {
   if (attachMode) {
-    attachToExisting(existing.port);   // prints the URL + keep-alive
+    if (existing.port === port) attachToExisting(existing.port);  // already on our port — just keep alive
+    else startProxy(port, existing.port);                          // bridge our port → the real server
     await new Promise(() => {});       // block here — never fall through and start a duplicate
   }
   const url = `http://localhost:${existing.port}`;
@@ -691,13 +695,57 @@ function attachToExisting(p) {
   const url = `http://localhost:${p}`;
   console.log(`\n${label} already running at ${url} — attached.\n`);
   if (openBrowserEnabled) openBrowser(url);
+  watchUpstream(p);
+}
+
+// Exit once the server we're bridging/attached to goes away — we're only a
+// pass-through, so there's nothing to serve without it.
+function watchUpstream(upstreamPort) {
   setInterval(async () => {
-    const id = await probeIdentity(p);
+    const id = await probeIdentity(upstreamPort);
     if (!id || id.root !== root) {
-      console.log('\nmnfst-run: the server it attached to has stopped — exiting.\n');
+      console.log('\nmnfst-run: the server it was bridging has stopped — exiting.\n');
       process.exit(0);
     }
   }, 5000);
+}
+
+// --attach: a real dev server for this root is already running on `upstreamPort`,
+// but the preview panel can only use a server on the port it assigned us
+// (`listenPort`). Bind that port and transparently reverse-proxy every request
+// to the real server — including the live-reload SSE stream — so the existing
+// server stays the ONE dev server and the panel still works. We don't own a
+// server, so we never touch the registry.
+function startProxy(listenPort, upstreamPort) {
+  const proxy = createServer((creq, cres) => {
+    // Rewrite host/origin to the upstream so its loopback host + same-origin
+    // checks pass (the client speaks to us on listenPort, the server on upstream).
+    const headers = { ...creq.headers, host: `localhost:${upstreamPort}` };
+    if (headers.origin) headers.origin = `http://localhost:${upstreamPort}`;
+    if (headers.referer) {
+      headers.referer = headers.referer.split(`localhost:${listenPort}`).join(`localhost:${upstreamPort}`);
+    }
+    const preq = httpRequest(
+      { host: '127.0.0.1', port: upstreamPort, method: creq.method, path: creq.url, headers },
+      (pres) => {
+        cres.writeHead(pres.statusCode || 502, pres.headers);
+        pres.pipe(cres);   // stream — keeps SSE (text/event-stream) flowing live
+      },
+    );
+    preq.on('error', () => { try { cres.writeHead(502); cres.end('mnfst-run proxy: upstream unavailable'); } catch { /* client gone */ } });
+    creq.pipe(preq);
+  });
+  proxy.on('error', (err) => {
+    console.error(`mnfst-run: could not bind proxy port ${listenPort}: ${err.code || err.message}`);
+    process.exit(1);
+  });
+  proxy.listen(listenPort, '127.0.0.1', () => {
+    console.log(
+      `\n${label} already running at http://localhost:${upstreamPort} — ` +
+      `bridged to http://localhost:${listenPort} for the preview panel.\n`,
+    );
+  });
+  watchUpstream(upstreamPort);
 }
 
 function tryListen(p, attempt = 0) {
