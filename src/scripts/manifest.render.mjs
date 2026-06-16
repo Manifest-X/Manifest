@@ -1822,6 +1822,16 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
   const cachePngPath = cacheDir ? join(cacheDir, `${fileSeg}.png`) : null;
   const cacheHashPath = cacheDir ? join(cacheDir, `${fileSeg}.hash`) : null;
 
+  // Restore the last good cached PNG into the output dir. Used whenever a fresh
+  // snapshot can't be produced (error or blank result) so a transient failure
+  // never leaves the page with no OG image — and never destroys the prior.
+  const restoreFromCache = () => {
+    if (cachePngPath && existsSync(cachePngPath)) {
+      try { cpSync(cachePngPath, filePath); return `/og/${fileSeg}.png`; } catch { /* ignore */ }
+    }
+    return null;
+  };
+
   // Cache lookup: fingerprint the rendered DOM and check against the stored
   // hash.  The fingerprint normalises away attribute values assigned in
   // iteration order (data-hydrate-id, data-component-N) and randomly-generated
@@ -1885,11 +1895,12 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
     try {
       const sz = statSync(filePath).size;
       if (sz < 15 * 1024) {
-        unlinkSync(filePath);
-        // Drop the cache too so the next run doesn't trust it.
-        if (cachePngPath) { try { unlinkSync(cachePngPath); } catch { /* missing is fine */ } }
-        if (cacheHashPath) { try { unlinkSync(cacheHashPath); } catch { /* missing is fine */ } }
-        return null;
+        // Blank/header-only snapshot — don't trust it, but don't destroy the
+        // good cached prior either (a transient blank must not wipe a real
+        // image). Drop the blank output and restore the last good cached PNG;
+        // if there's no cache, fall through to other og:image sources.
+        try { unlinkSync(filePath); } catch { /* missing is fine */ }
+        return restoreFromCache();
       }
     } catch { /* stat failure is non-fatal */ }
     // Populate the cache: copy the fresh PNG into the cache dir and write the
@@ -1903,10 +1914,12 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
     }
     return `/og/${fileSeg}.png`;
   } catch (e) {
-    // Failures here are non-fatal — fall back to whatever other og:image source
-    // is available (manifest icon, first content <img>, etc.).
+    // Failures here are non-fatal and must be non-destructive: prefer the last
+    // good cached PNG (restored into the output) over leaving the page with no
+    // OG image. Only if there's no cache do we fall through to other og:image
+    // sources (manifest icon, first content <img>, etc.).
     console.error(`prerender: og snapshot failed for /${pathSeg || ''}: ${e?.message || e}`);
-    return null;
+    return restoreFromCache();
   }
 }
 
@@ -2101,6 +2114,10 @@ async function injectMetaInDom(page, ctx) {
       } else if (typeof expr === 'boolean' || typeof expr === 'number') {
         return String(expr);
       }
+      // Image only: the per-page auto-snapshot outranks the generic static
+      // fallback.image — it depicts this exact page and is sized for OG cards.
+      // The fallback then only applies to pages with no snapshot.
+      if (key === 'image' && ctx.snapshotUrl) return ctx.snapshotUrl;
       // Layer 4: explicit fallback
       const fallback = exprMap.fallback?.[key];
       if (fallback) return String(fallback);
@@ -3434,8 +3451,13 @@ async function runPrerender(config) {
       // by data-head, prerender.meta config, or an explicit fallback.
       let earlySnapshotUrl = null;
       if (config.seo.imageSnapshots) {
+        // Only an EXPLICIT per-page image suppresses the auto-snapshot:
+        // prerender.meta.image (a config expression) or an og:image already in
+        // the head (data-head / index.html).  A generic prerender.meta.fallback
+        // .image must NOT skip it — the per-page snapshot is the primary image
+        // and the static fallback is only used when a snapshot isn't available
+        // (see resolve('image') in injectMetaInDom).
         const ogImageHandled = !!config.seo.meta?.image
-          || !!config.seo.meta?.fallback?.image
           || await page.evaluate(() => !!document.head.querySelector('meta[property="og:image"]'));
         if (!ogImageHandled) {
           earlySnapshotUrl = await takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir);
