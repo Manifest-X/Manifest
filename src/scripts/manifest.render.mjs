@@ -1811,9 +1811,15 @@ function computeGlobalAssetSignature(rootDir) {
  *   - html.className (theme variant: light/dark/etc.)
  */
 async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, cacheDir) {
-  const fileSeg = pathSeg === '' || pathSeg === '__404__'
+  // The 404 page must NOT share the homepage's 'index' slug: both pages render
+  // concurrently and would otherwise race on the same og/index.png + cache
+  // files. The 404 (route hidden, near-empty body) screenshots blank, and that
+  // blank would clobber — or get mis-read as — the homepage's real snapshot.
+  const fileSeg = pathSeg === ''
     ? 'index'
-    : pathSeg.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '_');
+    : pathSeg === '__404__'
+      ? '404'
+      : pathSeg.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '_');
   const ogDir = join(outputDir, 'og');
   try { mkdirSync(ogDir, { recursive: true }); } catch { /* exists */ }
   const filePath = join(ogDir, `${fileSeg}.png`);
