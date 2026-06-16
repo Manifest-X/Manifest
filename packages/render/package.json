@@ -1,6 +1,6 @@
 {
   "name": "mnfst-render",
-  "version": "0.5.31",
+  "version": "0.5.32",
   "description": "Render Manifest sites to static HTML for SEO",
   "type": "module",
   "bin": {
