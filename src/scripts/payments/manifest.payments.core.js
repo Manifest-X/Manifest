@@ -46,7 +46,17 @@ async function postSession(config, ref, payload, preferMode) {
         credentials: 'include',
         body: JSON.stringify({ ref, payload: payload || null, context })
     });
-    if (!res.ok) throw new Error(`Payments endpoint ${res.status}`);
+    if (!res.ok) {
+        // Surface the function's own human message (it returns { error } /
+        // { message } strings meant for the shopper) rather than a bare status
+        // code. Fall back to a friendly generic if the body isn't readable JSON.
+        let message = '';
+        try {
+            const body = await res.json();
+            message = body && (body.message || body.error);
+        } catch (_) { /* non-JSON body */ }
+        throw new Error(message || "Checkout couldn't be started. Please try again.");
+    }
     return res.json();
 }
 

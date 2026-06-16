@@ -109,6 +109,35 @@ function prerenderOutputDir(root) {
 
 // --- MCP JSON-RPC over Streamable HTTP -------------------------------------
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Retry transient failures — a thrown fetch (network blip, worker cold-start /
+// redeploy window) or a 5xx — with a short backoff, so a single hiccup doesn't
+// surface as a raw "fetch failed". Publish/promote/upload are idempotent enough
+// that a repeat is harmless. 4xx are NOT retried (they're real client errors).
+async function fetchRetry(url, init, { tries = 4, label = 'the server' } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.status >= 500 && attempt < tries) {
+        log(`  ${label} had a hiccup (HTTP ${res.status}) — retrying (${attempt}/${tries - 1})…`);
+        await sleep(500 * attempt);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < tries) {
+        log(`  couldn't reach ${label} — retrying (${attempt}/${tries - 1})…`);
+        await sleep(500 * attempt);
+        continue;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function mcp(url, key, method, params, sessionId) {
   const headers = {
     'content-type': 'application/json',
@@ -116,7 +145,11 @@ async function mcp(url, key, method, params, sessionId) {
     'x-api-key': key,
   };
   if (sessionId) headers['mcp-session-id'] = sessionId;
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const res = await fetchRetry(
+    url,
+    { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) },
+    { label: 'Manifest' },
+  );
   const sid = res.headers.get('mcp-session-id') || sessionId;
   const text = await res.text();
   // Response may be a JSON object or an SSE "data: {...}" line.
@@ -337,11 +370,11 @@ export async function main() {
   const zip = buildZip(root, rels);
   log(`Uploading ${rels.length} files (${(zip.length / 1048576).toFixed(1)} MB)…`);
 
-  const up = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/zip' },
-    body: zip,
-  });
+  const up = await fetchRetry(
+    uploadUrl,
+    { method: 'POST', headers: { 'content-type': 'application/zip' }, body: zip },
+    { label: 'the upload server' },
+  );
   const upText = await up.text();
   let upJson = null;
   try {

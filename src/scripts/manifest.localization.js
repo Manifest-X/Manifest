@@ -11,6 +11,119 @@ const originalHtmlLang = (typeof document !== 'undefined' && document.documentEl
     ? (document.documentElement.lang || '')
     : '';
 
+// RTL language codes — module scope so both the init plugin (sets <html dir>)
+// and the $locale magic (sets $locale.list direction) share one table.
+const rtlLanguages = new Set([
+    // Arabic script
+    'ar',     // Arabic
+    'az-Arab',// Azerbaijani (Arabic script)
+    'bal',    // Balochi
+    'ckb',    // Central Kurdish (Sorani)
+    'fa',     // Persian (Farsi)
+    'glk',    // Gilaki
+    'ks',     // Kashmiri
+    'ku-Arab',// Kurdish (Arabic script)
+    'lrc',    // Northern Luri
+    'mzn',    // Mazanderani
+    'pnb',    // Western Punjabi (Shahmukhi)
+    'ps',     // Pashto
+    'sd',     // Sindhi
+    'ur',     // Urdu
+
+    // Hebrew script
+    'he',     // Hebrew
+    'yi',     // Yiddish
+    'jrb',    // Judeo-Arabic
+    'jpr',    // Judeo-Persian
+    'lad-Hebr',// Ladino (Hebrew script)
+
+    // Thaana script
+    'dv',     // Dhivehi (Maldivian)
+
+    // N’Ko script
+    'nqo',    // N’Ko (West Africa)
+
+    // Syriac script
+    'syr',    // Syriac
+    'aii',    // Assyrian Neo-Aramaic
+    'arc',    // Aramaic
+    'sam',    // Samaritan Aramaic
+
+    // Mandaic script
+    'mid',    // Mandaic
+
+    // Other RTL minority/obscure scripts
+    'uga',    // Ugaritic
+    'phn',    // Phoenician
+    'xpr',    // Parthian (ancient)
+    'peo',    // Old Persian (cuneiform, but RTL)
+    'pal',    // Middle Persian (Pahlavi)
+    'avst',   // Avestan
+    'man',    // Manding (N'Ko variants)
+]);
+
+// Detect if a language is RTL
+function isRTL(lang) {
+    return rtlLanguages.has(lang);
+}
+
+// Endonym overrides — browsers' Intl.DisplayNames (CLDR) returns a wrong,
+// anglicized, or bare-code value for these, so they're pinned here (which also
+// insulates them from future CLDR drift). Overrides win over Intl. Add project-
+// or region-specific labels as needed.
+//   tl             → Intl gives "Filipino", conflating it with canonical `fil`
+//   dv/bal/glk/pnb → Intl gives a Latin exonym, not the native-script endonym
+//   aii            → Intl gives the bare code (Assyrian Neo-Aramaic / Sureth)
+const localeNameOverrides = {
+    tl: 'Tagalog',
+    dv: 'ދިވެހި',
+    bal: 'بلوچی',
+    glk: 'گیلکی',
+    pnb: 'پنجابی',
+    aii: 'ܣܘܪܝܬ',
+};
+
+// Native language name (endonym) for a BCP-47 code, e.g. 'fr' → "français".
+// Derived from the browser's Intl.DisplayNames — no data files, no fetches.
+// Falls back to the raw code for custom/unsupported codes.
+const localeNameCache = new Map();
+function localeName(code) {
+    if (localeNameOverrides[code]) return localeNameOverrides[code];
+    if (localeNameCache.has(code)) return localeNameCache.get(code);
+    let name = code;
+    try {
+        if (typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function') {
+            name = new Intl.DisplayNames([code], { type: 'language' }).of(code) || code;
+        }
+    } catch { /* unsupported code — keep raw code */ }
+    localeNameCache.set(code, name);
+    return name;
+}
+
+// Rich list backing $locale.list: one object per available locale, with
+// ordering views hung off the array as non-enumerable getters so x-for and
+// spreads only ever see the locale items, never the view accessors.
+//   $locale.list                → source (manifest.json) order
+//   $locale.list.alphabetical   → by native name, locale-aware compare
+//   $locale.list.currentFirst   → active locale first, rest in source order
+function buildLocaleList(available, current) {
+    const list = available.map(code => ({
+        code,
+        name: localeName(code),
+        direction: isRTL(code) ? 'rtl' : 'ltr',
+        current: code === current
+    }));
+    Object.defineProperty(list, 'alphabetical', {
+        enumerable: false,
+        get() { return [...list].sort((a, b) => a.name.localeCompare(b.name)); }
+    });
+    Object.defineProperty(list, 'currentFirst', {
+        enumerable: false,
+        get() { return [...list].sort((a, b) => (b.current === true) - (a.current === true)); }
+    });
+    return list;
+}
+
 // Global setLocale wrapper - will be replaced with real implementation
 let setLocaleImpl = null;
 
@@ -44,61 +157,6 @@ function initializeLocalizationPlugin() {
     // Debug logging helper (always enabled for now)
     // Debug logging disabled for production
     const debugLog = () => { };
-
-    // RTL language codes - using Set for O(1) lookups
-    const rtlLanguages = new Set([
-        // Arabic script
-        'ar',     // Arabic
-        'az-Arab',// Azerbaijani (Arabic script)
-        'bal',    // Balochi
-        'ckb',    // Central Kurdish (Sorani)
-        'fa',     // Persian (Farsi)
-        'glk',    // Gilaki
-        'ks',     // Kashmiri
-        'ku-Arab',// Kurdish (Arabic script)
-        'lrc',    // Northern Luri
-        'mzn',    // Mazanderani
-        'pnb',    // Western Punjabi (Shahmukhi)
-        'ps',     // Pashto
-        'sd',     // Sindhi
-        'ur',     // Urdu
-
-        // Hebrew script
-        'he',     // Hebrew
-        'yi',     // Yiddish
-        'jrb',    // Judeo-Arabic
-        'jpr',    // Judeo-Persian
-        'lad-Hebr',// Ladino (Hebrew script)
-
-        // Thaana script
-        'dv',     // Dhivehi (Maldivian)
-
-        // N’Ko script
-        'nqo',    // N’Ko (West Africa)
-
-        // Syriac script
-        'syr',    // Syriac
-        'aii',    // Assyrian Neo-Aramaic
-        'arc',    // Aramaic
-        'sam',    // Samaritan Aramaic
-
-        // Mandaic script
-        'mid',    // Mandaic
-
-        // Other RTL minority/obscure scripts
-        'uga',    // Ugaritic
-        'phn',    // Phoenician
-        'xpr',    // Parthian (ancient)
-        'peo',    // Old Persian (cuneiform, but RTL)
-        'pal',    // Middle Persian (Pahlavi)
-        'avst',   // Avestan
-        'man',    // Manding (N'Ko variants)
-    ]);
-
-    // Detect if a language is RTL
-    function isRTL(lang) {
-        return rtlLanguages.has(lang);
-    }
 
     function isPrerenderedStaticBuild() {
         return document.head?.querySelector('meta[name="manifest:prerendered"][content="1"]') !== null;
@@ -712,6 +770,17 @@ function registerLocaleMagic() {
                     if (prop === 'current') return currentStore?.current || document.documentElement.lang || 'en';
                     if (prop === 'available') return currentStore?.available || [document.documentElement.lang || 'en'];
                     if (prop === 'direction') return currentStore?.direction || 'ltr';
+                    if (prop === 'name') {
+                        const fallback = document.documentElement.lang || 'en';
+                        return localeName(currentStore?.current || fallback);
+                    }
+                    if (prop === 'list') {
+                        const fallback = document.documentElement.lang || 'en';
+                        return buildLocaleList(
+                            currentStore?.available || [fallback],
+                            currentStore?.current || fallback
+                        );
+                    }
                     if (prop === 'set') {
                         // Use the global setLocale function (wrapper or real implementation)
                         return async (locale, updateUrl = false) => {

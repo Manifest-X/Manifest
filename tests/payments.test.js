@@ -193,6 +193,19 @@ describe('payments engine — initiate', () => {
         expect(env.store.pay.loading).toBe(false)
         expect(env.events.some(e => e.type === 'manifest:pay:error')).toBe(true)
     })
+
+    it('surfaces the function\'s human message ({error}/{message}) instead of a status code', async () => {
+        env = makeEnv({ payments: CFG, fetchImpl: reply({ error: 'sign in required to check out' }, false, 401) })
+        await expect(env.PAY.initiate('x')).rejects.toThrow('sign in required to check out')
+
+        env = makeEnv({ payments: CFG, fetchImpl: reply({ message: 'That product is sold out' }, false, 400) })
+        await expect(env.PAY.initiate('x')).rejects.toThrow('That product is sold out')
+    })
+
+    it('falls back to a friendly message when the error body is not JSON', async () => {
+        env = makeEnv({ payments: CFG, fetchImpl: async () => ({ ok: false, status: 502, json: async () => { throw new Error('not json') } }) })
+        await expect(env.PAY.initiate('x')).rejects.toThrow(/Checkout couldn't be started/)
+    })
 })
 
 describe('payments engine — portal / state / return / navigate', () => {
