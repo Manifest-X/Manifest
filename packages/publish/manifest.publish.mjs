@@ -165,7 +165,6 @@ export function isExcludedPath(rel) {
   const base = parts[parts.length - 1];
   if (base === '.env' || base.startsWith('.env.')) return true; // .env, .env.local, .env.prod …
   if (base === '.npmrc' || base === '.dev.vars' || base === 'id_rsa' || base === '.DS_Store') return true;
-  if (base === '.mnfst-render-complete') return true; // internal render sentinel — not part of the site
   if (/\.(pem|key|p12|pfx)$/i.test(base)) return true;
   return false;
 }
@@ -298,16 +297,19 @@ export async function main() {
     if (r.status !== 0) fail('render failed — fix the errors above and try again.');
   }
 
-  // For a render project, confirm the output is a COMPLETE render before shipping
-  // it. mnfst-render writes a .mnfst-render-complete sentinel as its final step
-  // (atomic swap), so its absence means the dir is stale or half-built — refuse
-  // rather than publish a broken/empty site.
+  // For a render project, sanity-check there's actually a built site to ship —
+  // an output folder with an index.html. (When we just ran the render above, its
+  // exit code was already checked; this also covers --no-render and hand-built
+  // output.) Deliberately forgiving: no hard dependency on any marker file, so a
+  // good build always publishes regardless of which mnfst-render produced it.
   if (source === 'render') {
     const outDir = prerenderOutputDir(root);
-    if (!existsSync(join(root, outDir, '.mnfst-render-complete'))) {
+    if (!existsSync(join(root, outDir, 'index.html'))) {
       fail(
-        `the "${outDir}" directory isn't a complete render` +
-          (opts.render === false ? ' — re-run without --no-render.' : ' — run `npx mnfst-render` and try again.'),
+        `the "${outDir}" folder doesn't have a built site yet (no index.html). ` +
+          (opts.render === false
+            ? 'Remove --no-render so it builds first, or run `npx mnfst-render`, then publish again.'
+            : 'Run `npx mnfst-render` first, then publish again.'),
       );
     }
   }

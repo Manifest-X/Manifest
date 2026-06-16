@@ -4609,15 +4609,6 @@ async function runPrerender(config) {
     writeFileSync(join(config.output, '_redirects'), lines.join('\n'), 'utf8');
   }
 
-  // Success sentinel — written LAST, only after every step above succeeded.
-  // mnfst-publish checks for it to confirm the output is a complete render
-  // rather than a stale or half-built directory.
-  writeFileSync(
-    join(outputResolved, '.mnfst-render-complete'),
-    JSON.stringify({ completedAt: new Date().toISOString(), routes: pathList.length, version: 1 }) + '\n',
-    'utf8',
-  );
-
   // Atomic swap: replace the previous output with the freshly built staging dir.
   // rename() is atomic on the same filesystem (staging is a sibling of output),
   // so a consumer never sees a partially written output directory.
