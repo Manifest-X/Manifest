@@ -1044,6 +1044,42 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             }
         }
 
+        // Container query variants (Tailwind v4): @[size], @min-[size], @max-[size],
+        // named @sm/@md/… and @max-sm/…, each optionally scoped to a /name container.
+        // Tailwind emits these for its own utilities; recognising them here keeps them
+        // off the "Unknown variant" path and lets the Manifest compiler apply them to
+        // theme/semantic utilities too. The @-prefixed selector is wrapped as an
+        // at-rule by the generator, producing `@container (width …) { … }`.
+        if (variant.startsWith('@')) {
+            const containerSizes = {
+                '3xs': '16rem', '2xs': '18rem', 'xs': '20rem', 'sm': '24rem',
+                'md': '28rem', 'lg': '32rem', 'xl': '36rem', '2xl': '42rem',
+                '3xl': '48rem', '4xl': '56rem', '5xl': '64rem', '6xl': '72rem', '7xl': '80rem'
+            };
+            const slash = variant.indexOf('/');
+            const name = slash !== -1 ? variant.slice(slash + 1) : '';
+            const ctx = name ? `@container ${name}` : '@container';
+            const body = (slash !== -1 ? variant.slice(0, slash) : variant).slice(1); // strip '@'
+            let m;
+            if (body === '' || body === 'container') {
+                return { name: variant, selector: ctx, isArbitrary: false };
+            }
+            if ((m = body.match(/^(?:min-)?\[(.+)\]$/))) {
+                return { name: variant, selector: `${ctx} (width >= ${m[1]})`, isArbitrary: false };
+            }
+            if ((m = body.match(/^max-\[(.+)\]$/))) {
+                return { name: variant, selector: `${ctx} (width < ${m[1]})`, isArbitrary: false };
+            }
+            if ((m = body.match(/^max-(.+)$/))) {
+                if (containerSizes[m[1]]) {
+                    return { name: variant, selector: `${ctx} (width < ${containerSizes[m[1]]})`, isArbitrary: false };
+                }
+            } else if (containerSizes[body]) {
+                return { name: variant, selector: `${ctx} (width >= ${containerSizes[body]})`, isArbitrary: false };
+            }
+            // Unrecognised @-form falls through to the warning below.
+        }
+
         // If no match found, warn once per unique token and return null.
         // Deduped so unsupported variants (e.g. container queries like
         // `@[10rem]:`) don't flood the console on every compile pass.

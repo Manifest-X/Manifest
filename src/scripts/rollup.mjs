@@ -20,5 +20,5 @@ import './manifest.utilities.js';
 
 // Additional dependencies for Alpine+Tailwind build
 // Update these filenames as needed when versions change
-export const TAILWIND_V4_FILE = 'tailwind.v4.1.js';
+export const TAILWIND_V4_FILE = 'tailwind.v4.3.1.js';
 export const ALPINE_FILE = 'alpine.v3.14.9.js';

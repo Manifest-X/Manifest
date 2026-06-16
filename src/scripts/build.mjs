@@ -158,7 +158,7 @@ const CONFIG = {
 
     // Dependencies
     dependencies: {
-        TAILWIND_V4_FILE: 'tailwind.v4.1.js',
+        TAILWIND_V4_FILE: 'tailwind.v4.3.1.js',
     },
 
     // Stylesheet configuration
