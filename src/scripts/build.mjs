@@ -60,6 +60,7 @@ const CONFIG = {
         'manifest.appwrite.auth.teams.convenience.js',
         'manifest.appwrite.auth.users.anonymous.js',
         'manifest.appwrite.auth.users.magic.js',
+        'manifest.appwrite.auth.users.otp.js',
         'manifest.appwrite.auth.users.oauth.js',
         'manifest.appwrite.auth.users.callbacks.js'
     ],
@@ -123,6 +124,21 @@ const CONFIG = {
         'manifest.status.main.js'
     ],
 
+    // Edit subscripts order (x-edit / $edit — element editing). Fragments of one IIFE:
+    // core.js opens it, main.js closes it; order matters.
+    editSubscripts: [
+        'manifest.edit.core.js',
+        'manifest.edit.log.js',
+        'manifest.edit.drag.js',
+        'manifest.edit.size.js',
+        'manifest.edit.text.js',
+        'manifest.edit.style.js',
+        'manifest.edit.theme.js',
+        'manifest.edit.activation.js',
+        'manifest.edit.ui.js',
+        'manifest.edit.main.js'
+    ],
+
     // Data Appwrite presence subscripts (for manifest.appwrite.presence.js)
     dataAppwritePresenceSubscripts: [
         'presence/manifest.data.presence.utils.js',
@@ -145,6 +161,7 @@ const CONFIG = {
         'scripts/data/**',
         'scripts/status/**',
         'scripts/payments/**',
+        'scripts/edit/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
@@ -222,6 +239,9 @@ function buildSubscripts() {
 
     // Build status
     combineSubscripts(CONFIG.statusSubscripts, 'manifest.status.js', 'status');
+
+    // Build edit
+    combineSubscripts(CONFIG.editSubscripts, 'manifest.edit.js', 'edit');
 
     console.log('✓ Subscripts built successfully!\n');
 }

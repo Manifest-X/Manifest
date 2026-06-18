@@ -36,6 +36,17 @@ function initializeAnonymous() {
                     this.isAuthenticated = true;
                     this.isAnonymous = true;
 
+                    // Seed default teams for the guest when auth.teams.guests is enabled
+                    const appwriteConfig = await config.getAppwriteConfig();
+                    if (appwriteConfig?.guestTeams && this._loadTeamsAndSeed) {
+                        try {
+                            await this._loadTeamsAndSeed(appwriteConfig);
+                        } catch (teamsError) {
+                            // Don't fail guest creation if teams fail to load, but surface why
+                            console.warn('[Manifest Appwrite Auth] Failed to seed guest teams:', teamsError);
+                        }
+                    }
+
                     // Sync state to localStorage for cross-tab synchronization
                     if (this._syncStateToStorage) {
                         this._syncStateToStorage(this);

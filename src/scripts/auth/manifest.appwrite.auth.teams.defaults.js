@@ -430,9 +430,11 @@ async function ensureDefaultTeams(store) {
 
                 if (result.success) {
                     createdTeams.push(result.team);
+                } else {
+                    console.warn(`[Manifest Appwrite Auth] Could not seed permanent team "${teamName}":`, result.error);
                 }
             } catch (error) {
-                // Error creating permanent team
+                console.warn(`[Manifest Appwrite Auth] Error seeding permanent team "${teamName}":`, error);
             }
         }
     }
@@ -472,9 +474,11 @@ async function ensureDefaultTeams(store) {
 
                 if (result.success) {
                     createdTeams.push(result.team);
+                } else {
+                    console.warn(`[Manifest Appwrite Auth] Could not seed template team "${teamName}":`, result.error);
                 }
             } catch (error) {
-                // Error creating template team
+                console.warn(`[Manifest Appwrite Auth] Error seeding template team "${teamName}":`, error);
             }
         }
     }

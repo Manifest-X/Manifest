@@ -147,6 +147,7 @@
 			cfg.grid = cfg.grid !== false;
 			cfg.tooltip = cfg.tooltip !== false;   // hover tooltips on by default
 			cfg.dataLabels = !!cfg.dataLabels;       // static value labels off by default
+			cfg.gap = num(cfg.gap, 1);               // heatmap tile gutter in px
 			cfg.labels = Array.isArray(cfg.labels) ? cfg.labels : [];
 
 			// Series may be omitted in favor of a single `data` array.
@@ -160,6 +161,13 @@
 					cfg.labels = s.data.map(d => d.label);
 					s.data = s.data.map(d => num(d.value, 0));
 				}
+			}
+
+			// Gauge: a single value, from `value` or the first series datum.
+			if (cfg.type === 'gauge') {
+				if (cfg.value != null && !cfg.series.length) cfg.series = [{ data: [num(cfg.value, 0)] }];
+				cfg.min = num(cfg.min, 0);
+				cfg.max = num(cfg.max, 100);
 			}
 			return cfg;
 		}
@@ -176,8 +184,13 @@
 			t.appendChild(document.createTextNode(str == null ? '' : String(str))); // untrusted-safe
 			return t;
 		}
+		// Entry animations run only on a chart's first draw. Reactive redraws
+		// (a bound value changing, a resize) must paint the final state directly
+		// — otherwise dragging a slider replays the reveal every frame and the
+		// chart flickers. drawChart sets this before dispatching.
+		let _suppressAnim = false;
 		function animate(el, keyframes, opts) {
-			if (prefersReducedMotion() || typeof el.animate !== 'function') return;
+			if (_suppressAnim || prefersReducedMotion() || typeof el.animate !== 'function') return;
 			try { el.animate(keyframes, Object.assign({ duration: 600, easing: 'cubic-bezier(0.22,1,0.36,1)', fill: 'backwards' }, opts)); } catch (_) { }
 		}
 		// Cursor-following tooltip. Manifest's x-tooltip relies on CSS anchor
@@ -280,11 +293,17 @@
 			const hasData = cfg.series.some(s => Array.isArray(s.data) && s.data.length);
 			if (!hasData) { const d = document.createElement('small'); d.textContent = 'No data'; el.appendChild(d); return; }
 
+			// Animate the reveal only on the first paint; redraws snap to state.
+			_suppressAnim = !!state._drawn;
+			state._drawn = true;
+
 			// Label via aria-label (not an SVG <title>, which renders a native
 			// browser tooltip that conflicts with our cursor tooltip).
 			const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, width: '100%', height: String(height), role: 'img', 'aria-label': cfg.title || (cfg.type + ' chart'), preserveAspectRatio: 'xMidYMid meet' }, el);
 
 			if (cfg.type === 'pie' || cfg.type === 'donut') drawPie(state, root, width, height);
+			else if (cfg.type === 'gauge') drawGauge(state, root, width, height);
+			else if (cfg.type === 'heatmap') drawHeatmap(state, root, width, height);
 			else drawCartesian(state, root, width, height);
 		}
 
@@ -302,6 +321,17 @@
 			} catch (_) { _paletteN = 8; }
 		}
 		function seriesColorVar(i, explicit) { return explicit || `var(--color-chart-${(i % _paletteN) + 1})`; }
+
+		// Resolve the theme --radius token to user-space px (the viewBox is 1:1
+		// with CSS px), so SVG corners match the rest of the UI's rounding.
+		function cssRadius(el) {
+			try {
+				const v = getComputedStyle(el).getPropertyValue('--radius').trim() || '0.5rem';
+				if (v.endsWith('rem')) return parseFloat(v) * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+				if (v.endsWith('px')) return parseFloat(v);
+				return parseFloat(v) || 8;
+			} catch (_) { return 8; }
+		}
 
 		// Line interpolation: monotone (smooth, default) | linear | step | natural.
 		function curveFor(d3, name) {
@@ -479,7 +509,7 @@
 			});
 		}
 		function animateBar(rect, ih) {
-			if (prefersReducedMotion() || typeof rect.animate !== 'function') return;
+			if (_suppressAnim || prefersReducedMotion() || typeof rect.animate !== 'function') return;
 			rect.style.transformBox = 'fill-box'; rect.style.transformOrigin = 'center bottom';
 			try { rect.animate([{ transform: 'scaleY(0)' }, { transform: 'scaleY(1)' }], { duration: 600, easing: 'cubic-bezier(0.22,1,0.36,1)', fill: 'backwards' }); } catch (_) { }
 		}
@@ -511,12 +541,134 @@
 				const path = svg('path', { class: 'slice', d: arc(slice), style: `--color-chart-color:${seriesColorVar(i)}` }, g);
 				applyTip(path, labels[i] + ': ' + data[i], cfg);
 				if (cfg.dataLabels) { const c = arc.centroid(slice); dataLabel(g, data[i], c[0], c[1], 'middle', 'central', 'inverse'); }
-				if (!prefersReducedMotion() && typeof path.animate === 'function') {
+				if (!_suppressAnim && !prefersReducedMotion() && typeof path.animate === 'function') {
 					path.style.transformBox = 'fill-box'; path.style.transformOrigin = 'center';
 					try { path.animate([{ opacity: 0, transform: 'scale(0.85)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 450, delay: i * 60, easing: 'cubic-bezier(0.22,1,0.36,1)', fill: 'backwards' }); } catch (_) { }
 				}
 			});
 			if (cfg.legend) drawLegend(state, labels);
+		}
+
+		// Gauge — a single value swept across a 180° dome. Track + value arc
+		// reuse the pie/donut arc primitive; optional `zones` paint threshold
+		// bands (e.g. positive/warning/negative ranges). `unit` suffixes the
+		// centered readout; `min`/`max` default 0–100.
+		function drawGauge(state, root, width, height) {
+			const cfg = state.config, d3 = state.d3;
+			const value = num(cfg.series[0] && cfg.series[0].data[0], 0);
+			const min = cfg.min, max = cfg.max;
+			const START = -Math.PI / 2, END = Math.PI / 2;
+			const scale = d3.scaleLinear().domain([min, max]).range([START, END]).clamp(true);
+			const unit = cfg.unit || '';
+
+			const r = Math.min(width / 2, height) - 8;
+			const thickness = Math.max(8, r * 0.22);
+			const cx = width / 2, cy = 8 + r;
+			const g = svg('g', { transform: `translate(${cx},${cy})` }, root);
+			const arc = d3.arc().innerRadius(r - thickness).outerRadius(r).cornerRadius(cssRadius(state.el));
+
+			// Track, or threshold zone bands when `zones` is given.
+			if (Array.isArray(cfg.zones) && cfg.zones.length) {
+				let from = min;
+				cfg.zones.forEach((z, i) => {
+					const to = num(z.to, max);
+					svg('path', { class: 'gauge-track', d: arc({ startAngle: scale(from), endAngle: scale(to) }), style: `--color-chart-color:${z.color || seriesColorVar(i)}`, opacity: 0.35 }, g);
+					from = to;
+				});
+			} else {
+				svg('path', { class: 'gauge-track', d: arc({ startAngle: START, endAngle: END }) }, g);
+			}
+
+			// Value arc — final geometry is set unconditionally so the gauge is
+			// correct even if the entry animation never runs (background tab);
+			// the sweep is a CSS reveal, never the source of the end state.
+			const color = (cfg.series[0] && cfg.series[0].color) || 'var(--color-chart-1)';
+			const valueAngle = scale(value);
+			const vArc = svg('path', { class: 'gauge-value', d: arc({ startAngle: START, endAngle: valueAngle }), style: `--color-chart-color:${color}` }, g);
+			applyTip(vArc, (cfg.title ? cfg.title + ': ' : '') + value + unit, cfg);
+			// Reveal via fade (WAAPI, origin-independent) — the final geometry above
+			// is unconditional, so the gauge is correct even if this never runs.
+			animate(vArc, [{ opacity: 0 }, { opacity: 1 }], { duration: 500 });
+
+			// Centered readout + range end labels.
+			text(g, value + unit, { class: 'gauge-label', x: 0, y: -r * 0.12, 'text-anchor': 'middle', 'dominant-baseline': 'central' });
+			if (cfg.axis) {
+				const lr = r - thickness / 2;
+				text(g, String(min), { x: -lr, y: 16, 'text-anchor': 'middle' });
+				text(g, String(max), { x: lr, y: 16, 'text-anchor': 'middle' });
+			}
+		}
+
+		// Heatmap — a matrix of cells: each series is a row, each datum a column
+		// aligned to `labels`. Cell colour is a CSS color-mix between the two
+		// --color-chart-heat-* tokens (no JS colour-interpolation dep), driven
+		// by the per-cell `--heat` percentage.
+		function drawHeatmap(state, root, width, height) {
+			const cfg = state.config, d3 = state.d3;
+			const rows = cfg.series;
+			const cols = cfg.labels.length ? cfg.labels : (rows[0] && Array.isArray(rows[0].data) ? rows[0].data.map((_, i) => i + 1) : []);
+			const rowName = (r, i) => r.name || String(i + 1);
+			const showLabels = cfg.axis;
+
+			const m = { top: 4, right: 4, bottom: showLabels ? 24 : 4, left: showLabels ? 64 : 4 };
+			const iw = width - m.left - m.right;
+			const ih = height - m.top - m.bottom;
+			// Tiles abut (padding 0); the gutter comes from insetting each rect
+			// by `gap` px (config, default 1; set 0 for a seamless field).
+			const gap = Math.max(0, cfg.gap);
+			const x = d3.scaleBand().domain(cols.map(String)).range([0, iw]).padding(0);
+			const yb = d3.scaleBand().domain(rows.map(rowName)).range([0, ih]).padding(0);
+			const cw = Math.max(0, x.bandwidth() - gap), ch = Math.max(0, yb.bandwidth() - gap);
+
+			// Value domain across every cell.
+			let lo = Infinity, hi = -Infinity;
+			rows.forEach(r => (r.data || []).forEach(v => { const n = num(v, 0); if (n < lo) lo = n; if (n > hi) hi = n; }));
+			if (!isFinite(lo)) { lo = 0; hi = 1; }
+			if (lo === hi) hi = lo + 1;
+
+			const plot = svg('g', { transform: `translate(${m.left},${m.top})` }, root);
+
+			// Round only the grid's outer corners: square tiles clipped to a single
+			// rounded rect hugging the cell extent (right/bottom edge sits at the
+			// last tile's inner edge, so the radius isn't clipping empty gutter).
+			const clipId = 'mnfst-heat-' + (++_uid);
+			const cp = svg('clipPath', { id: clipId }, svg('defs', null, root));
+			svg('rect', { x: 0, y: 0, width: Math.max(0, iw - gap), height: Math.max(0, ih - gap), rx: cssRadius(state.el) }, cp);
+			const cellsG = svg('g', { 'clip-path': `url(#${clipId})` }, plot);
+
+			rows.forEach((r, ri) => {
+				const yy = yb(rowName(r, ri));
+				cols.forEach((c, ci) => {
+					const v = num(r.data[ci], 0);
+					const t = Math.round(((v - lo) / (hi - lo)) * 100);
+					const cell = svg('rect', { class: 'heat-cell', x: x(String(c)), y: yy, width: cw, height: ch, style: `--heat:${t}%` }, cellsG);
+					applyTip(cell, (r.name ? r.name + ' · ' : '') + c + ': ' + v, cfg);
+					animate(cell, [{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: (ri + ci) * 20 });
+					if (cfg.dataLabels) dataLabel(plot, v, x(String(c)) + x.bandwidth() / 2, yy + yb.bandwidth() / 2, 'middle', 'central', 'inverse');
+				});
+			});
+
+			if (showLabels) {
+				rows.forEach((r, ri) => text(plot, rowName(r, ri), { x: -8, y: yb(rowName(r, ri)) + yb.bandwidth() / 2, 'text-anchor': 'end', 'dominant-baseline': 'central' }));
+				cols.forEach(c => text(plot, c, { x: x(String(c)) + x.bandwidth() / 2, y: ih + 16, 'text-anchor': 'middle' }));
+			}
+
+			if (cfg.legend) drawHeatLegend(state, lo, hi, m);
+		}
+
+		// Continuous gradient legend for the heatmap: low label, ramp bar, high
+		// label. Padded to the chart's margins so the bar spans the grid width
+		// (bar flexes to fill — see .heat-legend in the CSS).
+		function drawHeatLegend(state, lo, hi, m) {
+			const footer = document.createElement('footer');
+			footer.className = 'heat-legend';
+			footer.style.paddingLeft = m.left + 'px';
+			footer.style.paddingRight = m.right + 'px';
+			const a = document.createElement('span'); a.textContent = lo;
+			const bar = document.createElement('i');
+			const b = document.createElement('span'); b.textContent = hi;
+			footer.append(a, bar, b);
+			state.el.appendChild(footer);
 		}
 
 		// Legend is a <footer> sibling below the SVG (inline flex), not an

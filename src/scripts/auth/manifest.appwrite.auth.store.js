@@ -49,6 +49,8 @@ function initializeAuthStore() {
                     store.session = state.session;
                     store.magicLinkSent = state.magicLinkSent || false;
                     store.magicLinkExpired = state.magicLinkExpired || false;
+                    store.otpSent = state.otpSent || false;
+                    store.otpExpired = state.otpExpired || false;
                     store.error = state.error;
                 }
             } catch (error) {
@@ -67,6 +69,8 @@ function initializeAuthStore() {
                 session: sanitizeSessionForStorage(store.session),
                 magicLinkSent: store.magicLinkSent,
                 magicLinkExpired: store.magicLinkExpired,
+                otpSent: store.otpSent,
+                otpExpired: store.otpExpired,
                 error: store.error
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -84,6 +88,10 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
+        otpSent: false, // Email OTP: a code has been emailed and is awaiting entry
+        otpExpired: false, // Email OTP: the entered code was wrong/expired
+        otpPhrase: null, // Email OTP: security phrase to display (when enabled)
+        _otpUserId: null, // Email OTP: userId returned by createEmailToken, used by verifyOTP
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
@@ -216,15 +224,20 @@ function initializeAuthStore() {
             return null;
         },
 
-        // Get authentication method (oauth, magic, anonymous)
+        // Get authentication method (anonymous, magic, otp, phone, oauth)
         getMethod() {
             if (!this.session) return null;
-            const provider = this.session.provider;
-            if (provider === 'anonymous') return 'anonymous';
-            if (provider === 'magic-url') return 'magic';
-            // OAuth providers return their name (google, github, etc.)
-            if (provider && provider !== 'anonymous' && provider !== 'magic-url') return 'oauth';
-            return null;
+            // Appwrite session.provider: anonymous | magic-url | email (OTP) |
+            // token (OTP, some versions) | phone | oauth2 (or a specific provider).
+            switch (this.session.provider) {
+                case 'anonymous': return 'anonymous';
+                case 'magic-url': return 'magic';
+                case 'email':     return 'otp';   // this plugin uses email tokens for OTP
+                case 'token':     return 'otp';
+                case 'phone':     return 'phone';
+                case 'oauth2':    return 'oauth';
+                default:          return this.session.provider ? 'oauth' : null;
+            }
         },
 
         // Get OAuth provider name (google, github, etc.) or null for non-OAuth methods
@@ -237,8 +250,10 @@ function initializeAuthStore() {
             const sessionProvider = this.session.provider;
 
             // For OAuth, return the stored provider name (google, github, etc.)
-            // session.provider returns "oauth2" generically, so we use _oauthProvider
-            if (sessionProvider && sessionProvider !== 'anonymous' && sessionProvider !== 'magic-url') {
+            // session.provider returns "oauth2" generically, so we use _oauthProvider.
+            // Only OAuth sessions have a provider name — magic/otp/phone/anonymous don't,
+            // so gate on getMethod() to avoid a pointless identities lookup for those.
+            if (this.getMethod() === 'oauth') {
                 // Try to get from store first, then localStorage, then sessionStorage
                 let provider = this._oauthProvider;
                 if (!provider) {
@@ -311,6 +326,9 @@ function initializeAuthStore() {
             this.inProgress = true;
             this.error = null;
 
+            // Hoisted so the post-init background team load (below) can read it.
+            let appwriteConfig = null;
+
             try {
                 const appwrite = await config.getAppwriteClient();
                 if (!appwrite) {
@@ -323,7 +341,7 @@ function initializeAuthStore() {
                 this._appwrite = appwrite;
 
                 // Get auth methods config from manifest
-                const appwriteConfig = await config.getAppwriteConfig();
+                appwriteConfig = await config.getAppwriteConfig();
                 this._guestAuto = appwriteConfig?.guestAuto === true;
                 this._guestManual = appwriteConfig?.guestManual === true;
                 this.guestManualEnabled = appwriteConfig?.guestManual === true;
@@ -374,18 +392,10 @@ function initializeAuthStore() {
                         this.isAnonymous = false;
                     }
 
-                    // Load teams if enabled and user is authenticated
-                    if (this.isAuthenticated && appwriteConfig?.teams && this.listTeams) {
-                        try {
-                            await this.listTeams();
-                            // Auto-create default teams if enabled
-                            if ((appwriteConfig.permanentTeams || appwriteConfig.templateTeams) && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
-                                await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
-                            }
-                        } catch (teamsError) {
-                            // Don't fail initialization if teams fail to load
-                        }
-                    }
+                    // NOTE: team loading is intentionally NOT awaited here — it runs in
+                    // the background after manifest:auth:initialized fires (see below),
+                    // so a session gate (app splash) isn't held up by team listing +
+                    // member hydration.
                 } catch (error) {
                     // No existing session - this is expected
                     this.isAuthenticated = false;
@@ -397,7 +407,12 @@ function initializeAuthStore() {
                 // Sync state to localStorage
                 syncStateToStorage(this);
             } catch (error) {
-                this.error = error.message;
+                // init() is a passive lifecycle step (session restore / setup), not a
+                // user action. Resolve to a clean signed-out state and log — do NOT park
+                // the raw message in $auth.error, which is reserved for sign-in/action
+                // failures the user can act on (a sign-in card binding $auth.error must
+                // never show benign "no session" / "blocked account" scope errors).
+                console.warn('[Manifest Appwrite Auth] Session restore failed (treating as signed out):', error?.message || error);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
             } finally {
@@ -405,13 +420,93 @@ function initializeAuthStore() {
                 this._initialized = true;
                 this._initializing = false;
 
-                // Dispatch initialized event - let callback handlers process after
+                // Dispatch initialized event - let callback handlers process after.
+                // Fires as soon as identity is known (one round-trip), NOT after teams
+                // load — so a session gate / splash clears in a few hundred ms.
                 window.dispatchEvent(new CustomEvent('manifest:auth:initialized', {
                     detail: {
                         isAuthenticated: this.isAuthenticated,
                         isAnonymous: this.isAnonymous
                     }
                 }));
+            }
+
+            // Background, non-blocking: load + seed teams AFTER initialized fired.
+            // $auth.teams / currentTeam populate reactively when ready; a
+            // manifest:auth:teams-loaded event fires for anything that needs the full set.
+            if (appwriteConfig && this.isAuthenticated && appwriteConfig.teams
+                && (!this.isAnonymous || appwriteConfig.guestTeams)) {
+                this._loadTeamsAndSeed(appwriteConfig)
+                    .then(() => window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
+                        detail: { teams: this.teams, currentTeam: this.currentTeam }
+                    })))
+                    .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
+            }
+        },
+
+        // Clear all team-related state. Used when the active identity changes to a
+        // DIFFERENT user — e.g. a guest replaced by a fresh account on OTP sign-in
+        // (Appwrite can't convert anonymous → OTP). Without this, the previous user's
+        // currentTeam/teams leak into the new session and listTeams queries teams the
+        // new user can't access, producing 404s on prefs/memberships.
+        _resetTeamsState() {
+            this.teams = [];
+            this.currentTeam = null;
+            this.currentTeamMemberships = [];
+            this.deletedTemplateTeams = [];
+            this.deletedTemplateRoles = [];
+            this._teamImmutableCache = {};
+            if (this.stopTeamsRealtime) {
+                try { this.stopTeamsRealtime(); } catch (e) { /* ignore */ }
+            }
+        },
+
+        // Call the deployed guest-migration function (templates/guest-migration-function).
+        // The current Appwrite session authenticates the call — Appwrite forwards the
+        // user id to the function. Returns the parsed JSON response, or null on any
+        // failure (migration is best-effort: a failure must never block sign-in).
+        async _callGuestMigration(path, body) {
+            const appwriteConfig = await config.getAppwriteConfig();
+            const fnId = appwriteConfig?.guestMigrationFunctionId;
+            if (!fnId || !this._appwrite?.functions) {
+                return null;
+            }
+            try {
+                const exec = await this._appwrite.functions.createExecution(
+                    fnId, JSON.stringify(body || {}), false, path, 'POST'
+                );
+                const raw = exec?.responseBody ?? exec?.response ?? '';
+                try { return JSON.parse(raw); } catch (e) { return null; }
+            } catch (e) {
+                console.warn(`[Manifest Appwrite Auth] Guest migration ${path} failed:`, e.message);
+                return null;
+            }
+        },
+
+        // Load the user's teams and seed any configured default (permanent/template)
+        // teams. Shared by the guest, magic-link, OAuth, and init/restore paths.
+        async _loadTeamsAndSeed(appwriteConfig) {
+            const cfg = appwriteConfig || await config.getAppwriteConfig();
+            if (!cfg?.teams) {
+                return;
+            }
+            // Startup race: init() (and an early requestGuest) can reach here before
+            // teams.core.js / teams.defaults.js have finished wiring listTeams +
+            // ensureDefaultTeams onto the store. Wait briefly for them rather than
+            // silently skipping (which left guests with no teams on reload).
+            const needsSeed = !!(cfg.permanentTeams || cfg.templateTeams);
+            const ready = () => typeof this.listTeams === 'function'
+                && (!needsSeed || typeof window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams === 'function');
+            for (let i = 0; i < 40 && !ready(); i++) {
+                await new Promise(r => setTimeout(r, 50));
+            }
+            if (typeof this.listTeams !== 'function') {
+                console.warn('[Manifest Appwrite Auth] Teams module never became ready; skipping team load/seed.');
+                return;
+            }
+            await this.listTeams();
+            if (needsSeed && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
+                await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
             }
         },
 
@@ -458,9 +553,16 @@ function initializeAuthStore() {
                     // Ignore
                 }
 
-                // Clear teams for guest sessions (guests don't have teams)
-                this.teams = [];
-                this.currentTeam = null;
+                // Guests are full Appwrite sessions, so they can own teams. When
+                // auth.teams.guests is enabled, seed their default teams just like a
+                // signed-in user; otherwise keep the historical behavior (no teams).
+                const cfg = await config.getAppwriteConfig();
+                if (cfg?.guestTeams) {
+                    await this._loadTeamsAndSeed(cfg);
+                } else {
+                    this.teams = [];
+                    this.currentTeam = null;
+                }
 
                 syncStateToStorage(this);
                 window.dispatchEvent(new CustomEvent('manifest:auth:anonymous', {
@@ -523,6 +625,12 @@ function initializeAuthStore() {
                 // Clear magic link flags
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
+
+                // Clear email OTP flags
+                this.otpSent = false;
+                this.otpExpired = false;
+                this.otpPhrase = null;
+                this._otpUserId = null;
 
                 // Stop teams realtime subscription if active
                 if (this.stopTeamsRealtime) {

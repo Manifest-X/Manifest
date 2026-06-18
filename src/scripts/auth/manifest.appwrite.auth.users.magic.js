@@ -55,9 +55,17 @@ function initializeMagicLinks() {
 
                     const account = this._appwrite.account;
 
+                    // Guest upgrade: when enabled and we're currently a guest, pass the
+                    // anonymous user's own id so Appwrite links the email to that same
+                    // account (preserving its teams) rather than minting a fresh user.
+                    // Otherwise generate a unique id for a brand-new account.
+                    const magicUserId = (appwriteConfig?.guestUpgrade && this.isAnonymous && this.user?.$id)
+                        ? this.user.$id
+                        : ((window.Appwrite?.ID?.unique) ? window.Appwrite.ID.unique() : 'unique()');
+
                     // Try createMagicURLSession first (standard method)
                     if (typeof account.createMagicURLSession === 'function') {
-                        const token = await account.createMagicURLSession('unique()', email, cleanRedirectUrl);
+                        const token = await account.createMagicURLSession(magicUserId, email, cleanRedirectUrl);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -69,7 +77,7 @@ function initializeMagicLinks() {
 
                     // Fallback: try createMagicURLToken (alternative method name)
                     if (typeof account.createMagicURLToken === 'function') {
-                        const token = await account.createMagicURLToken('unique()', email, redirectUrl);
+                        const token = await account.createMagicURLToken(magicUserId, email, redirectUrl);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -212,8 +220,18 @@ function initializeMagicLinks() {
                 this.magicLinkSent = false;
 
                 try {
-                    // Delete any existing anonymous sessions first
-                    if (this.session && this.isAnonymous) {
+                    const appwriteConfig = await config.getAppwriteConfig();
+                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous);
+                    // A guest being replaced (not upgraded) by a different account — its
+                    // team state must be cleared before loading the new user's teams.
+                    const replacingGuest = this.isAnonymous && !upgradingGuest;
+
+                    // Delete the existing anonymous session first — UNLESS we're upgrading
+                    // the guest in place. For an upgrade the magic token was created against
+                    // the anonymous user's own id, so createSession converts that same
+                    // account (keeping its teams); deleting it first would orphan the teams
+                    // and force a brand-new user.
+                    if (this.session && this.isAnonymous && !upgradingGuest) {
                         try {
                             await this._appwrite.account.deleteSession(this.session.$id);
                         } catch (deleteError) {
@@ -221,8 +239,20 @@ function initializeMagicLinks() {
                         }
                     }
 
-                    // Create session from magic link credentials
-                    const session = await this._appwrite.account.createSession(userId, secret);
+                    // Create session from magic link credentials. When upgrading a guest the
+                    // anonymous session may still be active; Appwrite can reject the duplicate
+                    // with a "prohibited" error, in which case the account is already upgraded
+                    // and we just reuse the current session.
+                    let session;
+                    try {
+                        session = await this._appwrite.account.createSession(userId, secret);
+                    } catch (createError) {
+                        if (upgradingGuest && createError.message?.includes('prohibited')) {
+                            session = await this._appwrite.account.getSession('current');
+                        } else {
+                            throw createError;
+                        }
+                    }
                     this.session = session;
                     this.user = await this._appwrite.account.get();
                     this.isAuthenticated = true;
@@ -238,20 +268,21 @@ function initializeMagicLinks() {
                         // Ignore
                     }
 
+                    // Replacing a guest with a different account: drop the guest's stale
+                    // team state so listTeams doesn't query teams the new user can't access.
+                    if (replacingGuest && this._resetTeamsState) {
+                        this._resetTeamsState();
+                    }
+
                     // Sync state
                     if (this._syncStateToStorage) {
                         this._syncStateToStorage(this);
                     }
 
-                    // Load teams if enabled
-                    const appwriteConfig = await config.getAppwriteConfig();
+                    // Load teams if enabled (and seed any configured default teams)
                     if (appwriteConfig?.teams && this.listTeams) {
                         try {
-                            await this.listTeams();
-                            // Auto-create default teams if enabled
-                            if ((appwriteConfig.permanentTeams || appwriteConfig.templateTeams) && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
-                                await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
-                            }
+                            await this._loadTeamsAndSeed(appwriteConfig);
                         } catch (teamsError) {
                             console.warn('[Manifest Appwrite Auth] Failed to load teams after magic link login:', teamsError);
                             // Don't fail login if teams fail to load

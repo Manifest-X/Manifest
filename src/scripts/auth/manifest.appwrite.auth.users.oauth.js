@@ -39,8 +39,10 @@ function initializeOAuth() {
 
                 // Delete any existing anonymous sessions before OAuth
                 // This prevents conflicts where anonymous sessions might interfere with OAuth
-                // Appwrite will create a new account for OAuth if needed
-                if (this.isAnonymous && this.session) {
+                // Appwrite will create a new account for OAuth if needed.
+                // EXCEPTION: when guest upgrade is enabled we keep the anonymous session
+                // active so Appwrite can link the OAuth identity to it (preserving teams).
+                if (this.isAnonymous && this.session && !appwriteConfig?.guestUpgrade) {
                     try {
                         await this._appwrite.account.deleteSession(this.session.$id);
                         this.session = null;
@@ -192,8 +194,16 @@ function handleOAuthCallbacks() {
         store.magicLinkSent = false;
 
         try {
-            // Delete any existing anonymous sessions first
-            if (store.session && store.isAnonymous) {
+            const appwriteConfig = await window.ManifestAppwriteAuthConfig.getAppwriteConfig();
+            const upgradingGuest = !!(appwriteConfig?.guestUpgrade && store.isAnonymous);
+            // A guest being replaced (not upgraded) by a different account — its team
+            // state must be cleared before loading the new user's teams.
+            const replacingGuest = store.isAnonymous && !upgradingGuest;
+
+            // Delete the existing anonymous session first — UNLESS we're upgrading the
+            // guest in place, in which case Appwrite linked the OAuth identity to that
+            // account and the "prohibited" branch below reuses the upgraded session.
+            if (store.session && store.isAnonymous && !upgradingGuest) {
                 try {
                     await store._appwrite.account.deleteSession(store.session.$id);
                 } catch (deleteError) {
@@ -240,20 +250,21 @@ function handleOAuthCallbacks() {
                 }
             }
 
+            // Replacing a guest with a different account: drop the guest's stale team
+            // state so listTeams doesn't query teams the new user can't access.
+            if (replacingGuest && store._resetTeamsState) {
+                store._resetTeamsState();
+            }
+
             // Sync state
             if (store._syncStateToStorage) {
                 store._syncStateToStorage(store);
             }
 
-            // Load teams if enabled
-            const appwriteConfig = await window.ManifestAppwriteAuthConfig.getAppwriteConfig();
+            // Load teams if enabled (and seed any configured default teams)
             if (appwriteConfig?.teams && store.listTeams) {
                 try {
-                    await store.listTeams();
-                    // Auto-create default teams if enabled
-                    if ((appwriteConfig.permanentTeams || appwriteConfig.templateTeams) && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
-                        await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(store);
-                    }
+                    await store._loadTeamsAndSeed(appwriteConfig);
                 } catch (teamsError) {
                     console.warn('[Manifest Appwrite Auth] Failed to load teams after OAuth login:', teamsError);
                     // Don't fail login if teams fail to load

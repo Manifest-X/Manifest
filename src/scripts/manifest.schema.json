@@ -168,14 +168,23 @@
                             "type": "array",
                             "items": {
                                 "type": "string",
-                                "enum": ["guest", "guest-manual", "magic", "oauth", "password"]
+                                "enum": ["guest", "guest-auto", "guest-manual", "magic", "otp", "oauth", "password"]
                             }
                         },
                         "teams": {
                             "type": "object",
                             "properties": {
                                 "permanent": { "type": "array", "items": { "type": "string" } },
-                                "template": { "type": "array", "items": { "type": "string" } }
+                                "template": { "type": "array", "items": { "type": "string" } },
+                                "guests": { "type": "boolean", "description": "Seed permanent/template teams for guest (anonymous) sessions too. Off by default." }
+                            }
+                        },
+                        "guestUpgrade": { "type": "boolean", "description": "Preserve a guest's account (and its teams) when they sign in, instead of replacing it. Works with magic links and OAuth; email OTP cannot convert anonymous accounts (Appwrite limitation). Defaults to the value of teams.guests." },
+                        "guestMigration": {
+                            "type": "object",
+                            "description": "Carry a guest's teams over to the account they sign into via email OTP (which cannot convert in place). Requires the deployed guest-migration Appwrite Function — see templates/guest-migration-function.",
+                            "properties": {
+                                "functionId": { "type": "string", "description": "Id of the deployed guest-migration function." }
                             }
                         },
                         "roles": {

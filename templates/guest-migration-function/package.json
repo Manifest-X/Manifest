@@ -1,0 +1,11 @@
+{
+  "name": "manifest-guest-migration-function",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Manifest guest-migration function template (Appwrite Function) — carry a guest's teams to the account they sign into (OTP/OAuth), plus scheduled garbage collection of abandoned guests.",
+  "main": "src/main.js",
+  "dependencies": {
+    "node-appwrite": "^14.0.0"
+  }
+}

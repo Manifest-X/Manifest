@@ -1,5 +1,18 @@
 /* Auth teams - Membership operations */
 
+// The Users service is server-only (node-appwrite); it is never present on the
+// browser SDK, so member-email enrichment degrades gracefully. Warn once rather
+// than on every membership lookup to avoid flooding the console. The flag lives on
+// window (not a module `let`) so "once" holds across the whole page even if the
+// bundle is evaluated more than once or memberships load concurrently.
+function _warnUsersServiceOnce() {
+    if (typeof window !== 'undefined') {
+        if (window.__manifestAuthUsersServiceWarned) return;
+        window.__manifestAuthUsersServiceWarned = true;
+    }
+    console.warn('[Manifest Appwrite Auth] Users service unavailable on the browser SDK — member emails will not be enriched. (This is expected; logged once.)');
+}
+
 // Add membership methods to auth store
 function initializeTeamsMembers() {
     if (typeof Alpine === 'undefined') {
@@ -145,7 +158,7 @@ function initializeTeamsMembers() {
                                     try {
                                         // Check if users service is available
                                         if (!this._appwrite || !this._appwrite.users || typeof this._appwrite.users.get !== 'function') {
-                                            console.warn('[Manifest Appwrite Auth] Users service not available on Appwrite client');
+                                            _warnUsersServiceOnce();
                                         } else {
                                             const user = await this._appwrite.users.get({ userId: membership.userId });
                                             if (user && user.email) {
@@ -180,7 +193,7 @@ function initializeTeamsMembers() {
                                             try {
                                                 // Check if users service is available
                                                 if (!this._appwrite || !this._appwrite.users || typeof this._appwrite.users.get !== 'function') {
-                                                    console.warn('[Manifest Appwrite Auth] Users service not available for pending invite lookup');
+                                                    _warnUsersServiceOnce();
                                                 } else {
                                                     const user = await this._appwrite.users.get({ userId: membership.userId });
                                                     if (user && user.email) {

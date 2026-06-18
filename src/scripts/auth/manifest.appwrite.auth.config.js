@@ -69,12 +69,14 @@ async function getAppwriteConfig() {
     // Get auth methods from config (defaults to ["magic", "oauth"] if not specified)
     const authMethods = appwriteConfig.auth?.methods || ["magic", "oauth"];
 
-    // Guest session support: "guest-auto" = automatic, "guest-manual" = manual only
-    const guestAuto = authMethods.includes("guest-auto");
+    // Guest session support: "guest"/"guest-auto" = automatic, "guest-manual" = manual only.
+    // ("guest" is the schema's documented spelling; "guest-auto" is accepted as a synonym.)
+    const guestAuto = authMethods.includes("guest") || authMethods.includes("guest-auto");
     const guestManual = authMethods.includes("guest-manual");
     const hasGuest = guestAuto || guestManual;
 
     const magicEnabled = authMethods.includes("magic");
+    const otpEnabled = authMethods.includes("otp");
     const oauthEnabled = authMethods.includes("oauth");
 
     // Teams support: presence of teams object enables it
@@ -82,6 +84,15 @@ async function getAppwriteConfig() {
     const permanentTeams = appwriteConfig.auth?.teams?.permanent || null; // Array of team names (immutable)
     const templateTeams = appwriteConfig.auth?.teams?.template || null; // Array of team names (can be deleted and reapplied)
     const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // Polling interval in milliseconds (null = disabled)
+    const guestTeams = !!appwriteConfig.auth?.teams?.guests; // Seed default teams for guest (anonymous) sessions
+
+    // Guest upgrade: preserve the anonymous account (and its teams) when a guest signs in,
+    // rather than discarding it and minting a fresh user. Supported by magic links and OAuth;
+    // email OTP cannot convert anonymous accounts (Appwrite limitation). Defaults to guestTeams,
+    // since orphaning guest-created teams on signup is the failure mode guest teams introduce.
+    const guestUpgrade = appwriteConfig.auth?.guestUpgrade !== undefined
+        ? !!appwriteConfig.auth.guestUpgrade
+        : guestTeams;
 
     // Default roles: permanent (cannot be deleted) and template (can be deleted)
     // These are objects mapping role names to permissions: { "Admin": ["inviteMembers", ...] }
@@ -97,6 +108,11 @@ async function getAppwriteConfig() {
     // Creator role: string reference to a role in memberRoles (role creator gets by default)
     const creatorRole = appwriteConfig.auth?.creatorRole || null;
 
+    // Guest migration: id of the deployed guest-migration Appwrite Function. When set,
+    // a guest's teams are carried over to the account they sign into via OTP (which
+    // Appwrite can't convert in place). See templates/guest-migration-function.
+    const guestMigrationFunctionId = appwriteConfig.auth?.guestMigration?.functionId || null;
+
     return {
         endpoint,
         projectId,
@@ -107,11 +123,15 @@ async function getAppwriteConfig() {
         guestManual: guestManual,
         anonymous: guestAuto, // For backwards compatibility with existing code
         magic: magicEnabled,
+        otp: otpEnabled, // Email one-time-passcode authentication
         oauth: oauthEnabled,
         teams: teamsEnabled,
         permanentTeams: permanentTeams, // Array of team names (cannot be deleted)
         templateTeams: templateTeams, // Array of team names (can be deleted and reapplied)
         teamsPollInterval: teamsPollInterval, // Polling interval in milliseconds (null = disabled)
+        guestTeams: guestTeams, // Seed default teams for guest (anonymous) sessions
+        guestUpgrade: guestUpgrade, // Preserve guest account + teams on sign-in (magic/oauth)
+        guestMigrationFunctionId: guestMigrationFunctionId, // Carry guest teams to the OTP account via this function
         memberRoles: memberRoles, // Role definitions: { "RoleName": ["permission1", "permission2"] }
         permanentRoles: permanentRoles, // Object: { "RoleName": ["permission1", ...] } (cannot be deleted)
         templateRoles: templateRoles, // Object: { "RoleName": ["permission1", ...] } (can be deleted)
@@ -161,6 +181,7 @@ async function getAppwriteClient() {
         account: appwriteAccount,
         teams: appwriteTeams,
         users: appwriteUsers, // Add users service for fetching user details
+        functions: window.Appwrite?.Functions ? new window.Appwrite.Functions(appwriteClient) : null, // For guest-migration function calls
         realtime: window.Appwrite?.Realtime ? new window.Appwrite.Realtime(appwriteClient) : null // Realtime service for subscriptions
     };
 }
