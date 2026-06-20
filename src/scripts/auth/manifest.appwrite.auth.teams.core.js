@@ -52,13 +52,14 @@ function initializeTeamsCore() {
                     // Determine initial roles for team creator
                     let creatorRoles = roles;
                     if (creatorRoles.length === 0) {
-                        // If no roles specified, use creatorRole from config
                         const memberRoles = appwriteConfig?.memberRoles;
-                        const creatorRoleName = appwriteConfig?.creatorRole;
+                        const configuredCreatorRoles = appwriteConfig?.creatorRoles; // array | null
 
-                        if (memberRoles && creatorRoleName && memberRoles[creatorRoleName]) {
-                            // Use specified creatorRole
-                            creatorRoles = [creatorRoleName];
+                        if (Array.isArray(configuredCreatorRoles)) {
+                            // Explicitly configured via auth.creatorRoles (or legacy creatorRole).
+                            // An empty array means "owner-only" — the creator holds just
+                            // Appwrite's intrinsic owner, with no template role assigned.
+                            creatorRoles = configuredCreatorRoles.length ? configuredCreatorRoles.slice() : ['owner'];
                         } else if (memberRoles && Object.keys(memberRoles).length > 0) {
                             // No creatorRole specified, find role with all owner permissions or use first
                             let foundRole = null;

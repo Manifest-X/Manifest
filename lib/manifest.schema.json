@@ -197,7 +197,15 @@
                                 }
                             }
                         },
-                        "creatorRole": { "type": "string" }
+                        "creatorRole": { "type": "string" },
+                        "creatorRoles": {
+                            "description": "Role(s) the team creator is assigned atomically at creation. null or [] = owner-only (creator holds just Appwrite's intrinsic owner; no template role). Takes precedence over creatorRole.",
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } },
+                                { "type": "null" }
+                            ]
+                        }
                     }
                 }
             }

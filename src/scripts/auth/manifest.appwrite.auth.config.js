@@ -108,6 +108,20 @@ async function getAppwriteConfig() {
     // Creator role: string reference to a role in memberRoles (role creator gets by default)
     const creatorRole = appwriteConfig.auth?.creatorRole || null;
 
+    // Creator roles (plural): the custom role(s) the team creator is assigned, atomically,
+    // at team creation. Accepts string | string[] | null. An explicit null / [] means
+    // "no template role — creator holds only Appwrite's intrinsic owner". Takes precedence
+    // over the legacy singular `creatorRole`. When NEITHER is set, createTeam keeps its
+    // historical default (first defined role). Resolved to: array (configured, [] = owner-only)
+    // or null (unconfigured → use the historical default).
+    let creatorRoles = null;
+    if (appwriteConfig.auth && Object.prototype.hasOwnProperty.call(appwriteConfig.auth, 'creatorRoles')) {
+        const raw = appwriteConfig.auth.creatorRoles;
+        creatorRoles = raw == null ? [] : (Array.isArray(raw) ? raw.filter(r => typeof r === 'string') : [raw]).filter(Boolean);
+    } else if (creatorRole && memberRoles && memberRoles[creatorRole]) {
+        creatorRoles = [creatorRole];
+    }
+
     // Guest migration: id of the deployed guest-migration Appwrite Function. When set,
     // a guest's teams are carried over to the account they sign into via OTP (which
     // Appwrite can't convert in place). See templates/guest-migration-function.
@@ -135,7 +149,8 @@ async function getAppwriteConfig() {
         memberRoles: memberRoles, // Role definitions: { "RoleName": ["permission1", "permission2"] }
         permanentRoles: permanentRoles, // Object: { "RoleName": ["permission1", ...] } (cannot be deleted)
         templateRoles: templateRoles, // Object: { "RoleName": ["permission1", ...] } (can be deleted)
-        creatorRole: creatorRole // String reference to memberRoles key
+        creatorRole: creatorRole, // String reference to memberRoles key (legacy singular)
+        creatorRoles: creatorRoles // array (configured; [] = owner-only) or null (use historical default)
     };
 }
 

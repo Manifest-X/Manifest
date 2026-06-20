@@ -640,14 +640,9 @@ function initializeTeamsConvenience() {
                     const allRoles = this.allTeamRoles({ $id: teamId });
                     const permissions = allRoles && allRoles[roleName] ? [...allRoles[roleName]] : [];
 
-                    // Ensure allAvailablePermissions is populated (for dropdown)
-                    if (!this.allAvailablePermissions || this.allAvailablePermissions.length === 0) {
-                        if (this.getAllAvailablePermissions) {
-                            await this.getAllAvailablePermissions(teamId);
-                        }
-                    }
-
-                    // Set editing state
+                    // Set editing state SYNCHRONOUSLY — before the async dropdown fetch
+                    // below — so a caller that mutates editingRole.permissions immediately
+                    // after this isn't racing (and getting overwritten by) that fetch.
                     this.editingRole = {
                         teamId: teamId,
                         oldRoleName: roleName,
@@ -655,8 +650,44 @@ function initializeTeamsConvenience() {
                         permissions: permissions
                     };
 
+                    // Ensure allAvailablePermissions is populated (for dropdown)
+                    if (!this.allAvailablePermissions || this.allAvailablePermissions.length === 0) {
+                        if (this.getAllAvailablePermissions) {
+                            await this.getAllAvailablePermissions(teamId);
+                        }
+                    }
+
                     // Don't modify newRolePermissions when editing existing roles - that's only for new role creation
                     // The UI will use editingRole.permissions or pendingPermissions for existing roles
+                };
+
+                // Reactive-safe role-permission write. Takes a plain array and persists
+                // straight to team prefs via updateUserRole — WITHOUT going through the
+                // reactive editingRole object. Use this for programmatic edits; mutating
+                // $auth.editingRole.permissions directly is fragile under Alpine (the
+                // $auth proxy wraps the already-reactive editingRole and can recurse on
+                // get). updateUserRole refreshes the role cache, so allTeamRoles() re-reads.
+                store.updateRolePermissions = async function (teamId, roleName, permissions) {
+                    if (!this.updateUserRole) {
+                        return { success: false, error: 'Roles module not ready' };
+                    }
+                    const plain = Array.isArray(permissions)
+                        ? permissions.filter(p => p && typeof p === 'string')
+                        : [];
+                    return await this.updateUserRole(teamId, roleName, plain);
+                };
+
+                // Safely set the permissions on the in-progress edit (replaces editingRole
+                // with a fresh object holding a plain array, rather than mutating the
+                // reactive nested array). Pair with saveEditingRole().
+                store.setEditingPermissions = function (permissions) {
+                    if (!this.editingRole) {
+                        return;
+                    }
+                    const plain = Array.isArray(permissions)
+                        ? permissions.filter(p => p && typeof p === 'string')
+                        : [];
+                    this.editingRole = { ...this.editingRole, permissions: plain };
                 };
 
                 store.cancelEditingRole = function () {
@@ -752,29 +783,43 @@ function initializeTeamsConvenience() {
                     return userRoles.includes('owner');
                 };
 
-                // Synchronous version for Alpine.js bindings (uses permission cache)
+                // Synchronous version for Alpine.js bindings (x-show / :disabled).
+                // Resolves from the cached role definitions (allTeamRoles) so it matches
+                // the async hasTeamPermission() — including custom permission keys, not
+                // just the six built-ins the permission cache pre-computes.
                 store.hasTeamPermissionSync = function (permission) {
                     if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
                         return false;
                     }
 
-                    // Use cached permissions if available (updated by updatePermissionCache)
-                    if (this._permissionCache && typeof this._permissionCache[permission] === 'boolean') {
-                        return this._permissionCache[permission];
+                    const userRoles = this.getCurrentTeamRoles();
+                    if (!Array.isArray(userRoles)) {
+                        return false;
                     }
 
-                    // Fallback: check if user has no custom roles (should have all permissions)
-                    // This matches the logic in hasPermission: if customRoles.length === 0, return true
-                    const userRoles = this.getCurrentTeamRoles();
-                    const customRoles = userRoles.filter(role => role !== 'owner');
+                    // The merged config + user-generated role map for the current team
+                    // (same map the async path resolves against), available synchronously.
+                    const allRoles = (this.allTeamRoles && this.allTeamRoles(this.currentTeam)) || {};
 
-                    // If user has no custom roles (only "owner" or empty), grant all permissions
-                    // This handles users with "No Role" who should have all owner permissions
+                    // No custom roles defined → owner has every permission.
+                    if (!allRoles || Object.keys(allRoles).length === 0) {
+                        return userRoles.includes('owner');
+                    }
+
+                    // User holds no custom role (only "owner" / empty) → all permissions.
+                    const customRoles = userRoles.filter(role => role !== 'owner');
                     if (customRoles.length === 0) {
                         return true;
                     }
 
-                    // If user has custom roles but cache is missing, return false (shouldn't happen if cache is working)
+                    // Granted if any of the user's custom roles includes this permission
+                    // (built-in or custom key).
+                    for (const roleName of customRoles) {
+                        const rolePermissions = allRoles[roleName];
+                        if (Array.isArray(rolePermissions) && rolePermissions.includes(permission)) {
+                            return true;
+                        }
+                    }
                     return false;
                 };
 
