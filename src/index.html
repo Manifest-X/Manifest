@@ -36,10 +36,12 @@
   <link rel="stylesheet" href="/styles/elements/manifest.dropdown.css">
   <link rel="stylesheet" href="/styles/elements/manifest.form.css">
   <link rel="stylesheet" href="/styles/elements/manifest.input.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.combobox.css">
   <link rel="stylesheet" href="/styles/elements/manifest.presence.css">
   <link rel="stylesheet" href="/styles/elements/manifest.radio.css">
   <link rel="stylesheet" href="/styles/elements/manifest.range.css">
   <link rel="stylesheet" href="/styles/elements/manifest.resize.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.edit.css">
   <link rel="stylesheet" href="/styles/elements/manifest.sidebar.css">
   <link rel="stylesheet" href="/styles/elements/manifest.slides.css">
   <link rel="stylesheet" href="/styles/elements/manifest.switch.css">
@@ -65,12 +67,14 @@
   <script src="/scripts/manifest.color.js"></script>
   <script src="/scripts/manifest.components.js"></script>
   <script src="/scripts/manifest.dropdowns.js"></script>
+  <script src="/scripts/manifest.combobox.js"></script>
   <script src="/scripts/manifest.icons.js"></script>
   <script src="/scripts/manifest.localization.js"></script>
   <script src="/scripts/manifest.markdown.js"></script>
   <script src="/scripts/manifest.svg.js"></script>
   <script src="/scripts/manifest.payments.js"></script>
   <script src="/scripts/manifest.resize.js"></script>
+  <script src="/scripts/manifest.edit.js"></script>
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
@@ -87,9 +91,120 @@
   <script src="/scripts/manifest.appwrite.data.js"></script>
   <script src="/scripts/manifest.appwrite.presence.js"></script>
 
+  <!-- Editor demo chrome (spike-only) -->
+  <style>
+    .editor { display: flex; gap: 2rem; align-items: flex-start; padding: 2rem; max-width: 80rem; margin-inline: auto; }
+    .editor-panel { position: sticky; top: 1rem; flex: 0 0 16rem; display: flex; flex-direction: column; gap: 1.5rem; padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
+    .editor-panel h2 { font-size: .9rem; margin: 0; }
+    .editor-panel .group { display: flex; flex-direction: column; gap: .75rem; }
+    .editor-panel label { display: flex; flex-direction: column; gap: .3rem; font-size: .78rem; color: var(--color-content-neutral); }
+    .editor-panel input[type="color"] { height: 2rem; width: 100%; padding: 0; border: 1px solid var(--color-line); border-radius: 6px; background: none; }
+    .editor-panel input[type="range"] { width: 100%; }
+    .canvas { flex: 1 1 auto; min-width: 0; }
+    .canvas [data-edit-armed] { margin-block-start: 1.25rem; }   /* clearance for the armed-area label */
+  </style>
+
 </head>
 
 <body class="page">
+
+  <x-combobox-demo x-route="/combobox"></x-combobox-demo>
+
+  <div class="editor" x-route="/">
+
+    <!-- Side panel — OUTSIDE the canvas; theme controls target the canvas via its scope key -->
+    <aside class="editor-panel">
+      <div class="col gap-1">
+        <strong class="small">Website editor</strong>
+        <span class="caption text-content-subtle">Canvas is editable in every regime. This panel edits CSS variables.</span>
+      </div>
+
+      <!-- Scoped theme: x-edit.cssvar="site:--var" writes onto the canvas element only -->
+      <div class="group">
+        <h2>Canvas theme <span class="caption text-content-subtle">(scoped)</span></h2>
+        <label>Page <input type="color" x-edit.cssvar="site:--color-page"></label>
+        <label>Cards <input type="color" x-edit.cssvar="site:--color-surface-1"></label>
+        <label>Brand <input type="color" x-edit.cssvar="site:--color-brand-content"></label>
+        <label>Text <input type="color" x-edit.cssvar="site:--color-content-stark"></label>
+        <label>Corner radius <input type="range" min="0" max="2" step="0.125" data-unit="rem" x-edit.cssvar="site:--radius"></label>
+      </div>
+
+      <!-- Global theme: bare "--var" writes onto :root — affects this panel + anything not scoped -->
+      <div class="group">
+        <h2>Project theme <span class="caption text-content-subtle">(global)</span></h2>
+        <label>App radius <input type="range" min="0" max="1.5" step="0.125" data-unit="rem" x-edit.cssvar="--radius"></label>
+        <span class="caption text-content-subtle">Same <code>--radius</code> name, two scopes — global here, scoped on the canvas. No collision.</span>
+      </div>
+    </aside>
+
+    <!-- Canvas — a partially built webpage; pure theme scope "site" (cascade target, not an area) -->
+    <main class="canvas bg-page col gap-6" x-edit.theme="site" data-edit-theme-file="test/themes/site.css"
+      style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
+
+      <!-- Static text -->
+      <header class="col gap-2" x-edit.text="hero">
+        <h1 class="h2" style="color: var(--color-content-stark);">Bloom &amp; Bramble</h1>
+        <p style="color: var(--color-content-neutral);">Seasonal arrangements, delivered weekly. Click any text to rewrite it.</p>
+      </header>
+
+      <!-- Static sort + text + style -->
+      <section class="col gap-2">
+        <small class="caption" style="color: var(--color-content-neutral);">Features · drag to reorder · click text · right-click for classes · 3rd is locked</small>
+        <div class="row-wrap gap-3" x-edit.sort.text.style="features">
+          <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
+            <strong style="color: var(--color-content-stark);">Fresh daily</strong><span class="small" style="color: var(--color-content-neutral);">Cut this morning.</span>
+          </div>
+          <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
+            <strong style="color: var(--color-content-stark);">Local growers</strong><span class="small" style="color: var(--color-content-neutral);">Within 50 miles.</span>
+          </div>
+          <div class="col gap-1 p-4 bg-surface-1" x-edit.lock="" style="border-radius: var(--radius); min-width: 150px;">
+            <strong style="color: var(--color-content-stark);">Guaranteed</strong><span class="small" style="color: var(--color-content-neutral);">x-edit.lock — read-only.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Data sort + value editing -->
+      <section class="col gap-2">
+        <small class="caption" style="color: var(--color-content-neutral);">Catalog · drag to reorder · edit names (writes products.csv; price read-only)</small>
+        <div class="row-wrap gap-3" x-edit.sort.data="catalog">
+          <template x-for="p in $x.products" :key="p.id">
+            <div class="col gap-1 p-4 bg-surface-1" :data-key="p.id" style="border-radius: var(--radius); min-width: 150px;">
+              <strong x-text="p.name" style="color: var(--color-content-stark);"></strong>
+              <span class="small" x-text="'$' + p.price" style="color: var(--color-brand-content);"></span>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- Component (instance / main) -->
+      <section class="col gap-2">
+        <small class="caption" style="color: var(--color-content-neutral);">Promos · two &lt;x-promo-card&gt; · right-click for scope (this / all) + classes</small>
+        <div class="row-wrap gap-3">
+          <div x-edit.text="promoA"><x-promo-card headline="Spring sale" body="20% off all bouquets."></x-promo-card></div>
+          <div x-edit.text="promoB"><x-promo-card headline="Weddings" body="Book a consultation."></x-promo-card></div>
+        </div>
+      </section>
+
+      <!-- Size (handles + snap) -->
+      <section class="col gap-2">
+        <small class="caption" style="color: var(--color-content-neutral);">Size · drag edges/corners (rem-preserving, snaps at 12/18rem); arrow keys resize</small>
+        <div class="center p-2 bg-surface-2" x-edit.size="hero-image" style="width: 18rem; height: 7rem; border-radius: var(--radius); --edit-size: both; --edit-size-snap: 12rem 18rem; --edit-size-snap-distance: 1rem;">
+          <span class="small" style="color: var(--color-content-neutral);">Hero image placeholder</span>
+        </div>
+      </section>
+
+      <!-- Move (positioned children) -->
+      <section class="col gap-2">
+        <small class="caption" style="color: var(--color-content-neutral);">Layout stage · drag the chips (position:absolute → move, rem-preserving)</small>
+        <div x-edit.sort="stage" style="position: relative; height: 140px; border-radius: var(--radius); background: var(--color-surface-2);">
+          <div class="p-2 center" style="position: absolute; left: 1rem; top: 1rem; border-radius: var(--radius); background: var(--color-brand-content); color: #fff;">Logo</div>
+          <div class="p-2 center" style="position: absolute; left: 11rem; top: 4.5rem; border-radius: var(--radius); background: var(--color-content-stark); color: #fff;">CTA</div>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
 
 </body>
 

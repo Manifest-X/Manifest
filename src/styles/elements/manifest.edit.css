@@ -1,0 +1,175 @@
+/* Manifest Edit */
+
+/* Authors override any of this without specificity battles: every rule is wrapped
+   in :where(), state lives on data-attributes, and injected affordances use plain
+   semantic class names (.edit-handle, .edit-frame) — no framework-prefixed litter. */
+
+@layer utilities {
+
+    /* ---- Editable area (armed) ---- */
+    :where([data-edit-armed]) {
+        position: relative;
+        outline: 1px dashed var(--color-line);
+        outline-offset: 6px;
+        border-radius: var(--radius);
+    }
+
+    :where([data-edit-armed])::before {
+        content: attr(data-edit-label);
+        position: absolute;
+        inset-block-start: -1.5rem;
+        inset-inline-start: 0;
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--color-content-subtle);
+        pointer-events: none;
+    }
+
+    /* ---- Reorder (pointer + keyboard; touch-action:none lets touch-drag beat scroll) ---- */
+    :where([data-edit-sortable]) {
+        cursor: grab;
+        touch-action: none;
+        transition: opacity 0.12s ease, outline-color 0.12s ease;
+    }
+    :where([data-edit-sortable]):hover {
+        outline: 1px solid var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+    :where([data-edit-sortable]):focus-visible,
+    :where([data-edit-movable]):focus-visible {
+        outline: 2px solid var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+    :where([data-edit-dragging]) { opacity: 0.4; }
+    :where([data-edit-grabbed]) {
+        outline: 2px dashed var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+
+    /* Screen-reader announcement region (keyboard grab/move/drop) */
+    :where(.edit-sr) {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0; border: 0;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+
+    /* ---- Move (positioned children) ---- */
+    :where([data-edit-movable]) { cursor: move; touch-action: none; }
+    :where([data-edit-movable]):hover {
+        outline: 1px solid var(--edit-accent, var(--color-brand-content));
+        outline-offset: 2px;
+    }
+
+    /* ---- Inline text ---- */
+    :where([data-edit-armed]) [contenteditable="true"] {
+        outline: 1px solid color-mix(in srgb, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
+        outline-offset: 2px;
+        border-radius: 3px;
+    }
+    :where([data-edit-armed]) [contenteditable="true"]:focus {
+        outline: 2px solid var(--edit-accent, var(--color-brand-content));
+    }
+
+    /* ---- Size (resize handles) — injected overlay children, fully stylable ---- */
+    /* The element keeps its own markup untouched, so its native :hover/:focus still
+       fire. Handles are separate elements with pointer-events; the body of the
+       element stays interactive. */
+    :where([data-edit-sizable]) {
+        position: relative;
+
+        .edit-handle {
+            position: absolute;
+            z-index: 100;
+            background: transparent;
+            --h: var(--edit-size-handle, 1rem);
+
+            &::before {
+                content: '';
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 1px;
+                height: 1px;
+                background: transparent;
+                transition: background-color 0.15s ease;
+            }
+            &:hover::before, &:active::before {
+                background-color: var(--edit-accent, var(--color-brand-content));
+            }
+        }
+
+        .edit-handle-top, .edit-handle-bottom { left: 0; width: 100%; height: var(--h); cursor: ns-resize; &::before { width: 100%; } }
+        .edit-handle-left, .edit-handle-right, .edit-handle-start, .edit-handle-end { top: 0; height: 100%; width: var(--h); cursor: ew-resize; &::before { height: 100%; } }
+        .edit-handle-top { top: calc(var(--h) * -0.5); }
+        .edit-handle-bottom { bottom: calc(var(--h) * -0.5); }
+        .edit-handle-left { left: calc(var(--h) * -0.5); }
+        .edit-handle-right { right: calc(var(--h) * -0.5); }
+        /* Logical edges — inset-inline-* auto-flips for RTL */
+        .edit-handle-start { inset-inline-start: calc(var(--h) * -0.5); }
+        .edit-handle-end { inset-inline-end: calc(var(--h) * -0.5); }
+
+        .edit-handle-top-left, .edit-handle-top-right, .edit-handle-bottom-left, .edit-handle-bottom-right,
+        .edit-handle-top-start, .edit-handle-top-end, .edit-handle-bottom-start, .edit-handle-bottom-end {
+            width: var(--h); height: var(--h);
+        }
+        .edit-handle-top-left { top: calc(var(--h) * -0.5); left: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        .edit-handle-top-right { top: calc(var(--h) * -0.5); right: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-left { bottom: calc(var(--h) * -0.5); left: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-right { bottom: calc(var(--h) * -0.5); right: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        .edit-handle-top-start { top: calc(var(--h) * -0.5); inset-inline-start: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        .edit-handle-top-end { top: calc(var(--h) * -0.5); inset-inline-end: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-start { bottom: calc(var(--h) * -0.5); inset-inline-start: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-end { bottom: calc(var(--h) * -0.5); inset-inline-end: calc(var(--h) * -0.5); cursor: nwse-resize; }
+    }
+
+    /* Collapsed state (size dropped below --edit-size-collapse-*) — authors restyle freely */
+    :where([data-edit-collapsed]) { opacity: 0.45; }
+
+    /* Full-viewport capture layer during a size/move drag (mirrors resize overlay) */
+    :where(.edit-overlay) {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: transparent;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        :where([data-edit-armed]) > [draggable="true"], :where([data-edit-sizable]) .edit-handle::before { transition: none; }
+    }
+}
+
+/* ---- Plugin dev chrome (spike-only: toolbar + class/scope menu) ---- */
+@layer components {
+
+    :where(.edit-toolbar) {
+        position: fixed;
+        inset-block-end: 1rem;
+        inset-inline-end: 1rem;
+        z-index: 9999;
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    :where(.edit-classes) {
+        position: fixed;
+        z-index: 10000;
+        width: 260px;
+        padding: 0.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+    }
+    :where(.edit-classes)[hidden] { display: none; }
+    :where(.edit-classes) input { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; }
+    :where(.edit-classes) .muted { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-content-subtle); }
+
+    :where(.edit-toolbar) button[disabled] { opacity: 0.35; pointer-events: none; }
+}

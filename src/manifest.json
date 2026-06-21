@@ -20,7 +20,7 @@
         }
     ],
     "components": [],
-    "preloadedComponents": [],
+    "preloadedComponents": ["/test/components/promo-card.html", "/test/components/combobox-demo.html"],
     "data": {
         "manifest": "/manifest.json",
         "statusLabels": {

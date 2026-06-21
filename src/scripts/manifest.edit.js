@@ -1,0 +1,852 @@
+/* Manifest Edit — SPIKE.
+
+   Compiled from src/scripts/edit/*.js into src/scripts/manifest.edit.js by build.mjs
+   (order matters). These subscripts are FRAGMENTS of a single IIFE: core.js opens it,
+   main.js closes it. Everything stays in one private closure — no globals, no E.* churn.
+   Each fragment is grouped by concern; references resolve at runtime once all parts load.
+
+   x-edit marks an editable AREA (or single target). Always-on by default; .gated requires
+   $edit.on(). Capabilities via modifiers: .sort .text .style .size (default sort+text+style);
+   .lock opts a subtree out. Fine config (size axes/snap/collapse) reads --edit-* CSS vars.
+   Three regimes: static HTML · data mutation · component override. Append-only typed-delta
+   log is the spine; A overlay + B source patch are projections. */
+
+(function () {
+    const LS_KEY = 'mnfst-edit-log';
+    const SCHEMA = 5;                  // overlay schema version — bump when the delta shape changes
+    const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
+    const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
+    let dragged = null, autoN = 0;
+
+    let log = [], cursor = 0;
+    const lastSnap = {}, lastOrder = {};
+    // Content-derived key for a static sortable child — stable across reorder AND reload
+    // (same content → same key), so reorder can be stored as a tiny key permutation.
+    const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    const loadState = () => { try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; } else if (s) localStorage.removeItem(LS_KEY); } catch {} };
+    const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log, cursor })); };
+    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const cssVar = (el, name, fallback) => { const v = getComputedStyle(el).getPropertyValue(name).trim(); return v || fallback; };
+
+    /* ---- Safety helpers ---- */
+    // Structural signature for a node at a path — guards against the source structure
+    // drifting under a stored delta (apply only if the node still matches).
+    const nodeSig = (el) => el ? el.tagName.toLowerCase() : '';
+    // Sanitize contentEditable / replayed HTML: allowlist inline tags, strip everything
+    // else (attributes, scripts, comments, javascript: hrefs). Critical once overlays can
+    // come from other users (cloud). Unknown tags are unwrapped to their text.
+    const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
+    function sanitizeHTML(html) {
+        const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
+        const walk = (node) => [...node.childNodes].forEach(c => {
+            if (c.nodeType === 8) return c.remove();                         // comments
+            if (c.nodeType !== 1) return;
+            if (!SAFE_TAGS.has(c.tagName)) { c.replaceWith(document.createTextNode(c.textContent)); return; }   // unwrap unknown tag
+            [...c.attributes].forEach(a => { const n = a.name.toLowerCase(); if (!(c.tagName === 'A' && n === 'href' && !/^\s*javascript:/i.test(a.value))) c.removeAttribute(a.name); });
+            walk(c);
+        });
+        walk(t.content);
+        return t.innerHTML;
+    }
+
+    /* ---- x-edit registry ---- */
+    const editEls = new Set();
+    const themeScopes = {};            // scope key → element (CSS-var cascade target for x-edit.cssvar)
+    function registerEdit(el, modifiers, expression) {
+        if (modifiers.includes('cssvar')) return registerCssVar(el, expression);   // theme control, not an area
+        const caps = new Set(ALL_CAPS.filter(c => modifiers.includes(c)));
+        const lock = modifiers.includes('lock') || modifiers.includes('none');
+        const theme = modifiers.includes('theme');   // theme scope: vars set here cascade to this subtree only
+        const k = (expression || '').trim() || `area-${++autoN}`;
+        if (theme) themeScopes[k] = el;
+        if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
+        if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
+        if ((expression || '').trim() && [...editEls].some(e => e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
+        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme };
+        el.setAttribute('data-edit-area', '');
+        editEls.add(el);
+    }
+    const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
+    const areaByKey = (k) => areas().find(a => a._edit.key === k);
+    const key = (area) => area._edit.key;
+    function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
+    const capOf = (node, cap) => { const i = editInfo(node); return !!i && !i.lock && i.caps.has(cap); };
+    const locked = (node) => { const i = editInfo(node); return !!i && i.lock; };
+    const ownsCap = (el, cap) => !!el._edit && !el._edit.lock && el._edit.caps.has(cap);
+
+    /* ---- Regime classification ---- */
+    function classify(area) {
+        if (area.querySelector('template[x-for]')) return 'data';
+        if (area.matches('[data-component]') || area.querySelector('[data-component]')) return 'component';
+        return 'static';
+    }
+    function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
+    const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
+    const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.classList.contains('edit-handle'));
+    const STRUCT_ATTRS = new Set(['class', 'style', 'data-component', 'data-edit-area', 'data-edit-field', 'data-edit-sizable', 'data-edit-movable', 'draggable', 'contenteditable', 'x-text', 'x-html', 'id']);
+    const componentParams = (area) => { const r = area.querySelector('[data-component]') || area; return [...r.attributes].filter(a => !STRUCT_ATTRS.has(a.name) && a.value.trim()); };
+
+    /* ---- Unit helpers (shared by move + size) ---- */
+    const unitOf = (v) => { const m = String(v || '').match(/[a-z%]+$/i); return m ? m[0] : null; };
+    function toUnit(px, unit, el, basisEl, dim) {
+        if (unit === 'rem') return +(px / parseFloat(getComputedStyle(document.documentElement).fontSize)).toFixed(2);
+        if (unit === 'em') return +(px / parseFloat(getComputedStyle(el).fontSize)).toFixed(2);
+        if (unit === '%') { const b = (basisEl || el.parentElement).getBoundingClientRect(); return +(px / (dim === 'w' ? b.width : b.height) * 100).toFixed(2); }
+        return Math.round(px);
+    }
+    function toPx(str, el, dim) {
+        const v = parseFloat(str); if (isNaN(v)) return null; const u = unitOf(str) || 'px';
+        if (u === 'rem') return v * parseFloat(getComputedStyle(document.documentElement).fontSize);
+        if (u === 'em') return v * parseFloat(getComputedStyle(el).fontSize);
+        if (u === '%') { const b = (el.parentElement || el).getBoundingClientRect(); return v / 100 * (dim === 'h' ? b.height : b.width); }
+        return v;
+    }
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+
+    /* ---- Snapshots (static/data are area-snapshotted; component uses per-node deltas) ---- */
+    const REVERT = ' revert';
+    function snapshot(area, kind) {
+        if (kind === 'data') return { source: dataSourceName(area), order: sortableChildren(area).map(c => c.getAttribute('data-key')) };
+        return {};   // static & component use per-node typed deltas, not area snapshots
+    }
+    function cleanStaticHTML(area) {
+        const c = area.cloneNode(true);
+        c.querySelectorAll('.edit-handle, .edit-sr').forEach(n => n.remove());
+        c.querySelectorAll('[draggable],[contenteditable],[data-edit-area],[data-edit-sizable],[data-edit-movable],[data-edit-sortable],[data-edit-path],[data-edit-scope],[role="list"]').forEach(el => {
+            ['draggable', 'contenteditable', 'data-edit-area', 'data-edit-sizable', 'data-edit-movable', 'data-edit-sortable', 'data-edit-path', 'data-edit-scope', 'data-edit-label', 'data-edit-grabbed', 'data-edit-dragging', 'tabindex', 'role', 'aria-label'].forEach(a => el.removeAttribute(a));
+            if (!el.getAttribute('class')) el.removeAttribute('class');
+        });
+        return c.innerHTML.trim().replace(/\n\s*\n/g, '\n');
+    }
+    async function applySnap(area, kind, snap) {
+        if (!area || !snap) return;
+        if (kind === 'static') { area.innerHTML = snap.html; if (snap.style != null) area.setAttribute('style', snap.style); }
+        else if (kind === 'data') applyDataOrder(area, snap.order);
+        if (isActive(area)) armArea(area);
+    }
+    function applyDataOrder(area, order) {
+        const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]');
+        try {
+            const arr = window.Alpine.evaluate(tpl, expr); if (!Array.isArray(arr)) return;
+            const byKey = new Map(arr.map(it => [String(it.id), it]));
+            const next = order.map(k => byKey.get(String(k))).filter(Boolean);
+            arr.forEach(it => { if (!order.map(String).includes(String(it.id))) next.push(it); });
+            arr.splice(0, arr.length, ...next);
+        } catch {}
+    }
+
+    /* ---- Component edits: per-node deltas, scoped instance vs main ----
+       cmp-main applies to EVERY instance of the component; cmp-inst to one region.
+       prop is 'text' or 'class'; REVERT (prop '*') clears a node's instance overrides. */
+    function componentState() {
+        const main = {}, inst = {}, reverts = {}, sigs = {};
+        for (let i = 0; i < cursor; i++) {
+            const d = log[i];
+            if (d.kind === 'cmp-main' || d.kind === 'cmp-inst') if (d.sig) sigs[d.component + '|' + d.path] = d.sig;
+            if (d.kind === 'cmp-main') { (main[d.component] = main[d.component] || {}); (main[d.component][d.path] = main[d.component][d.path] || {})[d.prop] = d.value; }
+            else if (d.kind === 'cmp-inst') {
+                const r = d.region;
+                if (d.value === REVERT) {
+                    reverts[r] = reverts[r] || new Set();
+                    if (d.path === '*') { delete inst[r]; reverts[r] = new Set(['*']); }
+                    else { if (inst[r]) delete inst[r][d.path]; reverts[r].add(d.path); }
+                } else {
+                    inst[r] = inst[r] || {}; (inst[r][d.path] = inst[r][d.path] || {})[d.prop] = d.value;
+                    if (reverts[r]) { reverts[r].delete(d.path); reverts[r].delete('*'); }
+                }
+            }
+        }
+        return { main, inst, reverts, sigs };
+    }
+    function applyComponentState() {
+        const { main, inst, sigs } = componentState();
+        document.querySelectorAll('[data-edit-area]').forEach(area => {
+            if (!area._edit || classify(area) !== 'component') return;
+            const comp = componentName(area), region = key(area), root = area.querySelector('[data-component]'); if (!root) return;
+            [root, ...root.querySelectorAll('[data-edit-path]')].forEach(el => {   // include the root (path '') — edits on the parent
+                const p = el.getAttribute('data-edit-path');
+                const expect = sigs[comp + '|' + p];
+                if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale node (structure changed):', comp, p); return; }
+                const iv = (inst[region] && inst[region][p]) || {}, mv = (main[comp] && main[comp][p]) || {};
+                const base = area._baseText || {}, baseC = area._baseClass || {};
+                const text = iv.text !== undefined ? iv.text : (mv.text !== undefined ? mv.text : base[p]);
+                const cls = iv.class !== undefined ? iv.class : (mv.class !== undefined ? mv.class : baseC[p]);
+                if (text !== undefined) { const safe = sanitizeHTML(text); if (el.innerHTML !== safe) el.innerHTML = safe; }   // sanitize on apply (cloud overlays)
+                if (cls !== undefined && el.getAttribute('class') !== cls) el.setAttribute('class', cls);
+            });
+        });
+    }
+    function commitComponentNode(area, el, prop, value) {
+        const path = el.getAttribute('data-edit-path'), scope = area._editScope || 'instance', component = componentName(area), region = key(area);
+        if (prop === 'text') value = sanitizeHTML(value);   // sanitize contentEditable on capture
+        const before = prop === 'text' ? el._preEdit : el._preClass;
+        if (before === value) return;
+        log.splice(cursor);
+        const sig = nodeSig(el);
+        log.push(scope === 'main' ? { kind: 'cmp-main', component, path, prop, value, before, sig } : { kind: 'cmp-inst', component, region, path, prop, value, before, sig });
+        cursor = log.length; saveState(); applyComponentState(); refresh();
+    }
+    function revertNode(area, el) { log.splice(cursor); log.push({ kind: 'cmp-inst', component: componentName(area), region: key(area), path: el.getAttribute('data-edit-path'), prop: '*', value: REVERT }); cursor = log.length; saveState(); applyComponentState(); refresh(); }
+    function revertAll(area) { log.splice(cursor); log.push({ kind: 'cmp-inst', component: componentName(area), region: key(area), path: '*', prop: '*', value: REVERT }); cursor = log.length; saveState(); applyComponentState(); refresh(); }
+
+    /* ---- Static editing: per-node typed deltas (text/class/style) + reorder permutation.
+       No whole-HTML snapshots — storage is O(edits), addresses not trees. ---- */
+    function staticState() {
+        const node = {}, order = {}, sigs = {};
+        for (let i = 0; i < cursor; i++) {
+            const d = log[i];
+            if (d.kind === 'st-node') { (node[d.region] = node[d.region] || {}); (node[d.region][d.path] = node[d.region][d.path] || {})[d.prop] = d.value; if (d.sig) sigs[d.region + '|' + d.path] = d.sig; }
+            else if (d.kind === 'st-order') order[d.region] = d.order;
+        }
+        return { node, order, sigs };
+    }
+    function applyStaticState() {
+        const { node, order, sigs } = staticState();
+        document.querySelectorAll('[data-edit-area]').forEach(area => {
+            if (!area._edit || classify(area) !== 'static') return;
+            const region = key(area);
+            [area, ...area.querySelectorAll('[data-edit-path]')].forEach(el => {
+                const p = el.getAttribute('data-edit-path'), ops = node[region] && node[region][p]; if (!ops) return;
+                const expect = sigs[region + '|' + p]; if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale static node', region, p); return; }
+                if (ops.text !== undefined) { const safe = sanitizeHTML(ops.text); if (el.innerHTML !== safe) el.innerHTML = safe; }
+                if (ops.class !== undefined && el.getAttribute('class') !== ops.class) el.setAttribute('class', ops.class);
+                if (ops.style !== undefined && el.getAttribute('style') !== ops.style) el.setAttribute('style', ops.style);
+            });
+            const want = order[region] || area._baseOrder;
+            if (want) { const by = {}; sortableChildren(area).forEach(k => { by[staticKey(k)] = k; }); want.forEach(kk => { const el = by[kk]; if (el) area.appendChild(el); }); }
+        });
+    }
+    function commitStaticNode(area, el, prop, value) {
+        const region = key(area), path = el.getAttribute('data-edit-path');
+        if (prop === 'text') value = sanitizeHTML(value);
+        const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        if (before === value) return;
+        log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();
+    }
+    /* ---- Data VALUE editing (opt-in .values): edit $x record fields. Not an HTML edit —
+       it mutates the data source. A-side: mutate the in-memory $x array (reactive).
+       B-side: local file cell write (dev server); cloud → $x.<source>.$update(id,{field}). ---- */
+    function dataValueState() {
+        const s = {};
+        for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'data-val') ((s[d.source] = s[d.source] || {})[d.id] = s[d.source][d.id] || {})[d.field] = d.value; }
+        return s;
+    }
+    function applyDataValues() {
+        const st = dataValueState();
+        areas().forEach(area => {
+            if (classify(area) !== 'data') return;
+            const source = dataSourceName(area), recs = st[source]; if (!recs) return;
+            const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
+            try { const arr = window.Alpine.evaluate(tpl, expr); if (Array.isArray(arr)) Object.entries(recs).forEach(([id, fields]) => { const rec = arr.find(r => String(r.id) === String(id)); if (rec) Object.entries(fields).forEach(([f, v]) => { if (rec[f] !== v) rec[f] = v; }); }); } catch {}
+            if (isActive(area)) setTimeout(() => armDataValues(area), 0);   // re-arm clones Alpine re-rendered
+        });
+    }
+    function commitDataValue(area, source, id, field, value, el) {
+        value = String(value); const before = el ? el._preEdit : undefined;
+        if (before === value) return;
+        log.splice(cursor); log.push({ kind: 'data-val', source, id, field, value, before }); cursor = log.length; saveState();
+        applyDataValues(); refresh();
+    }
+
+    // size/move write an element's inline style → static: per-node style op; data: n/a.
+    function commitStyle(area, el) { if (classify(area) === 'static') commitStaticNode(area, el, 'style', el.getAttribute('style') || ''); }
+    function commitStaticOrder(area) {
+        const region = key(area), order = sortableChildren(area).map(staticKey), before = lastOrder[region] || order;
+        if (eq(before, order)) return;
+        log.splice(cursor); log.push({ kind: 'st-order', region, order, before }); cursor = log.length; lastOrder[region] = order; saveState(); refresh();
+    }
+
+    /* ---- Commit / undo / redo (data area snapshots) ---- */
+    function commit(area) {
+        if (!area) return;
+        const k = key(area), kind = classify(area), after = snapshot(area, kind), before = lastSnap[k];
+        if (before && eq(before, after)) return;
+        log.splice(cursor); log.push({ region: k, kind, before: before ?? after, after });
+        cursor = log.length; lastSnap[k] = after; saveState(); refresh();
+    }
+    const dispatchApply = (d) => { if (d.kind === 'cmp-main' || d.kind === 'cmp-inst') applyComponentState(); else if (d.kind === 'data-val') applyDataValues(); else if (d.kind === 'theme') applyThemeState(); else applyStaticState(); };
+    async function undo() {
+        if (cursor === 0) return; const d = log[--cursor];
+        if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
+        else dispatchApply(d);
+        saveState(); refresh();
+    }
+    async function redo() {
+        if (cursor >= log.length) return; const d = log[cursor++];
+        if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
+        else dispatchApply(d);
+        saveState(); refresh();
+    }
+
+    /* ---- Projections (static/data); component projections come from componentState() ---- */
+    function fold() { const s = {}; for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'static' || d.kind === 'data') s[d.region] = { kind: d.kind, snap: d.after }; } return s; }
+    function patchFor(r, kind, snap) {
+        if (kind === 'static') return { region: r, kind, op: 'writeHTML', target: `[x-edit="${r}"]`, html: snap.html, style: snap.style, note: 'static/style/size/move fold into the source HTML.' };
+        return { region: r, kind, op: 'reorderData', source: snap.source, order: snap.order, note: `data mutation: $x.${snap.source}.$update(id,{order}).` };
+    }
+
+
+    /* ---- Drag: reorder (in-flow, pointer+keyboard) OR move (positioned) ----
+       Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
+       Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel. */
+    const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
+    let lastMoveX = 0, lastMoveY = 0, grabbed = null, liveRegion;
+    function announce(msg) { if (!liveRegion) { liveRegion = document.createElement('div'); liveRegion.className = 'edit-sr'; liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
+
+    function makeSortable(container) {
+        sortableChildren(container).forEach(child => {
+            if (locked(child)) return;
+            if (isPositioned(child)) { if (!child._dragBound) { child._dragBound = true; makeMovable(child); } return; }
+            child.setAttribute('data-edit-sortable', ''); child.tabIndex = 0; child.setAttribute('role', 'listitem');
+            if (child._dragBound) return; child._dragBound = true;
+            child.addEventListener('pointerdown', onPointerDown);
+            child.addEventListener('keydown', onItemKeydown);
+        });
+        container.setAttribute('role', 'list');
+    }
+    function onPointerDown(e) {
+        const item = this, area = item.closest('[data-edit-area]');
+        if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
+        if (e.target.isContentEditable || e.target.classList.contains('edit-handle')) return;   // text/size win
+        const container = item.parentElement, sx = e.clientX, sy = e.clientY; let active = false;
+        const onMove = (ev) => {
+            if (!active) {
+                if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;   // threshold so taps/clicks still work
+                active = true; dragged = item; item.setAttribute('data-edit-dragging', ''); lastMoveX = ev.clientX; lastMoveY = ev.clientY;
+            }
+            ev.preventDefault();
+            reorderOver(container, ev.clientX, ev.clientY);
+        };
+        const onUp = () => {
+            document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp);
+            if (active) { item.removeAttribute('data-edit-dragging'); dragged = null; finishReorder(area); }
+        };
+        document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
+    }
+    function reorderOver(container, x, y) {   // hysteresis dead-zone kills the reflow swap-back oscillation
+        if (!dragged || dragged.parentElement !== container) return;
+        if (Math.hypot(x - lastMoveX, y - lastMoveY) < 6) return;
+        lastMoveX = x; lastMoveY = y;
+        const ref = afterElement(container, x, y);
+        if (ref === dragged || ref === dragged.nextElementSibling) return;
+        if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    }
+    function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => c.getAttribute('data-key'))); commit(area); } else commitStaticOrder(area); }
+    function afterElement(c, x, y) {   // reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow
+        let best = null, bestDist = Infinity;
+        for (const el of sortableChildren(c)) {
+            if (el === dragged || locked(el)) continue;
+            const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+            const sameRow = Math.abs(cy - y) <= b.height / 2;
+            if (!((cy - y > b.height / 2) || (sameRow && cx > x))) continue;
+            const d = (cx - x) ** 2 + (cy - y) ** 2;
+            if (d < bestDist) { bestDist = d; best = el; }
+        }
+        return best;
+    }
+    // Keyboard reorder: grab → arrows move among siblings → drop.
+    function onItemKeydown(e) {
+        const item = this, area = item.closest('[data-edit-area]'); if (!isActive(area)) return;
+        if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            if (grabbed === item) { grabbed = null; item.removeAttribute('data-edit-grabbed'); finishReorder(area); item.focus(); announce('Dropped'); }
+            else { if (grabbed) grabbed.removeAttribute('data-edit-grabbed'); grabbed = item; item.setAttribute('data-edit-grabbed', ''); announce('Grabbed — arrow keys to move, Enter to drop'); }
+            return;
+        }
+        if (grabbed !== item) return;
+        if (e.key === 'Escape') { e.preventDefault(); grabbed = null; item.removeAttribute('data-edit-grabbed'); item.focus(); announce('Cancelled'); return; }
+        const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+        if (dir == null) return;
+        e.preventDefault();
+        const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
+        if (j < 0 || j >= sibs.length) return;
+        if (dir > 0) sibs[j].after(item); else sibs[j].before(item);
+        item.focus(); announce(`Position ${j + 1} of ${sibs.length}`);
+    }
+    // Move mode: positioned elements → pointer-drag left/top (touch-capable) + keyboard nudge, unit-preserving.
+    function makeMovable(el) {
+        el.setAttribute('data-edit-movable', ''); el.tabIndex = 0; el.setAttribute('role', 'application'); el.setAttribute('aria-label', 'Draggable; arrow keys to move');
+        el.addEventListener('pointerdown', (e) => {
+            const area = el.closest('[data-edit-area]');
+            if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e.target.isContentEditable || e.target.classList.contains('edit-handle')) return;
+            e.preventDefault(); el._preStyle = el.getAttribute('style') || '';
+            const cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
+            const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
+            const baseL = parseFloat(cs.left) || 0, baseT = parseFloat(cs.top) || 0, sx = e.clientX, sy = e.clientY;
+            const ov = showOverlay();
+            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(baseL + (ev.clientX - sx), lu, el, parent, 'w') + lu; el.style.top = toUnit(baseT + (ev.clientY - sy), tu, el, parent, 'h') + tu; };
+            const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov); commitStyle(area, el); };
+            document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+        });
+        el.addEventListener('keydown', (e) => {
+            const area = el.closest('[data-edit-area]'); if (!isActive(area)) return;
+            const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
+            e.preventDefault();
+            if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
+            const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
+            const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
+            if (d[0]) el.style.left = toUnit((parseFloat(cs.left) || 0) + d[0] * step, lu, el, parent, 'w') + lu;
+            if (d[1]) el.style.top = toUnit((parseFloat(cs.top) || 0) + d[1] * step, tu, el, parent, 'h') + tu;
+            clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(area, el); }, 350);
+        });
+    }
+
+
+    /* ---- Size: drag handles → unit-preserving width/height (folded-in resize) ----
+       CSS-var config (cascades by selector, keeps the directive tight):
+         --edit-size              both | x | y | none           which axes (default both)
+         --edit-size-edges        e.g. "right bottom-right"      explicit handle list (logical start/end ok)
+         --edit-size-handle       1rem                           handle hit area
+         --edit-size-snap         12rem 24rem                    snap stops (both axes)
+         --edit-size-snap-x/-y    per-axis stop overrides
+         --edit-size-snap-distance  1rem                         magnet tolerance (NOT a grid step)
+         --edit-size-snap-distance-x/-y  per-axis tolerance
+         --edit-size-collapse-x/-y  120px                        collapse below this → [data-edit-collapsed] + 'edit:collapse' event
+       (min/max come from the element's native min-/max-width/height.) */
+    let overlayEl;
+    function showOverlay() { if (!overlayEl) { overlayEl = document.createElement('div'); overlayEl.className = 'edit-overlay'; document.body.appendChild(overlayEl); } overlayEl.style.display = 'block'; return overlayEl; }
+    function hideOverlay() { if (overlayEl) overlayEl.style.display = 'none'; }
+
+    const isRTL = (el) => getComputedStyle(el).direction === 'rtl';
+    // Resolve logical start/end to physical left/right per the element's direction.
+    function physical(pos, el) {
+        const rtl = isRTL(el);
+        return pos.replace(/start/g, rtl ? 'right' : 'left').replace(/end/g, rtl ? 'left' : 'right');
+    }
+    const defaultEdges = (axes) => axes === 'x' ? ['left', 'right'] : axes === 'y' ? ['top', 'bottom'] : ['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+
+    function armSize(el) {
+        const axes = cssVar(el, '--edit-size', 'both');
+        if (axes === 'none') return;
+        if (el._sizeBound) return; el._sizeBound = true;
+        el.setAttribute('data-edit-sizable', '');
+        // Anchor guard: handles are positioned against this element, so it must establish a
+        // containing block. The CSS sets position:relative via :where() (overridable); if an
+        // author's CSS won and left it static, set it here so handles never detach.
+        if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+        const edges = (cssVar(el, '--edit-size-edges', '').trim() || defaultEdges(axes).join(' ')).split(/\s+/).filter(Boolean);
+        edges.forEach(pos => {
+            const phys = physical(pos, el);                  // keep logical class for CSS; resolve to physical for behavior
+            const h = document.createElement('span');
+            h.className = `edit-handle edit-handle-${pos}`;
+            h.tabIndex = 0; h.setAttribute('role', 'slider'); h.setAttribute('aria-label', `Resize ${pos}`);
+            h.addEventListener('pointerdown', (e) => startSize(e, el, phys));
+            h.addEventListener('keydown', (e) => keyResize(e, el, phys));
+            el.appendChild(h);
+        });
+    }
+    // Keyboard a11y: focus a handle, arrow keys resize (Shift = larger step), debounced commit.
+    let _keyTimer;
+    function keyResize(e, el, pos) {
+        const map = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+        if (!map[e.key]) return;
+        const area = el.closest('[data-edit-area]'); if (!isActive(area)) return;
+        e.preventDefault();
+        if (!_keyTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
+        const [kx, ky] = map[e.key], step = e.shiftKey ? 32 : 8, cs = getComputedStyle(el);
+        const right = pos.includes('right'), left = pos.includes('left'), top = pos.includes('top'), bottom = pos.includes('bottom');
+        const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
+        const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity, minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
+        if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
+        if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
+        clearTimeout(_keyTimer); _keyTimer = setTimeout(() => { _keyTimer = null; commitStyle(area, el); }, 350);   // coalesce key bursts into one delta
+    }
+    function snapStops(el, axisVar, dim) {
+        const list = cssVar(el, axisVar, '') || cssVar(el, '--edit-size-snap', '');
+        return list.split(/\s+/).filter(Boolean).map(s => toPx(s, el, dim)).filter(v => v != null);
+    }
+    function startSize(e, el, pos) {
+        const area = el.closest('[data-edit-area]');
+        if (!isActive(area) || e.button !== 0) return;
+        e.preventDefault(); e.stopPropagation(); el._preStyle = el.getAttribute('style') || '';
+        const cs = getComputedStyle(el), rect = el.getBoundingClientRect();
+        const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
+        const baseW = parseFloat(cs.width) || rect.width, baseH = parseFloat(cs.height) || rect.height, sx = e.clientX, sy = e.clientY;
+        const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity;
+        const minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
+        const right = pos.includes('right'), left = pos.includes('left'), bottom = pos.includes('bottom'), top = pos.includes('top');
+        const tolX = toPx(cssVar(el, '--edit-size-snap-distance-x', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'w') || 0;
+        const tolY = toPx(cssVar(el, '--edit-size-snap-distance-y', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'h') || 0;
+        const snapW = snapStops(el, '--edit-size-snap-x', 'w'), snapH = snapStops(el, '--edit-size-snap-y', 'h');
+        const collapseX = toPx(cssVar(el, '--edit-size-collapse-x', ''), el, 'w');
+        const collapseY = toPx(cssVar(el, '--edit-size-collapse-y', ''), el, 'h');
+        const snap = (v, pts, tol) => { if (!tol) return v; for (const p of pts) if (Math.abs(v - p) <= tol) return p; return v; };
+        const ov = showOverlay();
+        let lastW = baseW, lastH = baseH;
+        const move = (ev) => {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            if (right || left) { lastW = snap(clamp(baseW + (right ? dx : -dx), minW, maxW), snapW, tolX); el.style.width = toUnit(lastW, wu, el, el.parentElement, 'w') + wu; }
+            if (top || bottom) { lastH = snap(clamp(baseH + (bottom ? dy : -dy), minH, maxH), snapH, tolY); el.style.height = toUnit(lastH, hu, el, el.parentElement, 'h') + hu; }
+            const collapsed = (collapseX != null && lastW < collapseX) || (collapseY != null && lastH < collapseY);
+            el.toggleAttribute('data-edit-collapsed', collapsed);
+        };
+        const up = () => {
+            document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov);
+            if (el.hasAttribute('data-edit-collapsed')) el.dispatchEvent(new CustomEvent('edit:collapse', { bubbles: true }));
+            commitStyle(area, el);
+        };
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+    }
+
+
+    /* ---- Inline text editing ---- */
+    // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
+    function armText(area) {
+        area.querySelectorAll('*').forEach(el => {
+            if (el.children.length || !el.textContent.trim() || el.closest('template') || el.classList.contains('edit-handle')) return;
+            if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
+            el.setAttribute('contenteditable', 'true');
+            if (el._textBound) return; el._textBound = true;
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); });
+            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(area, el, 'text', el.innerHTML.trim()); });
+        });
+    }
+
+    /* ---- DATA value editing (opt-in .data): make $x-bound leaves in an x-for list editable,
+       but ONLY when the binding is a SIMPLE field ref of the loop var (p.name) — computed
+       expressions (e.g. '$' + p.price) stay read-only. Edit → data mutation, not HTML.
+       (Scope today: x-for list item fields. Direct $x.a.b bindings outside a list are a
+       natural extension — different addressing {source,path} + key-value write-back.) ---- */
+    function armDataValues(area) {
+        const tpl = area.querySelector('template[x-for]'); if (!tpl) return;
+        const lv = (tpl.getAttribute('x-for').match(/^\s*([\w$]+)\s+in\b/) || [])[1]; if (!lv) return;
+        const source = dataSourceName(area), fieldRe = new RegExp('^\\s*' + lv + '\\.([\\w$]+)\\s*$');
+        sortableChildren(area).forEach(clone => {
+            const id = clone.getAttribute('data-key'); if (id == null) return;
+            clone.querySelectorAll('*').forEach(el => {
+                if (el.children.length || el.classList.contains('edit-handle')) return;
+                const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
+                const m = expr.match(fieldRe); if (!m) return;
+                const field = m[1];
+                el.setAttribute('contenteditable', 'true'); el.setAttribute('data-edit-field', field);
+                if (el._dvBound) return; el._dvBound = true;
+                el.addEventListener('focus', () => { el._preEdit = el.textContent; });
+                el.addEventListener('blur', () => commitDataValue(area, source, id, field, el.textContent, el));
+            });
+        });
+    }
+
+    /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
+       instance for the scope (this instance vs all) + per-element classes + revert. ---- */
+    const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
+    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(Array.from(n.parentElement.children).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
+    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = el.children[i]; if (!el) return null; } return el; }
+    // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
+    // skip the source element (don't fight the caret) and skip any instance that has its
+    // OWN committed override for this node/prop (instance overrides always win).
+    function liveMainPropagate(area, sourceEl, prop, value) {
+        if ((area._editScope || 'instance') !== 'main') return;
+        const comp = componentName(area), path = sourceEl.getAttribute('data-edit-path'), { inst } = componentState();
+        document.querySelectorAll('[data-edit-area]').forEach(a => {
+            if (!a._edit || classify(a) !== 'component' || componentName(a) !== comp) return;
+            const root = a.querySelector('[data-component]'); if (!root) return;
+            const el = path === '' ? root : nodeByPath(root, path); if (!el || el === sourceEl) return;
+            const iv = (inst[key(a)] && inst[key(a)][path]) || {}; if (iv[prop] !== undefined) return;   // override wins
+            if (prop === 'class') { if (el.getAttribute('class') !== value) el.setAttribute('class', value); }
+            else if (el.innerHTML !== value) el.innerHTML = value;
+        });
+    }
+    function armComponent(area) {
+        const root = area.querySelector('[data-component]'); if (!root) return;
+        if (!area._editScope) { area._editScope = 'instance'; area.setAttribute('data-edit-scope', 'instance'); }
+        area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {};
+        // Mark the root AND every element with a path → all are class-editable (incl. the parent).
+        const markClass = (el) => { const p = pathOf(el, root); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; };
+        markClass(root);
+        root.querySelectorAll('*').forEach(el => { if (!el.classList.contains('edit-handle')) markClass(el); });
+        // Text leaves also become contenteditable. Capture innerHTML (not textContent) so
+        // nested inline elements like <i>/<br> the user adds are preserved.
+        root.querySelectorAll('[data-edit-path]').forEach(el => {
+            if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
+            const p = el.getAttribute('data-edit-path');
+            if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
+            el.setAttribute('contenteditable', 'true');
+            if (el._textBound) return; el._textBound = true;
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); });
+            el.addEventListener('input', () => liveMainPropagate(area, el, 'text', el.innerHTML));
+            el.addEventListener('blur', () => commitComponentNode(area, el, 'text', el.innerHTML.trim()));
+        });
+        if (area._cmpMenuBound) return; area._cmpMenuBound = true;
+        area.addEventListener('contextmenu', e => openComponentMenu(e, area));
+    }
+    let cmpMenu;
+    function openComponentMenu(e, area) {
+        if (!isActive(area)) return; e.preventDefault(); e.stopPropagation();
+        const target = e.target.closest('[data-edit-path]');
+        if (!cmpMenu) {
+            cmpMenu = document.createElement('div'); cmpMenu.className = 'edit-classes'; cmpMenu.hidden = true;
+            cmpMenu.addEventListener('pointerdown', ev => ev.stopPropagation());
+            document.body.appendChild(cmpMenu);
+            document.addEventListener('pointerdown', () => { if (cmpMenu) cmpMenu.hidden = true; });
+        }
+        if (target) target._preClass = target.getAttribute('class') || '';
+        const cur = area._editScope || 'instance';
+        cmpMenu.innerHTML =
+            `<div class="muted">Scope · ${componentName(area)}</div>`
+            + `<div class="row"><button class="ghost sm" data-s="instance">${cur === 'instance' ? '✓ ' : ''}This instance</button><button class="ghost sm" data-s="main">${cur === 'main' ? '✓ ' : ''}All</button></div>`
+            + (target ? `<div class="muted">Classes · ${target.tagName.toLowerCase()} <span style="opacity:.6">· live</span></div><input type="text" spellcheck="false" data-cls>` : '')
+            + `<div class="row">${target ? '<button class="ghost sm" data-a="revert">Revert element</button>' : ''}<button class="ghost sm" data-a="revertall">Revert all</button></div>`;
+        cmpMenu.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { area._editScope = b.getAttribute('data-s'); area.setAttribute('data-edit-scope', area._editScope); area.setAttribute('data-edit-label', `${key(area)} · component · ${area._editScope}`); openComponentMenu(e, area); });
+        const cls = cmpMenu.querySelector('[data-cls]');
+        if (cls && target) {
+            cls.value = target.getAttribute('class') || '';
+            cls.addEventListener('input', () => { target.setAttribute('class', cls.value); liveMainPropagate(area, target, 'class', cls.value); });
+            cls.addEventListener('change', () => commitComponentNode(area, target, 'class', cls.value));
+            cls.addEventListener('keydown', ev => { if (ev.key === 'Enter') cls.blur(); });
+        }
+        const rv = cmpMenu.querySelector('[data-a="revert"]'); if (rv) rv.onclick = () => { revertNode(area, target); cmpMenu.hidden = true; };
+        cmpMenu.querySelector('[data-a="revertall"]').onclick = () => { revertAll(area); cmpMenu.hidden = true; };
+        cmpMenu.style.left = Math.min(e.clientX, innerWidth - 240) + 'px'; cmpMenu.style.top = Math.min(e.clientY, innerHeight - 180) + 'px'; cmpMenu.hidden = false;
+        if (cls) setTimeout(() => cls.focus(), 0);
+    }
+
+
+    /* ---- Style: right-click → live utility-class input (no Apply; commit on close) ---- */
+    let menu;
+    function closeMenu() {
+        if (!menu || menu.hidden) return;
+        if (menu._dirty && menu._target) { commitStaticNode(menu._target.closest('[data-edit-area]'), menu._target, 'class', menu._target.getAttribute('class') || ''); menu._dirty = false; }
+        menu.hidden = true; menu._target = null;
+    }
+    function ensureMenu() {
+        if (menu) return menu;
+        menu = document.createElement('div'); menu.className = 'edit-classes'; menu.hidden = true;
+        menu.innerHTML = '<div class="muted">Classes <span data-tag></span> <span style="opacity:.6">· live</span></div><input type="text" spellcheck="false"><div class="row"><button class="ghost sm" data-a="close">Done</button></div>';
+        menu.addEventListener('pointerdown', e => e.stopPropagation());
+        const input = menu.querySelector('input');
+        input.addEventListener('input', () => { if (menu._target) { menu._target.setAttribute('class', input.value); menu._dirty = true; } });
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') closeMenu(); });
+        menu.querySelector('[data-a="close"]').addEventListener('click', closeMenu);
+        document.body.appendChild(menu);
+        document.addEventListener('pointerdown', closeMenu);
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+        return menu;
+    }
+    function openMenu(el, x, y) {
+        const m = ensureMenu(); m._target = el; m._dirty = false; el._preClass = el.getAttribute('class') || '';
+        m.querySelector('[data-tag]').textContent = '· ' + el.tagName.toLowerCase();
+        const input = m.querySelector('input'); input.value = el.getAttribute('class') || '';
+        m.style.left = Math.min(x, innerWidth - 280) + 'px'; m.style.top = Math.min(y, innerHeight - 130) + 'px'; m.hidden = false;
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+    }
+    function armStyle(area) {
+        if (area._styleBound) return; area._styleBound = true;
+        area.addEventListener('contextmenu', (e) => {
+            if (!isActive(area)) return;
+            let t = e.target;
+            while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.classList.contains('edit-handle'))) t = t.parentElement;
+            if (!t || !capOf(t, 'style') || locked(t)) return;
+            e.preventDefault(); e.stopPropagation();
+            openMenu(t, e.clientX, e.clientY);
+        });
+    }
+
+
+    /* ---- Theme regime: edit CSS custom properties (x-edit.cssvar) ----
+       Not DOM-element editing. A variable set on :root is global; set on an x-edit
+       theme scope's element it cascades to that subtree ONLY (sandboxed theme), so the
+       same var name can live at both levels without collision. Controls are inputs that
+       declare their target as "scope:--var" (area/scope key) or bare "--var" (global).
+       Live = setProperty (var()-referencing utilities update for free); persisted as
+       {kind:'theme', scope, var, value}. Net-new variables are a later step. */
+    const cssvarControls = new Set();
+    const themeBaseline = {};            // "scope|var" → original inline value ('' if none) — for revert-to-baseline
+    const themeTouched = new Set();      // every scope|var ever applied
+    const tkey = (scope, v) => (scope || '') + '|' + v;
+    const themeTargetEl = (scope) => (scope && themeScopes[scope]) || document.documentElement;
+    const cvValue = (el) => el.value + (el.dataset.unit || '');   // data-unit lets a range/number drive a unit'd var
+
+    function registerCssVar(el, expression) {
+        const spec = (expression || '').trim();
+        const m = spec.match(/^([\w-]+)\s*:\s*(--[\w-]+)$/);   // "scope:--var" vs bare "--var" (global)
+        el._cssvar = m ? { scope: m[1], var: m[2] } : { scope: null, var: spec };
+        cssvarControls.add(el);
+    }
+    function syncCssVarInput(el) {
+        const cv = el._cssvar; if (!cv || !('value' in el)) return;
+        const cur = getComputedStyle(themeTargetEl(cv.scope)).getPropertyValue(cv.var).trim();
+        if (!cur) return;
+        const next = el.dataset.unit ? String(parseFloat(cur)) : cur;
+        if (el.value !== next) el.value = next;
+    }
+    function armCssVar(el) {
+        const cv = el._cssvar; if (!cv || !cv.var) return;
+        const kk = tkey(cv.scope, cv.var);
+        if (!(kk in themeBaseline)) themeBaseline[kk] = themeTargetEl(cv.scope).style.getPropertyValue(cv.var);
+        syncCssVarInput(el);
+        if (el._cvBound) return; el._cvBound = true;
+        el.addEventListener('input', () => themeTargetEl(cv.scope).style.setProperty(cv.var, cvValue(el)));   // live, no log
+        el.addEventListener('change', () => commitTheme(cv.scope, cv.var, cvValue(el)));                       // commit
+    }
+    function armThemeControls() { cssvarControls.forEach(armCssVar); }
+
+    function themeState() {
+        const s = {};
+        for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'theme') s[tkey(d.scope, d.var)] = d; }
+        return s;
+    }
+    // Re-derive every touched var from the log: state value if present, else the captured
+    // baseline (setProperty to restore an authored inline value; removeProperty if none).
+    function applyThemeState() {
+        const st = themeState();
+        new Set([...themeTouched, ...Object.keys(st)]).forEach(kk => {
+            themeTouched.add(kk);
+            const sep = kk.indexOf('|'), scope = kk.slice(0, sep) || null, v = kk.slice(sep + 1);
+            const el = themeTargetEl(scope), eff = st[kk] ? st[kk].value : themeBaseline[kk];
+            if (eff) el.style.setProperty(v, eff); else el.style.removeProperty(v);
+        });
+        cssvarControls.forEach(syncCssVarInput);
+    }
+    function commitTheme(scope, v, value) {
+        const kk = tkey(scope, v); themeTouched.add(kk);
+        themeTargetEl(scope).style.setProperty(v, value);
+        const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe
+        log.splice(cursor); log.push({ kind: 'theme', scope: scope || null, var: v, value }); cursor = log.length; saveState(); refresh();
+    }
+    // B-side: each theme var → its scope's target CSS file (data-edit-theme-file on the
+    // scope element); global vars carry no file → the server falls back to the theme file.
+    function themePatches() {
+        return Object.values(themeState()).map(d => {
+            const el = d.scope ? themeScopes[d.scope] : null;
+            return { kind: 'theme', scope: d.scope || null, var: d.var, value: d.value, file: el ? el.getAttribute('data-edit-theme-file') || null : null };
+        });
+    }
+
+
+    /* ---- Arm / disarm an area for its regime + caps ---- */
+    // Static: address every element by structural path + capture per-node baselines (class,
+    // style, text) and the initial child order, so edits store as tiny typed ops/permutations.
+    function markStatic(area) {
+        area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
+        const markEl = (el) => { const p = pathOf(el, area); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
+        markEl(area);
+        area.querySelectorAll('*').forEach(el => { if (!el.classList.contains('edit-handle')) markEl(el); });
+        if (!area._baseOrder) area._baseOrder = sortableChildren(area).map(staticKey);
+        if (!(key(area) in lastOrder)) lastOrder[key(area)] = area._baseOrder;
+    }
+    function armArea(area) {
+        const kind = classify(area);
+        area.setAttribute('data-edit-armed', '');
+        area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
+        if (kind === 'static') markStatic(area);
+        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
+        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
+        if (kind === 'component') armComponent(area); else armText(area);
+        if (kind === 'static') armStyle(area);
+        if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
+    }
+    function disarmArea(area) {
+        area.querySelectorAll('.edit-handle').forEach(h => h.remove());
+        area.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
+        area.querySelectorAll('[data-edit-sortable]').forEach(e => { ['data-edit-sortable', 'data-edit-grabbed', 'data-edit-dragging', 'tabindex', 'role', 'draggable'].forEach(a => e.removeAttribute(a)); e._dragBound = false; });
+        [area, ...area.querySelectorAll('[data-edit-sizable],[data-edit-movable]')].forEach(e => { e.removeAttribute('data-edit-sizable'); e.removeAttribute('data-edit-movable'); e._sizeBound = false; });
+        area.removeAttribute('data-edit-armed'); area.removeAttribute('data-edit-label');
+    }
+
+    /* ---- Activation: per-area, always-on by default (.gated needs $edit.on()) ---- */
+    let estore;
+    const isActive = (a) => !!a && (!a._edit.gated || (estore && estore.active));
+    const anyActive = () => areas().some(isActive);
+    function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); }
+    // The plugin is storage-agnostic. The overlay ALREADY auto-persists to localStorage
+    // on every commit (saveState). These expose the edit set so an author can route it to
+    // their real sink — localStorage (default), Appwrite/cloud, or a custom endpoint:
+    //   $edit.export()  → the raw delta log + cursor (the A-side overlay; e.g. push to cloud)
+    //   $edit.patches() → resolved B-side source patches (for an authoring write-back)
+    //   $edit.publish() → hand patches to the configured sink: $edit.onPublish (author's
+    //                     function/Promise) if set, else the local dev-server source writer
+    //                     (authoring only — never wire this to anonymous end users).
+    function buildPatches() {
+        const patches = Object.entries(fold()).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
+        const toEdits = (paths) => { const e = []; Object.entries(paths).forEach(([p, props]) => Object.entries(props).forEach(([prop, value]) => e.push({ path: p, prop, value }))); return e; };
+        const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
+        new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
+            const edits = toEdits(ss.node[region] || {});
+            if (edits.length || ss.order[region]) patches.push({ kind: 'static', region, edits, order: ss.order[region] || null });
+        });
+        const dv = dataValueState();   // data-value edits → field writes (local file / cloud $update)
+        Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));
+        const { main, inst, reverts } = componentState();
+        Object.entries(main).forEach(([component, paths]) => { const edits = toEdits(paths); if (edits.length) patches.push({ kind: 'component', scope: 'main', component, edits }); });
+        new Set([...Object.keys(inst), ...Object.keys(reverts)]).forEach(region => {
+            const area = areaByKey(region); if (!area) return;
+            const edits = toEdits(inst[region] || {}), rv = [...(reverts[region] || [])];
+            if (edits.length || rv.length) patches.push({ kind: 'component', scope: 'instance', component: componentName(area), region, edits, reverts: rv });
+        });
+        themePatches().forEach(p => patches.push(p));   // theme: CSS-var value writes (scoped → its file; global → theme file)
+        return patches;
+    }
+    function publish() {
+        const patches = buildPatches();
+        if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor }));
+        if (!patches.length) return Promise.resolve({ results: [] });
+        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json());   // default: local dev-server source writer (authoring)
+    }
+    function on() { if (estore) estore.active = true; armAll(); }
+    function off() { if (estore) estore.active = false; areas().forEach(a => { if (a._edit.gated && a._armed) { disarmArea(a); a._armed = false; } }); closeMenu(); refresh(); }
+    // Runtime lock — META (status, not content): applied immediately, NOT in the content log.
+    // Locks the target AND its subtree (descendants without their own x-edit inherit it).
+    function setLock(el, val) {
+        if (!el) return;
+        if (!el._edit) { el._edit = { key: `lock-${++autoN}`, caps: new Set(), lock: val, gated: false }; el.setAttribute('data-edit-area', ''); editEls.add(el); }
+        else { el._edit.lock = val; if (val) el._edit.caps = new Set(); }
+        if (val) { el.querySelectorAll('.edit-handle').forEach(h => h.remove()); el.removeAttribute('draggable'); el.removeAttribute('contenteditable'); el.removeAttribute('data-edit-sizable'); el._sizeBound = false; el.querySelectorAll('[draggable],[contenteditable]').forEach(n => { n.removeAttribute('draggable'); n.removeAttribute('contenteditable'); }); }
+        const area = areas().find(a => a === el || a.contains(el));
+        if (area && isActive(area)) armArea(area);
+    }
+
+
+    /* ---- Dev chrome: floating toolbar (undo/redo/publish/reset). Spike-only — the
+       author drives activation via the $edit magic; this is just a convenience. ---- */
+    let bar;
+    function buildUI() {
+        bar = document.createElement('div'); bar.className = 'edit-toolbar';
+        bar.innerHTML = '<button class="ghost" data-a="undo">↶ Undo</button><button class="ghost" data-a="redo">↷ Redo</button><button class="brand" data-a="publish">Publish</button><button class="ghost" data-a="reset">Reset</button>';
+        bar.addEventListener('click', e => {
+            const btn = e.target.closest('button'); if (!btn) return; const a = btn.getAttribute('data-a');
+            if (a === 'undo') undo(); if (a === 'redo') redo(); if (a === 'reset') { localStorage.removeItem(LS_KEY); location.reload(); }
+            if (a === 'publish') {
+                const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Publishing…';
+                publish().then(r => { const rs = r.results || []; const w = rs.filter(x => x.status === 'written').length, sk = rs.filter(x => x.status === 'skipped').length; btn.textContent = `Wrote ${w}${sk ? ` · ${sk} skipped` : ''}`; })
+                    .catch(() => btn.textContent = 'Failed').finally(() => { btn.disabled = false; setTimeout(() => btn.textContent = orig, 2800); });
+            }
+        });
+        document.body.appendChild(bar);
+    }
+    function refresh() {
+        if (estore) { estore.canUndo = cursor > 0; estore.canRedo = cursor < log.length; }
+        if (bar) { bar.querySelector('[data-a="undo"]').disabled = cursor === 0; bar.querySelector('[data-a="redo"]').disabled = cursor >= log.length; }
+    }
+
+
+    /* ---- Restore persisted edits + boot (registers x-edit directive + $edit magic) ---- */
+    function restore() {
+        if (!log.length) return;
+        for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
+        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order')) applyStaticState();
+        if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
+        if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
+        if (log.some(d => d.kind === 'theme')) applyThemeState();
+    }
+    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch {} if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
+    function init() {
+        if (!window.Alpine || !Alpine.directive) return;
+        Alpine.directive('edit', (el, { modifiers, expression }) => registerEdit(el, modifiers, expression));
+        Alpine.store('edit', {
+            active: false, canUndo: false, canRedo: false,
+            onPublish: null,                                 // author sets a fn(patches, {log,cursor}) → route to cloud/custom
+            toggle() { this.active ? off() : on(); }, on() { on(); }, off() { off(); },
+            undo() { undo(); }, redo() { redo(); }, lock(el) { setLock(el, true); }, unlock(el) { setLock(el, false); },
+            publish() { return publish(); },
+            patches() { return buildPatches(); },            // resolved B-side source patches
+            export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)
+        });
+        estore = Alpine.store('edit');
+        Alpine.magic('edit', () => Alpine.store('edit'));
+        loadState(); buildUI();
+        setTimeout(() => { armAll(); restore(); }, 450);   // arm (captures baselines) THEN re-apply persisted edits
+    }
+    document.addEventListener('alpine:init', init);
+    if (window.Alpine && Alpine.directive) setTimeout(init, 0);
+})();

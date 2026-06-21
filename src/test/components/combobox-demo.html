@@ -1,0 +1,53 @@
+<!-- Combobox demos -->
+<main class="col gap-6" style="max-width: 44rem; margin-inline: auto; padding: 2rem;">
+
+    <header class="col gap-1">
+        <h1 class="h3">Combobox</h1>
+        <p class="small text-content-neutral">One directive, four axes: editor · options · single/multiple · text/chips. Submit a form to see the vanilla <code>FormData</code> it posts.</p>
+    </header>
+
+    <!-- 1 — Email invites: input · no list · multiple · chips -->
+    <form class="col gap-2" x-data="{ out: '' }"
+        @submit.prevent="out = [...new FormData($el)].map(p => p[0] + ': ' + p[1]).join('\n') || '(empty)'">
+        <label class="small">Invite by email <span class="text-content-subtle">— type, then Enter / comma / paste</span></label>
+        <input name="emails" placeholder="name@company.com"
+            x-combobox.multiple.chips data-separators="," value="ana@acme.com, sam@acme.com">
+        <div class="row gap-2"><button class="small">Submit</button></div>
+        <pre class="small text-content-neutral" x-text="out"></pre>
+    </form>
+
+    <!-- 2 — Country: input · datalist source · single · text · startswith filter -->
+    <form class="col gap-2" x-data="{ out: '' }"
+        @submit.prevent="out = [...new FormData($el)].map(p => p[0] + ': ' + p[1]).join('\n') || '(empty)'">
+        <label class="small">Country <span class="text-content-subtle">— filters as you type; pick or free-type</span></label>
+        <input name="country" placeholder="Start typing…" x-combobox="#countries" data-filter="startswith">
+        <datalist id="countries">
+            <option>Australia</option><option>Brazil</option><option>Canada</option>
+            <option>Denmark</option><option>Finland</option><option>France</option>
+            <option>Germany</option><option>India</option><option>Japan</option>
+            <option>Mexico</option><option>Netherlands</option><option>Norway</option>
+            <option>Portugal</option><option>Spain</option><option>Sweden</option>
+            <option>United Kingdom</option><option>United States</option>
+        </datalist>
+        <div class="row gap-2"><button class="small">Submit</button></div>
+        <pre class="small text-content-neutral" x-text="out"></pre>
+    </form>
+
+    <!-- 3 — Assignees: input · authored menu (rich rows) · multiple · chips · create · cap 4 -->
+    <form class="col gap-2" x-data="{ out: '' }"
+        @submit.prevent="out = [...new FormData($el)].map(p => p[0] + ': ' + p[1]).join('\n') || '(empty)'">
+        <label class="small">Assignees <span class="text-content-subtle">— suggestions, “Add …”, max 4</span></label>
+        <input name="assignees" placeholder="Search people…" x-combobox.multiple.chips.create="#people" data-max="4">
+        <menu popover id="people">
+            <li data-value="ana"  data-label="Ana Ruiz">Ana Ruiz <small style="margin-inline-start:auto">ana@acme.com</small></li>
+            <li data-value="sam"  data-label="Sam Cole">Sam Cole <small style="margin-inline-start:auto">sam@acme.com</small></li>
+            <li data-value="kim"  data-label="Kim Park">Kim Park <small style="margin-inline-start:auto">kim@acme.com</small></li>
+            <li data-value="lee"  data-label="Lee Nash">Lee Nash <small style="margin-inline-start:auto">lee@acme.com</small></li>
+            <li data-value="jo"   data-label="Jo Adeyemi">Jo Adeyemi <small style="margin-inline-start:auto">jo@acme.com</small></li>
+            <li data-value="raj"  data-label="Raj Mehta">Raj Mehta <small style="margin-inline-start:auto">raj@acme.com</small></li>
+        </menu>
+        <div class="row gap-2"><button class="small">Submit</button></div>
+        <pre class="small text-content-neutral" x-text="out"></pre>
+    </form>
+
+</main>
