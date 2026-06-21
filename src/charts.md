@@ -77,7 +77,7 @@ Lines interpolate smoothly by default. Set `curve` to change it: `'linear'` for 
 
 ### Area
 
-Area charts are line charts with a translucent fill. Add `stacked: true` to pile series on top of each other.
+Area charts are line charts with a translucent fill. Add `stacked: true`{copy} to pile series on top of each other.
 
 <div x-code-group>
 
@@ -102,7 +102,7 @@ Area charts are line charts with a translucent fill. Add `stacked: true` to pile
 
 ### Bar
 
-Multiple series render as grouped bars; `stacked: true` stacks them instead.
+Multiple series render as grouped bars; `stacked: true`{copy} stacks them instead.
 
 <div x-code-group>
 
@@ -128,7 +128,7 @@ Multiple series render as grouped bars; `stacked: true` stacks them instead.
 
 ### Pie & Donut
 
-Pie charts take a single series whose values become slices, colored from the theme palette in order. `type: 'donut'` hollows the center. Data also accepts `[{ label, value }]` rows.
+Pie charts take a single series whose values become slices, colored from the theme palette in order. `type: 'donut'`{copy} hollows the center. Data also accepts `[{ label, value }]`{copy} rows.
 
 <div x-code-group>
 
@@ -169,7 +169,7 @@ Pie charts take a single series whose values become slices, colored from the the
 
 ### Combo
 
-`type: 'combo'` mixes renderers in one plot — give each series its own `type` (`bar`, `line`, or `area`). Series without one default to bars.
+`type: 'combo'`{copy} mixes renderers in one plot — give each series its own `type` (`bar`, `line`, or `area`). Series without one default to bars.
 
 <div x-code-group>
 
@@ -193,7 +193,7 @@ Pie charts take a single series whose values become slices, colored from the the
 
 ### Candlestick
 
-`type: 'candlestick'` (or `'ohlc'`) plots open–high–low–close rows, as `{ o, h, l, c }` objects (long names `open`/`high`/`low`/`close` also work) or `[o, h, l, c]` arrays. Rising candles use the theme's positive color, falling ones the negative.
+`type: 'candlestick'`{copy} (or `'ohlc'`) plots open–high–low–close rows, as `{ o, h, l, c }`{copy} objects (long names `open`/`high`/`low`/`close` also work) or `[o, h, l, c]`{copy} arrays. Rising candles use the theme's positive color, falling ones the negative.
 
 <div x-code-group>
 
@@ -218,24 +218,122 @@ Pie charts take a single series whose values become slices, colored from the the
 
 </div>
 
+### Gauge
+
+`type: 'gauge'`{copy} plots a single value on a 180° dial — a compact KPI readout. Give it a `value` (or a one-number `series`/`data`); `unit` suffixes the centered readout.
+
+<div x-code-group>
+
+```html copy
+<div x-chart="{ type: 'gauge', value: 73, unit: '%', height: 180 }"></div>
+```
+
+::: frame row-wrap gap-10
+<div x-chart="{ type: 'gauge', value: 73, unit: '%', height: 180 }" style="max-width: 280px;"></div>
+:::
+
+</div>
+
+The dial runs 0–100 by default. Set `min: <n>`{copy} and `max: <n>`{copy} to rescale it — the end labels and the value fill follow the new range.
+
+<div x-code-group>
+
+```html copy
+<div x-chart="{ type: 'gauge', value: 6.2, min: 0, max: 10, height: 180 }"></div>
+```
+
+::: frame row-wrap gap-10
+<div x-chart="{ type: 'gauge', value: 6.2, min: 0, max: 10, height: 180 }" style="max-width: 280px;"></div>
+:::
+
+</div>
+
+Pass `zones`{copy} to paint threshold bands behind the value arc — an array of `{ to, color }`{copy} segments, each running from the previous `to` (or `min`) up to its own. Useful for good/warning/critical ranges.
+
+<div x-code-group>
+
+```html copy
+<div x-chart="{
+    type: 'gauge',
+    value: 88,
+    unit: '%',
+    zones: [
+        { to: 50, color: 'var(--color-negative-content)' },
+        { to: 80, color: 'var(--color-brand-content)' },
+        { to: 100, color: 'var(--color-positive-content)' }
+    ],
+    height: 180
+}"></div>
+```
+
+::: frame row-wrap gap-10
+<div x-chart="{ type: 'gauge', value: 88, unit: '%', height: 180, zones: [ { to: 50, color: 'var(--color-negative-content)' }, { to: 80, color: 'var(--color-brand-content)' }, { to: 100, color: 'var(--color-positive-content)' } ] }" style="max-width: 280px;"></div>
+:::
+
+</div>
+
+### Heatmap
+
+`type: 'heatmap'`{copy} renders a matrix of tiles — each series is a **row**, each datum a **column** aligned to `labels`, and the series `name` is the row label. Tile color interpolates across the value range using the heatmap ramp (see [Theme](#theme)).
+
+<div x-code-group>
+
+```html copy
+<div x-chart="{
+    type: 'heatmap',
+    labels: ['12a','4a','8a','12p','4p','8p'],
+    series: [
+        { name: 'Mon', data: [2, 1, 8, 14, 18, 9] },
+        { name: 'Tue', data: [3, 1, 10, 16, 20, 11] },
+        { name: 'Wed', data: [1, 0, 7, 13, 22, 14] }
+    ],
+    height: 200
+}"></div>
+```
+
+::: frame
+<div x-chart="{ type: 'heatmap', labels: ['12a','4a','8a','12p','4p','8p'], series: [ { name: 'Mon', data: [2, 1, 8, 14, 18, 9] }, { name: 'Tue', data: [3, 1, 10, 16, 20, 11] }, { name: 'Wed', data: [1, 0, 7, 13, 22, 14] }, { name: 'Thu', data: [4, 2, 12, 19, 25, 16] }, { name: 'Fri', data: [5, 3, 14, 21, 28, 24] } ], height: 220 }" style="max-width: 460px;"></div>
+:::
+
+</div>
+
+Set `dataLabels: true`{copy} to print each value in its tile, and `gap` to change the tile gutter (px, default `1`; use `0` for a seamless field).
+
+<div x-code-group>
+
+```html copy
+<div x-chart="{ type: 'heatmap', dataLabels: true, gap: 0, ... }"></div>
+```
+
+::: frame row-wrap gap-10
+<div x-chart="{ type: 'heatmap', dataLabels: true, labels: ['Q1','Q2','Q3','Q4'], series: [ { name: 'North', data: [12, 19, 24, 31] }, { name: 'South', data: [8, 14, 11, 22] }, { name: 'West', data: [20, 25, 28, 40] } ], height: 180 }" style="max-width: 460px;"></div>
+:::
+
+</div>
+
 ---
 
 ## Configuration
 
 | Key          | Type             | Description                                                                  |
 | ------------ | ---------------- | ---------------------------------------------------------------------------- |
-| `type`{copy}       | string           | `line`, `area`, `bar`, `pie`, `donut`, `scatter`, `combo`, `candlestick`. Default `line`. |
-| `labels`{copy}     | array            | X-axis categories (or slice labels).                                          |
-| `series`{copy}     | array            | `{ name, data, color?, type? }` per series. `color` overrides the palette; `type` applies in combo charts. |
+| `type`{copy}       | string           | `line`, `area`, `bar`, `pie`, `donut`, `scatter`, `combo`, `candlestick`, `gauge`, `heatmap`. Default `line`. |
+| `labels`{copy}     | array            | X-axis categories, slice labels, or heatmap columns.                          |
+| `series`{copy}     | array            | `{ name, data, color?, type? }` per series. `color` overrides the palette; `type` applies in combo charts; in a heatmap each series is a row and `name` is its label. |
 | `data`{copy}       | array            | Shorthand for a single unnamed series.                                        |
 | `height`{copy}     | number           | Chart height in pixels. Default `240`. Width tracks the container.            |
 | `stacked`{copy}    | boolean          | Stack bar/area series. Default `false`.                                       |
 | `curve`{copy}      | string           | Line interpolation — `monotone` (default), `linear`, `step`, `natural`.       |
-| `legend`{copy}     | boolean          | Show the legend (multi-series and pies). Default `true`.                      |
-| `axis`{copy} / `grid`{copy} | boolean | Show axis labels / grid lines. Default `true`.                                |
+| `legend`{copy}     | boolean          | Show the legend (multi-series, pies, heatmap ramp). Default `true`.           |
+| `axis`{copy} / `grid`{copy} | boolean | Show axis labels / grid lines (heatmap: row & column labels). Default `true`. |
 | `tooltip`{copy}    | boolean          | Hover tooltips on segments. Default `true`.                                   |
-| `dataLabels`{copy} | boolean          | Static value labels on points, bars, and slices. Default `false`.             |
+| `dataLabels`{copy} | boolean          | Static value labels on points, bars, slices, and heatmap tiles. Default `false`. |
 | `title`{copy}      | string           | Accessible chart label (`aria-label` on the SVG).                             |
+| `value`{copy}      | number           | Gauge — the plotted value (or use a one-number `series`/`data`).              |
+| `min`{copy} / `max`{copy} | number    | Gauge range. Default `0` / `100`.                                             |
+| `unit`{copy}       | string           | Gauge — suffix on the centered readout (e.g. `'%'`).                          |
+| `zones`{copy}      | array            | Gauge — threshold bands: `{ to, color }` segments behind the value arc.       |
+| `gap`{copy}        | number           | Heatmap — tile gutter in px. Default `1`; `0` for a seamless field.           |
 
 ### Declarative Series
 
@@ -298,6 +396,7 @@ Series cycle through the `--color-chart-N` color variable palette in order. By d
 | `--color-chart-grid`{copy}   | Grid line color.                              |
 | `--color-chart-label`{copy}  | Axis label color.                             |
 | `--color-positive-content`{copy} / `--color-negative-content`{copy} | Rising / falling candlesticks. |
+| `--color-chart-heat-low`{copy} / `--color-chart-heat-high`{copy} | Heatmap ramp endpoints (low → high value). |
 
 ```css copy
 /* Extend the palette past 9 */
@@ -312,7 +411,16 @@ Series cycle through the `--color-chart-N` color variable palette in order. By d
 }
 ```
 
-Per-series overrides also work inline through the config (`series: [{ color: '#f43f5e', ... }]`), which beats the palette.
+Per-series overrides also work inline through the config (`series: [{ color: '#f43f5e', ... }]`{copy}), which beats the palette.
+
+The heatmap ramp is a single-hue sequential scale derived from `--color-chart-1` by default. Override the two endpoints to recolor it — the tiles interpolate between them with `color-mix`:
+
+```css copy
+:root {
+    --color-chart-heat-low: var(--color-surface-2);
+    --color-chart-heat-high: var(--color-brand-content);
+}
+```
 
 ---
 
@@ -342,10 +450,13 @@ Modify base styles with custom CSS targeting `[x-chart]` (or the `.chart` marker
 | `path.area`{copy}           | Area fills                                    |
 | `path.slice`{copy}          | Pie / donut slices                            |
 | `rect`{copy}                | Bars and candle bodies                        |
+| `rect.heat-cell`{copy}      | Heatmap tiles (fill driven by the `--heat` percentage) |
 | `circle`{copy}              | Line points and scatter dots (`.scatter`)     |
 | `g.positive`{copy} / `g.negative`{copy} | Rising / falling candles          |
+| `path.gauge-track`{copy} / `path.gauge-value`{copy} | Gauge track and value arc         |
 | `text.value`{copy}          | Data labels (`.inverse` when on a filled segment) |
-| `footer`{copy}              | Legend — `<span>` items with `<i>` swatches   |
+| `text.gauge-label`{copy}    | Gauge centered readout                        |
+| `footer`{copy}              | Legend — `<span>` items with `<i>` swatches (heatmap: `footer.heat-legend` gradient bar) |
 | `.tooltip`{copy}            | Cursor tooltip — chrome shared with [tooltips](/docs/elements/tooltips) |
 
 Each series element carries its resolved color as `--color-chart-color`, so one rule can restyle any series-colored part.

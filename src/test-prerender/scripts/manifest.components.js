@@ -85,7 +85,7 @@ window.ManifestComponentsRegistry = {
             this.preloaded = (this.manifest?.preloadedComponents || []).map(path => path.split('/').pop().replace('.html', ''));
         }
     }
-}; 
+};
 
 // Components loader
 // Uses cache for resolved content and _loading for in-flight promises so duplicate
@@ -146,7 +146,7 @@ window.ManifestComponentsLoader = {
         this._loading[name] = promise;
         return promise;
     }
-}; 
+};
 
 // Components processor
 window.ManifestComponentsProcessor = {
@@ -162,7 +162,7 @@ window.ManifestComponentsProcessor = {
         }
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
             // Pre-rendered components skip re-fetching, but hydrate-marked content
-            // still needs Alpine initialization (x-data, @click, :class, x-theme etc.).
+            // still needs Alpine initialization (x-data, @click, :class, x-color etc.).
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
                 try { window.Alpine.initTree(element); } catch (e) { /* graceful */ }
             }
@@ -490,7 +490,7 @@ window.ManifestComponentsProcessor = {
     },
     initialize() {
     }
-}; 
+};
 
 // Components swapping
 (function () {
@@ -695,7 +695,7 @@ window.ManifestComponentsProcessor = {
             }
         }
     };
-})(); 
+})();
 
 // Components mutation observer
 window.ManifestComponentsMutation = {
@@ -774,7 +774,7 @@ window.ManifestComponentsMutation = {
             });
         }
     }
-}; 
+};
 
 // Main initialization for Manifest Components
 function initializeComponents() {

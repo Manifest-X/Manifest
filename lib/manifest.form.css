@@ -58,6 +58,7 @@
             /* Concentric corners */
             &>* {
                 flex-grow: 1;
+                justify-content: center;
                 width: fit-content;
                 min-height: 0;
                 height: 100%;
@@ -195,7 +196,7 @@
     }
 
     /* Inline label wrapper */
-    label:has(data):not(.unstyle) {
+    :where(label, .label):has(data):not(.unstyle) {
         display: flex;
         flex-direction: row;
         justify-content: space-between;

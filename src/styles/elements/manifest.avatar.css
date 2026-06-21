@@ -54,7 +54,7 @@
     }
 
     /* Button & label versions */
-    :where(button.avatar, label.avatar) {
+    :where(button.avatar, [role=button].avatar, label.avatar):not(.unstyle) {
         padding: 0;
         background-blend-mode: normal;
 
@@ -65,6 +65,10 @@
             & img {
                 filter: brightness(0.9)
             }
+        }
+
+        & span {
+            padding: 0
         }
     }
 

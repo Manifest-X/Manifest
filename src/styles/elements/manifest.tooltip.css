@@ -40,6 +40,11 @@
         & [x-icon]:first-child {
             margin-inline-end: 0.25rem
         }
+
+        /* Nested text elements */
+        &>* {
+            color: inherit
+        }
     }
 
     /* Anchored popover positioning + open/close behavior */

@@ -43,7 +43,7 @@ async function flushAlpineEffects(page) {
         }
       });
     })
-    .catch(() => {});
+    .catch(() => { });
 }
 
 /**
@@ -2114,7 +2114,7 @@ async function runPrerender(config) {
           }
           sourceAttrs.set(el, rec);
           if (el.hasAttribute && el.hasAttribute('data-hydrate')) {
-            try { sourceInnerHTML.set(el, el.innerHTML); } catch (_) {}
+            try { sourceInnerHTML.set(el, el.innerHTML); } catch (_) { }
           }
         };
 
@@ -2179,7 +2179,7 @@ async function runPrerender(config) {
 
         // Flush any pending mutations before the DOM is read for serialization.
         window.__manifestFlushHydrateSources = () => {
-          try { handleMutations(observer.takeRecords()); } catch (_) {}
+          try { handleMutations(observer.takeRecords()); } catch (_) { }
         };
         // Expose for the contract-emission phase.
         window.__manifestSourceAttrs = sourceAttrs;
@@ -2472,7 +2472,7 @@ async function runPrerender(config) {
       const hydrationContractRaw = await page.evaluate(() => {
         // Drain any mutations not yet delivered to the observer so our source
         // map has the latest values.
-        try { window.__manifestFlushHydrateSources && window.__manifestFlushHydrateSources(); } catch (_) {}
+        try { window.__manifestFlushHydrateSources && window.__manifestFlushHydrateSources(); } catch (_) { }
 
         const sourceAttrs = window.__manifestSourceAttrs || new Map();
         const sourceInnerHTML = window.__manifestSourceInnerHTML || new Map();
@@ -2481,7 +2481,7 @@ async function runPrerender(config) {
         // Interactive Manifest-registered directives that attach click/hover/
         // observer state at runtime and therefore need the live Alpine scope.
         const INTERACTIVE_DIRECTIVES = new Set([
-          'x-theme', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
+          'x-color', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
           'x-toast', 'x-carousel', 'x-resize', 'x-anchors', 'x-model',
           'x-files', 'x-data-files',
         ]);
@@ -3083,13 +3083,13 @@ async function runPrerender(config) {
       browserReadyPromise = new Promise((r) => { resolveReady = r; });
       try {
         process.stdout.write(`prerender: recycling browser (processed ${pagesSinceRecycle} pages)\n`);
-        try { await browser.close(); } catch (_) {}
+        try { await browser.close(); } catch (_) { }
         browser = await launchBrowser();
         pagesSinceRecycle = 0;
       } finally {
         // Release the gate first so any waiting workers can proceed, then
         // clear the recycle lock so the outer while loop stops pausing.
-        try { resolveReady(); } catch (_) {}
+        try { resolveReady(); } catch (_) { }
         recycleLock.busy = false;
         const r = recycleGate.resume;
         recycleGate.resume = null;
@@ -3174,7 +3174,7 @@ async function runPrerender(config) {
       Array.from({ length: Math.min(concurrency, puppeteerPaths.length || 1) }, () => worker())
     );
   } finally {
-    try { await browser.close(); } catch (_) {}
+    try { await browser.close(); } catch (_) { }
   }
 
   // Phase 2: Node.js — generate locale variants via text substitution

@@ -506,7 +506,7 @@
     }
 
     /* Button & label versions */
-    :where(button.avatar, label.avatar) {
+    :where(button.avatar, [role=button].avatar, label.avatar):not(.unstyle) {
         padding: 0;
         background-blend-mode: normal;
 
@@ -517,6 +517,10 @@
             & img {
                 filter: brightness(0.9)
             }
+        }
+
+        & span {
+            padding: 0
         }
     }
 
@@ -651,6 +655,12 @@
     --color-chart-grid: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
     --color-chart-label: var(--color-content-subtle, oklch(55.6% 0 0));
 
+    /* Heatmap ramp — single-hue sequential scale derived from --color-chart-1,
+       spanning a pale tint to a deep, saturated shade so values stay legible
+       even when the brand color itself is light. */
+    --color-chart-heat-low: oklch(from var(--color-chart-1) 0.95 calc(c * 0.3) h);
+    --color-chart-heat-high: oklch(from var(--color-chart-1) 0.55 calc(c * 1.15) h);
+
     /* Chart data segments */
     --color-chart-1: var(--color-yellow-400, oklch(85.2% 0.199 91.936));
     --color-chart-2: var(--color-yellow-500, oklch(79.5% 0.184 86.047));
@@ -765,6 +775,23 @@
             }
         }
 
+        /* Gauge — track band + value arc */
+        & path.gauge-track {
+            fill: var(--color-chart-color, var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)))
+        }
+
+        & path.gauge-value {
+            fill: var(--color-chart-color, var(--color-chart-1))
+        }
+
+        /* Gauge centered readout */
+        & text.gauge-label {
+            fill: var(--color-content-stark, oklch(20.5% 0 0));
+            font-size: 1.75rem;
+            font-weight: 700;
+            pointer-events: none
+        }
+
         /* Value labels drawn on/above segments */
         & text.value {
             fill: var(--color-content-stark, oklch(20.5% 0 0));
@@ -778,6 +805,17 @@
                 paint-order: stroke;
                 stroke: rgba(255, 255, 255, 0.75);
                 stroke-width: 1.5px
+            }
+        }
+
+        /* Heatmap cell — fill interpolates between the two heat tokens by the
+           per-cell --heat percentage (0% = low, 100% = high) */
+        & rect.heat-cell {
+            fill: color-mix(in oklch, var(--color-chart-heat-high, var(--color-chart-1)) var(--heat, 0%), var(--color-chart-heat-low, var(--color-surface-2)));
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
             }
         }
 
@@ -803,6 +841,21 @@
                 height: 0.625rem;
                 border-radius: 2px;
                 background: var(--color-chart-color, var(--color-chart-1))
+            }
+        }
+
+        /* Heatmap gradient legend — low label, ramp bar (spans the grid), high
+           label. Footer is padded to the chart margins in JS so the bar aligns
+           with the columns. */
+        & footer.heat-legend {
+            flex-wrap: nowrap;
+            gap: 0.5rem;
+
+            & i {
+                flex: 1;
+                height: 0.5rem;
+                border-radius: 1rem;
+                background: linear-gradient(to right, var(--color-chart-heat-low, var(--color-surface-2)), var(--color-chart-heat-high, var(--color-chart-1)))
             }
         }
 
@@ -1400,6 +1453,169 @@
     .gradient-layer-icon-conic {
         background: conic-gradient(var(--color-content-neutral, oklch(43.9% 0 0)), color-mix(in oklch, var(--color-content-neutral, oklch(43.9% 0 0)) 0%, transparent 100%));
         border-radius: 50%
+    }
+}
+
+/* Manifest Combobox */
+
+@layer components {
+
+    /* Field shell — inherits input tokens so it reads as a normal field */
+    :where(.combobox):not(.unstyle) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--spacing, 0.25rem);
+        width: 100%;
+        max-width: 100%;
+        min-height: var(--spacing-field-height, 2.25rem);
+        padding: calc(var(--spacing, 0.25rem) * 1.25) var(--spacing-field-padding, 0.625rem);
+        color: var(--color-field-inverse, oklch(43.9% 0 0));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+        border-radius: var(--radius, 0.5rem);
+        transition: var(--transition, all .05s ease-in-out);
+        cursor: text;
+
+        &:hover {
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
+        }
+
+        &:focus-within {
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+            box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 30%, transparent)
+        }
+
+        &.is-disabled {
+            opacity: .6;
+            pointer-events: none
+        }
+    }
+
+    /* Inner typing surface — transparent, grows with content */
+    :where(.combobox-editor):not(.unstyle) {
+        flex: 1 1 4rem;
+        width: auto;
+        min-width: 4rem;
+        height: auto;
+        margin: 0;
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        field-sizing: content;
+
+        &:hover,
+        &:focus-visible {
+            background: transparent;
+            box-shadow: none
+        }
+    }
+
+    /* Textarea editor — vertical auto-grow, full-width line */
+    :where(textarea.combobox-editor):not(.unstyle) {
+        flex-basis: 100%;
+        resize: none
+    }
+
+    /* Chips */
+    :where(.combobox-chip):not(.unstyle) {
+        display: inline-flex;
+        align-items: center;
+        gap: calc(var(--spacing, 0.25rem) * 1.5);
+        max-width: 100%;
+        height: calc(var(--spacing-field-height, 2.25rem) - var(--spacing, 0.25rem) * 2.5);
+        padding-inline: calc(var(--spacing, 0.25rem) * 2);
+        font-size: 0.875rem;
+        color: var(--color-content-stark, oklch(43.9% 0 0));
+        background-color: var(--color-surface-2, var(--color-field-surface-hover));
+        border-radius: calc(var(--radius, 0.5rem) * 0.7);
+        user-select: none
+    }
+
+    :where(.combobox-chip-label):not(.unstyle) {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap
+    }
+
+    :where(.combobox-chip-remove):not(.unstyle) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.15em;
+        height: 1.15em;
+        padding: 0;
+        font-size: 1em;
+        line-height: 1;
+        color: var(--color-content-neutral, oklch(43.9% 0 0));
+        background: transparent;
+        border-radius: 50%;
+        cursor: pointer;
+
+        &:hover {
+            color: var(--color-content-stark, oklch(43.9% 0 0));
+            background: color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 12%, transparent)
+        }
+    }
+
+    /* Invalid chip (failed validation) */
+    :where(.combobox-chip.is-invalid):not(.unstyle) {
+        color: var(--color-red-700, crimson);
+        background-color: color-mix(in oklch, crimson 15%, transparent)
+    }
+
+    /* Trigger (editor:none button mode) — reuses field look */
+    :where(.combobox-trigger):not(.unstyle) {
+        justify-content: space-between;
+        gap: var(--spacing, 0.25rem)
+    }
+
+    /* Listbox — base look comes from menu[popover]; these are combobox-only extras */
+    :where(.combobox-menu):not(.unstyle) {
+
+        /* Active descendant mirrors hover */
+        & :where(li.is-active) {
+            color: var(--color-field-inverse, oklch(43.9% 0 0));
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
+        }
+
+        /* Filtered out */
+        & :where(li[hidden]) {
+            display: none
+        }
+
+        /* Selected (multiple) */
+        & :where(li[aria-selected="true"]) {
+            font-weight: 600
+        }
+
+        /* "Add …" create row */
+        & :where(li.combobox-create) {
+            color: var(--color-content-neutral, oklch(43.9% 0 0))
+        }
+
+        /* Empty state */
+        & :where(.combobox-empty) {
+            padding: 0.5rem;
+            color: var(--color-content-subtle, oklch(55.6% 0 0));
+            cursor: default;
+
+            &:hover {
+                background: transparent
+            }
+        }
+    }
+
+    /* Screen-reader-only live region */
+    :where(.combobox-live):not(.unstyle) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0
     }
 }
 
@@ -2357,6 +2573,182 @@
     }
 }
 
+/* Manifest Edit */
+
+/* Authors override any of this without specificity battles: every rule is wrapped
+   in :where(), state lives on data-attributes, and injected affordances use plain
+   semantic class names (.edit-handle, .edit-frame) — no framework-prefixed litter. */
+
+@layer utilities {
+
+    /* ---- Editable area (armed) ---- */
+    :where([data-edit-armed]) {
+        position: relative;
+        outline: 1px dashed var(--color-line);
+        outline-offset: 6px;
+        border-radius: var(--radius);
+    }
+
+    :where([data-edit-armed])::before {
+        content: attr(data-edit-label);
+        position: absolute;
+        inset-block-start: -1.5rem;
+        inset-inline-start: 0;
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--color-content-subtle);
+        pointer-events: none;
+    }
+
+    /* ---- Reorder (pointer + keyboard; touch-action:none lets touch-drag beat scroll) ---- */
+    :where([data-edit-sortable]) {
+        cursor: grab;
+        touch-action: none;
+        transition: opacity 0.12s ease, outline-color 0.12s ease;
+    }
+    :where([data-edit-sortable]):hover {
+        outline: 1px solid var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+    :where([data-edit-sortable]):focus-visible,
+    :where([data-edit-movable]):focus-visible {
+        outline: 2px solid var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+    :where([data-edit-dragging]) { opacity: 0.4; }
+    :where([data-edit-grabbed]) {
+        outline: 2px dashed var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+
+    /* Screen-reader announcement region (keyboard grab/move/drop) */
+    :where(.edit-sr) {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0; border: 0;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+
+    /* ---- Move (positioned children) ---- */
+    :where([data-edit-movable]) { cursor: move; touch-action: none; }
+    :where([data-edit-movable]):hover {
+        outline: 1px solid var(--edit-accent, var(--color-brand-content));
+        outline-offset: 2px;
+    }
+
+    /* ---- Inline text ---- */
+    :where([data-edit-armed]) [contenteditable="true"] {
+        outline: 1px solid color-mix(in srgb, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
+        outline-offset: 2px;
+        border-radius: 3px;
+    }
+    :where([data-edit-armed]) [contenteditable="true"]:focus {
+        outline: 2px solid var(--edit-accent, var(--color-brand-content));
+    }
+
+    /* ---- Size (resize handles) — injected overlay children, fully stylable ---- */
+    /* The element keeps its own markup untouched, so its native :hover/:focus still
+       fire. Handles are separate elements with pointer-events; the body of the
+       element stays interactive. */
+    :where([data-edit-sizable]) {
+        position: relative;
+
+        .edit-handle {
+            position: absolute;
+            z-index: 100;
+            background: transparent;
+            --h: var(--edit-size-handle, 1rem);
+
+            &::before {
+                content: '';
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 1px;
+                height: 1px;
+                background: transparent;
+                transition: background-color 0.15s ease;
+            }
+            &:hover::before, &:active::before {
+                background-color: var(--edit-accent, var(--color-brand-content));
+            }
+        }
+
+        .edit-handle-top, .edit-handle-bottom { left: 0; width: 100%; height: var(--h); cursor: ns-resize; &::before { width: 100%; } }
+        .edit-handle-left, .edit-handle-right, .edit-handle-start, .edit-handle-end { top: 0; height: 100%; width: var(--h); cursor: ew-resize; &::before { height: 100%; } }
+        .edit-handle-top { top: calc(var(--h) * -0.5); }
+        .edit-handle-bottom { bottom: calc(var(--h) * -0.5); }
+        .edit-handle-left { left: calc(var(--h) * -0.5); }
+        .edit-handle-right { right: calc(var(--h) * -0.5); }
+        /* Logical edges — inset-inline-* auto-flips for RTL */
+        .edit-handle-start { inset-inline-start: calc(var(--h) * -0.5); }
+        .edit-handle-end { inset-inline-end: calc(var(--h) * -0.5); }
+
+        .edit-handle-top-left, .edit-handle-top-right, .edit-handle-bottom-left, .edit-handle-bottom-right,
+        .edit-handle-top-start, .edit-handle-top-end, .edit-handle-bottom-start, .edit-handle-bottom-end {
+            width: var(--h); height: var(--h);
+        }
+        .edit-handle-top-left { top: calc(var(--h) * -0.5); left: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        .edit-handle-top-right { top: calc(var(--h) * -0.5); right: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-left { bottom: calc(var(--h) * -0.5); left: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-right { bottom: calc(var(--h) * -0.5); right: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        .edit-handle-top-start { top: calc(var(--h) * -0.5); inset-inline-start: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        .edit-handle-top-end { top: calc(var(--h) * -0.5); inset-inline-end: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-start { bottom: calc(var(--h) * -0.5); inset-inline-start: calc(var(--h) * -0.5); cursor: nesw-resize; }
+        .edit-handle-bottom-end { bottom: calc(var(--h) * -0.5); inset-inline-end: calc(var(--h) * -0.5); cursor: nwse-resize; }
+    }
+
+    /* Collapsed state (size dropped below --edit-size-collapse-*) — authors restyle freely */
+    :where([data-edit-collapsed]) { opacity: 0.45; }
+
+    /* Full-viewport capture layer during a size/move drag (mirrors resize overlay) */
+    :where(.edit-overlay) {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: transparent;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        :where([data-edit-armed]) > [draggable="true"], :where([data-edit-sizable]) .edit-handle::before { transition: none; }
+    }
+}
+
+/* ---- Plugin dev chrome (spike-only: toolbar + class/scope menu) ---- */
+@layer components {
+
+    :where(.edit-toolbar) {
+        position: fixed;
+        inset-block-end: 1rem;
+        inset-inline-end: 1rem;
+        z-index: 9999;
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    :where(.edit-classes) {
+        position: fixed;
+        z-index: 10000;
+        width: 260px;
+        padding: 0.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+    }
+    :where(.edit-classes)[hidden] { display: none; }
+    :where(.edit-classes) input { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; }
+    :where(.edit-classes) .muted { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-content-subtle); }
+
+    :where(.edit-toolbar) button[disabled] { opacity: 0.35; pointer-events: none; }
+}
+
 /* Manifest Forms */
 
 @layer components {
@@ -2417,6 +2809,7 @@
             /* Concentric corners */
             &>* {
                 flex-grow: 1;
+                justify-content: center;
                 width: fit-content;
                 min-height: 0;
                 height: 100%;
@@ -2554,7 +2947,7 @@
     }
 
     /* Inline label wrapper */
-    label:has(data):not(.unstyle) {
+    :where(label, .label):has(data):not(.unstyle) {
         display: flex;
         flex-direction: row;
         justify-content: space-between;
@@ -3592,6 +3985,11 @@
         /* Leading icon */
         & [x-icon]:first-child {
             margin-inline-end: 0.25rem
+        }
+
+        /* Nested text elements */
+        &>* {
+            color: inherit
         }
     }
 

@@ -39,10 +39,11 @@ if (!m) {
 }
 const next = `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
 
-const updated = raw.replace(/("version"\s*:\s*")[^"]*(")/, `$1${next}$2`);
-if (updated === raw) {
+const versionRe = /("version"\s*:\s*")[^"]*(")/;
+if (!versionRe.test(raw)) {
   console.error(`release-bump: no "version" field found in ${pkgPath}`);
   process.exit(1);
 }
+const updated = raw.replace(versionRe, `$1${next}$2`);
 writeFileSync(pkgPath, updated);
 console.log(`release-bump: ${pkg.name} ${published ? `npm@${published}` : '(unpublished)'} → ${next}`);
