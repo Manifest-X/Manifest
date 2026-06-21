@@ -1497,6 +1497,15 @@ function numericKeyObjectToArray(obj) {
     return sorted.map(i => obj[String(i)]);
 }
 
+// Empty value for a header-only CSV (declares columns but has no data rows yet —
+// e.g. a locales file used only to declare available languages). Shapes the
+// result like a populated parse would: tabular ('id' + 3+ columns) → [], else
+// key-value → {}. A header-only CSV is a valid empty source, not an error.
+function emptyCsvResult(headers) {
+    const first = (headers[0] || '').toLowerCase();
+    return (headers.length > 2 && first === 'id') ? [] : {};
+}
+
 // Parse CSV text to nested object structure
 function parseCSVToNestedObject(csvText, options = {}) {
     const {
@@ -1520,7 +1529,13 @@ function parseCSVToNestedObject(csvText, options = {}) {
         }
 
         if (!parsed.data || parsed.data.length === 0) {
-            throw new Error('[Manifest Data] CSV file is empty or has no data rows');
+            // Header-only CSV is a valid empty source — return empty rather than
+            // throw. Only a file with no header row at all is treated as invalid.
+            const fields = parsed.meta?.fields || [];
+            if (fields.length === 0) {
+                throw new Error('[Manifest Data] CSV file is empty or has no headers');
+            }
+            return emptyCsvResult(fields);
         }
 
         const result = {};
@@ -1608,8 +1623,8 @@ function parseCSVToNestedObject(csvText, options = {}) {
     } else {
         // Fallback simple parser (if PapaParse not loaded)
         const lines = csvText.split('\n').filter(line => line.trim());
-        if (lines.length < 2) {
-            throw new Error('[Manifest Data] CSV file must have at least a header row and one data row');
+        if (lines.length === 0) {
+            throw new Error('[Manifest Data] CSV file is empty or has no headers');
         }
 
         // Simple CSV line parser (handles quoted values)
@@ -1636,6 +1651,11 @@ function parseCSVToNestedObject(csvText, options = {}) {
         const headers = parseCSVLine(lines[0], delimiter);
         if (headers.length < 2) {
             throw new Error('[Manifest Data] CSV file must have at least two columns');
+        }
+
+        if (lines.length === 1) {
+            // Header-only CSV → valid empty source (see PapaParse path above).
+            return emptyCsvResult(headers);
         }
 
         // First column is always the key

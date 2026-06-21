@@ -196,9 +196,21 @@ describe('parseCSVToNestedObject (simple parser)', () => {
         expect(() => parseCSVToNestedObject(csv)).toThrow()
     })
 
-    it('throws on a CSV with fewer than 2 rows', () => {
+    it('returns an empty object for a header-only key-value CSV (no data rows)', () => {
         const csv = `key,value`
-        expect(() => parseCSVToNestedObject(csv)).toThrow()
+        expect(parseCSVToNestedObject(csv)).toEqual({})
+    })
+
+    it('returns an empty array for a header-only tabular CSV', () => {
+        const csv = `id,name,role`
+        const result = parseCSVToNestedObject(csv)
+        expect(Array.isArray(result)).toBe(true)
+        expect(result).toHaveLength(0)
+    })
+
+    it('returns an empty source for a header-only locales CSV (locale columns, no rows)', () => {
+        const csv = `key,en,fr,es`
+        expect(parseCSVToNestedObject(csv)).toEqual({})
     })
 
     it('handles quoted values with commas', () => {
