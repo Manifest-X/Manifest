@@ -17,6 +17,7 @@ const CONFIG = {
         'manifest.components.processor.js',
         'manifest.components.swapping.js',
         'manifest.components.mutation.js',
+        'manifest.components.prefetch.js',
         'manifest.components.main.js'
     ],
 
