@@ -242,6 +242,7 @@
 		'datepicker',
 		'charts',
 		'url-parameters',
+		'virtual',
 		'export',
 		'status'
 	];

@@ -694,6 +694,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
         { source: 'scripts/manifest.url.parameters.js', dest: '../lib/manifest.url.parameters.js' },
         { source: 'scripts/manifest.utilities.js', dest: '../lib/manifest.utilities.js' },
+        { source: 'scripts/manifest.virtual.js', dest: '../lib/manifest.virtual.js' },
 
         // Tailwind bundle — loader requests `${base}/manifest.tailwind.min.js`
         // and jsDelivr auto-minifies, so we only need to ship the unminified
@@ -742,13 +743,10 @@ function copyFilesToDist() {
     console.log(`\n✓ Copied ${copiedCount} file(s) to lib directory\n`);
 }
 
-// Compute SHA-384 of every plugin file in lib/, inline the resulting map into
-// the loader (so the loader can apply `script.integrity` when it dynamically
-// injects plugin scripts), and write lib/manifest.integrity.json for users
-// who self-host or want to audit hashes. SRI is the defense against CDN
-// poisoning / npm hijack — without it, a tampered jsDelivr response runs
-// silently. With it, the browser refuses the script and the site breaks
-// loudly (which is the safe failure mode).
+// Compute SHA-384 of every plugin file in lib/ and write lib/manifest.integrity.json.
+// Covers the self-host path only (loader serves unminified `.js`, matching these hashes).
+// The default CDN path loads jsDelivr-auto-minified `.min.js`, whose bytes differ from the
+// shipped `.js`, so those can't be SRI-pinned from a build-time hash.
 function emitIntegrityMap() {
     console.log('Emitting SRI integrity map...');
 
@@ -768,25 +766,8 @@ function emitIntegrityMap() {
         integrity[f] = hashFile(path.join(libDir, f));
     }
 
-    // Inline the map into lib/manifest.js by replacing the placeholder.  The
-    // loader's own hash is then computed AFTER this patch so users can SRI
-    // the loader tag itself from the integrity map.
+    // Hash the loader itself so self-hosters can SRI-pin the loader <script> tag too.
     const loaderPath = path.join(libDir, 'manifest.js');
-    const loaderSource = fs.readFileSync(loaderPath, 'utf8');
-    const PLACEHOLDER = 'const INTEGRITY = {};';
-    if (!loaderSource.includes(PLACEHOLDER)) {
-        console.warn(`  ⚠ Loader missing '${PLACEHOLDER}' — SRI map not inlined.`);
-    } else {
-        const inlined = loaderSource.replace(
-            PLACEHOLDER,
-            `const INTEGRITY = ${JSON.stringify(integrity, null, 2)};`
-        );
-        fs.writeFileSync(loaderPath, inlined);
-        console.log(`  ✓ Inlined integrity map (${Object.keys(integrity).length} files) into lib/manifest.js`);
-    }
-
-    // Hash the loader AFTER patching so the value in integrity.json matches
-    // what users actually fetch from CDN.
     integrity['manifest.js'] = hashFile(loaderPath);
 
     const mapPath = path.join(libDir, 'manifest.integrity.json');
