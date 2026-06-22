@@ -141,28 +141,44 @@
 	}
 
 	/*
-	 * Remove baked x-for/x-if clones the prerender kept for crawlers.  Their
-	 * <template> is still live, so Alpine re-renders the list/conditional on
-	 * boot; dropping the baked copies first avoids a duplicate render.
-	 * data-hydrate islands keep their baked DOM.
+	 * Reconcile baked x-for/x-if clones the prerender kept for crawlers.  Their
+	 * <template> is still live, so without intervention Alpine renders a second
+	 * copy on boot (a duplicate).  data-hydrate islands keep their baked DOM.
 	 *
-	 * Deliberately NOT part of hydratePrerenderedPage(): this wipe is
-	 * destructive, so it runs at the last safe moment — `alpine:init`, which
-	 * Alpine dispatches after its script has arrived and executed but BEFORE
-	 * it walks the DOM and re-renders x-for/x-if from their live templates.
-	 * If Alpine never arrives (CDN failure, offline), the listener never
-	 * fires and the page keeps its complete baked content instead of losing
-	 * the clones with nothing to re-render them.
+	 *  - x-if clones are ADOPTED: we point the template's Alpine x-if state
+	 *    (`_x_currentIfEl`) at the baked element, so Alpine treats the
+	 *    condition as already-rendered and leaves the baked DOM in place. Heavy
+	 *    x-if content (e.g. an x-markdown article) would otherwise be torn down
+	 *    and re-rendered — flashing raw text and re-fetching $x data — even
+	 *    though the prerendered output is already correct. A genuine
+	 *    route/condition change later still re-renders normally.
+	 *  - x-for clones are REMOVED: lists are light, often interactive, and
+	 *    Alpine re-renders them from the live template, so the baked copies are
+	 *    dropped to avoid a duplicate.
+	 *
+	 * Deliberately NOT part of hydratePrerenderedPage(): it runs at the last
+	 * safe moment — `alpine:init`, which Alpine dispatches after its script has
+	 * executed but BEFORE it walks the DOM. If Alpine never arrives (CDN
+	 * failure, offline), the listener never fires and the page keeps its
+	 * complete baked content.
 	 */
-	function removePrerenderClones() {
+	function reconcilePrerenderClones() {
 		if (typeof document === 'undefined' || !document.querySelectorAll) return;
 		document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
 			if (el.closest && el.closest('[data-hydrate]')) return;
-			el.remove();
+			el.removeAttribute('data-mnfst-prerender-clone');
+			const tpl = el.previousElementSibling;
+			if (tpl && tpl.tagName === 'TEMPLATE' && tpl.hasAttribute('x-if')) {
+				// Adopt: Alpine's x-if `show()` returns early when _x_currentIfEl
+				// is set, so the baked element stays and is not re-rendered.
+				tpl._x_currentIfEl = el;
+			} else {
+				el.remove();
+			}
 		});
 	}
 	if (typeof document !== 'undefined') {
-		document.addEventListener('alpine:init', removePrerenderClones, { once: true });
+		document.addEventListener('alpine:init', reconcilePrerenderClones, { once: true });
 	}
 
 	// Run hydration BEFORE Alpine's deferred script executes.
@@ -235,6 +251,7 @@
 		'toasts',
 		'tooltips',
 		'dropdowns',
+		'combobox',
 		'tabs',
 		'slides',
 		'resize',
