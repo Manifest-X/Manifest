@@ -27,7 +27,10 @@
 
         function claudeAdapter(opts) {
             opts = opts || {};
-            const endpoint = opts.endpoint || window.CHAT_LLM_ENDPOINT || 'http://localhost:8799/chat';
+            // Default to the same-origin relay mnfst-run serves when manifest.json
+            // has an `ai` block (no proxy to start, no CORS, key stays server-side).
+            // Override via opts.endpoint / window.CHAT_LLM_ENDPOINT (e.g. self-host Worker).
+            const endpoint = opts.endpoint || window.CHAT_LLM_ENDPOINT || '/_ai/chat';
             const system = opts.system || 'You are a helpful assistant for the Manifest framework docs. Answer in concise markdown.';
             const handlers = {};   // conversationId -> subscribe handlers
             let seq = 0;

@@ -1,5 +1,6 @@
 {
     "name": "Project Name",
+    "ai": { "provider": "anthropic", "model": "claude-haiku-4-5" },
     "short_name": "Project Name",
     "description": "",
     "start_url": "/",

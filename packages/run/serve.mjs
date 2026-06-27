@@ -161,9 +161,10 @@ const LIVE_RELOAD_SCRIPT = `<script>
 // by the host. See the Appwrite setup doc for the full pattern.
 function loadEnvFile(rootDir) {
   const envPath = join(rootDir, '.env');
-  if (!existsSync(envPath)) return { public: {}, private: [] };
+  if (!existsSync(envPath)) return { public: {}, private: [], privateValues: {} };
   const publicEnv = {};
   const privateNames = [];
+  const privateValues = {};   // server-side only — NEVER injected into window.env
   try {
     const text = readFileSync(envPath, 'utf8');
     for (const line of text.split(/\r?\n/)) {
@@ -179,12 +180,12 @@ function loadEnvFile(rootDir) {
         value = value.slice(1, -1);
       }
       if (key.startsWith('PUBLIC_')) publicEnv[key] = value;
-      else privateNames.push(key);
+      else { privateNames.push(key); privateValues[key] = value; }
     }
   } catch (error) {
     console.warn('[mnfst-run] Failed to parse .env:', error.message);
   }
-  return { public: publicEnv, private: privateNames };
+  return { public: publicEnv, private: privateNames, privateValues };
 }
 
 // Build a `<script>window.env = {…};</script>` tag from the public env map.
@@ -363,8 +364,64 @@ const EDIT_ENABLED = process.argv.includes('--edit') || process.env.MNFST_EDIT =
 // script. Kept as a single string so serveFile doesn't re-stringify on every
 // HTML response. Empty string when no public vars exist — the injection step
 // becomes a no-op for projects whose .env holds only server-side secrets.
-const { public: publicEnv, private: privateEnvNames } = loadEnvFile(root);
+const { public: publicEnv, private: privateEnvNames, privateValues: privateEnv } = loadEnvFile(root);
 const envInjectScript = buildEnvInjectScript(publicEnv);
+
+// --- Turnkey AI relay (gates the same-origin /_ai/chat route) ---------------
+// Reads the optional `ai` block from manifest.json and the LLM key from .env
+// (server-side only). When the `ai` block is present, the dev server hosts the
+// relay so a chat adapter can POST to `/_ai/chat` with no separate proxy, no
+// CORS, and no key in the browser. No key → MOCK replies (try keyless); add the
+// key for real. The same path is served by managed Manifest hosting in prod.
+const aiConfig = (() => {
+  try { return JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).ai || null; }
+  catch { return null; }
+})();
+const aiKey = process.env.ANTHROPIC_API_KEY || privateEnv.ANTHROPIC_API_KEY || '';
+if (publicEnv.PUBLIC_ANTHROPIC_API_KEY) {
+  // The one footgun: a PUBLIC_-prefixed LLM key would ship to every visitor.
+  console.warn('[mnfst-run] ⚠ PUBLIC_ANTHROPIC_API_KEY is injected into the BROWSER and exposes your key to every visitor. Rename it to ANTHROPIC_API_KEY (no PUBLIC_ prefix) — the dev server uses it server-side via /_ai/chat.');
+}
+if (aiConfig) {
+  console.log(`[mnfst-run] AI relay on /_ai/chat — provider=${aiConfig.provider || 'anthropic'} model=${aiConfig.model || 'claude-haiku-4-5'} mode=${aiKey ? 'REAL' : 'MOCK (no ANTHROPIC_API_KEY)'}`);
+}
+
+function aiSse(res, o) { res.write(`event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`); }
+function streamMockAi(res) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  aiSse(res, { type: 'message_start', message: { id: 'mock', role: 'assistant' } });
+  aiSse(res, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+  const text = "Here's a **mock** reply from the in-server relay:\n\n- no separate proxy\n- the key stays server-side\n- add `ANTHROPIC_API_KEY` to `.env` for real Claude\n\n```js\nconst turnkey = true;\n```";
+  const chunks = text.match(/\S+\s*/g) || [text];
+  let i = 0;
+  const tick = setInterval(() => {
+    if (i >= chunks.length) { clearInterval(tick); aiSse(res, { type: 'content_block_stop', index: 0 }); aiSse(res, { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: chunks.length } }); aiSse(res, { type: 'message_stop' }); res.end(); return; }
+    aiSse(res, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunks[i++] } });
+  }, 45);
+  res.on('close', () => clearInterval(tick));
+}
+async function streamRealAi(res, payload) {
+  const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': aiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: payload.model || aiConfig.model || 'claude-haiku-4-5',
+      max_tokens: payload.max_tokens || aiConfig.maxTokens || 1024,
+      stream: true,
+      system: payload.system || aiConfig.system || undefined,
+      messages: payload.messages || []
+    })
+  });
+  if (!upstream.ok) {
+    const body = await upstream.text();
+    res.writeHead(upstream.status, { 'Content-Type': 'text/event-stream' });
+    aiSse(res, { type: 'error', error: { message: `upstream ${upstream.status}: ${body.slice(0, 300)}` } });
+    return res.end();
+  }
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+  for await (const chunk of upstream.body) res.write(chunk);   // passthrough — exact Anthropic SSE
+  res.end();
+}
 const publicCount = Object.keys(publicEnv).length;
 if (publicCount > 0) {
   console.log(`Loaded ${publicCount} PUBLIC_ env var(s) into window.env`);
@@ -952,6 +1009,23 @@ const server = createServer((req, res) => {
   // Edit-plugin B-side write-back (SPIKE, dev-only). POST + same-origin. Currently
   // handles the `data` regime: reorder the source CSV/JSON for a registered data
   // source. static/component regimes are reported unsupported (need an HTML parser).
+  // Turnkey AI relay — same-origin chat proxy; key held server-side, never in
+  // the browser. Inert (404) unless manifest.json has an `ai` block. No key →
+  // mock stream so keyless dev works; add ANTHROPIC_API_KEY to .env for real.
+  if (urlPath === '/_ai/chat') {
+    if (!aiConfig) { res.writeHead(404); res.end(); return; }
+    if (req.method !== 'POST') { res.writeHead(405, { 'Allow': 'POST' }); res.end(); return; }
+    if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
+    let raw = '';
+    req.on('data', c => { raw += c; if (raw.length > 25e6) req.destroy(); });   // 25MB cap (attachments)
+    req.on('end', async () => {
+      let payload = {}; try { payload = raw ? JSON.parse(raw) : {}; } catch { res.writeHead(400); res.end('bad json'); return; }
+      try { if (aiKey) await streamRealAi(res, payload); else streamMockAi(res); }
+      catch (e) { try { res.writeHead(500); res.end(String(e && e.message || e)); } catch (_) {} }
+    });
+    return;
+  }
+
   if (urlPath === '/__edit/save') {
     if (!EDIT_ENABLED) { res.writeHead(404); res.end(); return; }   // opt-in (--edit / MNFST_EDIT=1): source write-back is authoring-only
     if (req.method !== 'POST') { res.writeHead(405, { 'Allow': 'POST' }); res.end(); return; }

@@ -1,6 +1,6 @@
 # Manifest Chat Plugin — Design Doc (DRAFT / RFC v2)
 
-> **Status: DRAFT / RFC — v2.4 (reference impl + LLM/markdown/attachments verified).** Architecture for a `$chat` plugin, iterated across two adversarial reviews by Playcom as first power-user consumer. **Playcom has signed off: no blockers remain** — the contract expresses its three-lens default, multi-pane, transfers, and nested threading without a fork. v2.3 adds a working framework-side spike (`src/scripts/chat/`) + a driven `/chat` harness that verifies every hard part of the contract end-to-end against a static reference adapter (and surfaced one cursor-management subtlety, now fixed — see §13). The data model and adapter contract are considered settled.
+> **Status: DRAFT / RFC — v2.5 (turnkey LLM keys via mnfst-run relay).** Architecture for a `$chat` plugin, iterated across two adversarial reviews by Playcom as first power-user consumer. **Playcom has signed off: no blockers remain** — the contract expresses its three-lens default, multi-pane, transfers, and nested threading without a fork. v2.3 adds a working framework-side spike (`src/scripts/chat/`) + a driven `/chat` harness that verifies every hard part of the contract end-to-end against a static reference adapter (and surfaced one cursor-management subtlety, now fixed — see §13). The data model and adapter contract are considered settled.
 
 ---
 
@@ -321,6 +321,10 @@ Ship `$chat`: a reactive, renderable, drivable **conversation projection** + a c
 ---
 
 ## 13. Changelog
+
+**v2.5 — turnkey LLM keys (in-server relay):**
+- `mnfst-run` now hosts a **same-origin `/_ai/chat` relay** (`packages/run/serve.mjs`), gated by an `ai` block in `manifest.json` (`{ provider, model }`) — inert/404 otherwise. The key lives in the project **`.env` as `ANTHROPIC_API_KEY`** (server-side only; `mnfst-run` injects *only* `PUBLIC_`-prefixed vars into the browser, so the bare-named key never ships to a visitor). No proxy to start, no CORS; the `claude` adapter defaults to `/_ai/chat`. No key → mock stream (keyless dev works); add the key for real. **Guardrail:** `mnfst-run` warns loudly if it sees `PUBLIC_ANTHROPIC_API_KEY` (the one footgun). Same `/_ai/chat` path is served by managed Manifest hosting in prod (a natural billing point); self-host points the adapter at `tools/chat-llm-proxy.mjs` as a Worker/Function reference.
+- **Author flow is now Appwrite-grade:** add `"ai": { "provider": "anthropic", "model": "claude-haiku-4-5" }` to `manifest.json` + `ANTHROPIC_API_KEY=…` to `.env` → real LLM chat, key never in the browser. Verified end-to-end (mock keyless).
 
 **v2.4 — LLM adapter, markdown, attachments + a streaming-reactivity fix:**
 - Built the optional **`claude` reference adapter** (`src/scripts/chat/manifest.chat.adapters.llm.js`) + a key-holding dev **proxy** (`tools/chat-llm-proxy.mjs`; MOCK mode without a key, shaped to redeploy as a Cloudflare Worker). `$chat` never calls the LLM — the assistant is a participant whose replies stream over the Messages API SSE into `onMessagePart`. Model `claude-haiku-4-5` (cheap/fast for a docs demo), endpoint-configurable. Verified end-to-end against the mock; real on key.
