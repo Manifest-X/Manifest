@@ -125,6 +125,13 @@ const CONFIG = {
         'manifest.status.main.js'
     ],
 
+    // Chat subscripts order ($chat — conversation projection over an adapter; no UI)
+    chatSubscripts: [
+        'manifest.chat.store.js',
+        'manifest.chat.adapters.js',
+        'manifest.chat.main.js'
+    ],
+
     // Edit subscripts order (x-edit / $edit — element editing). Fragments of one IIFE:
     // core.js opens it, main.js closes it; order matters.
     editSubscripts: [
@@ -163,6 +170,7 @@ const CONFIG = {
         'scripts/status/**',
         'scripts/payments/**',
         'scripts/edit/**',
+        'scripts/chat/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
@@ -240,6 +248,9 @@ function buildSubscripts() {
 
     // Build status
     combineSubscripts(CONFIG.statusSubscripts, 'manifest.status.js', 'status');
+
+    // Build chat
+    combineSubscripts(CONFIG.chatSubscripts, 'manifest.chat.js', 'chat');
 
     // Build edit
     combineSubscripts(CONFIG.editSubscripts, 'manifest.edit.js', 'edit');
@@ -688,6 +699,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.router.js', dest: '../lib/manifest.router.js' },
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
         { source: 'scripts/manifest.status.js', dest: '../lib/manifest.status.js' },
+        { source: 'scripts/manifest.chat.js', dest: '../lib/manifest.chat.js' },
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
         { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },

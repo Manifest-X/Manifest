@@ -78,6 +78,7 @@
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
+  <script src="/scripts/manifest.chat.js"></script>
   <script src="/scripts/manifest.tabs.js"></script>
   <script src="/scripts/manifest.toasts.js"></script>
   <script src="/scripts/manifest.tooltips.js"></script>
@@ -109,6 +110,137 @@
 <body class="page">
 
   <x-combobox-demo x-route="/combobox"></x-combobox-demo>
+
+  <!-- Chat plugin ($chat) test harness — visit /chat -->
+  <style>
+    .chat-demo { max-width: 56rem; margin-inline: auto; }
+    .chat-card { padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
+    .chat-log { display: flex; flex-direction: column; gap: .35rem; }
+    .chat-row { display: flex; gap: .5rem; align-items: baseline; }
+    .chat-name { font-weight: 600; font-size: .8rem; }
+    .chat-meta { font-size: .72rem; color: var(--color-content-subtle); }
+  </style>
+  <div class="chat-demo col gap-6 p-6" x-route="chat" x-data="{
+      dm: $chat.open('dm-ai', { adapter: 'demo' }),
+      grp: $chat.open('grp-1', { adapter: 'demo' }),
+      forum: $chat.open('forum-1', { adapter: 'demo' }),
+      agg: $chat.open('agg:c_p7', { adapter: 'demo-aggregate', aggregate: true }),
+      closed: $chat.open('hist-tg-1', { adapter: 'demo' }),
+      draft: '', gdraft: '', maxDepth: 4
+    }">
+
+    <div class="col gap-1">
+      <strong>$chat — reference spike</strong>
+      <span class="chat-meta">Static in-memory adapter. Buttons drive the simulation deterministically.</span>
+    </div>
+
+    <!-- A: 1:1 AI streaming + optimistic send -->
+    <section class="chat-card col gap-3" data-test="dm">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">A · 1:1 co-pilot — streaming + optimistic</strong>
+        <span class="chat-meta" x-text="dm.live ? 'live' : 'reconnecting…'" data-test="dm-live"></span>
+      </div>
+      <div class="chat-log" data-test="dm-log">
+        <template x-for="m in dm.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+            <span class="chat-meta" x-show="m.status!=='delivered' && m.status!=='sent'" x-text="'· '+m.status"></span>
+          </div>
+        </template>
+      </div>
+      <div class="row gap-2">
+        <input type="text" x-model="draft" placeholder="message…" style="flex:1" @keydown.enter="dm.send({text:draft}); draft=''">
+        <button class="outlined" @click="dm.send({text:draft}); draft=''">Send</button>
+        <button class="ghost" @click="$chat.sim.aiReply('dm-ai')">Stream AI reply</button>
+      </div>
+      <div class="row gap-2">
+        <button class="ghost small" @click="$chat.sim.disconnect('dm-ai')">Disconnect</button>
+        <button class="ghost small" @click="$chat.sim.reconnectWithGap('dm-ai')">Reconnect + gap-backfill</button>
+      </div>
+    </section>
+
+    <!-- B: group — reactions, typing, participants -->
+    <section class="chat-card col gap-3" data-test="grp">
+      <strong class="small">B · group — reactions · typing · participants</strong>
+      <div class="chat-log" data-test="grp-log">
+        <template x-for="m in grp.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+            <span class="chat-meta" x-show="m.reactions" x-text="m.reactions ? m.reactions.map(r=>r.emoji+r.count).join(' ') : ''"></span>
+            <button class="ghost small" @click="grp.react(m.id,'🎉')">react</button>
+          </div>
+        </template>
+      </div>
+      <div class="chat-meta" data-test="grp-parts">participants: <span x-text="grp.participants.map(p=>p.displayName).join(', ')"></span></div>
+      <div class="chat-meta" data-test="grp-typing" x-show="grp.typing.length">typing: <span x-text="grp.typing.map(p=>p.displayName).join(', ')"></span></div>
+      <div class="row gap-2">
+        <button class="ghost small" @click="grp.setTyping(true); setTimeout(()=>grp.setTyping(false),1500)">typing…</button>
+        <button class="ghost small" @click="grp.addParticipant({id:'u_cy',kind:'human',role:'member',displayName:'Cy',color:'#ea580c'})">add Cy</button>
+      </div>
+    </section>
+
+    <!-- C: threaded tree (forum) -->
+    <section class="chat-card col gap-3" data-test="forum">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">C · threaded — c.tree({maxDepth})</strong>
+        <label class="chat-meta">maxDepth <input type="range" min="0" max="4" step="1" x-model="maxDepth"> <span x-text="maxDepth"></span></label>
+      </div>
+      <div class="chat-log" data-test="forum-log">
+        <template x-for="n in forum.flatTree({maxDepth:Number(maxDepth)})" :key="n.id">
+          <div class="chat-row" :style="`margin-left:${Math.min(n.depth,Number(maxDepth))*1.25}rem`">
+            <span class="chat-name" :style="`color:${n.author?.color||'#888'}`" x-text="n.author?.displayName||'?'"></span>
+            <span x-text="n.body.text"></span>
+            <span class="chat-meta" x-show="n.childCount" x-text="'· '+n.childCount+' repl.'"></span>
+            <span class="chat-meta" x-show="n.orphan">· orphan</span>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- D: aggregate lens (virtual id, fan-out) -->
+    <section class="chat-card col gap-3" data-test="agg">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">D · aggregate — virtual id · anchored · unseen-convId live</strong>
+        <span class="chat-meta" data-test="agg-count" x-text="agg.messages.length+' msgs'"></span>
+      </div>
+      <div class="row gap-2">
+        <button class="ghost small" @click="agg.loadOlder()" :disabled="agg.atStart">◀ older</button>
+        <button class="ghost small" @click="agg.loadNewer()" :disabled="agg.atEnd">newer ▶</button>
+        <button class="ghost small" @click="$chat.sim.newInboundOnClosedChannel()">new inbound (unseen convId)</button>
+      </div>
+      <div class="chat-log" data-test="agg-log">
+        <template x-for="m in agg.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-meta" style="min-width:6rem" x-text="m.conversationId"></span>
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- E: re-home footgun (closed single-chat) -->
+    <section class="chat-card col gap-3" data-test="rehome">
+      <strong class="small">E · closed→new-Chat re-home (single-chat lens)</strong>
+      <div class="chat-log" data-test="closed-log">
+        <template x-for="m in closed.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+            <span class="chat-meta" x-text="'· '+m.conversationId"></span>
+          </div>
+        </template>
+      </div>
+      <div class="row gap-2">
+        <button class="outlined small" @click="closed.send({text:'are you there?'})">reply into closed chat</button>
+      </div>
+      <div class="chat-meta" data-test="rehome-flag" x-show="closed.lastRehome"
+           x-text="closed.lastRehome ? `re-homed ${closed.lastRehome.from} → ${closed.lastRehome.to} — cockpit must retarget` : ''"></div>
+    </section>
+
+  </div>
 
   <div class="editor" x-route="/">
 
