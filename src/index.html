@@ -79,6 +79,27 @@
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
   <script src="/scripts/manifest.chat.js"></script>
+  <script src="/scripts/chat/manifest.chat.adapters.llm.js"></script>
+  <!-- Markdown render helper for the chat demo: reuse the markdown plugin's
+       marked + DOMPurify (loaded on demand) via x-html — robust under streaming
+       (synchronous, no innerHTML/initTree race with x-for re-stamping). -->
+  <script>
+    window.mdRender = function (t) {
+      try {
+        if (!window.marked) return (t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        var html = window.marked.parse(t || '');
+        if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
+        return html;
+      } catch (e) { return (t || ''); }
+    };
+    // Reactive flag so x-html re-renders static messages once marked/DOMPurify finish loading from CDN.
+    document.addEventListener('alpine:init', function () { window.Alpine.store('md', { ready: !!window.marked }); });
+    document.addEventListener('DOMContentLoaded', function () { try { window.ManifestDOMPurify && window.ManifestDOMPurify.load(); } catch (e) { } });
+    (function poll() {
+      if (window.marked && window.DOMPurify && window.Alpine && window.Alpine.store('md')) { window.Alpine.store('md').ready = true; return; }
+      setTimeout(poll, 60);
+    })();
+  </script>
   <script src="/scripts/manifest.tabs.js"></script>
   <script src="/scripts/manifest.toasts.js"></script>
   <script src="/scripts/manifest.tooltips.js"></script>
@@ -126,7 +147,19 @@
       forum: $chat.open('forum-1', { adapter: 'demo' }),
       agg: $chat.open('agg:c_p7', { adapter: 'demo-aggregate', aggregate: true }),
       closed: $chat.open('hist-tg-1', { adapter: 'demo' }),
-      draft: '', gdraft: '', maxDepth: 4
+      llm: $chat.open('docs-session', { adapter: 'claude' }),
+      draft: '', gdraft: '', maxDepth: 4, llmDraft: '', llmFiles: null,
+      async sendLlm() {
+        const files = this.llmFiles ? [...this.llmFiles] : [];
+        const media = [];
+        for (const f of files) {
+          const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+          media.push({ kind: f.type.startsWith('image/') ? 'image' : 'document', name: f.name, mediaType: f.type, url, data: url.split(',')[1] });
+        }
+        if (!this.llmDraft.trim() && !media.length) return;
+        this.llm.send({ body: { text: this.llmDraft, media } });
+        this.llmDraft = ''; this.llmFiles = null;
+      }
     }">
 
     <div class="col gap-1">
@@ -238,6 +271,42 @@
       </div>
       <div class="chat-meta" data-test="rehome-flag" x-show="closed.lastRehome"
            x-text="closed.lastRehome ? `re-homed ${closed.lastRehome.from} → ${closed.lastRehome.to} — cockpit must retarget` : ''"></div>
+    </section>
+
+    <!-- F: real Claude adapter — streaming markdown (both ways) + attachments -->
+    <section class="chat-card col gap-3" data-test="llm">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">F · Claude adapter — streaming markdown · attachments</strong>
+        <span class="chat-meta" x-text="llm.live ? 'connected' : 'connecting…'"></span>
+      </div>
+      <div class="chat-log" data-test="llm-log" style="gap:.75rem">
+        <template x-for="m in llm.messages" :key="m.id">
+          <div class="col gap-1">
+            <div class="row gap-2" style="align-items:baseline">
+              <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+              <span class="chat-meta" x-show="m.status==='streaming'">· streaming…</span>
+            </div>
+            <div x-html="($store.md && $store.md.ready, window.mdRender(m.body.text))" data-test="md"></div>
+            <div class="row-wrap gap-2" x-show="m.body.media && m.body.media.length">
+              <template x-for="att in (m.body.media||[])" :key="att.name">
+                <span>
+                  <img x-show="att.kind==='image'" :src="att.url" :alt="att.name" style="max-height:5rem; border-radius:var(--radius)">
+                  <span class="chat-meta" x-show="att.kind!=='image'" x-text="'📎 '+att.name"></span>
+                </span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div class="col gap-2">
+        <textarea x-model="llmDraft" rows="2" placeholder="Ask in markdown — **bold**, lists, `code`…" @keydown.enter.meta="sendLlm()"></textarea>
+        <div class="row gap-2" style="align-items:center">
+          <input type="file" multiple accept="image/*,application/pdf" @change="llmFiles = $event.target.files">
+          <button class="outlined" @click="sendLlm()">Send</button>
+          <span class="chat-meta" x-show="llmFiles && llmFiles.length" x-text="(llmFiles?.length||0)+' attached'"></span>
+        </div>
+        <span class="chat-meta">Proxy holds the key. No key → mock markdown stream. ⌘↵ to send.</span>
+      </div>
     </section>
 
   </div>

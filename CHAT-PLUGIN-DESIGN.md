@@ -1,6 +1,6 @@
 # Manifest Chat Plugin — Design Doc (DRAFT / RFC v2)
 
-> **Status: DRAFT / RFC — v2.3 (reference implementation verified).** Architecture for a `$chat` plugin, iterated across two adversarial reviews by Playcom as first power-user consumer. **Playcom has signed off: no blockers remain** — the contract expresses its three-lens default, multi-pane, transfers, and nested threading without a fork. v2.3 adds a working framework-side spike (`src/scripts/chat/`) + a driven `/chat` harness that verifies every hard part of the contract end-to-end against a static reference adapter (and surfaced one cursor-management subtlety, now fixed — see §13). The data model and adapter contract are considered settled.
+> **Status: DRAFT / RFC — v2.4 (reference impl + LLM/markdown/attachments verified).** Architecture for a `$chat` plugin, iterated across two adversarial reviews by Playcom as first power-user consumer. **Playcom has signed off: no blockers remain** — the contract expresses its three-lens default, multi-pane, transfers, and nested threading without a fork. v2.3 adds a working framework-side spike (`src/scripts/chat/`) + a driven `/chat` harness that verifies every hard part of the contract end-to-end against a static reference adapter (and surfaced one cursor-management subtlety, now fixed — see §13). The data model and adapter contract are considered settled.
 
 ---
 
@@ -265,7 +265,7 @@ Chat is ephemeral and user-scoped, so it **no-ops in `mnfst-render` MPA output e
 1. **Static / in-memory** — seeded messages, no transport. The path for UI-first development against dummy data (e.g. Playcom Stage 1: build the whole cockpit — including anchored open and an aggregate lens over seeded multi-conversation data — before the data plane exists). High value for dev + demos. **Built & verified** — `src/scripts/chat/manifest.chat.adapters.js` (per-conversation + aggregate/fan-out views), exercised by the `/chat` harness (§13).
 2. **Appwrite** — a table as the message log + Appwrite realtime for inbound; reuses the existing realtime wrapper. Turnkey for Appwrite projects.
 3. **Generic transport** — `load` over GET (Manifest's GET-only remote-data constraint), `subscribe` over SSE or a custom-JS WebSocket, reconnect handled per §6. The escape hatch for any bespoke backend (the shape a Playcom DO+control-plane adapter takes — multiplexing a per-conversation socket with a control-plane roster source).
-4. **LLM / MCP** *(optional, separate, on-demand-loaded like payment provider adapters)* — talks to Claude via the Manifest backend for the AI co-pilot case. Just-another-adapter; never privileged in core.
+4. **LLM / MCP** *(optional, separate, on-demand-loaded like payment provider adapters)* — talks to Claude via a key-holding backend proxy for the AI co-pilot case. Just-another-adapter; never privileged in core. **Built & verified** — `src/scripts/chat/manifest.chat.adapters.llm.js` + `tools/chat-llm-proxy.mjs` (§13); the browser never holds the API key.
 
 ---
 
@@ -321,6 +321,12 @@ Ship `$chat`: a reactive, renderable, drivable **conversation projection** + a c
 ---
 
 ## 13. Changelog
+
+**v2.4 — LLM adapter, markdown, attachments + a streaming-reactivity fix:**
+- Built the optional **`claude` reference adapter** (`src/scripts/chat/manifest.chat.adapters.llm.js`) + a key-holding dev **proxy** (`tools/chat-llm-proxy.mjs`; MOCK mode without a key, shaped to redeploy as a Cloudflare Worker). `$chat` never calls the LLM — the assistant is a participant whose replies stream over the Messages API SSE into `onMessagePart`. Model `claude-haiku-4-5` (cheap/fast for a docs demo), endpoint-configurable. Verified end-to-end against the mock; real on key.
+- **Markdown is render-time and author-owned** — the plugin stores raw `body.text` and never parses it (the no-pre-translation invariant). The harness renders via `x-html` over the markdown plugin's `marked`/`DOMPurify`. Streaming markdown both directions confirmed (note: `x-markdown`'s async innerHTML rewrite + `initTree` races a streaming `x-for`; a synchronous `x-html` helper is the robust path).
+- **Attachments** — multi-file via `body.media[]` (image/document base64), sent to Claude as image/document content blocks; optimistic object-URL → canonical via the server-echo path (§6).
+- **Engine fix (real bug the demo surfaced):** streaming appends mutate a message in place, but `commit()` reassigned `state.messages` with the *same* object identities, so a keyed `x-for` never re-rendered the changed message (only a tracked-dep flip forced it). `commit()` now emits per-message snapshots. Spike-simple; a production build should hold reactive message elements and mutate them in place.
 
 **v2.3 — reference implementation built & verified:**
 - Spiked the framework side under `src/scripts/chat/` (`manifest.chat.store.js` engine, `manifest.chat.adapters.js` static reference adapter, `manifest.chat.main.js` `$chat` magic) + a driven harness on the `/chat` route. Wired into `build.mjs`.

@@ -82,7 +82,11 @@
         });
 
         function ordered() { return _msgs.slice().sort(byKey); }
-        function commit() { state.messages = ordered(); }
+        // Emit fresh per-message snapshots each commit so a keyed x-for re-renders
+        // a message mutated in place (streaming token appends, status changes) —
+        // same object identity wouldn't trip Alpine's diff. (Spike-simple; a
+        // production build would mutate reactive elements in place instead.)
+        function commit() { state.messages = ordered().map(m => Object.assign({}, m, { body: Object.assign({}, m.body) })); }
         function commitParticipants() { state.participants = [..._participants.values()]; }
         function commitTyping() { state.typing = [..._typing.values()]; }
 
