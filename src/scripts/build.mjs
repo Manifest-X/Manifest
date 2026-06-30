@@ -147,17 +147,6 @@ const CONFIG = {
         'manifest.edit.main.js'
     ],
 
-    // Data Appwrite presence subscripts (for manifest.appwrite.presence.js)
-    dataAppwritePresenceSubscripts: [
-        'presence/manifest.data.presence.utils.js',
-        'presence/manifest.data.presence.elements.js',
-        'presence/manifest.data.presence.events.js',
-        'presence/manifest.data.presence.database.js',
-        'presence/manifest.data.presence.realtime.js',
-        'presence/manifest.data.presence.visual.js',
-        'presence/manifest.data.presence.main.js'
-    ],
-
     // Core plugins that should load first
     corePlugins: ['scripts/manifest.components.js'],
 
@@ -239,9 +228,6 @@ function buildSubscripts() {
 
     // Build Appwrite data
     combineSubscripts(CONFIG.dataAppwriteSubscripts, 'manifest.appwrite.data.js', 'data');
-
-    // Build Appwrite presence
-    combineSubscripts(CONFIG.dataAppwritePresenceSubscripts, 'manifest.appwrite.presence.js', 'data');
 
     // Build payments
     combineSubscripts(CONFIG.paymentsSubscripts, 'manifest.payments.js', 'payments');
@@ -682,7 +668,6 @@ function copyFilesToDist() {
         // Individual plugin files
         { source: 'scripts/manifest.appwrite.auth.js', dest: '../lib/manifest.appwrite.auth.js' },
         { source: 'scripts/manifest.appwrite.data.js', dest: '../lib/manifest.appwrite.data.js' },
-        { source: 'scripts/manifest.appwrite.presence.js', dest: '../lib/manifest.appwrite.presence.js' },
         { source: 'scripts/manifest.code.js', dest: '../lib/manifest.code.js' },
         { source: 'scripts/manifest.components.js', dest: '../lib/manifest.components.js' },
         { source: 'scripts/manifest.colorpicker.js', dest: '../lib/manifest.colorpicker.js' },
