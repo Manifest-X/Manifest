@@ -35,7 +35,10 @@ async function ensureManifest() {
     try {
         const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
         const response = await fetch(manifestUrl);
-        return await response.json();
+        const manifest = await response.json();
+        // No-loader path: resolve ${VAR} placeholders the dynamic loader would have.
+        window.ManifestDataConfig?.interpolateManifest?.(manifest);
+        return manifest;
     } catch (error) {
         return null;
     }

@@ -66,6 +66,8 @@ window.ManifestComponentsRegistry = {
                 });
                 if (res.ok) {
                     manifest = await res.json();
+                    // No-loader path: resolve ${VAR} placeholders the dynamic loader would have.
+                    window.ManifestDataConfig?.interpolateManifest?.(manifest);
                 } else {
                     console.warn('[Manifest] Failed to load manifest.json (HTTP', res.status + ')');
                 }
