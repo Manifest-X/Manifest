@@ -1,16 +1,10 @@
-/* Payments magic ($pay) */
+/* Manifest Payments — $pay magic (callable + reactive props) */
 //
-// $pay is a callable magic with reactive properties:
-//   $pay('pro-monthly')            initiate a flow for an opaque ref → Promise
-//   $pay('https://buy.…')          absolute URL → plain link-through, no server
+//   $pay(ref|url)                  initiate a flow → Promise
 //   $pay.portal()                  open the billing/customer portal
 //   $pay.refresh()                 re-pull server state into $pay.state
-//   $pay.register(name, adapter)   add/override an overlay adapter (escape hatch)
-//   $pay.state                     server-defined entitlement record (schema-less)
-//   $pay.loading / $pay.error / $pay.last
-//
-// Reads of .state/.loading/etc. go through the reactive 'pay' store, so Alpine
-// tracks them in x-show / x-text. State for Appwrite projects is read via $x.
+//   $pay.register(name, adapter)   add/override an overlay adapter
+//   $pay.state / .loading / .error / .last   reactive (tracked in x-show/x-text)
 
 function initializePaymentsMagic() {
     if (typeof Alpine === 'undefined') return;

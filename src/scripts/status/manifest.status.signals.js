@@ -1,11 +1,6 @@
 /*  Manifest Status — signal resolvers + rollup
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
-/*
-/*  Each provider type resolves a normalized signal to { state, latencyMs }.
-/*  Generic providers (probe/feed/static/heartbeat) are fully implemented;
-/*  appwrite resolves via the public /health endpoint; mirror uses a small
-/*  registry of known upstream feeds; mcp is feed-based and pluggable.
 */
 
 (function () {
@@ -50,8 +45,7 @@
             return { state, latencyMs };
         } catch (err) {
             clearTimeout(t);
-            // Network error / CORS / timeout: can't distinguish down from blocked,
-            // so report unknown rather than a false outage.
+            // Can't distinguish down from CORS-blocked, so report unknown not outage.
             return { state: 'unknown', latencyMs: null, error: err && err.name ? err.name : 'fetch failed' };
         }
     }
@@ -61,13 +55,11 @@
             const res = await fetch(sig.url, { cache: 'no-store' });
             if (!res.ok) return { state: 'unknown', latencyMs: null, error: 'feed ' + res.status };
             const json = await res.json();
-            // The feed node may be a bare state string, or an object carrying
-            // both a state and a human update message.
+            // Feed node may be a bare state string or an object with state + message.
             const node = sig.path ? dig(json, sig.path) : json;
             const obj = (node && typeof node === 'object') ? node : null;
             const raw = obj ? (obj.state != null ? obj.state : obj.status) : node;
             const message = (obj && obj.message) ? obj.message : (json.message || null);
-            // Optional historical data a backend can hydrate.
             const history = Array.isArray(obj && obj.history) ? obj.history : (Array.isArray(json.history) ? json.history : undefined);
             const uptime = (obj && typeof obj.uptime === 'number') ? obj.uptime : (typeof json.uptime === 'number' ? json.uptime : undefined);
             const incidents = Array.isArray(obj && obj.incidents) ? obj.incidents : (Array.isArray(json.incidents) ? json.incidents : undefined);

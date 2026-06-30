@@ -1,16 +1,8 @@
-/* Payments directive (x-pay) */
-//
-// Sugar for "on click, initiate this ref". Markup is provider- AND modality-
-// agnostic — switching either is a config/server change, never an HTML change.
-//   <button x-pay="'pro-monthly'">Subscribe</button>
-//   <button x-pay="'credits-1000'">Buy credits</button>
-//   <button x-pay.portal>Manage billing</button>
-//   <button x-pay.overlay="'pro-monthly'">Subscribe</button>   modality hint
-//   <a x-pay="cart.token">Checkout</a>
+/* Manifest Payments — x-pay directive (click → initiate a ref) */
 //
 // Modifiers:
-//   .portal           treat as a portal flow (ref defaults to "portal")
-//   .overlay/.redirect  hint preferred modality to the function (server decides)
+//   .portal             portal flow (ref defaults to "portal")
+//   .overlay/.redirect  hint preferred modality (server decides)
 
 function initializePaymentsDirective() {
     if (typeof Alpine === 'undefined') return;
@@ -25,11 +17,9 @@ function initializePaymentsDirective() {
         const hasExpr = expression && expression.trim().length > 0;
         const getRef = hasExpr ? evaluateLater(expression) : null;
 
-        // Busy guard: ignore clicks while a flow is in flight and disable the
-        // element, so double-clicks can't mint duplicate checkout sessions.
-        // On failure, surface feedback automatically via the toasts plugin
-        // when it's loaded ($toast resolved through this element's Alpine
-        // scope); programmatic $pay() callers handle their own rejections.
+        // Busy guard: ignore clicks and disable the element while in flight, so
+        // double-clicks can't mint duplicate sessions. On failure, surface a
+        // toast if the toasts plugin is loaded.
         const run = async (ref) => {
             if (el.getAttribute('aria-busy') === 'true') return;
             const payload = modeHint ? { mode: modeHint } : {};

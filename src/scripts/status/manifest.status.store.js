@@ -1,16 +1,12 @@
 /*  Manifest Status — store
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
-/*
-/*  Internal reactive store backing $status. Mirrors store('data'):
-/*  named entries + a _version counter bumped on every update.
 */
 
 (function () {
     'use strict';
 
-    // Ordered severity. maintenance sits between operational and degraded so a
-    // worst-of rollup surfaces it over a fully-operational set. unknown = -1.
+    // Ordered severity; maintenance sits between operational and degraded.
     const LEVELS = {
         operational: 0,
         maintenance: 0.5,

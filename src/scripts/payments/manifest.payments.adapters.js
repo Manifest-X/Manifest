@@ -1,30 +1,7 @@
-/* Payments adapters */
-//
-// An adapter is the ONLY provider-specific client code. It knows how to open a
-// provider's overlay/embedded checkout. Link-through (redirect) needs no adapter
-// and is the universal floor — ANY provider with a hosted page works without one.
-//
-// Capability tiers:
-//   overlay  (supportsOverlay: true)  — provider exposes a programmatic modal
-//                                        with a success/cancel callback. Shipped
-//                                        for: revolut, paddle, lemonsqueezy,
-//                                        polar, razorpay.
-//   redirect (supportsOverlay: false) — no no-mount modal; works via the redirect
-//                                        floor (server returns {mode:'redirect',
-//                                        url}). Embedded/popup variants (Stripe
-//                                        Elements, Square Web Payments, PayPal
-//                                        Buttons, …) can be added per-provider via
-//                                        $pay.register(name, customAdapter).
-//
-// Adapter shape:
-//   { supportsOverlay: bool,
-//     async open({ url, params, config }) -> { status: 'complete'|'cancelled'|… } }
-//
-// The server (your function) decides modality per response, so adapters never see
-// secret keys — only a hosted url, publishable params, or a public token.
+/* Manifest Payments — provider adapters (overlay/embedded checkout) */
 
-// Load a CDN script once; resolve when ready. Adapters call this on first use so
-// heavy provider SDKs are never bundled and never appear in prerendered output.
+// Load a CDN script once; resolve when ready. Keeps heavy provider SDKs out of
+// the bundle and prerendered output.
 const _loaded = {};
 function loadScript(src, attrs) {
     if (_loaded[src]) return _loaded[src];
@@ -54,8 +31,7 @@ function list() { return Object.keys(_registry).map(n => ({ name: n, overlay: !!
 
 /* ---- Overlay adapters (programmatic modal + success callback) ------------- */
 
-// Revolut Merchant — popup over an order token. Function returns
-// { provider:'revolut', params:{ token } }  (token = the order's public id).
+// Revolut Merchant — popup over an order token.
 register('revolut', {
     supportsOverlay: true,
     async open({ params = {}, config }) {
@@ -75,8 +51,7 @@ register('revolut', {
     }
 });
 
-// Paddle (MoR) — overlay via Paddle.js. Function returns
-// { provider:'paddle', params:{ token, items, customer, … } }  (token = publishable).
+// Paddle (MoR) — overlay via Paddle.js.
 register('paddle', {
     supportsOverlay: true,
     async open({ params = {}, config }) {
@@ -96,8 +71,7 @@ register('paddle', {
     }
 });
 
-// Lemon Squeezy (MoR) — URL-in-a-modal via lemon.js. Function returns
-// { provider:'lemonsqueezy', url }  (a hosted checkout URL).
+// Lemon Squeezy (MoR) — URL-in-a-modal via lemon.js.
 register('lemonsqueezy', {
     supportsOverlay: true,
     async open({ url }) {
@@ -116,8 +90,7 @@ register('lemonsqueezy', {
     }
 });
 
-// Polar (MoR) — URL-in-a-modal via the embed SDK. Function returns
-// { provider:'polar', url }  (a checkout-link/session url).
+// Polar (MoR) — URL-in-a-modal via the embed SDK.
 register('polar', {
     supportsOverlay: true,
     async open({ url }) {
@@ -133,8 +106,7 @@ register('polar', {
     }
 });
 
-// Razorpay — true modal checkout. Function returns
-// { provider:'razorpay', params:{ key, order_id, amount, … } }.
+// Razorpay — true modal checkout.
 register('razorpay', {
     supportsOverlay: true,
     async open({ params = {} }) {
@@ -152,23 +124,8 @@ register('razorpay', {
 });
 
 /* ---- Redirect-floor providers --------------------------------------------- */
-// Well-known hosted-page providers with no clean no-mount modal. They work today
-// via the redirect floor — the function returns { mode:'redirect', url } (a hosted
-// checkout / payment link / order approve url). Registered for discoverability and
-// so a mistaken mode:'overlay' degrades cleanly. Add an embedded/popup variant any
-// time with $pay.register(name, { supportsOverlay:true, open }).
-//
-//   stripe     Checkout session url (Elements/embedded = custom adapter)
-//   square     Payment Link / Checkout API url (Web Payments SDK = custom)
-//   paypal     Orders API approve url (Smart Buttons popup = custom)
-//   braintree  hosted / Drop-in (Drop-in needs a mount node = custom)
-//   adyen      Pay-by-Link / hosted (Drop-in/Components = custom)
-//   mollie     hosted checkout (redirect-first by design)
-//
-// NOTE: any provider NOT listed here still works with zero config via the same
-// redirect floor (absolute-URL ref, or the function returning {mode:'redirect'}).
-// Hosted destinations like Patreon / Buy Me a Coffee / Ko-fi / donation pages are
-// just link-through: <a x-pay="'https://patreon.com/you'">…</a>. No adapter needed.
+// Registered for discoverability; no overlay, so they degrade to the redirect
+// floor. Unlisted providers work the same way with zero config.
 ['stripe', 'square', 'paypal', 'braintree', 'adyen', 'mollie']
     .forEach((name) => register(name, { supportsOverlay: false, redirectOnly: true }));
 

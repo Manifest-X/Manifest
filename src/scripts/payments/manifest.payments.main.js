@@ -1,8 +1,4 @@
-/* Payments main */
-//
-// Orchestration: settle redirect-returns and pull initial state once Alpine and
-// (optionally) auth are ready. Registration of store/magic/directive happens in
-// their own subscripts on alpine:init.
+/* Manifest Payments — boot (settle redirect-returns, pull initial state) */
 
 function bootPayments() {
     if (window.__manifestPaymentsBooted) return;
