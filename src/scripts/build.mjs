@@ -668,6 +668,7 @@ function copyFilesToDist() {
         // Individual plugin files
         { source: 'scripts/manifest.appwrite.auth.js', dest: '../lib/manifest.appwrite.auth.js' },
         { source: 'scripts/manifest.appwrite.data.js', dest: '../lib/manifest.appwrite.data.js' },
+        { source: 'scripts/manifest.appwrite.presences.js', dest: '../lib/manifest.appwrite.presences.js' },
         { source: 'scripts/manifest.code.js', dest: '../lib/manifest.code.js' },
         { source: 'scripts/manifest.combobox.js', dest: '../lib/manifest.combobox.js' },
         { source: 'scripts/manifest.components.js', dest: '../lib/manifest.components.js' },

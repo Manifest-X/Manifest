@@ -241,13 +241,13 @@
 	const APPWRITE_PLUGINS = [
 		'appwrite-auth',
 		'appwrite-data',
-		'appwrite-presence'
+		'appwrite-presences'
 	];
 
 	// Plugin dependencies: plugins that require other plugins to be loaded first
 	const PLUGIN_DEPENDENCIES = {
 		'appwrite-data': ['data'],
-		'appwrite-presence': ['data', 'appwrite-auth']
+		'appwrite-presences': ['data', 'appwrite-auth']
 	};
 
 	// Derive default plugin list from manifest (only load data/localization/components when manifest needs them)
@@ -422,7 +422,7 @@
 			plugins.push('appwrite-data');
 		}
 		if (manifest.appwrite?.presence) {
-			plugins.push('appwrite-presence');
+			plugins.push('appwrite-presences');
 		}
 		return plugins;
 	}
@@ -541,7 +541,7 @@
 
 		const MANIFEST_DEPENDENT_PLUGINS = [
 			'data', 'localization', 'components',
-			'appwrite-auth', 'appwrite-data', 'appwrite-presence', 'payments'
+			'appwrite-auth', 'appwrite-data', 'appwrite-presences', 'payments'
 		];
 		const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
 
