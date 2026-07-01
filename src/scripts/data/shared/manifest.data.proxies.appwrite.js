@@ -1,7 +1,6 @@
 /* Manifest Data Sources - Appwrite Methods Handler */
-// Create Appwrite methods handler for tables and buckets
+// CRUD/storage methods handler for Appwrite tables and buckets
 function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
-    // Helper to set error state automatically
     const setErrorState = (error) => {
         const store = Alpine.store('data');
         if (store) {
@@ -17,11 +16,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             };
             Alpine.store('data', updatedStore);
         }
-        // For test purposes, also log to console
         console.error(`[Manifest Data] ${dataSourceName} operation failed:`, error);
     };
 
-    // Helper to clear error state
     const clearErrorState = () => {
         const store = Alpine.store('data');
         if (store) {
@@ -41,13 +38,11 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         }
     };
 
-    // Core method handler logic (extracted for recursive calls)
+    // Core handler (named so $duplicate etc. can recurse)
     const handleMethod = async function (method, ...args) {
-        // Clear error state before operation
         clearErrorState();
 
         try {
-            // Get manifest to check if this is an Appwrite data source
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
             if (!manifest?.data) {
                 throw new Error('[Manifest Data] Manifest not available');
@@ -98,7 +93,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                     }
 
-                    // Use unified mutation system with optimistic updates
+                    // Optimistic mutation path
                     const executeMutation = window.ManifestDataMutations?.executeMutation;
                     if (executeMutation) {
                         return await executeMutation({
@@ -689,11 +684,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         addEntryToStore(dataSourceName, result);
                     }
 
-                    // If entryId is provided, link the file to a table entry
-                    // Supports multiple API styles for flexibility:
-                    // 1. $x.assets.$create(file, null, null, { entryId: '...', table: 'projects' })
-                    // 2. $x.assets.$create(file, null, null, { entryId: '...', table: 'projects', fileIdsColumn: 'attachments' })
-                    // 3. $x.assets.$create(file, null, null, null, 'entryId') // Legacy: 4th arg as entryId
+                    // Link the uploaded file to a table entry, resolved from the
+                    // options object (4th arg), the legacy 5th-arg id, or belongsTo.
                     let entryId = null;
                     let tableName = null;
                     let fileIdsColumn = 'fileIds'; // Default column name
@@ -744,11 +736,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                     }
 
-                    // For storage buckets, we already have the real file from API response
-                    // No need for background reload - the optimistic update was already replaced with real file
-                    // Background reload would only be needed if we need to apply scope filtering,
-                    // but since we have the real file object, we can trust it's correct
-                    // If scope filtering is needed, it will be handled by realtime events
+                    // We already have the real file from the API response, so no
+                    // background reload; scope filtering (if any) is handled by realtime.
                     if (!addEntryToStore) {
                         // Fallback to old behavior
                         if (window.ManifestDataStore?.dataSourceCache) {
@@ -821,9 +810,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                 })
                             );
 
-                            // SINGLE SOURCE OF TRUTH: No reload needed - optimistic delete provides immediate feedback
-                            // and realtime events will sync everything automatically. Reloading causes race conditions
-                            // where stale data overwrites optimistic deletes, causing files to reappear.
+                            // No reload: optimistic delete + realtime sync. Reloading
+                            // races and can resurrect deleted files from stale data.
                             return results;
                         } else {
                             // Fallback to old behavior
@@ -851,9 +839,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                 }
                             });
 
-                            // SINGLE SOURCE OF TRUTH: No reload needed - optimistic delete provides immediate feedback
-                            // and realtime events will sync everything automatically. Reloading causes race conditions
-                            // where stale data overwrites optimistic deletes, causing files to reappear.
+                            // No reload: optimistic delete + realtime sync. Reloading
+                            // races and can resurrect deleted files from stale data.
                             return result;
                         } else {
                             // Fallback to old behavior
@@ -888,40 +875,15 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         throw new Error(`[Manifest Data] File "${actualFileId}" not found or not accessible: ${error.message}`);
                     }
 
-                    // Get view URL using Appwrite SDK (a URL STRING, not the
-                    // file content). Using 'view' rather than 'download' since
-                    // we're re-uploading rather than saving to disk.
+                    // 'view' URL (a string, not the bytes) since we re-upload rather than save to disk
                     const viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
 
-                    // Authenticate the fetch for permissioned buckets.
-                    //
-                    // Storage's /view, /download and /preview endpoints check
-                    // the USER SESSION — not API/dev keys (those work only on
-                    // JSON endpoints like /storage/buckets/.../files/.../).
-                    // In localhost dev the browser blocks the cross-domain
-                    // session cookie (SameSite=Lax on plain HTTP), so the
-                    // request lands at Appwrite as anonymous and a permissioned
-                    // file returns 404 storage_file_not_found.
-                    //
-                    // The Appwrite Web SDK works around this by writing the
-                    // session token to localStorage under `cookieFallback`
-                    // and replaying it as the `X-Fallback-Cookies` header on
-                    // every SDK request. That's why SDK calls (getFile metadata
-                    // above, listRows, $create, etc.) succeed cross-domain
-                    // while raw fetch() doesn't — raw fetch doesn't know to
-                    // read that localStorage key.
-                    //
-                    // We do exactly what the SDK does: read cookieFallback
-                    // and attach it as X-Fallback-Cookies. This is more
-                    // reliable than JWT:
-                    //   - no createJWT round-trip (and dev-key-configured
-                    //     clients 501 on createJWT)
-                    //   - no 15-min expiry or rate limit (10/hour/account)
-                    //   - matches whatever auth the SDK is already using
-                    //
-                    // Falls through to credentials-only when the user isn't
-                    // signed in (no cookieFallback in storage) — that path
-                    // still works in production with a SameSite=None cookie.
+                    // Storage /view checks the user SESSION, not API/dev keys. In
+                    // localhost dev the cross-domain session cookie is blocked
+                    // (SameSite=Lax on HTTP) so a raw fetch lands anonymous → 404.
+                    // Replicate the SDK's workaround: replay the `cookieFallback`
+                    // localStorage token as X-Fallback-Cookies. Falls through to
+                    // credentials-only when signed out (works in prod via SameSite=None).
                     const fetchHeaders = {};
                     if (appwriteConfig.projectId) {
                         fetchHeaders['X-Appwrite-Project'] = appwriteConfig.projectId;

@@ -2,13 +2,9 @@
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
 /*
-/*  The static/in-memory adapter: a seeded backend of multiple conversations
-/*  with a per-conversation view AND an aggregate (virtual conversationId,
-/*  fan-out) view. It exercises the whole contract — anchored bidirectional
-/*  load, streaming, optimistic+echo reconcile, closed→new-conversation spawn,
-/*  unseen-conversationId live inbound, gap/backfill — with no transport. This
-/*  is the proof a real adapter (Appwrite, a Cloudflare DO, etc.) slots in the
-/*  same shape. Backends own ts and identity; the plugin only projects.
+/*  Seeded in-memory backend with per-conversation and aggregate (fan-out)
+/*  views. Exercises the whole contract with no transport, proving a real
+/*  adapter (Appwrite, a Cloudflare DO) slots in the same shape.
 */
 
 (function () {
@@ -24,7 +20,7 @@
     }
 
     // ---- the shared in-memory backend --------------------------------------
-    // One backend instance holds all conversations; both adapter views read it.
+    // One instance holds all conversations; both adapter views read it.
     function createBackend() {
         let seq = 0;
         const now = Date.now();
@@ -94,8 +90,7 @@
         emit('contact:' + backend.player.id, h => h.onMessage && h.onMessage(msg));  // aggregate sees it too
     }
 
-    // page a message list around/before/after an anchor — opaque cursors are
-    // just indices here; a real backend encodes hot-log vs archive offset.
+    // page around/before/after an anchor; cursors are just indices here.
     function pageList(list, win, size) {
         win = win || {}; size = size || 20;
         const ids = list.map(x => x.id);
@@ -144,9 +139,8 @@
     }
 
     // ---- aggregate adapter (virtual conversationId, fan-out) ----------------
-    // Merges a contact's conversations across channels into one stream; live
-    // subscribes at the CONTACT level so a brand-new conversation's first
-    // inbound arrives with a never-before-seen conversationId.
+    // Merges a contact's conversations into one stream; subscribes at the
+    // CONTACT level so a new conversation's first inbound has an unseen id.
     function aggregateAdapter(opts) {
         const contactId = (opts && opts.contactId) || backend.player.id;
         function memberConvs() { return [...backend.convs.values()].filter(c => c.participants.some(p => p.id === contactId)); }

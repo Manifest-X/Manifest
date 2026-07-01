@@ -728,8 +728,7 @@ class TailwindCompiler {
 
 
 
-// Synchronous utility generation
-// Methods for generating utilities synchronously before first paint
+// Synchronous utility generation before first paint
 
 TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     if (!this.criticalStyleElement) return;
@@ -737,7 +736,6 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     const syncStart = performance.now();
 
     try {
-        // Extract CSS variables synchronously from already-loaded sources
         const cssVariables = new Map();
 
         // 1. From inline style elements (already in DOM)
@@ -778,7 +776,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                     const rules = Array.from(sheet.cssRules || []);
                     for (const rule of rules) {
                         if (rule.type === CSSRule.STYLE_RULE && rule.styleSheet) {
-                            // Handle @import rules that have nested stylesheets
+                            // @import rules with nested stylesheets
                             try {
                                 const nestedRules = Array.from(rule.styleSheet.cssRules || []);
                                 for (const nestedRule of nestedRules) {
@@ -809,18 +807,10 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         } catch (e) {
         }
 
-        // 4. From computed styles (if :root is available)
-        // Run even while document.readyState === 'loading'. This method is the
-        // constructor's only origin-independent variable source: getComputedStyle
-        // reads the resolved cascade regardless of stylesheet origin, whereas
-        // method 3 (CSSOM cssRules) throws on cross-origin sheets (e.g. the CDN
-        // build at cdn.jsdelivr.net). The classic <script> blocks on preceding
-        // stylesheets, so :root variables are already resolved here. Skipping
-        // this during 'loading' meant a CDN-hosted page captured zero variables
-        // synchronously, so the critical "all colors" fallback never ran and
-        // variable-derived utilities (bg-line, border-line, …) fell back to
-        // currentColor — pure white in dark mode / black in light — until the
-        // async compile finished.
+        // 4. From computed styles. Runs even during 'loading': getComputedStyle
+        // reads the resolved cascade across origins (CDN sheets), which the CSSOM
+        // path (method 3) can't — without it CDN pages capture no vars and
+        // utilities flash as currentColor.
         try {
             if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
@@ -851,7 +841,6 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 while ((classMatch = classRegex.exec(htmlSource)) !== null) {
                     const classes = classMatch[1].split(/\s+/).filter(Boolean);
                     for (const cls of classes) {
-                        // Match utility patterns that might use CSS variables
                         if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(cls)) {
                             classesToGenerate.add(cls);
                         }
@@ -895,7 +884,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                     variableSuffixes: []
                 };
             } else {
-                // Try to get classes from cache (most efficient - only generate what was used before)
+                // Fall back to the cache (only generate what was used before)
                 const cached = localStorage.getItem('tailwind-cache');
                 let cachedClasses = new Set();
 
@@ -904,17 +893,14 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                         const parsed = JSON.parse(cached);
                         const cacheEntries = Object.values(parsed);
 
-                        // Extract classes from cache keys (format: "class1,class2-themeHash")
                         for (const entry of cacheEntries) {
-                            // Find the cache entry with the most recent timestamp
                             const mostRecent = cacheEntries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
                             if (mostRecent && mostRecent.css) {
-                                // Extract class names from generated CSS
                                 const classMatches = mostRecent.css.match(/\.([a-zA-Z0-9_-]+(?::[a-zA-Z0-9_-]+)*)\s*{/g);
                                 if (classMatches) {
                                     for (const match of classMatches) {
                                         const className = match.replace(/^\./, '').replace(/\s*{.*$/, '');
-                                        // Only include utility classes (not Tailwind native like red-500)
+                                        // Utility classes only (not native like red-500)
                                         if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(className.split(':').pop())) {
                                             cachedClasses.add(className);
                                         }
@@ -962,14 +948,12 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 }
             }
 
-            // If no classes found, generate utilities for all color variables
+            // No classes found: generate every color-* utility to prevent flash.
             if (!usedData || !usedData.classes || usedData.classes.length === 0) {
-                // Generate utilities for all color-* variables to prevent flash
                 const colorVars = Array.from(cssVariables.entries())
                     .filter(([name]) => name.startsWith('color-'));
 
                 if (colorVars.length > 0) {
-                    // Create synthetic classes for all color utilities (text, bg, border)
                     const syntheticClasses = [];
                     for (const [varName] of colorVars) {
                         const suffix = varName.replace('color-', '');
@@ -1046,16 +1030,12 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
             // Ignore parsing errors
         }
 
-        // Method 3: Check computed styles from :root (if available)
-        // Run even during readyState === 'loading' — getComputedStyle resolves
-        // the cascade from cross-origin stylesheets (CDN builds) that the CSSOM
-        // methods above cannot read. See addCriticalBlockingStylesSync for the
-        // full rationale: without this, CDN-hosted pages capture no variables
-        // synchronously and variable-derived utilities flash as currentColor.
+        // Method 3: Computed styles from :root. Runs even during 'loading' —
+        // resolves cross-origin (CDN) vars the CSSOM methods can't; see
+        // addCriticalBlockingStylesSync.
         try {
             if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
-                // Extract all CSS variables, not just color ones
                 const allProps = rootStyles.length;
                 for (let i = 0; i < allProps; i++) {
                     const prop = rootStyles[i];
@@ -1074,14 +1054,12 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         // Method 4: Scan HTML source directly for class attributes
         try {
             const htmlSource = document.documentElement.outerHTML;
-            // Extract all class attributes from HTML source
             const classRegex = /class=["']([^"']+)["']/gi;
             let classMatch;
             while ((classMatch = classRegex.exec(htmlSource)) !== null) {
                 const classString = classMatch[1];
                 const classes = classString.split(/\s+/).filter(Boolean);
                 for (const cls of classes) {
-                    // Match common color utility patterns (more comprehensive)
                     if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(cls)) {
                         commonColorClasses.add(cls);
                     }
@@ -2430,8 +2408,7 @@ TailwindCompiler.prototype.parseClassName = function (className) {
 
 
 
-// Compilation methods
-// Main compilation logic and utility generation
+// Compilation logic and utility generation
 
 // Generate utilities from CSS variables
 TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedData) {
@@ -2579,16 +2556,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         generateUtility(className, css);
                     }
 
-                    // Check for opacity variants of this utility. Collect the
-                    // bare opacity base class (e.g. `bg-black/10`) rather than the
-                    // full prefixed class (e.g. `backdrop:bg-black/10`). generateUtility
-                    // discovers and applies variant prefixes itself by matching the
-                    // trailing segment after the last `:`, so passing it the bare base
-                    // lets its variant loop emit the correct selector
-                    // (`.backdrop\:bg-black\/10::backdrop`). Passing the prefixed class
-                    // instead made generateUtility treat it as a plain base class and
-                    // emit a malformed `.backdrop\:bg-black\/10 { … }` rule with no
-                    // `::backdrop` pseudo-element.
+                    // Opacity variants: collect the bare base (e.g. `bg-black/10`),
+                    // not the prefixed class — generateUtility discovers variant
+                    // prefixes itself, so passing the bare base emits the correct
+                    // selector (`.backdrop\:bg-black\/10::backdrop`).
                     const opacityBaseClasses = new Set();
                     for (const cls of usedClasses) {
                         // Parse the class to extract the base utility name
@@ -2648,16 +2619,9 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
             return className.replace(/[^a-zA-Z0-9-]/g, '\\$&');
         };
 
-        // Helper to replace & in CSS selectors (not in property values or comments)
-        // IMPORTANT: For CSS nesting, we should NOT replace & in nested selectors
-        // The & should remain as-is so CSS nesting works correctly
-        // This function should only be used for legacy/flattened CSS, not nested CSS
+        // Replace & in selectors — legacy/flattened CSS only; nested CSS keeps &
+        // as-is so native nesting works.
         const replaceAmpersandInSelectors = (cssText, replacement) => {
-            // For full blocks with nested rules, don't replace & at all - preserve CSS nesting
-            // Check if this looks like nested CSS:
-            // - Has & followed by :, ., [, or whitespace then { (nested selector)
-            // - Has ] & (attribute selector followed by &, like [dir=rtl] &)
-            // - Has & on its own line followed by :, ., or [ (common nested pattern)
             const hasNestedSelectors =
                 /&\s*[:\.\[{]/.test(cssText) ||           // &:not(), &::before, &[attr], & {
                 /&\s*\n\s*[:\.\[{]/.test(cssText) ||      // & on new line followed by selector
@@ -3192,13 +3156,9 @@ TailwindCompiler.prototype.compile = async function () {
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
             if (themeCss) {
-                // Extract and cache custom utilities. We scan framework CSS too
-                // because the generator needs to know about semantic classes
-                // like .brand / .row / .col to emit their responsive/state
-                // variants (e.g. md:row, hover:brand). Base-form re-emission is
-                // suppressed in generateCustomUtilities ("Skip generating base
-                // utility - it already exists in the CSS"); duplicate captures
-                // are collapsed at the end of extractCustomUtilities.
+                // Extract custom utilities. Framework CSS is scanned too so the
+                // generator can emit variants of semantic classes (md:row,
+                // hover:brand); base forms are suppressed in generateCustomUtilities.
                 const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
                 for (const [name, value] of discoveredCustomUtilities.entries()) {
                     this.customUtilities.set(name, value);
@@ -3357,25 +3317,19 @@ TailwindCompiler.prototype.compile = async function () {
 
 
 
-// DOM observation and event handling
-// Methods for watching DOM changes and triggering recompilation
+// DOM observation: watch for changes and trigger recompilation
 
 // Setup component load listener and MutationObserver
 TailwindCompiler.prototype.setupComponentLoadListener = function () {
-    // Use a single debounced handler for all component-related events
     const debouncedCompile = this.debounce(() => {
         if (!this.isCompiling) {
             this.compile();
         }
     }, this.options.debounceTime);
 
-    // Listen for custom events when components are loaded/processed
-    // Support both old (manifest) and new (manifest) event names for compatibility
+    // Recompile when components load/process; re-scan so component HTML is covered.
     const handleComponentEvent = () => {
-        // If we haven't scanned static classes yet, trigger a full re-scan
-        // This ensures component HTML files are scanned for utility classes
         if (!this.hasScannedStatic) {
-            // Reset the scan promise to allow re-scanning
             this.staticScanPromise = null;
             this.hasScannedStatic = false;
         }
@@ -3389,12 +3343,9 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     document.addEventListener('manifest:components-processed', handleComponentEvent);
     document.addEventListener('manifest:components-ready', handleComponentEvent);
 
-    // Listen for route changes but don't recompile unnecessarily
+    // On route change, recompile only if genuinely new dynamic classes appeared.
     document.addEventListener('manifest:route-change', (event) => {
-        // Only trigger compilation if we detect new dynamic classes
-        // The existing MutationObserver will handle actual DOM changes
         if (this.hasScannedStatic) {
-            // Wait longer for route content to fully load before checking
             setTimeout(() => {
                 const currentDynamicCount = this.dynamicClassCache.size;
                 const currentClassesHash = this.lastClassesHash;
@@ -3405,10 +3356,9 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                 const dynamicClasses = Array.from(this.dynamicClassCache);
                 const newClassesHash = dynamicClasses.sort().join(',');
 
-                // Only compile if we found genuinely new classes, not just code processing artifacts
                 if (newDynamicCount > currentDynamicCount && newClassesHash !== currentClassesHash) {
                     const newClasses = dynamicClasses.filter(cls =>
-                        // Filter out classes that are likely from code processing
+                        // Ignore highlight/code-processing artifacts
                         !cls.includes('hljs') &&
                         !cls.startsWith('language-') &&
                         !cls.includes('copy') &&
@@ -3419,11 +3369,11 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                         debouncedCompile();
                     }
                 }
-            }, 300); // Longer delay to let code processing finish
+            }, 300); // let code processing finish
         }
     });
 
-    // Use a single MutationObserver for all DOM changes
+    // Single MutationObserver for all DOM changes
     const observer = new MutationObserver((mutations) => {
         let shouldRecompile = false;
 
@@ -3510,15 +3460,10 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     });
 };
 
-// Start processing with initial compilation. DOM observation is owned by
-// setupComponentLoadListener (called separately from main.js init) — that one
-// uses an incremental staticClassCache lookup per mutation, which scales to
-// thousands of elements. A previous version of this method also installed its
-// own MutationObserver here that called getUsedClasses() on EVERY mutation
-// (a full document-wide O(N) DOM scan), so on a busy page with N≥3000 the
-// scan cost exceeded the inter-mutation interval and the main thread froze
-// (~100% CPU on docs site, 3042 elements). That observer was redundant with
-// the incremental one and has been removed.
+// Initial compilation only. DOM observation is owned by
+// setupComponentLoadListener (incremental, scales to thousands of elements);
+// don't add a per-mutation getUsedClasses() scan here — it froze the main
+// thread on busy pages.
 TailwindCompiler.prototype.startProcessing = async function () {
     if (this.usesStaticPrerenderUtilities) return;
     try {
@@ -3531,15 +3476,11 @@ TailwindCompiler.prototype.startProcessing = async function () {
 
 
 
-// Utilities initialization
-// Initialize compiler and set up event listeners
+// Utilities initialization: create compiler, set up event listeners
 
-// Detect operating system and stamp it on <html data-os> so OS variants
-// (mac:, ios:, windows:, …) and the *-only visibility classes can resolve in
-// pure CSS. There is no CSS media feature for OS, so this one-time read is the
-// minimum required. Runs synchronously at script load (documentElement exists
-// during head parsing) to set the marker before first paint. Honors a value
-// already present (e.g. written by the prerenderer or set manually).
+// Stamp <html data-os> so OS variants (mac:, ios:, …) resolve in pure CSS
+// (no CSS media feature for OS). Runs synchronously before first paint;
+// honors an existing value (prerenderer or manual).
 function detectOS() {
     try {
         const html = document.documentElement;
@@ -3561,13 +3502,9 @@ function detectOS() {
 }
 detectOS();
 
-// Register the device/OS variants with Tailwind too. The Manifest compiler
-// applies these variants to its own theme-derived/semantic utilities, but
-// standard Tailwind utilities (px-4, flex, …) are emitted by Tailwind's own
-// engine, which only knows its built-in variants. A `<style type="text/tailwindcss">`
-// carrying @custom-variant definitions teaches Tailwind the same variants, so
-// touch:px-4 / mac:flex / cursor:gap-2 resolve like sm:/hover:. Tailwind's
-// browser build reprocesses when this style is added, so load order is moot.
+// Teach Tailwind the same device/OS variants via @custom-variant so its own
+// utilities (px-4, flex) get touch:/mac:/cursor: like sm:/hover: — the Manifest
+// compiler only applies them to its own utilities.
 function injectTailwindVariants() {
     try {
         if (document.getElementById('manifest-tailwind-variants')) return;
@@ -3598,16 +3535,12 @@ const compiler = new TailwindCompiler();
 // Expose utilities compiler for optional integration
 window.ManifestUtilities = compiler;
 
-// Log when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        // DOM ready
     });
 } else {
-    // DOM already ready
 }
 
-// Log first paint if available
 if ('PerformanceObserver' in window) {
     try {
         const paintObserver = new PerformanceObserver((list) => {
@@ -3620,7 +3553,7 @@ if ('PerformanceObserver' in window) {
     }
 }
 
-// Also handle DOMContentLoaded for any elements that might be added later
+// Recompile on DOMContentLoaded for late-added elements
 document.addEventListener('DOMContentLoaded', () => {
     if (!compiler.usesStaticPrerenderUtilities && !compiler.isCompiling) {
         compiler.compile();

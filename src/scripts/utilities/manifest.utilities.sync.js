@@ -1,5 +1,4 @@
-// Synchronous utility generation
-// Methods for generating utilities synchronously before first paint
+// Synchronous utility generation before first paint
 
 TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     if (!this.criticalStyleElement) return;
@@ -7,7 +6,6 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     const syncStart = performance.now();
 
     try {
-        // Extract CSS variables synchronously from already-loaded sources
         const cssVariables = new Map();
 
         // 1. From inline style elements (already in DOM)
@@ -48,7 +46,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                     const rules = Array.from(sheet.cssRules || []);
                     for (const rule of rules) {
                         if (rule.type === CSSRule.STYLE_RULE && rule.styleSheet) {
-                            // Handle @import rules that have nested stylesheets
+                            // @import rules with nested stylesheets
                             try {
                                 const nestedRules = Array.from(rule.styleSheet.cssRules || []);
                                 for (const nestedRule of nestedRules) {
@@ -79,18 +77,10 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         } catch (e) {
         }
 
-        // 4. From computed styles (if :root is available)
-        // Run even while document.readyState === 'loading'. This method is the
-        // constructor's only origin-independent variable source: getComputedStyle
-        // reads the resolved cascade regardless of stylesheet origin, whereas
-        // method 3 (CSSOM cssRules) throws on cross-origin sheets (e.g. the CDN
-        // build at cdn.jsdelivr.net). The classic <script> blocks on preceding
-        // stylesheets, so :root variables are already resolved here. Skipping
-        // this during 'loading' meant a CDN-hosted page captured zero variables
-        // synchronously, so the critical "all colors" fallback never ran and
-        // variable-derived utilities (bg-line, border-line, …) fell back to
-        // currentColor — pure white in dark mode / black in light — until the
-        // async compile finished.
+        // 4. From computed styles. Runs even during 'loading': getComputedStyle
+        // reads the resolved cascade across origins (CDN sheets), which the CSSOM
+        // path (method 3) can't — without it CDN pages capture no vars and
+        // utilities flash as currentColor.
         try {
             if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
@@ -121,7 +111,6 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 while ((classMatch = classRegex.exec(htmlSource)) !== null) {
                     const classes = classMatch[1].split(/\s+/).filter(Boolean);
                     for (const cls of classes) {
-                        // Match utility patterns that might use CSS variables
                         if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(cls)) {
                             classesToGenerate.add(cls);
                         }
@@ -165,7 +154,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                     variableSuffixes: []
                 };
             } else {
-                // Try to get classes from cache (most efficient - only generate what was used before)
+                // Fall back to the cache (only generate what was used before)
                 const cached = localStorage.getItem('tailwind-cache');
                 let cachedClasses = new Set();
 
@@ -174,17 +163,14 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                         const parsed = JSON.parse(cached);
                         const cacheEntries = Object.values(parsed);
 
-                        // Extract classes from cache keys (format: "class1,class2-themeHash")
                         for (const entry of cacheEntries) {
-                            // Find the cache entry with the most recent timestamp
                             const mostRecent = cacheEntries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
                             if (mostRecent && mostRecent.css) {
-                                // Extract class names from generated CSS
                                 const classMatches = mostRecent.css.match(/\.([a-zA-Z0-9_-]+(?::[a-zA-Z0-9_-]+)*)\s*{/g);
                                 if (classMatches) {
                                     for (const match of classMatches) {
                                         const className = match.replace(/^\./, '').replace(/\s*{.*$/, '');
-                                        // Only include utility classes (not Tailwind native like red-500)
+                                        // Utility classes only (not native like red-500)
                                         if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(className.split(':').pop())) {
                                             cachedClasses.add(className);
                                         }
@@ -232,14 +218,12 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 }
             }
 
-            // If no classes found, generate utilities for all color variables
+            // No classes found: generate every color-* utility to prevent flash.
             if (!usedData || !usedData.classes || usedData.classes.length === 0) {
-                // Generate utilities for all color-* variables to prevent flash
                 const colorVars = Array.from(cssVariables.entries())
                     .filter(([name]) => name.startsWith('color-'));
 
                 if (colorVars.length > 0) {
-                    // Create synthetic classes for all color utilities (text, bg, border)
                     const syntheticClasses = [];
                     for (const [varName] of colorVars) {
                         const suffix = varName.replace('color-', '');
@@ -316,16 +300,12 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
             // Ignore parsing errors
         }
 
-        // Method 3: Check computed styles from :root (if available)
-        // Run even during readyState === 'loading' — getComputedStyle resolves
-        // the cascade from cross-origin stylesheets (CDN builds) that the CSSOM
-        // methods above cannot read. See addCriticalBlockingStylesSync for the
-        // full rationale: without this, CDN-hosted pages capture no variables
-        // synchronously and variable-derived utilities flash as currentColor.
+        // Method 3: Computed styles from :root. Runs even during 'loading' —
+        // resolves cross-origin (CDN) vars the CSSOM methods can't; see
+        // addCriticalBlockingStylesSync.
         try {
             if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
-                // Extract all CSS variables, not just color ones
                 const allProps = rootStyles.length;
                 for (let i = 0; i < allProps; i++) {
                     const prop = rootStyles[i];
@@ -344,14 +324,12 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         // Method 4: Scan HTML source directly for class attributes
         try {
             const htmlSource = document.documentElement.outerHTML;
-            // Extract all class attributes from HTML source
             const classRegex = /class=["']([^"']+)["']/gi;
             let classMatch;
             while ((classMatch = classRegex.exec(htmlSource)) !== null) {
                 const classString = classMatch[1];
                 const classes = classString.split(/\s+/).filter(Boolean);
                 for (const cls of classes) {
-                    // Match common color utility patterns (more comprehensive)
                     if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(cls)) {
                         commonColorClasses.add(cls);
                     }

@@ -1,22 +1,16 @@
-// DOM observation and event handling
-// Methods for watching DOM changes and triggering recompilation
+// DOM observation: watch for changes and trigger recompilation
 
 // Setup component load listener and MutationObserver
 TailwindCompiler.prototype.setupComponentLoadListener = function () {
-    // Use a single debounced handler for all component-related events
     const debouncedCompile = this.debounce(() => {
         if (!this.isCompiling) {
             this.compile();
         }
     }, this.options.debounceTime);
 
-    // Listen for custom events when components are loaded/processed
-    // Support both old (manifest) and new (manifest) event names for compatibility
+    // Recompile when components load/process; re-scan so component HTML is covered.
     const handleComponentEvent = () => {
-        // If we haven't scanned static classes yet, trigger a full re-scan
-        // This ensures component HTML files are scanned for utility classes
         if (!this.hasScannedStatic) {
-            // Reset the scan promise to allow re-scanning
             this.staticScanPromise = null;
             this.hasScannedStatic = false;
         }
@@ -30,12 +24,9 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     document.addEventListener('manifest:components-processed', handleComponentEvent);
     document.addEventListener('manifest:components-ready', handleComponentEvent);
 
-    // Listen for route changes but don't recompile unnecessarily
+    // On route change, recompile only if genuinely new dynamic classes appeared.
     document.addEventListener('manifest:route-change', (event) => {
-        // Only trigger compilation if we detect new dynamic classes
-        // The existing MutationObserver will handle actual DOM changes
         if (this.hasScannedStatic) {
-            // Wait longer for route content to fully load before checking
             setTimeout(() => {
                 const currentDynamicCount = this.dynamicClassCache.size;
                 const currentClassesHash = this.lastClassesHash;
@@ -46,10 +37,9 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                 const dynamicClasses = Array.from(this.dynamicClassCache);
                 const newClassesHash = dynamicClasses.sort().join(',');
 
-                // Only compile if we found genuinely new classes, not just code processing artifacts
                 if (newDynamicCount > currentDynamicCount && newClassesHash !== currentClassesHash) {
                     const newClasses = dynamicClasses.filter(cls =>
-                        // Filter out classes that are likely from code processing
+                        // Ignore highlight/code-processing artifacts
                         !cls.includes('hljs') &&
                         !cls.startsWith('language-') &&
                         !cls.includes('copy') &&
@@ -60,11 +50,11 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                         debouncedCompile();
                     }
                 }
-            }, 300); // Longer delay to let code processing finish
+            }, 300); // let code processing finish
         }
     });
 
-    // Use a single MutationObserver for all DOM changes
+    // Single MutationObserver for all DOM changes
     const observer = new MutationObserver((mutations) => {
         let shouldRecompile = false;
 
@@ -151,15 +141,10 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     });
 };
 
-// Start processing with initial compilation. DOM observation is owned by
-// setupComponentLoadListener (called separately from main.js init) — that one
-// uses an incremental staticClassCache lookup per mutation, which scales to
-// thousands of elements. A previous version of this method also installed its
-// own MutationObserver here that called getUsedClasses() on EVERY mutation
-// (a full document-wide O(N) DOM scan), so on a busy page with N≥3000 the
-// scan cost exceeded the inter-mutation interval and the main thread froze
-// (~100% CPU on docs site, 3042 elements). That observer was redundant with
-// the incremental one and has been removed.
+// Initial compilation only. DOM observation is owned by
+// setupComponentLoadListener (incremental, scales to thousands of elements);
+// don't add a per-mutation getUsedClasses() scan here — it froze the main
+// thread on busy pages.
 TailwindCompiler.prototype.startProcessing = async function () {
     if (this.usesStaticPrerenderUtilities) return;
     try {

@@ -1,21 +1,7 @@
 /* Manifest Data Sources - Circular Reference Handler */
-// Handles detection and resolution of circular references in proxy property access
-// This is critical for preventing infinite recursion when Alpine re-evaluates expressions
-
-/**
- * Handles circular reference detection and resolution
- * @param {Object} params - Handler parameters
- * @param {Set} params.activeProps - Set of currently active property accesses
- * @param {string} params.propKey - The property key being accessed
- * @param {Object} params.rawTarget - Raw target object (not Alpine-wrapped)
- * @param {Array} params.path - Path array to the current object
- * @param {string} params.key - The key being accessed
- * @param {string} params.fullPath - Full path string for logging
- * @param {number} params.currentDepth - Current call depth
- * @param {string} params.triggeredBy - What triggered this access ('Alpine', 'Proxy', etc.)
- * @param {boolean} params.shouldLog - Whether to log debug information
- * @returns {*} The resolved value or undefined to break the cycle
- */
+// Breaks infinite recursion when Alpine re-evaluates an expression that
+// re-reads a property still being accessed. Returns the cached plain copy if
+// available, else undefined to break the cycle.
 function handleCircularReference({
     activeProps,
     propKey,
@@ -28,18 +14,16 @@ function handleCircularReference({
     shouldLog
 }) {
     if (!activeProps || !activeProps.has(propKey)) {
-        return null; // Not a circular reference, continue normal flow
+        return null; // Not circular, continue normal flow
     }
 
     if (shouldLog) {
         console.warn(`[Proxy] ⚠️ CIRCULAR ${fullPath} | depth:${currentDepth} | triggered by:${triggeredBy} | This is likely Alpine re-evaluation`);
     }
 
-    // Property is already being accessed - this is likely Alpine re-evaluating the expression
-    // CRITICAL: For simple objects that are already being accessed, return the cached plain copy
-    // if it exists. This prevents infinite recursion by ensuring Alpine gets the same object instance.
+    // Prop already in flight (Alpine re-evaluating): hand back the cached plain
+    // copy so Alpine gets the same instance and doesn't recurse.
     try {
-        // First, try to get the value from rawTarget
         let current = rawTarget;
         let pathValid = true;
         const accessPath = path.length === 0 ? [key] : [...path, key];
@@ -63,7 +47,7 @@ function handleCircularReference({
                 return current;
             }
 
-            // If it's a simple object, check if we have a cached plain copy
+            // Simple object: return its cached plain copy if present
             if (!Array.isArray(current)) {
                 let isSimpleObject = true;
                 try {
@@ -78,7 +62,6 @@ function handleCircularReference({
                 }
 
                 if (isSimpleObject) {
-                    // Check for cached plain copy first - this is critical to prevent recursion
                     if (!window.ManifestDataProxiesCore.frozenPlainCopyCache) {
                         window.ManifestDataProxiesCore.frozenPlainCopyCache = new WeakMap();
                     }
@@ -86,8 +69,7 @@ function handleCircularReference({
                     const cachedCopy = plainCopyCache.get(current);
 
                     if (cachedCopy) {
-                        // Return cached copy immediately - don't create a new one
-                        // DON'T remove from activeProps here - let the normal flow handle it
+                        // Leave propKey in activeProps — normal flow clears it
                         return cachedCopy;
                     }
                 }

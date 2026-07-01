@@ -2,10 +2,8 @@
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
 /*
-/*  Lightweight loader that dynamically loads Alpine.js and Manifest plugins
-/*  from jsDelivr CDN. Loads all plugins by default, or a subset if specified.
-/*
-/*  Some plugins use Manifest CSS styles.
+/*  Loader: pulls Alpine.js and Manifest plugins from the jsDelivr CDN — all
+/*  plugins by default, or a subset if specified.
 */
 
 (function () {
@@ -14,23 +12,16 @@
 	/*
 	 * Hydration contract runtime
 	 * --------------------------
-	 * Prerendered MPA pages carry a `<script type="application/json"
-	 * id="__manifest_hydrate__">` blob containing the source-authored
-	 * attributes (and, for explicit `data-hydrate` subtrees, the source
-	 * innerHTML) of every element that needs runtime hydration.  This
-	 * function runs once on page load BEFORE any plugin or Alpine starts —
-	 * it walks the contract, restores source state, and removes its own
-	 * markers.  Every downstream plugin (colors, router, data, markdown,
-	 * icons, …) then sees exactly the DOM the user authored, exactly as it
-	 * would in a live SPA.  No plugin needs a "prerender mode" branch.
+	 * Prerendered MPA pages carry a `#__manifest_hydrate__` JSON blob of the
+	 * source-authored attributes (and, for `data-hydrate` subtrees, innerHTML)
+	 * of each element needing hydration. Runs once BEFORE any plugin or Alpine
+	 * so every downstream plugin sees the authored DOM, as in a live SPA — no
+	 * plugin needs a "prerender mode" branch.
 	 *
-	 * Implementation notes:
-	 *  - We use a temp-div HTML parse to set attributes because `setAttribute`
-	 *    throws InvalidCharacterError on Alpine special names like `@click`.
-	 *    The HTML parser is lenient and accepts them.
-	 *  - The contract is a compact diff: only attributes whose values drifted
-	 *    from source during prerender appear.  An entry's `attrs` object maps
-	 *    attribute name -> source value, or null to mean "remove".
+	 *  - Attributes are set via a temp-div HTML parse, not setAttribute, which
+	 *    throws on Alpine special names like `@click`; the parser accepts them.
+	 *  - The contract is a compact diff: `attrs` maps name -> source value, or
+	 *    null to remove; only values that drifted during prerender appear.
 	 */
 	function hydratePrerenderedPage() {
 		if (typeof document === 'undefined' || !document.querySelector) return;
@@ -55,9 +46,7 @@
 			.replace(/"/g, '&quot;');
 		const voidEls = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 
-		// Restore deepest-first so that when an ancestor rebuilds its innerHTML,
-		// its children have already been restored and their source state is what
-		// the ancestor captures.
+		// Deepest-first: a rebuilt ancestor then captures already-restored children.
 		const items = [];
 		for (const entry of entries) {
 			const el = document.querySelector('[data-hydrate-id="' + entry.id + '"]');
@@ -72,13 +61,12 @@
 			const el = document.querySelector('[data-hydrate-id="' + entry.id + '"]') || initialEl;
 			if (!el || !el.parentNode) continue;
 
-			// Case 1: explicit subtree restoration (entry.html present).
-			// Rebuild the element from scratch via outerHTML replacement so the
-			// entire subtree mirrors the authored source.
+			// Case 1: explicit subtree restoration (entry.html present) —
+			// rebuild via outerHTML so the whole subtree mirrors source.
 			if (typeof entry.html === 'string') {
 				const tag = el.tagName.toLowerCase();
 				const finalAttrs = {};
-				// Start from current attrs, then apply the contract diff.
+				// Current attrs, then the contract diff.
 				const cur = el.attributes;
 				for (let i = 0; i < cur.length; i++) {
 					if (cur[i].name !== 'data-hydrate-id') finalAttrs[cur[i].name] = cur[i].value;
@@ -106,9 +94,8 @@
 				continue;
 			}
 
-			// Case 2: attribute-only diff.  Reparse the element with the merged
-			// attribute set (current attrs overlaid by source diff) so that
-			// special-name attributes like @click work.  Preserve innerHTML.
+			// Case 2: attribute-only diff. Reparse with merged attrs (so
+			// special names like @click work); innerHTML preserved.
 			if (!entry.attrs) continue;
 			const tag = el.tagName.toLowerCase();
 			const finalAttrs = {};
@@ -141,25 +128,19 @@
 	}
 
 	/*
-	 * Reconcile baked x-for/x-if clones the prerender kept for crawlers.  Their
-	 * <template> is still live, so without intervention Alpine renders a second
-	 * copy on boot (a duplicate).  data-hydrate islands keep their baked DOM.
+	 * Reconcile baked x-for/x-if clones the prerender kept for crawlers. Their
+	 * <template> is still live, so Alpine would render a duplicate on boot.
 	 *
-	 *  - x-if clones are ADOPTED: we point the template's Alpine x-if state
-	 *    (`_x_currentIfEl`) at the baked element, so Alpine treats the
-	 *    condition as already-rendered and leaves the baked DOM in place. Heavy
-	 *    x-if content (e.g. an x-markdown article) would otherwise be torn down
-	 *    and re-rendered — flashing raw text and re-fetching $x data — even
-	 *    though the prerendered output is already correct. A genuine
+	 *  - x-if clones are ADOPTED: point the template's `_x_currentIfEl` at the
+	 *    baked element so Alpine treats the condition as already-rendered and
+	 *    leaves it in place — avoids tearing down heavy content (e.g. an
+	 *    x-markdown article) only to re-render identical output. A real
 	 *    route/condition change later still re-renders normally.
-	 *  - x-for clones are REMOVED: lists are light, often interactive, and
-	 *    Alpine re-renders them from the live template, so the baked copies are
-	 *    dropped to avoid a duplicate.
+	 *  - x-for clones are REMOVED: lists are light and re-render from the live
+	 *    template, so the baked copies are dropped to avoid a duplicate.
 	 *
-	 * Deliberately NOT part of hydratePrerenderedPage(): it runs at the last
-	 * safe moment — `alpine:init`, which Alpine dispatches after its script has
-	 * executed but BEFORE it walks the DOM. If Alpine never arrives (CDN
-	 * failure, offline), the listener never fires and the page keeps its
+	 * Runs on `alpine:init` (after Alpine's script, before it walks the DOM),
+	 * not in hydratePrerenderedPage: if Alpine never arrives the page keeps its
 	 * complete baked content.
 	 */
 	function reconcilePrerenderClones() {
@@ -169,8 +150,7 @@
 			el.removeAttribute('data-mnfst-prerender-clone');
 			const tpl = el.previousElementSibling;
 			if (tpl && tpl.tagName === 'TEMPLATE' && tpl.hasAttribute('x-if')) {
-				// Adopt: Alpine's x-if `show()` returns early when _x_currentIfEl
-				// is set, so the baked element stays and is not re-rendered.
+				// Alpine's x-if show() returns early when _x_currentIfEl is set.
 				tpl._x_currentIfEl = el;
 			} else {
 				el.remove();
@@ -181,25 +161,18 @@
 		document.addEventListener('alpine:init', reconcilePrerenderClones, { once: true });
 	}
 
-	// Run hydration BEFORE Alpine's deferred script executes.
-	//
-	// Timing: `<script defer>` runs AFTER HTML parsing finishes but BEFORE
-	// `DOMContentLoaded` fires.  So listening for DOMContentLoaded is too late —
-	// Alpine has already walked the tree and attached directives by then, and
-	// our `replaceChild`-based restore would destroy the Alpine-bound nodes.
-	//
-	// The only earlier hook is `readystatechange → 'interactive'`, which is
-	// dispatched the moment the parser finishes and BEFORE deferred scripts run.
-	// We also run synchronously if readyState is already 'interactive' or later
-	// (e.g. if manifest.js was injected dynamically after page load).
+	// Run hydration BEFORE Alpine's deferred script executes: DOMContentLoaded
+	// is too late (Alpine has already bound the nodes our replaceChild would
+	// destroy). The earlier `readystatechange → 'interactive'` fires the moment
+	// parsing finishes, before deferred scripts. Run synchronously if already
+	// past 'loading' (e.g. manifest.js injected after load).
 	function tryHydrate() {
 		try { hydratePrerenderedPage(); } catch (e) { /* graceful */ }
 	}
 	if (typeof document !== 'undefined') {
 		if (document.readyState === 'loading') {
-			// We're still parsing.  Listen for 'interactive' via readystatechange
-			// — this is the earliest moment document.body is guaranteed to exist
-			// but deferred scripts haven't run yet.
+			// Still parsing: 'interactive' is the earliest hook where body exists
+			// but deferred scripts haven't run.
 			let hydrated = false;
 			document.addEventListener('readystatechange', () => {
 				if (!hydrated && document.readyState !== 'loading') {
@@ -208,7 +181,7 @@
 				}
 			});
 		} else {
-			// Parser already done (interactive or complete).  Hydrate immediately.
+			// Parser already done — hydrate immediately.
 			tryHydrate();
 		}
 	}
@@ -306,16 +279,12 @@
 		});
 	}
 
-	// Get plugin URL from CDN or the `data-plugin-base` override.  When the
-	// loader's <script> tag carries `data-plugin-base="/scripts"` (or an
-	// absolute URL), plugins are loaded from that base as unminified `.js`
-	// files.  Otherwise they come from the jsDelivr CDN as `.min.js`.
+	// Plugin URL: `data-plugin-base` override → unminified `.js`; else the
+	// jsDelivr CDN as `.min.js`.
 	let _pluginBase = null;
 	function setPluginBase(b) { _pluginBase = b || null; }
 	function getPluginUrl(pluginName, version = DEFAULT_VERSION) {
-		// Map hyphenated plugin API names to their dotted file names.
-		// `appwrite-auth` → `manifest.appwrite.auth.js`
-		// `url-parameters` → `manifest.url.parameters.js`
+		// Hyphenated API name → dotted file name (`appwrite-auth` → appwrite.auth).
 		const fileName = pluginName.replace(/-/g, '.');
 		if (_pluginBase) {
 			const base = _pluginBase.replace(/\/$/, '');
@@ -332,10 +301,8 @@
 		return `https://cdn.jsdelivr.net/npm/alpinejs@${dataAlpine}/dist/cdn.min.js`;
 	}
 
-	// Has DOMContentLoaded already fired?  readyState alone can't tell:
-	// 'interactive' covers both "deferred scripts still running" (DCL pending)
-	// and "DCL done, subresources still loading".  Disambiguate via the
-	// navigation timing entry, which records the event the moment it runs.
+	// Has DOMContentLoaded fired? readyState can't tell ('interactive' spans
+	// both DCL-pending and DCL-done); the navigation timing entry disambiguates.
 	function domContentLoadedFired() {
 		if (document.readyState === 'complete') return true;
 		if (document.readyState === 'loading') return false;
@@ -346,9 +313,8 @@
 		return false;
 	}
 
-	// Run fn once the document's deferred scripts have all executed (i.e. at
-	// or after DOMContentLoaded).  The window 'load' listener is a belt-and-
-	// braces fallback for environments where the navigation entry is missing.
+	// Run fn at or after DOMContentLoaded; 'load' is a fallback when the
+	// navigation entry is missing.
 	function whenDomReady(fn) {
 		if (domContentLoadedFired()) {
 			fn();
@@ -360,28 +326,18 @@
 		window.addEventListener('load', run, { once: true });
 	}
 
-	// Load Alpine.js from CDN.  Called by the loader AFTER all plugin scripts
-	// have finished loading and registered their directives/magics.
-	//
-	// Gated on DOMContentLoaded: the page's own deferred scripts register
-	// x-data components and magics via `alpine:init`, and the defer queue
-	// spins the event loop while a script is still in flight — so on a warm
-	// cache an injected Alpine script can load and EXECUTE between two
-	// deferred scripts, firing `alpine:init` before the page's registrations
-	// exist.  Waiting for DCL (which fires only after every deferred script
-	// has run) makes the ordering deterministic.  In the common cold-cache
-	// case DCL has long passed by the time the plugin loads settle, so the
-	// gate adds no delay.
+	// Load Alpine, called after all plugins have registered. Gated on DCL: a
+	// warm-cache Alpine could otherwise execute between two deferred scripts and
+	// fire `alpine:init` before the page's registrations exist. DCL fires only
+	// after every deferred script runs, making the order deterministic (and cold
+	// cache is already past DCL, so no added delay).
 	function loadAlpine(alpineUrl = ALPINE_CDN_URL) {
 		whenDomReady(() => {
-			// Fast check: Alpine already initialized
 			if (window.Alpine) {
 				return;
 			}
 
-			// Fallback: if an existing Alpine <script> tag is already in the DOM
-			// (e.g. the fixture explicitly added one), wait for it — don't inject
-			// a second copy.
+			// Don't inject a second copy if an Alpine <script> is already present.
 			const existingAlpine = document.querySelector('script[src*="alpinejs"]');
 			if (existingAlpine) {
 				return;
@@ -389,8 +345,7 @@
 
 			const script = document.createElement('script');
 			script.src = alpineUrl;
-			// No `defer` — we're past plugin registration and past DCL, so
-			// Alpine should load and execute as soon as it arrives.
+			// No `defer` — past DCL, so execute as soon as it arrives.
 			document.head.appendChild(script);
 		});
 	}
@@ -423,11 +378,9 @@
 		const resolved = [];
 		const added = new Set();
 
-		// Helper to add a plugin and its dependencies in correct order
 		function addPluginWithDeps(plugin) {
 			if (added.has(plugin)) return;
 
-			// First, add all dependencies
 			const deps = PLUGIN_DEPENDENCIES[plugin];
 			if (deps) {
 				for (const dep of deps) {
@@ -437,12 +390,10 @@
 				}
 			}
 
-			// Then add the plugin itself
 			resolved.push(plugin);
 			added.add(plugin);
 		}
 
-		// Process all plugins in order, ensuring dependencies come first
 		for (const plugin of pluginList) {
 			addPluginWithDeps(plugin);
 		}
@@ -501,11 +452,8 @@
 		const tailwind = script.getAttribute('data-tailwind') !== null;
 		const version = script.getAttribute('data-version') || DEFAULT_VERSION;
 		const alpine = script.getAttribute('data-alpine');
-		// Optional override: when present, plugin URLs are resolved against
-		// this base instead of the CDN.  Useful for self-hosted deployments
-		// and for the e2e harness which needs to load locally-built plugins.
-		// The base should point at a directory that serves `manifest.<name>.js`
-		// files.  It can be relative (e.g. "/scripts") or absolute.
+		// Override: resolve plugin URLs against this base (dir serving
+		// `manifest.<name>.js`, relative or absolute) instead of the CDN.
 		const pluginBase = script.getAttribute('data-plugin-base');
 
 		let pluginList = [];
@@ -597,21 +545,12 @@
 		];
 		const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
 
-		// Substitute ${VAR} placeholders against window.env in every string
-		// value of the parsed manifest, in place. Called once before the
-		// manifest is cached on window so every downstream consumer
-		// (auth, data, components, etc.) sees resolved values. Inlined in
-		// the loader rather than borrowed from the data plugin because the
-		// data plugin's script may not have finished executing yet at the
-		// point we cache the manifest. window.env is populated by either
-		// the mnfst-run dev server (which reads PUBLIC_-prefixed vars from
-		// .env at startup) or a developer-supplied
-		// <script>window.env = {…}</script> block.
-		//
-		// Misses are warned, not silently dropped: a missing var almost
-		// always means the dev forgot the PUBLIC_ prefix or hasn't set the
-		// var at all, and an empty substitution downstream (e.g. an empty
-		// API URL) tends to fail far from the cause.
+		// Substitute ${VAR} placeholders against window.env in-place, once,
+		// before caching the manifest so every consumer sees resolved values.
+		// Inlined (not borrowed from the data plugin, which may not have run
+		// yet). window.env comes from mnfst-run (.env PUBLIC_ vars) or an
+		// author <script>window.env = {…}</script>. Misses are warned, not
+		// dropped — an empty substitution tends to fail far from the cause.
 		const warnedMissingEnv = new Set();
 		const interpolateManifestEnv = (obj) => {
 			if (obj === null || typeof obj !== 'object') return;
@@ -687,11 +626,8 @@
 				manifest = await manifestPromise;
 			}
 			if (manifest && typeof window !== 'undefined') {
-				// Resolve ${VAR} placeholders once, here, before any
-				// downstream plugin reads the cached manifest. Plugins like
-				// appwrite-auth read window.__manifestLoaded directly and
-				// would otherwise see literal `${APPWRITE_DEV_KEY}` strings
-				// even when window.env is populated.
+				// Resolve ${VAR} before any plugin reads the cached manifest —
+				// appwrite-auth etc. read window.__manifestLoaded directly.
 				interpolateManifestEnv(manifest);
 				window.__manifestLoaded = manifest;
 				if (window.ManifestComponentsRegistry) {

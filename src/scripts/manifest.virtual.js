@@ -1,44 +1,11 @@
-/* Manifest Virtual — in-flow list/table/grid/gallery virtualization for Alpine.
+/* Manifest Virtual — in-flow list/table/grid/gallery/masonry virtualization for Alpine.
  *
- * Renders only the rows visible in the scroll viewport (plus an overscan
- * buffer). Rows stay in NORMAL FLOW between a top + bottom spacer whose heights
- * stand in for the rows above/below the window — so the same markup + CSS works
- * virtualized or not. No absolute positioning, so shared columns (native
- * <table> and .grid-table), sticky cells, and flex-wrap all behave normally.
- *
- * Usage — wrap an x-for template in the scrolling container:
- *
- *   <div x-virtual style="height: 600px; overflow: auto">
- *     <template x-for="row in $x.customers" :key="row.id">
- *       <div class="grid-row"> … cells … </div>
- *     </template>
- *   </div>
- *
- * The template may be nested (e.g. inside <table><tbody>); the plugin finds it
- * and hosts spacers/rows in its parent.
- *
- * Options (object expression on the directive):
- *
- *   estimate   Initial per-row height in px (default 50), or { width, height }
- *              for galleries. Used for unmeasured rows; closer = less drift.
- *   overscan   Rows/lines to render above/below the window (default 3).
- *   mode       'rows' | 'gallery' | 'masonry'. Auto-detected if omitted
- *              (masonry must be set explicitly).
- *
- * Modes (how items fill lines — the spacer element is auto-detected separately):
- *   rows     — one item per line: stacked lists, native <table>, and
- *              .grid-table. The spacer is a div, a <tr>, or a grid cell
- *              depending on the container.
- *   gallery  — many items per line (flex-wrap); items pack N per line and
- *              whole lines render so flex sizing stays correct. Ragged
- *              width + height supported.
- *   masonry  — independent-size items packed into the shortest column
- *              (absolute positioning); set explicitly with mode: 'masonry'.
- *
- * Notes:
- *   - Column widths should be content-independent (table-layout: fixed, fixed/%
- *     grid tracks) or columns shift as the window changes. Stripe by data index,
- *     not :nth-child. See the docs for these table caveats.
+ * Renders only rows in the viewport (plus overscan). Line modes keep rows in NORMAL
+ * FLOW between top/bottom spacers standing in for off-window rows, so the same markup
+ * works virtualized or not and shared columns/sticky/flex-wrap behave normally;
+ * masonry positions absolutely. Options: estimate (px or {width,height}), overscan,
+ * mode ('rows'|'gallery'|'masonry'; masonry must be explicit, others auto-detect).
+ * Column widths must be content-independent or columns shift as the window changes.
  */
 
 function initializeVirtualPlugin() {
@@ -48,8 +15,7 @@ function initializeVirtualPlugin() {
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
         const template = el.querySelector('template[x-for]') || el.querySelector(':scope template');
         if (!template || !template.getAttribute('x-for')) {
-            // Stay quiet on re-init of an already-virtualized container (x-for was
-            // stripped on the first pass); only warn on genuine misuse.
+            // Quiet on re-init of an already-virtualized container (x-for stripped first pass).
             if (!el.querySelector('[data-virtual-spacer]')) {
                 console.warn('[x-virtual] expects a descendant <template> with x-for, e.g. <template x-for="row in $x.items" :key="row.id">…');
             }
@@ -65,8 +31,7 @@ function initializeVirtualPlugin() {
         const sourceExpr = m[2].trim();
         const keyExpr = template.getAttribute(':key') || template.getAttribute('x-bind:key') || `${itemName}.id`;
 
-        // Strip x-for/:key so Alpine doesn't render the full list; keep the
-        // template in the DOM as our clone source.
+        // Strip x-for/:key so Alpine won't render the full list; keep the template as clone source.
         template.removeAttribute('x-for');
         template.removeAttribute(':key');
         template.removeAttribute('x-bind:key');
@@ -89,9 +54,8 @@ function initializeVirtualPlugin() {
         const isGallery = mode === 'gallery';
         const isMasonry = mode === 'masonry';
 
-        // Masonry options: fixed `columns` or target `columnWidth`; optional
-        // per-item `span` (cols) and `height` (px) fns from data for ~zero
-        // settling; `gap` px (falls back to CSS gap).
+        // Masonry: fixed `columns` or target `columnWidth`; optional per-item `span`/
+        // `height` fns from data for ~zero settling; `gap` px (falls back to CSS gap).
         const colsOpt = Number(options.columns) > 0 ? Math.floor(options.columns) : 0;
         const colWidthOpt = Number(options.columnWidth) > 0 ? Number(options.columnWidth) : 0;
         const spanFn = typeof options.span === 'function' ? options.span : null;
@@ -147,9 +111,8 @@ function initializeVirtualPlugin() {
             else rebuildSingle();
         }
 
-        // Skyline packer: place each item in the column band (of `span` width)
-        // with the lowest top. Sizes are independent; only positions depend on
-        // order — so the whole layout is computed here in JS, no rendering.
+        // Skyline packer: place each item in the `span`-wide column band with the lowest
+        // top. Positions depend only on order, so the whole layout is computed in JS.
         function rebuildMasonry() {
             const cw = contentWidth();
             const g = masonryGap;
@@ -279,8 +242,8 @@ function initializeVirtualPlugin() {
             scheduleMeasure(keys);
         }
 
-        // Masonry: render items whose packed box intersects the viewport,
-        // absolutely positioned at their computed (x, y, w).
+        // Masonry: render items whose packed box intersects the viewport, positioned
+        // absolutely at their computed (x, y, w).
         function renderMasonry() {
             if (!data.length) { clearRows(); sizer.style.height = '0px'; return; }
             const vh = scrollEl.clientHeight;
@@ -532,7 +495,6 @@ function buildKeyFn(itemName, keyExpr) {
     }
 }
 
-// Track initialization to prevent duplicates
 let virtualPluginInitialized = false;
 
 function ensureVirtualPluginInitialized() {

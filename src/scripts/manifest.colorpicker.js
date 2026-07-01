@@ -1,49 +1,15 @@
-/* Manifest Color Picker
-
-   Directive:  x-colorpicker[.<modifier>[="value"]]
-
-     Root (no modifier): declares a picker container.
-     Children (with modifier): declare hooks. Three families:
-
-     • Layout (template OR instance — determined by host element tag)
-         .solid               canvas + hue/alpha sliders + value + format
-         .gradient            full gradient panel (layers container + layer template)
-         .layer-options       one gradient layer's UI
-         .gradient-layers     container holding cloned .layer-options instances
-         .layer-stops-bar     stops bar (inside a layer)
-
-     • Actions (click triggers behavior)
-         .add-layer                    .apply-color          .grab-color
-         .duplicate-layer              .remove-layer
-         .flip-layer                   .rotate-layer
-         .duplicate-stop               .delete-stop
-         .set-gradient-type="linear|radial|conic"
-
-     • Inputs (state-bound control)
-         .set-canvas          .set-hue            .set-alpha
-         .set-alpha-value     .set-color-space    .set-color-value
-         .set-angle           .set-gradient-value
-
-   Magic:  $colorpicker — returns the nearest ancestor picker's API
-           for programmatic control (addLayer, setHue, layers, activeStop, ...).
-*/
+/* Manifest Color Picker — x-colorpicker directive + $colorpicker magic */
 
 function initializeColorpickerPlugin() {
 
     // ---- Shared global: ManifestUI (universal `_ui` resolver) ----
-    // Defined guarded so the color picker localizes its default-menu chrome
-    // whether or not the date picker / charts (which also define it) are loaded.
-    // Kept byte-identical across those copies.
-    //
-    // `_ui` is a reserved, self-identifying key: any loaded data source may carry a
-    // top-level `_ui` object, namespaced per element (`_ui.colorpicker`, `_ui.datepicker`).
-    // No manifest flag — overrides piggyback on the normal local-data/localization model
-    // and can be colocated with author content. resolve() deep-merges every loaded
-    // source's `_ui[component]` onto the caller's English fallbacks.
+    // Guarded so the picker can localize its default-menu chrome whether or not
+    // the date picker / charts (which also define it) are loaded; byte-identical
+    // across those copies. Any loaded source may carry a top-level `_ui` object
+    // namespaced per element; resolve() deep-merges `_ui[component]` onto fallbacks.
     if (!window.ManifestUI) {
         window.ManifestUI = {
-            // Names of data sources that have loaded (current locale). Enumerates loaded
-            // sources only — never force-loads others just to scan them for `_ui`.
+            // Names of loaded data sources (current locale); never force-loads others.
             _loadedSourceNames() {
                 try {
                     const store = window.ManifestDataStore && window.ManifestDataStore.rawDataStore;
@@ -152,10 +118,8 @@ function initializeColorpickerPlugin() {
 
     function roundA(a) { const v=Math.round(a*100); return v===100?'1':(v/100).toString(); }
 
-    // Canonical dedupe key for a color or gradient value. Used to tag library swatches
-    // with a `data-cp-key` that the picker can match against its current color to toggle
-    // an `active` class. Parses any CSS color via parseCssColor → 8-digit hex. Gradients
-    // are compared as their normalized CSS string.
+    // Canonical dedupe key for a color/gradient — 8-digit hex for colors, the CSS
+    // string for gradients. Tags library swatches with data-cp-key for active-toggle.
     function _swatchKeyOf(value) {
         if (typeof value !== 'string') return null;
         const v = value.trim();
@@ -194,8 +158,7 @@ function initializeColorpickerPlugin() {
     // ---- Canvas (SV plane) ----
 
     function drawSvCanvas(canvas, hue) {
-        // Cache the 2D context on the canvas element. No `willReadFrequently` —
-        // we only ever write to this canvas, so we want GPU-accelerated compositing.
+        // Cached context; no willReadFrequently (write-only → GPU compositing).
         const ctx = canvas._cpCtx || (canvas._cpCtx = canvas.getContext('2d'));
         const w = canvas.width, h = canvas.height;
         const hr = hsvToRgb(hue, 100, 100);
@@ -226,11 +189,9 @@ function initializeColorpickerPlugin() {
         return layers.map(buildLayerString).join(', ');
     }
 
-    // ---- Gradient parsing (reverse of buildLayerString / buildFullGradientString) ----
-    //
-    // Parses a CSS gradient string back into the layers/stops structure the picker
-    // uses internally. Tolerant of whatever the browser serializes from inline
-    // styles (rgb(...) and rgba(...) instead of hex, etc.).
+    // ---- Gradient parsing (reverse of the builders) ----
+    // Parses a CSS gradient string back into layers/stops. Tolerant of whatever
+    // the browser serializes from inline styles (rgb()/rgba() instead of hex).
 
     // Split a string on top-level commas (commas not inside parentheses).
     function _splitTopLevelCommas(str) {
@@ -246,9 +207,7 @@ function initializeColorpickerPlugin() {
         return out;
     }
 
-    // Split a string into individual gradient calls — top-level segments that each
-    // start with `<type>-gradient(`. Handles multi-layer gradients like
-    // "linear-gradient(...), radial-gradient(...)".
+    // Split into individual gradient calls (top-level `<type>-gradient(` segments).
     function _splitGradientLayers(str) {
         const segments = _splitTopLevelCommas(str);
         return segments.filter(s => /^(linear|radial|conic)-gradient\s*\(/i.test(s));
@@ -415,10 +374,8 @@ function initializeColorpickerPlugin() {
     function buildIosPreset(labels) {
         const L = labels || {};
         const groupName = L._group || 'iOS';
-        // Swatch names are prefixed with the tone ("Light - " / "Dark - ") so users
-        // can still distinguish them by name once a color lands in Recent (where
-        // palette context is lost). The `_lightPrefix` / `_darkPrefix` meta keys
-        // let devs translate or remove the prefixes.
+        // Tone prefix ("Light - " / "Dark - ") keeps swatches distinguishable in
+        // Recent, where palette context is lost. `_lightPrefix`/`_darkPrefix` override.
         const lightPrefix = L._lightPrefix != null ? L._lightPrefix : 'Light - ';
         const darkPrefix  = L._darkPrefix  != null ? L._darkPrefix  : 'Dark - ';
         const baseColorName = (c) => L[c.name] || titleCase(c.name);
@@ -446,12 +403,10 @@ function initializeColorpickerPlugin() {
 
     // ---- Library data normalization ----
 
-    // Normalize into: Group[] where each Group = { name?, colors?: Swatch[], palettes?: Palette[], ...extras }
-    // A Group has EITHER flat `colors` OR nested `palettes`, never both. Each Palette = { name?, colors: Swatch[], ...extras }.
-    // Swatch = { name?, value, ...extras }. Hierarchy is strictly Group > Palette > Swatch (no deeper nesting).
-    // Filter proxy/magic noise: drop $-prefixed keys (Manifest magic like $route, $x, $watch),
-    // symbol keys, function values, and the few inherited Object.prototype names that can leak
-    // through exotic proxies.
+    // Normalize into Group[] — Group = { name?, colors?|palettes? }, Palette =
+    // { name?, colors }, Swatch = { name?, value }. Hierarchy is strictly
+    // Group > Palette > Swatch. Filters $-magic, symbol keys, functions, and
+    // Object.prototype names that leak through proxies.
     const _LIB_PROTO_NOISE = new Set(['valueOf', 'toString', 'constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString']);
     function _cleanLibraryEntries(input) {
         return Object.entries(input).filter(([k, v]) => {
@@ -519,9 +474,8 @@ function initializeColorpickerPlugin() {
         return { name: groupName, colors: [] };
     }
 
-    // Merge built-in Recent + Tailwind + iOS into a single default data object.
-    // Used when `x-colorpicker.library` has no expression AND no ancestor $x data.
-    // Optional `labels` is forwarded to the Tailwind / iOS builders for localization.
+    // Built-in Recent + Tailwind + iOS default library. Used when
+    // x-colorpicker.library has no expression and no ancestor $x data.
     function buildDefaultLibrary(labels) {
         const L = labels || {};
         return {
@@ -532,32 +486,13 @@ function initializeColorpickerPlugin() {
     }
 
     // ---- Auto-discovery of colorpicker data sources ----
-    //
-    // Devs register data sources in manifest.json using the standard Manifest conventions,
-    // then flag which ones contain color library content via a top-level `colorpicker` entry:
-    //
-    //   {
-    //     "data": {
-    //       "myColors": "/data/colors.yaml"                              // non-localized
-    //       "brand":    { "en": "/data/brand.en.yaml", "fr": "..." }     // per-locale
-    //     },
-    //     "colorpicker": "myColors"                                       // single source
-    //     "colorpicker": ["myColors", "brand"]                            // multiple sources
-    //   }
-    //
-    // The colorpicker plugin scans $x.manifest.data for entries flagged with a
-    // `colorpicker:` key, then merges the loaded $x.<name> values in declaration
-    // order. Each source may contain:
-    //   _tailwind:   (optional) replaces the built-in Tailwind group entirely
-    //   _ios:        (optional) replaces the built-in iOS group entirely
-    //   <Any Name>:  custom groups appended to the library after built-ins
-    //
-    // Presence of _tailwind / _ios is "all or nothing" — no merge with built-in data.
-    // If multiple flagged sources both include _tailwind, the LAST source wins.
+    // manifest.json flags library sources via a top-level `colorpicker` key (one
+    // name or an array). Each source may carry `_tailwind` / `_ios` (all-or-nothing
+    // replacements of the built-in group, last wins) plus custom named groups.
+    // See colorpickers.md for the manifest shape.
 
-    // Manifest's data proxy returns an empty object for ANY property access (graceful chain),
-    // so `src._tailwind` always looks truthy. We only treat an override as real if the source
-    // actually declared the key (`in` operator) AND the value has real content.
+    // Manifest's data proxy returns {} for any access, so `src._tailwind` always
+    // looks truthy. Only treat an override as real if declared (`in`) with content.
     function _hasRealContent(v) {
         if (v == null || typeof v !== 'object') return false;
         return Object.keys(v).some(k => !k.startsWith('$')
@@ -565,8 +500,8 @@ function initializeColorpickerPlugin() {
             && k !== 'contentType');
     }
 
-    // Takes an array of resolved source values, extracts _tailwind / _ios overrides and
-    // custom groups from each, and returns the final normalized groups array.
+    // Extract _tailwind / _ios overrides + custom groups from resolved sources,
+    // returning the final normalized groups array.
     function composeLibraryFromSources(sources) {
         let tailwindOverride = null;
         let iosOverride = null;
@@ -593,14 +528,13 @@ function initializeColorpickerPlugin() {
         const groups = [];
         if (recent.length) {
             const recentGroup = normalizeGroup(recent, 'Recent');
-            recentGroup._isRecent = true;  // marker — renderer picks the `library-recent-swatch` template over `library-swatch`
+            recentGroup._isRecent = true;  // renderer picks library-recent-swatch template
             groups.push(recentGroup);
         }
 
         groups.push(...customGroups);
 
         if (tailwindOverride) {
-            // `_group` meta inside the override becomes the group heading; default to "Tailwind"
             groups.push(normalizeGroup(tailwindOverride, tailwindOverride._group || 'Tailwind'));
         } else {
             groups.push(...normalizeLibraryInput(buildTailwindPreset()));
@@ -615,20 +549,10 @@ function initializeColorpickerPlugin() {
         return groups;
     }
 
-    // Walk a normalized groups array and resolve any reference-style strings in
-    // user-facing labels (group / palette / swatch names) against Alpine's scope.
-    // Two reference shapes are recognized:
-    //   • Bare path:  "$x.colorLabels.primary"           → Alpine.evaluate(...)
-    //   • Template:   "${$locale.t('brand.primary')}"     → Alpine.evaluate(...) as a literal
-    // Plain strings pass through unchanged. Failed lookups return the original
-    // string so a missing key surfaces as-is rather than rendering empty.
-    //
-    // Reading via Alpine.evaluate inside the surrounding render effect registers
-    // reactive deps on the referenced data — locale switches and content updates
-    // re-trigger the render automatically.
-    // Resolve a single `$x.`/`$locale`/`${…}` reference string against document.body
-    // scope. Plain strings pass through unchanged; returns the original on any failure.
-    // Reading via Alpine.evaluate inside a render effect registers the locale dep.
+    // Resolve a `$x.`/`$locale`/`${…}` reference string against document.body scope.
+    // Recognizes bare paths and template literals; plain strings and failures pass
+    // through unchanged. Alpine.evaluate inside the render effect registers the
+    // locale/content dep so switches re-trigger the render.
     function _resolveRefString(val) {
         if (typeof val !== 'string' || val.length === 0) return val;
         const trimmed = val.trim();
@@ -671,18 +595,16 @@ function initializeColorpickerPlugin() {
         return groups;
     }
 
-    // Returns an object that is BOTH callable (for localization) AND spreadable (for composition).
-    // `builder` is a function that takes optional labels and returns a preset object.
-    // Spreading the returned value exposes the default (unlabeled) preset's top-level keys.
+    // Returns an object both callable (for localization) and spreadable (for
+    // composition) — spreading exposes the default preset's top-level keys.
     function _makeCallablePreset(builder) {
         const fn = (labels) => builder(labels);
-        Object.assign(fn, builder()); // default preset's keys become own enumerable props on fn
+        Object.assign(fn, builder());
         return fn;
     }
 
-    // Render a group by cloning the group template and expanding nested templates in place.
-    // Returns a fragment with all top-level elements (scope applied to the first). `isRecent`
-    // threads down so palette/swatch layers can pick the Recent-specific swatch template.
+    // Render a group by cloning its template and expanding nested templates in
+    // place. `isRecent` threads down to pick the Recent-specific swatch template.
     function renderLibraryGroup(groupTpl, group) {
         const frag = groupTpl.content.cloneNode(true);
         const primary = frag.firstElementChild;
@@ -691,7 +613,7 @@ function initializeColorpickerPlugin() {
 
         const isRecent = !!group._isRecent;
 
-        // Normalize: flat groups become single unnamed palette so templates work uniformly
+        // Flat groups become a single unnamed palette so templates work uniformly.
         const palettes = (group.palettes && group.palettes.length)
             ? group.palettes
             : (group.colors && group.colors.length ? [{ name: null, colors: group.colors }] : []);
@@ -733,23 +655,19 @@ function initializeColorpickerPlugin() {
         return frag;
     }
 
-    // Per-clone counter for uniquifying nested dropdown/menu ids — mirrors the scheme
-    // used for gradient layer clones. Only menus that live INSIDE the swatch template
-    // get uniquified; menus placed at the library root are left alone (shared).
+    // Per-clone counter for uniquifying nested dropdown/menu ids. Only menus
+    // inside the swatch template get uniquified; library-root menus stay shared.
     let _swatchCloneCounter = 0;
 
     function renderLibrarySwatch(swatchTpl, swatch) {
         const frag = swatchTpl.content.cloneNode(true);
         const primary = frag.firstElementChild;
         if (!primary) return frag;
-        // Apply the swatch scope to the primary element (typically the swatch button).
-        // Sibling elements like nested menus don't need swatch scope — their actions
-        // read from the dropdowns plugin's trigger ref.
+        // Swatch scope on the primary (the swatch button); nested menus read from
+        // the dropdowns plugin's trigger ref instead.
         primary.setAttribute('x-data', '{ swatch: ' + _jsonStringifyForAlpine(swatch) + ' }');
-        // Raw value + canonical key go on BOTH the actual apply-color element AND the
-        // primary wrapper (if different). That way `_updateActiveSwatches` can toggle
-        // `.active` on both, and dev CSS targeting either selector — the wrapper div
-        // (for layout effects like `order: -1`) or the button (for box-shadow) — works.
+        // Value + key go on both apply-color element and primary wrapper so
+        // _updateActiveSwatches can toggle `.active` and dev CSS can target either.
         if (swatch && typeof swatch.value === 'string') {
             const applyEl = frag.querySelector('[x-colorpicker\\.apply-color]');
             const key = _swatchKeyOf(swatch.value);
@@ -761,14 +679,13 @@ function initializeColorpickerPlugin() {
                 if (key) t.setAttribute('data-cp-key', key);
             }
         }
-        // Uniquify any nested dropdown/menu ids so per-swatch context menus don't
-        // collide. Skipped automatically when the menu lives outside the template.
+        // Uniquify nested menu ids so per-swatch context menus don't collide.
         uniquifyDropdownIdsIn(frag, 'swatch-' + (++_swatchCloneCounter));
         return frag;
     }
 
-    // Default fallback: if no library template supplied, render a small heading per group
-    // and a flex-wrap row of apply-color spans for each swatch.
+    // Fallback when no library template supplied: heading per group + a flex-wrap
+    // row of apply-color spans.
     function renderDefaultGroup(group) {
         const root = document.createElement('div');
         root.setAttribute('data-cp-library-group', group.name || '');
@@ -804,12 +721,10 @@ function initializeColorpickerPlugin() {
         if (input == null) return { name: paletteName, colors: [] };
         if (Array.isArray(input)) return { name: paletteName, colors: normalizeColorList(input) };
         if (typeof input === 'object') {
-            // Meta key `_name` overrides the display name (lets devs keep object keys stable
-            // across locales while translating visible text).
+            // `_name` meta overrides the display name (keeps object keys stable across locales).
             const displayName = (typeof input._name === 'string') ? input._name : (input.name || paletteName);
-            // Explicit `_colors` / `colors` / `items` key holds the swatch list — use when
-            // you need to pair `_name` with an array of bare hex strings (YAML can't mix
-            // object keys and sequence items in the same node).
+            // Explicit `_colors`/`colors`/`items` holds the swatch list — pairs
+            // `_name` with a bare-hex array (YAML can't mix keys and sequence items).
             if ('_colors' in input || 'colors' in input || 'items' in input) {
                 return {
                     ...input,
@@ -844,7 +759,7 @@ function initializeColorpickerPlugin() {
             return input.map(item => _coerceSwatch(item)).filter(Boolean);
         }
         if (typeof input === 'object') {
-            // Filter `_`-prefixed meta keys (e.g., `_name`, `_group`) so they're not mistaken for shades.
+            // Filter `_`-prefixed meta keys so they're not mistaken for shades.
             return Object.entries(input)
                 .filter(([k]) => !k.startsWith('_'))
                 .map(([name, value]) => _coerceSwatch(value, name))
@@ -896,8 +811,7 @@ function initializeColorpickerPlugin() {
 
     // ---- Default fallback templates (used when developer doesn't supply their own) ----
 
-    // Solid-options panel — used both as a top-level tab body and as the
-    // accordion content under each gradient stop.
+    // Solid-options panel — top-level tab body and per-stop accordion content.
     const DEFAULT_SOLID_TEMPLATE_HTML = `
         <div>
             <div class="canvas-wrapper">
@@ -924,10 +838,8 @@ function initializeColorpickerPlugin() {
         </div>
     `;
 
-    // Gradient layer template — one of these per layer clone. Includes the
-    // gradient-type dropdown (with reactive icon class), angle input, stops bar
-    // with right-click context menu (Duplicate/Delete + inline library), and
-    // the per-stop solid-panel accordion.
+    // Gradient layer template (one per layer clone) — type dropdown, angle input,
+    // stops bar with context menu, and the per-stop solid-panel accordion.
     const DEFAULT_LAYER_TEMPLATE_HTML = `
         <div>
             <div class="layer-options-wrapper">
@@ -1067,14 +979,9 @@ function initializeColorpickerPlugin() {
     const _defaultLibraryLayoutTpl = parseOnce(DEFAULT_LIBRARY_LAYOUT_HTML);
 
     // ---- Default-menu text (localizable via `_ui`) ----
-    //
-    // English defaults for the chrome baked into the default menu. A project
-    // overrides any subset by flagging a data source with a `colorpicker` key and
-    // giving it a top-level `_ui` object (see colorpickers.md → Text & Localization).
-    // window.ManifestUI.resolve deep-overlays those overrides onto these fallbacks;
-    // values may be plain strings or `$x`/`$locale` references. The English text also
-    // lives verbatim in the templates above, so the menu still reads correctly if the
-    // resolver never runs (e.g. ManifestUI absent). Key shape matches the docs exactly.
+    // English fallbacks; ManifestUI.resolve deep-overlays project `_ui` overrides.
+    // The same English also lives verbatim in the templates above, so the menu
+    // reads correctly even if the resolver never runs.
     const UI_FALLBACK = {
         tabs: { solid: 'Solid', gradient: 'Gradient', library: 'Library' },
         grabColor: 'Grab color',
@@ -1107,10 +1014,9 @@ function initializeColorpickerPlugin() {
         return ui;
     }
 
-    // Stamp a resolved `_ui` object onto a freshly-cloned default-template subtree.
-    // Text nodes carry data-cp-ui-text="dotted.path"; icon-only buttons whose only
-    // label is a tooltip/aria carry data-cp-ui-label="dotted.path". Dev-authored
-    // custom templates have no markers, so this is a no-op for them.
+    // Stamp a resolved `_ui` object onto a cloned default-template subtree via
+    // data-cp-ui-text (textContent) / data-cp-ui-label (aria+tooltip) markers.
+    // No-op for dev-authored templates (no markers).
     function _applyDefaultUiText(scopeEl, ui) {
         if (!scopeEl || !ui) return;
         scopeEl.querySelectorAll('[data-cp-ui-text]').forEach(el => {
@@ -1130,12 +1036,11 @@ function initializeColorpickerPlugin() {
 
     let pickerCounter = 0;
 
-    // Reactive registry of pickers keyed by element ID.
-    // Consumers read via the magic; reads are tracked even for not-yet-registered IDs,
-    // so bindings resolve correctly when a picker mounts later in the DOM.
+    // Reactive registry of pickers keyed by element ID. Reads track unregistered
+    // IDs too, so bindings resolve when a picker mounts later.
     const _pickerRegistry = window.Alpine?.reactive ? Alpine.reactive({}) : {};
 
-    // Fallback API used when a picker ID isn't registered yet; coerces to empty string.
+    // Fallback API for an unregistered picker ID; coerces to empty string.
     const _nullApi = (() => {
         const noop = () => {};
         const empty = () => '';
@@ -1174,17 +1079,13 @@ function initializeColorpickerPlugin() {
             pickerMode: 'solid',
             openStop: null, // { layerIndex, stopIndex } | null
 
-            // Tab/panel filtering. When set (via array-literal directive expression
-            // on the root, e.g. `x-colorpicker="['solid', 'gradient']"`), the default
-            // injected UI is filtered + reordered to match. null/empty = all panels.
+            // Panel filter from an array-literal root expression (e.g.
+            // x-colorpicker="['solid','gradient']"); null = all panels.
             allowedPanels: null,
 
-            // Elements that act as live labels for the current solid format (e.g. a
-            // dropdown button whose text reads "Hex"/"RGB"/"HSL"/"OKLCH"). Refreshed
-            // whenever the format changes via _refreshFormatLabels().
+            // Live format-label elements (dropdown button text "Hex"/"RGB"/...).
             formatLabelEls: [],
-            // Elements bound to a specific format value (e.g. <li set-color-space="hex">).
-            // Refreshed alongside the labels to toggle an `active` class on the current.
+            // Elements bound to a specific format value (toggle `active` on current).
             formatChoiceEls: [],
 
             // Element registry (populated by child directive handlers)
@@ -1199,27 +1100,23 @@ function initializeColorpickerPlugin() {
             gradientValueInputs: [],    // <textarea x-colorpicker.set-gradient-value>
 
             // Library
-            libraryContainers: [],      // <div x-colorpicker.library> — every registered target (top-level tab, nested stop menus, etc.)
-            libraryTemplate: null,      // <template x-colorpicker.library> — dev layout (cloned into container)
-            libraryRootValue: null,     // expression from x-colorpicker.library="..." (data source)
+            libraryContainers: [],      // <div x-colorpicker.library> — every registered target
+            libraryTemplate: null,      // <template x-colorpicker.library> — dev layout
+            libraryRootValue: null,     // x-colorpicker.library="..." data source expression
 
-            // Recent-list commit tracking. `_recentBaseline` is the color at the start of
-            // a commit cycle (popover open, or inline picker init / last commit).
-            // `_lastChangeFromLibrary` is true if the most recent user change was picking
-            // a preset swatch — those don't count as "recent" even if committed.
-            // `_hasUserChange` is true if any non-library user interaction has happened
-            // since the baseline was set.
+            // Recent-list commit tracking. Baseline = color at cycle start;
+            // _lastChangeFromLibrary = preset swatch (doesn't count as recent);
+            // _hasUserChange = any non-library interaction since baseline.
             _recentBaseline: null,
             _lastChangeFromLibrary: false,
             _hasUserChange: false,
 
-            // The currently active solid-controls refs (inside Solid tab OR open-stop accordion)
+            // Active solid-controls refs (Solid tab or open-stop accordion)
             activeControls: null,
             solidTabRefs: null,
 
-            // Reactive version counter — bumped on every state change. The API
-            // getters read this to establish a reactive dependency, then compute
-            // values lazily. No upfront work when nothing is bound to $colorpicker(id).
+            // Reactive version counter — bumped on every change; API getters read
+            // it to establish a dep, then compute lazily.
             snapshot: window.Alpine?.reactive ? Alpine.reactive({ version: 0 }) : { version: 0 },
 
             // ---- Active target accessors ----
@@ -1276,8 +1173,7 @@ function initializeColorpickerPlugin() {
                     this.activeLayerIndex = 0;
                     this.activeStopIndex = 0;
                     this.openStop = null;
-                    // Seed the picker's working solid color from the first stop so
-                    // syncUI / hex output / canvas reflect something coherent.
+                    // Seed the working solid color from the first stop.
                     const firstStop = layers[0].stops[0];
                     if (firstStop) {
                         this.h = firstStop.color.h; this.s = firstStop.color.s;
@@ -1308,8 +1204,8 @@ function initializeColorpickerPlugin() {
                 this.activeLayerIndex = layerIndex;
                 this.activeStopIndex = stopIndex;
                 this.renderLayers();
-                // Gradient swatches in the library must be disabled while a stop is open
-                // (CSS gradients can't contain nested gradients as stop colors).
+                // Library gradient swatches disabled while a stop is open
+                // (CSS can't nest gradients as stop colors).
                 this._syncStopGradientDisable();
             },
 
@@ -1428,8 +1324,7 @@ function initializeColorpickerPlugin() {
             },
 
             applyColor(str) {
-                // Pure setter — Recent-list commits happen at the picker-close boundary
-                // (popover close / inline focusout), not on every call.
+                // Pure setter — Recent commits happen at the close boundary, not here.
                 if (this.setFromString(str)) {
                     this.syncUI();
                     this.syncToInput();
@@ -1437,10 +1332,8 @@ function initializeColorpickerPlugin() {
                 }
             },
 
-            // Toggle `.active` on library swatches whose canonical key matches the
-            // picker's current color. Gradients compare as their full CSS string;
-            // solids compare as 8-digit hex. Runs across every registered library
-            // container (tab + any nested containers such as stop context menus).
+            // Toggle `.active` on library swatches matching the current color's key,
+            // across every registered library container.
             _updateActiveSwatches() {
                 if (!this.libraryContainers.length) return;
                 const current = this.isGradient
@@ -1458,14 +1351,9 @@ function initializeColorpickerPlugin() {
                 this._syncStopGradientDisable();
             },
 
-            // Gradient-valued library swatches must be un-pickable when the click would
-            // try to apply that gradient as a gradient-stop color (CSS doesn't allow
-            // nested gradients in stop positions). That's the case when:
-            //   • a stop accordion is currently open (openStop set), OR
-            //   • the library container itself is nested inside a stop-context-menu —
-            //     every click in such a menu targets the right-clicked stop's color.
-            // Dev CSS styles [disabled] on apply-color elements; the click handler
-            // also short-circuits as belt-and-braces.
+            // Disable gradient library swatches when a click would apply them as a
+            // stop color (can't nest gradients): a stop accordion is open, or the
+            // container is inside a stop-context-menu. Dev CSS styles [disabled].
             _syncStopGradientDisable() {
                 const stopIsOpen = !!this.openStop;
                 for (const c of this.libraryContainers) {
@@ -1484,14 +1372,10 @@ function initializeColorpickerPlugin() {
             },
 
             // ---- Recent-list commit cycle ----
-            //
-            // Rules:
-            //   • Popover pickers commit on toggle→closed.
-            //   • Inline pickers commit on focusout past the rootEl.
-            //   • A commit pushes the current color to Recent IFF the user made a
-            //     non-library change since the last baseline and the color actually differs.
-            //   • Gradient mode never commits (stops are part of a gradient, not standalone).
-            //   • Programmatic api.applyColor calls don't mark user changes — only UI paths do.
+            // Popover commits on close, inline on focusout past rootEl. A commit
+            // pushes to Recent only if a non-library user change since baseline
+            // actually changed the color. Gradient mode never commits; programmatic
+            // applyColor doesn't mark a user change.
 
             _startCommitCycle() {
                 this._recentBaseline = this._currentCommitValue();
@@ -1521,10 +1405,8 @@ function initializeColorpickerPlugin() {
                 this._startCommitCycle();
             },
 
-            // Shared-picker write-back: when a swatch with x-model triggered this picker,
-            // push the current color through the swatch's model setter on commit. Unlike
-            // Recent, this runs even when the change came from a library click — the user
-            // clicked a library swatch intending to assign that color to their field.
+            // Write the current color back through the trigger's x-model setter on
+            // commit. Runs even for library clicks (the user meant to assign it).
             _commitToTrigger() {
                 const trigger = this.triggerBtn;
                 if (!trigger || typeof trigger._cpModelSetter !== 'function') return;
@@ -1537,10 +1419,7 @@ function initializeColorpickerPlugin() {
                 if (!window.EyeDropper) return;
                 try {
                     const result = await new EyeDropper().open();
-                    // Eyedropper is a single-color operation — route the result
-                    // to Solid mode and surface the solid controls. Mark as a
-                    // non-library user change; the usual commit boundary decides
-                    // whether it lands in Recent (user may tweak before closing).
+                    // Single-color op — route to Solid mode, mark a non-library change.
                     this._switchToSolidMode();
                     this._markUserChange(false);
                     this.applyColor(result.sRGBHex);
@@ -1560,9 +1439,8 @@ function initializeColorpickerPlugin() {
                 if (this.layersContainer) this.renderLayers();
             },
 
-            // Switch picker mode without touching the dev's `tab` Alpine data.
-            // Used by library-tab applies — the user is browsing swatches and
-            // shouldn't be flipped off the Library tab when they pick one.
+            // Switch mode without touching the dev's `tab` data — library-tab
+            // applies shouldn't flip the user off the Library tab.
             _setPickerMode(mode) {
                 if (this.pickerMode === mode) return;
                 this.pickerMode = mode;
@@ -1603,9 +1481,8 @@ function initializeColorpickerPlugin() {
                 }
             },
 
-            // Sync any registered format label elements to the current format and
-            // toggle an `active` class on each format-choice element so devs can
-            // style the active option without writing reactive bindings.
+            // Sync registered format-label elements and toggle `active` on each
+            // format-choice element for the current format.
             _refreshFormatLabels() {
                 const current = this.format;
                 const label = this._formatLabel(current);
@@ -1641,10 +1518,8 @@ function initializeColorpickerPlugin() {
             syncToInput() {
                 const swatchVal = this.toSwatchColor();
                 if (this.hiddenInput) {
-                    // Native <input type="color"> only accepts #rrggbb; everything
-                    // else (synthesized type=hidden, dev-supplied type=hidden) gets
-                    // the full CSS string — solid color or gradient — so gradients
-                    // and non-hex formats round-trip without lossy conversion.
+                    // Native <input type=color> only accepts #rrggbb; hidden inputs
+                    // get the full CSS string so gradients/non-hex round-trip losslessly.
                     const isNativeColorInput = this.hiddenInput.type === 'color';
                     this.hiddenInput.value = isNativeColorInput ? this.toHex() : swatchVal;
                     this.hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1652,15 +1527,10 @@ function initializeColorpickerPlugin() {
                 }
                 if (this.triggerBtn) this.triggerBtn.style.setProperty('--color-picker-swatch', swatchVal);
                 this.updateGradientValue();
-                // Reflect current color in the library: any swatch whose canonical key
-                // matches gets an `.active` class, all others lose it.
                 this._updateActiveSwatches();
-                // Refresh any custom format labels / choice highlights — covers paths
-                // where format changes implicitly (setFromString parsing a new format).
                 this._refreshFormatLabels();
 
-                // Bump reactive version — any $colorpicker(id).* reader re-runs.
-                // No eager computation of hex/css/etc. unless somebody is actually bound to them.
+                // Bump reactive version — $colorpicker(id).* readers re-run (lazily).
                 this.snapshot.version++;
             },
 
@@ -1676,11 +1546,11 @@ function initializeColorpickerPlugin() {
                 const canvas = this.activeControls?.canvas;
                 if (!canvas) return;
                 const rect = canvas.getBoundingClientRect();
-                if (rect.width <= 0) return; // not visible yet; ResizeObserver will redraw when it gains size
+                if (rect.width <= 0) return; // not visible; ResizeObserver redraws later
                 let dimsChanged = false;
                 if (canvas.width !== rect.width)  { canvas.width  = rect.width;  dimsChanged = true; }
                 if (canvas.height !== rect.height) { canvas.height = rect.height; dimsChanged = true; }
-                // Skip repaint if hue unchanged and dimensions unchanged (setting canvas.* dims clears the pixels)
+                // Skip repaint if hue and dims unchanged (setting dims clears pixels).
                 if (!dimsChanged && canvas._cpLastHue === this.h) return;
                 drawSvCanvas(canvas, this.h);
                 canvas._cpLastHue = this.h;
@@ -1722,7 +1592,7 @@ function initializeColorpickerPlugin() {
 
             // ---- Library rendering ----
             //
-            // Templates are nested in natural HTML hierarchy (x-for style):
+            // Templates nest as group > palette > swatch:
             //   <template x-colorpicker.library>
             //     <template x-colorpicker.library-group>          <!-- scope: group -->
             //       <template x-colorpicker.library-palette>     <!-- scope: palette -->
@@ -1732,69 +1602,46 @@ function initializeColorpickerPlugin() {
             //     </template>
             //   </template>
             //
-            // Each inner <template> is replaced in-place by clones (siblings before it, then removed).
-            // Data shape after normalization: [{ name?, colors?: Swatch[], palettes?: Palette[] }].
-            // If a group has only `colors` (flat, e.g. Recent), it's auto-wrapped as a single
-            // unnamed palette so nested templates still work uniformly.
+            // Each inner <template> is replaced in place by clones. Flat groups (Recent)
+            // are auto-wrapped as one unnamed palette so nesting works uniformly.
 
             renderLibrary() {
                 if (this._libraryEffectBound) return;
                 this._libraryEffectBound = true;
                 if (!this.libraryContainers.length) return;
-                // All registered containers share the same data source / render key. Use
-                // the first for any Alpine scope evaluation that needs an element.
+                // Containers share one data source; use the first for scope eval.
                 const evalHost = this.libraryContainers[0];
 
                 if (this.libraryRootValue && window.Alpine?.effect && window.Alpine?.evaluateLater) {
-                    // Explicit expression — bypass discovery, re-render reactively when deps change
+                    // Explicit expression — bypass discovery, re-render on dep change.
                     const evalFn = Alpine.evaluateLater(evalHost, this.libraryRootValue);
                     Alpine.effect(() => {
                         evalFn(v => { this._libraryResolvedData = v; this._doRenderLibrary(); });
                     });
                 } else if (window.Alpine?.effect) {
-                    // Zero-config — scan `$x.manifest.data` for entries flagged with a
-                    // `colorpicker:` key (mirroring how `locales:`, `appwriteTableId`, etc.
-                    // self-identify their plugin). Each flagged entry is loaded normally
-                    // by the data plugin; we collect the resulting `$x.<name>` values and
-                    // merge them into the library in declaration order.
-                    //
-                    // Multiple sources are supported — split your default-palette overrides
-                    // (`_tailwind`, `_ios`) and your custom palettes across as many files
-                    // as you like. Order in `manifest.data` determines render order.
-                    //
-                    // Everything happens synchronously inside the effect so Alpine tracks
-                    // all reactive deps ($locale, $x.manifest, each $x.<name>) and re-runs
-                    // the full pass on any change. Evaluate against document.body so $x
-                    // magic is always in scope (the container may be detached/popover
-                    // content without its own scope chain).
+                    // Zero-config — scan $x.manifest.data for `colorpicker:`-flagged
+                    // entries, collect their $x.<name> values, merge in declaration
+                    // order. Runs synchronously in the effect so Alpine tracks all deps.
+                    // Eval against document.body so $x magic is in scope (popover content
+                    // may be detached).
                     const evalCtx = document.body;
 
-                    // Manifest's data plugin REPLACES the $x.<source> proxy reference on load
-                    // rather than mutating in place. Alpine.effect can't catch that change via
-                    // property tracking, so we pair it with a short-lived poller that RE-READS
-                    // discovery until the data is loaded. We only actually re-render when the
-                    // serialized content has changed since the last render — otherwise each
-                    // poll tick would tear down and rebuild the whole library, thrashing the
-                    // DOM (and invalidating x-dropdown.context menu id lookups mid-flight).
+                    // The data plugin REPLACES the $x.<source> proxy on load rather than
+                    // mutating, which Alpine.effect can't catch by property tracking — so a
+                    // short poller re-reads until loaded. Re-render only when serialized
+                    // content changed (else each tick rebuilds the whole library, thrashing
+                    // the DOM and invalidating x-dropdown.context id lookups mid-flight).
                     const keyOf = (names, collected) => {
-                        // Include the Recent list in the key so additions/removals trigger a
-                        // re-render. Reading _recentStore.list inside the Alpine.effect also
-                        // establishes reactivity on it, so cookie mutations (pushRecent /
-                        // removeRecent) fire the effect and change the key.
+                        // Recent list is in the key (and read here for reactivity) so
+                        // push/removeRecent fire the effect and change the key.
                         const recentKey = _recentStore.list.slice(0, _recentMax).join(',');
                         try { return recentKey + '#' + names.join('|') + '::' + JSON.stringify(collected); }
                         catch { return recentKey + '#' + names.join('|') + '::[unserializable]'; }
                     };
                     const readSources = () => {
-                        // Discover palette sources two ways:
-                        //  1. Preferred: a top-level manifest `"colorpicker"` pointer
-                        //     naming one or more NORMAL data sources ("colors" or
-                        //     ["colors","brand"]). The sources register as plain
-                        //     (optionally localized) data — loading, locale reloads,
-                        //     and `_ui` piggybacking all work untouched.
-                        //  2. Legacy: a `colorpicker` key flagged on the data entry
-                        //     itself. Kept for back-compat; note the flag-wrapped
-                        //     locale-map shape is NOT loadable by the data plugin.
+                        // Two discovery paths: (1) preferred top-level manifest
+                        // "colorpicker" pointer naming normal data sources; (2) legacy
+                        // `colorpicker` key flagged on the data entry itself (back-compat).
                         const names = [];
                         try {
                             const ptr = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.colorpicker');
@@ -1834,8 +1681,7 @@ function initializeColorpickerPlugin() {
                             this._libraryDiscoveredKey = key;
                             this._libraryDiscoveredData = collected;
                             this._doRenderLibrary();
-                            // A `_ui` source loading late (poller-driven) won't change
-                            // $locale, so re-localize the rest of the picker here too.
+                            // A late-loading `_ui` source won't change $locale — re-localize here.
                             this._applyUi(this.rootEl);
                         }
                         return ready;
@@ -1846,12 +1692,9 @@ function initializeColorpickerPlugin() {
                         try { Alpine.evaluate(evalCtx, '$locale && $locale.current'); } catch {}
                         try { Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest._loadedFrom'); } catch {}
                         runDiscovery();
-                        // Re-localize the whole picker (tabs + any mounted menus) on
-                        // locale switch — this effect re-runs when $locale.current changes,
-                        // and _applyUi re-resolves $x/$locale references inside it.
+                        // Re-localize the whole picker on locale switch.
                         this._applyUi(this.rootEl);
-                        // Kick the poller only until data is ready — it re-checks every 150ms
-                        // but skips actual re-render when the content is unchanged.
+                        // Poll (150ms) only until data is ready; skips re-render when unchanged.
                         if (!this._libraryPollTimer) {
                             let attempts = 0;
                             this._libraryPollTimer = setInterval(() => {
@@ -1884,17 +1727,13 @@ function initializeColorpickerPlugin() {
                 } else {
                     groups = composeLibraryFromSources(this._libraryDiscoveredData || []);
                 }
-                // Resolve any `$x.<path>` or `${...}` template-literal references in
-                // group / palette / swatch names, so a single colorpicker file can
-                // chain into a separate localization data source without dev-side
-                // template tweaks. Reactive reads inside `Alpine.evaluate` register
-                // deps on the surrounding render effect → locale switches re-render.
+                // Resolve $x/${...} references in group/palette/swatch names (reactive
+                // reads register deps → locale switches re-render).
                 return _resolveLibraryRefs(groups);
             },
 
-            // Render ONE container (used when a new container registers post-mount
-            // — e.g. a gradient layer clone's inline library div). Avoids tearing
-            // down every other container's x-dropdown.context init timers.
+            // Render ONE container (new post-mount container, e.g. a layer clone's
+            // library div) without tearing down others' x-dropdown.context timers.
             _renderIntoContainer(container) {
                 if (!container || !container.isConnected) return;
                 const groups = this._resolveLibraryGroups();
@@ -1958,11 +1797,8 @@ function initializeColorpickerPlugin() {
                 return this.layersContainer.querySelectorAll(':scope > [data-cp-layer-clone]')[li] || null;
             },
 
-            // Resolve the default-menu chrome text (English fallbacks overlaid with
-            // any project `_ui` overrides) and stamp it onto a cloned default-template
-            // subtree. Called at each clone site and re-run inside the library locale
-            // effect, so switching locale (or a late data load) re-renders the labels.
-            // Custom dev templates carry no markers → no-op.
+            // Resolve default-menu chrome text (fallbacks + project `_ui` overrides)
+            // and stamp onto a cloned default-template subtree. No-op for custom templates.
             _applyUi(scopeEl) {
                 if (!scopeEl || !window.ManifestUI) return;
                 let ui;
@@ -1999,24 +1835,15 @@ function initializeColorpickerPlugin() {
                     root.setAttribute('data-gradient-type', layer.type);
                     root._cpLayerIndex = li;
 
-                    // Expose the layer's position + type to the clone's Alpine scope so
-                    // devs can bind classes/attributes reactively. Available in scope:
-                    //   layerType   — 'linear' | 'radial' | 'conic'
-                    //   layerIndex  — 0-based position of this layer
-                    //   layerCount  — total number of layers in the picker
-                    // Examples:
-                    //   :class="'layer-type-' + layerType"
-                    //   :disabled="layerIndex === 0"               (Move Up)
-                    //   :disabled="layerIndex === layerCount - 1"  (Move Down)
-                    //   :disabled="layerCount === 1"               (Remove)
+                    // Expose layerType / layerIndex / layerCount to the clone's Alpine
+                    // scope for reactive :class / :disabled bindings.
                     root.setAttribute('x-data', '{ '
                         + 'layerType: ' + JSON.stringify(layer.type) + ', '
                         + 'layerIndex: ' + li + ', '
                         + 'layerCount: ' + this.layers.length
                         + ' }');
 
-                    // Uniquify x-dropdown / x-dropdown.context / x-dropdown.hover IDs
-                    // within this clone so per-layer dropdowns don't collide.
+                    // Uniquify x-dropdown IDs so per-layer dropdowns don't collide.
                     uniquifyDropdownIdsIn(root, this.pickerUid + '-layer-' + li);
 
                     // Render stops bar content
@@ -2036,11 +1863,9 @@ function initializeColorpickerPlugin() {
 
                     this.layersContainer.appendChild(root);
 
-                    // Localize this clone's default menu chrome (gradient types, layer
-                    // actions, stop actions). No-op for dev-supplied layer templates.
                     this._applyUi(root);
 
-                    // Let Alpine/Manifest process the clone (x-dropdown, x-icon, and nested x-colorpicker directives)
+                    // Let Alpine process the clone (x-dropdown, x-icon, nested x-colorpicker).
                     if (window.Alpine?.initTree) {
                         requestAnimationFrame(() => Alpine.initTree(root));
                     }
@@ -2067,7 +1892,7 @@ function initializeColorpickerPlugin() {
                     handle.setAttribute('data-cp-stop-handle', '');
                     handle.style.left = stop.position + '%';
                     handle.style.backgroundColor = colorToRgba(stop.color);
-                    // .active reflects whether this stop's accordion is currently open
+                    // .active = this stop's accordion is open
                     if (this.openStop && this.openStop.layerIndex === layerIndex && this.openStop.stopIndex === si) {
                         handle.classList.add('active');
                     }
@@ -2087,8 +1912,7 @@ function initializeColorpickerPlugin() {
                         if (e.button !== 0) return;
                         e.stopPropagation();
                         self.selectStop(layerIndex, si);
-                        // .active is set by the re-render after toggleStop;
-                        // don't preemptively toggle here (would be wrong for drag-without-toggle).
+                        // .active is set by the re-render after toggleStop — don't preempt it.
                         dragging = true; moved = false; startX = e.clientX;
                         cachedBarRect = barEl.getBoundingClientRect();
                         handle.setPointerCapture(e.pointerId);
@@ -2099,10 +1923,9 @@ function initializeColorpickerPlugin() {
                         if (moved) throttledDrag(e);
                     });
                     handle.addEventListener('pointerup', () => {
-                        // Only toggle/cleanup if we had a valid left-click drag session.
-                        // Right-click never sets `dragging=true` (pointerdown bails for button!==0),
-                        // so this pointerup would otherwise still call toggleStop() and
-                        // destroy the layer clone — killing the context menu that just opened.
+                        // Only act on a real left-drag session. Right-click never sets
+                        // dragging, so bailing here keeps its context menu from being
+                        // destroyed by a stray toggleStop() re-render.
                         if (!dragging) return;
                         const wasMoved = moved;
                         dragging = false; moved = false; cachedBarRect = null;
@@ -2119,13 +1942,10 @@ function initializeColorpickerPlugin() {
                 containerEl.innerHTML = '';
                 const source = this.solidTemplate || _defaultSolidTpl;
                 const frag = source.content.cloneNode(true);
-                // Uniquify any x-dropdown menu ids inside the cloned solid panel
-                // (e.g. the `color-space-menu` from the default template) so two
-                // pickers on the same page don't share the same popover element.
+                // Uniquify x-dropdown menu ids so two pickers don't share a popover.
                 uniquifyDropdownIdsIn(frag, this.pickerUid + '-solid');
                 containerEl.appendChild(frag);
 
-                // Localize the default solid panel's chrome (the "Grab color" item).
                 this._applyUi(containerEl);
 
                 const refs = this._collectSolidRefs(containerEl);
@@ -2139,8 +1959,7 @@ function initializeColorpickerPlugin() {
                 return refs;
             },
 
-            // Mount the full gradient panel into an instance container.
-            // Uses <template x-colorpicker.gradient> if provided, otherwise the default.
+            // Mount the full gradient panel (dev template or default) into a container.
             _mountGradientInstance(containerEl) {
                 if (!containerEl) return;
                 containerEl.innerHTML = '';
@@ -2148,9 +1967,8 @@ function initializeColorpickerPlugin() {
                 const frag = source.content.cloneNode(true);
                 containerEl.appendChild(frag);
 
-                // Alpine processes the inner x-colorpicker.* directives (add-layer,
-                // gradient-layers, layer-options template, set-gradient-value) which
-                // register with THIS state via ancestor traversal.
+                // Alpine processes the inner x-colorpicker.* directives, which register
+                // with THIS state via ancestor traversal.
                 if (window.Alpine?.initTree) Alpine.initTree(containerEl);
             },
 
@@ -2176,7 +1994,7 @@ function initializeColorpickerPlugin() {
                     let dragging = false;
                     let cachedRect = null;
                     const pick = (e) => {
-                        // Cache the rect while dragging; invalidated on pointerdown
+                        // Rect cached during drag, invalidated on pointerdown.
                         if (!cachedRect) cachedRect = refs.canvas.getBoundingClientRect();
                         const rect = cachedRect;
                         self.s = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
@@ -2190,7 +2008,7 @@ function initializeColorpickerPlugin() {
                         cachedRect = refs.canvas.getBoundingClientRect();
                         refs.wrapper.setPointerCapture(e.pointerId);
                         self._markUserChange(false);
-                        pick(e); // immediate on first click (not throttled)
+                        pick(e); // immediate on first click
                     });
                     refs.wrapper.addEventListener('pointermove', (e) => { if (dragging) throttledPick(e); });
                     refs.wrapper.addEventListener('pointerup', () => { dragging = false; cachedRect = null; });
@@ -2245,8 +2063,7 @@ function initializeColorpickerPlugin() {
             // ---- Picker mount (after all children registered) ----
 
             mount() {
-                // Tier 2: if the container has no declared UI (templates are inert overrides),
-                // inject the full default UI. Templates alone don't count as "declared UI".
+                // No declared UI (templates alone don't count) → inject the default UI.
                 const noDeclared = !this.solidTemplate && !this.layerTemplate && !this.gradientTemplate
                     && this.solidInstances.length === 0 && this.gradientInstances.length === 0
                     && !this.layersContainer && this.gradientValueInputs.length === 0
@@ -2256,23 +2073,16 @@ function initializeColorpickerPlugin() {
                     this._injectDefaultUI();
                 }
 
-                // Auto-popovers register their picker state BEFORE the swatch hook gets
-                // a chance to set `x-dropdown` on the trigger element, so the early
-                // triggerBtn lookup misses. By mount-time (setTimeout 0) the swatch
-                // wiring has finished, so re-query if we don't have one yet.
+                // Auto-popovers register before the swatch hook sets x-dropdown on the
+                // trigger, so the early lookup misses. Re-query now that wiring's done.
                 if (!this.triggerBtn && this.rootEl.id) {
                     this.triggerBtn = document.querySelector(`[x-dropdown="${this.rootEl.id}"]`);
                 }
 
-                // Initialize the picker state from whatever source has a real value.
-                // Resolution priority matches the retarget flow on swatch-click so the
-                // picker's reactive value reads (`$colorpicker(id)`, .hex, .css, etc.)
-                // are correct from first paint — not just after the user opens the menu.
-                //   1. trigger swatch's x-model getter
-                //   2. trigger swatch's paired hidden input (form-participation flow)
-                //   3. trigger swatch's `value` attribute
-                //   4. picker container's own hidden input child
-                //   5. fallback '#000000'
+                // Init from the first source with a real value (matches the swatch-click
+                // retarget priority so value reads are correct from first paint):
+                //   1. trigger x-model getter  2. trigger's hidden input
+                //   3. trigger `value` attr    4. container hidden input  5. '#000000'
                 let initVal = '';
                 const tb = this.triggerBtn;
                 if (tb) {
@@ -2285,8 +2095,7 @@ function initializeColorpickerPlugin() {
                 if (!initVal && this.hiddenInput) initVal = this.hiddenInput.value;
                 this.setFromString(initVal || '#000000');
 
-                // Seed trigger swatch CSS var so the border-color derivation paints
-                // correctly before any interaction.
+                // Seed trigger swatch CSS var so border-color paints before interaction.
                 if (this.triggerBtn) this.triggerBtn.style.setProperty('--color-picker-swatch', this.toSwatchColor());
 
                 // Mount all solid-panel instances (Solid tab + any others)
@@ -2297,9 +2106,8 @@ function initializeColorpickerPlugin() {
                 }
                 this.solidTabRefs = firstSolidRefs;
 
-                // Mount all gradient-panel instances (the full gradient panel).
-                // This populates them with the gradient template (or default), which in turn
-                // registers gradient-layers / layer-options / set-gradient-value with this state.
+                // Mount gradient-panel instances (registers gradient-layers /
+                // layer-options / set-gradient-value with this state).
                 for (const inst of this.gradientInstances) this._mountGradientInstance(inst);
 
                 // Render gradient layers (only if a container is declared)
@@ -2319,42 +2127,35 @@ function initializeColorpickerPlugin() {
                 // Initial sync
                 this.syncToInput();
 
-                // Render the library — _doRenderLibrary clones the (optional) library template
-                // into the container and expands nested group/palette/swatch templates in-place.
                 if (this.libraryContainers.length) this.renderLibrary();
 
                 // ---- Recent-list commit wiring ----
-                // Seed the initial baseline. Popover pickers re-seed on toggle→open.
+                // Seed the baseline; popover pickers re-seed on toggle→open.
                 this._startCommitCycle();
 
-                // Broad user-interaction detector: any pointerdown or input event inside
-                // the picker marks the cycle as "user-touched". This covers all gradient
-                // controls (add-layer, set-angle, stop drags, textarea edits, etc.) without
-                // having to instrument each handler. Library swatches are detected by
-                // scope ancestry so a preset pick is correctly flagged as library-sourced.
+                // Broad user-interaction detector — any pointerdown/input marks the cycle
+                // touched (covers all controls). Library picks flagged by scope ancestry.
                 this.rootEl.addEventListener('pointerdown', (e) => {
                     const fromLibrary = !!e.target.closest('[x-data*="swatch:"]');
                     this._markUserChange(fromLibrary);
                 });
                 this.rootEl.addEventListener('input', () => {
-                    // 'input' on form controls = user typing / dragging sliders
                     this._markUserChange(false);
                 });
 
                 if (this.rootEl.hasAttribute('popover')) {
-                    // Popover mode: open/close are the commit boundaries
+                    // Popover: open/close are the commit boundaries
                     this.rootEl.addEventListener('toggle', (e) => {
                         if (e.newState === 'open')  this._startCommitCycle();
                         if (e.newState === 'closed') {
-                            // Write to the triggering swatch's model FIRST — _tryCommitRecent
-                            // resets the user-change flag on success, which would otherwise
-                            // short-circuit _commitToTrigger.
+                            // Commit to trigger FIRST — _tryCommitRecent resets the
+                            // user-change flag, which would short-circuit _commitToTrigger.
                             this._commitToTrigger();
                             this._tryCommitRecent();
                         }
                     });
                 } else {
-                    // Inline mode: commit when focus leaves the picker entirely
+                    // Inline: commit when focus leaves the picker
                     this.rootEl.addEventListener('focusout', (e) => {
                         const moved = e.relatedTarget;
                         if (!moved || !this.rootEl.contains(moved)) {
@@ -2412,17 +2213,15 @@ function initializeColorpickerPlugin() {
                     }
                 }
 
-                // Localize the tab chrome before initTree so x-tooltip caches the
-                // resolved label rather than the English default.
+                // Localize before initTree so x-tooltip caches the resolved label.
                 this._applyUi(this.rootEl);
 
-                // Alpine.initTree fires all x-* directives in the newly injected content,
-                // which will register solidTemplate/layerTemplate/solidInstances/layersContainer
-                // against THIS state (since ancestor traversal finds this.rootEl).
+                // initTree fires the injected x-* directives, registering the templates
+                // and instances against THIS state via ancestor traversal.
                 if (window.Alpine?.initTree) {
                     Alpine.initTree(this.rootEl);
                 }
-                // Stash the auto-injected tab scope wrapper so _syncPickerModeFromTab can read it
+                // Stash the auto-injected tab wrapper for _syncPickerModeFromTab.
                 this._autoTabScope = this.rootEl.firstElementChild;
             },
 
@@ -2431,10 +2230,8 @@ function initializeColorpickerPlugin() {
                 const autoTab = this._autoTabScope?._x_dataStack?.[0]?.tab;
                 const tab = rootTab || autoTab;
                 if (!tab) return;
-                // Only Solid/Gradient tabs drive the edit mode — Library (or any other
-                // tab) preserves the current mode. Otherwise switching to Library while
-                // editing a gradient would silently demote the picker to solid, breaking
-                // the "active" indicator on gradient Recent swatches.
+                // Only Solid/Gradient tabs drive edit mode; Library preserves it (else
+                // opening Library mid-gradient would demote to solid).
                 let newMode = null;
                 if (tab === 'gradient') newMode = 'gradient';
                 else if (tab === 'solid') newMode = 'solid';
@@ -2453,10 +2250,8 @@ function initializeColorpickerPlugin() {
 
         // ---- Public API exposed via $colorpicker magic ----
 
-        // Reading `state.snapshot.version` inside each getter registers a reactive
-        // dependency. When syncToInput bumps the version, any Alpine effect that
-        // read these getters re-runs — and only then do we compute the value.
-        // Zero computation if nothing is bound.
+        // track() reads snapshot.version to register a reactive dep; syncToInput
+        // bumps it, re-running bound effects. Zero computation if nothing is bound.
         const track = () => state.snapshot.version;
         state.api = {
             // Reactive reads — lazily computed on demand
@@ -2470,10 +2265,8 @@ function initializeColorpickerPlugin() {
             get format()     { track(); return state.format; },
             get pickerMode() { track(); return state.pickerMode; },
 
-            // Default string coercion → current CSS value. Lets the developer write
-            //   :style="`background: ${$colorpicker('id')}`"
-            //   x-text="$colorpicker('id')"
-            // and get the color string directly without picking a specific property.
+            // Default string coercion → current CSS value (e.g. x-text or :style
+            // interpolation of $colorpicker('id') without naming a property).
             [Symbol.toPrimitive]() { track(); return state.toFormattedString(); },
             toString()             { track(); return state.toFormattedString(); },
             valueOf()              { track(); return state.toFormattedString(); },
@@ -2543,8 +2336,8 @@ function initializeColorpickerPlugin() {
         return name.replace(/\./g, '\\.');
     }
 
-    // Rewrite x-dropdown* trigger attributes and the matching <menu id="..."> inside
-    // a cloned subtree so multiple clones don't share the same popover ID.
+    // Rewrite x-dropdown* triggers + matching <menu id> in a clone so clones don't
+    // share popover IDs.
     function uniquifyDropdownIdsIn(root, suffix) {
         const attrs = ['x-dropdown', 'x-dropdown.context', 'x-dropdown.hover'];
         for (const attr of attrs) {
@@ -2564,8 +2357,7 @@ function initializeColorpickerPlugin() {
         }
     }
 
-    // Coalesce rapid-fire calls (pointermove, input) into at most one per animation frame.
-    // The latest args win. Essential for keeping the main thread responsive on busy devices.
+    // Coalesce rapid-fire calls into at most one per animation frame; latest args win.
     function rafThrottle(fn) {
         let scheduled = false;
         let lastArgs;
@@ -2582,9 +2374,8 @@ function initializeColorpickerPlugin() {
         };
     }
 
-    // JSON-serialize a value for use in an Alpine x-data attribute via setAttribute.
-    // setAttribute does NOT decode HTML entities, so no escaping needed — JSON is
-    // already valid JS literal syntax that Alpine can parse directly.
+    // JSON-serialize for an Alpine x-data attribute — setAttribute doesn't decode
+    // entities, so JSON is directly parseable, no escaping needed.
     function _jsonStringifyForAlpine(v) {
         try { return JSON.stringify(v); } catch { return '{}'; }
     }
@@ -2625,15 +2416,12 @@ function initializeColorpickerPlugin() {
         Alpine.directive('colorpicker', (el, { modifiers, expression }, { cleanup, evaluateLater }) => {
             // Root: no modifiers
             if (!modifiers || modifiers.length === 0) {
-                // <template x-colorpicker> → registered as the page-wide default
-                // override. Every bare swatch (`<button x-colorpicker.swatch>`) that
-                // would otherwise auto-create an empty popover instead clones from
-                // this template. Only one default per page; first declaration wins.
+                // <template x-colorpicker> → page-wide default; bare swatches clone
+                // from it instead of auto-creating an empty popover. First wins.
                 if (el.tagName === 'TEMPLATE') {
                     if (expression || el.id) {
-                        // Id-keyed templates are no longer supported — declare the
-                        // picker inline (`<menu id="X" popover x-colorpicker>`) or
-                        // wrap it in a Manifest HTML component for reuse.
+                        // Id-keyed templates no longer supported — use an inline element
+                        // with the same id, or an HTML component.
                         try { console.warn('[colorpicker] Id-keyed <template x-colorpicker> is no longer supported. Use a live inline element with the same id, or wrap the picker in an HTML component.'); } catch {}
                         return;
                     }
@@ -2644,15 +2432,14 @@ function initializeColorpickerPlugin() {
                 const state = createPickerState(el);
                 el._colorpickerState = state;
 
-                // Panel-list expression: `x-colorpicker="['solid', 'gradient']"`.
-                // Parsed once here and used by _injectDefaultUI to filter + reorder
-                // the default UI's tabs and panels. Anything else is ignored.
+                // Panel-list expression x-colorpicker="['solid','gradient']" —
+                // filters + reorders the default UI's tabs/panels.
                 state.allowedPanels = parsePanelsExpression(expression);
 
                 // Find the form-participation input
                 state.hiddenInput = el.querySelector('input[type=color], input[type=hidden]');
 
-                // Find trigger button (any button with x-dropdown pointing to this element's ID)
+                // Find trigger button (x-dropdown pointing at this element's ID)
                 const id = el.id;
                 state.triggerBtn = id ? document.querySelector(`[x-dropdown="${id}"]`) : null;
                 if (state.triggerBtn) {
@@ -2661,10 +2448,8 @@ function initializeColorpickerPlugin() {
                     });
                 }
 
-                // Defer mount so all child directives have had a chance to register.
-                // setTimeout (rather than rAF) so we still fire when the tab is
-                // backgrounded or rAF is throttled — mount must happen for the
-                // picker to work, and it doesn't need to be sync'd with paint.
+                // Defer mount so child directives register first. setTimeout (not rAF)
+                // so it still fires when backgrounded.
                 setTimeout(() => state.mount(), 0);
 
                 cleanup(() => {
@@ -2677,20 +2462,15 @@ function initializeColorpickerPlugin() {
             // Child hook
             const role = modifiers[0];
 
-            // Swatches work as triggers OUTSIDE any picker — handle before the ancestor check.
-            // We only assign IDs + generate the popover tag; the dropdown plugin (x-dropdown)
-            // owns popover mechanics, anchor positioning, and transitions.
+            // Swatches trigger OUTSIDE any picker — handle before the ancestor check.
+            // We assign IDs + the popover tag; x-dropdown owns popover mechanics.
             if (role === 'swatch') {
                 if (el._cpSwatchWired) return; // guard against re-firing via initTree
                 el._cpSwatchWired = true;
 
                 // ---- Optional x-model binding ----
-                // When a swatch carries x-model, the expression is the source of truth for
-                // that swatch's color. The plugin:
-                //   • reactively shows the model value as the swatch background (via CSS var)
-                //   • exposes a read accessor the picker uses on open to load the value
-                //   • exposes a write accessor the picker uses on close to persist changes
-                // The dev can still apply inline style / class overrides on top.
+                // x-model is the swatch's source of truth: reactive background preview,
+                // plus read (open) / write (close) accessors the picker uses.
                 const modelExpr = el.getAttribute('x-model');
                 if (modelExpr && window.Alpine?.evaluateLater && window.Alpine?.effect) {
                     try {
@@ -2705,9 +2485,7 @@ function initializeColorpickerPlugin() {
                             });
                         });
                         el._cpModelGetter = (cb) => readFn(cb);
-                        // Writer: evaluate `<modelExpr> = <JSON-stringified value>`. JSON.stringify
-                        // ensures the value is safely serialized (color strings + gradient CSS
-                        // are all JSON-safe).
+                        // Writer: `<modelExpr> = <JSON value>` (color/gradient strings are JSON-safe).
                         el._cpModelSetter = (v) => {
                             try { Alpine.evaluate(el, `${modelExpr} = ${JSON.stringify(v)}`); } catch {}
                         };
@@ -2715,21 +2493,16 @@ function initializeColorpickerPlugin() {
                 }
 
                 // ---- Initial color via `value` attribute ----
-                // The swatch can carry a `value="#abc123"` attribute (mirrors native
-                // <input type="color"> semantics). It seeds the picker on first open
-                // and the swatch's CSS var so the border-color derivation paints
-                // correctly before any interaction.
+                // Mirrors native <input type=color>: seeds the picker on first open and
+                // the swatch CSS var so border-color paints before interaction.
                 const valueAttr = el.getAttribute('value');
                 if (valueAttr && !el.style.getPropertyValue('--color-picker-swatch')) {
                     el.style.setProperty('--color-picker-swatch', valueAttr);
                 }
 
                 // ---- Form participation via `name` attribute ----
-                // When the swatch has `name=`, the plugin synthesizes a sibling
-                // <input type="hidden"> with that name (or adopts a matching one
-                // already in the DOM). syncToInput then writes the picker's hex
-                // value to it, dispatching input/change events for form code.
-                // No `name` → no synthesized input — purely decorative swatch.
+                // With `name=`, synthesize (or adopt) a sibling <input type=hidden>;
+                // syncToInput writes the value + dispatches input/change. No name → decorative.
                 const nameAttr = el.getAttribute('name');
                 if (nameAttr) {
                     let hidden = el.parentElement?.querySelector?.(
@@ -2744,8 +2517,7 @@ function initializeColorpickerPlugin() {
                         el._cpSynthesizedHidden = hidden;
                     }
                     el._cpHiddenInput = hidden;
-                    // Drop `name` from the swatch itself so the form doesn't pick up
-                    // both the (typically empty) button and the hidden input.
+                    // Drop `name` from the button so the form doesn't submit it too.
                     if (el.tagName === 'BUTTON') el.removeAttribute('name');
                 }
 
@@ -2758,11 +2530,9 @@ function initializeColorpickerPlugin() {
                 const wireSwatchTo = (target) => {
                     if (!target) return;
 
-                    // Alias the picker's api under the swatch's id so consumers reading
-                    // via `$colorpicker('<swatch-id>')` track the right reactive key
-                    // (otherwise the auto-popover registers under `colorpicker-swatch-N`
-                    // and the consumer effect's tracked dep on `_pickerRegistry['<swatch-id>']`
-                    // would never fire). Run after mount so the api exists.
+                    // Alias the api under the swatch's id so $colorpicker('<swatch-id>')
+                    // tracks the right key (auto-popover otherwise registers under
+                    // colorpicker-swatch-N). Runs after mount so the api exists.
                     const aliasToSwatchId = () => {
                         if (!el.id) return;
                         const st = target._colorpickerState
@@ -2774,12 +2544,9 @@ function initializeColorpickerPlugin() {
 
                     const isDialog = target.tagName === 'DIALOG';
 
-                    // For non-dialog popover targets (menu / div with popover), delegate
-                    // open/close + anchor positioning to the dropdowns plugin so the
-                    // picker appears anchored to the swatch like a dropdown menu.
-                    // <dialog> targets are NOT routed through x-dropdown — dialogs are
-                    // modal/centered surfaces, not anchored to a trigger. We open them
-                    // imperatively on click via showPopover() or showModal().
+                    // Non-dialog popover targets route through x-dropdown (anchored like
+                    // a dropdown). <dialog> targets open imperatively on click instead
+                    // (modal/centered, not trigger-anchored).
                     if (!isDialog
                         && target.hasAttribute('popover')
                         && !el.hasAttribute('popovertarget')
@@ -2794,6 +2561,7 @@ function initializeColorpickerPlugin() {
                         // dialog has a `popover` attribute (light-dismiss); otherwise
                         // open as a true modal with backdrop and focus trap.
                         if (isDialog) {
+                            // Popover-attr dialogs light-dismiss; others open as true modals.
                             e.preventDefault();
                             try {
                                 if (target.hasAttribute('popover')) {
@@ -2805,9 +2573,8 @@ function initializeColorpickerPlugin() {
                         }
 
                         const retarget = () => {
-                            // Picker state may live on `target` itself (e.g. <menu x-colorpicker>)
-                            // or on a descendant when the target is a wrapping container such
-                            // as <dialog> hosting <div x-colorpicker> inside.
+                            // State lives on `target` or a descendant (e.g. <dialog> wrapping
+                            // <div x-colorpicker>).
                             let st = target._colorpickerState;
                             if (!st) {
                                 const inner = target.querySelector?.('[x-colorpicker]');
@@ -2815,17 +2582,10 @@ function initializeColorpickerPlugin() {
                             }
                             if (!st) { setTimeout(retarget, 0); return; }
                             st.triggerBtn = el;
-                            // Route form-participation writes to this swatch's hidden
-                            // input (synthesized from `name`, or dev-supplied sibling).
-                            // Falls back to whatever the picker container already had
-                            // — preserves the existing inline-input flow.
+                            // Route form writes to this swatch's hidden input if it has one.
                             if (el._cpHiddenInput) st.hiddenInput = el._cpHiddenInput;
-                            // Load the trigger's current value. Priority:
-                            //   1. x-model getter (shared-picker flow)
-                            //   2. paired hidden input value (form-participation flow)
-                            //   3. `value` attribute on the swatch
-                            //   4. --color-picker-swatch CSS var (auto / inline-style flow)
-                            //   5. fallback '#000000'
+                            // Load trigger value by priority: x-model getter, hidden input,
+                            // `value` attr, --color-picker-swatch var, then '#000000'.
                             if (el._cpModelGetter) {
                                 el._cpModelGetter(v => { if (typeof v === 'string' && v.length) st.setFromString(v); });
                             } else {
@@ -2836,7 +2596,7 @@ function initializeColorpickerPlugin() {
                                     || '#000000';
                                 if (current) st.setFromString(current);
                             }
-                            // Defer heavy UI sync so the popover's entry transition runs unimpeded
+                            // Defer UI sync so the popover's entry transition runs unimpeded.
                             setTimeout(() => st.syncUI(), 0);
                         };
                         retarget();
@@ -2913,27 +2673,20 @@ function initializeColorpickerPlugin() {
 
                 case 'apply-color': {
                     el.addEventListener('click', () => {
-                        // Respect disabled attribute (used when the swatch is a gradient
-                        // and the user is editing a gradient stop — CSS doesn't allow
-                        // gradients as color stop values).
+                        // Disabled = gradient swatch while editing a stop (can't nest gradients).
                         if (el.hasAttribute('disabled')) return;
                         const cs = window.getComputedStyle(el);
                         const raw = el.style.background || el.style.backgroundColor || cs.backgroundColor;
                         if (!raw) return;
-                        // Library-swatch clicks are marked so the commit cycle knows not
-                        // to record them as "recent" even if the picker closes afterwards.
+                        // Mark library clicks so the commit cycle won't record them as recent.
                         const fromLibrary = !!el.closest('[x-data*="swatch:"]');
                         const fromStopMenu = !!el.closest('menu[id^="stop-context-menu"]');
                         state._markUserChange(fromLibrary);
 
-                        // Top-level library picks (NOT inside a stop-context-menu) replace
-                        // the WHOLE field — switch picker mode to match the swatch's value
-                        // type so a solid swatch doesn't become a stop in an existing
-                        // gradient and a gradient swatch doesn't get parsed as the active
-                        // stop's color. Stop-menu picks intentionally write to the right-
-                        // clicked stop and stay in gradient mode.
-                        // Use _setPickerMode (not _switchToSolidMode) — we don't want to
-                        // flip the user off whatever tab they're on (typically Library).
+                        // Top-level library picks replace the whole field — switch mode to
+                        // match the swatch's value type. Stop-menu picks stay in gradient
+                        // mode (they target the right-clicked stop). _setPickerMode keeps
+                        // the user on their current tab.
                         const valueIsGradient = raw.includes('gradient(');
                         if (fromLibrary && !fromStopMenu) {
                             state._setPickerMode(valueIsGradient ? 'gradient' : 'solid');
@@ -2945,10 +2698,8 @@ function initializeColorpickerPlugin() {
                 }
 
                 case 'remove-recent': {
-                    // Expected placement: a menu item inside a <menu popover> referenced by
-                    // x-dropdown.context on a Recent swatch. The dropdowns plugin stashes the
-                    // triggering element on `menu._triggerEl`. We read its `data-cp-value`
-                    // (the raw stored form) and remove that entry from the Recent cookie.
+                    // Menu item in a Recent swatch's context menu. The dropdowns plugin
+                    // stashes the trigger on menu._triggerEl; read its data-cp-value to remove.
                     el.addEventListener('click', () => {
                         const menu = el.closest('[popover]');
                         const trigger = menu?._triggerEl || menu?._triggerHost;
@@ -2970,9 +2721,7 @@ function initializeColorpickerPlugin() {
                 case 'delete-stop':
                 case 'set-gradient-type': {
                     el.addEventListener('click', () => {
-                        // Respect :disabled bindings — Alpine toggles the attribute on the
-                        // element; a disabled menu item shouldn't fire its action.
-                        if (el.hasAttribute('disabled')) return;
+                        if (el.hasAttribute('disabled')) return; // respect :disabled bindings
                         const ctx = findLayerContext(el);
                         const li = ctx ? ctx.layerIndex : state.activeLayerIndex;
                         switch (role) {
@@ -2987,7 +2736,6 @@ function initializeColorpickerPlugin() {
                             case 'duplicate-stop': state.duplicateStop(li, state.activeStopIndex); break;
                             case 'delete-stop': state.deleteStop(li, state.activeStopIndex); break;
                             case 'set-gradient-type': {
-                                // Value comes from the expression (Alpine parsed) or the attribute
                                 const type = expression || el.getAttribute('x-colorpicker.set-gradient-type');
                                 state.setGradientType(li, (type || '').replace(/['"]/g, ''));
                                 break;
@@ -3044,27 +2792,17 @@ function initializeColorpickerPlugin() {
                     });
                     return;
 
-                // Solid-tab controls (wired via _wireSolidControls when mounted)
-                // If the developer places them OUTSIDE a solid-panel instance, wire individually:
+                // Solid-tab controls — normally handled inside _mountSolidInstance.
                 case 'set-canvas':
                 case 'set-hue':
                 case 'set-alpha':
                 case 'set-alpha-value':
                 case 'set-color-value': {
-                    // These are typically inside a solid-panel template/instance.
-                    // (The usual path handles them inside _mountSolidInstance.)
                     return;
                 }
 
-                // set-color-space supports two roles:
-                //   • With expression (`<li x-colorpicker.set-color-space="hex">`) →
-                //     click sets that format. Tracked so we can toggle .active on the
-                //     current choice.
-                //   • Without expression (`<button x-colorpicker.set-color-space>`) →
-                //     reactive label whose text reflects the active format. Useful as
-                //     a dropdown trigger that shows the current format.
-                //   • <select x-colorpicker.set-color-space> still works through the
-                //     legacy _wireSolidControls flow inside a solid-panel instance.
+                // set-color-space: with expression = format choice (click sets + tracks
+                // for .active); without = reactive label; <select> uses the legacy flow.
                 case 'set-color-space': {
                     if (el.tagName === 'SELECT') return; // legacy flow handles it
                     const raw = (expression || '').replace(/['"`]/g, '').trim().toLowerCase();
@@ -3087,21 +2825,16 @@ function initializeColorpickerPlugin() {
 
                 case 'library': {
                     if (el.tagName === 'TEMPLATE') {
-                        // Dev-defined library layout — cloned into the container at render time.
-                        // Nested <template x-colorpicker.library-group/palette/swatch> are resolved
-                        // in-place during rendering (x-for style).
+                        // Dev-defined library layout, cloned into the container at render time.
                         state.libraryTemplate = el;
                     } else {
-                        // Container where the library renders. Multiple containers are supported
-                        // (e.g., the primary tab AND inline menus like stop-context-menu); each
-                        // receives an independent clone of the library template. The expression
-                        // from the FIRST container wins as the data source; others reuse it.
+                        // Render container. Multiple are supported (tab + inline stop menus);
+                        // each gets its own clone. The first container's expression is the
+                        // data source; others reuse it.
                         if (!state.libraryContainers.includes(el)) {
                             state.libraryContainers.push(el);
-                            // If the picker is already mounted, render into ONLY this new
-                            // container so other containers' in-flight directive inits
-                            // (x-dropdown.context menu lookups, tooltips, etc.) aren't
-                            // torn down mid-init.
+                            // Post-mount: render only this new container so others' in-flight
+                            // directive inits aren't torn down mid-init.
                             if (state._mounted) state._renderIntoContainer(el);
                         }
                         if (expression && !state.libraryRootValue) state.libraryRootValue = expression;
@@ -3113,28 +2846,24 @@ function initializeColorpickerPlugin() {
                 case 'library-palette':
                 case 'library-swatch':
                 case 'library-recent-swatch': {
-                    // Nested templates — no registration. Resolved via querySelector at render time
-                    // (so their position in the HTML determines where clones land).
-                    // `library-recent-swatch` is an optional alternate template used only for
-                    // swatches inside the Recent group (typically wires up x-dropdown.context).
+                    // Nested templates — resolved via querySelector at render time, no
+                    // registration. library-recent-swatch is an optional Recent-only variant.
                     return;
                 }
 
             }
         });
 
-        // $colorpicker — accessor that is both callable (`$colorpicker('id')`) and property-readable
-        // (`$colorpicker.hex` — uses nearest ancestor picker).
+        // $colorpicker — callable ($colorpicker('id')) and property-readable
+        // ($colorpicker.hex, nearest ancestor picker).
         Alpine.magic('colorpicker', (el) => {
             const localState = findAncestorState(el);
             const localApi = localState?.api || null;
 
-            // Function form: `$colorpicker('picker-id')` → that picker's API.
-            // Reads from the reactive registry so bindings resolve even when the
-            // picker is declared later in the DOM than its consumer.
+            // $colorpicker('id') → that picker's API. Reactive registry read so it
+            // resolves even when the picker is declared after its consumer.
             const byId = (id) => {
                 if (!id) return localApi;
-                // Reactive read: tracks the key even if not yet registered
                 const api = _pickerRegistry[id];
                 if (api) return api;
                 // Allow lookup by swatch button ID (resolve through its popovertarget)
@@ -3149,15 +2878,11 @@ function initializeColorpickerPlugin() {
 
             return new Proxy(byId, {
                 get(fn, prop) {
-                    // Coerce `${$colorpicker}` (no call) to the local picker's CSS string
+                    // Coerce `${$colorpicker}` (no call) to the local CSS string.
                     if (prop === Symbol.toPrimitive || prop === 'toString' || prop === 'valueOf') {
                         return () => (localApi ? localApi.css : '');
                     }
-                    // Global helpers (picker-agnostic) — useful for library composition.
-                    // Each is BOTH callable AND spreadable:
-                    //   {...$colorpicker.tailwind}         → default English preset
-                    //   $colorpicker.tailwind(labels)      → localized preset (same values, translated names)
-                    //   {...$colorpicker.tailwind(labels)} → spread the localized result
+                    // Global preset helpers — each both callable (localized) and spreadable.
                     if (prop === 'presets')  return _makeCallablePreset(buildDefaultLibrary);
                     if (prop === 'tailwind') return _makeCallablePreset(buildTailwindPreset);
                     if (prop === 'ios')      return _makeCallablePreset(buildIosPreset);
@@ -3175,32 +2900,19 @@ function initializeColorpickerPlugin() {
 
     // ---- Picker resolution: inline / default-template / auto-generated ----
     //
-    // Two ways a dev can declare a picker:
-    //   1. Live inline element:    <menu id="brand-picker" popover x-colorpicker>…</menu>
-    //                              <dialog id="brand-picker" x-colorpicker>…</dialog>
-    //                              <div id="brand-picker" x-colorpicker>…</div>
-    //   2. Auto-created (bare):    <button x-colorpicker.swatch> generates its own popover.
-    //                              By default, the popover is filled with the plugin's
-    //                              hardcoded fallback UI. Devs can override it page-wide
-    //                              by adding a single `<template x-colorpicker>` (no id)
-    //                              anywhere in the markup — the auto-creator clones from
-    //                              that instead.
-    //
-    // For "componentize and reuse" use cases that previously needed an id-keyed template,
-    // wrap the picker in a Manifest HTML component (`<x-my-picker>`) and drop it wherever
-    // it's needed. This keeps the plugin's resolution model deliberately small.
+    // Two ways to declare a picker: (1) a live inline element with x-colorpicker;
+    // (2) a bare <button x-colorpicker.swatch> that auto-creates its own popover
+    // (fallback UI, or a clone of the page-wide <template x-colorpicker> if present).
+    // For reuse, wrap the picker in a Manifest HTML component.
 
     let _defaultColorpickerTemplate = null; // <template x-colorpicker> (no id)
 
     function registerDefaultColorpickerTemplate(tpl) {
-        // First wins. Subsequent declarations are ignored — explicit, no surprises.
-        if (!tpl || _defaultColorpickerTemplate) return;
+        if (!tpl || _defaultColorpickerTemplate) return; // first wins
         _defaultColorpickerTemplate = tpl;
     }
 
-    // Resolve a swatch's target by id. Inline elements only — templates are never
-    // looked up by id anymore (use a `<menu id="X" x-colorpicker>` or wrap in an
-    // HTML component for that pattern).
+    // Resolve a swatch's target by id — inline elements only, never templates.
     function resolvePickerById(id) {
         if (!id) return null;
         const live = document.getElementById(id);
@@ -3220,14 +2932,9 @@ function initializeColorpickerPlugin() {
     function createSwatchPopover(customId, panelsExpr) {
         const id = customId || nextAutoSwatchId();
 
-        // If a default `<template x-colorpicker>` is registered, clone its root
-        // and use that as the swatch's popover. Preserves the dev's chosen
-        // wrapper (menu / dialog / div) and any attributes they put on it.
-        // The dev's content inside the template is rendered verbatim (mount's
-        // noDeclared check sees real children and skips _injectDefaultUI).
-        // If the template exists in the DOM but its directive hasn't fired yet
-        // (source-order race), scan for it now so swatches earlier in the tree
-        // still pick it up.
+        // Clone the default <template x-colorpicker> if registered (preserves the
+        // dev's wrapper + content; mount skips _injectDefaultUI when it sees real
+        // children). Scan for it now in case its directive hasn't fired yet (race).
         if (!_defaultColorpickerTemplate) {
             const candidates = document.querySelectorAll('template[x-colorpicker]');
             for (const t of candidates) {
@@ -3255,8 +2962,7 @@ function initializeColorpickerPlugin() {
         // No default template → empty <menu> populated by _injectDefaultUI on mount.
         const menu = document.createElement('menu');
         menu.setAttribute('popover', '');
-        // Pass the panel-list expression through to the root x-colorpicker directive
-        // so the auto-created popover only shows the panels the swatch requested.
+        // Pass the panel-list expression through so the popover shows only requested panels.
         menu.setAttribute('x-colorpicker', panelsExpr || '');
         menu.id = id;
         menu.className = 'colorpicker dropdown-menu';
@@ -3274,8 +2980,7 @@ function initializeColorpickerPlugin() {
         const trimmed = expr.trim();
         if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return null;
         try {
-            // JSON.parse after normalizing single quotes — the expressions we accept
-            // are simple string-array literals, so a quote swap is safe.
+            // Simple string-array literals only, so a quote swap before JSON.parse is safe.
             const arr = JSON.parse(trimmed.replace(/'/g, '"'));
             if (!Array.isArray(arr)) return null;
             const out = arr
@@ -3293,8 +2998,7 @@ function initializeColorpickerPlugin() {
 // Track initialization
 let colorpickerPluginInitialized = false;
 
-// True once Alpine has completed its initial DOM walk. Listener is bound at
-// module load so we never miss the event, whatever the script order.
+// True once Alpine finished its initial DOM walk; listener bound at module load.
 let colorpickerAlpineHasWalked = false;
 document.addEventListener('alpine:initialized', () => { colorpickerAlpineHasWalked = true; });
 
@@ -3303,11 +3007,8 @@ function ensureColorpickerPluginInitialized() {
     if (!window.Alpine || typeof window.Alpine.directive !== 'function') return;
     colorpickerPluginInitialized = true;
     initializeColorpickerPlugin();
-    // Only walk existing [x-colorpicker] subtrees ourselves when Alpine has
-    // ALREADY finished its initial walk (i.e. this plugin loaded late).
-    // Otherwise the directive is registered during `alpine:init` and Alpine's
-    // one boot walk processes every element with all sibling directives present;
-    // walking here during boot would drop nested plugin content.
+    // Only walk existing subtrees ourselves when Alpine already finished its boot
+    // walk (late load). Walking during boot would drop nested plugin content.
     if (colorpickerAlpineHasWalked && typeof window.Alpine.initTree === 'function') {
         document.querySelectorAll('[x-colorpicker]').forEach(el => { if (!el.__x) window.Alpine.initTree(el); });
     }

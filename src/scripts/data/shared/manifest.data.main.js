@@ -1,8 +1,7 @@
 /* Manifest Data Sources - Main Initialization */
 
-// Filter storage files by scope (client-side filtering)
-// Appwrite returns all files user has access to, but we need to filter by current team
-// to match database team scope behavior
+// Client-side scope filter: Appwrite returns all accessible files, so narrow to
+// the current team to match database team-scope behavior.
 async function filterFilesByScope(files, scope) {
     if (!files || !Array.isArray(files) || files.length === 0) {
         return files;
@@ -257,26 +256,20 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
     }
 }
 
-// Track recently processed events to prevent duplicate processing
-// Use a combination of event type, ID, and timestamp to create a unique key per client
+// Realtime event dedup: key by type+id+sequence(+timestamp)
 const processedEvents = new Map(); // Map<eventKey, timestamp>
-const EVENT_DEDUP_WINDOW = 2000; // 2 seconds (reduced from 5 to catch rapid duplicates but allow legitimate updates)
+const EVENT_DEDUP_WINDOW = 2000; // ms
 
-// Generate a unique key for an event
-// For updates, we need to be more careful - use timestamp to allow same sequence from different sources
 function getEventKey(eventType, payload) {
     const id = payload?.$id || payload?.row?.$id || payload?.rowId || payload?.id || payload;
     const sequence = payload?.$sequence || payload?.sequence;
     const timestamp = payload?.$updatedAt || payload?.$createdAt || payload?.timestamp;
 
-    // For updates, include timestamp to allow processing updates with same sequence but different times
-    // This handles the case where multiple clients receive the same sequence number
+    // Updates add timestamp so the same sequence from different clients isn't dropped
     if (eventType === 'update' && timestamp) {
-        // Use a combination that allows same sequence from different times
         return `${eventType}:${id}:${sequence}:${timestamp}`;
     }
 
-    // For create/delete, sequence is usually unique enough
     return `${eventType}:${id}:${sequence || Date.now()}`;
 }
 
@@ -377,8 +370,8 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 // Check if row still matches scope after update
                 const rowMatchesScope = await checkRowMatchesScope(row, scope);
                 if (rowMatchesScope) {
-                    // For most data sources (roles, etc.), always update on realtime events
-                    // Special handling only for projects with fileIds to protect optimistic updates
+                    // Most sources update unconditionally; projects-with-fileIds get
+                    // special handling to protect optimistic uploads (see below).
                     const existingFileIds = existingRow?.fileIds || [];
                     const incomingFileIds = row?.fileIds || [];
                     const hasFileIds = existingFileIds.length > 0 || incomingFileIds.length > 0;
@@ -386,41 +379,30 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
 
                     let shouldUpdate = true;
 
-                    // Special handling only for projects with fileIds
                     if (isProjectWithFiles) {
                         const existingUpdatedAt = existingRow?.$updatedAt || existingRow?.$sequence;
                         const newUpdatedAt = row?.$updatedAt || row?.$sequence;
                         const shouldUpdateByTimestamp = !newUpdatedAt || !existingUpdatedAt || newUpdatedAt !== existingUpdatedAt;
 
                         if (!shouldUpdateByTimestamp) {
-                            // Timestamps match and both exist - skip update
-                            shouldUpdate = false;
+                            shouldUpdate = false; // identical timestamps → no-op
                         } else {
                             const existingFileIdsSet = new Set(existingFileIds);
                             const incomingFileIdsSet = new Set(incomingFileIds);
 
-                            // Check if incoming is a superset (has all existing files + more)
                             const isSuperset = incomingFileIds.every(id => existingFileIdsSet.has(id)) &&
                                 incomingFileIds.length > existingFileIds.length;
 
-                            // Check if incoming is missing files that exist in current (stale data)
                             const isMissingFiles = existingFileIds.some(id => !incomingFileIdsSet.has(id));
 
-                            // Only update if:
-                            // 1. Incoming is a superset (has all existing + more), OR
-                            // 2. Incoming is equal (same files), OR
-                            // 3. Timestamp comparison suggests it's definitely newer (more than 1 second difference)
                             const timestampDiff = newUpdatedAt > existingUpdatedAt ?
                                 (new Date(newUpdatedAt) - new Date(existingUpdatedAt)) :
                                 (new Date(existingUpdatedAt) - new Date(newUpdatedAt));
-                            const isDefinitelyNewer = timestampDiff > 1000; // More than 1 second difference
+                            const isDefinitelyNewer = timestampDiff > 1000; // ms
 
-                            // CRITICAL: If existing has more fileIds than incoming, and timestamps are close,
-                            // this is likely a stale realtime event overwriting an optimistic update
-                            // Protect optimistic updates by requiring incoming to be a superset or definitely newer
+                            // Incoming missing files + not clearly newer = stale event
+                            // racing an optimistic update; ignore it to protect the upload.
                             if (isMissingFiles && !isDefinitelyNewer) {
-                                // Incoming data is missing files and timestamp isn't definitely newer - likely stale
-                                // This protects optimistic updates from being overwritten by stale realtime events
                                 console.warn('[Realtime] Ignoring stale realtime update (protecting optimistic update):', {
                                     projectId: row.$id,
                                     existingFileIds: existingFileIds,
@@ -669,13 +651,9 @@ async function loadDataSource(dataSourceName, locale = 'en') {
     const cacheKey = `${dataSourceName}:${locale}`;
     const { dataSourceCache, loadingPromises, isInitializing, updateStore } = window.ManifestDataStore;
 
-    // Check memory cache first. The store write is guarded against stale
-    // locales: a caller that resolved its locale before a switch (or an effect
-    // re-running mid-switch) can request `name:en` after the locale-change
-    // reload already wrote `name:fr` — serving the cached data is fine, but
-    // writing it to the live store would clobber the current locale. Localized
-    // data carries a `_locale` stamp; unstamped (non-localized) data writes
-    // unconditionally.
+    // Memory cache. Serving cached data is fine, but writing an old locale to the
+    // live store would clobber a concurrent locale switch — so guard the store
+    // write via the `_locale` stamp (unstamped/non-localized data writes freely).
     if (dataSourceCache.has(cacheKey)) {
         const cachedData = dataSourceCache.get(cacheKey);
         const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
@@ -946,16 +924,13 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 enhancedData = [];
             }
 
-            // Update cache (store unsealed version for our use).
-            // Always safe — the cache key carries the locale this load was for.
+            // Cache is always safe — the key carries this load's locale.
             dataSourceCache.set(cacheKey, enhancedData);
 
-            // Stale-locale guard: if the app's locale changed while this load was
-            // in flight, a LOCALIZED source's result is stale — the locale-change
-            // listener has already reloaded (or is reloading) the right locale,
-            // and writing this one would clobber it. Non-localized sources are
-            // locale-independent and must still write (the listener never reloads
-            // them, so skipping would orphan an initial load).
+            // Stale-locale guard: if the locale changed mid-load, a localized
+            // source's result is stale (the locale listener already reloaded the
+            // right one). Non-localized sources still write — the listener never
+            // reloads them, so skipping would orphan the initial load.
             const localeSensitive = !!(dataSource && typeof dataSource === 'object'
                 && (dataSource.locales || dataSource[locale]));
             const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
@@ -1005,8 +980,7 @@ async function loadDataSource(dataSourceName, locale = 'en') {
 function setupUrlChangeListeners() {
     let currentUrl = window.location.pathname;
 
-    // Create a reactive object for route tracking that Alpine can track
-    // This is separate from the store to ensure Alpine tracks it properly
+    // Separate reactive object for route tracking (Alpine tracks it reliably)
     const routeTracker = Alpine.reactive ? Alpine.reactive({
         currentUrl: window.location.pathname
     }) : { currentUrl: window.location.pathname };
@@ -1022,22 +996,16 @@ function setupUrlChangeListeners() {
             currentUrl = newUrl;
             const store = Alpine.store('data');
             if (store && store._initialized) {
-                // Update the store property - Alpine stores are reactive by default
-                // CRITICAL: Use Object.assign or spread to ensure Alpine tracks the change
-                // Direct property assignment might not trigger reactivity in all cases
+                // Use Object.assign so Alpine reliably tracks the change
                 Object.assign(store, { _currentUrl: newUrl });
 
-                // CRITICAL: Also update the reactive route tracker
-                // This ensures Alpine tracks the change even if store access isn't tracked in Proxy get traps
+                // Also update the reactive tracker (covers untracked store get traps)
                 if (routeTracker) {
                     routeTracker.currentUrl = newUrl;
                 }
 
-                // Force Alpine to recognize the change by accessing the property
-                // This ensures Alpine's reactivity system tracks the update
-                const _ = store._currentUrl;
-                // Dispatch a custom event to ensure any components listening for URL changes can react
-                // This helps with reactivity in cases where Alpine's automatic tracking might miss the update
+                const _ = store._currentUrl; // touch to force tracking
+                // Event fallback for cases Alpine's auto-tracking might miss
                 try {
                     window.dispatchEvent(new CustomEvent('manifest:data-url-change', {
                         detail: { url: newUrl }
@@ -1058,7 +1026,7 @@ function setupUrlChangeListeners() {
     window.addEventListener('manifest:route-change', (event) => {
         const newUrl = event.detail?.to ?? window.ManifestRoutingNavigation?.getCurrentRoute?.() ?? window.location.pathname;
         updateCurrentUrl(newUrl);
-        // Flush route proxies after other listeners have queued their updates, so $x.*.$route('path') content updates without refresh
+        // Flush route proxies after other listeners queue updates, so $x.*.$route() refreshes in place
         setTimeout(() => {
             if (window.ManifestDataRouteProxyUpdateQueue?.flushSync) {
                 window.ManifestDataRouteProxyUpdateQueue.flushSync();
@@ -1174,24 +1142,11 @@ async function initializeDataSourcesPlugin() {
             _currentUrl: existingStore._currentUrl || window.location.pathname
         });
 
-        // Pre-load all local file-backed data sources so $x.* accessors see
-        // real data on the very first render pass.
-        //
-        // Each source is at most ONE fetch regardless of type:
-        //   - Simple string paths (e.g. "/data/clients.yaml") → one file.
-        //   - Localized objects (e.g. { "en": "...", "fr": "..." }) → only the
-        //     current locale file is fetched (+ default locale for fallback
-        //     merging if different), NOT all 35 variants.
-        //   - Single CSV with embedded locales → one file.
-        //
-        // Skipped (remain on-demand):
-        //   - Appwrite collections / buckets — require auth/session context.
-        //   - API-URL sources — may have side-effects or auth requirements.
-        //   - The special "manifest" key — handled separately below.
-        //
-        // Without pre-loading, sources like $x.clients load asynchronously on
-        // first access, causing a visible flash in the SPA and missing data in
-        // prerender snapshots.
+        // Pre-load local file-backed sources so $x.* has real data on the first
+        // render pass (avoids SPA flash + missing prerender data). At most one
+        // fetch each (localized objects load only the current + default locale).
+        // Skipped/on-demand: Appwrite (needs auth), API-URL (side-effects), and
+        // the special "manifest" key (handled separately below).
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             const locale = (typeof document !== 'undefined' && document.documentElement?.lang) || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';

@@ -1,6 +1,4 @@
-/* Manifest Data Sources - Pagination */
-
-// Pagination helper functions for Appwrite data sources
+/* Manifest Data Sources - Pagination (Appwrite) */
 
 /**
  * Get first page of results (cursor-based)

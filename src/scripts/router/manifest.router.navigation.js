@@ -5,12 +5,11 @@ let currentRoute = '/';
 let isInternalNavigation = false;
 
 function isPrerenderedStaticBuild() {
-    // When prerendered HTML is served as static pages, prefer normal browser navigation (MPA)
-    // so each URL loads its own prerendered HTML rather than SPA toggling.
+    // Prerendered static pages navigate MPA-style (each URL loads its own HTML).
     const prerendered = document.querySelector('meta[name="manifest:prerendered"]');
     const val = (prerendered?.getAttribute('content') || '').trim().toLowerCase();
     if (prerendered && val !== '0' && val !== 'false') return true;
-    // Backstop: prerender writes this per-page depth marker.
+    // Backstop: per-page depth marker written by prerender.
     return !!document.querySelector('meta[name="manifest:router-base-depth"]');
 }
 
@@ -207,17 +206,12 @@ async function handleRouteChange() {
     const prevRoute = currentRoute;
     currentRoute = newRoute;
 
-    // Handle scrolling based on whether this is an anchor link or route change
+    // Route change scrolls to top; anchor links let the browser scroll naturally.
     if (!window.location.hash) {
-        // This is a route change - scroll to top
-        // Use a small delay to ensure content has loaded
         setTimeout(() => {
-            // Scroll main page to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
-            // Find and scroll scrollable containers to top
-            // Use a generic approach that works with any CSS framework
-            // Only check elements that are likely to be scrollable containers
+            // Also reset any scrollable containers.
             const potentialContainers = document.querySelectorAll('div, main, section, article, aside, nav, header, footer, .prose');
             potentialContainers.forEach(element => {
                 const computedStyle = window.getComputedStyle(element);
@@ -234,11 +228,8 @@ async function handleRouteChange() {
             });
         }, 50);
     } else {
-        // This is an anchor link - let the browser handle the scroll naturally
-        // Use a small delay to ensure content has loaded, then let browser scroll to anchor
         setTimeout(() => {
-            // The browser will automatically scroll to the anchor
-            // We just need to ensure the content is loaded first
+            // Let the browser scroll to the anchor once content has loaded.
         }, 50);
     }
 
@@ -251,18 +242,9 @@ async function handleRouteChange() {
         }
     });
 
-    // SPA route changes use the View Transitions API when available so the
-    // visibility-toggle that listeners perform inside this dispatch is
-    // animated. Cross-document MPA navigations are already handled by
-    // `@view-transition { navigation: auto }` in the framework's reset CSS;
-    // the same `::view-transition-group(*)` rule (driven by
-    // `--view-transition-duration` / `--view-transition-easing`) covers both.
-    //
-    // The callback is synchronous: visibility/head/anchor listeners mutate
-    // the DOM inside `dispatchEvent` and return. Returning anything async
-    // here would freeze the rendered frame until the promise resolves,
-    // adding the entirety of Alpine's pending-update queue to the perceived
-    // navigation time (1–2s on busy pages).
+    // Wrap the SPA dispatch in a View Transition when available (MPA is handled
+    // by @view-transition in reset CSS). Callback must stay synchronous:
+    // returning a promise freezes the frame until Alpine's update queue drains.
     if (shouldUseViewTransition()) {
         document.startViewTransition(() => {
             window.dispatchEvent(event);
@@ -272,30 +254,12 @@ async function handleRouteChange() {
     }
 }
 
-// Decide whether SPA route changes should run inside a View Transition.
-// Three modes, in priority order:
-//
-//   1. `<html data-no-view-transitions>`  → force OFF
-//   2. `<html data-view-transitions>`     → force ON
-//   3. (neither)                          → auto: ON when the current page is
-//                                            under VT_AUTO_THRESHOLD elements,
-//                                            OFF otherwise
-//
-// The auto threshold exists because the View Transitions API rasterizes the
-// full viewport for the "before" and "after" snapshots; cost scales linearly
-// with DOM size and gets noticeable above a few thousand elements (a 10k-
-// element page measured ~500ms per snapshot in dev). Light pages keep the
-// crossfade; heavy pages stay fast.
-//
-// Cross-document (MPA) navigations are unaffected — those use the browser's
-// native cross-document path (`@view-transition { navigation: auto }`),
-// which rasterizes in parallel with page load and doesn't expose the cost.
-//
-// Per-element opt-out (`data-no-view-transition`, singular) on individual
-// elements is handled by the existing reset CSS rule that sets
-// `view-transition-name: none` on them. `prefers-reduced-motion` is
-// respected automatically — the browser falls back to a snap with no
-// animation when the user has it set.
+// Whether SPA route changes run inside a View Transition. Priority:
+// data-no-view-transitions → off, data-view-transitions → on, else auto
+// (on under VT_AUTO_THRESHOLD elements). Auto threshold: VT rasterizes the
+// full viewport per snapshot, so cost scales with DOM size (~500ms/snapshot
+// on a 10k-element page). Per-element opt-out and prefers-reduced-motion are
+// handled in reset CSS / by the browser.
 const VT_AUTO_THRESHOLD = 3000;
 
 function shouldUseViewTransition() {
@@ -312,14 +276,9 @@ function shouldUseViewTransition() {
     }
 }
 
-// Headless automation (Puppeteer / Playwright / Selenium / WebDriver-driven
-// Chromium) frequently captures screenshots mid-transition, producing blank
-// frames. Real browsers report `navigator.webdriver === false` — including
-// when DevTools is open, when launched via `open <url>`, or on mobile — so
-// this check exclusively affects automation tooling and leaves end-user
-// behavior identical. Authors who want transitions in their automation tests
-// can force them on with `<html data-view-transitions>`, which takes priority
-// over this attribute via `shouldUseViewTransition()` above.
+// Disable transitions under WebDriver automation, which captures screenshots
+// mid-transition and gets blank frames. Only affects automation
+// (navigator.webdriver); data-view-transitions overrides.
 if (typeof navigator !== 'undefined' && navigator.webdriver === true) {
     const html = document.documentElement;
     if (html && !html.hasAttribute('data-view-transitions')) {
@@ -395,9 +354,8 @@ function installMpaStickyLocaleLinks() {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        // For prerendered MPA builds, directory paths must have a trailing slash so that the
-        // static file host (e.g. Appwrite) resolves them to the correct index.html rather than
-        // falling back to the root index.html.
+        // MPA directory paths need a trailing slash so the static host resolves
+        // them to the right index.html, not the root one.
         const hasFileExt = /\.[a-zA-Z0-9]+$/.test(adjusted);
         url.pathname = (adjusted !== '/' && !hasFileExt && !adjusted.endsWith('/'))
             ? adjusted + '/'
@@ -428,18 +386,11 @@ function interceptLinkClicks() {
         // Handle pure anchor links normally - don't intercept them
         if (href.startsWith('#')) return;
 
-        // Don't intercept blob: or data: URLs. The export plugin creates a
-        // throwaway <a href="blob:…" download="…"> and programmatically
-        // clicks it to trigger a file save; if the router treats it as a
-        // SPA link, `new URL("blob:http://localhost/UUID", origin).pathname`
-        // resolves to "http://localhost/UUID" which then pushState pushes
-        // as a same-origin path, producing /http://localhost/UUID and
-        // landing the user on a 404 instead of downloading.
+        // Don't intercept blob:/data: (e.g. export plugin's download links) —
+        // pushState would turn them into a bogus same-origin path and 404.
         if (href.startsWith('blob:') || href.startsWith('data:')) return;
 
-        // Honor `download` — the link is opting out of SPA navigation in
-        // favor of letting the browser save its target. Same intent as
-        // blob:/data:, just expressed via the standard HTML attribute.
+        // Honor `download` — same opt-out intent, via the standard attribute.
         if (link.hasAttribute('download')) return;
 
         // Check if it's an external link FIRST (before any other processing)
@@ -532,8 +483,8 @@ function initializeNavigation() {
     handleRouteChange();
 }
 
-// Match the browser URL as soon as this module loads. Later chunks in the same bundle (e.g. router magic)
-// may initialize before DOMContentLoaded; getCurrentRoute() must not stay at '/' or $route breaks article pages.
+// Match the browser URL at module load: later chunks (e.g. router magic) may
+// read getCurrentRoute() before DOMContentLoaded; stale '/' breaks $route.
 currentRoute = pathnameToLogical(window.location.pathname);
 
 // Run immediately if DOM is ready, otherwise wait

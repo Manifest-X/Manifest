@@ -4,8 +4,7 @@ var Iconify = function (t) { "use strict"; const e = Object.freeze({ left: 0, to
 
 /* Manifest Icons */
 
-// Initialize plugin when either DOM is ready or Alpine is ready
-// Core icon processing logic - shared between directive and manual processing
+// Shared between directive and manual processing.
 function processIconElement(el, iconValue) {
     if (!iconValue) return;
 
@@ -19,14 +18,9 @@ function processIconElement(el, iconValue) {
             // Clear the element
             el.innerHTML = '';
 
-            // Wrapping <span x-icon> upfront — the list CSS rule
-            // `li:has([x-icon])` needs a DESCENDANT carrying the attribute to
-            // trigger vertical-stack layout.  Building it now (instead of via a
-            // post-Iconify-scan setTimeout) means the wrapper exists from
-            // first paint, so:
-            //   - no row→column flicker on SPA load
-            //   - prerender snapshots capture the correct DOM regardless of
-            //     when Iconify finishes fetching the SVG
+            // Wrap in <span x-icon> upfront: the `li:has([x-icon])` CSS rule needs a
+            // descendant carrying the attribute. Building it now (not post-scan) means
+            // the wrapper exists from first paint — no flicker, correct prerender DOM.
             const wrapper = document.createElement('span');
             wrapper.setAttribute('x-icon', iconValue);
             const iconTarget = document.createElement('span');
@@ -44,8 +38,7 @@ function processIconElement(el, iconValue) {
             // Mark as processed to prevent re-processing
             el.setAttribute('data-icon-processed', 'true');
 
-            // Iconify replaces iconTarget with an inline SVG (sync if cached,
-            // async otherwise).  Either way the wrapper stays put.
+            // Iconify swaps iconTarget for an inline SVG; wrapper stays put.
             if (window.Iconify && typeof window.Iconify.scan === 'function') {
                 window.Iconify.scan(iconTarget);
             }
@@ -87,8 +80,8 @@ function initializeIconPlugin() {
         const iconValue = expression;
         if (!iconValue) return;
 
-        // Prerender (or static HTML) already inlined an Iconify SVG; leave it alone. Otherwise Alpine
-        // evaluates stale expressions like `module.icon` from templating and throws ReferenceError.
+        // Prerender/static HTML already inlined the SVG; leave it alone (else Alpine
+        // evaluates stale template expressions like `module.icon` and throws).
         if (el.querySelector('svg[data-icon]')) {
             return;
         }
@@ -129,10 +122,7 @@ function ensureIconPluginInitialized() {
 
     iconPluginInitialized = true;
     initializeIconPlugin();
-
-    // No need to manually process existing elements - Alpine will handle them
-    // when it initializes, since plugins are now loaded before Alpine starts
-    // This maintains full reactivity for all elements
+    // Alpine processes existing elements on init (plugins load before Alpine starts).
 }
 
 // Expose on window for loader to call if needed
@@ -145,19 +135,14 @@ if (document.readyState === 'loading') {
 
 document.addEventListener('alpine:init', ensureIconPluginInitialized);
 
-// If Alpine is already initialized when this script loads, initialize immediately
-// Use setTimeout to ensure Alpine is fully ready
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
-    // Small delay to ensure Alpine is fully initialized
     setTimeout(ensureIconPluginInitialized, 0);
 } else {
-    // If document is already loaded but Alpine isn't ready yet, wait for it
     const checkAlpine = setInterval(() => {
         if (window.Alpine && typeof window.Alpine.directive === 'function') {
             clearInterval(checkAlpine);
             ensureIconPluginInitialized();
         }
     }, 10);
-    // Timeout after 5 seconds
     setTimeout(() => clearInterval(checkAlpine), 5000);
-} 
+}

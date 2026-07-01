@@ -1,12 +1,6 @@
 /* Manifest Data Sources - Magic Method State Properties */
-// Handles $loading, $error, $ready state properties
+// $loading, $error, $ready state properties
 
-/**
- * Get state property value for a data source
- * @param {string} prop - Property name ($loading, $error, $ready)
- * @param {string} dataSourceName - Name of the data source
- * @returns {boolean|string|null} State value
- */
 function getStateProperty(prop, dataSourceName) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return prop === '$loading' ? false : (prop === '$error' ? null : false);
@@ -31,10 +25,7 @@ function getStateProperty(prop, dataSourceName) {
     return undefined;
 }
 
-/**
- * Create a state property handler for loading proxies
- * Returns a function that can be used in proxy get handlers
- */
+// State property handler for use in proxy get() traps
 function createStatePropertyHandler(dataSourceName) {
     return function (key) {
         if (key === '$loading' || key === '$error' || key === '$ready') {

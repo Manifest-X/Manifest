@@ -1,13 +1,6 @@
 /* Manifest Data Sources - Proxy Helper Functions */
-// Utility functions for proxy creation and data manipulation
 
-/**
- * Find an item in nested data structures by path key and segments
- * @param {*} data - The data to search (array or object)
- * @param {string} pathKey - The key that contains the path value
- * @param {Array} pathSegments - Array of path segments to match
- * @returns {*} The found item or null
- */
+// Find a nested item whose pathKey value matches one of pathSegments
 function findItemByPath(data, pathKey, pathSegments) {
     if (!pathSegments || pathSegments.length === 0) {
         return null;
@@ -60,12 +53,7 @@ function findItemByPath(data, pathKey, pathSegments) {
     return null;
 }
 
-/**
- * Find the group that contains a specific item
- * @param {*} data - The data to search
- * @param {*} targetItem - The item to find
- * @returns {*} The group containing the item or null
- */
+// Find the group (item with .group + .items array) that contains targetItem
 function findGroupContainingItem(data, targetItem) {
     if (Array.isArray(data)) {
         for (const item of data) {
@@ -93,11 +81,7 @@ function findGroupContainingItem(data, targetItem) {
     return null;
 }
 
-/**
- * Convert Alpine proxy to real array
- * @param {*} proxyData - The proxy data to convert
- * @returns {Array} The converted array or original value
- */
+// Convert an Alpine proxy (or array-like) to a real array
 function convertProxyToArray(proxyData) {
     if (Array.isArray(proxyData)) {
         return proxyData;

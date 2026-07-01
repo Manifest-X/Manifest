@@ -2,18 +2,15 @@
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
 /*
-/*  The conversation projection. A handle holds a reactive view (messages,
-/*  participants, typing, status/live) fed by an adapter, and drives intents
-/*  (send/edit/react/transfer/paging). The plugin transports/stores nothing —
-/*  see CHAT-PLUGIN-DESIGN.md. This is the framework side of that contract.
+/*  Handle = reactive conversation view fed by an adapter; drives intents. The
+/*  plugin transports/stores nothing — see CHAT-PLUGIN-DESIGN.md.
 */
 
 (function () {
     'use strict';
 
     // ---- ordering -----------------------------------------------------------
-    // ts is adapter-supplied; a pending (un-acked) message has none → sorts to
-    // the tail until its ack supplies one. _seq is a local monotonic tiebreak.
+    // Pending (un-acked) messages have no ts → sort to the tail; _seq tiebreaks.
     function tsKey(m) {
         if (m._optimistic && m.ts == null) return Number.POSITIVE_INFINITY;
         const t = m.ts;
@@ -33,10 +30,9 @@
     }
 
     // ---- tree (render-time projection over replyTo) -------------------------
-    // Returns roots[] each with recursive .replies, annotated depth/childCount.
-    // A reply whose parent isn't loaded surfaces as a root with orphan:true.
-    // maxDepth (optional) re-parents deeper replies onto their level-N ancestor
-    // (stops indenting past N) while preserving the node's true depth.
+    // roots[] with recursive .replies; unloaded parent → orphan root.
+    // maxDepth re-parents deeper replies onto their level-N ancestor (stops
+    // indenting past N) while preserving the node's true depth.
     function buildTree(messages, opts) {
         const maxDepth = opts && typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity;
         const byId = new Map();
@@ -82,10 +78,8 @@
         });
 
         function ordered() { return _msgs.slice().sort(byKey); }
-        // Emit fresh per-message snapshots each commit so a keyed x-for re-renders
-        // a message mutated in place (streaming token appends, status changes) —
-        // same object identity wouldn't trip Alpine's diff. (Spike-simple; a
-        // production build would mutate reactive elements in place instead.)
+        // Fresh per-message snapshots each commit so a keyed x-for re-renders
+        // in-place mutations (streaming appends, status) that identity wouldn't trip.
         function commit() { state.messages = ordered().map(m => Object.assign({}, m, { body: Object.assign({}, m.body) })); }
         function commitParticipants() { state.participants = [..._participants.values()]; }
         function commitTyping() { state.typing = [..._typing.values()]; }
@@ -117,9 +111,8 @@
         function upsertParticipant(p) { if (p && p.id != null) { _participants.set(p.id, Object.assign(_participants.get(p.id) || {}, p)); commitParticipants(); } }
         function removeParticipant(id) { if (_participants.delete(id)) commitParticipants(); }
 
-        // side: undefined='both' (initial/anchored/backfill) · 'older'/'newer' for
-        // directional paging — a directional page must NOT clobber the opposite
-        // cursor (its chunk reports both, but only its own end advanced).
+        // side: undefined='both'; 'older'/'newer' must NOT clobber the opposite
+        // cursor (a directional page reports both, but only its own end advanced).
         function ingestLoad(res, side) {
             if (!res) return;
             (res.participants || []).forEach(upsertParticipant);

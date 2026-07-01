@@ -1,12 +1,8 @@
-// Utilities initialization
-// Initialize compiler and set up event listeners
+// Utilities initialization: create compiler, set up event listeners
 
-// Detect operating system and stamp it on <html data-os> so OS variants
-// (mac:, ios:, windows:, …) and the *-only visibility classes can resolve in
-// pure CSS. There is no CSS media feature for OS, so this one-time read is the
-// minimum required. Runs synchronously at script load (documentElement exists
-// during head parsing) to set the marker before first paint. Honors a value
-// already present (e.g. written by the prerenderer or set manually).
+// Stamp <html data-os> so OS variants (mac:, ios:, …) resolve in pure CSS
+// (no CSS media feature for OS). Runs synchronously before first paint;
+// honors an existing value (prerenderer or manual).
 function detectOS() {
     try {
         const html = document.documentElement;
@@ -28,13 +24,9 @@ function detectOS() {
 }
 detectOS();
 
-// Register the device/OS variants with Tailwind too. The Manifest compiler
-// applies these variants to its own theme-derived/semantic utilities, but
-// standard Tailwind utilities (px-4, flex, …) are emitted by Tailwind's own
-// engine, which only knows its built-in variants. A `<style type="text/tailwindcss">`
-// carrying @custom-variant definitions teaches Tailwind the same variants, so
-// touch:px-4 / mac:flex / cursor:gap-2 resolve like sm:/hover:. Tailwind's
-// browser build reprocesses when this style is added, so load order is moot.
+// Teach Tailwind the same device/OS variants via @custom-variant so its own
+// utilities (px-4, flex) get touch:/mac:/cursor: like sm:/hover: — the Manifest
+// compiler only applies them to its own utilities.
 function injectTailwindVariants() {
     try {
         if (document.getElementById('manifest-tailwind-variants')) return;
@@ -65,16 +57,12 @@ const compiler = new TailwindCompiler();
 // Expose utilities compiler for optional integration
 window.ManifestUtilities = compiler;
 
-// Log when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        // DOM ready
     });
 } else {
-    // DOM already ready
 }
 
-// Log first paint if available
 if ('PerformanceObserver' in window) {
     try {
         const paintObserver = new PerformanceObserver((list) => {
@@ -87,7 +75,7 @@ if ('PerformanceObserver' in window) {
     }
 }
 
-// Also handle DOMContentLoaded for any elements that might be added later
+// Recompile on DOMContentLoaded for late-added elements
 document.addEventListener('DOMContentLoaded', () => {
     if (!compiler.usesStaticPrerenderUtilities && !compiler.isCompiling) {
         compiler.compile();

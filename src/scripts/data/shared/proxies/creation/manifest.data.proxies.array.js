@@ -25,8 +25,7 @@ function clearArrayProxyCacheForDataSource(dataSourceName) {
 // Track which arrays have methods attached to avoid re-attaching
 const arraysWithMethodsAttached = new WeakSet();
 
-// Attach methods directly to an array (no proxy wrapper)
-// This allows Alpine to track the array directly for reactivity
+// Attach methods directly to the array (no proxy wrapper) so Alpine tracks it directly
 function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     // Skip if already has methods attached
     if (arraysWithMethodsAttached.has(array)) {
@@ -48,8 +47,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     // Mark as having methods attached
     arraysWithMethodsAttached.add(array);
 
-    // Attach state properties ($loading, $error, $ready) as getters
-    // These need to be accessible on the array for Alpine expressions like $x.assets.$ready
+    // State getters ($loading/$error/$ready) so $x.assets.$ready etc. resolve on the array
     Object.defineProperty(array, '$loading', {
         enumerable: false,
         configurable: true,
@@ -108,8 +106,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 });
             });
 
-            // Attach methods to the filtered result so chaining works (e.g., .$search().$query())
-            // This ensures the returned array has $query, $route, and other methods available
+            // Re-attach so chaining works (.$search().$query())
             attachArrayMethods(filtered, dataSourceName, reloadDataSource);
 
             return filtered;
@@ -129,11 +126,10 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 });
             }
             if (array && typeof array === 'object') {
-                // Get raw data to ensure we have the actual array (not Alpine proxy)
+                // Prefer raw data — the real array, not the Alpine proxy
                 const getRawData = window.ManifestDataStore?.getRawData;
                 let dataToUse = array;
 
-                // CRITICAL: Always try to get raw data first - this ensures we have the real array
                 if (dataSourceName && getRawData) {
                     const rawData = getRawData(dataSourceName);
                     if (rawData && (Array.isArray(rawData) || (rawData.length !== undefined && rawData.length >= 0))) {
@@ -208,23 +204,11 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         }
     }
 
-    // Attach client-side $query (overridden by Appwrite if source is Appwrite)
-    // Always attach even if dataSourceName empty (enables method chaining: .$search().$query())
-    //
-    // IMPORTANT: use the SYNCHRONOUS manifest accessor, not ensureManifest().
-    // ensureManifest() is `async function` — calling it without `await` returns
-    // a Promise, and `Promise.data` is undefined, so the Appwrite-detection
-    // block silently fell through and isAppwriteSource stayed `false` for
-    // EVERY source — including real Appwrite collections. That caused the
-    // client-side $query to be attached to Appwrite arrays. The client-side
-    // $query sorts/filters in-memory and returns the result (without mutating
-    // the source), while demo code calls $query as a fire-and-forget store
-    // mutation. Result: sort buttons silently no-op'd.
-    //
-    // window.__manifestLoaded and window.ManifestComponentsRegistry.manifest
-    // are populated synchronously by the loader after the manifest fetch
-    // resolves (see manifest.js loader: `window.__manifestLoaded = manifest`).
-    // By the time any data source is being attached, they're available.
+    // Client-side $query, overridden by Appwrite's for Appwrite sources.
+    // Must use the SYNCHRONOUS manifest accessor — ensureManifest() is async,
+    // so `.data` on its unawaited Promise is undefined and detection would
+    // silently fall through, wrongly attaching client-side $query to Appwrite
+    // arrays (in-memory sort discarded → sort buttons no-op).
     let isAppwriteSource = false;
     if (dataSourceName) {
         try {
@@ -240,8 +224,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         }
     }
 
-    // Only attach client-side $query for non-Appwrite sources
-    // Appwrite sources will get their $query from the Appwrite plugin (attached later)
+    // Appwrite sources get their $query from the Appwrite plugin instead
     if (!isAppwriteSource && !array.hasOwnProperty('$query')) {
         Object.defineProperty(array, '$query', {
             enumerable: false,
@@ -345,8 +328,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     }
                 }
 
-                // Attach methods to the filtered result so chaining works (e.g., .$query().$search())
-                // This ensures the returned array has $search, $route, and other methods available
+                // Re-attach so chaining works (.$query().$search())
                 attachArrayMethods(result, dataSourceName, reloadDataSource);
 
                 return result;
@@ -356,12 +338,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach Appwrite methods ($create, $update, $delete, etc.)
     if (dataSourceName) {
-        // Check if this is an Appwrite source. Same sync-manifest fix as
-        // the block above — ensureManifest() is async and returned a Promise
-        // here too, so isAppwriteSource was always false and the Appwrite
-        // $query was never attached, leaving sort/query buttons to silently
-        // fall through to the client-side $query that returns a discarded
-        // sorted array.
+        // Sync manifest accessor again — see note above on the async pitfall.
         let isAppwriteSource = false;
         try {
             const manifest = window.__manifestLoaded
@@ -378,7 +355,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
         if (createAppwriteMethodsHandler) {
             const methodsHandler = createAppwriteMethodsHandler(dataSourceName, reloadDataSource);
-            // For Appwrite sources, include $query. For local sources, exclude it (base plugin handles it)
+            // $query only for Appwrite sources; local sources keep the base plugin's
             const appwriteMethods = isAppwriteSource
                 ? ['$create', '$update', '$delete', '$duplicate', '$query', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove']
                 : ['$create', '$update', '$delete', '$duplicate', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove'];
@@ -489,11 +466,8 @@ if (typeof window !== 'undefined') {
 }
 
 function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDataSource = null) {
-    // When dataSourceName is provided, use a Map with composite key (array + dataSourceName)
-    // When dataSourceName is null, use WeakMap (original behavior)
+    // With dataSourceName: Map keyed by (array id + name). Without: WeakMap by array.
     if (dataSourceName) {
-        // Create a composite key using array identity and dataSourceName
-        // Use a WeakMap to store a unique ID for each array, then use that ID + dataSourceName in Map
         if (!window._arrayProxyIdMap) {
             window._arrayProxyIdMap = new WeakMap();
             window._arrayProxyIdCounter = 0;
@@ -516,14 +490,11 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         }
     }
 
-    // Attach array methods directly to target BEFORE creating proxy (ensures Alpine compatibility)
+    // Attach array methods to the target before proxying (safety net if Alpine reads them directly)
     if (Array.isArray(arrayTarget) && !arraysWithMethodsAttached.has(arrayTarget)) {
-        // Attach all standard array methods directly to the array
-        // This is a safety net in case Alpine accesses methods directly on the array
         const attachedMethods = [];
         ARRAY_METHODS.forEach(methodName => {
             if (!(methodName in arrayTarget) || typeof arrayTarget[methodName] !== 'function') {
-                // Only attach if not already present (to avoid overwriting)
                 try {
                     Object.defineProperty(arrayTarget, methodName, {
                         enumerable: false,
@@ -543,15 +514,14 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
     } else {
     }
 
-    // Pre-create $files function if this is a table data source
-    // Always create it, even if manifest isn't loaded yet - the function will handle it internally
+    // Pre-create $files (function validates table-vs-bucket at call time)
     if (dataSourceName) {
         const createFilesMethod = window.ManifestDataProxiesMagic?.createFilesMethod;
         if (createFilesMethod && !arrayTarget._$filesFunction) {
             arrayTarget._$filesFunction = createFilesMethod(dataSourceName);
             Object.defineProperty(arrayTarget._$filesFunction, 'name', { value: '$files', configurable: true });
             Object.setPrototypeOf(arrayTarget._$filesFunction, Function.prototype);
-            // Also define it directly on the array target so it's accessible without going through proxy
+            // Also define on the target so it's reachable without the proxy
             Object.defineProperty(arrayTarget, '$files', {
                 enumerable: true,
                 configurable: true,
@@ -561,9 +531,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         }
     }
 
-    // Attach $route directly to the array target (like attachArrayMethods does)
-    // This ensures $route() works even if Alpine proxies the proxy
-    // Always attach it, even if createRouteProxy isn't available yet (it will be checked at call time)
+    // Attach $route to the target too, so it survives Alpine proxying the proxy
     if (!arrayTarget.hasOwnProperty('$route')) {
         Object.defineProperty(arrayTarget, '$route', {
             enumerable: false,
@@ -577,11 +545,10 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     });
                 }
                 if (arrayTarget && typeof arrayTarget === 'object') {
-                    // Get raw data to ensure we have the actual array (not Alpine proxy)
+                    // Prefer raw data — the real array, not the Alpine proxy
                     const getRawData = window.ManifestDataStore?.getRawData;
                     let dataToUse = arrayTarget;
 
-                    // CRITICAL: Always try to get raw data first - this ensures we have the real array
                     if (dataSourceName && getRawData) {
                         const rawData = getRawData(dataSourceName);
                         if (rawData && (Array.isArray(rawData) || (rawData.length !== undefined && rawData.length >= 0))) {
@@ -589,7 +556,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         }
                     }
 
-                    // If we still don't have raw data, try to convert the proxy to a real array
+                    // Otherwise coerce the array-like proxy into a real array
                     if (!Array.isArray(dataToUse) && dataToUse && typeof dataToUse === 'object' && 'length' in dataToUse) {
                         try {
                             dataToUse = Array.from(dataToUse);
@@ -615,17 +582,16 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         });
     }
 
-    // Create the base array proxy
+    // Base array proxy
     const baseProxy = Object.setPrototypeOf(
         new Proxy(arrayTarget, {
             get(target, key, receiver) {
 
-                // Handle special keys - but allow Symbol.iterator for array iteration
                 if (key === 'then' || key === 'catch' || key === 'finally') {
                     return undefined;
                 }
 
-                // Allow Symbol.iterator for proper array iteration (needed for Alpine's x-for)
+                // Symbol.iterator needed for Alpine's x-for
                 if (key === Symbol.iterator) {
                     const manifest = window.ManifestDataConfig?.getManifest?.();
                     const ds = manifest?.data?.[dataSourceName];
@@ -633,7 +599,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     if (isStorageBucket) {
                     }
                     const iterator = target[Symbol.iterator].bind(target);
-                    // Ensure iterator function has proper prototype for Alpine's instanceof checks
+                    // Restore Function.prototype for Alpine's instanceof checks
                     if (iterator && typeof iterator === 'function') {
                         Object.setPrototypeOf(iterator, Function.prototype);
                     }
@@ -657,14 +623,11 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return null;
                 }
 
-                // Handle $route function for route-specific lookups on arrays
-                // Also check if it's attached directly to the target (for nested arrays)
+                // $route — prefer one attached to the target (nested arrays)
                 if (key === '$route') {
-                    // First check if it's attached directly to the target
                     if (target.$route && typeof target.$route === 'function') {
                         return target.$route;
                     }
-                    // Otherwise, return the function from the proxy handler
                     const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
                     if (!createRouteProxy) {
                         // Return a function that returns a safe proxy (not a proxy directly)
@@ -871,9 +834,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return undefined;
                 }
 
-                // Handle Appwrite methods for arrays (when data source is an Appwrite table or bucket)
-                // These methods are called on the array itself (e.g., $x.assets.$create(file))
-                // Only available if Appwrite plugin is loaded
+                // Appwrite methods called on the array itself (e.g. $x.assets.$create(file))
                 if (dataSourceName && (key === '$create' || key === '$update' || key === '$delete' || key === '$duplicate' || key === '$query' ||
                     key === '$url' || key === '$download' || key === '$preview' || key === '$filesFor' || key === '$unlinkFrom' || key === '$removeFrom' || key === '$remove')) {
                     // Check if Appwrite methods handler is available
@@ -1095,9 +1056,8 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         });
     }
 
-    // Cache the base proxy IMMEDIATELY after creation, before returning
-    // This ensures the cache is available if the proxy's get handler is called recursively
-    // SKIP CACHE for 'projects' to ensure Alpine gets fresh proxy reference for reactivity
+    // Cache before returning (get handler may recurse). Skip 'projects' so
+    // Alpine always gets a fresh proxy reference for reactivity.
     if (dataSourceName && dataSourceName !== 'projects') {
         // Use Map cache with composite key
         if (!window._arrayProxyIdMap) {

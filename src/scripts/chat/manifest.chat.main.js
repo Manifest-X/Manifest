@@ -2,11 +2,9 @@
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
 /*
-/*  Registers $chat. Instance-oriented, no global manifest.json config:
-/*    $chat.open(conversationId, { adapter, around?, aggregate? }) -> handle
-/*    $chat.merge([handleA, …], { order })                        -> read projection
-/*    $chat.adapter(name, factory)  /  $chat.flatten(tree)
-/*  The plugin renders nothing — the author drives their own UI off the handle.
+/*  Registers $chat. Renders nothing — the author drives their UI off the handle.
+/*    open(conversationId, { adapter, around?, aggregate? }) · merge(handles, { order })
+/*    adapter(name, factory) · flatten(tree)
 */
 
 (function () {

@@ -2,15 +2,9 @@
 
 (function () {
 
-// A select-like field with four orthogonal axes:
-//   trigger: input (default) | textarea | button (editor:none, click only)
-//   options: none (free entry) | datalist/select (generated menu) | menu (authored) | async
-//   value:   single (default) | multiple (+ max cap)
-//   display: text (default) | chips
-//
-// Config is the directive value: a bare id string (the options source, like
-// x-dropdown) or a { source, max, filter, separators, min, debounce } object.
-// Modes are modifiers. The dropdown reuses Manifest's menu[popover] styles.
+// Select-like field across four axes: trigger (input/textarea/button), options
+// (none/datalist/menu/async), value (single/multiple), display (text/chips). Modes
+// are modifiers; the value is a bare source id or a { source, max, filter, … } object.
 
 /* ------------------------------------------------------------------ *
  * Shared localized-UI resolver (byte-identical to the datepicker /
@@ -83,9 +77,8 @@ function initializeComboboxPlugin() {
                 pattern: li.dataset.pattern || null,
                 locked: li.hasAttribute('data-locked'),
                 html: li.innerHTML,
-                // Carry the authored row's own attributes (class, style, title, data-*) into
-                // the rendered option, minus the ones the combobox manages and Alpine's
-                // bindings (x-/:/@ — those reference the source's x-for scope, not the clone).
+                // Carry the row's own attributes into the option, minus combobox-managed
+                // ones and Alpine bindings (x-/:/@ reference the source's scope, not the clone).
                 attrs: Array.from(li.attributes)
                     .filter(a => { const n = a.name; return n !== 'role' && n !== 'id' && n !== 'aria-selected' && n[0] !== ':' && n[0] !== '@' && n.indexOf('x-') !== 0; })
                     .map(a => [a.name, a.value])
@@ -100,10 +93,8 @@ function initializeComboboxPlugin() {
         }));
     }
 
-    // Take ownership of x-model: capture the expression and strip the attribute so
-    // Alpine's own model directive never binds the editor. In chips mode the editor is
-    // a transient typing buffer — Alpine's x-model would dump the bound array into it
-    // and write partial typing back to the model. We read/write the model ourselves.
+    // Capture x-model's expression and strip the attribute so Alpine never binds the
+    // editor (in chips mode it's a typing buffer; we own read/write ourselves).
     function captureModel(el) {
         if (el.__cbModelExpr !== undefined) return;
         let attr = null;
@@ -114,9 +105,8 @@ function initializeComboboxPlugin() {
         if (attr) el.removeAttribute(attr);
     }
 
-    // NB: match by attribute-name prefix, not the `[x-combobox]` CSS selector — the
-    // directive is almost always written with modifiers (x-combobox.multiple.chips),
-    // a literal attribute name that `[x-combobox]` does NOT match.
+    // Match by attribute-name prefix, not `[x-combobox]` — modifiers make the literal
+    // attribute name (x-combobox.multiple.chips) that the CSS selector won't match.
     function isComboboxEl(el) {
         if (!el.attributes) return false;
         for (const a of el.attributes) if (a.name === 'x-combobox' || a.name.indexOf('x-combobox.') === 0) return true;
@@ -129,10 +119,8 @@ function initializeComboboxPlugin() {
         for (let i = 0; i < all.length; i++) if (isComboboxEl(all[i])) captureModel(all[i]);
     }
 
-    // Strip x-model before Alpine ever binds it. The initial static DOM is handled here
-    // (this runs on alpine:init, before the walk); subtrees mounted later — x-markdown,
-    // components — are handled by wrapping the public initTree they call to mount, so the
-    // attribute is gone before Alpine's model directive looks for it.
+    // Strip x-model before Alpine binds it: static DOM here (pre-walk), later-mounted
+    // subtrees (x-markdown, components) via the wrapped public initTree below.
     stripModels(document.body);
     if (typeof Alpine.initTree === 'function' && !Alpine.__cbInitTreeWrapped) {
         Alpine.__cbInitTreeWrapped = true;
@@ -150,17 +138,12 @@ function initializeComboboxPlugin() {
         if (el.__mnfstCombobox) return;
         el.__mnfstCombobox = true;
 
-        // If a mount path bypassed the pre-emptive strip (x-if / x-for mount via Alpine's
-        // INTERNAL initTree, which our public-initTree wrapper can't see) and Alpine's
-        // native x-model already bound the editor, neutralize it here. Otherwise its
-        // value-sync would bleed the raw model into the editor ("a,b") and its input
-        // listener would write partial typing back to the model. We own read/write below,
-        // so make both native paths no-ops. captureModel still recovered the expression.
+        // If a mount path bypassed the strip (x-if/x-for via Alpine's internal initTree)
+        // and native x-model already bound the editor, neutralize both native paths here
+        // (value-sync would bleed the model in; the input listener would write typing back).
         if (el._x_model) {
-            el._x_forceModelUpdate = function () { };    // kill the model→editor value-sync (no bleed)
-            // Remove Alpine's input/change listener that writes the editor back to the model
-            // (a local closure — overriding _x_model.set isn't enough). _x_removeModelListeners
-            // is Alpine's own removal hook for exactly this.
+            el._x_forceModelUpdate = function () { };    // kill the model→editor value-sync
+            // Remove Alpine's input/change listener (a closure; overriding .set isn't enough).
             try {
                 const rm = el._x_removeModelListeners;
                 if (rm) Object.keys(rm).forEach(k => { try { rm[k](); } catch (_) { } });
@@ -169,19 +152,15 @@ function initializeComboboxPlugin() {
             if (el.value) el.value = '';
         }
 
-        // Sweep generated menus left orphaned by a prior render — their controlling
-        // editor is gone (a SPA x-markdown re-render) or never hydrated (duplicates
-        // an old prerender baked into <body>). Either way, no connected editor points
-        // at them, so they can only sit as stale, sometimes-open duplicates.
+        // Sweep orphaned generated menus (editor gone after a re-render, or a baked
+        // prerender duplicate) — no connected editor points at them.
         document.querySelectorAll('body > menu[id^="combobox-menu-"]').forEach(m => {
             if (!document.querySelector('[aria-controls="' + m.id + '"]')) m.remove();
         });
 
         // ----- Prerender hydration -----
-        // A prerendered page bakes in the wrapper this plugin generated. On load we
-        // adopt that wrapper and re-derive the selection from the baked chips, rather
-        // than nesting a second .combobox inside it (which shrinks the field and
-        // truncates the chips). A fresh SPA run has no such wrapper and skips this.
+        // A prerendered page bakes in our wrapper; adopt it and re-derive the selection
+        // from the baked chips (nesting a second .combobox would shrink/truncate). SPA skips.
         const adopt = el.parentElement && el.parentElement.classList.contains('combobox') ? el.parentElement : null;
         let recoveredName = null, seedSelected = null;
         if (adopt) {
@@ -196,9 +175,8 @@ function initializeComboboxPlugin() {
             }
             adopt.querySelectorAll('.combobox-chip, input[data-cb], [role=status]').forEach(n => n.remove());
             const bakedMenuId = el.getAttribute('aria-controls');
-            // Remove the baked generated menu (its id is always combobox-menu-…); the
-            // source element (datalist or authored <menu>, carrying the author's own id)
-            // is the data layer and is left in place for readOptions to re-read.
+            // Remove the baked generated menu (id combobox-menu-…); leave the source
+            // element (author's own id) in place for readOptions to re-read.
             if (bakedMenuId && bakedMenuId.indexOf('combobox-menu-') === 0) {
                 const m = document.getElementById(bakedMenuId);
                 if (m) m.remove();
@@ -248,8 +226,7 @@ function initializeComboboxPlugin() {
             wrap.className = 'combobox';
             el.parentNode.insertBefore(wrap, el);
             wrap.appendChild(el);
-            // The wrapper IS the field, so move the author's sizing (inline style) onto
-            // it. Otherwise the editor/button is constrained inside a full-width field.
+            // The wrapper is the field, so move the author's inline sizing onto it.
             const authorStyle = el.getAttribute('style');
             if (authorStyle) { wrap.setAttribute('style', authorStyle); el.removeAttribute('style'); }
         }
@@ -273,9 +250,8 @@ function initializeComboboxPlugin() {
         };
 
         // ----- Locked values (non-removable chips) -----
-        // From a `locked: [...]` config list (re-evaluated reactively below) and/or a
-        // `data-locked` flag on individual options. Locked chips keep their × hidden and
-        // refuse removal while staying selected.
+        // From a `locked: [...]` config list (reactive below) and/or per-option
+        // `data-locked`. Locked chips hide their × and refuse removal.
         const lockedFromOptions = options.filter(o => o.locked).map(o => String(o.value).toLowerCase());
         const computeLocked = (cfgObj) => {
             const set = new Set(lockedFromOptions);
@@ -287,10 +263,9 @@ function initializeComboboxPlugin() {
         let lockedSet = computeLocked();
         const isLocked = (v) => lockedSet.has(String(v).toLowerCase());
 
-        // ----- Reactive model (x-model) — captured + stripped pre-walk, owned here -----
-        // The bound value may be a token array or a CSV string; we preserve whichever the
-        // author used (default array for .multiple). Chips render labels; the model carries
-        // values/tokens. Read/effect/set are wired near mount, once render() exists.
+        // ----- Reactive model (x-model), owned here -----
+        // Preserve the author's shape (array or CSV; array default for .multiple). Chips
+        // show labels, the model carries values. Read/effect/set wired near mount.
         const modelExpr = el.__cbModelExpr || null;
         let modelArrayShape = null;     // null until first read; true = array, false = CSV
         let modelSet = null;
@@ -329,11 +304,9 @@ function initializeComboboxPlugin() {
         }
 
         if (hasMenu) {
-            // Always render into a generated menu — even when the source is an authored
-            // <menu>. The source stays a pure data layer so x-for / $x can own its <li>
-            // freely (the reread below mirrors changes into the generated list), while the
-            // combobox owns the listbox it shows and the option lifecycle. readOptions
-            // captures each row's innerHTML, so authored rich markup is preserved.
+            // Always render into a generated menu, even for an authored <menu>: the source
+            // stays a data layer x-for/$x can own (reread below mirrors it), the combobox
+            // owns the listbox. readOptions keeps each row's innerHTML, preserving markup.
             menu = document.createElement('menu');
             document.body.appendChild(menu);   // anchor positioning needs it out of overflow contexts
             generatedMenu = menu;               // tracked so cleanup() can remove it on re-render
@@ -555,8 +528,8 @@ function initializeComboboxPlugin() {
             applyLock(chip, s.value, s.label);
             return chip;
         }
-        // Add or drop the × to match the value's locked state. Re-run from render() so a
-        // reactive `locked` change toggles the affordance on existing chips too.
+        // Add/drop the × to match locked state. Re-run from render() so a reactive
+        // `locked` change toggles existing chips too.
         function applyLock(chip, value, label) {
             const locked = isLocked(value);
             chip.toggleAttribute('data-locked', locked);
@@ -581,10 +554,8 @@ function initializeComboboxPlugin() {
 
         function render() {
             if (chips) {
-                // Incremental: keep existing chip nodes, only add new / drop removed /
-                // refresh locked state. Recreating every chip re-inserts them next to the
-                // focused editor, which collapses them to an ellipsis in WebKit; untouched
-                // nodes keep their width.
+                // Incremental: keep existing chip nodes, add/drop/refresh only. Recreating
+                // all re-inserts next to the focused editor, collapsing them in WebKit.
                 const norm = v => String(v).toLowerCase();
                 const have = new Map();
                 wrap.querySelectorAll('.combobox-chip').forEach(c => have.set(norm(c.dataset.value), c));
@@ -597,9 +568,8 @@ function initializeComboboxPlugin() {
                     if (!node) { const n = makeChip(s); have.set(key, n); wrap.insertBefore(n, el); }
                     else applyLock(node, s.value, s.label);
                 });
-                // Reorder to match selection only when it actually differs — needless
-                // re-insertion collapses chips in WebKit while the editor is focused, so the
-                // common append path (order already matches) skips this.
+                // Reorder only when order differs — needless re-insertion collapses chips
+                // in WebKit; the common append path (order matches) skips this.
                 const cur = Array.from(wrap.querySelectorAll('.combobox-chip')).map(c => norm(c.dataset.value));
                 if (!sameList(cur, want)) selected.forEach(s => wrap.insertBefore(have.get(norm(s.value)), el));
                 // Hidden inputs are type=hidden (no layout), so a clean rebuild is harmless.
@@ -618,9 +588,8 @@ function initializeComboboxPlugin() {
             if (el.hidden) closeMenu();
         }
 
-        // Pull complete tokens (those ended by a separator) out of the field into
-        // chips, leaving any trailing partial. Reading the value here rather than on
-        // keydown avoids the keydown/character-insert race, and covers paste too.
+        // Pull separator-terminated tokens out of the field into chips, leaving the
+        // trailing partial. Reading the value (not keydown) dodges the insert race and covers paste.
         function extractTokens() {
             if (!separators.length) return;
             const val = el.value;
@@ -635,8 +604,8 @@ function initializeComboboxPlugin() {
             el.value = buf;
         }
 
-        // Open for fresh entry. A committed single value is shown alongside the full
-        // list so it can be swapped; selectText (keyboard focus) also selects it to type over.
+        // Open for fresh entry. A committed single value shows the full list (swappable);
+        // selectText (keyboard focus) also selects it to type over.
         function openForEntry(selectText) {
             if (menu) menu.removeAttribute('data-kbd');   // opening is mouse-mode until a key drives it
             const committed = !multiple && selected.length && el.value === selected[0].label;
@@ -709,8 +678,7 @@ function initializeComboboxPlugin() {
             if (e.target === wrap) { e.preventDefault(); refocus(); }
         });
 
-        // Outside dismiss (manual popover). Self-removes once the menu leaves the DOM
-        // so repeated re-renders don't leak document listeners.
+        // Outside dismiss (manual popover); self-removes when the menu leaves the DOM.
         if (menu && !menu.__mnfstCbDismiss) {
             menu.__mnfstCbDismiss = true;
             const onDocPointer = (e) => {
@@ -720,15 +688,13 @@ function initializeComboboxPlugin() {
             document.addEventListener('pointerdown', onDocPointer);
             if (cleanup) cleanup(() => document.removeEventListener('pointerdown', onDocPointer));
         }
-        // A generated (datalist/select) menu lives in <body>; remove it when the field
-        // is torn down (e.g. an x-markdown re-render in a SPA) so it doesn't orphan as
-        // a stale, sometimes-open duplicate. Authored/adopted menus go with their container.
+        // The generated menu lives in <body>; remove it on teardown so it doesn't orphan
+        // as a stale duplicate. Authored/adopted menus go with their container.
         if (cleanup && generatedMenu) cleanup(() => { if (generatedMenu.isConnected) generatedMenu.remove(); });
 
         // ----- Reactive model (x-model) -----
-        // Renders chips from the bound value on init and whenever it changes externally
-        // (e.g. switching which record is being edited); writes back on add/remove. The
-        // read runs inside an Alpine effect so $x / nested state stay reactive.
+        // Render chips from the bound value on init and external change; write back on
+        // add/remove. Read inside an Alpine effect so $x / nested state stay reactive.
         if (modelExpr) {
             const read = Alpine.evaluateLater(el, modelExpr);
             modelSet = (vals) => {
@@ -748,8 +714,7 @@ function initializeComboboxPlugin() {
             });
         }
 
-        // ----- Reactive locked list (config-object form re-evaluates, so authors can
-        //        gate it on state, e.g. last-owner: locked: owners.length <= 1 ? ['owner'] : []) -----
+        // ----- Reactive locked list (config-object form, so `locked` can gate on state) -----
         if (expr.startsWith('{')) {
             Alpine.effect(() => {
                 let c; try { c = Alpine.evaluate(el, expr); } catch (_) { return; }
@@ -760,8 +725,8 @@ function initializeComboboxPlugin() {
             });
         }
 
-        // ----- Dynamic options: re-read when x-for / $x fills the source list after
-        //        build, so the menu, chip labels, and data-locked flags stay current. -----
+        // ----- Dynamic options: re-read when x-for / $x fills the source after build,
+        //        keeping the menu, chip labels, and data-locked flags current. -----
         if (src) {
             const reread = () => {
                 options = readOptions(src);
@@ -775,8 +740,7 @@ function initializeComboboxPlugin() {
                 if (menu && menu.matches(':popover-open')) filter();
             };
             const mo = new MutationObserver(reread);
-            // childList/characterData: x-for adds/removes/edits rows. attributes: a bound
-            // data-locked / data-value / data-label toggles, so locking is reactive.
+            // childList/characterData: x-for row edits. attributes: bound data-* toggles.
             mo.observe(src, {
                 childList: true, subtree: true, characterData: true,
                 attributes: true, attributeFilter: ['data-value', 'data-label', 'data-locked', 'data-pattern']
@@ -784,17 +748,16 @@ function initializeComboboxPlugin() {
             if (cleanup) cleanup(() => mo.disconnect());
         }
 
-        // ----- Seed initial chips from value="a, b" — only when there's no x-model
-        //        (x-model wins) and no adopted wrapper (which already seeded). -----
+        // ----- Seed initial chips from value="a, b" — only when no x-model (it wins)
+        //        and no adopted wrapper (already seeded). -----
         if (!modelExpr && !adopt && !editorNone && chips && el.value) {
             const seeds = el.value.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
             el.value = '';
             seeds.forEach(s => commitText(s));
         }
-        // In chips/multiple mode the editor is a typing buffer, never a value holder. Clear
-        // the value PROPERTY and remove the value ATTRIBUTE: the attribute (not the property)
-        // is what mnfst-render serializes into the prerendered HTML, so leaving it would bake
-        // the raw seed text into the editor and show it as inline text on hydration (Safari).
+        // In chips/multiple the editor is a typing buffer. Clear value AND remove the
+        // attribute: mnfst-render serializes the attribute, so leaving it bakes seed text
+        // into the prerendered editor (shows as inline text on hydration in Safari).
         if ((chips || multiple) && !editorNone) { el.value = ''; el.removeAttribute('value'); }
         render();
     }

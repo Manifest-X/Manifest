@@ -1,5 +1,4 @@
-// Compilation methods
-// Main compilation logic and utility generation
+// Compilation logic and utility generation
 
 // Generate utilities from CSS variables
 TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedData) {
@@ -147,16 +146,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         generateUtility(className, css);
                     }
 
-                    // Check for opacity variants of this utility. Collect the
-                    // bare opacity base class (e.g. `bg-black/10`) rather than the
-                    // full prefixed class (e.g. `backdrop:bg-black/10`). generateUtility
-                    // discovers and applies variant prefixes itself by matching the
-                    // trailing segment after the last `:`, so passing it the bare base
-                    // lets its variant loop emit the correct selector
-                    // (`.backdrop\:bg-black\/10::backdrop`). Passing the prefixed class
-                    // instead made generateUtility treat it as a plain base class and
-                    // emit a malformed `.backdrop\:bg-black\/10 { … }` rule with no
-                    // `::backdrop` pseudo-element.
+                    // Opacity variants: collect the bare base (e.g. `bg-black/10`),
+                    // not the prefixed class — generateUtility discovers variant
+                    // prefixes itself, so passing the bare base emits the correct
+                    // selector (`.backdrop\:bg-black\/10::backdrop`).
                     const opacityBaseClasses = new Set();
                     for (const cls of usedClasses) {
                         // Parse the class to extract the base utility name
@@ -216,16 +209,9 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
             return className.replace(/[^a-zA-Z0-9-]/g, '\\$&');
         };
 
-        // Helper to replace & in CSS selectors (not in property values or comments)
-        // IMPORTANT: For CSS nesting, we should NOT replace & in nested selectors
-        // The & should remain as-is so CSS nesting works correctly
-        // This function should only be used for legacy/flattened CSS, not nested CSS
+        // Replace & in selectors — legacy/flattened CSS only; nested CSS keeps &
+        // as-is so native nesting works.
         const replaceAmpersandInSelectors = (cssText, replacement) => {
-            // For full blocks with nested rules, don't replace & at all - preserve CSS nesting
-            // Check if this looks like nested CSS:
-            // - Has & followed by :, ., [, or whitespace then { (nested selector)
-            // - Has ] & (attribute selector followed by &, like [dir=rtl] &)
-            // - Has & on its own line followed by :, ., or [ (common nested pattern)
             const hasNestedSelectors =
                 /&\s*[:\.\[{]/.test(cssText) ||           // &:not(), &::before, &[attr], & {
                 /&\s*\n\s*[:\.\[{]/.test(cssText) ||      // & on new line followed by selector
@@ -760,13 +746,9 @@ TailwindCompiler.prototype.compile = async function () {
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
             if (themeCss) {
-                // Extract and cache custom utilities. We scan framework CSS too
-                // because the generator needs to know about semantic classes
-                // like .brand / .row / .col to emit their responsive/state
-                // variants (e.g. md:row, hover:brand). Base-form re-emission is
-                // suppressed in generateCustomUtilities ("Skip generating base
-                // utility - it already exists in the CSS"); duplicate captures
-                // are collapsed at the end of extractCustomUtilities.
+                // Extract custom utilities. Framework CSS is scanned too so the
+                // generator can emit variants of semantic classes (md:row,
+                // hover:brand); base forms are suppressed in generateCustomUtilities.
                 const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
                 for (const [name, value] of discoveredCustomUtilities.entries()) {
                     this.customUtilities.set(name, value);

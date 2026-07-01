@@ -1,15 +1,10 @@
 /*  Manifest Chat — optional LLM (Claude) adapter
  *  By Andrew Matlock under MIT license · https://manifestx.dev
  *
- *  A reference `claude` adapter: 1:1 (or many-session) chat where the assistant
- *  is a participant whose replies stream from a backend proxy that holds the
- *  API key (see tools/chat-llm-proxy.mjs). $chat never calls the LLM — this
- *  adapter does, behind the same contract as any other. Loaded separately from
- *  the core bundle (it's optional); attaches to the registry the bundle created.
- *
- *  Attachments: image/PDF File objects ride draft.body.media[] as base64 and are
- *  sent to Claude as image/document content blocks. Markdown is never parsed
- *  here — body.text is the raw original; the author renders it (x-markdown).
+ *  Reference `claude` adapter: replies stream from a backend proxy holding the
+ *  API key (tools/chat-llm-proxy.mjs). $chat never calls the LLM — this adapter
+ *  does, behind the same contract. Optional, loaded separately from the bundle.
+ *  Attachments ride draft.body.media[] as base64 → image/document blocks.
  */
 
 (function () {
@@ -27,9 +22,8 @@
 
         function claudeAdapter(opts) {
             opts = opts || {};
-            // Default to the same-origin relay mnfst-run serves when manifest.json
-            // has an `ai` block (no proxy to start, no CORS, key stays server-side).
-            // Override via opts.endpoint / window.CHAT_LLM_ENDPOINT (e.g. self-host Worker).
+            // Same-origin relay mnfst-run serves for an `ai` block; override via
+            // opts.endpoint / window.CHAT_LLM_ENDPOINT.
             const endpoint = opts.endpoint || window.CHAT_LLM_ENDPOINT || '/_ai/chat';
             const system = opts.system || 'You are a helpful assistant for the Manifest framework docs. Answer in concise markdown.';
             const handlers = {};   // conversationId -> subscribe handlers

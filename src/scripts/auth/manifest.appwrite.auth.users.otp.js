@@ -1,14 +1,9 @@
 /* Auth email OTP (one-time passcode) */
 
-// Email OTP is a two-step, in-page flow (no redirect, unlike magic links):
-//   1. createEmailOTP(email)  -> Appwrite emails a 6-digit code, returns a userId
-//   2. verifyOTP(code)        -> createSession(userId, code) completes login
-// Because there is no URL round-trip, this module never touches users.callbacks.js.
-//
-// NOTE: Appwrite does NOT support converting an anonymous (guest) session via email
-// OTP — only magic links, phone, email/password, and OAuth can do that. So when a
-// guest verifies an OTP we mint a fresh account (the anonymous session is deleted),
-// which discards any guest-created teams. Use magic links if you need guest upgrade.
+// Two-step in-page flow (no redirect): createEmailOTP(email) emails a code + returns
+// a userId, verifyOTP(code) creates the session.
+// Gotcha: Appwrite can't convert an anonymous guest via OTP — a guest verifying an OTP
+// gets a fresh account (guest teams lost). Use magic links for guest upgrade.
 
 function initializeEmailOTP() {
     if (typeof Alpine === 'undefined') {
@@ -20,9 +15,8 @@ function initializeEmailOTP() {
         return;
     }
 
-    // Resolve an email string from the same range of inputs sendMagicLink accepts:
-    // an input element, a selector, an Alpine { email } object, a bare string, or
-    // nothing (auto-find the nearest email input). Returns { email, inputEl, dataObj }.
+    // Resolve an email from an input/selector/{ email } object/string, or auto-find
+    // the nearest email input. Returns { email, inputEl, dataObj }.
     function resolveEmailInput(emailInputOrRef) {
         let email = null;
         let inputEl = null;
@@ -70,9 +64,8 @@ function initializeEmailOTP() {
     const waitForStore = () => {
         const store = Alpine.store('auth');
         if (store && !store.createEmailOTP) {
-            // Step 1: request a one-time passcode by email.
-            // Pass { phrase: true } to enable Appwrite's security phrase (anti-phishing);
-            // when enabled the phrase is stored on the store as `otpPhrase` for display.
+            // Step 1: email a passcode. { phrase: true } enables Appwrite's anti-phishing
+            // security phrase, surfaced on the store as `otpPhrase`.
             store.createEmailOTP = async function (email, options = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
@@ -91,8 +84,7 @@ function initializeEmailOTP() {
                     return { success: false, error: 'Email OTP authentication is not enabled' };
                 }
 
-                // Appwrite can't convert an anonymous account via OTP. Warn (once) so guest
-                // teams aren't silently lost; the login still proceeds as a fresh account.
+                // OTP can't convert a guest — warn so lost guest teams aren't a surprise.
                 if (this.isAnonymous && appwriteConfig?.guestUpgrade) {
                     console.warn('[Manifest Appwrite Auth] Email OTP cannot upgrade a guest account (Appwrite limitation); the guest session and any guest-created teams will be replaced. Use magic links for guest upgrade.');
                 }
@@ -127,8 +119,8 @@ function initializeEmailOTP() {
 
                     return { success: true, message: 'OTP sent to email', phrase: this.otpPhrase };
                 } catch (error) {
-                    // Appwrite returns 501 Not Implemented when Email OTP isn't enabled
-                    // for the project. Surface an actionable message instead of the raw error.
+                    // Appwrite returns 501 when Email OTP isn't enabled — surface an
+                    // actionable message rather than the raw error.
                     const code = error.code || error.statusCode;
                     const notEnabled = code === 501 || /not implemented/i.test(error.message || '');
                     this.error = notEnabled
@@ -189,10 +181,8 @@ function initializeEmailOTP() {
                     const appwriteConfig = await config.getAppwriteConfig();
                     const wasGuest = this.isAnonymous;
 
-                    // Guest team carryover: OTP can't convert the anonymous account, so we
-                    // migrate its teams to the new account instead. Issue the migration
-                    // ticket NOW, while the guest session is still authenticated — it's
-                    // redeemed after the new session exists. Best-effort; never blocks login.
+                    // Guest team carryover: issue the migration ticket now, while the guest
+                    // session is still authenticated; redeemed after the new session exists.
                     let migrationTicket = null;
                     if (wasGuest && appwriteConfig?.guestMigrationFunctionId && this._callGuestMigration) {
                         const prep = await this._callGuestMigration('/prepare', {});
@@ -220,16 +210,14 @@ function initializeEmailOTP() {
                     this._otpUserId = null;
                     this.error = null;
 
-                    // OTP replaces any prior guest with a different account (no conversion),
-                    // so clear the guest's team state before loading the new user's teams —
-                    // otherwise the stale currentTeam triggers 404s in listTeams.
+                    // Clear the guest's team state before loading the new user's teams,
+                    // else the stale currentTeam triggers 404s in listTeams.
                     if (this._resetTeamsState) {
                         this._resetTeamsState();
                     }
 
-                    // Redeem the migration ticket as the new account: carries the guest's
-                    // teams over. Best-effort — a failure leaves the guest's teams for GC
-                    // but never blocks the (already successful) sign-in.
+                    // Redeem the migration ticket as the new account to carry teams over.
+                    // Best-effort; failure never blocks the already-successful sign-in.
                     if (migrationTicket && this._callGuestMigration) {
                         await this._callGuestMigration('/commit', { ticket: migrationTicket });
                     }

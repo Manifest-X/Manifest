@@ -250,24 +250,18 @@ window.ManifestDataConfig = {
 
 /* Manifest Data Sources - Store Management */
 
-// Cache for loaded data sources (raw data, not in Alpine store to avoid double-proxying)
+// Raw data, kept out of Alpine's store to avoid double-proxying (recursion)
 const dataSourceCache = new Map();
 const loadingPromises = new Map();
-
-// Store raw data separately from Alpine's reactive store
-// This prevents Alpine from proxying our data, which causes recursion when we proxy it
 const rawDataStore = new Map();
 
-// Track initialization state
 let isInitializing = false;
 let initializationComplete = false;
 
-// Render-ready: debounced timer used by checkAndDispatchRenderReady
 let _renderReadyTimer = null;
-const RENDER_READY_QUIET_MS = 150; // ms of quiet (no loading) before firing
+const RENDER_READY_QUIET_MS = 150; // quiet time before firing render-ready
 
-// Deep seal an object to prevent Alpine from making it reactive
-// This prevents double-proxying which causes recursion errors
+// Deep seal so Alpine won't proxy (double-proxying causes recursion)
 function deepSeal(obj) {
     if (obj === null || typeof obj !== 'object') {
         return obj;
@@ -284,12 +278,8 @@ function deepSeal(obj) {
             }
         }
     } else {
-        // Iterate own enumerable keys via Object.keys instead of for…in +
-        // .hasOwnProperty(). The latter throws "hasOwnProperty is not a
-        // function" on any object that either lacks the Object prototype
-        // (e.g. Object.create(null)) or has a column literally named
-        // `hasOwnProperty` shadowing the prototype method — both of which
-        // can happen with payloads from Appwrite / arbitrary backends.
+        // Object.keys, not for…in + .hasOwnProperty: backend payloads may lack
+        // the Object prototype or shadow hasOwnProperty with a column of that name.
         for (const key of Object.keys(obj)) {
             const value = obj[key];
             if (value !== null && typeof value === 'object') {
@@ -416,15 +406,8 @@ function createReactiveReferences(data, dataSourceName = null) {
     }
 
     if (typeof data === 'object') {
-        // Create new object with new references for each property.
-        // Iterate via Object.keys() (own enumerable, no prototype walk)
-        // rather than for…in + .hasOwnProperty(). The latter pattern
-        // throws "hasOwnProperty is not a function" on any payload that
-        // either has a column literally named `hasOwnProperty` shadowing
-        // the prototype, or lacks the Object prototype entirely
-        // (Object.create(null), some SDK response shapes). This is the
-        // hot path for every Appwrite mutation result and realtime event,
-        // so it must be defensive about arbitrary backend payloads.
+        // Object.keys, not for…in + .hasOwnProperty (see deepSeal). Hot path for
+        // every Appwrite mutation result and realtime event.
         const newObj = {};
         for (const key of Object.keys(data)) {
             const value = data[key];
@@ -841,9 +824,7 @@ function setupTeamChangeListener() {
     }
 }
 
-// Dispatch manifest:render-ready when all tracked data sources have settled.
-// Uses a debounce so rapid sequential source completions coalesce into one event.
-// The render script listens for this event instead of polling internal store state.
+// Dispatch manifest:render-ready once all sources settle (debounced to coalesce).
 function checkAndDispatchRenderReady() {
     if (_renderReadyTimer) {
         clearTimeout(_renderReadyTimer);
@@ -2828,23 +2809,9 @@ window.ManifestDataProxies.globalAccessCache = globalAccessCache;
 
 
 /* Manifest Data Sources - Circular Reference Handler */
-// Handles detection and resolution of circular references in proxy property access
-// This is critical for preventing infinite recursion when Alpine re-evaluates expressions
-
-/**
- * Handles circular reference detection and resolution
- * @param {Object} params - Handler parameters
- * @param {Set} params.activeProps - Set of currently active property accesses
- * @param {string} params.propKey - The property key being accessed
- * @param {Object} params.rawTarget - Raw target object (not Alpine-wrapped)
- * @param {Array} params.path - Path array to the current object
- * @param {string} params.key - The key being accessed
- * @param {string} params.fullPath - Full path string for logging
- * @param {number} params.currentDepth - Current call depth
- * @param {string} params.triggeredBy - What triggered this access ('Alpine', 'Proxy', etc.)
- * @param {boolean} params.shouldLog - Whether to log debug information
- * @returns {*} The resolved value or undefined to break the cycle
- */
+// Breaks infinite recursion when Alpine re-evaluates an expression that
+// re-reads a property still being accessed. Returns the cached plain copy if
+// available, else undefined to break the cycle.
 function handleCircularReference({
     activeProps,
     propKey,
@@ -2857,18 +2824,16 @@ function handleCircularReference({
     shouldLog
 }) {
     if (!activeProps || !activeProps.has(propKey)) {
-        return null; // Not a circular reference, continue normal flow
+        return null; // Not circular, continue normal flow
     }
 
     if (shouldLog) {
         console.warn(`[Proxy] ⚠️ CIRCULAR ${fullPath} | depth:${currentDepth} | triggered by:${triggeredBy} | This is likely Alpine re-evaluation`);
     }
 
-    // Property is already being accessed - this is likely Alpine re-evaluating the expression
-    // CRITICAL: For simple objects that are already being accessed, return the cached plain copy
-    // if it exists. This prevents infinite recursion by ensuring Alpine gets the same object instance.
+    // Prop already in flight (Alpine re-evaluating): hand back the cached plain
+    // copy so Alpine gets the same instance and doesn't recurse.
     try {
-        // First, try to get the value from rawTarget
         let current = rawTarget;
         let pathValid = true;
         const accessPath = path.length === 0 ? [key] : [...path, key];
@@ -2892,7 +2857,7 @@ function handleCircularReference({
                 return current;
             }
 
-            // If it's a simple object, check if we have a cached plain copy
+            // Simple object: return its cached plain copy if present
             if (!Array.isArray(current)) {
                 let isSimpleObject = true;
                 try {
@@ -2907,7 +2872,6 @@ function handleCircularReference({
                 }
 
                 if (isSimpleObject) {
-                    // Check for cached plain copy first - this is critical to prevent recursion
                     if (!window.ManifestDataProxiesCore.frozenPlainCopyCache) {
                         window.ManifestDataProxiesCore.frozenPlainCopyCache = new WeakMap();
                     }
@@ -2915,8 +2879,7 @@ function handleCircularReference({
                     const cachedCopy = plainCopyCache.get(current);
 
                     if (cachedCopy) {
-                        // Return cached copy immediately - don't create a new one
-                        // DON'T remove from activeProps here - let the normal flow handle it
+                        // Leave propKey in activeProps — normal flow clears it
                         return cachedCopy;
                     }
                 }
@@ -2948,14 +2911,10 @@ if (typeof window !== 'undefined') {
 
 
 /* Manifest Data Sources - Simple Object Handler */
-// Handles detection and creation of plain copies for simple objects
-// This prevents infinite recursion when Alpine wraps proxies and accesses nested properties
+// Plain copies of primitive-only objects break the proxy chain so Alpine
+// wrapping + nested access can't recurse infinitely.
 
-/**
- * Checks if an object is a "simple object" (contains only primitives, no nested objects/arrays)
- * @param {*} value - The value to check
- * @returns {boolean} True if the object is simple (only primitives)
- */
+// True if value is an object of only primitives (no nested objects/arrays)
 function isSimpleObject(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || value === null) {
         return false;
@@ -2973,19 +2932,8 @@ function isSimpleObject(value) {
     }
 }
 
-/**
- * Creates or retrieves a cached plain copy of a simple object
- * Plain copies are NOT frozen - Alpine needs to access properties on them
- * @param {Object} value - The simple object to copy
- * @param {Object} params - Handler parameters
- * @param {Set} params.activeProps - Set of currently active property accesses
- * @param {string} params.propKey - The property key being accessed
- * @param {Object} params.rawTarget - Raw target object
- * @param {string} params.fullPath - Full path string for logging
- * @param {Map} params.callDepthMap - Map tracking call depth
- * @param {boolean} params.shouldLog - Whether to log debug information
- * @returns {Object|null} The plain copy, or null if not a simple object or copy failed
- */
+// Get/create a cached plain copy of a simple object. Not frozen — Alpine
+// reads properties off it. Returns null if not simple or copy failed.
 function createOrGetPlainCopy(value, {
     activeProps,
     propKey,
@@ -3004,62 +2952,41 @@ function createOrGetPlainCopy(value, {
     }
     const plainCopyCache = window.ManifestDataProxiesCore.frozenPlainCopyCache;
 
-    // Check for cached copy first - this is critical to prevent recursion
+    // Cached copy = same instance, so Alpine won't re-evaluate (prevents recursion)
     let cachedCopy = plainCopyCache.get(value);
     if (cachedCopy) {
-        // Return cached plain copy - Alpine won't see it as "new"
-        // CRITICAL: Remove from activeProps since plain copy is plain object (won't trigger proxy getters)
         if (activeProps) {
             activeProps.delete(propKey);
         }
-        // Reset depth after returning plain copy
         if (callDepthMap && rawTarget) {
             callDepthMap.delete(rawTarget);
         }
         return cachedCopy;
     }
 
-    // Create new plain copy
-
     const plainCopy = {};
     try {
-        // CRITICAL: Copy property values directly (they're already primitives for simple objects)
-        // Don't freeze nested values - just copy them as-is
         for (const prop in value) {
             plainCopy[prop] = value[prop];
         }
 
-        // Don't freeze the object - Alpine needs to access properties on it
-        // Instead, return a plain object copy which Alpine won't wrap in reactivity
-        // because it's a new object instance each time (cached by WeakMap)
-
-        // Cache the plain copy for future accesses (same instance = Alpine won't re-evaluate)
         plainCopyCache.set(value, plainCopy);
 
-        // CRITICAL: Remove from activeProps since plain copy is plain object (won't trigger proxy getters)
-        // The plain copy breaks the proxy chain, so we don't need to track it in activeProps
-        // This prevents false circular reference detection when Alpine accesses properties on the plain copy
+        // Plain copy breaks the proxy chain, so drop it from activeProps to
+        // avoid false circular-reference detection on Alpine's follow-up reads.
         if (activeProps) {
             activeProps.delete(propKey);
         }
-        // Reset depth after returning plain copy
         if (callDepthMap && rawTarget) {
             callDepthMap.delete(rawTarget);
         }
         return plainCopy;
     } catch (e) {
-        // Return null to indicate failure - caller should fall through to proxy creation
         return null;
     }
 }
 
-/**
- * Handles simple object detection and plain copy creation for a value
- * This is the main entry point for simple object handling
- * @param {*} value - The value to check
- * @param {Object} params - Handler parameters
- * @returns {Object|null} The plain copy if simple object, null otherwise
- */
+// Entry point: plain copy if value is a simple object, else null
 function handleSimpleObject(value, params) {
     if (Array.isArray(value)) {
         return null; // Arrays are not simple objects
@@ -3084,15 +3011,8 @@ if (typeof window !== 'undefined') {
 
 
 /* Manifest Data Sources - Proxy Helper Functions */
-// Utility functions for proxy creation and data manipulation
 
-/**
- * Find an item in nested data structures by path key and segments
- * @param {*} data - The data to search (array or object)
- * @param {string} pathKey - The key that contains the path value
- * @param {Array} pathSegments - Array of path segments to match
- * @returns {*} The found item or null
- */
+// Find a nested item whose pathKey value matches one of pathSegments
 function findItemByPath(data, pathKey, pathSegments) {
     if (!pathSegments || pathSegments.length === 0) {
         return null;
@@ -3145,12 +3065,7 @@ function findItemByPath(data, pathKey, pathSegments) {
     return null;
 }
 
-/**
- * Find the group that contains a specific item
- * @param {*} data - The data to search
- * @param {*} targetItem - The item to find
- * @returns {*} The group containing the item or null
- */
+// Find the group (item with .group + .items array) that contains targetItem
 function findGroupContainingItem(data, targetItem) {
     if (Array.isArray(data)) {
         for (const item of data) {
@@ -3178,11 +3093,7 @@ function findGroupContainingItem(data, targetItem) {
     return null;
 }
 
-/**
- * Convert Alpine proxy to real array
- * @param {*} proxyData - The proxy data to convert
- * @returns {Array} The converted array or original value
- */
+// Convert an Alpine proxy (or array-like) to a real array
 function convertProxyToArray(proxyData) {
     if (Array.isArray(proxyData)) {
         return proxyData;
@@ -3240,8 +3151,7 @@ function clearArrayProxyCacheForDataSource(dataSourceName) {
 // Track which arrays have methods attached to avoid re-attaching
 const arraysWithMethodsAttached = new WeakSet();
 
-// Attach methods directly to an array (no proxy wrapper)
-// This allows Alpine to track the array directly for reactivity
+// Attach methods directly to the array (no proxy wrapper) so Alpine tracks it directly
 function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     // Skip if already has methods attached
     if (arraysWithMethodsAttached.has(array)) {
@@ -3263,8 +3173,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     // Mark as having methods attached
     arraysWithMethodsAttached.add(array);
 
-    // Attach state properties ($loading, $error, $ready) as getters
-    // These need to be accessible on the array for Alpine expressions like $x.assets.$ready
+    // State getters ($loading/$error/$ready) so $x.assets.$ready etc. resolve on the array
     Object.defineProperty(array, '$loading', {
         enumerable: false,
         configurable: true,
@@ -3323,8 +3232,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 });
             });
 
-            // Attach methods to the filtered result so chaining works (e.g., .$search().$query())
-            // This ensures the returned array has $query, $route, and other methods available
+            // Re-attach so chaining works (.$search().$query())
             attachArrayMethods(filtered, dataSourceName, reloadDataSource);
 
             return filtered;
@@ -3344,11 +3252,10 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 });
             }
             if (array && typeof array === 'object') {
-                // Get raw data to ensure we have the actual array (not Alpine proxy)
+                // Prefer raw data — the real array, not the Alpine proxy
                 const getRawData = window.ManifestDataStore?.getRawData;
                 let dataToUse = array;
 
-                // CRITICAL: Always try to get raw data first - this ensures we have the real array
                 if (dataSourceName && getRawData) {
                     const rawData = getRawData(dataSourceName);
                     if (rawData && (Array.isArray(rawData) || (rawData.length !== undefined && rawData.length >= 0))) {
@@ -3423,23 +3330,11 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         }
     }
 
-    // Attach client-side $query (overridden by Appwrite if source is Appwrite)
-    // Always attach even if dataSourceName empty (enables method chaining: .$search().$query())
-    //
-    // IMPORTANT: use the SYNCHRONOUS manifest accessor, not ensureManifest().
-    // ensureManifest() is `async function` — calling it without `await` returns
-    // a Promise, and `Promise.data` is undefined, so the Appwrite-detection
-    // block silently fell through and isAppwriteSource stayed `false` for
-    // EVERY source — including real Appwrite collections. That caused the
-    // client-side $query to be attached to Appwrite arrays. The client-side
-    // $query sorts/filters in-memory and returns the result (without mutating
-    // the source), while demo code calls $query as a fire-and-forget store
-    // mutation. Result: sort buttons silently no-op'd.
-    //
-    // window.__manifestLoaded and window.ManifestComponentsRegistry.manifest
-    // are populated synchronously by the loader after the manifest fetch
-    // resolves (see manifest.js loader: `window.__manifestLoaded = manifest`).
-    // By the time any data source is being attached, they're available.
+    // Client-side $query, overridden by Appwrite's for Appwrite sources.
+    // Must use the SYNCHRONOUS manifest accessor — ensureManifest() is async,
+    // so `.data` on its unawaited Promise is undefined and detection would
+    // silently fall through, wrongly attaching client-side $query to Appwrite
+    // arrays (in-memory sort discarded → sort buttons no-op).
     let isAppwriteSource = false;
     if (dataSourceName) {
         try {
@@ -3455,8 +3350,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         }
     }
 
-    // Only attach client-side $query for non-Appwrite sources
-    // Appwrite sources will get their $query from the Appwrite plugin (attached later)
+    // Appwrite sources get their $query from the Appwrite plugin instead
     if (!isAppwriteSource && !array.hasOwnProperty('$query')) {
         Object.defineProperty(array, '$query', {
             enumerable: false,
@@ -3560,8 +3454,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     }
                 }
 
-                // Attach methods to the filtered result so chaining works (e.g., .$query().$search())
-                // This ensures the returned array has $search, $route, and other methods available
+                // Re-attach so chaining works (.$query().$search())
                 attachArrayMethods(result, dataSourceName, reloadDataSource);
 
                 return result;
@@ -3571,12 +3464,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
     // Attach Appwrite methods ($create, $update, $delete, etc.)
     if (dataSourceName) {
-        // Check if this is an Appwrite source. Same sync-manifest fix as
-        // the block above — ensureManifest() is async and returned a Promise
-        // here too, so isAppwriteSource was always false and the Appwrite
-        // $query was never attached, leaving sort/query buttons to silently
-        // fall through to the client-side $query that returns a discarded
-        // sorted array.
+        // Sync manifest accessor again — see note above on the async pitfall.
         let isAppwriteSource = false;
         try {
             const manifest = window.__manifestLoaded
@@ -3593,7 +3481,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
         if (createAppwriteMethodsHandler) {
             const methodsHandler = createAppwriteMethodsHandler(dataSourceName, reloadDataSource);
-            // For Appwrite sources, include $query. For local sources, exclude it (base plugin handles it)
+            // $query only for Appwrite sources; local sources keep the base plugin's
             const appwriteMethods = isAppwriteSource
                 ? ['$create', '$update', '$delete', '$duplicate', '$query', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove']
                 : ['$create', '$update', '$delete', '$duplicate', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove'];
@@ -3704,11 +3592,8 @@ if (typeof window !== 'undefined') {
 }
 
 function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDataSource = null) {
-    // When dataSourceName is provided, use a Map with composite key (array + dataSourceName)
-    // When dataSourceName is null, use WeakMap (original behavior)
+    // With dataSourceName: Map keyed by (array id + name). Without: WeakMap by array.
     if (dataSourceName) {
-        // Create a composite key using array identity and dataSourceName
-        // Use a WeakMap to store a unique ID for each array, then use that ID + dataSourceName in Map
         if (!window._arrayProxyIdMap) {
             window._arrayProxyIdMap = new WeakMap();
             window._arrayProxyIdCounter = 0;
@@ -3731,14 +3616,11 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         }
     }
 
-    // Attach array methods directly to target BEFORE creating proxy (ensures Alpine compatibility)
+    // Attach array methods to the target before proxying (safety net if Alpine reads them directly)
     if (Array.isArray(arrayTarget) && !arraysWithMethodsAttached.has(arrayTarget)) {
-        // Attach all standard array methods directly to the array
-        // This is a safety net in case Alpine accesses methods directly on the array
         const attachedMethods = [];
         ARRAY_METHODS.forEach(methodName => {
             if (!(methodName in arrayTarget) || typeof arrayTarget[methodName] !== 'function') {
-                // Only attach if not already present (to avoid overwriting)
                 try {
                     Object.defineProperty(arrayTarget, methodName, {
                         enumerable: false,
@@ -3758,15 +3640,14 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
     } else {
     }
 
-    // Pre-create $files function if this is a table data source
-    // Always create it, even if manifest isn't loaded yet - the function will handle it internally
+    // Pre-create $files (function validates table-vs-bucket at call time)
     if (dataSourceName) {
         const createFilesMethod = window.ManifestDataProxiesMagic?.createFilesMethod;
         if (createFilesMethod && !arrayTarget._$filesFunction) {
             arrayTarget._$filesFunction = createFilesMethod(dataSourceName);
             Object.defineProperty(arrayTarget._$filesFunction, 'name', { value: '$files', configurable: true });
             Object.setPrototypeOf(arrayTarget._$filesFunction, Function.prototype);
-            // Also define it directly on the array target so it's accessible without going through proxy
+            // Also define on the target so it's reachable without the proxy
             Object.defineProperty(arrayTarget, '$files', {
                 enumerable: true,
                 configurable: true,
@@ -3776,9 +3657,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         }
     }
 
-    // Attach $route directly to the array target (like attachArrayMethods does)
-    // This ensures $route() works even if Alpine proxies the proxy
-    // Always attach it, even if createRouteProxy isn't available yet (it will be checked at call time)
+    // Attach $route to the target too, so it survives Alpine proxying the proxy
     if (!arrayTarget.hasOwnProperty('$route')) {
         Object.defineProperty(arrayTarget, '$route', {
             enumerable: false,
@@ -3792,11 +3671,10 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     });
                 }
                 if (arrayTarget && typeof arrayTarget === 'object') {
-                    // Get raw data to ensure we have the actual array (not Alpine proxy)
+                    // Prefer raw data — the real array, not the Alpine proxy
                     const getRawData = window.ManifestDataStore?.getRawData;
                     let dataToUse = arrayTarget;
 
-                    // CRITICAL: Always try to get raw data first - this ensures we have the real array
                     if (dataSourceName && getRawData) {
                         const rawData = getRawData(dataSourceName);
                         if (rawData && (Array.isArray(rawData) || (rawData.length !== undefined && rawData.length >= 0))) {
@@ -3804,7 +3682,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         }
                     }
 
-                    // If we still don't have raw data, try to convert the proxy to a real array
+                    // Otherwise coerce the array-like proxy into a real array
                     if (!Array.isArray(dataToUse) && dataToUse && typeof dataToUse === 'object' && 'length' in dataToUse) {
                         try {
                             dataToUse = Array.from(dataToUse);
@@ -3830,17 +3708,16 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         });
     }
 
-    // Create the base array proxy
+    // Base array proxy
     const baseProxy = Object.setPrototypeOf(
         new Proxy(arrayTarget, {
             get(target, key, receiver) {
 
-                // Handle special keys - but allow Symbol.iterator for array iteration
                 if (key === 'then' || key === 'catch' || key === 'finally') {
                     return undefined;
                 }
 
-                // Allow Symbol.iterator for proper array iteration (needed for Alpine's x-for)
+                // Symbol.iterator needed for Alpine's x-for
                 if (key === Symbol.iterator) {
                     const manifest = window.ManifestDataConfig?.getManifest?.();
                     const ds = manifest?.data?.[dataSourceName];
@@ -3848,7 +3725,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     if (isStorageBucket) {
                     }
                     const iterator = target[Symbol.iterator].bind(target);
-                    // Ensure iterator function has proper prototype for Alpine's instanceof checks
+                    // Restore Function.prototype for Alpine's instanceof checks
                     if (iterator && typeof iterator === 'function') {
                         Object.setPrototypeOf(iterator, Function.prototype);
                     }
@@ -3872,14 +3749,11 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return null;
                 }
 
-                // Handle $route function for route-specific lookups on arrays
-                // Also check if it's attached directly to the target (for nested arrays)
+                // $route — prefer one attached to the target (nested arrays)
                 if (key === '$route') {
-                    // First check if it's attached directly to the target
                     if (target.$route && typeof target.$route === 'function') {
                         return target.$route;
                     }
-                    // Otherwise, return the function from the proxy handler
                     const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
                     if (!createRouteProxy) {
                         // Return a function that returns a safe proxy (not a proxy directly)
@@ -4086,9 +3960,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return undefined;
                 }
 
-                // Handle Appwrite methods for arrays (when data source is an Appwrite table or bucket)
-                // These methods are called on the array itself (e.g., $x.assets.$create(file))
-                // Only available if Appwrite plugin is loaded
+                // Appwrite methods called on the array itself (e.g. $x.assets.$create(file))
                 if (dataSourceName && (key === '$create' || key === '$update' || key === '$delete' || key === '$duplicate' || key === '$query' ||
                     key === '$url' || key === '$download' || key === '$preview' || key === '$filesFor' || key === '$unlinkFrom' || key === '$removeFrom' || key === '$remove')) {
                     // Check if Appwrite methods handler is available
@@ -4310,9 +4182,8 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
         });
     }
 
-    // Cache the base proxy IMMEDIATELY after creation, before returning
-    // This ensures the cache is available if the proxy's get handler is called recursively
-    // SKIP CACHE for 'projects' to ensure Alpine gets fresh proxy reference for reactivity
+    // Cache before returning (get handler may recurse). Skip 'projects' so
+    // Alpine always gets a fresh proxy reference for reactivity.
     if (dataSourceName && dataSourceName !== 'projects') {
         // Use Map cache with composite key
         if (!window._arrayProxyIdMap) {
@@ -6734,37 +6605,18 @@ window.ManifestDataProxiesFiles.buildStoragePermissions = buildStoragePermission
 window.ManifestDataProxiesFiles.reactiveFileManagers = reactiveFileManagers; // Legacy - will be removed
 
 /* Manifest Data Sources - Route & Proxy Coordinator */
-// This file coordinates the proxy creation modules and re-exports their functions
-// The actual implementations are in:
-// - proxies/creation/manifest.data.proxies.helpers.js (helper functions)
-// - proxies/creation/manifest.data.proxies.array.js (array proxy creation)
-// - proxies/creation/manifest.data.proxies.object.js (object proxy creation)
-// - proxies/creation/manifest.data.proxies.route.js (route proxy creation)
-
-// Re-export functions from proxy creation modules for backward compatibility
-// These modules export to window.ManifestDataProxies, so we just ensure the namespace exists
+// Proxy creation lives in proxies/creation/*; those modules self-export to
+// window.ManifestDataProxies. This file only ensures the namespace exists.
 if (typeof window !== 'undefined') {
     if (!window.ManifestDataProxies) {
         window.ManifestDataProxies = {};
     }
-    
-    // Functions are already exported by the individual modules:
-    // - createArrayProxyWithRoute (from array.js)
-    // - createRouteProxy (from route.js)
-    // - createNestedObjectProxy (from object.js)
-    // - clearRouteProxyCacheForDataSource (from route.js)
-    // - clearArrayProxyCacheForDataSource (from array.js)
-    // - attachArrayMethods (from array.js)
-    
-    // This file serves as a coordinator and ensures all modules are loaded
-    // The build system includes these files in the correct order before this file
 }
 
 
 /* Manifest Data Sources - Appwrite Methods Handler */
-// Create Appwrite methods handler for tables and buckets
+// CRUD/storage methods handler for Appwrite tables and buckets
 function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
-    // Helper to set error state automatically
     const setErrorState = (error) => {
         const store = Alpine.store('data');
         if (store) {
@@ -6780,11 +6632,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             };
             Alpine.store('data', updatedStore);
         }
-        // For test purposes, also log to console
         console.error(`[Manifest Data] ${dataSourceName} operation failed:`, error);
     };
 
-    // Helper to clear error state
     const clearErrorState = () => {
         const store = Alpine.store('data');
         if (store) {
@@ -6804,13 +6654,11 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         }
     };
 
-    // Core method handler logic (extracted for recursive calls)
+    // Core handler (named so $duplicate etc. can recurse)
     const handleMethod = async function (method, ...args) {
-        // Clear error state before operation
         clearErrorState();
 
         try {
-            // Get manifest to check if this is an Appwrite data source
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
             if (!manifest?.data) {
                 throw new Error('[Manifest Data] Manifest not available');
@@ -6861,7 +6709,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                     }
 
-                    // Use unified mutation system with optimistic updates
+                    // Optimistic mutation path
                     const executeMutation = window.ManifestDataMutations?.executeMutation;
                     if (executeMutation) {
                         return await executeMutation({
@@ -7452,11 +7300,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         addEntryToStore(dataSourceName, result);
                     }
 
-                    // If entryId is provided, link the file to a table entry
-                    // Supports multiple API styles for flexibility:
-                    // 1. $x.assets.$create(file, null, null, { entryId: '...', table: 'projects' })
-                    // 2. $x.assets.$create(file, null, null, { entryId: '...', table: 'projects', fileIdsColumn: 'attachments' })
-                    // 3. $x.assets.$create(file, null, null, null, 'entryId') // Legacy: 4th arg as entryId
+                    // Link the uploaded file to a table entry, resolved from the
+                    // options object (4th arg), the legacy 5th-arg id, or belongsTo.
                     let entryId = null;
                     let tableName = null;
                     let fileIdsColumn = 'fileIds'; // Default column name
@@ -7507,11 +7352,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                     }
 
-                    // For storage buckets, we already have the real file from API response
-                    // No need for background reload - the optimistic update was already replaced with real file
-                    // Background reload would only be needed if we need to apply scope filtering,
-                    // but since we have the real file object, we can trust it's correct
-                    // If scope filtering is needed, it will be handled by realtime events
+                    // We already have the real file from the API response, so no
+                    // background reload; scope filtering (if any) is handled by realtime.
                     if (!addEntryToStore) {
                         // Fallback to old behavior
                         if (window.ManifestDataStore?.dataSourceCache) {
@@ -7584,9 +7426,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                 })
                             );
 
-                            // SINGLE SOURCE OF TRUTH: No reload needed - optimistic delete provides immediate feedback
-                            // and realtime events will sync everything automatically. Reloading causes race conditions
-                            // where stale data overwrites optimistic deletes, causing files to reappear.
+                            // No reload: optimistic delete + realtime sync. Reloading
+                            // races and can resurrect deleted files from stale data.
                             return results;
                         } else {
                             // Fallback to old behavior
@@ -7614,9 +7455,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                 }
                             });
 
-                            // SINGLE SOURCE OF TRUTH: No reload needed - optimistic delete provides immediate feedback
-                            // and realtime events will sync everything automatically. Reloading causes race conditions
-                            // where stale data overwrites optimistic deletes, causing files to reappear.
+                            // No reload: optimistic delete + realtime sync. Reloading
+                            // races and can resurrect deleted files from stale data.
                             return result;
                         } else {
                             // Fallback to old behavior
@@ -7651,40 +7491,15 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         throw new Error(`[Manifest Data] File "${actualFileId}" not found or not accessible: ${error.message}`);
                     }
 
-                    // Get view URL using Appwrite SDK (a URL STRING, not the
-                    // file content). Using 'view' rather than 'download' since
-                    // we're re-uploading rather than saving to disk.
+                    // 'view' URL (a string, not the bytes) since we re-upload rather than save to disk
                     const viewUrl = await window.ManifestDataAppwrite.getFileURL(bucketId, actualFileId);
 
-                    // Authenticate the fetch for permissioned buckets.
-                    //
-                    // Storage's /view, /download and /preview endpoints check
-                    // the USER SESSION — not API/dev keys (those work only on
-                    // JSON endpoints like /storage/buckets/.../files/.../).
-                    // In localhost dev the browser blocks the cross-domain
-                    // session cookie (SameSite=Lax on plain HTTP), so the
-                    // request lands at Appwrite as anonymous and a permissioned
-                    // file returns 404 storage_file_not_found.
-                    //
-                    // The Appwrite Web SDK works around this by writing the
-                    // session token to localStorage under `cookieFallback`
-                    // and replaying it as the `X-Fallback-Cookies` header on
-                    // every SDK request. That's why SDK calls (getFile metadata
-                    // above, listRows, $create, etc.) succeed cross-domain
-                    // while raw fetch() doesn't — raw fetch doesn't know to
-                    // read that localStorage key.
-                    //
-                    // We do exactly what the SDK does: read cookieFallback
-                    // and attach it as X-Fallback-Cookies. This is more
-                    // reliable than JWT:
-                    //   - no createJWT round-trip (and dev-key-configured
-                    //     clients 501 on createJWT)
-                    //   - no 15-min expiry or rate limit (10/hour/account)
-                    //   - matches whatever auth the SDK is already using
-                    //
-                    // Falls through to credentials-only when the user isn't
-                    // signed in (no cookieFallback in storage) — that path
-                    // still works in production with a SameSite=None cookie.
+                    // Storage /view checks the user SESSION, not API/dev keys. In
+                    // localhost dev the cross-domain session cookie is blocked
+                    // (SameSite=Lax on HTTP) so a raw fetch lands anonymous → 404.
+                    // Replicate the SDK's workaround: replay the `cookieFallback`
+                    // localStorage token as X-Fallback-Cookies. Falls through to
+                    // credentials-only when signed out (works in prod via SameSite=None).
                     const fetchHeaders = {};
                     if (appwriteConfig.projectId) {
                         fetchHeaders['X-Appwrite-Project'] = appwriteConfig.projectId;
@@ -8068,14 +7883,8 @@ window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler = createAppwrite
 
 
 /* Manifest Data Sources - Magic Method State Properties */
-// Handles $loading, $error, $ready state properties
+// $loading, $error, $ready state properties
 
-/**
- * Get state property value for a data source
- * @param {string} prop - Property name ($loading, $error, $ready)
- * @param {string} dataSourceName - Name of the data source
- * @returns {boolean|string|null} State value
- */
 function getStateProperty(prop, dataSourceName) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return prop === '$loading' ? false : (prop === '$error' ? null : false);
@@ -8100,10 +7909,7 @@ function getStateProperty(prop, dataSourceName) {
     return undefined;
 }
 
-/**
- * Create a state property handler for loading proxies
- * Returns a function that can be used in proxy get handlers
- */
+// State property handler for use in proxy get() traps
 function createStatePropertyHandler(dataSourceName) {
     return function (key) {
         if (key === '$loading' || key === '$error' || key === '$ready') {
@@ -8228,14 +8034,8 @@ window.ManifestDataProxiesMagic.createFilesMethod = createFilesMethod;
 
 
 /* Manifest Data Sources - Magic Method $upload Handler */
-// Handles $upload method for uploading files and linking to table entries
+// $upload: upload files and link them to a table entry
 
-/**
- * Create $upload method for a data source
- * @param {string} dataSourceName - Name of the data source (table)
- * @param {Function} reloadDataSource - Function to reload data source
- * @returns {Function} $upload method function
- */
 function createUploadMethod(dataSourceName, reloadDataSource) {
     return async function (entryId, fileOrEvent, bucketName) {
         const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -8350,10 +8150,7 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
 
             const results = await Promise.all(uploadPromises);
 
-            // NOTE: No need to manually update file managers - computed files arrays
-            // automatically update when bucket array changes (single source of truth)
-
-            // Return single file or array of files
+            // Computed files arrays update automatically when the bucket array changes.
             return files.length === 1 ? results[0] : results;
         } catch (error) {
             // Clear all uploading states on error
@@ -8376,14 +8173,8 @@ window.ManifestDataProxiesMagic.createUploadMethod = createUploadMethod;
 
 
 /* Manifest Data Sources - Magic Method Pagination Handlers */
-// Handles pagination methods ($first, $next, $prev, $page)
+// $first, $next, $prev, $page
 
-/**
- * Create pagination method handler
- * @param {string} methodName - Method name ($first, $next, $prev, $page)
- * @param {string} dataSourceName - Name of the data source
- * @returns {Function} Pagination method function
- */
 function createPaginationMethod(methodName, dataSourceName) {
     return async function (...args) {
         const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -8396,7 +8187,7 @@ function createPaginationMethod(methodName, dataSourceName) {
             throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
         }
 
-        // Get base queries (from manifest or scope)
+        // Base queries from manifest or scope
         const scope = window.ManifestDataConfig.getScope(dataSource);
         const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
         const baseQueries = queriesConfig
@@ -8437,10 +8228,9 @@ window.ManifestDataProxiesMagic.createPaginationMethod = createPaginationMethod;
 
 
 /* Manifest Data Sources - Magic Method Core Registration */
-// Main proxy creation and registration - delegates to helper modules
+// $x proxy creation/registration; delegates to helper modules.
 
-// Expose $x globally IMMEDIATELY (at module load time) so it's available before Alpine initializes
-// This ensures window.$x works in x-data methods and other contexts
+// Expose window.$x at module load (before Alpine) so it works in x-data methods
 if (typeof window !== 'undefined') {
     // Create a cached fallback proxy (reuse same instance for chaining)
     let cachedFallbackProxy = null;
@@ -8449,9 +8239,7 @@ if (typeof window !== 'undefined') {
     try {
         Object.defineProperty(window, '$x', {
             get: function () {
-                // Try multiple methods to get the proxy:
-
-                // 1. Try stored factory function (most reliable)
+                // 1. Stored factory (most reliable)
                 if (window._$xProxyFactory && typeof window._$xProxyFactory === 'function') {
                     try {
                         const proxy = window._$xProxyFactory();
@@ -8461,7 +8249,7 @@ if (typeof window !== 'undefined') {
                     }
                 }
 
-                // 2. Try Alpine magic method
+                // 2. Alpine magic method
                 try {
                     const magicFn = window.Alpine?.magic?.('x');
                     if (magicFn && typeof magicFn === 'function') {
@@ -8469,28 +8257,23 @@ if (typeof window !== 'undefined') {
                         if (proxy) return proxy;
                     }
                 } catch (e) {
-                    // Magic method not ready or failed - continue to fallback
+                    // Not ready — continue to fallback
                 }
 
-                // 3. Fallback: return a safe loading proxy that allows chaining
-                // This allows code to run without errors while Alpine initializes
-                // Use the same loading proxy pattern used elsewhere in the codebase
+                // 3. Loading proxy (lets code run while Alpine initializes)
                 const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                 if (createLoadingProxy) {
                     const loadingProxy = createLoadingProxy();
                     if (loadingProxy) return loadingProxy;
                 }
 
-                // Ultimate fallback: return a cached proxy that returns itself for chaining
-                // Cache it so chaining works (window.$x.projects.$upload returns the same proxy)
+                // 4. Cached self-chaining proxy (same instance keeps chaining safe)
                 if (!cachedFallbackProxy) {
                     cachedFallbackProxy = new Proxy({}, {
                         get(target, prop) {
-                            // Return the same proxy for chaining (allows window.$x.projects.$upload without errors)
                             return cachedFallbackProxy;
                         },
                         has(target, prop) {
-                            // Make all properties appear to exist to prevent Alpine errors
                             return true;
                         }
                     });
@@ -8506,12 +8289,7 @@ if (typeof window !== 'undefined') {
     }
 }
 
-/**
- * Create a loading proxy with methods for Appwrite data sources
- * @param {string} dataSourceName - Name of the data source
- * @param {Function} reloadDataSource - Function to reload data source
- * @returns {Proxy} Loading proxy with methods
- */
+// Loading proxy for Appwrite sources (CRUD + state/files/upload/pagination methods)
 function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
     const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
     const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
@@ -8534,7 +8312,6 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
 
     return new Proxy(createLoadingProxy(), {
         get(target, key) {
-            // Handle state properties
             if (stateHandler) {
                 const stateValue = stateHandler(key);
                 if (stateValue !== undefined) {
@@ -8542,22 +8319,19 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
                 }
             }
 
-            // Handle $files method for tables (reactive file arrays) - available even when loading
+            // $files / $upload available even while loading
             if (key === '$files' && filesMethod) {
                 return filesMethod;
             }
-
-            // Handle $upload method for tables - available even when loading
             if (key === '$upload' && uploadMethod) {
                 return uploadMethod;
             }
 
-            // Handle pagination methods
             if ((key === '$first' || key === '$next' || key === '$prev' || key === '$page') && createPaginationMethod) {
                 return createPaginationMethod(key, dataSourceName);
             }
 
-            // Handle Appwrite CRUD methods
+            // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||
                 key === '$url' || key === '$download' || key === '$preview' || key === '$filesFor' ||
                 key === '$unlinkFrom' || key === '$removeFrom' || key === '$remove') {
@@ -8566,17 +8340,12 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
                 }
             }
 
-            // Fall through to loading proxy
             return target[key];
         }
     });
 }
 
-/**
- * Create a loading proxy for non-Appwrite data sources
- * @param {string} dataSourceName - Name of the data source
- * @returns {Proxy} Loading proxy with basic methods
- */
+// Loading proxy for non-Appwrite sources (state + $files only)
 function createBasicLoadingProxy(dataSourceName) {
     const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
     const createStatePropertyHandler = window.ManifestDataProxiesMagic?.createStatePropertyHandler;
@@ -8591,7 +8360,6 @@ function createBasicLoadingProxy(dataSourceName) {
 
     return new Proxy(createLoadingProxy(), {
         get(target, key) {
-            // Handle state properties
             if (stateHandler) {
                 const stateValue = stateHandler(key);
                 if (stateValue !== undefined) {
@@ -8599,7 +8367,6 @@ function createBasicLoadingProxy(dataSourceName) {
                 }
             }
 
-            // Handle $files method for tables (reactive file arrays)
             if (key === '$files' && filesMethod) {
                 return filesMethod;
             }
@@ -8609,23 +8376,16 @@ function createBasicLoadingProxy(dataSourceName) {
     });
 }
 
-/**
- * Register the $x magic method with Alpine
- * @param {Function} loadDataSource - Function to load data sources
- */
+// Register the $x magic method with Alpine
 function registerXMagicMethod(loadDataSource) {
-    // Ensure Alpine is loaded before registering magic method
     if (typeof Alpine === 'undefined') {
         console.error('[Manifest Data] Alpine.js must be loaded before manifest.data.js');
         return;
     }
 
-    // Store the proxy-creating function so we can access it directly
     let $xProxyFactory = null;
 
-    // CRITICAL: Return the same proxy instance every time so the re-entrancy guard (magicGetDepth)
-    // works. If we created a new proxy per magic('x') call, each would have its own depth and we'd
-    // never see depth > 1 when Alpine re-enters during store reads.
+    // Same proxy instance every call so the magicGetDepth re-entrancy guard actually counts re-entries.
     let cachedMagicProxy = null;
 
     const magicFunction = (el) => {
@@ -8641,13 +8401,10 @@ function registerXMagicMethod(loadDataSource) {
         // Store loadDataSource in closure for Appwrite methods
         const reloadDataSource = loadDataSource;
 
-        // Track active property accesses to prevent circular references
-        // Use a symbol to store the active props set on each proxy call
         const ACTIVE_PROPS = Symbol('activeProps');
 
-        // Re-entrancy guard: deep recursion when reading the store can cause stack overflow.
-        // Use a high threshold so we only break true overflow; Alpine may re-enter once when
-        // we read Alpine.store('data'), and we must return real data for that to render.
+        // Re-entrancy guard against store-read recursion → stack overflow. High
+        // threshold so we only break true overflow (Alpine may re-enter once).
         let magicGetDepth = 0;
         const MAGIC_GET_MAX_DEPTH = 12;
 
@@ -8662,17 +8419,14 @@ function registerXMagicMethod(loadDataSource) {
                     return fallback !== undefined ? fallback : '';
                 }
                 try {
-                    // Handle special keys
                     if (prop === Symbol.iterator || prop === 'then' || prop === 'catch' || prop === 'finally') {
                         return undefined;
                     }
 
-                    // CRITICAL: Resolve from raw data and cache BEFORE reading Alpine.store('data').
-                    // Reading the store registers a reactive dependency and can trigger Alpine to re-run
-                    // the current effect (e.g. :aria-label="$x.content.theme.light"). If we haven't cached
-                    // yet, the re-run calls get(proxy, 'content') again and we read the store again → stack overflow.
-                    // By using getRawData (non-reactive) first and caching the nested proxy, the re-run hits
-                    // the cache and returns without touching the store.
+                    // Resolve+cache from raw data BEFORE reading Alpine.store('data'):
+                    // the store read registers a reactive dep that can re-run this
+                    // effect and re-enter get() → stack overflow. Caching first makes
+                    // the re-run hit the cache without touching the store.
                     const getRawDataEarly = window.ManifestDataStore?.getRawData;
                     const rawValueEarly = getRawDataEarly ? getRawDataEarly(prop) : null;
                     if (!window.ManifestDataProxiesCore.nestedDataSourceProxyCache) {
@@ -8691,7 +8445,7 @@ function registerXMagicMethod(loadDataSource) {
                             }
                         }
                         if (nestedCache.has(prop) && !hasData) nestedCache.delete(prop);
-                        // Build and cache from raw before any store read, for object data sources (e.g. content, manifest)
+                        // Object sources (content, manifest): build+cache from raw before any store read
                         if (hasData && rawValueEarly && typeof rawValueEarly === 'object' && !Array.isArray(rawValueEarly)) {
                             const createNestedObjectProxy = window.ManifestDataProxies?.createNestedObjectProxy;
                             if (createNestedObjectProxy) {
@@ -8709,10 +8463,9 @@ function registerXMagicMethod(loadDataSource) {
                         }
                     }
 
-                    // When we have no raw data yet: start load, subscribe so effect re-runs when data loads, then return loading proxy.
-                    // We must read a store primitive (_dataVersion) so Alpine tracks the dependency; otherwise when
-                    // updateStore runs the effect never re-runs and UI stays on loading proxy. We only read the version,
-                    // never return store data, so no re-entry/stack overflow.
+                    // No raw data yet: start load, subscribe (read _dataVersion so
+                    // Alpine tracks the dep and re-runs on updateStore), return loading
+                    // proxy. Reading only the version avoids re-entry/overflow.
                     if (!hasData) {
                         if (!pendingLoads.has(prop)) {
                             const locale = typeof document !== 'undefined' && document.documentElement
@@ -8736,10 +8489,9 @@ function registerXMagicMethod(loadDataSource) {
                     const currentStoreForCache = Alpine.store('data');
                     void (currentStoreForCache && currentStoreForCache._dataVersion);
 
-                    // Don't use activeProps circular check here: reading Alpine.store() can trigger Alpine to
-                    // re-run effects that evaluate $x.json again, so we get re-entrant get(proxy, 'json') while
-                    // the first call is still running. Treating that as "circular" returned a loading proxy and
-                    // broke rendering. Stack overflow is prevented by MAGIC_GET_MAX_DEPTH instead.
+                    // No activeProps circular check here: a legit store-read re-entry
+                    // would be misread as circular and return a loading proxy, breaking
+                    // rendering. MAGIC_GET_MAX_DEPTH guards overflow instead.
                     const propKey = String(prop);
                     const activeProps = target[ACTIVE_PROPS] || (target[ACTIVE_PROPS] = new Set());
 
@@ -8752,16 +8504,12 @@ function registerXMagicMethod(loadDataSource) {
                             return undefined;
                         }
 
-                        // Get raw data first (unproxied) to check if it's an array
                         const getRawData = window.ManifestDataStore?.getRawData;
                         const rawValue = getRawData ? getRawData(prop) : null;
 
-                        // Get value from Alpine store (may be proxied)
-                        // CRITICAL: We need to access currentStore[prop] for Alpine reactivity to work
-                        // But we'll use rawValue when creating nested proxies to avoid circular references
+                        // Read currentStore[prop] for reactivity, but build nested proxies from rawValue
                         let value = currentStore[prop];
 
-                        // If value exists in store, return it immediately with proper proxy
                         if (value !== undefined && value !== null || rawValue !== undefined && rawValue !== null) {
                             // Clear any cached loading proxy for this data source
                             const globalAccessCache = window.ManifestDataProxies?.globalAccessCache;
@@ -8834,33 +8582,23 @@ function registerXMagicMethod(loadDataSource) {
                                     }
 
                                     if (arrayToProxy && (Array.isArray(arrayToProxy) || rawIsArrayLike || valueIsArrayLike)) {
-                                        // CRITICAL CHANGE: Use attachArrayMethods instead of createArrayProxyWithRoute
-                                        // Alpine wraps our proxy and can't see methods defined on the proxy object
-                                        // By attaching methods directly to the array, Alpine can see them even when it wraps
+                                        // attachArrayMethods (not createArrayProxyWithRoute): methods live on
+                                        // the array itself so Alpine sees them even after wrapping our proxy.
                                         const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                         const arrayForMethods = valueIsArray ? value : (rawIsArray ? rawValue : arrayToProxy);
 
                                         if (attachArrayMethods) {
                                             const arrayWithMethods = attachArrayMethods(arrayForMethods, prop, loadDataSource);
-                                            // CRITICAL: Wrap in a proxy with has() trap so Alpine can see $search, $query, etc.
-                                            // Alpine uses has() to check if properties exist before accessing them
+                                            // has() trap so Alpine sees $search/$query/etc. before accessing
                                             return new Proxy(arrayWithMethods, {
                                                 get(target, key) {
-                                                    // CRITICAL: Explicitly handle base plugin methods first
                                                     if (key === '$search' || key === '$query' || key === '$route') {
                                                         if (key in target && typeof target[key] === 'function') {
                                                             return target[key].bind(target);
                                                         }
-                                                        // Appwrite sources intentionally skip the client-side
-                                                        // $query attachment (see attachArrayMethods comment:
-                                                        // "Appwrite sources will get their $query from the
-                                                        // Appwrite plugin"). Delegate to the Appwrite methods
-                                                        // handler so the click hits the backend instead of
-                                                        // silently falling through to `undefined` or, in some
-                                                        // proxy paths, a no-op `() => []`. Without this, demo
-                                                        // sort/query buttons appear to do nothing — no console
-                                                        // error, no network request — because the call resolves
-                                                        // to the chaining fallback's stub `queryFn`.
+                                                        // Appwrite sources skip client-side $query attachment;
+                                                        // delegate to the Appwrite handler so the call hits the
+                                                        // backend instead of the no-op chaining fallback.
                                                         if (key === '$query' || key === '$search') {
                                                             const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
                                                             if (createAppwriteMethodsHandler) {
@@ -8920,33 +8658,24 @@ function registerXMagicMethod(loadDataSource) {
                                 }
                             }
 
-                            // For non-arrays (objects), check if they contain nested arrays
+                            // Objects: cache the nested proxy per source so Alpine
+                            // re-evaluations get the same instance (a fresh proxy each
+                            // time looks "new" and re-triggers evaluation → infinite loop).
                             if (value && typeof value === 'object' && !Array.isArray(value) && value !== null) {
-                                // Use nested object proxy to handle arrays within objects
-                                // CRITICAL: Cache nested proxies at $x level to prevent infinite loops
-                                // When Alpine re-evaluates expressions, it accesses $x.example again
-                                // If we create a new proxy each time, Alpine sees it as a "new" object and re-evaluates again
                                 if (!window.ManifestDataProxiesCore.nestedDataSourceProxyCache) {
                                     window.ManifestDataProxiesCore.nestedDataSourceProxyCache = new Map();
                                 }
                                 const nestedCache = window.ManifestDataProxiesCore.nestedDataSourceProxyCache;
 
-                                // Check cache first - use data source name as key
-                                // CRITICAL: Always return cached proxy if it exists to prevent infinite loops
-                                // When Alpine re-evaluates expressions, it accesses $x.example again
-                                // If we return the same proxy instance, Alpine won't see it as "new" and won't re-evaluate
-                                // NOTE: This cache check is redundant now (we check earlier), but keeping for safety
+                                // Redundant with the earlier check, kept for safety
                                 if (nestedCache.has(prop)) {
                                     const cachedProxy = nestedCache.get(prop);
                                     if (cachedProxy) {
                                         activeProps.delete(propKey);
                                         return cachedProxy;
-                                    } else {
                                     }
-                                } else {
                                 }
 
-                                // Clear cache entry if it exists but is invalid (safety check)
                                 if (nestedCache.has(prop) && !nestedCache.get(prop)) {
                                     nestedCache.delete(prop);
                                 }
@@ -8954,10 +8683,8 @@ function registerXMagicMethod(loadDataSource) {
                                 const createNestedObjectProxy = window.ManifestDataProxies?.createNestedObjectProxy;
                                 if (createNestedObjectProxy) {
 
-                                    // CRITICAL: MUST use rawValue, never value (Alpine-wrapped)
-                                    // Using Alpine-wrapped value causes infinite recursion when Alpine wraps our proxy
-                                    // and accesses properties (e.g. :aria-label="$x.content.theme.light"), triggering
-                                    // reactivity that re-evaluates the expression and re-enters this get → stack overflow.
+                                    // MUST build from rawValue, never the Alpine-wrapped value —
+                                    // wrapping our proxy and reading it re-triggers reactivity → overflow.
                                     if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
                                         activeProps.delete(propKey);
                                         const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
@@ -8976,21 +8703,15 @@ function registerXMagicMethod(loadDataSource) {
                                         return rawValue;
                                     }
 
-                                    // Cache the nested proxy - this prevents creating new proxies on each access
                                     if (nestedProxy) {
                                         nestedCache.set(prop, nestedProxy);
                                     } else {
-                                        // If nested proxy creation failed, return raw value as fallback
                                         activeProps.delete(propKey);
                                         return rawValue;
                                     }
 
-                                    // CRITICAL: Remove from activeProps AFTER caching but BEFORE returning
-                                    // This ensures the proxy is cached before Alpine can trigger another access
+                                    // Clear activeProps after caching, before returning
                                     activeProps.delete(propKey);
-
-                                    // CRITICAL: Return the cached proxy immediately
-                                    // Don't do anything else that might trigger Alpine reactivity
                                     return nestedProxy;
                                 }
                             }
@@ -9084,19 +8805,16 @@ function registerXMagicMethod(loadDataSource) {
                             });
                             pendingLoads.set(prop, loadPromise);
 
-                            // For array data sources, return an empty array with methods attached
-                            // This allows .map(), .filter(), etc. to work even before data loads
-                            // CRITICAL: Use attachArrayMethods to attach methods directly to the array
-                            // This ensures Alpine can see them even when it wraps the array
+                            // Array sources: empty array with methods attached, so
+                            // .map()/.filter() work before data loads (and Alpine sees them).
                             if (isArrayDataSource) {
                                 const emptyArray = [];
                                 const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                 if (attachArrayMethods) {
                                     const arrayWithMethods = attachArrayMethods(emptyArray, prop, reloadDataSource);
-                                    // CRITICAL: Wrap in a proxy with has() trap so Alpine can see $search, $query, etc.
+                                    // has() trap so Alpine sees $search/$query/etc.
                                     return new Proxy(arrayWithMethods, {
                                         get(target, key) {
-                                            // CRITICAL: Explicitly handle base plugin methods first
                                             if (key === '$search' || key === '$query' || key === '$route') {
                                                 if (key in target && typeof target[key] === 'function') {
                                                     return target[key].bind(target);
@@ -9183,19 +8901,15 @@ function registerXMagicMethod(loadDataSource) {
                                 const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                 if (attachArrayMethods) {
                                     const arrayWithMethods = attachArrayMethods(value, prop, loadDataSource);
-                                    // CRITICAL: Wrap in a proxy with has() trap so Alpine can see $search, $query, etc.
+                                    // has() trap so Alpine sees $search/$query/etc.
                                     return new Proxy(arrayWithMethods, {
                                         get(target, key) {
-                                            // Handle base plugin methods with fallbacks
                                             if (key === '$search' || key === '$query') {
                                                 if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                     return target[key].bind(target);
                                                 }
-                                                // Appwrite-source delegation: $query is intentionally
-                                                // not attached to Appwrite arrays by attachArrayMethods
-                                                // (it requires a backend round-trip). Route to the
-                                                // Appwrite methods handler instead of the no-op fallback
-                                                // so sort/query/search buttons actually fire requests.
+                                                // Appwrite $query isn't attached (needs a backend round-trip);
+                                                // route to the Appwrite handler so buttons actually fire requests.
                                                 const createAppwriteMethodsHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
                                                 if (createAppwriteMethodsHandler) {
                                                     try {
@@ -9268,15 +8982,13 @@ function registerXMagicMethod(loadDataSource) {
                                 }
                                 return value;
 
-                                // Create data source proxy for arrays
+                                // NOTE: unreachable below (early return above); kept for reference.
                                 const dataSourceProxy = new Proxy(value, {
                                     get(target, key) {
-                                        // Handle special keys
                                         if (key === 'then' || key === 'catch' || key === 'finally') {
                                             return undefined;
                                         }
 
-                                        // Handle state properties
                                         const stateHandler = window.ManifestDataProxiesMagic?.createStatePropertyHandler;
                                         if (stateHandler) {
                                             const stateValue = stateHandler(prop)(key);
@@ -9632,9 +9344,8 @@ function registerXMagicMethod(loadDataSource) {
                         const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                         return createLoadingProxy ? createLoadingProxy(prop) : {};
                     } finally {
-                        // Always remove so the same prop can be read again (e.g. Alpine re-evaluating $x.products).
-                        // Without this, NO_STORE_DATA and other paths left prop in activeProps and the next
-                        // get(proxy, prop) was wrongly treated as CIRCULAR.
+                        // Always clear so the same prop can be read again (else Alpine's
+                        // next read of it is wrongly treated as circular).
                         activeProps.delete(propKey);
                     }
                 } finally {
@@ -9672,8 +9383,7 @@ function registerXMagicMethod(loadDataSource) {
     }
 }
 
-// Register $try magic method for cleaner async error handling
-// Usage: $try(() => $x.assets.$removeFrom(...), 'assetsError')
+// $try magic: async error handling — $try(() => $x.assets.$removeFrom(...), 'assetsError')
 if (typeof Alpine !== 'undefined' && typeof Alpine.magic === 'function') {
     if (!window.__manifestTryMagicRegistered) {
         window.__manifestTryMagicRegistered = true;
@@ -9695,15 +9405,12 @@ if (typeof Alpine !== 'undefined' && typeof Alpine.magic === 'function') {
                             scope[errorVar] = error.message || 'Operation failed';
                         }
                     }
-                    // Don't throw - return undefined on error so caller can handle gracefully
+                    // Return undefined on error so the caller can handle it gracefully
                     return undefined;
                 }
             };
         });
     }
-
-    // Note: window.$x getter is defined at module load time (top of file)
-    // so it's available immediately, even before registerXMagicMethod is called
 }
 
 // Clear nested proxy cache for a specific data source (called when store updates)
@@ -9712,7 +9419,7 @@ function clearNestedProxyCacheForDataSource(dataSourceName) {
     window.ManifestDataProxiesCore.nestedDataSourceProxyCache.delete(dataSourceName);
 }
 
-// Export function to window for use by other subscripts
+// Exports
 if (!window.ManifestDataProxies) {
     window.ManifestDataProxies = {};
 }
@@ -9720,10 +9427,9 @@ window.ManifestDataProxies.registerXMagicMethod = registerXMagicMethod;
 window.ManifestDataProxies.clearNestedProxyCacheForDataSource = clearNestedProxyCacheForDataSource;
 
 /* Manifest Data Sources - Directives */
-// Register x-files directive for automatic file management (files linked to table entries)
+// x-files / x-data-files: reactive file arrays for a table entry
 function registerFilesDirective() {
     if (typeof Alpine === 'undefined') {
-        // Wait for Alpine to be available
         const checkAlpine = setInterval(() => {
             if (typeof Alpine !== 'undefined') {
                 clearInterval(checkAlpine);
@@ -9734,12 +9440,10 @@ function registerFilesDirective() {
         return;
     }
 
-    // Helper to walk up DOM tree to find parent x-for template
+    // Walk up to the nearest parent x-for template
     function findParentXFor(el) {
         let current = el;
-        // Walk up the tree, checking each element
         while (current) {
-            // Check if current element is a template with x-for
             if (current.tagName === 'TEMPLATE' && current.hasAttribute('x-for')) {
                 return current;
             }
@@ -9752,17 +9456,15 @@ function registerFilesDirective() {
         return null;
     }
 
-    // Helper to extract loop item variable name from x-for expression
+    // "item in $x.source" -> "item"
     function extractLoopItemName(xForExpression) {
-        // x-for="item in $x.source" -> "item"
         const match = xForExpression.match(/^(\w+)\s+in\s+/);
         return match ? match[1] : null;
     }
 
     Alpine.directive('files', (el, { expression, modifiers }, { effect, evaluateLater, cleanup }) => {
 
-        // For string literals (data source names), we need to handle them specially
-        // If expression is a plain identifier (no quotes, no dots, no special chars), treat as string
+        // A bare identifier is a data-source name (string literal), not an expression
         const isPlainIdentifier = expression && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(expression.trim());
 
         const evaluate = isPlainIdentifier
@@ -9789,19 +9491,16 @@ function registerFilesDirective() {
         let isProcessing = false; // Guard to prevent infinite loops
         let waitingForDataSource = null; // Track which data source we're waiting for
 
-        // Initialize reactive state in Alpine scope IMMEDIATELY (before Alpine evaluates expressions)
-        // This must happen synchronously, not in an effect, so Alpine can find the variables
+        // Seed scope state synchronously (before Alpine evaluates expressions),
+        // not in an effect, so the variables exist on first evaluation.
         let scope;
         try {
             scope = Alpine.$data(el);
         } catch (e) {
-            // Scope might not be ready yet, will initialize in effect
-            scope = null;
+            scope = null; // not ready — seed in the effect instead
         }
 
         if (scope) {
-            // Always initialize - don't check for undefined, just set them
-            // This ensures they exist when Alpine first evaluates expressions
             if (!('files' in scope)) {
                 scope.files = [];
             }
@@ -10201,12 +9900,8 @@ function registerFilesDirective() {
         });
     });
 
-    // Register x-project-files directive - simplified, turnkey solution for project files
-    // Usage: <div x-project-files="project"> - automatically provides files, loadingFiles, filesError
-    // Register x-entry-files directive - generic directive for displaying files linked to any table entry
-    // Usage: <div x-entry-files="entry"> - automatically provides files, loadingFiles, filesError
-    // Renamed from x-project-files to be more generic (works with any table entry, not just projects)
-    // WeakMap to store namespace per element - ensures complete isolation
+    // x-data-files="entry": provides files/loadingFiles/filesError for a table entry.
+    // Per-element namespace via WeakMap for full isolation.
     const dataFilesNamespaces = new WeakMap();
 
     Alpine.directive('data-files', (el, { expression }, { effect, evaluateLater, cleanup }) => {
@@ -10226,10 +9921,9 @@ function registerFilesDirective() {
 
         const directiveInstanceId = `directive-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-        // Isolated reactive scope for this directive instance. Alpine never
-        // re-reads x-data attributes on initialized elements, so editing the
-        // attribute would resolve $data(el) to the ANCESTOR scope and pollute
-        // it — addScopeToNode attaches a fresh scope layer to this node.
+        // Isolated reactive scope layer for this instance. Editing x-data won't
+        // work (Alpine never re-reads it on initialized nodes) and would pollute
+        // the ancestor scope — addScopeToNode attaches a fresh layer instead.
         const isolatedData = Alpine.reactive({
             files: [],
             loadingFiles: false,
@@ -10238,8 +9932,7 @@ function registerFilesDirective() {
         const removeIsolatedScope = Alpine.addScopeToNode(el, isolatedData);
         cleanupCallbacks.push(removeIsolatedScope);
 
-        // Merged scope view: writes to files/loadingFiles/filesError land on
-        // isolatedData (top of stack), magics like $watch resolve from ancestors
+        // Merged view: files/* writes hit isolatedData (top of stack); $watch etc. resolve from ancestors
         const scope = Alpine.$data(el);
 
         // Store reference in WeakMap for access in closures
@@ -10395,17 +10088,13 @@ function registerFilesDirective() {
                     // CRITICAL DEBUG: Verify we're using the correct projectId before calling getFilesForEntry
                     const loadedFiles = await getFilesForEntry('projects', currentProjectId, bucketId, 'fileIds') || [];
 
-                    // CRITICAL: Always create a NEW array for scope.files to avoid sharing between directive instances
-                    // Don't mutate the existing array - create a completely new one
+                    // Fresh array so instances don't share references
                     const newFilesArray = [...loadedFiles];
 
-                    // Update local reference
                     files = newFilesArray;
 
-                    // Update both namespace and scope directly (they reference the same arrays/values)
                     const ns = getNamespace();
                     if (ns) {
-                        // DIAGNOSTIC: Mark each file with the project ID for tracking
                         const markedFiles = newFilesArray.map(file => ({
                             ...file,
                             _debugProjectId: currentProjectId,
@@ -10433,13 +10122,11 @@ function registerFilesDirective() {
                     }
 
 
-                    // Update lastFileIds to match what we actually loaded (from Appwrite)
-                    // This is more reliable than reading from the store, which might be stale
+                    // Track what we actually loaded (Appwrite is truth, store may be stale)
                     const loadedFileIdsArray = loadedFiles.map(f => f.$id) || [];
                     lastFileIds = JSON.stringify(loadedFileIdsArray);
 
-                    // CRITICAL: Sync store AND Appwrite database's fileIds with what actually exists
-                    // If the store/database has stale fileIds (file IDs that don't exist), clean them up
+                    // Reconcile stale fileIds in both the store and the Appwrite row
                     const store = Alpine.store('data');
                     const projects = store?.projects;
                     if (Array.isArray(projects)) {
@@ -10478,8 +10165,8 @@ function registerFilesDirective() {
                                     }
                                 }
 
-                                // CRITICAL: Only update Appwrite database if it's actually stale
-                                // This prevents unnecessary realtime events that might overwrite our store update
+                                // Only write the DB if actually stale — avoids a
+                                // realtime event that could overwrite our store update
                                 if (databaseIsStale) {
                                     try {
                                         const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -10549,10 +10236,7 @@ function registerFilesDirective() {
         let fileIdsWatchUnwatch = null;
 
         effect(() => {
-            // Evaluate project expression - this will re-run when project changes
             evaluateEntry((value) => {
-                // Always get the latest project reference from the store by ID
-                // This prevents using stale references when the projects array updates
                 const currentProjectId = value?.$id;
 
                 if (!currentProjectId) {
@@ -10602,13 +10286,11 @@ function registerFilesDirective() {
                     loadProjectFiles();
                 }
 
-                // Watch for fileIds changes by watching the store directly
-                // This ensures we always get the latest project reference from the store
-                // Only create watch if we don't already have one for this project ID AND haven't created one yet
+                // Watch this project's fileIds via the store (one watch per project id)
                 if (currentProjectId && scope && typeof scope.$watch === 'function' && !fileIdsWatchUnwatch && !watchCreated) {
-                    watchCreated = true; // Mark watch as created to prevent duplicates
-                    const projectId = currentProjectId; // Capture project ID for closure
-                    let isProcessing = false; // Guard against multiple simultaneous updates
+                    watchCreated = true;
+                    const projectId = currentProjectId; // capture for closure
+                    let isProcessing = false;
 
                     // Initialize lastFileIds with current value from the store to prevent false positives
                     const store = Alpine.store('data');
@@ -10620,23 +10302,17 @@ function registerFilesDirective() {
                         }
                     }
 
-                    // Use function-based watch that accesses the store - Alpine will track this
-                    // This is more reliable than string expressions for nested store access
-                    // IMPORTANT: Only access the specific project's fileIds to minimize reactivity
+                    // Function watch (more reliable than a string expr for nested store access);
+                    // reads only this project's fileIds to keep reactivity narrow.
                     fileIdsWatchUnwatch = scope.$watch(
                         () => {
-                            // Access the store - Alpine tracks this
                             const store = Alpine.store('data');
                             const projects = store?.projects;
                             if (!Array.isArray(projects)) return null;
 
-                            // Find the current project by ID - always gets latest reference
                             const currentProject = projects.find(p => p.$id === projectId);
                             if (!currentProject) return null;
 
-                            // Return the fileIds array as JSON string for comparison
-                            // Accessing fileIds here makes Alpine track changes to this property
-                            // This should only trigger when THIS project's fileIds changes
                             return JSON.stringify(currentProject.fileIds || []);
                         },
                         (currentFileIdsJson) => {
@@ -10703,16 +10379,13 @@ function registerFilesDirective() {
         };
 
         const handleFileCreated = (e) => {
-            // Check if the file is linked to this project
             const fileId = e.detail?.fileId;
             const entryId = e.detail?.entryId;
             const tableName = e.detail?.tableName;
 
-            // CRITICAL: Use entryId from event to identify target project
-            // This is more reliable than checking the store, which might be stale
+            // Match on the event's entryId (store may be stale)
             const matchesProject = entryId === projectId && tableName === 'projects';
 
-            // Use entryId from event instead of checking store (which is stale)
             if (fileId && matchesProject && !eventProcessing) {
                 eventProcessing = true;
                 // Reload files for this project - getFilesForEntry will get the latest from Appwrite
@@ -10764,8 +10437,7 @@ function registerFilesDirective() {
     });
 }
 
-// Directive removed - using project.$files property instead
-// Auto-register directive when Alpine is ready
+// Auto-registration handled elsewhere; kept for reference.
 // if (typeof document !== 'undefined') {
 //     if (typeof Alpine !== 'undefined') {
 //         registerFilesDirective();
@@ -10778,9 +10450,8 @@ function registerFilesDirective() {
 
 /* Manifest Data Sources - Main Initialization */
 
-// Filter storage files by scope (client-side filtering)
-// Appwrite returns all files user has access to, but we need to filter by current team
-// to match database team scope behavior
+// Client-side scope filter: Appwrite returns all accessible files, so narrow to
+// the current team to match database team-scope behavior.
 async function filterFilesByScope(files, scope) {
     if (!files || !Array.isArray(files) || files.length === 0) {
         return files;
@@ -11035,26 +10706,20 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
     }
 }
 
-// Track recently processed events to prevent duplicate processing
-// Use a combination of event type, ID, and timestamp to create a unique key per client
+// Realtime event dedup: key by type+id+sequence(+timestamp)
 const processedEvents = new Map(); // Map<eventKey, timestamp>
-const EVENT_DEDUP_WINDOW = 2000; // 2 seconds (reduced from 5 to catch rapid duplicates but allow legitimate updates)
+const EVENT_DEDUP_WINDOW = 2000; // ms
 
-// Generate a unique key for an event
-// For updates, we need to be more careful - use timestamp to allow same sequence from different sources
 function getEventKey(eventType, payload) {
     const id = payload?.$id || payload?.row?.$id || payload?.rowId || payload?.id || payload;
     const sequence = payload?.$sequence || payload?.sequence;
     const timestamp = payload?.$updatedAt || payload?.$createdAt || payload?.timestamp;
 
-    // For updates, include timestamp to allow processing updates with same sequence but different times
-    // This handles the case where multiple clients receive the same sequence number
+    // Updates add timestamp so the same sequence from different clients isn't dropped
     if (eventType === 'update' && timestamp) {
-        // Use a combination that allows same sequence from different times
         return `${eventType}:${id}:${sequence}:${timestamp}`;
     }
 
-    // For create/delete, sequence is usually unique enough
     return `${eventType}:${id}:${sequence || Date.now()}`;
 }
 
@@ -11155,8 +10820,8 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 // Check if row still matches scope after update
                 const rowMatchesScope = await checkRowMatchesScope(row, scope);
                 if (rowMatchesScope) {
-                    // For most data sources (roles, etc.), always update on realtime events
-                    // Special handling only for projects with fileIds to protect optimistic updates
+                    // Most sources update unconditionally; projects-with-fileIds get
+                    // special handling to protect optimistic uploads (see below).
                     const existingFileIds = existingRow?.fileIds || [];
                     const incomingFileIds = row?.fileIds || [];
                     const hasFileIds = existingFileIds.length > 0 || incomingFileIds.length > 0;
@@ -11164,41 +10829,30 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
 
                     let shouldUpdate = true;
 
-                    // Special handling only for projects with fileIds
                     if (isProjectWithFiles) {
                         const existingUpdatedAt = existingRow?.$updatedAt || existingRow?.$sequence;
                         const newUpdatedAt = row?.$updatedAt || row?.$sequence;
                         const shouldUpdateByTimestamp = !newUpdatedAt || !existingUpdatedAt || newUpdatedAt !== existingUpdatedAt;
 
                         if (!shouldUpdateByTimestamp) {
-                            // Timestamps match and both exist - skip update
-                            shouldUpdate = false;
+                            shouldUpdate = false; // identical timestamps → no-op
                         } else {
                             const existingFileIdsSet = new Set(existingFileIds);
                             const incomingFileIdsSet = new Set(incomingFileIds);
 
-                            // Check if incoming is a superset (has all existing files + more)
                             const isSuperset = incomingFileIds.every(id => existingFileIdsSet.has(id)) &&
                                 incomingFileIds.length > existingFileIds.length;
 
-                            // Check if incoming is missing files that exist in current (stale data)
                             const isMissingFiles = existingFileIds.some(id => !incomingFileIdsSet.has(id));
 
-                            // Only update if:
-                            // 1. Incoming is a superset (has all existing + more), OR
-                            // 2. Incoming is equal (same files), OR
-                            // 3. Timestamp comparison suggests it's definitely newer (more than 1 second difference)
                             const timestampDiff = newUpdatedAt > existingUpdatedAt ?
                                 (new Date(newUpdatedAt) - new Date(existingUpdatedAt)) :
                                 (new Date(existingUpdatedAt) - new Date(newUpdatedAt));
-                            const isDefinitelyNewer = timestampDiff > 1000; // More than 1 second difference
+                            const isDefinitelyNewer = timestampDiff > 1000; // ms
 
-                            // CRITICAL: If existing has more fileIds than incoming, and timestamps are close,
-                            // this is likely a stale realtime event overwriting an optimistic update
-                            // Protect optimistic updates by requiring incoming to be a superset or definitely newer
+                            // Incoming missing files + not clearly newer = stale event
+                            // racing an optimistic update; ignore it to protect the upload.
                             if (isMissingFiles && !isDefinitelyNewer) {
-                                // Incoming data is missing files and timestamp isn't definitely newer - likely stale
-                                // This protects optimistic updates from being overwritten by stale realtime events
                                 console.warn('[Realtime] Ignoring stale realtime update (protecting optimistic update):', {
                                     projectId: row.$id,
                                     existingFileIds: existingFileIds,
@@ -11447,13 +11101,9 @@ async function loadDataSource(dataSourceName, locale = 'en') {
     const cacheKey = `${dataSourceName}:${locale}`;
     const { dataSourceCache, loadingPromises, isInitializing, updateStore } = window.ManifestDataStore;
 
-    // Check memory cache first. The store write is guarded against stale
-    // locales: a caller that resolved its locale before a switch (or an effect
-    // re-running mid-switch) can request `name:en` after the locale-change
-    // reload already wrote `name:fr` — serving the cached data is fine, but
-    // writing it to the live store would clobber the current locale. Localized
-    // data carries a `_locale` stamp; unstamped (non-localized) data writes
-    // unconditionally.
+    // Memory cache. Serving cached data is fine, but writing an old locale to the
+    // live store would clobber a concurrent locale switch — so guard the store
+    // write via the `_locale` stamp (unstamped/non-localized data writes freely).
     if (dataSourceCache.has(cacheKey)) {
         const cachedData = dataSourceCache.get(cacheKey);
         const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
@@ -11724,16 +11374,13 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 enhancedData = [];
             }
 
-            // Update cache (store unsealed version for our use).
-            // Always safe — the cache key carries the locale this load was for.
+            // Cache is always safe — the key carries this load's locale.
             dataSourceCache.set(cacheKey, enhancedData);
 
-            // Stale-locale guard: if the app's locale changed while this load was
-            // in flight, a LOCALIZED source's result is stale — the locale-change
-            // listener has already reloaded (or is reloading) the right locale,
-            // and writing this one would clobber it. Non-localized sources are
-            // locale-independent and must still write (the listener never reloads
-            // them, so skipping would orphan an initial load).
+            // Stale-locale guard: if the locale changed mid-load, a localized
+            // source's result is stale (the locale listener already reloaded the
+            // right one). Non-localized sources still write — the listener never
+            // reloads them, so skipping would orphan the initial load.
             const localeSensitive = !!(dataSource && typeof dataSource === 'object'
                 && (dataSource.locales || dataSource[locale]));
             const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
@@ -11783,8 +11430,7 @@ async function loadDataSource(dataSourceName, locale = 'en') {
 function setupUrlChangeListeners() {
     let currentUrl = window.location.pathname;
 
-    // Create a reactive object for route tracking that Alpine can track
-    // This is separate from the store to ensure Alpine tracks it properly
+    // Separate reactive object for route tracking (Alpine tracks it reliably)
     const routeTracker = Alpine.reactive ? Alpine.reactive({
         currentUrl: window.location.pathname
     }) : { currentUrl: window.location.pathname };
@@ -11800,22 +11446,16 @@ function setupUrlChangeListeners() {
             currentUrl = newUrl;
             const store = Alpine.store('data');
             if (store && store._initialized) {
-                // Update the store property - Alpine stores are reactive by default
-                // CRITICAL: Use Object.assign or spread to ensure Alpine tracks the change
-                // Direct property assignment might not trigger reactivity in all cases
+                // Use Object.assign so Alpine reliably tracks the change
                 Object.assign(store, { _currentUrl: newUrl });
 
-                // CRITICAL: Also update the reactive route tracker
-                // This ensures Alpine tracks the change even if store access isn't tracked in Proxy get traps
+                // Also update the reactive tracker (covers untracked store get traps)
                 if (routeTracker) {
                     routeTracker.currentUrl = newUrl;
                 }
 
-                // Force Alpine to recognize the change by accessing the property
-                // This ensures Alpine's reactivity system tracks the update
-                const _ = store._currentUrl;
-                // Dispatch a custom event to ensure any components listening for URL changes can react
-                // This helps with reactivity in cases where Alpine's automatic tracking might miss the update
+                const _ = store._currentUrl; // touch to force tracking
+                // Event fallback for cases Alpine's auto-tracking might miss
                 try {
                     window.dispatchEvent(new CustomEvent('manifest:data-url-change', {
                         detail: { url: newUrl }
@@ -11836,7 +11476,7 @@ function setupUrlChangeListeners() {
     window.addEventListener('manifest:route-change', (event) => {
         const newUrl = event.detail?.to ?? window.ManifestRoutingNavigation?.getCurrentRoute?.() ?? window.location.pathname;
         updateCurrentUrl(newUrl);
-        // Flush route proxies after other listeners have queued their updates, so $x.*.$route('path') content updates without refresh
+        // Flush route proxies after other listeners queue updates, so $x.*.$route() refreshes in place
         setTimeout(() => {
             if (window.ManifestDataRouteProxyUpdateQueue?.flushSync) {
                 window.ManifestDataRouteProxyUpdateQueue.flushSync();
@@ -11952,24 +11592,11 @@ async function initializeDataSourcesPlugin() {
             _currentUrl: existingStore._currentUrl || window.location.pathname
         });
 
-        // Pre-load all local file-backed data sources so $x.* accessors see
-        // real data on the very first render pass.
-        //
-        // Each source is at most ONE fetch regardless of type:
-        //   - Simple string paths (e.g. "/data/clients.yaml") → one file.
-        //   - Localized objects (e.g. { "en": "...", "fr": "..." }) → only the
-        //     current locale file is fetched (+ default locale for fallback
-        //     merging if different), NOT all 35 variants.
-        //   - Single CSV with embedded locales → one file.
-        //
-        // Skipped (remain on-demand):
-        //   - Appwrite collections / buckets — require auth/session context.
-        //   - API-URL sources — may have side-effects or auth requirements.
-        //   - The special "manifest" key — handled separately below.
-        //
-        // Without pre-loading, sources like $x.clients load asynchronously on
-        // first access, causing a visible flash in the SPA and missing data in
-        // prerender snapshots.
+        // Pre-load local file-backed sources so $x.* has real data on the first
+        // render pass (avoids SPA flash + missing prerender data). At most one
+        // fetch each (localized objects load only the current + default locale).
+        // Skipped/on-demand: Appwrite (needs auth), API-URL (side-effects), and
+        // the special "manifest" key (handled separately below).
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             const locale = (typeof document !== 'undefined' && document.documentElement?.lang) || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';

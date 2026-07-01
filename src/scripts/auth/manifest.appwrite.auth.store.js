@@ -14,12 +14,8 @@ function initializeAuthStore() {
     // Cross-tab synchronization using localStorage events
     const STORAGE_KEY = 'manifest:auth:state';
 
-    // Whitelist of Appwrite Session fields safe to mirror across tabs.
-    // CRITICALLY excludes `secret` (the bearer credential), `providerAccessToken`,
-    // `providerRefreshToken`, and `providerAccessTokenExpiry`. The cookie set
-    // on the Appwrite domain is the actual auth of record; this localStorage
-    // copy only supports UI cross-tab sync ("someone just logged in here").
-    // An XSS on this origin must not be able to lift session secrets out.
+    // Session fields safe to mirror across tabs. Excludes `secret` and provider
+    // tokens — this copy is only for UI cross-tab sync, not the auth of record.
     const SAFE_SESSION_FIELDS = [
         '$id', 'userId', 'provider', 'expire', 'current',
         'clientName', 'osName', 'osCode', 'deviceName',
@@ -219,8 +215,7 @@ function initializeAuthStore() {
 
         // Get personal team (convenience getter - returns first default team)
         get personalTeam() {
-            // This is async, so we can't use a getter directly
-            // Return null and let users call getPersonalTeam() or getDefaultTeams() directly
+            // Lookup is async; use getPersonalTeam()/getDefaultTeams() instead
             return null;
         },
 
@@ -240,19 +235,16 @@ function initializeAuthStore() {
             }
         },
 
-        // Get OAuth provider name (google, github, etc.) or null for non-OAuth methods
-        // Uses stored provider from loginOAuth() call, or falls back to session.provider
-        // For existing sessions without stored provider, triggers async fetch from Appwrite identities
+        // OAuth provider name (google, github, …), or null for non-OAuth methods.
+        // Reads stored provider, else falls back to session.provider / identities fetch.
         getProvider() {
             if (!this.session) {
                 return null;
             }
             const sessionProvider = this.session.provider;
 
-            // For OAuth, return the stored provider name (google, github, etc.)
-            // session.provider returns "oauth2" generically, so we use _oauthProvider.
-            // Only OAuth sessions have a provider name — magic/otp/phone/anonymous don't,
-            // so gate on getMethod() to avoid a pointless identities lookup for those.
+            // session.provider is generically "oauth2", so use _oauthProvider. Gate on
+            // getMethod() so non-OAuth sessions skip the pointless identities lookup.
             if (this.getMethod() === 'oauth') {
                 // Try to get from store first, then localStorage, then sessionStorage
                 let provider = this._oauthProvider;
@@ -358,8 +350,7 @@ function initializeAuthStore() {
                         this.isAuthenticated = true;
                         this.isAnonymous = currentSession.provider === 'anonymous';
 
-                        // Restore OAuth provider from localStorage if available (persists across redirects)
-                        // This ensures provider name persists across page refreshes
+                        // Restore OAuth provider from storage (persists across redirects/refresh)
                         if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
                             try {
                                 // Try localStorage first (persists across redirects), fallback to sessionStorage
@@ -392,10 +383,8 @@ function initializeAuthStore() {
                         this.isAnonymous = false;
                     }
 
-                    // NOTE: team loading is intentionally NOT awaited here — it runs in
-                    // the background after manifest:auth:initialized fires (see below),
-                    // so a session gate (app splash) isn't held up by team listing +
-                    // member hydration.
+                    // Team loading is deferred (not awaited) — runs in the background after
+                    // manifest:auth:initialized so a session gate isn't held up by it.
                 } catch (error) {
                     // No existing session - this is expected
                     this.isAuthenticated = false;
@@ -407,11 +396,8 @@ function initializeAuthStore() {
                 // Sync state to localStorage
                 syncStateToStorage(this);
             } catch (error) {
-                // init() is a passive lifecycle step (session restore / setup), not a
-                // user action. Resolve to a clean signed-out state and log — do NOT park
-                // the raw message in $auth.error, which is reserved for sign-in/action
-                // failures the user can act on (a sign-in card binding $auth.error must
-                // never show benign "no session" / "blocked account" scope errors).
+                // Passive lifecycle step: resolve to signed-out and log. Don't set
+                // $auth.error — that's reserved for user-actionable sign-in failures.
                 console.warn('[Manifest Appwrite Auth] Session restore failed (treating as signed out):', error?.message || error);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
@@ -420,9 +406,8 @@ function initializeAuthStore() {
                 this._initialized = true;
                 this._initializing = false;
 
-                // Dispatch initialized event - let callback handlers process after.
-                // Fires as soon as identity is known (one round-trip), NOT after teams
-                // load — so a session gate / splash clears in a few hundred ms.
+                // Fire as soon as identity is known, before teams load, so a session
+                // gate / splash clears in a few hundred ms.
                 window.dispatchEvent(new CustomEvent('manifest:auth:initialized', {
                     detail: {
                         isAuthenticated: this.isAuthenticated,
@@ -431,9 +416,8 @@ function initializeAuthStore() {
                 }));
             }
 
-            // Background, non-blocking: load + seed teams AFTER initialized fired.
-            // $auth.teams / currentTeam populate reactively when ready; a
-            // manifest:auth:teams-loaded event fires for anything that needs the full set.
+            // Background load + seed teams after init. Populates reactively; fires
+            // manifest:auth:teams-loaded for anything needing the full set.
             if (appwriteConfig && this.isAuthenticated && appwriteConfig.teams
                 && (!this.isAnonymous || appwriteConfig.guestTeams)) {
                 this._loadTeamsAndSeed(appwriteConfig)
@@ -444,11 +428,8 @@ function initializeAuthStore() {
             }
         },
 
-        // Clear all team-related state. Used when the active identity changes to a
-        // DIFFERENT user — e.g. a guest replaced by a fresh account on OTP sign-in
-        // (Appwrite can't convert anonymous → OTP). Without this, the previous user's
-        // currentTeam/teams leak into the new session and listTeams queries teams the
-        // new user can't access, producing 404s on prefs/memberships.
+        // Clear team state when the identity changes to a different user (e.g. guest
+        // replaced on OTP sign-in). Otherwise stale currentTeam/teams cause 404s.
         _resetTeamsState() {
             this.teams = [];
             this.currentTeam = null;
@@ -461,10 +442,8 @@ function initializeAuthStore() {
             }
         },
 
-        // Call the deployed guest-migration function (templates/guest-migration-function).
-        // The current Appwrite session authenticates the call — Appwrite forwards the
-        // user id to the function. Returns the parsed JSON response, or null on any
-        // failure (migration is best-effort: a failure must never block sign-in).
+        // Call the deployed guest-migration function; the current session authenticates it.
+        // Returns parsed JSON, or null on failure (best-effort — never blocks sign-in).
         async _callGuestMigration(path, body) {
             const appwriteConfig = await config.getAppwriteConfig();
             const fnId = appwriteConfig?.guestMigrationFunctionId;
@@ -483,17 +462,15 @@ function initializeAuthStore() {
             }
         },
 
-        // Load the user's teams and seed any configured default (permanent/template)
-        // teams. Shared by the guest, magic-link, OAuth, and init/restore paths.
+        // Load the user's teams and seed configured defaults. Shared by the guest,
+        // magic-link, OAuth, and init/restore paths.
         async _loadTeamsAndSeed(appwriteConfig) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
             }
-            // Startup race: init() (and an early requestGuest) can reach here before
-            // teams.core.js / teams.defaults.js have finished wiring listTeams +
-            // ensureDefaultTeams onto the store. Wait briefly for them rather than
-            // silently skipping (which left guests with no teams on reload).
+            // Startup race: we can arrive before teams.core/defaults wire listTeams +
+            // ensureDefaultTeams onto the store. Wait briefly rather than skip.
             const needsSeed = !!(cfg.permanentTeams || cfg.templateTeams);
             const ready = () => typeof this.listTeams === 'function'
                 && (!needsSeed || typeof window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams === 'function');
@@ -553,9 +530,8 @@ function initializeAuthStore() {
                     // Ignore
                 }
 
-                // Guests are full Appwrite sessions, so they can own teams. When
-                // auth.teams.guests is enabled, seed their default teams just like a
-                // signed-in user; otherwise keep the historical behavior (no teams).
+                // Guests are full sessions and can own teams: seed defaults when
+                // guestTeams is enabled, otherwise none.
                 const cfg = await config.getAppwriteConfig();
                 if (cfg?.guestTeams) {
                     await this._loadTeamsAndSeed(cfg);
@@ -646,18 +622,8 @@ function initializeAuthStore() {
                 this.teams = [];
                 this.currentTeam = null;
 
-                // Clear deleted teams tracking for this user (optional - uncomment if you want to clear on logout)
-                // try {
-                //     const userId = this.user?.$id;
-                //     if (userId) {
-                //         localStorage.removeItem(`manifest:deleted-teams:${userId}`);
-                //     }
-                // } catch (e) {
-                //     // Ignore
-                // }
-
-                // Restore to guest state after logout (if guest-auto is enabled)
-                // This only applies to non-guest sessions - if logging out from guest, don't create a new guest
+                // Restore to guest state after logout (guest-auto only, and not when
+                // already a guest — don't mint a new guest on top).
                 if (!this.isAnonymous && this._guestAuto && this._createAnonymousSession) {
                     await this._createAnonymousSession();
                 } else {

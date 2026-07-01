@@ -1,23 +1,17 @@
 /* Manifest Data Sources - Store Management */
 
-// Cache for loaded data sources (raw data, not in Alpine store to avoid double-proxying)
+// Raw data, kept out of Alpine's store to avoid double-proxying (recursion)
 const dataSourceCache = new Map();
 const loadingPromises = new Map();
-
-// Store raw data separately from Alpine's reactive store
-// This prevents Alpine from proxying our data, which causes recursion when we proxy it
 const rawDataStore = new Map();
 
-// Track initialization state
 let isInitializing = false;
 let initializationComplete = false;
 
-// Render-ready: debounced timer used by checkAndDispatchRenderReady
 let _renderReadyTimer = null;
-const RENDER_READY_QUIET_MS = 150; // ms of quiet (no loading) before firing
+const RENDER_READY_QUIET_MS = 150; // quiet time before firing render-ready
 
-// Deep seal an object to prevent Alpine from making it reactive
-// This prevents double-proxying which causes recursion errors
+// Deep seal so Alpine won't proxy (double-proxying causes recursion)
 function deepSeal(obj) {
     if (obj === null || typeof obj !== 'object') {
         return obj;
@@ -34,12 +28,8 @@ function deepSeal(obj) {
             }
         }
     } else {
-        // Iterate own enumerable keys via Object.keys instead of for…in +
-        // .hasOwnProperty(). The latter throws "hasOwnProperty is not a
-        // function" on any object that either lacks the Object prototype
-        // (e.g. Object.create(null)) or has a column literally named
-        // `hasOwnProperty` shadowing the prototype method — both of which
-        // can happen with payloads from Appwrite / arbitrary backends.
+        // Object.keys, not for…in + .hasOwnProperty: backend payloads may lack
+        // the Object prototype or shadow hasOwnProperty with a column of that name.
         for (const key of Object.keys(obj)) {
             const value = obj[key];
             if (value !== null && typeof value === 'object') {
@@ -166,15 +156,8 @@ function createReactiveReferences(data, dataSourceName = null) {
     }
 
     if (typeof data === 'object') {
-        // Create new object with new references for each property.
-        // Iterate via Object.keys() (own enumerable, no prototype walk)
-        // rather than for…in + .hasOwnProperty(). The latter pattern
-        // throws "hasOwnProperty is not a function" on any payload that
-        // either has a column literally named `hasOwnProperty` shadowing
-        // the prototype, or lacks the Object prototype entirely
-        // (Object.create(null), some SDK response shapes). This is the
-        // hot path for every Appwrite mutation result and realtime event,
-        // so it must be defensive about arbitrary backend payloads.
+        // Object.keys, not for…in + .hasOwnProperty (see deepSeal). Hot path for
+        // every Appwrite mutation result and realtime event.
         const newObj = {};
         for (const key of Object.keys(data)) {
             const value = data[key];
@@ -591,9 +574,7 @@ function setupTeamChangeListener() {
     }
 }
 
-// Dispatch manifest:render-ready when all tracked data sources have settled.
-// Uses a debounce so rapid sequential source completions coalesce into one event.
-// The render script listens for this event instead of polling internal store state.
+// Dispatch manifest:render-ready once all sources settle (debounced to coalesce).
 function checkAndDispatchRenderReady() {
     if (_renderReadyTimer) {
         clearTimeout(_renderReadyTimer);

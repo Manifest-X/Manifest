@@ -1,12 +1,6 @@
 /* Manifest Data Sources - Magic Method Pagination Handlers */
-// Handles pagination methods ($first, $next, $prev, $page)
+// $first, $next, $prev, $page
 
-/**
- * Create pagination method handler
- * @param {string} methodName - Method name ($first, $next, $prev, $page)
- * @param {string} dataSourceName - Name of the data source
- * @returns {Function} Pagination method function
- */
 function createPaginationMethod(methodName, dataSourceName) {
     return async function (...args) {
         const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -19,7 +13,7 @@ function createPaginationMethod(methodName, dataSourceName) {
             throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
         }
 
-        // Get base queries (from manifest or scope)
+        // Base queries from manifest or scope
         const scope = window.ManifestDataConfig.getScope(dataSource);
         const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
         const baseQueries = queriesConfig

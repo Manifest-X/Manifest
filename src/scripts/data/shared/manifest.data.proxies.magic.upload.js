@@ -1,12 +1,6 @@
 /* Manifest Data Sources - Magic Method $upload Handler */
-// Handles $upload method for uploading files and linking to table entries
+// $upload: upload files and link them to a table entry
 
-/**
- * Create $upload method for a data source
- * @param {string} dataSourceName - Name of the data source (table)
- * @param {Function} reloadDataSource - Function to reload data source
- * @returns {Function} $upload method function
- */
 function createUploadMethod(dataSourceName, reloadDataSource) {
     return async function (entryId, fileOrEvent, bucketName) {
         const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -121,10 +115,7 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
 
             const results = await Promise.all(uploadPromises);
 
-            // NOTE: No need to manually update file managers - computed files arrays
-            // automatically update when bucket array changes (single source of truth)
-
-            // Return single file or array of files
+            // Computed files arrays update automatically when the bucket array changes.
             return files.length === 1 ? results[0] : results;
         } catch (error) {
             // Clear all uploading states on error

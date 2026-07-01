@@ -1,8 +1,7 @@
 /* Manifest Data Sources - Directives */
-// Register x-files directive for automatic file management (files linked to table entries)
+// x-files / x-data-files: reactive file arrays for a table entry
 function registerFilesDirective() {
     if (typeof Alpine === 'undefined') {
-        // Wait for Alpine to be available
         const checkAlpine = setInterval(() => {
             if (typeof Alpine !== 'undefined') {
                 clearInterval(checkAlpine);
@@ -13,12 +12,10 @@ function registerFilesDirective() {
         return;
     }
 
-    // Helper to walk up DOM tree to find parent x-for template
+    // Walk up to the nearest parent x-for template
     function findParentXFor(el) {
         let current = el;
-        // Walk up the tree, checking each element
         while (current) {
-            // Check if current element is a template with x-for
             if (current.tagName === 'TEMPLATE' && current.hasAttribute('x-for')) {
                 return current;
             }
@@ -31,17 +28,15 @@ function registerFilesDirective() {
         return null;
     }
 
-    // Helper to extract loop item variable name from x-for expression
+    // "item in $x.source" -> "item"
     function extractLoopItemName(xForExpression) {
-        // x-for="item in $x.source" -> "item"
         const match = xForExpression.match(/^(\w+)\s+in\s+/);
         return match ? match[1] : null;
     }
 
     Alpine.directive('files', (el, { expression, modifiers }, { effect, evaluateLater, cleanup }) => {
 
-        // For string literals (data source names), we need to handle them specially
-        // If expression is a plain identifier (no quotes, no dots, no special chars), treat as string
+        // A bare identifier is a data-source name (string literal), not an expression
         const isPlainIdentifier = expression && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(expression.trim());
 
         const evaluate = isPlainIdentifier
@@ -68,19 +63,16 @@ function registerFilesDirective() {
         let isProcessing = false; // Guard to prevent infinite loops
         let waitingForDataSource = null; // Track which data source we're waiting for
 
-        // Initialize reactive state in Alpine scope IMMEDIATELY (before Alpine evaluates expressions)
-        // This must happen synchronously, not in an effect, so Alpine can find the variables
+        // Seed scope state synchronously (before Alpine evaluates expressions),
+        // not in an effect, so the variables exist on first evaluation.
         let scope;
         try {
             scope = Alpine.$data(el);
         } catch (e) {
-            // Scope might not be ready yet, will initialize in effect
-            scope = null;
+            scope = null; // not ready — seed in the effect instead
         }
 
         if (scope) {
-            // Always initialize - don't check for undefined, just set them
-            // This ensures they exist when Alpine first evaluates expressions
             if (!('files' in scope)) {
                 scope.files = [];
             }
@@ -480,12 +472,8 @@ function registerFilesDirective() {
         });
     });
 
-    // Register x-project-files directive - simplified, turnkey solution for project files
-    // Usage: <div x-project-files="project"> - automatically provides files, loadingFiles, filesError
-    // Register x-entry-files directive - generic directive for displaying files linked to any table entry
-    // Usage: <div x-entry-files="entry"> - automatically provides files, loadingFiles, filesError
-    // Renamed from x-project-files to be more generic (works with any table entry, not just projects)
-    // WeakMap to store namespace per element - ensures complete isolation
+    // x-data-files="entry": provides files/loadingFiles/filesError for a table entry.
+    // Per-element namespace via WeakMap for full isolation.
     const dataFilesNamespaces = new WeakMap();
 
     Alpine.directive('data-files', (el, { expression }, { effect, evaluateLater, cleanup }) => {
@@ -505,10 +493,9 @@ function registerFilesDirective() {
 
         const directiveInstanceId = `directive-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-        // Isolated reactive scope for this directive instance. Alpine never
-        // re-reads x-data attributes on initialized elements, so editing the
-        // attribute would resolve $data(el) to the ANCESTOR scope and pollute
-        // it — addScopeToNode attaches a fresh scope layer to this node.
+        // Isolated reactive scope layer for this instance. Editing x-data won't
+        // work (Alpine never re-reads it on initialized nodes) and would pollute
+        // the ancestor scope — addScopeToNode attaches a fresh layer instead.
         const isolatedData = Alpine.reactive({
             files: [],
             loadingFiles: false,
@@ -517,8 +504,7 @@ function registerFilesDirective() {
         const removeIsolatedScope = Alpine.addScopeToNode(el, isolatedData);
         cleanupCallbacks.push(removeIsolatedScope);
 
-        // Merged scope view: writes to files/loadingFiles/filesError land on
-        // isolatedData (top of stack), magics like $watch resolve from ancestors
+        // Merged view: files/* writes hit isolatedData (top of stack); $watch etc. resolve from ancestors
         const scope = Alpine.$data(el);
 
         // Store reference in WeakMap for access in closures
@@ -674,17 +660,13 @@ function registerFilesDirective() {
                     // CRITICAL DEBUG: Verify we're using the correct projectId before calling getFilesForEntry
                     const loadedFiles = await getFilesForEntry('projects', currentProjectId, bucketId, 'fileIds') || [];
 
-                    // CRITICAL: Always create a NEW array for scope.files to avoid sharing between directive instances
-                    // Don't mutate the existing array - create a completely new one
+                    // Fresh array so instances don't share references
                     const newFilesArray = [...loadedFiles];
 
-                    // Update local reference
                     files = newFilesArray;
 
-                    // Update both namespace and scope directly (they reference the same arrays/values)
                     const ns = getNamespace();
                     if (ns) {
-                        // DIAGNOSTIC: Mark each file with the project ID for tracking
                         const markedFiles = newFilesArray.map(file => ({
                             ...file,
                             _debugProjectId: currentProjectId,
@@ -712,13 +694,11 @@ function registerFilesDirective() {
                     }
 
 
-                    // Update lastFileIds to match what we actually loaded (from Appwrite)
-                    // This is more reliable than reading from the store, which might be stale
+                    // Track what we actually loaded (Appwrite is truth, store may be stale)
                     const loadedFileIdsArray = loadedFiles.map(f => f.$id) || [];
                     lastFileIds = JSON.stringify(loadedFileIdsArray);
 
-                    // CRITICAL: Sync store AND Appwrite database's fileIds with what actually exists
-                    // If the store/database has stale fileIds (file IDs that don't exist), clean them up
+                    // Reconcile stale fileIds in both the store and the Appwrite row
                     const store = Alpine.store('data');
                     const projects = store?.projects;
                     if (Array.isArray(projects)) {
@@ -757,8 +737,8 @@ function registerFilesDirective() {
                                     }
                                 }
 
-                                // CRITICAL: Only update Appwrite database if it's actually stale
-                                // This prevents unnecessary realtime events that might overwrite our store update
+                                // Only write the DB if actually stale — avoids a
+                                // realtime event that could overwrite our store update
                                 if (databaseIsStale) {
                                     try {
                                         const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -828,10 +808,7 @@ function registerFilesDirective() {
         let fileIdsWatchUnwatch = null;
 
         effect(() => {
-            // Evaluate project expression - this will re-run when project changes
             evaluateEntry((value) => {
-                // Always get the latest project reference from the store by ID
-                // This prevents using stale references when the projects array updates
                 const currentProjectId = value?.$id;
 
                 if (!currentProjectId) {
@@ -881,13 +858,11 @@ function registerFilesDirective() {
                     loadProjectFiles();
                 }
 
-                // Watch for fileIds changes by watching the store directly
-                // This ensures we always get the latest project reference from the store
-                // Only create watch if we don't already have one for this project ID AND haven't created one yet
+                // Watch this project's fileIds via the store (one watch per project id)
                 if (currentProjectId && scope && typeof scope.$watch === 'function' && !fileIdsWatchUnwatch && !watchCreated) {
-                    watchCreated = true; // Mark watch as created to prevent duplicates
-                    const projectId = currentProjectId; // Capture project ID for closure
-                    let isProcessing = false; // Guard against multiple simultaneous updates
+                    watchCreated = true;
+                    const projectId = currentProjectId; // capture for closure
+                    let isProcessing = false;
 
                     // Initialize lastFileIds with current value from the store to prevent false positives
                     const store = Alpine.store('data');
@@ -899,23 +874,17 @@ function registerFilesDirective() {
                         }
                     }
 
-                    // Use function-based watch that accesses the store - Alpine will track this
-                    // This is more reliable than string expressions for nested store access
-                    // IMPORTANT: Only access the specific project's fileIds to minimize reactivity
+                    // Function watch (more reliable than a string expr for nested store access);
+                    // reads only this project's fileIds to keep reactivity narrow.
                     fileIdsWatchUnwatch = scope.$watch(
                         () => {
-                            // Access the store - Alpine tracks this
                             const store = Alpine.store('data');
                             const projects = store?.projects;
                             if (!Array.isArray(projects)) return null;
 
-                            // Find the current project by ID - always gets latest reference
                             const currentProject = projects.find(p => p.$id === projectId);
                             if (!currentProject) return null;
 
-                            // Return the fileIds array as JSON string for comparison
-                            // Accessing fileIds here makes Alpine track changes to this property
-                            // This should only trigger when THIS project's fileIds changes
                             return JSON.stringify(currentProject.fileIds || []);
                         },
                         (currentFileIdsJson) => {
@@ -982,16 +951,13 @@ function registerFilesDirective() {
         };
 
         const handleFileCreated = (e) => {
-            // Check if the file is linked to this project
             const fileId = e.detail?.fileId;
             const entryId = e.detail?.entryId;
             const tableName = e.detail?.tableName;
 
-            // CRITICAL: Use entryId from event to identify target project
-            // This is more reliable than checking the store, which might be stale
+            // Match on the event's entryId (store may be stale)
             const matchesProject = entryId === projectId && tableName === 'projects';
 
-            // Use entryId from event instead of checking store (which is stale)
             if (fileId && matchesProject && !eventProcessing) {
                 eventProcessing = true;
                 // Reload files for this project - getFilesForEntry will get the latest from Appwrite
@@ -1043,8 +1009,7 @@ function registerFilesDirective() {
     });
 }
 
-// Directive removed - using project.$files property instead
-// Auto-register directive when Alpine is ready
+// Auto-registration handled elsewhere; kept for reference.
 // if (typeof document !== 'undefined') {
 //     if (typeof Alpine !== 'undefined') {
 //         registerFilesDirective();

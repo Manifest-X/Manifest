@@ -15,19 +15,8 @@ function initializeTeamsConvenience() {
     const waitForStore = () => {
         const store = Alpine.store('auth');
         if (store) {
-            // Decide whether to (re)attach convenience methods. Use a sentinel
-            // that ONLY this module defines — `createTeamFromName`. The earlier
-            // sentinel (`isCreatingTeam`) was unreliable: the store itself
-            // defines an `isCreatingTeam()` stub at init (see manifest.appwrite
-            // .auth.store.js — the "Stub team convenience methods" block), so
-            // `typeof store.isCreatingTeam === 'function'` is true BEFORE this
-            // module runs. The check then fired false-positive and skipped the
-            // whole `if (needsReinitialization)` block below, leaving the real
-            // convenience methods (startEditingMember, createTeamFromName,
-            // cancelEditingMember, saveEditingMember, deleteMember, leaveTeam,
-            // toggleInviteRole, etc.) unattached — surfacing as
-            // "$auth.startEditingMember is not a function" the moment a user
-            // clicked an edit-member button.
+            // Sentinel must be a method ONLY this module defines. isCreatingTeam
+            // won't do — the store stubs it at init, so it reads present too early.
             const needsReinitialization = typeof store.createTeamFromName !== 'function';
             
             // Ensure cache properties are initialized (methods are already in store)
@@ -109,8 +98,7 @@ function initializeTeamsConvenience() {
                 };
             }
 
-            // CRITICAL: Check if convenience methods exist - use isCreatingTeam as the key check
-            // This ensures methods are re-added if the store was replaced or methods were lost after idle
+            // Re-attach methods if the store was replaced or methods were lost after idle
             if (needsReinitialization) {
                 // Convenience method: create team using newTeamName property
                 store.createTeamFromName = async function () {
@@ -640,9 +628,8 @@ function initializeTeamsConvenience() {
                     const allRoles = this.allTeamRoles({ $id: teamId });
                     const permissions = allRoles && allRoles[roleName] ? [...allRoles[roleName]] : [];
 
-                    // Set editing state SYNCHRONOUSLY — before the async dropdown fetch
-                    // below — so a caller that mutates editingRole.permissions immediately
-                    // after this isn't racing (and getting overwritten by) that fetch.
+                    // Set state synchronously, before the async fetch below, so a caller
+                    // mutating editingRole.permissions right after isn't overwritten.
                     this.editingRole = {
                         teamId: teamId,
                         oldRoleName: roleName,
@@ -661,12 +648,8 @@ function initializeTeamsConvenience() {
                     // The UI will use editingRole.permissions or pendingPermissions for existing roles
                 };
 
-                // Reactive-safe role-permission write. Takes a plain array and persists
-                // straight to team prefs via updateUserRole — WITHOUT going through the
-                // reactive editingRole object. Use this for programmatic edits; mutating
-                // $auth.editingRole.permissions directly is fragile under Alpine (the
-                // $auth proxy wraps the already-reactive editingRole and can recurse on
-                // get). updateUserRole refreshes the role cache, so allTeamRoles() re-reads.
+                // Reactive-safe write: persist via updateUserRole, bypassing the reactive
+                // editingRole (mutating $auth.editingRole.permissions directly recurses).
                 store.updateRolePermissions = async function (teamId, roleName, permissions) {
                     if (!this.updateUserRole) {
                         return { success: false, error: 'Roles module not ready' };
@@ -677,9 +660,8 @@ function initializeTeamsConvenience() {
                     return await this.updateUserRole(teamId, roleName, plain);
                 };
 
-                // Safely set the permissions on the in-progress edit (replaces editingRole
-                // with a fresh object holding a plain array, rather than mutating the
-                // reactive nested array). Pair with saveEditingRole().
+                // Set permissions on the in-progress edit by replacing editingRole with a
+                // fresh object (not mutating the reactive nested array). Pair with saveEditingRole().
                 store.setEditingPermissions = function (permissions) {
                     if (!this.editingRole) {
                         return;
@@ -783,10 +765,8 @@ function initializeTeamsConvenience() {
                     return userRoles.includes('owner');
                 };
 
-                // Synchronous version for Alpine.js bindings (x-show / :disabled).
-                // Resolves from the cached role definitions (allTeamRoles) so it matches
-                // the async hasTeamPermission() — including custom permission keys, not
-                // just the six built-ins the permission cache pre-computes.
+                // Sync version for Alpine bindings. Resolves from cached allTeamRoles so it
+                // matches async hasTeamPermission, including custom (non-built-in) keys.
                 store.hasTeamPermissionSync = function (permission) {
                     if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
                         return false;
@@ -858,12 +838,9 @@ function initializeTeamsConvenience() {
                     return userRoles;
                 };
 
-            } // End of if (!store.isCreatingTeam || typeof store.isCreatingTeam !== 'function')
+            } // End needsReinitialization
 
-            // Note: hasPermission from roles module takes (userRoles, permission, teamId)
-            // hasTeamPermission is the convenience wrapper for current team
-
-            // Update cache when team is viewed (wrap existing viewTeam if it exists)
+            // Wrap viewTeam to refresh permission cache after a team is viewed
             if (store.viewTeam && !store._viewTeamWrapped) {
                 const originalViewTeam = store.viewTeam;
                 store.viewTeam = async function (team) {
