@@ -53,6 +53,8 @@
  *   other           → full page reload
  */
 import { createServer, get as httpGet, request as httpRequest }  from 'http';
+import { request as httpsRequest } from 'https';
+import { connect as tlsConnect } from 'tls';
 import {
   readFileSync, statSync, watch,
   existsSync, writeFileSync, unlinkSync,
@@ -161,9 +163,10 @@ const LIVE_RELOAD_SCRIPT = `<script>
 // by the host. See the Appwrite setup doc for the full pattern.
 function loadEnvFile(rootDir) {
   const envPath = join(rootDir, '.env');
-  if (!existsSync(envPath)) return { public: {}, private: [] };
+  if (!existsSync(envPath)) return { public: {}, private: [], privateValues: {} };
   const publicEnv = {};
   const privateNames = [];
+  const privateValues = {};   // server-side only — NEVER injected into window.env
   try {
     const text = readFileSync(envPath, 'utf8');
     for (const line of text.split(/\r?\n/)) {
@@ -179,12 +182,12 @@ function loadEnvFile(rootDir) {
         value = value.slice(1, -1);
       }
       if (key.startsWith('PUBLIC_')) publicEnv[key] = value;
-      else privateNames.push(key);
+      else { privateNames.push(key); privateValues[key] = value; }
     }
   } catch (error) {
     console.warn('[mnfst-run] Failed to parse .env:', error.message);
   }
-  return { public: publicEnv, private: privateNames };
+  return { public: publicEnv, private: privateNames, privateValues };
 }
 
 // Build a `<script>window.env = {…};</script>` tag from the public env map.
@@ -363,8 +366,81 @@ const EDIT_ENABLED = process.argv.includes('--edit') || process.env.MNFST_EDIT =
 // script. Kept as a single string so serveFile doesn't re-stringify on every
 // HTML response. Empty string when no public vars exist — the injection step
 // becomes a no-op for projects whose .env holds only server-side secrets.
-const { public: publicEnv, private: privateEnvNames } = loadEnvFile(root);
-const envInjectScript = buildEnvInjectScript(publicEnv);
+const { public: publicEnv, private: privateEnvNames, privateValues: privateEnv } = loadEnvFile(root);
+
+// Appwrite dev proxy: when APPWRITE_PROXY_TARGET is set (server-side .env), the
+// dev server proxies /_appwrite/* to that Appwrite origin so the session cookie
+// is FIRST-PARTY on localhost. Cross-origin Appwrite Cloud blocks the third-party
+// session cookie, and some endpoints (e.g. Presences) don't honour the
+// X-Fallback-Cookies workaround the SDK uses for the others — so user-scoped
+// calls land as the anonymous "guests" role. Proxying makes Appwrite same-origin
+// and fixes it uniformly (HTTP + Realtime WebSocket).
+const APPWRITE_PROXY_TARGET = (process.env.APPWRITE_PROXY_TARGET || privateEnv.APPWRITE_PROXY_TARGET || '').trim();
+const APPWRITE_PROXY_PREFIX = '/_appwrite';
+
+let envInjectScript = buildEnvInjectScript(publicEnv);
+if (APPWRITE_PROXY_TARGET) {
+  // Point the Appwrite endpoint at the same-origin proxy. Computed in the browser
+  // from location.origin so it's port-independent (auto-port safe) and prod-safe
+  // (production sets PUBLIC_APPWRITE_ENDPOINT to the real/custom domain instead).
+  envInjectScript += `<script>window.env=Object.assign(window.env||{},{PUBLIC_APPWRITE_ENDPOINT:location.origin+'${APPWRITE_PROXY_PREFIX}/v1'});</script>`;
+}
+
+// --- Turnkey AI relay (gates the same-origin /_ai/chat route) ---------------
+// Reads the optional `ai` block from manifest.json and the LLM key from .env
+// (server-side only). When the `ai` block is present, the dev server hosts the
+// relay so a chat adapter can POST to `/_ai/chat` with no separate proxy, no
+// CORS, and no key in the browser. No key → MOCK replies (try keyless); add the
+// key for real. The same path is served by managed Manifest hosting in prod.
+const aiConfig = (() => {
+  try { return JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).ai || null; }
+  catch { return null; }
+})();
+const aiKey = process.env.ANTHROPIC_API_KEY || privateEnv.ANTHROPIC_API_KEY || '';
+if (publicEnv.PUBLIC_ANTHROPIC_API_KEY) {
+  // The one footgun: a PUBLIC_-prefixed LLM key would ship to every visitor.
+  console.warn('[mnfst-run] ⚠ PUBLIC_ANTHROPIC_API_KEY is injected into the BROWSER and exposes your key to every visitor. Rename it to ANTHROPIC_API_KEY (no PUBLIC_ prefix) — the dev server uses it server-side via /_ai/chat.');
+}
+if (aiConfig) {
+  console.log(`[mnfst-run] AI relay on /_ai/chat — provider=${aiConfig.provider || 'anthropic'} model=${aiConfig.model || 'claude-haiku-4-5'} mode=${aiKey ? 'REAL' : 'MOCK (no ANTHROPIC_API_KEY)'}`);
+}
+
+function aiSse(res, o) { res.write(`event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`); }
+function streamMockAi(res) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  aiSse(res, { type: 'message_start', message: { id: 'mock', role: 'assistant' } });
+  aiSse(res, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+  const text = "Here's a **mock** reply from the in-server relay:\n\n- no separate proxy\n- the key stays server-side\n- add `ANTHROPIC_API_KEY` to `.env` for real Claude\n\n```js\nconst turnkey = true;\n```";
+  const chunks = text.match(/\S+\s*/g) || [text];
+  let i = 0;
+  const tick = setInterval(() => {
+    if (i >= chunks.length) { clearInterval(tick); aiSse(res, { type: 'content_block_stop', index: 0 }); aiSse(res, { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: chunks.length } }); aiSse(res, { type: 'message_stop' }); res.end(); return; }
+    aiSse(res, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunks[i++] } });
+  }, 45);
+  res.on('close', () => clearInterval(tick));
+}
+async function streamRealAi(res, payload) {
+  const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': aiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: payload.model || aiConfig.model || 'claude-haiku-4-5',
+      max_tokens: payload.max_tokens || aiConfig.maxTokens || 1024,
+      stream: true,
+      system: payload.system || aiConfig.system || undefined,
+      messages: payload.messages || []
+    })
+  });
+  if (!upstream.ok) {
+    const body = await upstream.text();
+    res.writeHead(upstream.status, { 'Content-Type': 'text/event-stream' });
+    aiSse(res, { type: 'error', error: { message: `upstream ${upstream.status}: ${body.slice(0, 300)}` } });
+    return res.end();
+  }
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+  for await (const chunk of upstream.body) res.write(chunk);   // passthrough — exact Anthropic SSE
+  res.end();
+}
 const publicCount = Object.keys(publicEnv).length;
 if (publicCount > 0) {
   console.log(`Loaded ${publicCount} PUBLIC_ env var(s) into window.env`);
@@ -863,6 +939,75 @@ function isLocalOrigin(origin, port) {
 }
 
 // --- HTTP server ---
+// --- Appwrite dev proxy (see APPWRITE_PROXY_TARGET above) ---
+
+// Rewrite upstream Set-Cookie so the session cookie is storable + sent on
+// http://localhost: drop Domain (defaults to our host), drop Secure (we're http),
+// and downgrade SameSite=None → Lax (None requires Secure, which we just removed).
+function rewriteAppwriteSetCookie(values) {
+  return (Array.isArray(values) ? values : [values]).map(v => v
+    .replace(/;\s*Domain=[^;]*/ig, '')
+    .replace(/;\s*Secure\b/ig, '')
+    .replace(/;\s*SameSite=None/ig, '; SameSite=Lax'));
+}
+
+// /_appwrite/v1/account?x → /v1/account?x  (strip our prefix, keep path + query)
+function appwriteUpstreamPath(reqUrl, urlPath) {
+  const search = reqUrl.includes('?') ? reqUrl.slice(reqUrl.indexOf('?')) : '';
+  return urlPath.slice(APPWRITE_PROXY_PREFIX.length) + search;
+}
+
+function proxyAppwriteHttp(req, res, urlPath) {
+  let u;
+  try { u = new URL(APPWRITE_PROXY_TARGET); } catch { res.writeHead(502); res.end('bad APPWRITE_PROXY_TARGET'); return; }
+  const headers = { ...req.headers, host: u.host };
+  delete headers.connection;
+  // Force cookie-only auth. Appwrite emits X-Fallback-Cookies (because the
+  // forwarded Origin looks cross-origin) and the SDK then replays it on every
+  // request — but the Presences endpoint REJECTS any request carrying the
+  // fallback, even with a valid session cookie present. Strip it both ways so
+  // the real first-party cookie (which the proxy makes same-origin) is used.
+  delete headers['x-fallback-cookies'];
+  const transport = u.protocol === 'https:' ? httpsRequest : httpRequest;
+  const upstream = transport({
+    protocol: u.protocol, hostname: u.hostname,
+    port: u.port || (u.protocol === 'https:' ? 443 : 80),
+    method: req.method, path: appwriteUpstreamPath(req.url, urlPath), headers,
+  }, (up) => {
+    const outHeaders = { ...up.headers };
+    delete outHeaders.connection; delete outHeaders['transfer-encoding'];
+    delete outHeaders['x-fallback-cookies']; // keep the SDK out of localStorage-fallback mode
+    if (up.headers['set-cookie']) outHeaders['set-cookie'] = rewriteAppwriteSetCookie(up.headers['set-cookie']);
+    res.writeHead(up.statusCode || 502, outHeaders);
+    up.pipe(res);
+  });
+  upstream.on('error', (e) => { try { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('appwrite proxy error: ' + e.message); } catch { /* client gone */ } });
+  req.pipe(upstream);
+}
+
+// Raw WebSocket tunnel for Appwrite Realtime (wss). Replays the HTTP upgrade over
+// a TLS socket to the upstream and pipes both ways; the browser's first-party
+// localhost cookie rides the upgrade headers, so realtime auth works too.
+function proxyAppwriteWs(req, socket, head, urlPath) {
+  let u;
+  try { u = new URL(APPWRITE_PROXY_TARGET); } catch { socket.destroy(); return; }
+  const upstream = tlsConnect({ host: u.hostname, port: u.port || 443, servername: u.hostname }, () => {
+    const headers = { ...req.headers, host: u.host };
+    delete headers['x-fallback-cookies']; // cookie-only auth (see HTTP proxy)
+    let handshake = `${req.method} ${appwriteUpstreamPath(req.url, urlPath)} HTTP/1.1\r\n`;
+    for (const [k, v] of Object.entries(headers)) {
+      (Array.isArray(v) ? v : [v]).forEach(val => { handshake += `${k}: ${val}\r\n`; });
+    }
+    handshake += '\r\n';
+    upstream.write(handshake);
+    if (head && head.length) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.on('error', () => socket.destroy());
+  socket.on('error', () => upstream.destroy());
+}
+
 const server = createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split('?')[0]);
 
@@ -873,6 +1018,13 @@ const server = createServer((req, res) => {
   if (listenPort && !isLocalHostHeader(req.headers.host, listenPort)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('403 Forbidden — invalid Host header');
+    return;
+  }
+
+  // Appwrite dev proxy — forward to the configured Appwrite origin so the
+  // session cookie is first-party (see APPWRITE_PROXY_TARGET).
+  if (APPWRITE_PROXY_TARGET && urlPath.startsWith(APPWRITE_PROXY_PREFIX + '/')) {
+    proxyAppwriteHttp(req, res, urlPath);
     return;
   }
 
@@ -952,6 +1104,23 @@ const server = createServer((req, res) => {
   // Edit-plugin B-side write-back (SPIKE, dev-only). POST + same-origin. Currently
   // handles the `data` regime: reorder the source CSV/JSON for a registered data
   // source. static/component regimes are reported unsupported (need an HTML parser).
+  // Turnkey AI relay — same-origin chat proxy; key held server-side, never in
+  // the browser. Inert (404) unless manifest.json has an `ai` block. No key →
+  // mock stream so keyless dev works; add ANTHROPIC_API_KEY to .env for real.
+  if (urlPath === '/_ai/chat') {
+    if (!aiConfig) { res.writeHead(404); res.end(); return; }
+    if (req.method !== 'POST') { res.writeHead(405, { 'Allow': 'POST' }); res.end(); return; }
+    if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
+    let raw = '';
+    req.on('data', c => { raw += c; if (raw.length > 25e6) req.destroy(); });   // 25MB cap (attachments)
+    req.on('end', async () => {
+      let payload = {}; try { payload = raw ? JSON.parse(raw) : {}; } catch { res.writeHead(400); res.end('bad json'); return; }
+      try { if (aiKey) await streamRealAi(res, payload); else streamMockAi(res); }
+      catch (e) { try { res.writeHead(500); res.end(String(e && e.message || e)); } catch (_) {} }
+    });
+    return;
+  }
+
   if (urlPath === '/__edit/save') {
     if (!EDIT_ENABLED) { res.writeHead(404); res.end(); return; }   // opt-in (--edit / MNFST_EDIT=1): source write-back is authoring-only
     if (req.method !== 'POST') { res.writeHead(405, { 'Allow': 'POST' }); res.end(); return; }
@@ -1075,6 +1244,16 @@ function startProxy(listenPort, upstreamPort) {
     );
   });
   watchUpstream(upstreamPort);
+}
+
+// Appwrite Realtime (WebSocket) proxy — same first-party-cookie rationale as the
+// HTTP proxy. Without it, switching the endpoint to the proxy would break realtime.
+if (APPWRITE_PROXY_TARGET) {
+  server.on('upgrade', (req, socket, head) => {
+    const p = (req.url || '').split('?')[0];
+    if (p.startsWith(APPWRITE_PROXY_PREFIX + '/')) proxyAppwriteWs(req, socket, head, p);
+    else socket.destroy();
+  });
 }
 
 function tryListen(p, attempt = 0) {

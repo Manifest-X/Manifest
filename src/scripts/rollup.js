@@ -1,7 +1,7 @@
 import './manifest.components.js';
 import './manifest.appwrite.auth.js';
 import './manifest.appwrite.data.js';
-import './manifest.appwrite.presence.js';
+import './manifest.appwrite.presences.js';
 import './manifest.components.js';
 import './manifest.data.js';
 import './manifest.dropdowns.js';

@@ -1,0 +1,185 @@
+<!-- Virtual plugin test harness -->
+<style>
+  .vtest { max-width: 64rem; margin-inline: auto; padding: 1.5rem; }
+  .vtest .panel { border: 1px solid var(--color-line); border-radius: var(--radius); overflow: auto; }
+  .vtest .grid-table { grid-template-columns: 4rem 1fr 1.4fr 7rem 6rem; }
+  .vtest .tile { display: grid; place-items: center; border-radius: var(--radius); color: #fff; font-weight: 600; }
+  .vtest .note { font-size: .78rem; color: var(--color-content-subtle); }
+  .vtest .target { border-left: 2px solid var(--color-brand-content); padding-left: .6rem; }
+</style>
+
+<div class="vtest col gap-8" x-data="{
+    count: 5000,
+    query: '',
+    sorted: false,
+    sortAsc: false,
+    all: [],
+    view: [],
+    roles: ['Engineer','Designer','PM','Researcher','QA','Writer','Analyst','Lead'],
+    statuses: ['active','idle','blocked','done'],
+    names: ['Sirius','Vega','Polaris','Rigel','Arcturus','Lyra','Orion','Mira'],
+    init() { this.regen() },
+    regen() {
+        const n = this.count;
+        this.all = Array.from({ length: n }, (_, i) => ({
+            id: i + 1,
+            name: this.names[i % 8] + ' ' + (i + 1),
+            email: 'user' + (i + 1) + '@playcom.io',
+            role: this.roles[i % this.roles.length],
+            status: this.statuses[i % this.statuses.length],
+            value: (i * 37) % 1000,
+            w: 110 + ((i * 47) % 190),
+            h: 80 + ((i * 71) % 180),
+            hue: (i * 53) % 360,
+            span: i % 11 === 0 ? 2 : 1,
+            mh: 90 + ((i * 61) % 200) + (i % 23 === 0 ? 180 : 0)
+        }));
+        this.refresh();
+    },
+    refresh() {
+        let r = this.all;
+        const q = this.query.trim().toLowerCase();
+        if (q) r = r.filter(x => x.name.toLowerCase().includes(q) || x.email.toLowerCase().includes(q) || x.role.toLowerCase().includes(q));
+        if (this.sorted) r = [...r].sort((a, b) => this.sortAsc ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name));
+        this.view = r;
+    },
+    shuffle() {
+        const a = [...this.all];
+        for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+        this.all = a;
+        this.refresh();
+    }
+}">
+
+    <header class="col gap-1">
+        <h1 class="h3">x-virtual test harness</h1>
+        <p class="note">Same controls drive every case. Sort/shuffle test key re-binding; filter tests reactive source; the last panel tests deferred (zero-height) mount. Cases marked <span class="target">like this</span> are targets for the new in-flow engine.</p>
+    </header>
+
+    <!-- Controls -->
+    <div class="row-wrap gap-3 items-end">
+        <label class="col gap-1 caption">Rows
+            <select x-model.number="count" @change="regen()">
+                <option>1000</option>
+                <option>5000</option>
+                <option>20000</option>
+            </select>
+        </label>
+        <input type="search" placeholder="Filter name / email / role…" x-model="query" @input.debounce.150ms="refresh()" style="max-width: 16rem">
+        <button @click="sorted = true; sortAsc = !sortAsc; refresh()" x-text="sorted ? (sortAsc ? 'Name ↑' : 'Name ↓') : 'Sort by name'"></button>
+        <button class="ghost" @click="shuffle()">Shuffle</button>
+        <span class="note ml-auto">Showing <span x-text="view.length"></span> of <span x-text="all.length"></span></span>
+    </div>
+
+    <!-- Case A — simple stacked list (baseline) -->
+    <section class="col gap-2">
+        <strong class="small">A · Simple list <span class="note">— block flow, baseline</span></strong>
+        <div x-virtual class="panel" style="height: 320px">
+            <template x-for="r in view" :key="r.id">
+                <div class="row gap-3 p-3 border-b border-line">
+                    <span class="text-content-subtle shrink-0" style="width: 3rem" x-text="'#' + r.id"></span>
+                    <span class="font-semibold flex-1" x-text="r.name"></span>
+                    <span class="text-content-subtle" x-text="r.role"></span>
+                </div>
+            </template>
+        </div>
+    </section>
+
+    <!-- Case B — native table (nested template under tbody) -->
+    <section class="col gap-2 target">
+        <strong class="small">B · Native &lt;table&gt; <span class="note">— scroll wrapper is x-virtual, template nested in tbody, spacer = &lt;tr&gt;</span></strong>
+        <div x-virtual class="panel" style="height: 320px">
+            <table style="table-layout: fixed; width: 100%">
+                <thead>
+                    <tr>
+                        <th style="width: 4rem">#</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th style="width: 7rem">Role</th>
+                        <th style="width: 6rem">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="r in view" :key="r.id">
+                        <tr :class="r.id % 2 ? 'bg-surface-1' : ''">
+                            <td x-text="r.id"></td>
+                            <td x-text="r.name"></td>
+                            <td x-text="r.email"></td>
+                            <td x-text="r.role"></td>
+                            <td x-text="r.status"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Case C — grid-table (display:contents rows, shared grid) -->
+    <section class="col gap-2 target">
+        <strong class="small">C · .grid-table <span class="note">— display:grid container, display:contents rows, spacer spans 1 / -1</span></strong>
+        <div x-virtual class="grid-table panel" style="height: 320px">
+            <div class="grid-header">
+                <div>#</div><div>Name</div><div>Email</div><div>Role</div><div>Status</div>
+            </div>
+            <template x-for="r in view" :key="r.id">
+                <div class="grid-row">
+                    <div x-text="r.id"></div>
+                    <div x-text="r.name"></div>
+                    <div x-text="r.email"></div>
+                    <div x-text="r.role"></div>
+                    <div x-text="r.status"></div>
+                </div>
+            </template>
+        </div>
+    </section>
+
+    <!-- Case D — ragged flex-wrap gallery -->
+    <section class="col gap-2 target">
+        <strong class="small">D · Flex-wrap gallery <span class="note">— ragged width + height, virtualize by line</span></strong>
+        <div x-virtual class="panel" style="height: 360px; display: flex; flex-wrap: wrap; gap: .5rem; align-content: flex-start; padding: .5rem">
+            <template x-for="r in view" :key="r.id">
+                <div class="tile caption" :style="`width: ${r.w}px; height: ${r.h}px; background: hsl(${r.hue} 65% 58%)`" x-text="'#' + r.id"></div>
+            </template>
+        </div>
+    </section>
+
+    <!-- Case F — masonry (independent sizes, JS column packing, span/height hints) -->
+    <section class="col gap-2 target">
+        <strong class="small">F · Masonry <span class="note">— skyline pack, absolute, per-item span + height from data (~zero settling)</span></strong>
+        <div x-virtual="{ mode: 'masonry', columnWidth: 150, gap: 8, span: i => i.span, height: i => i.mh }"
+             class="panel" style="height: 440px; position: relative; padding: 8px">
+            <template x-for="r in view" :key="r.id">
+                <div class="tile caption" :style="`height: ${r.mh}px; background: hsl(${r.hue} 65% 58%)`" x-text="'#' + r.id"></div>
+            </template>
+        </div>
+    </section>
+
+    <!-- Case G — grid gallery (display:grid multi-column, mode: gallery) -->
+    <section class="col gap-2 target">
+        <strong class="small">G · Grid gallery <span class="note">— display:grid multi-column, mode: 'gallery'</span></strong>
+        <div x-virtual="{ mode: 'gallery', estimate: { width: 120, height: 120 } }" class="panel"
+             style="display: grid; grid-template-columns: repeat(auto-fill, 120px); gap: .5rem; height: 360px; padding: .5rem">
+            <template x-for="r in view" :key="r.id">
+                <div class="tile caption" :style="`height: 120px; background: hsl(${r.hue} 65% 58%)`" x-text="'#' + r.id"></div>
+            </template>
+        </div>
+    </section>
+
+    <!-- Case E — deferred mount (boots at height 0 inside closed details) -->
+    <section class="col gap-2 target">
+        <strong class="small">E · Deferred mount <span class="note">— starts collapsed (clientHeight 0); should render correctly on open, not dump every row</span></strong>
+        <details class="panel" style="overflow: visible">
+            <summary class="p-3 small font-semibold" style="cursor: pointer">Expand list</summary>
+            <div x-virtual style="height: 280px; overflow: auto; border-top: 1px solid var(--color-line)">
+                <template x-for="r in view" :key="r.id">
+                    <div class="row gap-3 p-3 border-b border-line">
+                        <span class="text-content-subtle shrink-0" style="width: 3rem" x-text="'#' + r.id"></span>
+                        <span class="font-semibold flex-1" x-text="r.name"></span>
+                        <span class="text-content-subtle" x-text="r.email"></span>
+                    </div>
+                </template>
+            </div>
+        </details>
+    </section>
+
+</div>

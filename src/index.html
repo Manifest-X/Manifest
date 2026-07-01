@@ -37,7 +37,6 @@
   <link rel="stylesheet" href="/styles/elements/manifest.form.css">
   <link rel="stylesheet" href="/styles/elements/manifest.input.css">
   <link rel="stylesheet" href="/styles/elements/manifest.combobox.css">
-  <link rel="stylesheet" href="/styles/elements/manifest.presence.css">
   <link rel="stylesheet" href="/styles/elements/manifest.radio.css">
   <link rel="stylesheet" href="/styles/elements/manifest.range.css">
   <link rel="stylesheet" href="/styles/elements/manifest.resize.css">
@@ -53,7 +52,6 @@
   <link rel="stylesheet" href="/styles/utilities/manifest.utilities.css">
 
   <!-- Scripts -->
-  <script src="/env.local.js" onerror="this.remove()"></script>
 
   <!-- Alpine & Tailwind -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
@@ -78,37 +76,383 @@
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
+  <script src="/scripts/manifest.chat.js"></script>
+  <script src="/scripts/chat/manifest.chat.adapters.llm.js"></script>
+  <!-- Markdown render helper for the chat demo: reuse the markdown plugin's
+       marked + DOMPurify (loaded on demand) via x-html — robust under streaming
+       (synchronous, no innerHTML/initTree race with x-for re-stamping). -->
+  <script>
+    window.mdRender = function (t) {
+      try {
+        if (!window.marked) return (t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        var html = window.marked.parse(t || '');
+        if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
+        return html;
+      } catch (e) { return (t || ''); }
+    };
+    // Reactive flag so x-html re-renders static messages once marked/DOMPurify finish loading from CDN.
+    document.addEventListener('alpine:init', function () { window.Alpine.store('md', { ready: !!window.marked }); });
+    document.addEventListener('DOMContentLoaded', function () { try { window.ManifestDOMPurify && window.ManifestDOMPurify.load(); } catch (e) { } });
+    (function poll() {
+      if (window.marked && window.DOMPurify && window.Alpine && window.Alpine.store('md')) { window.Alpine.store('md').ready = true; return; }
+      setTimeout(poll, 60);
+    })();
+  </script>
   <script src="/scripts/manifest.tabs.js"></script>
   <script src="/scripts/manifest.toasts.js"></script>
   <script src="/scripts/manifest.tooltips.js"></script>
   <script src="/scripts/manifest.url.parameters.js"></script>
   <script src="/scripts/manifest.utilities.js"></script>
+  <script src="/scripts/manifest.virtual.js"></script>
   <script src="/scripts/manifest.colorpicker.js"></script>
 
   <!-- Appwrite SDK and plugins -->
   <script src="https://cdn.jsdelivr.net/npm/appwrite@latest"></script>
   <script src="/scripts/manifest.appwrite.auth.js"></script>
   <script src="/scripts/manifest.appwrite.data.js"></script>
-  <script src="/scripts/manifest.appwrite.presence.js"></script>
+  <script src="/scripts/manifest.appwrite.presences.js"></script>
 
   <!-- Editor demo chrome (spike-only) -->
   <style>
-    .editor { display: flex; gap: 2rem; align-items: flex-start; padding: 2rem; max-width: 80rem; margin-inline: auto; }
-    .editor-panel { position: sticky; top: 1rem; flex: 0 0 16rem; display: flex; flex-direction: column; gap: 1.5rem; padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
-    .editor-panel h2 { font-size: .9rem; margin: 0; }
-    .editor-panel .group { display: flex; flex-direction: column; gap: .75rem; }
-    .editor-panel label { display: flex; flex-direction: column; gap: .3rem; font-size: .78rem; color: var(--color-content-neutral); }
-    .editor-panel input[type="color"] { height: 2rem; width: 100%; padding: 0; border: 1px solid var(--color-line); border-radius: 6px; background: none; }
-    .editor-panel input[type="range"] { width: 100%; }
-    .canvas { flex: 1 1 auto; min-width: 0; }
-    .canvas [data-edit-armed] { margin-block-start: 1.25rem; }   /* clearance for the armed-area label */
+    .editor {
+      display: flex;
+      gap: 2rem;
+      align-items: flex-start;
+      padding: 2rem;
+      max-width: 80rem;
+      margin-inline: auto;
+    }
+
+    .editor-panel {
+      position: sticky;
+      top: 1rem;
+      flex: 0 0 16rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      padding: 1.25rem;
+      background: var(--color-surface-1);
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius);
+    }
+
+    .editor-panel h2 {
+      font-size: .9rem;
+      margin: 0;
+    }
+
+    .editor-panel .group {
+      display: flex;
+      flex-direction: column;
+      gap: .75rem;
+    }
+
+    .editor-panel label {
+      display: flex;
+      flex-direction: column;
+      gap: .3rem;
+      font-size: .78rem;
+      color: var(--color-content-neutral);
+    }
+
+    .editor-panel input[type="color"] {
+      height: 2rem;
+      width: 100%;
+      padding: 0;
+      border: 1px solid var(--color-line);
+      border-radius: 6px;
+      background: none;
+    }
+
+    .editor-panel input[type="range"] {
+      width: 100%;
+    }
+
+    .canvas {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .canvas [data-edit-armed] {
+      margin-block-start: 1.25rem;
+    }
+
+    /* clearance for the armed-area label */
   </style>
 
 </head>
 
 <body class="page">
 
-  <x-combobox-demo x-route="/combobox"></x-combobox-demo>
+  <!-- Spike nav -->
+  <nav class="row gap-4 p-3 border-b border-line">
+    <a href="/">Edit demo</a>
+    <a href="/virtual">Virtual</a>
+    <a href="/chat">Chat</a>
+    <a href="/presence">Presence</a>
+  </nav>
+
+  <!-- Virtual plugin test harness -->
+  <x-virtual-demo x-route="virtual"></x-virtual-demo>
+
+  <!-- Chat plugin ($chat) test harness -->
+  <style>
+    .chat-demo { max-width: 56rem; margin-inline: auto; }
+    .chat-card { padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
+    .chat-log { display: flex; flex-direction: column; gap: .35rem; }
+    .chat-row { display: flex; gap: .5rem; align-items: baseline; }
+    .chat-name { font-weight: 600; font-size: .8rem; }
+    .chat-meta { font-size: .72rem; color: var(--color-content-subtle); }
+  </style>
+  <div class="chat-demo col gap-6 p-6" x-route="chat" x-data="{
+      dm: $chat.open('dm-ai', { adapter: 'demo' }),
+      grp: $chat.open('grp-1', { adapter: 'demo' }),
+      forum: $chat.open('forum-1', { adapter: 'demo' }),
+      agg: $chat.open('agg:c_p7', { adapter: 'demo-aggregate', aggregate: true }),
+      closed: $chat.open('hist-tg-1', { adapter: 'demo' }),
+      llm: $chat.open('docs-session', { adapter: 'claude' }),
+      draft: '', gdraft: '', maxDepth: 4, llmDraft: '', llmFiles: null,
+      async sendLlm() {
+        const files = this.llmFiles ? [...this.llmFiles] : [];
+        const media = [];
+        for (const f of files) {
+          const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+          media.push({ kind: f.type.startsWith('image/') ? 'image' : 'document', name: f.name, mediaType: f.type, url, data: url.split(',')[1] });
+        }
+        if (!this.llmDraft.trim() && !media.length) return;
+        this.llm.send({ body: { text: this.llmDraft, media } });
+        this.llmDraft = ''; this.llmFiles = null;
+      }
+    }">
+
+    <div class="col gap-1">
+      <strong>$chat — reference spike</strong>
+      <span class="chat-meta">Static in-memory adapter. Buttons drive the simulation deterministically.</span>
+    </div>
+
+    <!-- A: 1:1 AI streaming + optimistic send -->
+    <section class="chat-card col gap-3" data-test="dm">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">A · 1:1 co-pilot — streaming + optimistic</strong>
+        <span class="chat-meta" x-text="dm.live ? 'live' : 'reconnecting…'" data-test="dm-live"></span>
+      </div>
+      <div class="chat-log" data-test="dm-log">
+        <template x-for="m in dm.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+            <span class="chat-meta" x-show="m.status!=='delivered' && m.status!=='sent'" x-text="'· '+m.status"></span>
+          </div>
+        </template>
+      </div>
+      <div class="row gap-2">
+        <input type="text" x-model="draft" placeholder="message…" style="flex:1" @keydown.enter="dm.send({text:draft}); draft=''">
+        <button class="outlined" @click="dm.send({text:draft}); draft=''">Send</button>
+        <button class="ghost" @click="$chat.sim.aiReply('dm-ai')">Stream AI reply</button>
+      </div>
+      <div class="row gap-2">
+        <button class="ghost small" @click="$chat.sim.disconnect('dm-ai')">Disconnect</button>
+        <button class="ghost small" @click="$chat.sim.reconnectWithGap('dm-ai')">Reconnect + gap-backfill</button>
+      </div>
+    </section>
+
+    <!-- B: group — reactions, typing, participants -->
+    <section class="chat-card col gap-3" data-test="grp">
+      <strong class="small">B · group — reactions · typing · participants</strong>
+      <div class="chat-log" data-test="grp-log">
+        <template x-for="m in grp.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+            <span class="chat-meta" x-show="m.reactions" x-text="m.reactions ? m.reactions.map(r=>r.emoji+r.count).join(' ') : ''"></span>
+            <button class="ghost small" @click="grp.react(m.id,'🎉')">react</button>
+          </div>
+        </template>
+      </div>
+      <div class="chat-meta" data-test="grp-parts">participants: <span x-text="grp.participants.map(p=>p.displayName).join(', ')"></span></div>
+      <div class="chat-meta" data-test="grp-typing" x-show="grp.typing.length">typing: <span x-text="grp.typing.map(p=>p.displayName).join(', ')"></span></div>
+      <div class="row gap-2">
+        <button class="ghost small" @click="grp.setTyping(true); setTimeout(()=>grp.setTyping(false),1500)">typing…</button>
+        <button class="ghost small" @click="grp.addParticipant({id:'u_cy',kind:'human',role:'member',displayName:'Cy',color:'#ea580c'})">add Cy</button>
+      </div>
+    </section>
+
+    <!-- C: threaded tree (forum) -->
+    <section class="chat-card col gap-3" data-test="forum">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">C · threaded — c.tree({maxDepth})</strong>
+        <label class="chat-meta">maxDepth <input type="range" min="0" max="4" step="1" x-model="maxDepth"> <span x-text="maxDepth"></span></label>
+      </div>
+      <div class="chat-log" data-test="forum-log">
+        <template x-for="n in forum.flatTree({maxDepth:Number(maxDepth)})" :key="n.id">
+          <div class="chat-row" :style="`margin-left:${Math.min(n.depth,Number(maxDepth))*1.25}rem`">
+            <span class="chat-name" :style="`color:${n.author?.color||'#888'}`" x-text="n.author?.displayName||'?'"></span>
+            <span x-text="n.body.text"></span>
+            <span class="chat-meta" x-show="n.childCount" x-text="'· '+n.childCount+' repl.'"></span>
+            <span class="chat-meta" x-show="n.orphan">· orphan</span>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- D: aggregate lens (virtual id, fan-out) -->
+    <section class="chat-card col gap-3" data-test="agg">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">D · aggregate — virtual id · anchored · unseen-convId live</strong>
+        <span class="chat-meta" data-test="agg-count" x-text="agg.messages.length+' msgs'"></span>
+      </div>
+      <div class="row gap-2">
+        <button class="ghost small" @click="agg.loadOlder()" :disabled="agg.atStart">◀ older</button>
+        <button class="ghost small" @click="agg.loadNewer()" :disabled="agg.atEnd">newer ▶</button>
+        <button class="ghost small" @click="$chat.sim.newInboundOnClosedChannel()">new inbound (unseen convId)</button>
+      </div>
+      <div class="chat-log" data-test="agg-log">
+        <template x-for="m in agg.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-meta" style="min-width:6rem" x-text="m.conversationId"></span>
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- E: re-home footgun (closed single-chat) -->
+    <section class="chat-card col gap-3" data-test="rehome">
+      <strong class="small">E · closed→new-Chat re-home (single-chat lens)</strong>
+      <div class="chat-log" data-test="closed-log">
+        <template x-for="m in closed.messages" :key="m.id">
+          <div class="chat-row">
+            <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+            <span x-text="m.body.text"></span>
+            <span class="chat-meta" x-text="'· '+m.conversationId"></span>
+          </div>
+        </template>
+      </div>
+      <div class="row gap-2">
+        <button class="outlined small" @click="closed.send({text:'are you there?'})">reply into closed chat</button>
+      </div>
+      <div class="chat-meta" data-test="rehome-flag" x-show="closed.lastRehome"
+           x-text="closed.lastRehome ? `re-homed ${closed.lastRehome.from} → ${closed.lastRehome.to} — cockpit must retarget` : ''"></div>
+    </section>
+
+    <!-- F: real Claude adapter — streaming markdown (both ways) + attachments -->
+    <section class="chat-card col gap-3" data-test="llm">
+      <div class="row gap-2" style="justify-content:space-between">
+        <strong class="small">F · Claude adapter — streaming markdown · attachments</strong>
+        <span class="chat-meta" x-text="llm.live ? 'connected' : 'connecting…'"></span>
+      </div>
+      <div class="chat-log" data-test="llm-log" style="gap:.75rem">
+        <template x-for="m in llm.messages" :key="m.id">
+          <div class="col gap-1">
+            <div class="row gap-2" style="align-items:baseline">
+              <span class="chat-name" :style="`color:${m.author?.color||'#888'}`" x-text="m.author?.displayName||'?'"></span>
+              <span class="chat-meta" x-show="m.status==='streaming'">· streaming…</span>
+            </div>
+            <div x-html="($store.md && $store.md.ready, window.mdRender(m.body.text))" data-test="md"></div>
+            <div class="row-wrap gap-2" x-show="m.body.media && m.body.media.length">
+              <template x-for="att in (m.body.media||[])" :key="att.name">
+                <span>
+                  <img x-show="att.kind==='image'" :src="att.url" :alt="att.name" style="max-height:5rem; border-radius:var(--radius)">
+                  <span class="chat-meta" x-show="att.kind!=='image'" x-text="'📎 '+att.name"></span>
+                </span>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div class="col gap-2">
+        <textarea x-model="llmDraft" rows="2" placeholder="Ask in markdown — **bold**, lists, `code`…" @keydown.enter.meta="sendLlm()"></textarea>
+        <div class="row gap-2" style="align-items:center">
+          <input type="file" multiple accept="image/*,application/pdf" @change="llmFiles = $event.target.files">
+          <button class="outlined" @click="sendLlm()">Send</button>
+          <span class="chat-meta" x-show="llmFiles && llmFiles.length" x-text="(llmFiles?.length||0)+' attached'"></span>
+        </div>
+        <span class="chat-meta">Proxy holds the key. No key → mock markdown stream. ⌘↵ to send.</span>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- $presence (Appwrite Presences) test harness -->
+  <style>
+    .presence-demo { max-width: 64rem; margin-inline: auto; }
+    .presence-card { padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
+    .presence-meta { font-size: .72rem; color: var(--color-content-subtle); }
+    .presence-swatch { display: inline-block; width: .8rem; height: .8rem; border-radius: 50%; flex: 0 0 auto; }
+    .presence-chip { font-size: .68rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid var(--color-line); }
+    .presence-roster-row { display: flex; gap: .5rem; align-items: center; }
+    .presence-user-ctl { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+  </style>
+
+  <div class="presence-demo col gap-6 p-6" x-route="presence" x-data="{}">
+
+    <div class="col gap-1">
+      <strong>Presence — <code>$presence</code></strong>
+      <span class="presence-meta">Live user status/roster over the native Appwrite Presences API. Sign in, then Start and toggle your status.</span>
+    </div>
+
+    <!-- Sign in ($auth) -->
+    <section class="presence-card col gap-3">
+      <div class="row-wrap gap-3" style="justify-content:space-between; align-items:center">
+        <strong class="small">Sign in — <code>$auth</code></strong>
+        <span class="presence-meta">
+          <span x-show="$auth.isAuthenticated">signed in as <b x-text="$auth.user?.email || ($auth.isAnonymous ? 'a guest' : 'a user')"></b> · <span x-text="$auth.method || 'guest'"></span></span>
+          <span x-show="!$auth.isAuthenticated">not signed in</span>
+        </span>
+      </div>
+      <div class="row-wrap gap-2" style="align-items:center">
+        <button class="outlined small" @click="$auth.loginOAuth('google')" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress"><i x-icon="simple-icons:google"></i> Google</button>
+        <button class="outlined small" @click="$auth.loginOAuth('github')" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress"><i x-icon="simple-icons:github"></i> GitHub</button>
+        <input type="email" pattern=".*@.*\..*" autocomplete="on" placeholder="email for magic link" aria-label="Email" @keyup.enter="$auth.sendMagicLink()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress" style="flex:1; min-width:13rem">
+        <button class="ghost small" @click="$auth.sendMagicLink()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress">Send magic link</button>
+        <button class="ghost small" @click="$auth.sendEmailOTP()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress">Email code (OTP)</button>
+        <button class="ghost small" @click="$auth.requestGuest()" :disabled="$auth.isAuthenticated || $auth.inProgress">Continue as guest</button>
+        <button class="ghost small" @click="$auth.logout()" :disabled="!$auth.isAuthenticated || $auth.inProgress">Logout</button>
+      </div>
+      <div class="row gap-2" x-show="$auth.otpSent" style="align-items:center">
+        <input name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter the emailed code" aria-label="One-time code" @keyup.enter="$auth.submitOTP()" :disabled="$auth.inProgress" style="flex:1; min-width:11rem">
+        <button class="outlined small" @click="$auth.submitOTP()" :disabled="$auth.inProgress">Verify</button>
+      </div>
+      <span class="presence-meta" x-show="$auth.otpSent">Code emailed — enter it above to sign in (in-page, no redirect).</span>
+      <span class="presence-meta" x-show="$auth.otpExpired">Code was invalid or expired — try again.</span>
+      <span class="presence-meta" x-show="$auth.inProgress">Authorizing…</span>
+      <span class="presence-meta" x-show="$auth.magicLinkSent">Magic link sent — check your inbox/spam, then return here.</span>
+      <span class="presence-meta" x-show="$auth.magicLinkExpired">Magic link expired — try again.</span>
+      <span class="presence-meta" x-show="$auth.isAnonymous">Signed in as a guest — presence works; sign in for a named identity.</span>
+      <span class="presence-meta" x-show="$auth.error" x-text="$auth.error" style="color:#dc2626"></span>
+    </section>
+
+    <!-- Native Presences ($presence) -->
+    <section class="presence-card col gap-3">
+      <div class="row-wrap gap-3" style="justify-content:space-between; align-items:center">
+        <strong class="small">Native Presences — <code>$presence</code></strong>
+        <span class="presence-meta" x-text="$presence.ready ? 'live' : ($presence.error || 'idle')"></span>
+      </div>
+      <span class="presence-meta">Opaque app-defined status over Appwrite's Presences API (server TTL, team-scoped). Needs sign-in; degrades to a notice otherwise.</span>
+      <div class="presence-user-ctl">
+        <button class="outlined small" @click="$presence.start({ auto: false })">Start</button>
+        <button class="ghost small" @click="$presence.stop()">Stop</button>
+        <button class="ghost small" @click="$presence.set('online')">online</button>
+        <button class="ghost small" @click="$presence.set('away')">away</button>
+        <button class="ghost small" @click="$presence.set('typing', { route: location.pathname })">typing</button>
+        <button class="ghost small" @click="$presence.clear()">clear</button>
+      </div>
+      <span class="presence-meta">Buttons set your status manually. (The plugin can also auto-flip online/away on window focus/blur via <code>start({ auto: true })</code> — off here so manual toggles aren't overridden.)</span>
+      <div class="col gap-2" x-show="$presence.list.length">
+        <template x-for="u in $presence.list" :key="u.userId">
+          <div class="presence-roster-row">
+            <span class="presence-swatch" :style="`background:${u.color}`"></span>
+            <span class="small" x-text="(u.metadata && u.metadata.name) || u.userId" style="flex:1"></span>
+            <span class="presence-chip" x-text="u.status"
+                  :style="`color:${u.status==='online'?'#16a34a':u.status==='away'?'#d97706':u.status==='typing'?'#2563eb':'var(--color-content-subtle)'}; border-color:currentColor`"></span>
+          </div>
+        </template>
+      </div>
+      <span class="presence-meta" x-show="!$presence.list.length" x-text="$presence.ready ? 'No one present yet.' : 'Sign in and Start to publish your status.'"></span>
+    </section>
+
+  </div>
 
   <div class="editor" x-route="/">
 
@@ -138,8 +482,7 @@
     </aside>
 
     <!-- Canvas — a partially built webpage; pure theme scope "site" (cascade target, not an area) -->
-    <main class="canvas bg-page col gap-6" x-edit.theme="site" data-edit-theme-file="test/themes/site.css"
-      style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
+    <main class="canvas bg-page col gap-6" x-edit.theme="site" data-edit-theme-file="test/themes/site.css" style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
 
       <!-- Static text -->
       <header class="col gap-2" x-edit.text="hero">

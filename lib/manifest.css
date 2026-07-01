@@ -723,7 +723,7 @@
             stroke-width: 1.5;
             transition: r var(--transition-duration, .1s) ease;
 
-            &:hover {
+            &:not(.map-point):hover {
                 r: 5
             }
         }
@@ -792,6 +792,37 @@
             pointer-events: none
         }
 
+        /* Timeline / Gantt */
+        & rect.gantt-segment {
+            fill: var(--color-chart-color, var(--color-chart-1));
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        & rect.gantt-point {
+            fill: var(--color-chart-color, var(--color-content-stark, oklch(20.5% 0 0)))
+        }
+
+        & text.gantt-track {
+            fill: var(--color-chart-label);
+            font-size: 0.75rem
+        }
+
+        /* Reference marker */
+        & line.gantt-marker {
+            stroke: var(--color-chart-color, var(--color-content-subtle, oklch(55.6% 0 0)));
+            stroke-width: 1.5;
+            stroke-dasharray: 3 3
+        }
+
+        & text.gantt-marker-label {
+            fill: var(--color-chart-color, var(--color-content-subtle, oklch(55.6% 0 0)));
+            font-size: 0.625rem
+        }
+
         /* Value labels drawn on/above segments */
         & text.value {
             fill: var(--color-content-stark, oklch(20.5% 0 0));
@@ -808,8 +839,32 @@
             }
         }
 
-        /* Heatmap cell — fill interpolates between the two heat tokens by the
-           per-cell --heat percentage (0% = low, 100% = high) */
+        /* World map city / point markers */
+        & circle.map-point {
+            fill: var(--color-chart-color, var(--color-accent-content, oklch(20.5% 0 0)));
+            stroke: var(--color-page, oklch(98.5% 0 0));
+            stroke-width: 1;
+            fill-opacity: 0.82;
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        /* World map regions */
+        & path.map-region {
+            fill: var(--color-chart-color, var(--color-surface-2, color-mix(in oklch, oklch(20.5% 0 0) 8%, transparent)));
+            stroke: var(--color-page, oklch(98.5% 0 0));
+            stroke-width: 0.4;
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        /* Heatmap cell */
         & rect.heat-cell {
             fill: color-mix(in oklch, var(--color-chart-heat-high, var(--color-chart-1)) var(--heat, 0%), var(--color-chart-heat-low, var(--color-surface-2)));
             transition: opacity var(--transition-duration, .1s) ease;
@@ -819,7 +874,7 @@
             }
         }
 
-        /* Legend — <footer> sibling below the SVG; <span> items, <i> swatches */
+        /* Legend */
         & footer {
             display: flex;
             flex-flow: row wrap;
@@ -844,9 +899,7 @@
             }
         }
 
-        /* Heatmap gradient legend — low label, ramp bar (spans the grid), high
-           label. Footer is padded to the chart margins in JS so the bar aligns
-           with the columns. */
+        /* Heatmap gradient legend */
         & footer.heat-legend {
             flex-wrap: nowrap;
             gap: 0.5rem;
@@ -859,8 +912,7 @@
             }
         }
 
-        /* Cursor-following tooltip — chrome comes from manifest.tooltip.css
-           (.tooltip); only the pointer-tracking positioning lives here */
+        /* Cursor-following tooltip */
         & .tooltip {
             position: absolute;
             left: 0;
@@ -1460,7 +1512,7 @@
 
 @layer components {
 
-    /* Field shell — inherits input tokens so it reads as a normal field */
+    /* Wrapper */
     :where(.combobox):not(.unstyle) {
         display: flex;
         flex-wrap: wrap;
@@ -1473,11 +1525,15 @@
         color: var(--color-field-inverse, oklch(43.9% 0 0));
         background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: var(--radius, 0.5rem);
-        transition: var(--transition, all .05s ease-in-out);
+        transition: var(--transition);
         cursor: text;
 
-        &:hover {
+        &:hover:has(> :where(input:not([type=hidden]), textarea, button):not([hidden])) {
             background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
+        }
+
+        &:not(:has(> :where(input:not([type=hidden]), textarea, button):not([hidden]))) {
+            cursor: default
         }
 
         &:focus-within {
@@ -1485,116 +1541,164 @@
             box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 30%, transparent)
         }
 
-        &.is-disabled {
-            opacity: .6;
+        &:has(.combobox-chip) {
+            padding-inline: calc(var(--spacing, 0.25rem) * 1.25)
+        }
+
+        &:has(> :where(input, textarea):disabled) {
+            opacity: .5;
             pointer-events: none
         }
-    }
 
-    /* Inner typing surface — transparent, grows with content */
-    :where(.combobox-editor):not(.unstyle) {
-        flex: 1 1 4rem;
-        width: auto;
-        min-width: 4rem;
-        height: auto;
-        margin: 0;
-        padding: 0;
-        color: inherit;
-        background: transparent;
-        field-sizing: content;
-
-        &:hover,
-        &:focus-visible {
+        /* Inner typing surface */
+        &> :where(input:not([type=hidden]), textarea):not(.unstyle) {
+            flex: 1 1 7rem;
+            min-width: 0;
+            width: auto;
+            height: auto;
+            margin: 0;
+            padding: 0;
+            color: inherit;
             background: transparent;
-            box-shadow: none
-        }
-    }
+            field-sizing: content;
 
-    /* Textarea editor — vertical auto-grow, full-width line */
-    :where(textarea.combobox-editor):not(.unstyle) {
-        flex-basis: 100%;
-        resize: none
+            &:hover,
+            &:focus-visible {
+                background: transparent;
+                box-shadow: none
+            }
+        }
+
+        &>textarea {
+            resize: none
+        }
     }
 
     /* Chips */
     :where(.combobox-chip):not(.unstyle) {
         display: inline-flex;
+        flex: 0 0 auto;
         align-items: center;
-        gap: calc(var(--spacing, 0.25rem) * 1.5);
+        gap: var(--spacing, 0.25rem);
         max-width: 100%;
         height: calc(var(--spacing-field-height, 2.25rem) - var(--spacing, 0.25rem) * 2.5);
-        padding-inline: calc(var(--spacing, 0.25rem) * 2);
+        padding-inline-start: calc(var(--spacing, 0.25rem) * 2);
         font-size: 0.875rem;
         color: var(--color-content-stark, oklch(43.9% 0 0));
-        background-color: var(--color-surface-2, var(--color-field-surface-hover));
+        background-color: var(--color-popover-surface, oklch(100% 0 0));
         border-radius: calc(var(--radius, 0.5rem) * 0.7);
-        user-select: none
-    }
-
-    :where(.combobox-chip-label):not(.unstyle) {
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap
-    }
+        user-select: none;
 
-    :where(.combobox-chip-remove):not(.unstyle) {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 1.15em;
-        height: 1.15em;
-        padding: 0;
-        font-size: 1em;
-        line-height: 1;
-        color: var(--color-content-neutral, oklch(43.9% 0 0));
-        background: transparent;
-        border-radius: 50%;
-        cursor: pointer;
+        /* Label */
+        &>span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap
+        }
 
-        &:hover {
-            color: var(--color-content-stark, oklch(43.9% 0 0));
-            background: color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 12%, transparent)
+        /* Remove button */
+        &>button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+            height: 100%;
+            aspect-ratio: 1 / 1;
+            padding: 0;
+            font-size: 1em;
+            line-height: 1;
+            color: var(--color-content-neutral, oklch(43.9% 0 0));
+            background: transparent;
+            border-radius: 0;
+            cursor: pointer;
+
+            &:hover {
+                color: var(--color-content-stark, oklch(43.9% 0 0));
+                background: color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 12%, transparent)
+            }
+        }
+
+        /* Non-removable */
+        &[data-locked] {
+            padding-inline-end: calc(var(--spacing, 0.25rem) * 2);
+            cursor: default
+        }
+
+        /* Failed validation */
+        &[aria-invalid="true"] {
+            color: var(--color-negative-inverse, oklch(44.4% 0.177 26.899));
+            background-color: var(--color-negative-surface, oklch(80.8% 0.114 19.571))
         }
     }
 
-    /* Invalid chip (failed validation) */
-    :where(.combobox-chip.is-invalid):not(.unstyle) {
-        color: var(--color-red-700, crimson);
-        background-color: color-mix(in oklch, crimson 15%, transparent)
+    /* Button trigger */
+    :where(.combobox)>button:not(.unstyle) {
+        flex: 1 1 auto;
+        align-self: stretch;
+        min-width: 7rem;
+        justify-content: flex-start;
+        gap: var(--spacing, 0.25rem);
+        height: auto;
+        min-height: calc(var(--spacing-field-height, 2.25rem) - var(--spacing, 0.25rem) * 2.5);
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        cursor: pointer;
+
+        &:hover {
+            background: transparent
+        }
+
+        /* Caret */
+        &::after {
+            content: '';
+            flex: none;
+            width: 1em;
+            height: 1em;
+            margin-inline-start: auto;
+            background-color: var(--color-content-subtle, oklch(55.6% 0 0));
+            mask: var(--icon-chevron-down, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m6 9 6 6 6-6'/%3E%3C/svg%3E")) center / contain no-repeat
+        }
     }
 
-    /* Trigger (editor:none button mode) — reuses field look */
-    :where(.combobox-trigger):not(.unstyle) {
-        justify-content: space-between;
-        gap: var(--spacing, 0.25rem)
+    /* Chip-less */
+    :where(.combobox):has(> :where(input:not([type=hidden]), textarea, button):not(.unstyle)):not(:has(.combobox-chip)) {
+        padding: 0;
+
+        &> :where(input:not([type=hidden]), textarea, button):not(.unstyle) {
+            align-self: stretch;
+            min-height: var(--spacing-field-height, 2.25rem);
+            padding: calc(var(--spacing, 0.25rem) * 1.25) var(--spacing-field-padding, 0.625rem)
+        }
     }
 
-    /* Listbox — base look comes from menu[popover]; these are combobox-only extras */
-    :where(.combobox-menu):not(.unstyle) {
+    /* Listbox */
+    :where(menu[role=listbox]):not(.unstyle) {
 
-        /* Active descendant mirrors hover */
-        & :where(li.is-active) {
+        /* Active descendant */
+        &[data-kbd] [role=option][aria-current="true"] {
             color: var(--color-field-inverse, oklch(43.9% 0 0));
             background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Filtered out */
-        & :where(li[hidden]) {
+        & [role=option][hidden] {
             display: none
         }
 
         /* Selected (multiple) */
-        & :where(li[aria-selected="true"]) {
+        & [role=option][aria-selected="true"] {
             font-weight: 600
         }
 
         /* "Add …" create row */
-        & :where(li.combobox-create) {
+        & .combobox-create {
             color: var(--color-content-neutral, oklch(43.9% 0 0))
         }
 
         /* Empty state */
-        & :where(.combobox-empty) {
+        & .combobox-empty {
             padding: 0.5rem;
             color: var(--color-content-subtle, oklch(55.6% 0 0));
             cursor: default;
@@ -1606,7 +1710,7 @@
     }
 
     /* Screen-reader-only live region */
-    :where(.combobox-live):not(.unstyle) {
+    :where(.combobox)> :where([role=status]) {
         position: absolute;
         width: 1px;
         height: 1px;
@@ -2754,7 +2858,7 @@
 @layer components {
 
     /* Group & tab bar wrappers */
-    :where([role=group]:has(button, [role=button], input, select),
+    :where([role=group]:has(button, [role=button], input, select, textarea, [onclick], [popovertarget], [x-dropdown], [\@click], [\@click\.stop], [\@click\.prevent], [x-on\:click], [x-on\:click\.stop], [x-on\:click\.prevent]),
         [role=tablist]:not(:has(>:not(button, a, [role=button], [role=tab], template)))):not(.unstyle) {
         display: flex;
         flex-flow: row nowrap;
@@ -2777,21 +2881,27 @@
             width: fit-content
         }
 
-        /* Groups connect children with shared borders */
+        /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>*:first-child {
-                border-start-end-radius: 0;
-                border-end-end-radius: 0
-            }
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
-            &>*:not(:first-child):not(:last-child) {
-                border-radius: 0
-            }
+                /* First participant */
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                    border-start-end-radius: 0;
+                    border-end-end-radius: 0
+                }
 
-            &>*:last-child {
-                border-start-start-radius: 0;
-                border-end-start-radius: 0
+                /* Middle participants */
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                    border-radius: 0
+                }
+
+                /* Last participant */
+                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                    border-start-start-radius: 0;
+                    border-end-start-radius: 0
+                }
             }
         }
 
@@ -3120,138 +3230,6 @@
         display: block;
         height: auto;
         padding: var(--spacing-field-padding, 0.625rem) calc(var(--spacing-field-padding, 0.625rem) * 1.3)
-    }
-}
-
-/* Manifest Presence - Visual Indicators */
-
-/* CSS Variables - move to manifest.theme.css after testing completes */
-:root {
-    /* Focus indicator */
-    --presence-focus-outline-width: 2px;
-    --presence-focus-outline-style: dashed;
-    --presence-focus-outline-offset: 2px;
-    --presence-focus-opacity: 0.6;
-    --presence-focus-color: #3b82f6;
-
-    /* Text caret indicator */
-    --presence-caret-width: 2px;
-    --presence-caret-height: 1.2em;
-    --presence-caret-color: #3b82f6;
-    --presence-caret-z-index: 1000;
-    --presence-caret-blink-duration: 1s;
-    --presence-caret-opacity-high: 1;
-    --presence-caret-opacity-low: 0.3;
-
-    /* Text selection highlight */
-    --presence-selection-color: #3b82f6;
-    --presence-selection-opacity: 0.2;
-    --presence-selection-z-index: 999;
-
-    /* Cursor indicator (if rendered) */
-    --presence-cursor-size: 8px;
-    --presence-cursor-border-width: 2px;
-    --presence-cursor-z-index: 1001;
-
-    /* Timing and threshold configuration (read by JavaScript) */
-    --presence-throttle: 300ms;
-    --presence-cleanup-interval: 30000ms;
-    --presence-min-change-threshold: 5px;
-    --presence-idle-threshold: 5000ms;
-}
-
-@layer elements {
-
-    /* Focus indicator - applied to elements focused by other users */
-    :where(.presence-focused) {
-        outline: var(--presence-focus-outline-width) var(--presence-focus-outline-style) var(--presence-focus-color);
-        outline-offset: var(--presence-focus-outline-offset);
-        opacity: var(--presence-focus-opacity);
-    }
-
-    /* Dynamic focus color via data attribute */
-    :where(.presence-focused[data-presence-focus-color]) {
-        --presence-focus-color: attr(data-presence-focus-color);
-        outline-color: var(--presence-focus-color);
-    }
-
-    /* Caret indicator for other users' text cursors */
-    :where(.presence-caret) {
-        position: absolute;
-        width: var(--presence-caret-width);
-        height: var(--presence-caret-height);
-        background-color: var(--presence-caret-color);
-        pointer-events: none;
-        z-index: var(--presence-caret-z-index);
-        animation: presence-caret-blink var(--presence-caret-blink-duration) infinite;
-    }
-
-    /* Dynamic caret color via data attribute */
-    :where(.presence-caret[data-presence-caret-color]),
-    [data-presence-caret-color] .presence-caret {
-        --presence-caret-color: attr(data-presence-caret-color);
-    }
-
-    /* Caret blink animation */
-    @keyframes presence-caret-blink {
-
-        0%,
-        50% {
-            opacity: var(--presence-caret-opacity-high);
-        }
-
-        51%,
-        100% {
-            opacity: var(--presence-caret-opacity-low);
-        }
-    }
-
-    /* Selection highlight for other users' text selections */
-    :where(.presence-selection) {
-        position: absolute;
-        background-color: var(--presence-selection-color);
-        opacity: var(--presence-selection-opacity);
-        pointer-events: none;
-        z-index: var(--presence-selection-z-index);
-    }
-
-    /* Dynamic selection color - plugin sets CSS variable via setProperty */
-    :where(.presence-selection) {
-        background-color: var(--presence-selection-color);
-    }
-
-    /* Cursor indicator (for mouse/touch cursors) */
-    :where(.presence-cursor) {
-        position: absolute;
-        width: var(--presence-cursor-size);
-        height: var(--presence-cursor-size);
-        border: var(--presence-cursor-border-width) solid var(--presence-cursor-color, var(--presence-focus-color));
-        border-radius: 50%;
-        background-color: var(--presence-cursor-color, var(--presence-focus-color));
-        pointer-events: none;
-        z-index: var(--presence-cursor-z-index);
-        transform: translate(-50%, -50%);
-    }
-
-    /* Cursor label (user name) */
-    :where(.presence-cursor-label) {
-        position: absolute;
-        top: calc(var(--presence-cursor-size) + 4px);
-        left: 50%;
-        transform: translateX(-50%);
-        background-color: var(--presence-cursor-color, var(--presence-focus-color));
-        color: oklch(98.5% 0 0);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 12px;
-        white-space: nowrap;
-        pointer-events: none;
-        z-index: calc(var(--presence-cursor-z-index) + 1);
-    }
-
-    /* Element that contains presence indicators */
-    :where([data-presence-caret-user], [data-presence-selection-user], [data-presence-focus-user]) {
-        position: relative;
     }
 }
 
@@ -3798,8 +3776,13 @@
 
 @layer components {
 
+    :where(.grid-table):not(.unstyle) {
+        display: grid;
+    }
+
     :where(table, .grid-table):not(.unstyle) {
         table-layout: auto;
+        align-items: start;
         width: 100%;
         max-width: 100%;
         overflow: hidden;
@@ -3833,7 +3816,6 @@
             font-size: 0.875rem;
             text-align: left;
             text-align: start;
-            overflow: hidden;
 
             /* Make elements within cell inline */
             &>*:not(template) {
@@ -3845,6 +3827,11 @@
                     margin-right: 4px
                 }
             }
+        }
+
+        /* Native cells clip */
+        :where(td, th) {
+            overflow: hidden
         }
 
         /* Footer row */

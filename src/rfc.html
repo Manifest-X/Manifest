@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Presence &amp; Collab — design RFC</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body { max-width: 52rem; margin: 2.5rem auto; padding: 0 1.25rem 4rem;
+           font: 16px/1.65 -apple-system, system-ui, sans-serif; color: #1f2430; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 2rem; }
+    h1 { font-size: 1.9rem; }
+    h2 { font-size: 1.35rem; border-bottom: 1px solid #e5e7eb; padding-bottom: .3rem; }
+    code { background: #f3f4f6; padding: .12em .35em; border-radius: 4px; font-size: .9em; }
+    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow: auto; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+    th, td { border: 1px solid #e5e7eb; padding: .45rem .65rem; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    blockquote { border-left: 3px solid #c7cdd6; margin: 1rem 0; padding: .2rem 1rem; color: #4b5563; background: #f9fafb; }
+    a { color: #4f46e5; }
+    .note { font-size: .8rem; color: #6b7280; border: 1px dashed #d1d5db; border-radius: 8px; padding: .5rem .75rem; margin-bottom: 1.5rem; }
+  </style>
+</head>
+<body>
+  <div class="note">Rendered preview of <code>PRESENCE-COLLAB-DESIGN.md</code> (canonical lives at the repo root; this <code>src/</code> copy + <code>rfc.html</code> are disposable preview helpers).</div>
+  <article id="out">Loading…</article>
+  <script>
+    fetch('/PRESENCE-COLLAB-DESIGN.md')
+      .then(r => r.text())
+      .then(t => {
+        if (/^\s*<!DOCTYPE/i.test(t)) { document.getElementById('out').textContent = 'Could not load the markdown (server returned HTML). Open src/PRESENCE-COLLAB-DESIGN.md directly.'; return; }
+        document.getElementById('out').innerHTML = marked.parse(t);
+      })
+      .catch(e => { document.getElementById('out').textContent = 'Failed to load: ' + e.message; });
+  </script>
+</body>
+</html>

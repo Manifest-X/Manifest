@@ -73,7 +73,7 @@
             stroke-width: 1.5;
             transition: r var(--transition-duration, .1s) ease;
 
-            &:hover {
+            &:not(.map-point):hover {
                 r: 5
             }
         }
@@ -142,6 +142,37 @@
             pointer-events: none
         }
 
+        /* Timeline / Gantt */
+        & rect.gantt-segment {
+            fill: var(--color-chart-color, var(--color-chart-1));
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        & rect.gantt-point {
+            fill: var(--color-chart-color, var(--color-content-stark, oklch(20.5% 0 0)))
+        }
+
+        & text.gantt-track {
+            fill: var(--color-chart-label);
+            font-size: 0.75rem
+        }
+
+        /* Reference marker */
+        & line.gantt-marker {
+            stroke: var(--color-chart-color, var(--color-content-subtle, oklch(55.6% 0 0)));
+            stroke-width: 1.5;
+            stroke-dasharray: 3 3
+        }
+
+        & text.gantt-marker-label {
+            fill: var(--color-chart-color, var(--color-content-subtle, oklch(55.6% 0 0)));
+            font-size: 0.625rem
+        }
+
         /* Value labels drawn on/above segments */
         & text.value {
             fill: var(--color-content-stark, oklch(20.5% 0 0));
@@ -158,8 +189,32 @@
             }
         }
 
-        /* Heatmap cell — fill interpolates between the two heat tokens by the
-           per-cell --heat percentage (0% = low, 100% = high) */
+        /* World map city / point markers */
+        & circle.map-point {
+            fill: var(--color-chart-color, var(--color-accent-content, oklch(20.5% 0 0)));
+            stroke: var(--color-page, oklch(98.5% 0 0));
+            stroke-width: 1;
+            fill-opacity: 0.82;
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        /* World map regions */
+        & path.map-region {
+            fill: var(--color-chart-color, var(--color-surface-2, color-mix(in oklch, oklch(20.5% 0 0) 8%, transparent)));
+            stroke: var(--color-page, oklch(98.5% 0 0));
+            stroke-width: 0.4;
+            transition: opacity var(--transition-duration, .1s) ease;
+
+            &:hover {
+                opacity: 0.82
+            }
+        }
+
+        /* Heatmap cell */
         & rect.heat-cell {
             fill: color-mix(in oklch, var(--color-chart-heat-high, var(--color-chart-1)) var(--heat, 0%), var(--color-chart-heat-low, var(--color-surface-2)));
             transition: opacity var(--transition-duration, .1s) ease;
@@ -169,7 +224,7 @@
             }
         }
 
-        /* Legend — <footer> sibling below the SVG; <span> items, <i> swatches */
+        /* Legend */
         & footer {
             display: flex;
             flex-flow: row wrap;
@@ -194,9 +249,7 @@
             }
         }
 
-        /* Heatmap gradient legend — low label, ramp bar (spans the grid), high
-           label. Footer is padded to the chart margins in JS so the bar aligns
-           with the columns. */
+        /* Heatmap gradient legend */
         & footer.heat-legend {
             flex-wrap: nowrap;
             gap: 0.5rem;
@@ -209,8 +262,7 @@
             }
         }
 
-        /* Cursor-following tooltip — chrome comes from manifest.tooltip.css
-           (.tooltip); only the pointer-tracking positioning lives here */
+        /* Cursor-following tooltip */
         & .tooltip {
             position: absolute;
             left: 0;

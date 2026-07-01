@@ -2,8 +2,13 @@
 
 @layer components {
 
+    :where(.grid-table):not(.unstyle) {
+        display: grid;
+    }
+
     :where(table, .grid-table):not(.unstyle) {
         table-layout: auto;
+        align-items: start;
         width: 100%;
         max-width: 100%;
         overflow: hidden;
@@ -37,7 +42,6 @@
             font-size: 0.875rem;
             text-align: left;
             text-align: start;
-            overflow: hidden;
 
             /* Make elements within cell inline */
             &>*:not(template) {
@@ -49,6 +53,11 @@
                     margin-right: 4px
                 }
             }
+        }
+
+        /* Native cells clip */
+        :where(td, th) {
+            overflow: hidden
         }
 
         /* Footer row */

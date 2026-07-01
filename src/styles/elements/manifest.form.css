@@ -3,7 +3,7 @@
 @layer components {
 
     /* Group & tab bar wrappers */
-    :where([role=group]:has(button, [role=button], input, select),
+    :where([role=group]:has(button, [role=button], input, select, textarea, [onclick], [popovertarget], [x-dropdown], [\@click], [\@click\.stop], [\@click\.prevent], [x-on\:click], [x-on\:click\.stop], [x-on\:click\.prevent]),
         [role=tablist]:not(:has(>:not(button, a, [role=button], [role=tab], template)))):not(.unstyle) {
         display: flex;
         flex-flow: row nowrap;
@@ -26,21 +26,27 @@
             width: fit-content
         }
 
-        /* Groups connect children with shared borders */
+        /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>*:first-child {
-                border-start-end-radius: 0;
-                border-end-end-radius: 0
-            }
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
-            &>*:not(:first-child):not(:last-child) {
-                border-radius: 0
-            }
+                /* First participant */
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                    border-start-end-radius: 0;
+                    border-end-end-radius: 0
+                }
 
-            &>*:last-child {
-                border-start-start-radius: 0;
-                border-end-start-radius: 0
+                /* Middle participants */
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                    border-radius: 0
+                }
+
+                /* Last participant */
+                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                    border-start-start-radius: 0;
+                    border-end-start-radius: 0
+                }
             }
         }
 

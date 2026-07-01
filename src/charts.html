@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Charts preview</title>
+  <link rel="stylesheet" href="/styles/core/manifest.theme.css">
+  <link rel="stylesheet" href="/styles/core/manifest.reset.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.chart.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.tooltip.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.range.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.typography.css">
+  <link rel="stylesheet" href="/styles/utilities/manifest.colors.css">
+  <link rel="stylesheet" href="/styles/utilities/manifest.utilities.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <script src="/scripts/manifest.charts.js"></script>
+</head>
+
+<body class="page" x-data>
+  <main class="content col" style="gap: 3rem; padding: 3rem 0;">
+
+    <!-- ============================ GANTT ============================ -->
+    <section class="col gap-4">
+      <h1 class="h2">Gantt</h1>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Single track — status strip over a day (fixed 00–24 window, now-line)</small>
+        <div x-chart="{
+          type: 'gantt',
+          min: '2026-06-25T00:00', max: '2026-06-26T00:00',
+          markers: [{ at: '2026-06-25T14:20', label: 'now' }],
+          colors: { Idle: 'var(--color-surface-3)', Active: 'var(--color-positive-content)', Degraded: 'var(--color-brand-content)' },
+          series: [{ name: 'API', data: [
+            { from: '2026-06-25T00:00', to: '2026-06-25T06:30', status: 'Idle' },
+            { from: '2026-06-25T06:30', to: '2026-06-25T11:00', status: 'Active' },
+            { from: '2026-06-25T11:00', to: '2026-06-25T11:40', status: 'Degraded' },
+            { from: '2026-06-25T11:40', to: '2026-06-25T19:00', status: 'Active' },
+            { from: '2026-06-25T19:00', to: '2026-06-26T00:00', status: 'Idle' }
+          ] }]
+        }"></div>
+      </div>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Multiple tracks — live-agent status (the swimlane / Gantt case)</small>
+        <div x-chart="{
+          type: 'gantt',
+          min: '2026-06-25T00:00', max: '2026-06-25T21:00',
+          colors: { Online: 'var(--color-positive-content)', Away: 'var(--color-brand-content)', 'Logged out': 'var(--color-surface-3)' },
+          series: [
+            { name: 'Bo-Chen', data: [
+              { from: '2026-06-25T00:00', to: '2026-06-25T17:12', status: 'Online' },
+              { from: '2026-06-25T17:12', to: '2026-06-25T21:00', status: 'Logged out' } ] },
+            { name: 'Ele', data: [
+              { from: '2026-06-25T00:00', to: '2026-06-25T04:10', status: 'Logged out' },
+              { from: '2026-06-25T04:10', to: '2026-06-25T04:25', status: 'Online' },
+              { from: '2026-06-25T04:25', to: '2026-06-25T13:00', status: 'Logged out' },
+              { from: '2026-06-25T13:00', to: '2026-06-25T17:21', status: 'Online' },
+              { from: '2026-06-25T17:21', to: '2026-06-25T21:00', status: 'Logged out' } ] },
+            { name: 'Fareedah', data: [
+              { from: '2026-06-25T00:00', to: '2026-06-25T17:12', status: 'Online' } ] },
+            { name: 'Hakan', data: [
+              { from: '2026-06-25T00:00', to: '2026-06-25T03:00', status: 'Online' },
+              { from: '2026-06-25T03:00', to: '2026-06-25T03:19', status: 'Away' },
+              { from: '2026-06-25T03:19', to: '2026-06-25T13:30', status: 'Logged out' },
+              { from: '2026-06-25T13:30', to: '2026-06-25T17:00', status: 'Online' } ] }
+          ]
+        }"></div>
+      </div>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Numeric axis — marathon effort by distance (unit, no time)</small>
+        <div x-chart="{
+          type: 'gantt',
+          unit: ' mi', min: 0, max: 26.2,
+          colors: { Easy: 'var(--color-positive-content)', Tempo: 'var(--color-brand-content)', Hard: 'var(--color-negative-content)' },
+          series: [{ name: 'Pace', data: [
+            { from: 0, to: 8, status: 'Easy' },
+            { from: 8, to: 18, status: 'Tempo' },
+            { from: 18, to: 23, status: 'Hard' },
+            { from: 23, to: 26.2, status: 'Easy' }
+          ] }]
+        }"></div>
+      </div>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Category axis — release across named stages (ordinal)</small>
+        <div x-chart="{
+          type: 'gantt',
+          labels: ['Plan','Build','Beta','GA','Sunset'],
+          colors: { 'On track': 'var(--color-positive-content)', 'At risk': 'var(--color-brand-content)' },
+          series: [
+            { name: 'Core', data: [{ from: 'Plan', to: 'GA', status: 'On track' }] },
+            { name: 'Mobile', data: [{ from: 'Build', to: 'Beta', status: 'At risk' }, { from: 'Beta', to: 'Sunset', status: 'On track' }] }
+          ]
+        }"></div>
+      </div>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Project phases — floating bars with labels (dates axis)</small>
+        <div x-chart="{
+          type: 'gantt',
+          dataLabels: true,
+          series: [
+            { name: 'Design', data: [{ from: '2026-01-06', to: '2026-02-10', status: 'Design' }] },
+            { name: 'Build', data: [{ from: '2026-02-03', to: '2026-04-15', status: 'Build' }] },
+            { name: 'QA', data: [{ from: '2026-04-01', to: '2026-05-05', status: 'QA' }] },
+            { name: 'Launch', data: [{ from: '2026-05-05', to: '2026-05-20', status: 'Launch' }] }
+          ]
+        }"></div>
+      </div>
+
+    </section>
+
+    <!-- ============================ MAP ============================ -->
+    <section class="col gap-4">
+      <h1 class="h2">World map</h1>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Sequential — value per country (ISO codes &amp; names)</small>
+        <div x-chart="{
+          type: 'map',
+          data: { US: 320, CA: 70, BR: 140, FR: 210, DE: 260, 'United Kingdom': 240, CN: 410, IN: 380, JP: 190, AU: 90, ZA: 60, NG: 110, RU: 130, MX: 95 }
+        }"></div>
+      </div>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Categorical — by continent</small>
+        <div x-chart="{
+          type: 'map',
+          data: { Africa: 'EMEA', Europe: 'EMEA', Asia: 'APAC', Oceania: 'APAC', 'North America': 'Americas', 'South America': 'Americas' }
+        }"></div>
+      </div>
+
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>City nodes — bubbles sized by value (names via author-supplied places)</small>
+        <div x-chart="{
+          type: 'map',
+          places: {
+            'New York': [40.71, -74.01], London: [51.5, -0.13], Tokyo: [35.69, 139.69],
+            'São Paulo': [-23.55, -46.63], Lagos: [6.45, 3.39], Sydney: [-33.87, 151.21],
+            Mumbai: [19.08, 72.88], Paris: [48.85, 2.35], Singapore: [1.29, 103.85]
+          },
+          points: [
+            { name: 'New York', value: 84 }, { name: 'London', value: 71 }, { name: 'Tokyo', value: 95 },
+            { name: 'São Paulo', value: 52 }, { name: 'Lagos', value: 38 }, { name: 'Sydney', value: 44 },
+            { name: 'Mumbai', value: 67 }, { name: 'Paris', value: 60 }, { name: 'Singapore', value: 55 }
+          ]
+        }"></div>
+      </div>
+
+    </section>
+
+    <!-- ============================ GAUGE ============================ -->
+    <section class="col gap-4">
+      <h1 class="h2">Gauge</h1>
+      <div class="row-wrap gap-8 items-start">
+        <div class="col gap-2" style="width: 280px;">
+          <small>Threshold zones</small>
+          <div x-chart="{ type: 'gauge', value: 88, unit: '%', height: 180, zones: [
+            { to: 50, color: 'var(--color-negative-content)' },
+            { to: 80, color: 'var(--color-brand-content)' },
+            { to: 100, color: 'var(--color-positive-content)' }
+          ] }"></div>
+        </div>
+        <div class="col gap-2" style="width: 280px;" x-data="{ score: 60 }">
+          <small>Reactive</small>
+          <div x-chart="{ type: 'gauge', value: score, unit: '%', height: 180 }"></div>
+          <input type="range" min="0" max="100" x-model.number="score">
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ HEATMAP ============================ -->
+    <section class="col gap-4">
+      <h1 class="h2">Heatmap</h1>
+      <div class="col gap-2" style="width: 460px; max-width: 100%;">
+        <small>With value labels</small>
+        <div x-chart="{
+          type: 'heatmap', dataLabels: true,
+          labels: ['Q1','Q2','Q3','Q4'],
+          series: [
+            { name: 'North', data: [12, 19, 24, 31] },
+            { name: 'South', data: [8, 14, 11, 22] },
+            { name: 'West', data: [20, 25, 28, 40] }
+          ],
+          height: 200
+        }"></div>
+      </div>
+    </section>
+
+  </main>
+</body>
+
+</html>

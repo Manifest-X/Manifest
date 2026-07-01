@@ -1,15 +1,4 @@
-/* Manifest Tooltips — singleton architecture.
- *
- * Instead of creating one <div popover="hint"> per x-tooltip trigger, this plugin
- * maintains ONE tooltip element per popover host (usually just document.body plus
- * optionally one per open popover). Every trigger with x-tooltip becomes a
- * lightweight content provider that asks the shared controller to show its text,
- * anchored to that trigger.
- *
- * Why: N triggers × 1 tooltip each = N extra DOM nodes that are empty 99% of the
- * time. For dense UIs like colorpicker libraries (~300+ swatches × 20 pickers),
- * this is the difference between a usable page and a laggy one.
- */
+/* Manifest Tooltips */
 
 // Hover delay from CSS var (with time-unit parsing). Defaults to 500ms.
 function getTooltipHoverDelay(element) {
@@ -160,7 +149,7 @@ function initializeTooltipPlugin() {
         let wasOpen = false;
         document.querySelectorAll('.tooltip[popover="hint"]:popover-open').forEach(el => {
             wasOpen = true;
-            try { el.hidePopover(); } catch {}
+            try { el.hidePopover(); } catch { }
         });
         // Restore each tooltip's prior aria-describedby on the trigger it had been
         // bound to. We can't reach the trigger from the popover alone, so we walk

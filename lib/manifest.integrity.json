@@ -1,12 +1,13 @@
 {
-  "manifest.appwrite.auth.js": "sha384-1Kz/Dlerds1/7iKrEVDIRbFDyngZ0L+f81td9eW3w4t3nGFU+w4gjyGhwn+IiTRM",
+  "manifest.appwrite.auth.js": "sha384-MkFnZiplXyEFnxLp+p6MqQ8I2vu2FWTEKS7QadDM93uMsHAntGBxE7yhb+EDZWI4",
   "manifest.appwrite.data.js": "sha384-00ulLT+GAIuPHA/rRT9p98vYlsyDzkyKXtg86BDQ6FGQa5vVVN+W6kuforniBAsz",
-  "manifest.appwrite.presence.js": "sha384-uxRpx9/Jj0kGtklH5QmUlAzD3zdSvFRfK6bcJQqxl+Bsf5tOo4zgwqJTQgtZoHQP",
-  "manifest.charts.js": "sha384-RuV7gWXt3s+JegxWgDieR/P5U99sbOYWiYHdJGe2uCJjDFU1cPp0mJ1QT55ec9uz",
-  "manifest.code.js": "sha384-nP6DncLx/UuJtloyVKMCOXwIBAq32DshTb/Lc0vVRBWX7kSbxiBnY5aEyqqvK8Kg",
+  "manifest.charts.js": "sha384-J9dLEW8iHWbg5DLRzMT3safd0FaLwc62cbtzerE4UCwfFFPsOM4OY+J2V2RbBTMa",
+  "manifest.chat.js": "sha384-oWr88HHjDjm/gN51nDHsEcbRHHMd9w9H6VsSywHpKqh/MCn0ahN6hlUynWojqIds",
+  "manifest.code.js": "sha384-BJSRJ7txA6fY660qX+SfEEBrEB0dOChHdHI4/9iNGz3rGqohEZdzs7qA3LuR1GJW",
   "manifest.color.js": "sha384-6Rv3LxyTcZNjrhtayQfqRdCx0uSZ4BiEbgEI98I62eTvp8Aw7LBIoNJ0Je1oktwL",
   "manifest.colorpicker.js": "sha384-Wqz0ZIbeIi7KarqqqSLsQk+7E/fMaKhb32hrq5/eWzX1yjqMrpPZKH8y+jZ3mfg+",
-  "manifest.components.js": "sha384-mzPFoM0vqL9dnTVLMN3OrmO+KCgSqGknM1fd7bM1xzYeCco5OaZi56IMR5RS5oad",
+  "manifest.combobox.js": "sha384-wwmzHsoYRSSj6YMUjxAak6vnqCtHok6J4Ku96yAQqmOfMwjtPvnSesqUvAHtXh5G",
+  "manifest.components.js": "sha384-wmyZT2WAqrJFzC+pIpE5XjqufIQtTnLYsA2ZPrS+X9hZTdjKVVMiCN3d+JGf80QR",
   "manifest.data.js": "sha384-bCYTYyAYNVkg5pSwGcoe07Dgf5B7JDN7GtOIQdS+BtrBStQwvjZtskiQ38Bncvrf",
   "manifest.datepicker.js": "sha384-NEb/H4vuR3CFtRcodHsm3jJjrcYW2JMpDlQKlgwTrzpMMTcDkFKYXzAYJD0gZ7Ov",
   "manifest.dropdowns.js": "sha384-a2j9Z1LWolyZANlfeBc1aIFQ0kf0UDeOZ8TetulYbpRS6T/zaD/OWSMGvz+gRehX",
@@ -23,9 +24,9 @@
   "manifest.tabs.js": "sha384-7Kb1EHIbqh1NOl8J1NMp087lcF1gVmwm55QNM3s7JamV6sYiH/WZbdnknAZFtsfW",
   "manifest.tailwind.js": "sha384-r/Jvqb+Piz21jUts10BbVAJoKkShOdJRVFpywyi4HPIi/OfOJq5CtPyWAPbdkMgt",
   "manifest.toasts.js": "sha384-ytd5rDbax/Ou9z23uedFXPZbxDPsk2E/pxCTq4WLvfv+os1qTI6kELp0kPp07g24",
-  "manifest.tooltips.js": "sha384-ADzAx9D0HWq2b46mvNG05iOwPmEWdiFZNpEOXONSbBxs4xj1B/bzNL7S3x2R9cS1",
+  "manifest.tooltips.js": "sha384-G+xn2DrF3QPfgmCt5q823E5092YXg9TJaswYLyq5Qg/mzL3tIX3siiedD77MOJkw",
   "manifest.url.parameters.js": "sha384-FIufiClqDx1rJpU/QUc9z/D43qClQ6Qm8rBahipbJl9BDHUvhrOsUDegmTWW7Tuf",
   "manifest.utilities.js": "sha384-HWyVkjQoDRlWFKDBQw4RQOYODkBcU72NHW6l1p4bhQv1RtN0/XtnjwIb+lQK6+zv",
-  "manifest.virtual.js": "sha384-J2+MpRskVH39R2DmHUib2bItuGsvSLEhPM+83iznrdfQFMZ63Ea6xwLeCsG04jOl",
-  "manifest.js": "sha384-gt/s7g3VPNs5TkVUIsvS/t+iDfyl3+DUnkKvc/tUY1bxgHnNEsuuEweXW8A9bLBw"
+  "manifest.virtual.js": "sha384-klEAlDCSGuzMZmO7NMSckKVeEJRR9UGWCesoPOOypX78EcPJ1/TUBAXz3MeSGx2s",
+  "manifest.js": "sha384-zPXrym9jwpYVdg4TJ1XPQVxQhz7uezdDubaO/MZDvLeiTufor+6lNJsTG75cYPXm"
 }

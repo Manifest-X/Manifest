@@ -1,5 +1,9 @@
 {
     "name": "Project Name",
+    "ai": {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5"
+    },
     "short_name": "Project Name",
     "description": "",
     "start_url": "/",
@@ -19,8 +23,12 @@
             "type": "image/png"
         }
     ],
-    "components": [],
-    "preloadedComponents": ["/test/components/promo-card.html", "/test/components/combobox-demo.html"],
+    "components": [
+        "/test/components/virtual-demo.html"
+    ],
+    "preloadedComponents": [
+        "/test/components/promo-card.html"
+    ],
     "data": {
         "manifest": "/manifest.json",
         "statusLabels": {
@@ -55,7 +63,9 @@
         "blogPosts": "/test/data/blog-posts.csv",
         "json": "/test/data/test.json",
         "chartSales": "/test/data/chart-sales.json",
-        "dpUi": { "locales": "/test/data/dp-ui.csv" },
+        "dpUi": {
+            "locales": "/test/data/dp-ui.csv"
+        },
         "yaml": "/test/data/test.yaml",
         "yamlArray": "/test/data/test-array.yaml",
         "projects": {
@@ -86,17 +96,17 @@
     "colorpicker": "colors",
     "payments": {
         "provider": "mockpay",
-        "endpoint": "https://fn.test/pay",
-        "state": { "url": "https://fn.test/state" }
+        "endpoint": "https://fn.test/pay"
     },
     "appwrite": {
         "projectId": "68cfcc610014415b6f9a",
-        "endpoint": "https://fra.cloud.appwrite.io/v1",
-        "devKey": "${APPWRITE_DEV_KEY}",
+        "endpoint": "${PUBLIC_APPWRITE_ENDPOINT}",
+        "devKey": "${PUBLIC_APPWRITE_DEV_KEY}",
         "auth": {
             "methods": [
                 "guest-manual",
                 "magic",
+                "otp",
                 "oauth"
             ],
             "teams": {

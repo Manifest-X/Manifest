@@ -125,6 +125,13 @@ const CONFIG = {
         'manifest.status.main.js'
     ],
 
+    // Chat subscripts order ($chat — conversation projection over an adapter; no UI)
+    chatSubscripts: [
+        'manifest.chat.store.js',
+        'manifest.chat.adapters.js',
+        'manifest.chat.main.js'
+    ],
+
     // Edit subscripts order (x-edit / $edit — element editing). Fragments of one IIFE:
     // core.js opens it, main.js closes it; order matters.
     editSubscripts: [
@@ -140,17 +147,6 @@ const CONFIG = {
         'manifest.edit.main.js'
     ],
 
-    // Data Appwrite presence subscripts (for manifest.appwrite.presence.js)
-    dataAppwritePresenceSubscripts: [
-        'presence/manifest.data.presence.utils.js',
-        'presence/manifest.data.presence.elements.js',
-        'presence/manifest.data.presence.events.js',
-        'presence/manifest.data.presence.database.js',
-        'presence/manifest.data.presence.realtime.js',
-        'presence/manifest.data.presence.visual.js',
-        'presence/manifest.data.presence.main.js'
-    ],
-
     // Core plugins that should load first
     corePlugins: ['scripts/manifest.components.js'],
 
@@ -163,6 +159,7 @@ const CONFIG = {
         'scripts/status/**',
         'scripts/payments/**',
         'scripts/edit/**',
+        'scripts/chat/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
@@ -232,14 +229,14 @@ function buildSubscripts() {
     // Build Appwrite data
     combineSubscripts(CONFIG.dataAppwriteSubscripts, 'manifest.appwrite.data.js', 'data');
 
-    // Build Appwrite presence
-    combineSubscripts(CONFIG.dataAppwritePresenceSubscripts, 'manifest.appwrite.presence.js', 'data');
-
     // Build payments
     combineSubscripts(CONFIG.paymentsSubscripts, 'manifest.payments.js', 'payments');
 
     // Build status
     combineSubscripts(CONFIG.statusSubscripts, 'manifest.status.js', 'status');
+
+    // Build chat
+    combineSubscripts(CONFIG.chatSubscripts, 'manifest.chat.js', 'chat');
 
     // Build edit
     combineSubscripts(CONFIG.editSubscripts, 'manifest.edit.js', 'edit');
@@ -671,8 +668,8 @@ function copyFilesToDist() {
         // Individual plugin files
         { source: 'scripts/manifest.appwrite.auth.js', dest: '../lib/manifest.appwrite.auth.js' },
         { source: 'scripts/manifest.appwrite.data.js', dest: '../lib/manifest.appwrite.data.js' },
-        { source: 'scripts/manifest.appwrite.presence.js', dest: '../lib/manifest.appwrite.presence.js' },
         { source: 'scripts/manifest.code.js', dest: '../lib/manifest.code.js' },
+        { source: 'scripts/manifest.combobox.js', dest: '../lib/manifest.combobox.js' },
         { source: 'scripts/manifest.components.js', dest: '../lib/manifest.components.js' },
         { source: 'scripts/manifest.colorpicker.js', dest: '../lib/manifest.colorpicker.js' },
         { source: 'scripts/manifest.datepicker.js', dest: '../lib/manifest.datepicker.js' },
@@ -688,6 +685,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.router.js', dest: '../lib/manifest.router.js' },
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
         { source: 'scripts/manifest.status.js', dest: '../lib/manifest.status.js' },
+        { source: 'scripts/manifest.chat.js', dest: '../lib/manifest.chat.js' },
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
         { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },
@@ -709,6 +707,7 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.button.css', dest: '../lib/manifest.button.css' },
         { source: 'styles/elements/manifest.chart.css', dest: '../lib/manifest.chart.css' },
         { source: 'styles/elements/manifest.checkbox.css', dest: '../lib/manifest.checkbox.css' },
+        { source: 'styles/elements/manifest.combobox.css', dest: '../lib/manifest.combobox.css' },
         { source: 'styles/elements/manifest.colorpicker.css', dest: '../lib/manifest.colorpicker.css' },
         { source: 'styles/elements/manifest.datepicker.css', dest: '../lib/manifest.datepicker.css' },
         { source: 'styles/elements/manifest.dialog.css', dest: '../lib/manifest.dialog.css' },
