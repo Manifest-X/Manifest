@@ -80,7 +80,9 @@ async function streamReal(res, payload) {
             model: payload.model || MODEL,
             max_tokens: payload.max_tokens || 1024,
             stream: true,
-            system: payload.system || undefined,
+            // cache_control: byte-identical system prompts hit the server-side
+            // prompt cache (~0.1× input price) — parity with the mnfst-run relay
+            system: payload.system ? [{ type: 'text', text: payload.system, cache_control: { type: 'ephemeral' } }] : undefined,
             messages: payload.messages || []
         })
     });

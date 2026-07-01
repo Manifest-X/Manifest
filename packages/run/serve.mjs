@@ -396,6 +396,32 @@ const aiConfig = (() => {
   try { return JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).ai || null; }
   catch { return null; }
 })();
+
+// Doc-grounding: `ai.system` (persona/instructions) + optional `ai.grounding`
+// (URL or project-relative file whose text is appended to the system prompt).
+// Resolved ONCE at startup so the combined prompt is byte-identical across
+// requests — the precondition for the server-side prompt cache to hit.
+let aiSystemResolved = (aiConfig && aiConfig.system) || '';
+async function resolveAiGrounding() {
+  const src = aiConfig && aiConfig.grounding;
+  if (!src) return;
+  try {
+    let text;
+    if (/^https?:\/\//.test(src)) {
+      const r = await fetch(src);
+      if (!r.ok) throw new Error(`http ${r.status}`);
+      text = await r.text();
+    } else {
+      text = readFileSync(join(root, src), 'utf8');
+    }
+    aiSystemResolved = (aiSystemResolved ? aiSystemResolved + '\n\n' : '')
+      + '<reference_documentation>\n' + text + '\n</reference_documentation>';
+    console.log(`[mnfst-run] AI grounding loaded from ${src} (${text.length} bytes)`);
+  } catch (e) {
+    console.warn(`[mnfst-run] AI grounding failed to load from ${src}: ${e.message} — continuing without it`);
+  }
+}
+if (aiConfig) resolveAiGrounding();
 const aiKey = process.env.ANTHROPIC_API_KEY || privateEnv.ANTHROPIC_API_KEY || '';
 if (publicEnv.PUBLIC_ANTHROPIC_API_KEY) {
   // The one footgun: a PUBLIC_-prefixed LLM key would ship to every visitor.
@@ -420,6 +446,12 @@ function streamMockAi(res) {
   res.on('close', () => clearInterval(tick));
 }
 async function streamRealAi(res, payload) {
+  // System prompt as a cache_control block: the (instructions + grounding) text
+  // is byte-identical every request, so Anthropic serves it from the prompt
+  // cache (~0.1× input price) after the first request — long doc-grounded
+  // prompts cost near-nothing per message. Per-request payload.system overrides
+  // (adapter opts) still work but won't share the project-level cache entry.
+  const systemText = payload.system || aiSystemResolved;
   const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': aiKey, 'anthropic-version': '2023-06-01' },
@@ -427,7 +459,7 @@ async function streamRealAi(res, payload) {
       model: payload.model || aiConfig.model || 'claude-haiku-4-5',
       max_tokens: payload.max_tokens || aiConfig.maxTokens || 1024,
       stream: true,
-      system: payload.system || aiConfig.system || undefined,
+      system: systemText ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }] : undefined,
       messages: payload.messages || []
     })
   });
