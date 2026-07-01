@@ -1,18 +1,10 @@
-/*  Manifest Payments
+/*  Manifest Payments — config
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
-/*
-/*  Provider-agnostic payments surface (x-pay / $pay).
-/*  The client only ever talks to YOUR function endpoint — never a provider's
-/*  secret API directly. Session creation, fulfilment webhooks and any mutation
-/*  live server-side. See manifest.payments.core.js for the contract.
 */
 
-/* Payments config */
-
-// Refuse strings still containing an unresolved ${VAR}. The loader interpolates
-// against window.env before caching the manifest, so a literal ${VAR} here means
-// an undefined env var — fail loud rather than POST it to the function verbatim.
+// Refuse strings still containing an unresolved ${VAR} — fail loud rather than
+// POST an undefined env var to the function verbatim.
 function resolvedOrNull(value, fieldName) {
     if (typeof value !== 'string') return value;
     if (/\$\{[^}]+\}/.test(value)) {
@@ -35,13 +27,6 @@ async function ensureManifest() {
 }
 
 // Normalize manifest.payments into a stable config object.
-//   provider   default adapter key (e.g. "revolut", "stripe", "paddle")
-//   endpoint   YOUR function base — mints checkout/portal sessions, verifies webhooks
-//   mode       default modality hint: "redirect" | "overlay" (server may override)
-//   publicKey  publishable key for overlay SDK init (safe to expose; NOT a secret key)
-//   managed    true = Manifest-hosted server moment (endpoint inferred)
-//   state      optional reactive-state source for $pay.state: { url } (GET) — for
-//              managed mode. Appwrite-backed projects read state via $x instead.
 let _cache = null;
 async function getPaymentsConfig() {
     if (_cache) return _cache;

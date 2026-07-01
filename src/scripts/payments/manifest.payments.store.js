@@ -1,8 +1,4 @@
-/* Payments store */
-//
-// Reactive in-flight + server-defined state for $pay. Commerce semantics are NOT
-// modelled here — `state` is whatever your function returns (schema-less). The
-// core engine (plain JS) mutates these fields via Alpine.store('pay').
+/* Manifest Payments — reactive store for $pay */
 
 function initializePaymentsStore() {
     if (typeof Alpine === 'undefined') return;

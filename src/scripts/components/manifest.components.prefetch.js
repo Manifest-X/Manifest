@@ -1,22 +1,4 @@
-// Components — route-level prefetch.
-//
-// Two enhancements that run on top of the existing on-encounter loader:
-//
-//   1. Parallel batch on route change. When manifest:route-change fires,
-//      scan the [x-route] subtrees that match the new route and call
-//      loadComponent() on every <x-*> tag inside them. The loader
-//      deduplicates fetches, so calling it for components that the
-//      regular swapping logic is already mounting is harmless — but
-//      pre-issuing in parallel saves 50–200 ms vs. one-by-one fetches.
-//
-//   2. Prefetch on hover. When the pointer enters an internal <a href>,
-//      derive the target pathname, find the [x-route] subtree(s) that
-//      would match it, and prefetch their components. By the time the
-//      user clicks the link, the components are warm in the loader's
-//      cache and navigation feels instant.
-//
-// Both phases require zero author configuration. Manifest auto-discovers
-// what to prefetch from the existing [x-route] DOM structure.
+/* Manifest Components — route-level prefetch (batch on route change + on hover) */
 
 (function () {
     'use strict';
@@ -24,20 +6,15 @@
     // <x-*> tag pattern — lowercase, hyphenated.
     const TAG_RE = /^x-[a-z][a-z0-9-]*$/;
 
-    // Framework-provided web components (registered by Manifest plugins
-    // themselves, not as project components in manifest.json). Skip these
-    // when scanning for project components to prefetch.
+    // Framework web components (not project components) — skip when scanning.
     const FRAMEWORK_TAGS = new Set(['code', 'code-group']);
 
-    // Anchors we've already issued a hover-prefetch for. WeakSet so DOM
-    // garbage-collects naturally as elements leave the tree.
+    // Anchors already hover-prefetched. WeakSet so detached nodes GC naturally.
     const prefetchedAnchors = new WeakSet();
 
     function loader() { return window.ManifestComponentsLoader; }
 
-    // Match a single route pattern against a normalized pathname (no
-    // leading/trailing slashes, '/' represented as '/'). Mirrors the
-    // router visibility logic so prefetch targets the same subtrees.
+    // Match a route pattern against a normalized pathname. Mirrors router visibility.
     function routeMatches(routeValue, pathname) {
         const pieces = String(routeValue || '').split(',').map((s) => s.trim()).filter(Boolean);
         let matched = false;
@@ -76,10 +53,7 @@
     function discoverComponentNames(root) {
         const names = new Set();
         if (!root || !root.querySelectorAll) return names;
-        // querySelectorAll('*') is the fastest path for "every descendant".
-        // We filter by tag name in JS — there's no CSS selector for "tag
-        // name starts with x-". A page typically has a few thousand nodes,
-        // which scans in well under a millisecond.
+        // No CSS selector for "tag starts with x-", so scan all and filter in JS.
         root.querySelectorAll('*').forEach((el) => {
             const tag = el.tagName.toLowerCase();
             if (!tag.startsWith('x-') || !TAG_RE.test(tag)) return;
@@ -124,10 +98,7 @@
             prefetchForRoute(pathname);
         });
 
-        // 2) Hover prefetch. Use pointerover (bubbles) and check the closest
-        // anchor on each event so we get a single trigger per anchor entry
-        // without needing pointerenter (which doesn't bubble). Dedup via
-        // a WeakSet so repeat moves within the anchor don't re-scan.
+        // 2) Hover prefetch. pointerover bubbles (pointerenter doesn't); WeakSet dedups.
         document.addEventListener('pointerover', (e) => {
             if (!e.target || !e.target.closest) return;
             const a = e.target.closest('a[href]');

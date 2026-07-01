@@ -367,7 +367,6 @@ const EDIT_ENABLED = process.argv.includes('--edit') || process.env.MNFST_EDIT =
 // HTML response. Empty string when no public vars exist — the injection step
 // becomes a no-op for projects whose .env holds only server-side secrets.
 const { public: publicEnv, private: privateEnvNames, privateValues: privateEnv } = loadEnvFile(root);
-
 // Appwrite dev proxy: when APPWRITE_PROXY_TARGET is set (server-side .env), the
 // dev server proxies /_appwrite/* to that Appwrite origin so the session cookie
 // is FIRST-PARTY on localhost. Cross-origin Appwrite Cloud blocks the third-party
@@ -385,6 +384,7 @@ if (APPWRITE_PROXY_TARGET) {
   // (production sets PUBLIC_APPWRITE_ENDPOINT to the real/custom domain instead).
   envInjectScript += `<script>window.env=Object.assign(window.env||{},{PUBLIC_APPWRITE_ENDPOINT:location.origin+'${APPWRITE_PROXY_PREFIX}/v1'});</script>`;
 }
+
 
 // --- Turnkey AI relay (gates the same-origin /_ai/chat route) ---------------
 // Reads the optional `ai` block from manifest.json and the LLM key from .env

@@ -1,6 +1,6 @@
     /* ---- Arm / disarm an area for its regime + caps ---- */
-    // Static: address every element by structural path + capture per-node baselines (class,
-    // style, text) and the initial child order, so edits store as tiny typed ops/permutations.
+    // Static: address each element by structural path, capture per-node baselines
+    // and child order so edits store as typed ops/permutations.
     function markStatic(area) {
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const markEl = (el) => { const p = pathOf(el, area); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
@@ -33,14 +33,8 @@
     const isActive = (a) => !!a && (!a._edit.gated || (estore && estore.active));
     const anyActive = () => areas().some(isActive);
     function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); }
-    // The plugin is storage-agnostic. The overlay ALREADY auto-persists to localStorage
-    // on every commit (saveState). These expose the edit set so an author can route it to
-    // their real sink — localStorage (default), Appwrite/cloud, or a custom endpoint:
-    //   $edit.export()  → the raw delta log + cursor (the A-side overlay; e.g. push to cloud)
-    //   $edit.patches() → resolved B-side source patches (for an authoring write-back)
-    //   $edit.publish() → hand patches to the configured sink: $edit.onPublish (author's
-    //                     function/Promise) if set, else the local dev-server source writer
-    //                     (authoring only — never wire this to anonymous end users).
+    // Build B-side source patches from the edit set (storage-agnostic; overlay
+    // already auto-persists to localStorage on commit).
     function buildPatches() {
         const patches = Object.entries(fold()).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
         const toEdits = (paths) => { const e = []; Object.entries(paths).forEach(([p, props]) => Object.entries(props).forEach(([prop, value]) => e.push({ path: p, prop, value }))); return e; };
@@ -69,8 +63,8 @@
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() { if (estore) estore.active = false; areas().forEach(a => { if (a._edit.gated && a._armed) { disarmArea(a); a._armed = false; } }); closeMenu(); refresh(); }
-    // Runtime lock — META (status, not content): applied immediately, NOT in the content log.
-    // Locks the target AND its subtree (descendants without their own x-edit inherit it).
+    // Runtime lock — meta, not content: applied immediately, not logged. Locks
+    // the target and its subtree (descendants without their own x-edit inherit).
     function setLock(el, val) {
         if (!el) return;
         if (!el._edit) { el._edit = { key: `lock-${++autoN}`, caps: new Set(), lock: val, gated: false }; el.setAttribute('data-edit-area', ''); editEls.add(el); }

@@ -1,4 +1,4 @@
-/* Payments core */
+/* Manifest Payments — core engine (client ↔ function contract) */
 //
 // CONTRACT (client → your function):
 //   POST {endpoint}  { ref, payload, context }
@@ -7,24 +7,19 @@
 //     → { mode:'overlay',  provider, url }         URL-in-a-modal overlay
 //   GET  {state.url}?workspace=…&user=…            → arbitrary entitlement record
 //
-// `ref` is OPAQUE — a string only your function understands (price id, plan code,
-// cart token, "portal", …). Manifest never interprets it. All commerce semantics,
-// secret keys and webhook fulfilment live behind the function. Fulfilment is the
-// webhook — never trust this redirect/callback; always reconcile against state.
+// `ref` is opaque — Manifest never interprets it. Fulfilment is the webhook, not
+// this redirect/callback; always reconcile against state.
 
 const RETURN_PARAM = 'checkout';
 
 function store() { return window.Alpine?.store('pay') || null; }
 function setStore(patch) { const s = store(); if (s) Object.assign(s, patch); }
 
-// Navigation indirection. Defaults to a full-page redirect; override via
-// setNavigate() to intercept (SPA router integration, or test harnesses that
-// must not actually leave the page).
+// Navigation indirection; override via setNavigate() for SPA routers or tests.
 let _navigate = (url) => window.location.assign(url);
 function setNavigate(fn) { if (typeof fn === 'function') _navigate = fn; }
 
-// Identity context, auto-injected so the function knows who/which workspace pays.
-// Read from the auth store if the auth plugin is present; absent otherwise.
+// Identity context, auto-injected from the auth store when present.
 function getContext() {
     const ctx = {};
     try {
@@ -47,9 +42,7 @@ async function postSession(config, ref, payload, preferMode) {
         body: JSON.stringify({ ref, payload: payload || null, context })
     });
     if (!res.ok) {
-        // Surface the function's own human message (it returns { error } /
-        // { message } strings meant for the shopper) rather than a bare status
-        // code. Fall back to a friendly generic if the body isn't readable JSON.
+        // Surface the function's own { error }/{ message } over a bare status code.
         let message = '';
         try {
             const body = await res.json();
@@ -60,8 +53,8 @@ async function postSession(config, ref, payload, preferMode) {
     return res.json();
 }
 
-// Drive a server response into the right modality. Overlay degrades to redirect
-// when no adapter supports it — the universal floor, so no author hits a wall.
+// Drive a server response into the right modality; overlay degrades to redirect
+// when no adapter supports it.
 async function dispatch(response, config) {
     const mode = response?.mode || 'redirect';
     if (mode === 'overlay') {
@@ -81,10 +74,8 @@ async function dispatch(response, config) {
     return { status: 'redirected' };
 }
 
-// Public: initiate a payment flow for an opaque ref.
-//   ref      string the function understands, OR an absolute URL for a plain
-//            link-through with no server (the "embed a checkout link today" case).
-//   payload  optional opaque data forwarded to the function (+ optional .context).
+// Public: initiate a payment flow for an opaque ref (or an absolute URL for a
+// zero-server link-through).
 async function initiate(ref, payload = {}) {
     setStore({ loading: true, error: null });
     try {
@@ -110,12 +101,10 @@ async function initiate(ref, payload = {}) {
     }
 }
 
-// Convenience: open the billing/customer portal. Just another ref ("portal" by
-// default) the function maps to a server-minted portal session.
+// Convenience: open the billing/customer portal (just another ref).
 function portal(ref = 'portal', payload = {}) { return initiate(ref, payload); }
 
-// Read server-defined entitlement state into $pay.state (managed mode). Appwrite
-// projects should read state reactively via $x instead of configuring state.url.
+// Read server-defined entitlement state into $pay.state (managed mode).
 async function refreshState() {
     const config = await window.ManifestPaymentsConfig.getPaymentsConfig();
     if (!config?.state?.url) return null;
@@ -135,15 +124,9 @@ async function refreshState() {
     }
 }
 
-// On return from a redirect checkout, settle: the webhook is the source of truth,
-// so we re-pull state rather than trusting the success redirect. Strips our marker
-// from the URL afterward. Success pages should carry ?checkout=1 (set as the
-// function's success_url) so we know to reconcile.
-//
-// The provider's webhook can land seconds AFTER the buyer does, so a single
-// refresh can read pre-payment state. Re-poll on a short backoff to absorb the
-// lag — each refresh overwrites $pay.state, so the page settles on the granted
-// record without author code.
+// On return from a redirect checkout (success_url carries ?checkout=…), re-pull
+// state and strip the marker. The webhook can land seconds after the buyer, so
+// re-poll on a backoff to absorb the lag; each refresh overwrites $pay.state.
 const RETURN_POLL_MS = [2000, 5000, 10000];
 function handleReturn() {
     try {

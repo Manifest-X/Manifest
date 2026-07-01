@@ -1,21 +1,14 @@
 /*  Manifest Status — main
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
-/*
-/*  Wires the store, polls each entry's signals, and registers the $status
-/*  magic. $status.<name> → rolled-up health object; $status.overall → worst
-/*  across all entries. The plugin renders nothing: the author drives their own
-/*  UI from these reactive values (:class, x-show, x-text, etc.).
 */
 
 (function () {
     'use strict';
 
-    /* Shared global: ManifestUI — universal `_ui` text resolver. Defined once
-       and shared across plugins (datepicker/colorpicker/charts/status); the
-       `if (!window.ManifestUI)` guard means whichever loads first wins. Lets
-       baked-in labels be localized/overridden via any loaded data source's
-       `_ui` key, locale-reactive. Kept behaviourally identical across copies. */
+    /* Shared `_ui` text resolver — defined once across plugins, first load wins.
+       Localizes baked-in labels via any data source's `_ui` key. Kept identical
+       across copies. */
     if (!window.ManifestUI) {
         window.ManifestUI = {
             _loadedSourceNames() {
@@ -65,9 +58,8 @@
 
     function store() { return window.Alpine && window.Alpine.store('status'); }
 
-    // Debounce state changes: a new state must be observed `confirmations`
-    // times in a row before it replaces the committed state. confirmations:1
-    // (default) commits immediately.
+    // Debounce: a new state must be observed `confirmations` times in a row
+    // before it replaces the committed one (default 1 = commit immediately).
     function applyHysteresis(entry, observed) {
         const need = entry.confirmations || 1;
         const prev = committed[entry.name];
@@ -127,8 +119,7 @@
 
         const rolled = Signals.rollup(entry, resolved);
 
-        // Manual override wins and bypasses hysteresis; otherwise debounce the
-        // observed state through applyHysteresis.
+        // Manual override wins and bypasses hysteresis.
         let state, message = null;
         if (overrides[entry.name]) {
             state = overrides[entry.name].state;
@@ -151,8 +142,7 @@
             hist = rolled.history.slice(-entry.history);
             while (hist.length < entry.history) hist.unshift('unknown');
         } else {
-            // Pre-fill with `unknown` so the bar is always full width and fills
-            // from the right as checks accrue (StatusPage-style no-data segments).
+            // Pre-fill with `unknown` so the bar is full-width and fills from the right.
             hist = histories[entry.name] ? histories[entry.name].slice() : new Array(entry.history).fill('unknown');
             hist.push(state);
             if (hist.length > entry.history) hist = hist.slice(hist.length - entry.history);
@@ -209,8 +199,7 @@
         return known.reduce((a, b) => (level(b.state) > level(a.state) ? b : a)).state;
     }
 
-    // Default English labels per state; overridable per-locale via any loaded
-    // data source's `_ui.status.label` (same mechanism as datepicker/colorpicker).
+    // Default English labels; overridable per-locale via a data source's `_ui.status.label`.
     const UI_FALLBACK = {
         label: {
             operational: 'Operational',
@@ -222,9 +211,7 @@
         }
     };
 
-    // Resolve `$x`/`$locale`/`${…}` reference strings in `_ui` values (same
-    // treatment as the colorpicker's _resolveRefString — kept semantically
-    // identical). Reading inside the caller's effect registers the deps.
+    // Resolve `$x`/`$locale`/`${…}` reference strings in `_ui` values.
     function _resolveRefString(val) {
         if (typeof val !== 'string' || val.length === 0) return val;
         const trimmed = val.trim();
@@ -243,13 +230,9 @@
         return val;
     }
 
-    // Human label for a state string, localized through `_ui` when available.
-    // Falls back to the English default, then a generic title-case for any
-    // custom/unrecognized state.
+    // Human label for a state, localized through `_ui`, else title-cased.
     function formatStateLabel(state) {
-        // Dep on the data store version so labels re-resolve when a `_ui`
-        // source loads late or reloads on locale switch (same fix as the
-        // datepicker's ui effect).
+        // Dep on the data store version so labels re-resolve when a `_ui` source loads late.
         try { void (window.Alpine && Alpine.store('data')?._dataVersion); } catch (_) { }
         const ui = window.ManifestUI ? window.ManifestUI.resolve('status', UI_FALLBACK) : UI_FALLBACK;
         const labels = (ui && ui.label) || UI_FALLBACK.label;
@@ -257,15 +240,14 @@
         return String(state == null ? '' : state).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     }
 
-    // Reserved accessor names — never treated as entry names or enumerated, so
-    // `x-for="(service, name) in $status"` iterates only real services.
+    // Reserved accessor names — never treated as entries or enumerated.
     const RESERVED = new Set(['overall', 'all', 'ready', 'incidents', 'label', 'set', 'clear', 'refresh', 'beat']);
 
     function setOverride(name, state, message) {
         overrides[name] = { state, message: message || null };
         committed[name] = state;
         delete pending[name];
-        // An operator update is an incident: open/append, or resolve when set back to operational.
+        // An operator update is an incident: open/append, or resolve when back to operational.
         if (state === 'operational') { if (message) logIncident(name, state, message); resolveIncident(name); }
         else { logIncident(name, state, message); }
         const e = config && config.entries[name];

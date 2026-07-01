@@ -1,17 +1,12 @@
 /*  Manifest Status — config
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
-/*
-/*  Reads the top-level `status` block from manifest.json and normalizes each
-/*  named entry into { signals[], rollup, refresh, ... }. Pure signal layer —
-/*  no UI. Each entry resolves to $status.<name> (see manifest.status.main.js).
 */
 
 (function () {
     'use strict';
 
-    // Infer a signal's provider type from which field is present (mirrors the
-    // data plugin's field-presence inference).
+    // Infer provider type from which field is present.
     function normalizeSignal(sig) {
         if (typeof sig === 'string') return { type: 'probe', url: sig, label: sig };
         if (!sig || typeof sig !== 'object') return { type: 'unknown', label: 'unknown' };
@@ -50,7 +45,7 @@
                 if (def.confirmations) opts.confirmations = def.confirmations;
                 if (def.staleAfter) opts.staleAfter = def.staleAfter;
             } else {
-                // Single-signal object (carries its own provider field).
+                // Single-signal object.
                 signals = [normalizeSignal(def)];
                 if (def.refresh) opts.refresh = def.refresh;
             }
@@ -61,9 +56,8 @@
         return { name, signals, ...opts };
     }
 
-    // Resolve manifest.json. Reuse a cached copy only if it actually carries the
-    // `status` block — other plugins may cache a normalized manifest that omits
-    // keys they don't consume, so fall through to a fresh fetch otherwise.
+    // Reuse a cached manifest only if it carries the `status` block; some plugins
+    // cache a normalized copy that omits keys they don't consume.
     async function ensureStatusManifest() {
         const cached = window.ManifestComponentsRegistry?.manifest || window.__manifestLoaded;
         if (cached && cached.status) return cached;
