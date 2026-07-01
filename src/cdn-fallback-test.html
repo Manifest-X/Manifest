@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- Scratch page: CDN fallback-chain test. First host is dead on purpose;
+     the loader must fall through to cdn.manifestx.dev and still boot. -->
+
+<head>
+    <meta charset="UTF-8">
+    <title>CDN fallback test</title>
+    <link rel="manifest" href="/manifest.json">
+    <script src="/scripts/manifest.js" data-version="0.5.165" data-plugins="toasts,tabs"
+        data-cdn="https://dead.invalid/npm, https://cdn.manifestx.dev/npm"></script>
+</head>
+
+<body>
+    <div x-data="{ ok: 'FALLBACK-OK' }">
+        <p id="probe" x-text="ok">loading…</p>
+    </div>
+</body>
+
+</html>
