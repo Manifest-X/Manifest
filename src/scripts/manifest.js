@@ -274,7 +274,7 @@
 	// Plugin dependencies: plugins that require other plugins to be loaded first
 	const PLUGIN_DEPENDENCIES = {
 		'appwrite-data': ['data'],
-		'appwrite-presence': ['data']
+		'appwrite-presence': ['data', 'appwrite-auth']
 	};
 
 	// Derive default plugin list from manifest (only load data/localization/components when manifest needs them)
@@ -470,7 +470,7 @@
 		))) {
 			plugins.push('appwrite-data');
 		}
-		if (manifest.data?.presence?.appwriteTableId) {
+		if (manifest.appwrite?.presence) {
 			plugins.push('appwrite-presence');
 		}
 		return plugins;
