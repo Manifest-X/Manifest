@@ -129,6 +129,7 @@ const CONFIG = {
     chatSubscripts: [
         'manifest.chat.store.js',
         'manifest.chat.adapters.js',
+        'manifest.chat.adapters.llm.js',
         'manifest.chat.main.js'
     ],
 

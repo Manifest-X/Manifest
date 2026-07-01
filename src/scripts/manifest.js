@@ -479,6 +479,15 @@
 		return [];
 	}
 
+	// Detect the chat plugin from manifest.json content.
+	// Opt-in / auto-loaded when an `ai` (or `chat`) config block is present.
+	function detectChatPlugins(manifest) {
+		if (!manifest || typeof manifest !== 'object') return [];
+		if ((manifest.ai && typeof manifest.ai === 'object') ||
+			(manifest.chat && typeof manifest.chat === 'object')) return ['chat'];
+		return [];
+	}
+
 	// Parse data attributes
 	function parseDataAttributes() {
 		// Try to get current script first, then fall back to querySelector
@@ -551,7 +560,7 @@
 	// Expose API
 	window.Manifest = {
 		loadPlugin: function (pluginName, version = DEFAULT_VERSION) {
-			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, 'payments'];
+			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, 'payments', 'chat'];
 			if (!allPlugins.includes(pluginName)) {
 				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
 				return Promise.reject(new Error(`Unknown plugin: ${pluginName}`));
@@ -644,7 +653,8 @@
 				const corePlugins = getDefaultPluginsFromManifest(manifest);
 				const appwritePlugins = detectAppwritePlugins(manifest);
 				const paymentsPlugins = detectPaymentsPlugins(manifest);
-				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins, ...paymentsPlugins]);
+				const chatPlugins = detectChatPlugins(manifest);
+				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins, ...paymentsPlugins, ...chatPlugins]);
 			} else {
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {
