@@ -183,9 +183,9 @@
             A.Permission.delete(A.Role.user(user.$id))
         ];
 
-        // name/color in metadata for rosters
+        // name/color in metadata for rosters (name null when unknown — display label is the author's)
         const meta = Object.assign(
-            { name: user.name || user.email || 'Anonymous', color: userColor(user.$id) },
+            { name: user.name || user.email || null, color: userColor(user.$id) },
             ctx.metadata || {}
         );
 
