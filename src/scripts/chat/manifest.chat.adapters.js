@@ -129,7 +129,20 @@
                 setTimeout(() => deliver(target, msg), 60);   // server echo (reconciles media/status by id)
                 return { id: msg.id, ts: msg.ts, conversationId: target.id };
             },
-            async react(cid, mid, emoji) { const c = backend.convs.get(cid); const msg = c && c.messages.find(x => x.id === mid); if (msg) { msg.reactions = [{ emoji, count: 1, byMe: true, by: [backend.me.id] }]; emit(cid, h => h.onReaction && h.onReaction(mid, msg.reactions)); } return { ok: true }; },
+            async react(cid, mid, emoji) {
+                // toggle: off if I reacted, join if others did, add if new
+                const c = backend.convs.get(cid); const msg = c && c.messages.find(x => x.id === mid);
+                if (msg) {
+                    const rs = (msg.reactions || []).map(r => Object.assign({}, r));
+                    const r = rs.find(x => x.emoji === emoji);
+                    if (r && r.byMe) { r.count--; r.byMe = false; }
+                    else if (r) { r.count++; r.byMe = true; }
+                    else rs.push({ emoji, count: 1, byMe: true });
+                    msg.reactions = rs.filter(x => x.count > 0);
+                    emit(cid, h => h.onReaction && h.onReaction(mid, msg.reactions));
+                }
+                return { ok: true };
+            },
             async addParticipant(cid, p) { const c = backend.convs.get(cid); if (c && !c.participants.some(x => x.id === p.id)) { c.participants.push(p); emit(cid, h => h.onParticipant && h.onParticipant(p, 'added')); } return { ok: true }; },
             async transfer(cid, from, to, role) { emit(cid, h => h.onParticipant && h.onParticipant({ id: to, role: role || 'assignee' }, 'changed')); return { ok: true }; },
             async setTyping(cid, on) { emit(cid, h => h.onTyping && h.onTyping(backend.me.id, on)); },
