@@ -130,6 +130,7 @@ const CONFIG = {
         'manifest.chat.store.js',
         'manifest.chat.adapters.js',
         'manifest.chat.adapters.llm.js',
+        'manifest.chat.adapters.appwrite.js',
         'manifest.chat.main.js'
     ],
 

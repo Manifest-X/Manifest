@@ -6,6 +6,11 @@
         "system": "You are the Manifest docs assistant. Answer questions about the Manifest framework in concise markdown, grounded in the reference documentation below. If the docs don't cover something, say so rather than guessing.",
         "grounding": "https://manifestx.dev/llms.txt"
     },
+    "chat": {
+        "appwriteDatabaseId": "69272017000296721b73",
+        "appwriteTableId": "chat_messages",
+        "ttlHours": 24
+    },
     "short_name": "Project Name",
     "description": "",
     "start_url": "/",
