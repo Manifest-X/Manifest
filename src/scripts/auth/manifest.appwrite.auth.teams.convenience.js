@@ -745,7 +745,19 @@ function initializeTeamsConvenience() {
                     const userMembership = this.currentTeamMemberships.find(
                         m => m.userId === this.user.$id
                     );
-                    return userMembership?.roles || [];
+                    const raw = userMembership?.roles || [];
+                    // Membership tokens are Appwrite-safe slugs; translate them back to the
+                    // author's display names using the cached role map. "owner" and unknown
+                    // tokens pass through unchanged.
+                    const slug = this.roleSlug;
+                    const allRoles = (this.allTeamRoles && this.allTeamRoles(this.currentTeam)) || {};
+                    const keys = Object.keys(allRoles);
+                    if (typeof slug !== 'function' || !keys.length) {
+                        return raw;
+                    }
+                    const bySlug = {};
+                    for (const name of keys) bySlug[slug(name)] = name;
+                    return raw.map(r => (r === 'owner' ? 'owner' : (bySlug[slug(r)] || r)));
                 };
 
                 // Check if current user has a specific permission in the current team
@@ -793,9 +805,13 @@ function initializeTeamsConvenience() {
                     }
 
                     // Granted if any of the user's custom roles includes this permission
-                    // (built-in or custom key).
+                    // (built-in or custom key). Match by slug so slugged/legacy membership
+                    // tokens resolve against display-name definitions.
+                    const slug = this.roleSlug || (x => x);
+                    const bySlug = {};
+                    for (const [name, perms] of Object.entries(allRoles)) bySlug[slug(name)] = perms;
                     for (const roleName of customRoles) {
-                        const rolePermissions = allRoles[roleName];
+                        const rolePermissions = bySlug[slug(roleName)];
                         if (Array.isArray(rolePermissions) && rolePermissions.includes(permission)) {
                             return true;
                         }
@@ -809,7 +825,8 @@ function initializeTeamsConvenience() {
                         return false;
                     }
                     const userRoles = this.getCurrentTeamRoles();
-                    return userRoles.includes(roleName);
+                    const slug = this.roleSlug || (x => x);
+                    return userRoles.some(r => slug(r) === slug(roleName));
                 };
 
                 // Get current user's primary role in current team

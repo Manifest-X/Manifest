@@ -3215,29 +3215,50 @@ function mergeRoles(manifestRoles, userGeneratedRoles) {
     return merged;
 }
 
-// Normalize custom roles for Appwrite (add "owner" if any role requires it)
+// Appwrite membership role tokens allow only [a-zA-Z0-9._-]. Role definitions are
+// keyed by display name (which may contain spaces/unicode), so we store an
+// Appwrite-safe slug on the membership and resolve by matching slug(token) against
+// slug(defName). Idempotent, and "owner" (Appwrite's intrinsic role) passes through.
+function roleSlug(name) {
+    if (name === 'owner') return 'owner';
+    return String(name)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+// Normalize custom roles for Appwrite: slugify tokens (so space/unicode names stay
+// assignable) and add "owner" if any role requires it.
 function normalizeRolesForAppwrite(customRoles, memberRoles, userGeneratedRoles = null) {
     if (!Array.isArray(customRoles)) {
         return customRoles;
     }
 
+    const slugged = customRoles.map(role => roleSlug(role));
+
     // Merge manifest and user-generated roles
     const allRoles = mergeRoles(memberRoles, userGeneratedRoles);
 
-    // If no roles config, return as-is (will use Appwrite's default behavior)
+    // If no roles config, return slugged tokens (Appwrite handles owner default)
     if (!allRoles || Object.keys(allRoles).length === 0) {
-        return customRoles;
+        return slugged;
     }
 
-    // Check if any custom role requires owner
-    const requiresOwner = customRoles.some(role => roleRequiresOwner(role, allRoles));
+    // Which definition slugs require owner — checked by slug so this works whether the
+    // incoming tokens are display names or already slugged.
+    const ownerSlugs = new Set();
+    for (const name of Object.keys(allRoles)) {
+        if (roleRequiresOwner(name, allRoles)) ownerSlugs.add(roleSlug(name));
+    }
+    const requiresOwner = slugged.some(s => ownerSlugs.has(s));
 
     // If owner is already in the list, don't duplicate
-    if (requiresOwner && !customRoles.includes('owner')) {
-        return [...customRoles, 'owner'];
+    if (requiresOwner && !slugged.includes('owner')) {
+        return [...slugged, 'owner'];
     }
 
-    return customRoles;
+    return slugged;
 }
 
 // Normalize Appwrite roles for display (filter "owner" if a custom role replaces it)
@@ -3249,10 +3270,15 @@ function normalizeRolesForDisplay(appwriteRoles, memberRoles, userGeneratedRoles
     // Merge manifest and user-generated roles
     const allRoles = mergeRoles(memberRoles, userGeneratedRoles);
 
-    // If custom roles are defined, always filter out "owner" (it's a background Appwrite role)
-    // "owner" is automatically added by Appwrite for permissions, but shouldn't be displayed
+    // If custom roles are defined, filter out "owner" (a background Appwrite role) and
+    // translate slug tokens back to their display names (legacy exact-name tokens map
+    // through slug() too; unknown tokens pass through as-is).
     if (allRoles && Object.keys(allRoles).length > 0) {
-        return appwriteRoles.filter(role => role !== 'owner');
+        const bySlug = {};
+        for (const name of Object.keys(allRoles)) bySlug[roleSlug(name)] = name;
+        return appwriteRoles
+            .filter(role => role !== 'owner')
+            .map(role => bySlug[roleSlug(role)] || role);
     }
 
     // If no custom roles config, show "owner" as-is (legacy behavior)
@@ -3303,9 +3329,13 @@ function hasPermission(userRoles, permission, memberRoles, userGeneratedRoles = 
         return true;
     }
 
-    // Check if any of the user's custom roles has this permission
+    // Check if any of the user's custom roles has this permission. Match by slug so
+    // display-name definitions resolve against slugged membership tokens, and legacy
+    // exact-name tokens still resolve.
+    const bySlug = {};
+    for (const [name, perms] of Object.entries(allRoles)) bySlug[roleSlug(name)] = perms;
     for (const roleName of customRoles) {
-        const rolePermissions = allRoles[roleName];
+        const rolePermissions = bySlug[roleSlug(roleName)];
         if (rolePermissions && Array.isArray(rolePermissions) && rolePermissions.includes(permission)) {
             return true;
         }
@@ -3358,6 +3388,10 @@ function initializeTeamsRoles() {
             // Add role abstraction methods to store
             store.getOwnerPermissions = function () {
                 return getOwnerPermissions();
+            };
+
+            store.roleSlug = function (name) {
+                return roleSlug(name);
             };
 
             store.validateRoleConfig = async function () {
@@ -3532,6 +3566,7 @@ window.ManifestAppwriteAuthTeamsRoles = {
     roleHasAllOwnerPermissions,
     getUserGeneratedRoles,
     mergeRoles,
+    roleSlug,
     normalizeRolesForAppwrite,
     normalizeRolesForDisplay,
     getPrimaryDisplayRole,
@@ -5446,7 +5481,19 @@ function initializeTeamsConvenience() {
                     const userMembership = this.currentTeamMemberships.find(
                         m => m.userId === this.user.$id
                     );
-                    return userMembership?.roles || [];
+                    const raw = userMembership?.roles || [];
+                    // Membership tokens are Appwrite-safe slugs; translate them back to the
+                    // author's display names using the cached role map. "owner" and unknown
+                    // tokens pass through unchanged.
+                    const slug = this.roleSlug;
+                    const allRoles = (this.allTeamRoles && this.allTeamRoles(this.currentTeam)) || {};
+                    const keys = Object.keys(allRoles);
+                    if (typeof slug !== 'function' || !keys.length) {
+                        return raw;
+                    }
+                    const bySlug = {};
+                    for (const name of keys) bySlug[slug(name)] = name;
+                    return raw.map(r => (r === 'owner' ? 'owner' : (bySlug[slug(r)] || r)));
                 };
 
                 // Check if current user has a specific permission in the current team
@@ -5494,9 +5541,13 @@ function initializeTeamsConvenience() {
                     }
 
                     // Granted if any of the user's custom roles includes this permission
-                    // (built-in or custom key).
+                    // (built-in or custom key). Match by slug so slugged/legacy membership
+                    // tokens resolve against display-name definitions.
+                    const slug = this.roleSlug || (x => x);
+                    const bySlug = {};
+                    for (const [name, perms] of Object.entries(allRoles)) bySlug[slug(name)] = perms;
                     for (const roleName of customRoles) {
-                        const rolePermissions = allRoles[roleName];
+                        const rolePermissions = bySlug[slug(roleName)];
                         if (Array.isArray(rolePermissions) && rolePermissions.includes(permission)) {
                             return true;
                         }
@@ -5510,7 +5561,8 @@ function initializeTeamsConvenience() {
                         return false;
                     }
                     const userRoles = this.getCurrentTeamRoles();
-                    return userRoles.includes(roleName);
+                    const slug = this.roleSlug || (x => x);
+                    return userRoles.some(r => slug(r) === slug(roleName));
                 };
 
                 // Get current user's primary role in current team
