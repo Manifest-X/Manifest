@@ -27,7 +27,7 @@
         "render": "node src/scripts/manifest.render.mjs --root src",
         "prerender:docs": "node src/scripts/manifest.render.mjs --root docs",
         "prerender:starter": "node src/scripts/manifest.render.mjs --root templates/starter",
-        "release": "node scripts/release-bump.mjs . && npm publish && node scripts/cdn-warm.mjs",
+        "release": "node scripts/release-bump.mjs . && npm publish && node scripts/cdn-warm.mjs --detach",
         "release:run": "node scripts/release-bump.mjs packages/run && cd packages/run && npm publish --auth-type=web",
         "release:render": "node scripts/release-bump.mjs packages/render && cd packages/render && npm publish --auth-type=web",
         "release:types": "node scripts/release-bump.mjs packages/types && cd packages/types && npm publish --auth-type=web",

@@ -11,11 +11,25 @@
  *
  *   Usage: node scripts/cdn-warm.mjs   (after `npm publish`, from repo root)
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, openSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const CDN_BASE = process.env.MNFST_CDN_BASE || 'https://cdn.manifestx.dev/npm';
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 const base = `${CDN_BASE}/mnfst@${version}/lib`;
+
+// --detach: re-spawn in the background and return the terminal immediately.
+// Propagation polling can take minutes and the publish is already done —
+// nothing here needs to block the release command.
+if (process.argv.includes('--detach')) {
+    const log = join(tmpdir(), `mnfst-cdn-warm-${version}.log`);
+    const fd = openSync(log, 'a');
+    spawn(process.execPath, [process.argv[1]], { detached: true, stdio: ['ignore', fd, fd] }).unref();
+    console.log(`cdn-warm: warming mnfst@${version} in the background (log: ${log})`);
+    process.exit(0);
+}
 
 // Every shipped lib/ file, plus the .min.js variant consumers actually request.
 const files = readdirSync('lib').filter(f => /\.(js|css|json|ts)$/.test(f));
