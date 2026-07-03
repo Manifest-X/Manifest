@@ -287,13 +287,36 @@
         function mk(cid, channel, parts, msgs, closed) {
             convs.set(cid, { id: cid, channel, closed: !!closed, participants: parts, messages: msgs });
         }
-        const m = (cid, author, text, minsAgo, extra) =>
-            Object.assign({ id: id('m'), conversationId: cid, author, body: { text }, ts: t(minsAgo), status: 'delivered' }, extra || {});
+        const m = (cid, author, text, minsAgo, extra) => {
+            const msg = Object.assign({ id: id('m'), conversationId: cid, author, body: { text }, ts: t(minsAgo), status: 'delivered' }, extra || {});
+            if (msg.media) { msg.body.media = msg.media; delete msg.media; }   // media lives on body
+            return msg;
+        };
 
         // 1:1 AI co-pilot
         mk('dm-ai', 'webchat', [me, bot], [
             m('dm-ai', bot, 'Hi — I can help with your account. What do you need?', 12),
             m('dm-ai', me, 'How many free credits do I get?', 11)
+        ]);
+
+        // Attachment showcase — one of every media kind, both directions
+        // (harness-only conversation; asset paths resolve in the test project)
+        mk('media-1', 'webchat', [me, bot], [
+            m('media-1', me, 'Here is the artwork and the brief.', 22, {
+                media: [
+                    { kind: 'image', url: '/test/media/sample.png', name: 'artwork.png', mediaType: 'image/png' },
+                    { kind: 'document', url: '/test/media/sample.pdf', name: 'brief.pdf', mediaType: 'application/pdf' }
+                ]
+            }),
+            m('media-1', bot, 'Received — and here is everything back in every format:', 20, {
+                media: [
+                    { kind: 'image', url: '/test/media/sample.png', name: 'render.png', mediaType: 'image/png' },
+                    { kind: 'audio', url: '/test/media/sample.wav', name: 'jingle.wav', mediaType: 'audio/wav' },
+                    { kind: 'voice', url: '/test/media/sample.wav', name: 'voice note', mediaType: 'audio/wav' },
+                    { kind: 'video', url: 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4', name: 'clip.mp4', mediaType: 'video/mp4' },
+                    { kind: 'document', url: '/test/media/sample.pdf', name: 'summary.pdf', mediaType: 'application/pdf' }
+                ]
+            })
         ]);
 
         // group with reactions + a small reply tree
@@ -426,11 +449,11 @@
 
     // ---- simulation hooks (button-driven; deterministic for verification) ---
     const sim = {
-        // stream an AI reply token-by-token into a conversation
-        aiReply(cid, text) {
+        // stream an AI reply token-by-token into a conversation (media attaches on completion)
+        aiReply(cid, text, media) {
             const c = backend.convs.get(cid); if (!c) return;
             const mid = backend.id('m');
-            const msg = { id: mid, conversationId: cid, author: backend.bot, body: { text: '' }, ts: backend.t(0), status: 'streaming', meta: { authoredBy: 'u_me' } };
+            const msg = { id: mid, conversationId: cid, author: backend.bot, body: { text: '', media: media || undefined }, ts: backend.t(0), status: 'streaming', meta: { authoredBy: 'u_me' } };
             c.messages.push(msg);
             emit(cid, h => h.onMessage && h.onMessage(msg));
             const words = (text || 'Every account starts with 5,000 free credits each month.').split(' ');
@@ -512,12 +535,15 @@
             const toMsg = (r) => ({ id: r.id, conversationId: null, author: r.role === 'assistant' ? BOT : USER, body: { text: r.text }, ts: r.ts, status: 'delivered' });
 
             // Build the Anthropic messages array; attachments → image/document blocks.
+            // Only what the API accepts is forwarded (images + PDFs with data);
+            // audio/video/voice render locally but don't reach the model.
             function apiMessages(cid, draft) {
                 const hist = loadStore(cid).map(r => ({ role: r.role, content: r.text }));
-                const media = (draft.body && draft.body.media) || [];
+                const media = ((draft.body && draft.body.media) || []).filter(a =>
+                    a.data && (a.kind === 'image' || a.mediaType === 'application/pdf'));
                 const blocks = media.map(a => a.kind === 'image'
                     ? { type: 'image', source: { type: 'base64', media_type: a.mediaType, data: a.data } }
-                    : { type: 'document', source: { type: 'base64', media_type: a.mediaType || 'application/pdf', data: a.data } });
+                    : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
                 const text = (draft.body && draft.body.text) || draft.text || '';
                 const last = blocks.length ? { role: 'user', content: [...blocks, { type: 'text', text }] } : { role: 'user', content: text };
                 return [...hist, last];

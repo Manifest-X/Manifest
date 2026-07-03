@@ -42,12 +42,15 @@
             const toMsg = (r) => ({ id: r.id, conversationId: null, author: r.role === 'assistant' ? BOT : USER, body: { text: r.text }, ts: r.ts, status: 'delivered' });
 
             // Build the Anthropic messages array; attachments → image/document blocks.
+            // Only what the API accepts is forwarded (images + PDFs with data);
+            // audio/video/voice render locally but don't reach the model.
             function apiMessages(cid, draft) {
                 const hist = loadStore(cid).map(r => ({ role: r.role, content: r.text }));
-                const media = (draft.body && draft.body.media) || [];
+                const media = ((draft.body && draft.body.media) || []).filter(a =>
+                    a.data && (a.kind === 'image' || a.mediaType === 'application/pdf'));
                 const blocks = media.map(a => a.kind === 'image'
                     ? { type: 'image', source: { type: 'base64', media_type: a.mediaType, data: a.data } }
-                    : { type: 'document', source: { type: 'base64', media_type: a.mediaType || 'application/pdf', data: a.data } });
+                    : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
                 const text = (draft.body && draft.body.text) || draft.text || '';
                 const last = blocks.length ? { role: 'user', content: [...blocks, { type: 'text', text }] } : { role: 'user', content: text };
                 return [...hist, last];
