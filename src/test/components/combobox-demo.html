@@ -1,0 +1,125 @@
+<!-- Combobox test harness -->
+<div class="col gap-8 p-6" style="max-width: 40rem; margin-inline: auto;"
+     x-data="{
+        member: { roles: ['owner', 'editor'] },
+        owners: 1,
+        allRoles: [
+            { v: 'owner',   l: 'Owner' },
+            { v: 'editor',  l: 'Editor' },
+            { v: 'viewer',  l: 'Viewer' },
+            { v: 'billing', l: 'Billing admin' }
+        ],
+        search(e) {
+            const all = ['Ada Lovelace', 'Alan Turing', 'Grace Hopper', 'Katherine Johnson', 'Margaret Hamilton'];
+            const v = e.detail.value.toLowerCase();
+            clearTimeout(this._t);
+            this._t = setTimeout(() => e.detail.setOptions(all.filter(n => n.toLowerCase().includes(v))), 300);
+        }
+     }">
+
+    <h2>Combobox</h2>
+
+    <!-- Free-entry chips + separators + starting values -->
+    <section class="col gap-2">
+        <h5>Chips, free entry</h5>
+        <input x-combobox.multiple.chips="{ separators: ', ' }" value="ana@acme.com, sam@acme.com" placeholder="Add emails">
+    </section>
+
+    <!-- Datalist source, single -->
+    <section class="col gap-2">
+        <h5>Datalist, single</h5>
+        <input x-combobox="cbd-countries" placeholder="Country">
+        <datalist id="cbd-countries">
+            <option>Australia</option><option>Brazil</option><option>Canada</option>
+            <option>Denmark</option><option>France</option><option>Japan</option>
+        </datalist>
+    </section>
+
+    <!-- Datalist source, multiple chips -->
+    <section class="col gap-2">
+        <h5>Datalist, multiple chips</h5>
+        <input x-combobox.multiple.chips="cbd-skills" placeholder="Skills">
+        <datalist id="cbd-skills">
+            <option>Design</option><option>Writing</option><option>Research</option>
+            <option>Strategy</option><option>Testing</option>
+        </datalist>
+    </section>
+
+    <!-- Static data-locked -->
+    <section class="col gap-2">
+        <h5>Locked value (data-locked)</h5>
+        <input x-combobox.multiple.chips="cbd-plan" x-model="$data.plan" placeholder="Add features" x-data="{ plan: ['SSL', 'Backups'] }">
+        <datalist id="cbd-plan">
+            <option data-locked>SSL</option><option>Backups</option>
+            <option>Analytics</option><option>Priority support</option>
+        </datalist>
+    </section>
+
+    <!-- x-model + x-for menu + reactive lock -->
+    <section class="col gap-2">
+        <h5>Reactive: x-model, x-for options, conditional lock</h5>
+        <input x-combobox.multiple.chips="cbd-roles" x-model="member.roles" placeholder="Roles">
+        <menu popover id="cbd-roles">
+            <template x-for="o in allRoles" :key="o.v">
+                <li :data-value="o.v" :data-label="o.l" :data-locked="(o.v == 'owner' && owners <= 1) || null" x-text="o.l"></li>
+            </template>
+        </menu>
+        <label class="row gap-2 items-center small">
+            <input type="checkbox" :checked="owners <= 1" @change="owners = owners <= 1 ? 2 : 1">
+            Sole owner (locks the Owner chip)
+        </label>
+        <code class="small" x-text="'member.roles = ' + JSON.stringify(member.roles)"></code>
+    </section>
+
+    <!-- Authored rich menu -->
+    <section class="col gap-2">
+        <h5>Rich menu rows</h5>
+        <input x-combobox.multiple.chips="cbd-people" placeholder="Assign people">
+        <menu popover id="cbd-people">
+            <li data-value="ada" data-label="Ada"><strong>Ada Lovelace</strong>&nbsp;<span class="small">Engineering</span></li>
+            <li data-value="alan" data-label="Alan"><strong>Alan Turing</strong>&nbsp;<span class="small">Research</span></li>
+            <li data-value="grace" data-label="Grace"><strong>Grace Hopper</strong>&nbsp;<span class="small">Systems</span></li>
+        </menu>
+    </section>
+
+    <!-- Textarea editor -->
+    <section class="col gap-2">
+        <h5>Textarea editor</h5>
+        <textarea x-combobox.multiple.chips="cbd-skills" placeholder="Add skills"></textarea>
+    </section>
+
+    <!-- Button trigger, single + multiple -->
+    <section class="col gap-2">
+        <h5>Button triggers</h5>
+        <button x-combobox="cbd-priority">Select priority</button>
+        <button x-combobox.multiple.chips="cbd-priority">Select priorities</button>
+        <menu popover id="cbd-priority">
+            <li>Low</li><li>Medium</li><li>High</li>
+        </menu>
+    </section>
+
+    <!-- Max cap -->
+    <section class="col gap-2">
+        <h5>Max 3</h5>
+        <input x-combobox.multiple.chips="{ source: 'cbd-skills', max: 3 }" placeholder="Pick up to 3">
+    </section>
+
+    <!-- Create + strict -->
+    <section class="col gap-2">
+        <h5>Create row (.create)</h5>
+        <input x-combobox.multiple.chips.create="cbd-skills" placeholder="Pick or add new">
+    </section>
+
+    <!-- Async -->
+    <section class="col gap-2">
+        <h5>Remote suggestions (.async)</h5>
+        <input x-combobox.async.multiple.chips="{ min: 1 }" placeholder="Search users" @combobox-filter="search($event)">
+    </section>
+
+    <!-- Disabled -->
+    <section class="col gap-2">
+        <h5>Disabled</h5>
+        <input x-combobox.multiple.chips="cbd-skills" placeholder="Disabled" disabled>
+    </section>
+
+</div>

@@ -28,15 +28,16 @@
   <link rel="stylesheet" href="/styles/elements/manifest.button.css">
   <link rel="stylesheet" href="/styles/elements/manifest.checkbox.css">
   <link rel="stylesheet" href="/styles/elements/manifest.chart.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.chat.css">
   <link rel="stylesheet" href="/styles/elements/manifest.code.css">
   <link rel="stylesheet" href="/styles/elements/manifest.colorpicker.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.combobox.css">
   <link rel="stylesheet" href="/styles/elements/manifest.datepicker.css">
   <link rel="stylesheet" href="/styles/elements/manifest.dialog.css">
   <link rel="stylesheet" href="/styles/elements/manifest.divider.css">
   <link rel="stylesheet" href="/styles/elements/manifest.dropdown.css">
   <link rel="stylesheet" href="/styles/elements/manifest.form.css">
   <link rel="stylesheet" href="/styles/elements/manifest.input.css">
-  <link rel="stylesheet" href="/styles/elements/manifest.combobox.css">
   <link rel="stylesheet" href="/styles/elements/manifest.radio.css">
   <link rel="stylesheet" href="/styles/elements/manifest.range.css">
   <link rel="stylesheet" href="/styles/elements/manifest.resize.css">
@@ -189,19 +190,60 @@
     <a href="/virtual">Virtual</a>
     <a href="/chat">Chat</a>
     <a href="/presence">Presence</a>
+    <a href="/combobox">Combobox</a>
   </nav>
 
   <!-- Virtual plugin test harness -->
   <x-virtual-demo x-route="virtual"></x-virtual-demo>
 
+  <!-- Combobox test harness -->
+  <x-combobox-demo x-route="combobox"></x-combobox-demo>
+
   <!-- Chat plugin ($chat) test harness -->
   <style>
-    .chat-demo { max-width: 56rem; margin-inline: auto; }
-    .chat-card { padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
-    .chat-log { display: flex; flex-direction: column; gap: .35rem; }
-    .chat-row { display: flex; gap: .5rem; align-items: baseline; }
-    .chat-name { font-weight: 600; font-size: .8rem; }
-    .chat-meta { font-size: .72rem; color: var(--color-content-subtle); }
+    .chat-demo {
+      max-width: 56rem;
+      margin-inline: auto;
+    }
+
+    .chat-card {
+      padding: 1.25rem;
+      background: var(--color-surface-1);
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius);
+    }
+
+    .chat-log {
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+    }
+
+    .chat-row {
+      display: flex;
+      gap: .5rem;
+      align-items: baseline;
+    }
+
+    .chat-name {
+      font-weight: 600;
+      font-size: .8rem;
+    }
+
+    .chat-meta {
+      font-size: .72rem;
+      color: var(--color-content-subtle);
+    }
+
+    /* The chat shell needs a bounded height from its container;
+       break out of the harness column so wide-screen layout is testable */
+    .chat-card:has(> .chat-wrapper) {
+      height: 36rem;
+      width: min(110rem, calc(100vw - 4rem));
+      position: relative;
+      inset-inline-start: 50%;
+      translate: -50% 0;
+    }
   </style>
   <div class="chat-demo col gap-6 p-6" x-route="chat" x-data="{
       dm: $chat.open('dm-ai', { adapter: 'demo' }),
@@ -210,18 +252,36 @@
       agg: $chat.open('agg:c_p7', { adapter: 'demo-aggregate', aggregate: true }),
       closed: $chat.open('hist-tg-1', { adapter: 'demo' }),
       llm: $chat.open('docs-session', { adapter: 'claude' }),
+      media: $chat.open('media-1', { adapter: 'demo' }),
       cm: $chat.open('docs-comments', { adapter: 'appwrite' }),
-      draft: '', gdraft: '', maxDepth: 4, llmDraft: '', llmFiles: null, cDraft: '',
+      mode: 'claude',
+      get uic() { return this.mode === 'demo' ? this.media : this.llm },
+      draft: '', gdraft: '', maxDepth: 4, llmDraft: '', llmFiles: [], maxFiles: 8, cDraft: '',
+      kindOf(f) {
+        if (f.type.startsWith('image/')) return 'image';
+        if (f.type.startsWith('audio/')) return 'audio';
+        if (f.type.startsWith('video/')) return 'video';
+        return 'document';
+      },
+      addFiles(list) {
+        for (const f of [...list]) {
+          if (this.llmFiles.length >= this.maxFiles) break;
+          this.llmFiles.push({ file: f, url: URL.createObjectURL(f), name: f.name, kind: this.kindOf(f), mediaType: f.type });
+        }
+      },
+      removeFile(i) {
+        URL.revokeObjectURL(this.llmFiles[i].url);
+        this.llmFiles.splice(i, 1);
+      },
       async sendLlm() {
-        const files = this.llmFiles ? [...this.llmFiles] : [];
         const media = [];
-        for (const f of files) {
-          const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
-          media.push({ kind: f.type.startsWith('image/') ? 'image' : 'document', name: f.name, mediaType: f.type, url, data: url.split(',')[1] });
+        for (const a of this.llmFiles) {
+          const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(a.file); });
+          media.push({ kind: a.kind, name: a.name, mediaType: a.mediaType, url: a.url, data: url.split(',')[1] });
         }
         if (!this.llmDraft.trim() && !media.length) return;
-        this.llm.send({ body: { text: this.llmDraft, media } });
-        this.llmDraft = ''; this.llmFiles = null;
+        this.uic.send({ body: { text: this.llmDraft, media } });
+        this.llmDraft = ''; this.llmFiles = [];
       }
     }">
 
@@ -229,6 +289,80 @@
       <strong>$chat — reference spike</strong>
       <span class="chat-meta">Static in-memory adapter. Buttons drive the simulation deterministically.</span>
     </div>
+
+    <section class="chat-card p-4">
+
+
+
+
+      <!-- CHAT UI (manifest.chat.css) — Claude (real via relay) or the demo media showcase -->
+      <div class="chat-wrapper">
+
+        <!-- Harness chrome: adapter toggle -->
+        <div class="row gap-2 p-2">
+          <button type="button" class="ghost small" :class="mode === 'claude' && 'selected'" @click="mode = 'claude'">Claude</button>
+          <button type="button" class="ghost small" :class="mode === 'demo' && 'selected'" @click="mode = 'demo'">Media demo</button>
+        </div>
+
+        <!-- Message scroll container -->
+        <div role="log">
+
+          <!-- Message stack -->
+          <div>
+
+            <template x-for="m in uic.messages" :key="m.id">
+
+              <!-- Messages -->
+              <div :data-own="m.author?.id === uic.me?.id || null">
+                <div x-show="m.body.text" x-html="($store.md && $store.md.ready, window.mdRender(m.body.text))"></div>
+
+                <!-- Attachments & voice notes -->
+                <template x-for="a in (m.body.media || [])" :key="(a.url || '') + (a.name || '')">
+                  <div>
+                    <template x-if="a.kind === 'image'"><img :src="a.url" :alt="a.name || 'image'"></template>
+                    <template x-if="a.kind === 'audio' || a.kind === 'voice'"><audio controls :src="a.url"></audio></template>
+                    <template x-if="a.kind === 'video'"><video controls :src="a.url"></video></template>
+                    <template x-if="!['image','audio','voice','video'].includes(a.kind)">
+                      <a :href="a.url" :download="a.name" x-text="'📎 ' + (a.name || 'file')"></a>
+                    </template>
+                  </div>
+                </template>
+
+              </div>
+
+            </template>
+
+          </div>
+
+        </div>
+
+        <!-- Chat input -->
+        <form @submit.prevent="sendLlm()" class="textarea">
+
+          <!-- Pending attachments -->
+          <menu x-show="llmFiles.length">
+            <template x-for="(a, i) in llmFiles" :key="a.url">
+              <li>
+                <img x-show="a.kind === 'image'" :src="a.url" :alt="a.name">
+                <span x-show="a.kind !== 'image'"><i x-icon="lucide:file"></i> <span x-text="a.name"></span></span>
+                <button type="button" class="sm" x-icon="lucide:x" aria-label="Remove attachment" @click="removeFile(i)"></button>
+              </li>
+            </template>
+          </menu>
+
+          <input type="file" multiple accept="image/*,audio/*,video/*,application/pdf" x-ref="attach" hidden @change="addFiles($event.target.files); $event.target.value = ''">
+          <button type="button" data-action="attach" class="transparent" x-icon="lucide:paperclip" aria-label="Attach files" @click="$refs.attach.click()"></button>
+          <textarea class="transparent" x-model="llmDraft" placeholder="What do you need?" @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); sendLlm(); }"></textarea>
+          <button type="submit" class="transparent" x-icon="lucide:corner-down-left" aria-label="Send"></button>
+
+        </form>
+
+      </div>
+
+
+
+
+    </section>
 
     <!-- A: 1:1 AI streaming + optimistic send -->
     <section class="chat-card col gap-3" data-test="dm">
@@ -332,8 +466,7 @@
       <div class="row gap-2">
         <button class="outlined small" @click="closed.send({text:'are you there?'})">reply into closed chat</button>
       </div>
-      <div class="chat-meta" data-test="rehome-flag" x-show="closed.lastRehome"
-           x-text="closed.lastRehome ? `re-homed ${closed.lastRehome.from} → ${closed.lastRehome.to} — cockpit must retarget` : ''"></div>
+      <div class="chat-meta" data-test="rehome-flag" x-show="closed.lastRehome" x-text="closed.lastRehome ? `re-homed ${closed.lastRehome.from} → ${closed.lastRehome.to} — cockpit must retarget` : ''"></div>
     </section>
 
     <!-- F: real Claude adapter — streaming markdown (both ways) + attachments -->
@@ -399,13 +532,50 @@
 
   <!-- $presence (Appwrite Presences) test harness -->
   <style>
-    .presence-demo { max-width: 64rem; margin-inline: auto; }
-    .presence-card { padding: 1.25rem; background: var(--color-surface-1); border: 1px solid var(--color-line); border-radius: var(--radius); }
-    .presence-meta { font-size: .72rem; color: var(--color-content-subtle); }
-    .presence-swatch { display: inline-block; width: .8rem; height: .8rem; border-radius: 50%; flex: 0 0 auto; }
-    .presence-chip { font-size: .68rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid var(--color-line); }
-    .presence-roster-row { display: flex; gap: .5rem; align-items: center; }
-    .presence-user-ctl { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+    .presence-demo {
+      max-width: 64rem;
+      margin-inline: auto;
+    }
+
+    .presence-card {
+      padding: 1.25rem;
+      background: var(--color-surface-1);
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius);
+    }
+
+    .presence-meta {
+      font-size: .72rem;
+      color: var(--color-content-subtle);
+    }
+
+    .presence-swatch {
+      display: inline-block;
+      width: .8rem;
+      height: .8rem;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+
+    .presence-chip {
+      font-size: .68rem;
+      padding: .1rem .45rem;
+      border-radius: 999px;
+      border: 1px solid var(--color-line);
+    }
+
+    .presence-roster-row {
+      display: flex;
+      gap: .5rem;
+      align-items: center;
+    }
+
+    .presence-user-ctl {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .35rem;
+      align-items: center;
+    }
   </style>
 
   <div class="presence-demo col gap-6 p-6" x-route="presence" x-data="{}">
@@ -467,8 +637,7 @@
           <div class="presence-roster-row">
             <span class="presence-swatch" :style="`background:${u.color}`"></span>
             <span class="small" x-text="(u.metadata && u.metadata.name) || u.userId" style="flex:1"></span>
-            <span class="presence-chip" x-text="u.status"
-                  :style="`color:${u.status==='online'?'#16a34a':u.status==='away'?'#d97706':u.status==='typing'?'#2563eb':'var(--color-content-subtle)'}; border-color:currentColor`"></span>
+            <span class="presence-chip" x-text="u.status" :style="`color:${u.status==='online'?'#16a34a':u.status==='away'?'#d97706':u.status==='typing'?'#2563eb':'var(--color-content-subtle)'}; border-color:currentColor`"></span>
           </div>
         </template>
       </div>
