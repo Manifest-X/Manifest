@@ -95,7 +95,13 @@ function initializeTeamsMembers() {
 
                     const result = await this._appwrite.teams.createMembership(membershipParams);
 
-                    return { success: true, membership: result };
+                    // Surface the requested vs. stored tokens. They diverge by design —
+                    // role names are slugified for Appwrite, and owner-level roles carry the
+                    // "owner" token — so `normalized: true` signals an intentional transform,
+                    // not a failed write.
+                    const normalized = !(rolesArray.length === normalizedRoles.length
+                        && rolesArray.every((r, i) => r === normalizedRoles[i]));
+                    return { success: true, membership: result, requestedRoles: rolesArray, normalizedRoles, normalized };
                 } catch (error) {
                     this.error = error.message;
                     return { success: false, error: error.message };
@@ -352,7 +358,13 @@ function initializeTeamsMembers() {
                         await this.refreshPermissionCache();
                     }
 
-                    return { success: true, membership: result };
+                    // `normalized: true` signals the stored tokens intentionally differ from
+                    // the requested roles (slugified names, and an appended "owner" token for
+                    // owner-level roles) — a by-design transform, not a failed write.
+                    const normalized = !(Array.isArray(roles) && Array.isArray(normalizedRoles)
+                        && roles.length === normalizedRoles.length
+                        && roles.every((r, i) => r === normalizedRoles[i]));
+                    return { success: true, membership: result, requestedRoles: roles, normalizedRoles, normalized };
                 } catch (error) {
                     // Revert optimistic update on error
                     if (this.currentTeam && this.currentTeam.$id === teamId && this.listMemberships) {
