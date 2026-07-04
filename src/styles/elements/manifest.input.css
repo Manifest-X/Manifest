@@ -1,8 +1,15 @@
 /* Manifest Inputs */
 
+:root {
+
+    /* Copy button icons */
+    --icon-field-copy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/g%3E%3C/svg%3E");
+    --icon-field-copied: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Cpath d='m12 15 2 2 4-4'/%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/g%3E%3C/svg%3E")
+}
+
 @layer components {
 
-    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file]), .label:has([type=search], [type=file])):not(.unstyle) {
+    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file], button[command="--copy"]), .label:has([type=search], [type=file], button[command="--copy"])):not(.unstyle) {
         width: 100%;
         max-width: 100%;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
@@ -109,6 +116,73 @@
             height: 100%;
             margin-inline-end: 0;
             color: var(--color-content-subtle, oklch(55.6% 0 0))
+        }
+    }
+
+    /* Label wrapper for inputs with a copy button */
+    :where(label, .label):has(button[command="--copy"]):not(.unstyle) {
+        display: flex;
+        flex-flow: row;
+        align-items: center;
+        justify-content: start;
+        padding-inline-end: 0.375rem;
+
+        /* Input element overrides */
+        & :where(input) {
+            background: transparent;
+
+            &:hover,
+            &:focus-visible {
+                background: transparent
+            }
+
+            &:focus-visible {
+                box-shadow: 0 0 0 0 transparent
+            }
+        }
+
+        /* Copy button */
+        & :where(button[command="--copy"]) {
+            flex-shrink: 0;
+            min-width: 0;
+            width: calc(var(--spacing-field-height, 2.25rem) - 0.75rem);
+            height: calc(var(--spacing-field-height, 2.25rem) - 0.75rem);
+            padding: 0;
+            background-color: transparent;
+            opacity: 0;
+
+            &::after {
+                content: '';
+                display: block;
+                width: 0.8125rem;
+                height: 0.8125rem;
+                background-color: var(--color-content-neutral, oklch(43.9% 0 0));
+                mask-image: var(--icon-field-copy);
+                mask-size: contain;
+                mask-repeat: no-repeat;
+                mask-position: center
+            }
+
+            &:hover,
+            &:active,
+            &:focus-visible {
+                background-color: transparent;
+
+                &::after {
+                    background-color: var(--color-field-inverse, oklch(43.9% 0 0))
+                }
+            }
+
+            &.copied::after {
+                mask-image: var(--icon-field-copied)
+            }
+        }
+
+        /* Reveal on hover, focus, or after copying */
+        &:hover :where(button[command="--copy"]),
+        &:focus-within :where(button[command="--copy"]),
+        & :where(button[command="--copy"].copied) {
+            opacity: 1
         }
     }
 
