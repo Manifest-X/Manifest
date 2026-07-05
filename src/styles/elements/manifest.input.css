@@ -122,13 +122,20 @@
     /* Copied confirmation icon (tooltip content) */
     :where(.field-copied-icon) {
         display: inline-block;
+        vertical-align: middle;
         width: 1em;
         height: 1em;
         background-color: currentColor;
         mask-image: var(--icon-field-copied);
-        mask-size: contain;
+        mask-size: 1em;
         mask-repeat: no-repeat;
-        mask-position: center
+        mask-position: center;
+
+        /* Fill the line box so the mask centers optically */
+        @supports (height: 1lh) {
+            height: 1lh;
+            vertical-align: top
+        }
     }
 
     /* Label wrapper for inputs with a copy button */
