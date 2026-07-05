@@ -9,7 +9,7 @@
 
 @layer components {
 
-    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file], button[command="--copy"]), .label:has([type=search], [type=file], button[command="--copy"])):not(.unstyle) {
+    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file], > button[command="--copy"]), .label:has([type=search], [type=file], > button[command="--copy"])):not(.unstyle) {
         width: 100%;
         max-width: 100%;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
@@ -119,8 +119,20 @@
         }
     }
 
+    /* Copied confirmation icon (tooltip content) */
+    :where(.field-copied-icon) {
+        display: inline-block;
+        width: 1em;
+        height: 1em;
+        background-color: currentColor;
+        mask-image: var(--icon-field-copied);
+        mask-size: contain;
+        mask-repeat: no-repeat;
+        mask-position: center
+    }
+
     /* Label wrapper for inputs with a copy button */
-    :where(label, .label):has(button[command="--copy"]):not(.unstyle) {
+    :where(label, .label):has(> button[command="--copy"]):not(.unstyle) {
         display: flex;
         flex-flow: row;
         align-items: center;

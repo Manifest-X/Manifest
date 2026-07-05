@@ -191,7 +191,70 @@
     <a href="/chat">Chat</a>
     <a href="/presence">Presence</a>
     <a href="/combobox">Combobox</a>
+    <a href="/copy">Copy input</a>
   </nav>
+
+  <!-- Copy input test harness -->
+  <div class="col gap-6 p-6 max-w-md" x-route="copy">
+    <h2>Copy input</h2>
+
+    <label x-data>
+      <input x-ref="field" value="MNFST-20" aria-label="Coupon code" />
+      <button type="button" command="--copy" aria-label="Copy to clipboard"
+        @click="navigator.clipboard.writeText($refs.field.value)
+          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    </label>
+
+    <label x-data>
+      <input x-ref="field" type="email" value="andrew@example.com" aria-label="Email" />
+      <button type="button" command="--copy" aria-label="Copy to clipboard"
+        @click="navigator.clipboard.writeText($refs.field.value)
+          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    </label>
+
+    <label x-data>
+      <input x-ref="field" type="tel" value="+1 (555) 010-2030" aria-label="Phone" />
+      <button type="button" command="--copy" aria-label="Copy to clipboard"
+        @click="navigator.clipboard.writeText($refs.field.value)
+          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    </label>
+
+    <label x-data>
+      <input x-ref="field" type="number" value="42" aria-label="Quantity" />
+      <button type="button" command="--copy" aria-label="Copy to clipboard"
+        @click="navigator.clipboard.writeText($refs.field.value)
+          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    </label>
+
+    <label x-data>
+      <input x-ref="field" placeholder="Type, then hover to copy" aria-label="Free text" />
+      <button type="button" command="--copy" aria-label="Copy to clipboard"
+        @click="navigator.clipboard.writeText($refs.field.value)
+          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    </label>
+
+    <!-- Stacked label composition -->
+    <label>
+      Stacked label
+      <div class="label" x-data>
+        <input x-ref="field" value="stacked-copy-value" aria-label="Stacked field" />
+        <button type="button" command="--copy" aria-label="Copy to clipboard"
+          @click="navigator.clipboard.writeText($refs.field.value)
+            .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+      </div>
+    </label>
+
+    <!-- Group composition -->
+    <div role="group">
+      <label x-data>
+        <input x-ref="field" value="grouped-copy-value" aria-label="Grouped field" />
+        <button type="button" command="--copy" aria-label="Copy to clipboard"
+          @click="navigator.clipboard.writeText($refs.field.value)
+            .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+      </label>
+      <button class="brand">Button</button>
+    </div>
+  </div>
 
   <!-- Virtual plugin test harness -->
   <x-virtual-demo x-route="virtual"></x-virtual-demo>

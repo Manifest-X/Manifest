@@ -22,28 +22,29 @@
             width: 100%
         }
 
-        & input {
+        & input,
+        & :where(label, .label):has(> button[command="--copy"]) {
             width: fit-content
         }
 
         /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
                 /* First participant */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
 
                 /* Middle participants */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-radius: 0
                 }
 
                 /* Last participant */
-                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -172,7 +173,7 @@
     }
 
     /* Label wrapper */
-    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(:has(button[command="--copy"])):not(.unstyle) {
+    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(:has(> button[command="--copy"])):not(.unstyle) {
         display: flex;
         flex-direction: column;
         gap: 0.2ch;
@@ -240,6 +241,18 @@
         justify-content: space-between;
         background-color: transparent;
         cursor: default;
+
+        /* Stack label text above the .label field when not inlined via <data> */
+        &:not(:has(data)) {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2ch;
+            text-indent: calc(var(--radius, 0.5rem) / 2);
+
+            & .label {
+                text-indent: 0
+            }
+        }
 
         :where([type=search]) {
             width: 100%;
