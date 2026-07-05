@@ -200,7 +200,7 @@
 
     <label x-data>
       <input x-ref="field" value="MNFST-20" aria-label="Coupon code" />
-      <button type="button" command="--copy" aria-label="Copy to clipboard"
+      <button type="button" command="--copy" aria-label="Copy to clipboard" x-tooltip.top.end="Copy coupon code"
         @click="navigator.clipboard.writeText($refs.field.value)
           .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
     </label>
