@@ -138,6 +138,32 @@
         }
     }
 
+    /* Copy button icon */
+    :where(button[command="--copy"]):not(.unstyle) {
+
+        &::after {
+            content: '';
+            display: block;
+            width: 0.8125rem;
+            height: 0.8125rem;
+            background-color: var(--color-content-neutral, oklch(43.9% 0 0));
+            mask-image: var(--icon-field-copy);
+            mask-size: contain;
+            mask-repeat: no-repeat;
+            mask-position: center
+        }
+
+        &:hover::after,
+        &:active::after,
+        &:focus-visible::after {
+            background-color: var(--color-field-inverse, oklch(43.9% 0 0))
+        }
+
+        &.copied::after {
+            mask-image: var(--icon-field-copied)
+        }
+    }
+
     /* Label wrapper for inputs with a copy button */
     :where(label, .label):has(> button[command="--copy"]):not(.unstyle) {
         display: flex;
@@ -160,7 +186,7 @@
             }
         }
 
-        /* Copy button */
+        /* Copy button, compact and hidden until reveal */
         & :where(button[command="--copy"]) {
             flex-shrink: 0;
             min-width: 0;
@@ -170,30 +196,10 @@
             background-color: transparent;
             opacity: 0;
 
-            &::after {
-                content: '';
-                display: block;
-                width: 0.8125rem;
-                height: 0.8125rem;
-                background-color: var(--color-content-neutral, oklch(43.9% 0 0));
-                mask-image: var(--icon-field-copy);
-                mask-size: contain;
-                mask-repeat: no-repeat;
-                mask-position: center
-            }
-
             &:hover,
             &:active,
             &:focus-visible {
-                background-color: transparent;
-
-                &::after {
-                    background-color: var(--color-field-inverse, oklch(43.9% 0 0))
-                }
-            }
-
-            &.copied::after {
-                mask-image: var(--icon-field-copied)
+                background-color: transparent
             }
         }
 

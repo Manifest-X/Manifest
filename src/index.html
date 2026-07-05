@@ -198,61 +198,54 @@
   <div class="col gap-6 p-6 max-w-md" x-route="copy">
     <h2>Copy input</h2>
 
-    <label x-data>
-      <input x-ref="field" value="MNFST-20" aria-label="Coupon code" />
-      <button type="button" command="--copy" aria-label="Copy to clipboard" x-tooltip.top.end="Copy coupon code"
-        @click="navigator.clipboard.writeText($refs.field.value)
-          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    <label>
+      <input value="MNFST-20" aria-label="Coupon code" />
+      <button command="--copy" aria-label="Copy to clipboard" x-tooltip.top.end="Copy coupon code"></button>
     </label>
 
-    <label x-data>
-      <input x-ref="field" type="email" value="andrew@example.com" aria-label="Email" />
-      <button type="button" command="--copy" aria-label="Copy to clipboard" x-tooltip.top.end="Copy email"
-        @click="navigator.clipboard.writeText($refs.field.value)
-          .then(() => ManifestTooltips.showTransient($el, 'Copied!', 1500, ['top', 'end']))"></button>
+    <!-- Custom confirmation text via [value] -->
+    <label>
+      <input type="email" value="andrew@example.com" aria-label="Email" />
+      <button command="--copy" value="Copied!" aria-label="Copy to clipboard" x-tooltip.top.end="Copy email"></button>
     </label>
 
-    <label x-data>
-      <input x-ref="field" type="tel" value="+1 (555) 010-2030" aria-label="Phone" />
-      <button type="button" command="--copy" aria-label="Copy to clipboard"
-        @click="navigator.clipboard.writeText($refs.field.value)
-          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    <label>
+      <input type="tel" value="+1 (555) 010-2030" aria-label="Phone" />
+      <button command="--copy" aria-label="Copy to clipboard"></button>
     </label>
 
-    <label x-data>
-      <input x-ref="field" type="number" value="42" aria-label="Quantity" />
-      <button type="button" command="--copy" aria-label="Copy to clipboard"
-        @click="navigator.clipboard.writeText($refs.field.value)
-          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    <label>
+      <input type="number" value="42" aria-label="Quantity" />
+      <button command="--copy" aria-label="Copy to clipboard"></button>
     </label>
 
-    <label x-data>
-      <input x-ref="field" placeholder="Type, then hover to copy" aria-label="Free text" />
-      <button type="button" command="--copy" aria-label="Copy to clipboard"
-        @click="navigator.clipboard.writeText($refs.field.value)
-          .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+    <label>
+      <input placeholder="Type, then hover to copy" aria-label="Free text" />
+      <button command="--copy" aria-label="Copy to clipboard"></button>
     </label>
 
     <!-- Stacked label composition -->
     <label>
       Stacked label
-      <div class="label" x-data>
-        <input x-ref="field" value="stacked-copy-value" aria-label="Stacked field" />
-        <button type="button" command="--copy" aria-label="Copy to clipboard"
-          @click="navigator.clipboard.writeText($refs.field.value)
-            .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+      <div class="label">
+        <input value="stacked-copy-value" aria-label="Stacked field" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
       </div>
     </label>
 
     <!-- Group composition -->
     <div role="group">
-      <label x-data>
-        <input x-ref="field" value="grouped-copy-value" aria-label="Grouped field" />
-        <button type="button" command="--copy" aria-label="Copy to clipboard"
-          @click="navigator.clipboard.writeText($refs.field.value)
-            .then(() => ManifestTooltips.showTransient($el, '<span class=field-copied-icon></span>', 1500, ['top', 'end']))"></button>
+      <label>
+        <input value="grouped-copy-value" aria-label="Grouped field" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
       </label>
       <button class="brand">Button</button>
+    </div>
+
+    <!-- Detached button via [commandfor] -->
+    <div class="row gap-2 items-center">
+      <input id="commandfor-source" value="commandfor-value" aria-label="Detached field" />
+      <button command="--copy" commandfor="commandfor-source" aria-label="Copy to clipboard"></button>
     </div>
   </div>
 
