@@ -42,6 +42,7 @@ const CONFIG = {
         'manifest.utilities.helpers.js',
         'manifest.utilities.compile.js',
         'manifest.utilities.observation.js',
+        'manifest.utilities.device.js',
         'manifest.utilities.init.js'
     ],
 

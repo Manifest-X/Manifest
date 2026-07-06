@@ -476,6 +476,13 @@
     html[data-os="android"] .no-android { display: none !important }
     html[data-os="macos"] .no-apple, html[data-os="ios"] .no-apple { display: none !important }
 
+    /* Visibility — connectivity & container (html[data-*] set by the $device signal) */
+    html:not([data-online="false"]) .offline-only { display: none !important }
+    html[data-online="false"] .online-only { display: none !important }
+    html:not([data-standalone]) .standalone-only { display: none !important }
+    html:not([data-native]) .native-only { display: none !important }
+    html[data-native] .web-only { display: none !important }
+
     /* Safe-area padding (var --safe-* is 0 unless viewport-fit=cover on a notched screen) */
     :where(.pt-safe) { padding-top: var(--safe-top) }
     :where(.pr-safe) { padding-right: var(--safe-right) }

@@ -42,7 +42,12 @@ function injectTailwindVariants() {
             '@custom-variant linux (&:where([data-os="linux"] *));',
             '@custom-variant ios (&:where([data-os="ios"] *));',
             '@custom-variant android (&:where([data-os="android"] *));',
-            '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));'
+            '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));',
+            '@custom-variant online (&:where([data-online="true"] *));',
+            '@custom-variant offline (&:where([data-online="false"] *));',
+            '@custom-variant standalone (&:where([data-standalone] *));',
+            '@custom-variant native (&:where([data-native] *));',
+            '@custom-variant web (&:where(html:not([data-native]) *));'
         ].join('\n');
         (document.head || document.documentElement).appendChild(style);
     } catch (e) {

@@ -196,7 +196,80 @@
     <a href="/presence">Presence</a>
     <a href="/combobox">Combobox</a>
     <a href="/copy">Copy input</a>
+    <a href="/native">Native</a>
   </nav>
+
+  <!-- Native primitives + $device harness -->
+  <div class="col gap-8 p-6 max-w-2xl" x-route="native"
+       x-data="{ fakeInsets: false, toggleInsets() { const h = document.documentElement; if (this.fakeInsets) { h.style.setProperty('--safe-top','59px'); h.style.setProperty('--safe-right','24px'); h.style.setProperty('--safe-bottom','34px'); h.style.setProperty('--safe-left','24px'); } else { ['top','right','bottom','left'].forEach(s => h.style.removeProperty('--safe-'+s)); } } }">
+    <h2>Native primitives &amp; $device</h2>
+
+    <!-- $device readout -->
+    <section class="col gap-2">
+      <h3>$device</h3>
+      <div class="row-wrap gap-2">
+        <span class="row gap-1 px-2 py-1 rounded bg-surface-2">os: <strong x-text="$device.os || '—'"></strong></span>
+        <span class="row gap-1 px-2 py-1 rounded bg-surface-2">platform: <strong x-text="$device.platform"></strong></span>
+        <span class="row gap-1 px-2 py-1 rounded bg-surface-2">touch: <strong x-text="$device.touch"></strong></span>
+        <span class="row gap-1 px-2 py-1 rounded bg-surface-2">online: <strong x-text="$device.online"></strong></span>
+        <span class="row gap-1 px-2 py-1 rounded bg-surface-2">standalone: <strong x-text="$device.standalone"></strong></span>
+        <span class="row gap-1 px-2 py-1 rounded bg-surface-2">native: <strong x-text="$device.native"></strong></span>
+      </div>
+      <small class="subtle">Toggle DevTools → Network → "Offline" to watch <code>online</code> flip live.</small>
+    </section>
+
+    <!-- Connectivity visibility classes -->
+    <section class="col gap-2">
+      <h3>Connectivity classes</h3>
+      <div class="online-only positive px-3 py-2 rounded">.online-only — visible while online</div>
+      <div class="offline-only negative px-3 py-2 rounded">.offline-only — visible while offline</div>
+    </section>
+
+    <!-- Safe-area utilities -->
+    <section class="col gap-2">
+      <h3>Safe-area</h3>
+      <label class="row gap-2 center hug">
+        <input type="checkbox" x-model="fakeInsets" @change="toggleInsets()">
+        Simulate device insets (env() is 0 on desktop)
+      </label>
+      <div class="p-safe rounded bg-surface-3">
+        <div class="px-3 py-2 rounded bg-brand-surface text-brand-content">.p-safe — padding tracks --safe-*</div>
+      </div>
+      <div class="pb-safe rounded bg-surface-3">
+        <div class="px-3 py-2 rounded bg-surface-1">.pb-safe — bottom inset only (home indicator)</div>
+      </div>
+    </section>
+
+    <!-- Web-tell suppression -->
+    <section class="col gap-2">
+      <h3>Web-tell suppression (opt-in)</h3>
+      <p class="no-select px-3 py-2 rounded bg-surface-2">.no-select — try to select this text; you can't.</p>
+      <div class="col gap-2 p-3 rounded bg-surface-2">
+        <div class="h-40 overflow-y-auto no-overscroll">
+          <p class="caption subtle">.no-overscroll — scroll to an edge; the page behind won't rubber-band.</p>
+          <div class="col gap-2">
+            <template x-for="n in 20" :key="n"><div class="px-3 py-2 rounded bg-surface-1">row <span x-text="n"></span></div></template>
+          </div>
+        </div>
+      </div>
+      <small class="subtle">.no-callout and .no-tap-zoom are touch-only — verify on device.</small>
+    </section>
+
+    <!-- OS / container visibility -->
+    <section class="col gap-2">
+      <h3>OS &amp; container badges</h3>
+      <div class="row-wrap gap-2">
+        <span class="ios-only px-2 py-1 rounded bg-surface-2">.ios-only</span>
+        <span class="android-only px-2 py-1 rounded bg-surface-2">.android-only</span>
+        <span class="apple-only px-2 py-1 rounded bg-surface-2">.apple-only</span>
+        <span class="mac-only px-2 py-1 rounded bg-surface-2">.mac-only</span>
+        <span class="native-only px-2 py-1 rounded bg-surface-2">.native-only</span>
+        <span class="web-only px-2 py-1 rounded bg-surface-2">.web-only</span>
+        <span class="standalone-only px-2 py-1 rounded bg-surface-2">.standalone-only</span>
+      </div>
+      <small class="subtle">Only the badges matching this device show. Override <code>&lt;html data-os&gt;</code> in DevTools to test others.</small>
+    </section>
+  </div>
 
   <!-- Copy input test harness -->
   <div class="col gap-6 p-6 max-w-md" x-route="copy">
