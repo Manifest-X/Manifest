@@ -35,7 +35,9 @@ Manifest does not own the native build toolchain (no Mac CI commitment).
 - ✅ **Docs** — `native-apps.md` reframed (Capacitor path, honest 4.2), new `app-store-readiness.md` (feel-native, native capability, physical-vs-digital payments, 4.2 checklist) on the website repo `staging` (not yet published; hold production until primitives ship). Privacy-manifest section still to add.
 - ✅ **Primitives** — safe-area `--safe-*` + `p/px/py/pt/…-safe` utilities, `min-h-dvh`/`h-dvh`, opt-in web-tell utilities (`no-callout/select/tap-zoom/overscroll`), `viewport-fit=cover` + apple/mobile meta, starter `theme_color`.
 - ✅ **`$device`** — base signal in core/utilities (`os/touch/online/standalone/native/platform`), `html[data-online|standalone|native]` + `offline:/online:/standalone:/native:/web:` variants + `*-only` classes, reactive store. `/native` QA harness on the src test page.
-- ⏭ Next: bottom-tab nav convention → native umbrella scaffold + `$device` enrichment → capabilities (push/deep-links/share/secure-storage first) → Capacitor wrap → payments adapter.
+- ✅ **Bottom-tab nav** — `.tabbar` component (fixed, safe-area, `[aria-current]` active via `$route`), auto-included via elements glob.
+- ✅ **Native umbrella** — `manifest.native.js` (opt-in; `native/` subscripts core+share+network). Core stamps `data-native/data-platform` for `$device`; `$share` = native sheet→Web Share→clipboard; network upgrades `$device.online` in-container. Loader auto-injects on `window.Capacitor` or a manifest `"native"` block. Verified web fallback on `/native`.
+- ⏭ Next: capabilities (push/deep-links/share/secure-storage first) → Capacitor wrap → payments adapter. TODO: add `"native"` block to `manifest.schema.json` (editor autocomplete); per-capability + `$device` docs pages.
 
 ## Ethos / constraints (unchanged)
 
