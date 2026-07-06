@@ -83,6 +83,7 @@
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
   <script src="/scripts/manifest.chat.js"></script>
+  <script src="/scripts/manifest.native.js"></script>
   <!-- Markdown render helper for the chat demo: reuse the markdown plugin's
        marked + DOMPurify (loaded on demand) via x-html — robust under streaming
        (synchronous, no innerHTML/initTree race with x-for re-stamping). -->
@@ -269,6 +270,13 @@
         <span class="standalone-only px-2 py-1 rounded bg-surface-2">.standalone-only</span>
       </div>
       <small class="subtle">Only the badges matching this device show. Override <code>&lt;html data-os&gt;</code> in DevTools to test others.</small>
+    </section>
+
+    <!-- $share capability -->
+    <section class="col gap-2">
+      <h3>$share</h3>
+      <button class="hug brand" @click="$share({ title: 'Manifest', text: 'Native app support in Manifest', url: 'https://manifestx.dev' }).then(r => $toast((r.shared ? 'Shared via ' : 'Not shared: ') + r.method))">Share</button>
+      <small class="subtle">Native share sheet in-app; Web Share or clipboard on the web. Result method shown in a toast.</small>
     </section>
 
     <!-- Tab bar note -->

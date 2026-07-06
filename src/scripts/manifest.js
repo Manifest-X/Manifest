@@ -488,6 +488,14 @@
 		return [];
 	}
 
+	// Detect the native umbrella plugin. Auto-loaded inside a Capacitor container
+	// (window.Capacitor present) or when a `native` config block opts in on the web.
+	function detectNativePlugins(manifest) {
+		if (typeof window !== 'undefined' && window.Capacitor) return ['native'];
+		if (manifest && typeof manifest === 'object' && manifest.native && typeof manifest.native === 'object') return ['native'];
+		return [];
+	}
+
 	// Parse data attributes
 	function parseDataAttributes() {
 		// Try to get current script first, then fall back to querySelector
@@ -560,7 +568,7 @@
 	// Expose API
 	window.Manifest = {
 		loadPlugin: function (pluginName, version = DEFAULT_VERSION) {
-			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, 'payments', 'chat'];
+			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, 'payments', 'chat', 'native'];
 			if (!allPlugins.includes(pluginName)) {
 				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
 				return Promise.reject(new Error(`Unknown plugin: ${pluginName}`));
@@ -654,7 +662,8 @@
 				const appwritePlugins = detectAppwritePlugins(manifest);
 				const paymentsPlugins = detectPaymentsPlugins(manifest);
 				const chatPlugins = detectChatPlugins(manifest);
-				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins, ...paymentsPlugins, ...chatPlugins]);
+				const nativePlugins = detectNativePlugins(manifest);
+				pluginsToLoad = resolveDependencies([...corePlugins, ...appwritePlugins, ...paymentsPlugins, ...chatPlugins, ...nativePlugins]);
 			} else {
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {

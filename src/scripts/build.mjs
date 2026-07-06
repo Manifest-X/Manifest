@@ -150,6 +150,14 @@ const CONFIG = {
         'manifest.edit.main.js'
     ],
 
+    // Native umbrella subscripts order (opt-in; Capacitor as one adapter, web
+    // fallbacks throughout). core.js first: it stamps $device + boots the magics.
+    nativeSubscripts: [
+        'manifest.native.core.js',
+        'manifest.native.share.js',
+        'manifest.native.network.js'
+    ],
+
     // Core plugins that should load first
     corePlugins: ['scripts/manifest.components.js'],
 
@@ -243,6 +251,9 @@ function buildSubscripts() {
 
     // Build edit
     combineSubscripts(CONFIG.editSubscripts, 'manifest.edit.js', 'edit');
+
+    // Build native umbrella
+    combineSubscripts(CONFIG.nativeSubscripts, 'manifest.native.js', 'native');
 
     console.log('✓ Subscripts built successfully!\n');
 }
@@ -690,6 +701,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
         { source: 'scripts/manifest.status.js', dest: '../lib/manifest.status.js' },
         { source: 'scripts/manifest.chat.js', dest: '../lib/manifest.chat.js' },
+        { source: 'scripts/manifest.native.js', dest: '../lib/manifest.native.js' },
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
         { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },
