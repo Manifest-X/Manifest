@@ -23,28 +23,29 @@
         }
 
         & input,
-        & :where(label, .label):has(> button[command="--copy"]) {
+        & .combobox,
+        & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
             width: fit-content
         }
 
         /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
                 /* First participant */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
 
                 /* Middle participants */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-radius: 0
                 }
 
                 /* Last participant */
-                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, label:has(> button[command="--copy"]), .label:has(> button[command="--copy"])):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -191,7 +192,7 @@
             padding-inline-start: calc(var(--radius, 0.5rem) / 2)
         }
 
-        :where(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea) {
+        &>:where(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea, .combobox, [role=group], [role=tablist]) {
             width: 100%;
             max-width: 100%
         }
@@ -215,8 +216,8 @@
             box-shadow: 0 0 0 0
         }
 
-        /* Size buttons and inputs */
-        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist]) {
+        /* Size buttons, inputs, and field wrappers */
+        &>:where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist], .combobox) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }
@@ -246,7 +247,9 @@
         &:not(:has(data)) {
             display: flex;
             flex-direction: column;
+            align-items: start;
             gap: 0.2ch;
+            width: 100%;
             text-indent: calc(var(--radius, 0.5rem) / 2);
 
             & .label {

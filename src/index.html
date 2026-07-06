@@ -247,6 +247,117 @@
       <input id="commandfor-source" value="commandfor-value" aria-label="Detached field" />
       <button command="--copy" commandfor="commandfor-source" aria-label="Copy to clipboard"></button>
     </div>
+
+    <h2>Form layouts: stacked labels</h2>
+
+    <label>
+      Plain input
+      <input placeholder="Plain" />
+    </label>
+
+    <label>
+      Search
+      <div class="label">
+        <span x-icon="lucide:search"></span>
+        <input type="search" placeholder="Search" />
+      </div>
+    </label>
+
+    <label>
+      Copyable
+      <div class="label">
+        <input value="stacked-copy" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </div>
+    </label>
+
+    <label>
+      Select
+      <select>
+        <option>One</option>
+        <option>Two</option>
+      </select>
+    </label>
+
+    <label>
+      Combobox
+      <input x-combobox.multiple.chips="{ separators: ', ' }" placeholder="Add tags" />
+    </label>
+
+    <label>
+      Group
+      <div role="group">
+        <input placeholder="Email" />
+        <button class="brand">Go</button>
+      </div>
+    </label>
+
+    <h2>Form layouts: inline labels</h2>
+
+    <label>
+      <data>Plain</data>
+      <input placeholder="Plain" />
+    </label>
+
+    <label>
+      <data>Search</data>
+      <div class="label">
+        <span x-icon="lucide:search"></span>
+        <input type="search" placeholder="Search" />
+      </div>
+    </label>
+
+    <label>
+      <data>Copyable</data>
+      <div class="label">
+        <input value="inline-copy" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </div>
+    </label>
+
+    <label>
+      <data>Select</data>
+      <select>
+        <option>One</option>
+        <option>Two</option>
+      </select>
+    </label>
+
+    <label>
+      <data>Combobox</data>
+      <input x-combobox.multiple.chips="{ separators: ', ' }" placeholder="Tags" />
+    </label>
+
+    <label>
+      <data>Group</data>
+      <div role="group">
+        <input placeholder="Email" />
+        <button class="brand">Go</button>
+      </div>
+    </label>
+
+    <h2>Form layouts: groups with wrapped fields</h2>
+
+    <div role="group">
+      <label>
+        <input value="copy-in-group" aria-label="Copy in group" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </label>
+      <button class="brand">Send</button>
+    </div>
+
+    <div role="group">
+      <label role="button">
+        <span x-icon="lucide:search"></span>
+        <input type="search" placeholder="Search" aria-label="Search in group" />
+      </label>
+      <button class="brand">Go</button>
+    </div>
+
+    <div role="group">
+      <input x-combobox.multiple.chips="{ separators: ', ' }" placeholder="Tags" aria-label="Combobox in group" />
+      <button class="brand">Add</button>
+    </div>
   </div>
 
   <!-- Virtual plugin test harness -->
