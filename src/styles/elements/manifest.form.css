@@ -197,6 +197,12 @@
             max-width: 100%
         }
 
+        /* Group inputs flex to fill the label width */
+        &>:where([role=group]) :where(input) {
+            flex: 1;
+            min-width: 0
+        }
+
         /* Space out stacked labels for search and file inputs */
         :has([type=search], [type=file]) :where([type=search], [type=file]) {
             margin-top: 0.2ch
@@ -220,6 +226,12 @@
         &>:where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist], .combobox) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
+        }
+
+        /* Group inputs flex to fit the sized group */
+        &>:where([role=group]) :where(input) {
+            flex: 1;
+            min-width: 0
         }
 
         /* Focus state for .label wrapper for search and file inputs */
