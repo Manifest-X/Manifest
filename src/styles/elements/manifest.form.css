@@ -192,7 +192,7 @@
             padding-inline-start: calc(var(--radius, 0.5rem) / 2)
         }
 
-        &>:where(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea, .combobox, [role=group], [role=tablist]) {
+        &>:where(label, button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea, .combobox, [role=group], [role=tablist]) {
             width: 100%;
             max-width: 100%
         }
@@ -223,7 +223,7 @@
         }
 
         /* Size buttons, inputs, and field wrappers */
-        &>:where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist], .combobox) {
+        &>:where(label, .label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist], .combobox) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }
@@ -234,8 +234,8 @@
             min-width: 0
         }
 
-        /* Focus state for .label wrapper for search and file inputs */
-        & .label:focus-within {
+        /* Focus state for nested field wrappers (search, file, copy) */
+        & :where(label, .label):focus-within {
             box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 35%, transparent)
         }
 

@@ -292,6 +292,17 @@
       </div>
     </label>
 
+    <!-- Nested label stamped by Alpine (template x-if), per app usage -->
+    <label>
+      Nested label
+      <template x-if="true">
+        <label>
+          <input value="nested-stacked" aria-label="Nested stacked" />
+          <button command="--copy" aria-label="Copy to clipboard"></button>
+        </label>
+      </template>
+    </label>
+
     <h2>Form layouts: inline labels</h2>
 
     <label>
@@ -334,6 +345,17 @@
         <input placeholder="Email" />
         <button class="brand">Go</button>
       </div>
+    </label>
+
+    <!-- Nested label stamped by Alpine (template x-if), per app usage -->
+    <label>
+      <data>Nested</data>
+      <template x-if="true">
+        <label>
+          <input type="email" value="nested@example.com" aria-label="Nested inline" />
+          <button command="--copy" aria-label="Copy to clipboard"></button>
+        </label>
+      </template>
     </label>
 
     <h2>Form layouts: groups with wrapped fields</h2>
