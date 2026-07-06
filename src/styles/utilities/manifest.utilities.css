@@ -475,4 +475,24 @@
     html[data-os="ios"] .no-ios { display: none !important }
     html[data-os="android"] .no-android { display: none !important }
     html[data-os="macos"] .no-apple, html[data-os="ios"] .no-apple { display: none !important }
+
+    /* Safe-area padding (var --safe-* is 0 unless viewport-fit=cover on a notched screen) */
+    :where(.pt-safe) { padding-top: var(--safe-top) }
+    :where(.pr-safe) { padding-right: var(--safe-right) }
+    :where(.pb-safe) { padding-bottom: var(--safe-bottom) }
+    :where(.pl-safe) { padding-left: var(--safe-left) }
+    :where(.px-safe) { padding-left: var(--safe-left); padding-right: var(--safe-right) }
+    :where(.py-safe) { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom) }
+    :where(.p-safe) { padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left) }
+
+    /* Dynamic viewport height (avoids the mobile 100vh browser-chrome jump) */
+    :where(.min-h-dvh) { min-height: 100dvh }
+    :where(.h-dvh) { height: 100dvh }
+
+    /* Native — suppress web tells (opt-in) */
+    :where(.no-callout) { -webkit-touch-callout: none }
+    :where(.no-select) { -webkit-user-select: none; user-select: none }
+    :where(.no-tap-zoom) { touch-action: manipulation }
+    :where(.no-overscroll) { overscroll-behavior: none }
+    :where(.no-overscroll-y) { overscroll-behavior-y: none }
 }
