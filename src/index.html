@@ -248,6 +248,60 @@
       <button command="--copy" commandfor="commandfor-source" aria-label="Copy to clipboard"></button>
     </div>
 
+    <h2>Wrapper parity: .label vs nested label</h2>
+
+    <label>
+      Stacked via .label
+      <div class="label">
+        <input value="dot-label" aria-label="Stacked via .label" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </div>
+    </label>
+
+    <label>
+      Stacked via nested label
+      <template x-if="true">
+        <label>
+          <input value="nested-label" aria-label="Stacked via nested label" />
+          <button command="--copy" aria-label="Copy to clipboard"></button>
+        </label>
+      </template>
+    </label>
+
+    <label>
+      <data>Inline .label</data>
+      <div class="label">
+        <input value="dot-label" aria-label="Inline via .label" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </div>
+    </label>
+
+    <label>
+      <data>Inline nested</data>
+      <template x-if="true">
+        <label>
+          <input value="nested-label" aria-label="Inline via nested label" />
+          <button command="--copy" aria-label="Copy to clipboard"></button>
+        </label>
+      </template>
+    </label>
+
+    <div role="group">
+      <div class="label">
+        <input value="group-dot-label" aria-label="Group via .label" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </div>
+      <button class="brand">Send</button>
+    </div>
+
+    <div role="group">
+      <label>
+        <input value="group-label" aria-label="Group via label" />
+        <button command="--copy" aria-label="Copy to clipboard"></button>
+      </label>
+      <button class="brand">Send</button>
+    </div>
+
     <h2>Form layouts: stacked labels</h2>
 
     <label>
