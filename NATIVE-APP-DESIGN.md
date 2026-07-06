@@ -30,6 +30,13 @@ access → 4.2-achievable), documented *alongside* PWABuilder (kept, but honestl
 reframed as 4.2-risk for iOS). We **bless the config; the author runs Xcode/CLI** —
 Manifest does not own the native build toolchain (no Mac CI commitment).
 
+## Progress (2026-07-06)
+
+- ✅ **Docs** — `native-apps.md` reframed (Capacitor path, honest 4.2), new `app-store-readiness.md` (feel-native, native capability, physical-vs-digital payments, 4.2 checklist) on the website repo `staging` (not yet published; hold production until primitives ship). Privacy-manifest section still to add.
+- ✅ **Primitives** — safe-area `--safe-*` + `p/px/py/pt/…-safe` utilities, `min-h-dvh`/`h-dvh`, opt-in web-tell utilities (`no-callout/select/tap-zoom/overscroll`), `viewport-fit=cover` + apple/mobile meta, starter `theme_color`.
+- ✅ **`$device`** — base signal in core/utilities (`os/touch/online/standalone/native/platform`), `html[data-online|standalone|native]` + `offline:/online:/standalone:/native:/web:` variants + `*-only` classes, reactive store. `/native` QA harness on the src test page.
+- ⏭ Next: bottom-tab nav convention → native umbrella scaffold + `$device` enrichment → capabilities (push/deep-links/share/secure-storage first) → Capacitor wrap → payments adapter.
+
 ## Ethos / constraints (unchanged)
 
 - Core stays minimal; native features are **opt-in plugins**, not core weight.
@@ -168,18 +175,21 @@ immediate-check), conditional auto-injection via a `manifest.json` block (as
 Payments/Chat/Appwrite do). Each capability **no-ops when its native API is
 absent** → PE is free given the hydration contract.
 
-Capabilities, prioritized by 4.2 "genuine native functionality":
+Capabilities (capability-first: a web-degradable API with Capacitor as one adapter):
 
-1. **Biometric** (Face ID / Touch ID) — easiest single "this is native" win.
-2. **Network/online** — feeds `$device.online` at higher fidelity.
-3. **Share** — native share sheet / Web Share API / clipboard fallback.
-4. **Haptics**.
-5. **Push notifications** (APNs).
-6. **Camera / photos**.
-7. **Deep links / universal links**.
-8. **App lifecycle hooks**.
+- **Biometric** (Face ID / Touch ID) — easiest single "this is native" win; gate sign-in or a sensitive action.
+- **Secure storage** — Keychain/Keystore-backed token storage, its **own** capability (not folded into biometric). An app needs secure session-token storage independently of whether biometric is enabled; the Appwrite auth plugin currently falls back to `localStorage`, which a native adapter upgrades to the Keychain when present. Web fallback: `localStorage`/`IndexedDB`.
+- **Push notifications** (APNs) — **three contracts, not display-only**, designed together and coupled to deep links + lifecycle:
+  1. **Permission prompt timing** under author control (not auto-prompt on launch).
+  2. **Device-token registration hook** — token → author's backend.
+  3. **Notification-tap payload → router handoff** — deep-link the tap into a route (couples to deep links + lifecycle).
+- **Deep links / universal links** — open the app to a specific route from a URL; shared handoff target with push taps.
+- **Share** — native share sheet / Web Share API / clipboard fallback.
+- **Haptics**.
+- **Camera / photos**.
+- **App lifecycle hooks** (foreground/background/resume) — also the delivery point for a tapped-notification payload.
 
-Each is capability-first: a web-degradable API with Capacitor as one adapter.
+**Proving-ground priority (Nurvana, framework-agnostic ordering aside):** the 4.2 "native-feel" ranking puts biometric first, but the first consumer's critical path is **push → deep links → share → secure storage** (internal TestFlight ~Jul 27, store submission Aug 4–6). Biometric + haptics are welcome riders (Face ID on slide-to-pay is a genuine luxury-feel + 4.2 win); camera can trail. Since capabilities are independent plugins, this only reorders the build sequence, not the design.
 
 ## Bucket 4 — Payments native adapter
 
@@ -217,6 +227,7 @@ Highest leverage; land first. House style: `articles/publishing/<topic>.md` +
   **Capacitor = store-grade**. Keep other-OS packaging intact.
 - New **App Store readiness / 4.2 guide** + checkbox **4.2 compliance checklist**.
 - Payments physical-vs-digital / IAP boundary section.
+- **Apple privacy manifests** — `PrivacyInfo.xcprivacy`, required-reason API declarations, and data-collection/tracking disclosures (mandatory since 2024, including for third-party SDKs like Capacitor plugins). Belongs in the readiness guide; it bites every author at submission otherwise.
 - Per-capability plugin pages + `$device` page.
 
 ## Bucket 7 — Capacitor starter wrap
