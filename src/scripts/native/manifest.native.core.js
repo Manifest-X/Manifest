@@ -34,6 +34,8 @@ if (typeof initManifestNativeNetwork === 'function') initManifestNativeNetwork()
 let manifestNativeInitialized = false;
 function initManifestNative() {
     if (typeof initManifestShare === 'function') initManifestShare();
+    if (typeof initManifestSecure === 'function') initManifestSecure();
+    if (typeof initManifestLinks === 'function') initManifestLinks();
 }
 function ensureManifestNativeInitialized() {
     if (manifestNativeInitialized) return;

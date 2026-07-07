@@ -279,6 +279,31 @@
       <small class="subtle">Native share sheet in-app; Web Share or clipboard on the web. Result method shown in a toast.</small>
     </section>
 
+    <!-- $secure capability -->
+    <section class="col gap-2" x-data="{ key:'token', val:'abc123', out:'—' }">
+      <h3>$secure</h3>
+      <div class="row-wrap gap-2 center">
+        <input x-model="key" class="hug" aria-label="key">
+        <input x-model="val" class="hug" aria-label="value">
+        <button class="hug" @click="await $secure.set(key, val); out = 'set ' + key">Set</button>
+        <button class="hug" @click="out = 'get: ' + await $secure.get(key)">Get</button>
+        <button class="hug" @click="await $secure.remove(key); out = 'removed ' + key">Remove</button>
+        <button class="hug" @click="out = 'keys: ' + ((await $secure.keys()).join(', ') || '(none)')">Keys</button>
+        <span class="subtle" x-text="out"></span>
+      </div>
+      <small class="subtle">Keychain/Keystore in-app; namespaced localStorage on the web (not encrypted).</small>
+    </section>
+
+    <!-- $links capability -->
+    <section class="col gap-2">
+      <h3>$links</h3>
+      <div class="row-wrap gap-2 center">
+        <button class="hug" @click="$links.open('https://app.example.com/virtual')">Open /virtual</button>
+        <button class="hug" @click="$links.open('https://app.example.com/combobox')">Open /combobox</button>
+      </div>
+      <small class="subtle">Native <code>appUrlOpen</code> hands off to the router; here <code>$links.open()</code> simulates an inbound universal link (custom schemes → map via <code>$links.on()</code>). Last: <span x-text="$links.last || '—'"></span></small>
+    </section>
+
     <!-- Dock note -->
     <section class="col gap-2">
       <h3>Dock</h3>

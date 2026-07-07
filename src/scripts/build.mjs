@@ -155,7 +155,9 @@ const CONFIG = {
     nativeSubscripts: [
         'manifest.native.core.js',
         'manifest.native.share.js',
-        'manifest.native.network.js'
+        'manifest.native.network.js',
+        'manifest.native.secure.js',
+        'manifest.native.links.js'
     ],
 
     // Core plugins that should load first
