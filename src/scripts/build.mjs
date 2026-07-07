@@ -160,7 +160,9 @@ const CONFIG = {
         'manifest.native.links.js',
         'manifest.native.push.js',
         'manifest.native.app.js',
-        'manifest.native.haptics.js'
+        'manifest.native.haptics.js',
+        'manifest.native.biometric.js',
+        'manifest.native.camera.js'
     ],
 
     // Core plugins that should load first

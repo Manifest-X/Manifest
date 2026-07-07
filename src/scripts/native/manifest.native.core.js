@@ -39,6 +39,8 @@ function initManifestNative() {
     if (typeof initManifestPush === 'function') initManifestPush();
     if (typeof initManifestApp === 'function') initManifestApp();
     if (typeof initManifestHaptics === 'function') initManifestHaptics();
+    if (typeof initManifestBiometric === 'function') initManifestBiometric();
+    if (typeof initManifestCamera === 'function') initManifestCamera();
 }
 function ensureManifestNativeInitialized() {
     if (manifestNativeInitialized) return;

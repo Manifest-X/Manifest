@@ -328,6 +328,19 @@
       <small class="subtle"><code>$app.active</code> flips with foreground/background (visibilitychange on the web). Haptics use Capacitor natively, <code>navigator.vibrate</code> on the web (desktop often ignores it).</small>
     </section>
 
+    <!-- $biometric + $camera capabilities -->
+    <section class="col gap-2" x-data="{ bio:'—', shot:'—' }">
+      <h3>$biometric &amp; $camera</h3>
+      <div class="row-wrap gap-2 center">
+        <button class="hug" @click="bio = 'available: ' + await $biometric.available()">Check biometric</button>
+        <button class="hug" @click="const r = await $biometric.verify({ reason:'Confirm it\'s you' }); bio = r.verified ? 'verified' : ('no: ' + r.error)">Verify</button>
+        <span class="subtle" x-text="bio"></span>
+        <button class="hug" @click="const r = await $camera.photo(); shot = r.dataUrl ? 'got image' : (r.cancelled ? 'cancelled' : r.error)">Photo</button>
+        <span class="subtle" x-text="shot"></span>
+      </div>
+      <small class="subtle">Biometric is native-only (Face ID / Touch ID); the web reports unsupported. Camera uses Capacitor natively, a file picker on the web.</small>
+    </section>
+
     <!-- Dock note -->
     <section class="col gap-2">
       <h3>Dock</h3>

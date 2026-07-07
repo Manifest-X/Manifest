@@ -39,6 +39,8 @@ function initManifestNative() {
     if (typeof initManifestPush === 'function') initManifestPush();
     if (typeof initManifestApp === 'function') initManifestApp();
     if (typeof initManifestHaptics === 'function') initManifestHaptics();
+    if (typeof initManifestBiometric === 'function') initManifestBiometric();
+    if (typeof initManifestCamera === 'function') initManifestCamera();
 }
 function ensureManifestNativeInitialized() {
     if (manifestNativeInitialized) return;
@@ -368,5 +370,90 @@ function initManifestHaptics() {
             if (H) { try { return H.vibrate({ duration: ms || 300 }); } catch (e) {} }
             manifestVibrate(ms || 300); return Promise.resolve();
         }
+    }));
+}
+
+
+// $biometric — Face ID / Touch ID. Native: a Capacitor biometric plugin
+// (BiometricAuth or NativeBiometric; method shapes differ, adapted below). The web
+// has no equivalent one-shot verify (WebAuthn is a separate server ceremony), so
+// available() is false and verify() reports unsupported — a genuine native win.
+
+function manifestBiometricPlugin() {
+    return manifestNativePlugin('BiometricAuth') || manifestNativePlugin('NativeBiometric') || null;
+}
+
+async function manifestBiometricAvailable() {
+    const B = manifestBiometricPlugin();
+    if (!B) return false;
+    try {
+        if (typeof B.checkBiometry === 'function') { const r = await B.checkBiometry(); return !!(r && r.isAvailable); }
+        if (typeof B.isAvailable === 'function') { const r = await B.isAvailable(); return !!(r && r.isAvailable !== false); }
+    } catch (e) {}
+    return false;
+}
+
+async function manifestBiometricVerify(opts) {
+    const o = opts || {};
+    const B = manifestBiometricPlugin();
+    if (!B) return { verified: false, error: 'unsupported' };
+    try {
+        if (typeof B.authenticate === 'function') { await B.authenticate({ reason: o.reason, ...o }); return { verified: true }; }
+        if (typeof B.verifyIdentity === 'function') { await B.verifyIdentity({ reason: o.reason, title: o.title, subtitle: o.subtitle }); return { verified: true }; }
+    } catch (e) { return { verified: false, error: (e && (e.message || e.code)) || 'failed' }; }
+    return { verified: false, error: 'unsupported' };
+}
+
+function initManifestBiometric() {
+    window.Alpine.magic('biometric', () => ({
+        available: () => manifestBiometricAvailable(),
+        verify: (opts) => manifestBiometricVerify(opts)
+    }));
+}
+
+
+// $camera — capture or pick a photo. Native: Capacitor Camera.getPhoto. Web
+// fallback: a file input (with capture hint on mobile) returning a data URL.
+// Resolves { dataUrl?, format?, cancelled?, error? }.
+
+function manifestCameraWeb(opts) {
+    const o = opts || {};
+    return new Promise(resolve => {
+        try {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            if (o.source !== 'photos') input.setAttribute('capture', 'environment');
+            input.style.position = 'fixed';
+            input.style.left = '-9999px';
+            input.addEventListener('change', () => {
+                const file = input.files && input.files[0];
+                if (!file) { resolve({ cancelled: true }); input.remove(); return; }
+                const reader = new FileReader();
+                reader.onload = () => { resolve({ dataUrl: reader.result, format: (file.type.split('/')[1]) || '' }); input.remove(); };
+                reader.onerror = () => { resolve({ cancelled: true, error: 'read-failed' }); input.remove(); };
+                reader.readAsDataURL(file);
+            });
+            document.body.appendChild(input);
+            input.click();
+        } catch (e) { resolve({ cancelled: true, error: 'unsupported' }); }
+    });
+}
+
+function manifestCameraPhoto(opts) {
+    const o = opts || {};
+    const Cam = manifestNativePlugin('Camera');
+    if (Cam) {
+        return Cam.getPhoto({ resultType: 'dataUrl', source: o.source === 'photos' ? 'PHOTOS' : 'CAMERA', quality: o.quality || 90 })
+            .then(r => ({ dataUrl: r && (r.dataUrl || r.webPath), format: r && r.format }))
+            .catch(e => ({ cancelled: true, error: (e && (e.message || e.code)) || 'cancelled' }));
+    }
+    return manifestCameraWeb(o);
+}
+
+function initManifestCamera() {
+    window.Alpine.magic('camera', () => ({
+        photo: (opts) => manifestCameraPhoto(opts),
+        pick: (opts) => manifestCameraPhoto(Object.assign({}, opts || {}, { source: 'photos' }))
     }));
 }
