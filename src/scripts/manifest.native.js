@@ -36,6 +36,9 @@ function initManifestNative() {
     if (typeof initManifestShare === 'function') initManifestShare();
     if (typeof initManifestSecure === 'function') initManifestSecure();
     if (typeof initManifestLinks === 'function') initManifestLinks();
+    if (typeof initManifestPush === 'function') initManifestPush();
+    if (typeof initManifestApp === 'function') initManifestApp();
+    if (typeof initManifestHaptics === 'function') initManifestHaptics();
 }
 function ensureManifestNativeInitialized() {
     if (manifestNativeInitialized) return;
@@ -236,4 +239,134 @@ function initManifestLinks() {
         try { App.addListener('appUrlOpen', (data) => { if (data && data.url) manifestHandleUrl(data.url); }); } catch (e) {}
         try { App.getLaunchUrl().then(r => { if (r && r.url) manifestHandleUrl(r.url); }).catch(() => {}); } catch (e) {}
     }
+}
+
+
+// $push — push notifications (Capacitor PushNotifications → APNs/FCM), designed as
+// three author-controlled contracts, not display-only:
+//   1. permission timing — $push.request() (never auto-prompts on load)
+//   2. device token      — $push.onToken(fn): token -> your backend
+//   3. tap -> route       — tapped payload's url/route hands off to the router
+//                           ($push.onTap(fn) to override; reuses $links + $app)
+// Web fallback: permission maps to the Notification API; full web push (service
+// worker + VAPID) is out of scope, so register() is a no-op on the web.
+
+let _manifestPushTokenHandlers = [];
+let _manifestPushReceiveHandlers = [];
+let _manifestPushTapHandler = null;
+
+function manifestPushMapPermission(p) {
+    if (p === 'granted' || p === 'denied' || p === 'prompt') return p;
+    if (p === 'default') return 'prompt';
+    return p || 'prompt';
+}
+
+function manifestPushRoutePayload(notification) {
+    const data = (notification && (notification.data || notification)) || {};
+    return data.url || data.route || data.path || null;
+}
+
+function manifestPushHandleTap(notification) {
+    if (typeof _manifestPushTapHandler === 'function') { try { _manifestPushTapHandler(notification); } catch (e) {} return; }
+    const target = manifestPushRoutePayload(notification);
+    if (target && typeof manifestHandleUrl === 'function') manifestHandleUrl(target);
+}
+
+function initManifestPush() {
+    const store = { permission: 'prompt', token: null };
+    try { store.permission = (typeof Notification !== 'undefined') ? manifestPushMapPermission(Notification.permission) : 'unsupported'; }
+    catch (e) { store.permission = 'unsupported'; }
+    window.Alpine.store('push', store);
+
+    const Push = manifestNativePlugin('PushNotifications');
+    if (Push) {
+        try { Push.addListener('registration', t => { store.token = t && t.value; _manifestPushTokenHandlers.forEach(fn => { try { fn(store.token); } catch (e) {} }); }); } catch (e) {}
+        try { Push.addListener('pushNotificationReceived', n => { _manifestPushReceiveHandlers.forEach(fn => { try { fn(n); } catch (e) {} }); }); } catch (e) {}
+        try { Push.addListener('pushNotificationActionPerformed', a => manifestPushHandleTap(a && a.notification)); } catch (e) {}
+    }
+
+    window.Alpine.magic('push', () => ({
+        async request() {
+            const P = manifestNativePlugin('PushNotifications');
+            if (P) { try { const r = await P.requestPermissions(); const p = manifestPushMapPermission(r && r.receive); window.Alpine.store('push').permission = p; return p; } catch (e) { return 'denied'; } }
+            if (typeof Notification !== 'undefined' && Notification.requestPermission) { try { const p = manifestPushMapPermission(await Notification.requestPermission()); window.Alpine.store('push').permission = p; return p; } catch (e) { return 'denied'; } }
+            return 'unsupported';
+        },
+        async register() {
+            const P = manifestNativePlugin('PushNotifications');
+            if (P) { try { await P.register(); } catch (e) {} }
+        },
+        onToken(fn) { if (typeof fn === 'function') _manifestPushTokenHandlers.push(fn); },
+        onReceive(fn) { if (typeof fn === 'function') _manifestPushReceiveHandlers.push(fn); },
+        onTap(fn) { _manifestPushTapHandler = typeof fn === 'function' ? fn : null; },
+        get permission() { const s = window.Alpine.store('push'); return s ? s.permission : 'prompt'; },
+        get token() { const s = window.Alpine.store('push'); return s ? s.token : null; }
+    }));
+}
+
+
+// $app — app lifecycle. Native: Capacitor App appStateChange (foreground/background).
+// Web fallback: document visibilitychange + pageshow/pagehide. $app.active is
+// reactive; onChange hooks fire on transition. Push delivers tapped-notification
+// routing around resume, so this pairs with $push + $links.
+
+let _manifestAppChangeHandlers = [];
+
+function manifestAppSetActive(active) {
+    try { const s = window.Alpine && window.Alpine.store('app'); if (s) s.active = !!active; } catch (e) {}
+    _manifestAppChangeHandlers.forEach(fn => { try { fn(!!active); } catch (e) {} });
+}
+
+function initManifestApp() {
+    const visible = (typeof document !== 'undefined') ? document.visibilityState !== 'hidden' : true;
+    window.Alpine.store('app', { active: visible });
+
+    const App = manifestNativePlugin('App');
+    if (App) {
+        try { App.addListener('appStateChange', s => manifestAppSetActive(s && s.isActive)); } catch (e) {}
+    } else if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', () => manifestAppSetActive(document.visibilityState !== 'hidden'));
+        window.addEventListener('pageshow', () => manifestAppSetActive(true));
+        window.addEventListener('pagehide', () => manifestAppSetActive(false));
+    }
+
+    window.Alpine.magic('app', () => ({
+        get active() { const s = window.Alpine.store('app'); return s ? s.active : true; },
+        onChange(fn) { if (typeof fn === 'function') _manifestAppChangeHandlers.push(fn); }
+    }));
+}
+
+
+// $haptics — tactile feedback. Native: Capacitor Haptics. Web fallback:
+// navigator.vibrate (limited; iOS Safari ignores it — fine, it's an enhancement).
+// No-ops silently when unsupported.
+
+function manifestVibrate(pattern) {
+    try { if (navigator.vibrate) return navigator.vibrate(pattern); } catch (e) {}
+    return false;
+}
+
+function initManifestHaptics() {
+    window.Alpine.magic('haptics', () => ({
+        impact(style) {
+            const H = manifestNativePlugin('Haptics');
+            if (H) { try { return H.impact({ style: style || 'MEDIUM' }); } catch (e) {} }
+            manifestVibrate(10); return Promise.resolve();
+        },
+        notification(type) {
+            const H = manifestNativePlugin('Haptics');
+            if (H) { try { return H.notification({ type: type || 'SUCCESS' }); } catch (e) {} }
+            manifestVibrate([10, 40, 10]); return Promise.resolve();
+        },
+        selection() {
+            const H = manifestNativePlugin('Haptics');
+            if (H) { try { return H.selectionChanged(); } catch (e) {} }
+            manifestVibrate(5); return Promise.resolve();
+        },
+        vibrate(ms) {
+            const H = manifestNativePlugin('Haptics');
+            if (H) { try { return H.vibrate({ duration: ms || 300 }); } catch (e) {} }
+            manifestVibrate(ms || 300); return Promise.resolve();
+        }
+    }));
 }

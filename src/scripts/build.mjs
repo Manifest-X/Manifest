@@ -157,7 +157,10 @@ const CONFIG = {
         'manifest.native.share.js',
         'manifest.native.network.js',
         'manifest.native.secure.js',
-        'manifest.native.links.js'
+        'manifest.native.links.js',
+        'manifest.native.push.js',
+        'manifest.native.app.js',
+        'manifest.native.haptics.js'
     ],
 
     // Core plugins that should load first

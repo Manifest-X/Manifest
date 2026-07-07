@@ -304,6 +304,30 @@
       <small class="subtle">Native <code>appUrlOpen</code> hands off to the router; here <code>$links.open()</code> simulates an inbound universal link (custom schemes → map via <code>$links.on()</code>). Last: <span x-text="$links.last || '—'"></span></small>
     </section>
 
+    <!-- $push capability -->
+    <section class="col gap-2">
+      <h3>$push</h3>
+      <div class="row-wrap gap-2 center">
+        <span class="px-2 py-1 rounded bg-surface-2">permission: <strong x-text="$push.permission"></strong></span>
+        <button class="hug" @click="await $push.request()">Request</button>
+        <button class="hug" @click="$push.register()">Register</button>
+        <span class="subtle">token: <span x-text="$push.token || '—'"></span></span>
+      </div>
+      <small class="subtle">Three contracts: author-timed permission, <code>onToken</code> → your backend, tap payload → router. Token + tap are native-only.</small>
+    </section>
+
+    <!-- $app + $haptics capabilities -->
+    <section class="col gap-2">
+      <h3>$app &amp; $haptics</h3>
+      <div class="row-wrap gap-2 center">
+        <span class="px-2 py-1 rounded bg-surface-2">state: <strong x-text="$app.active ? 'foreground' : 'background'"></strong></span>
+        <button class="hug" @click="$haptics.impact()">Impact</button>
+        <button class="hug" @click="$haptics.notification()">Notify</button>
+        <button class="hug" @click="$haptics.selection()">Selection</button>
+      </div>
+      <small class="subtle"><code>$app.active</code> flips with foreground/background (visibilitychange on the web). Haptics use Capacitor natively, <code>navigator.vibrate</code> on the web (desktop often ignores it).</small>
+    </section>
+
     <!-- Dock note -->
     <section class="col gap-2">
       <h3>Dock</h3>

@@ -36,6 +36,9 @@ function initManifestNative() {
     if (typeof initManifestShare === 'function') initManifestShare();
     if (typeof initManifestSecure === 'function') initManifestSecure();
     if (typeof initManifestLinks === 'function') initManifestLinks();
+    if (typeof initManifestPush === 'function') initManifestPush();
+    if (typeof initManifestApp === 'function') initManifestApp();
+    if (typeof initManifestHaptics === 'function') initManifestHaptics();
 }
 function ensureManifestNativeInitialized() {
     if (manifestNativeInitialized) return;
