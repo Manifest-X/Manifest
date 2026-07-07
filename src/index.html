@@ -49,7 +49,7 @@
   <link rel="stylesheet" href="/styles/elements/manifest.sidebar.css">
   <link rel="stylesheet" href="/styles/elements/manifest.slides.css">
   <link rel="stylesheet" href="/styles/elements/manifest.switch.css">
-  <link rel="stylesheet" href="/styles/elements/manifest.tabbar.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.dock.css">
   <link rel="stylesheet" href="/styles/elements/manifest.table.css">
   <link rel="stylesheet" href="/styles/elements/manifest.toast.css">
   <link rel="stylesheet" href="/styles/elements/manifest.tooltip.css">
@@ -203,7 +203,7 @@
 
   <!-- Native primitives + $device harness -->
   <div class="col gap-8 px-6 pt-6 pb-28 max-w-2xl" x-route="native"
-       x-data="{ fakeInsets: false, toggleInsets() { const h = document.documentElement; if (this.fakeInsets) { h.style.setProperty('--safe-top','59px'); h.style.setProperty('--safe-right','24px'); h.style.setProperty('--safe-bottom','34px'); h.style.setProperty('--safe-left','24px'); } else { ['top','right','bottom','left'].forEach(s => h.style.removeProperty('--safe-'+s)); } } }">
+       x-data="{ fakeInsets: false, float: false, toggleInsets() { const h = document.documentElement; if (this.fakeInsets) { h.style.setProperty('--safe-top','59px'); h.style.setProperty('--safe-right','24px'); h.style.setProperty('--safe-bottom','34px'); h.style.setProperty('--safe-left','24px'); } else { ['top','right','bottom','left'].forEach(s => h.style.removeProperty('--safe-'+s)); } } }">
     <h2>Native primitives &amp; $device</h2>
 
     <!-- $device readout -->
@@ -279,21 +279,26 @@
       <small class="subtle">Native share sheet in-app; Web Share or clipboard on the web. Result method shown in a toast.</small>
     </section>
 
-    <!-- Tab bar note -->
+    <!-- Dock note -->
     <section class="col gap-2">
-      <h3>Bottom tab bar</h3>
-      <small class="subtle">The <code>.tabbar</code> at the bottom of this route uses <code>$route</code> for active state and <code>pb-safe</code> for the home indicator. Tap a tab to navigate.</small>
+      <h3>Dock</h3>
+      <label class="row gap-2 center hug">
+        <input type="checkbox" x-model="float">
+        Float (Playcom-style) — sets <code>--dock-inset</code> + <code>--dock-radius</code>
+      </label>
+      <small class="subtle">The <code>&lt;nav dock&gt;</code> at the bottom uses <code>$route</code> for active state and <code>--safe-bottom</code> for the home indicator. Edge-to-edge by default; the toggle floats it with two variables.</small>
     </section>
-  </div>
 
-  <!-- Native-style bottom tab bar (route-scoped; active state from $route) -->
-  <nav class="tabbar" x-route="native" aria-label="Primary">
-    <a href="/native" :aria-current="$route === '/native' ? 'page' : null"><span x-icon="lucide:smartphone"></span>Native</a>
-    <a href="/virtual" :aria-current="$route.startsWith('/virtual') ? 'page' : null"><span x-icon="lucide:list"></span>Virtual</a>
-    <a href="/combobox" :aria-current="$route.startsWith('/combobox') ? 'page' : null"><span x-icon="lucide:chevrons-up-down"></span>Picker</a>
-    <a href="/chat" :aria-current="$route.startsWith('/chat') ? 'page' : null"><span x-icon="lucide:message-circle"></span>Chat</a>
-    <a href="/" :aria-current="$route === '/' ? 'page' : null"><span x-icon="lucide:home"></span>Home</a>
-  </nav>
+    <!-- Dock: fixed bottom nav (parent route gates visibility; float via --dock-* vars) -->
+    <nav dock aria-label="Primary"
+         :style="float ? '--dock-inset: 0.75rem; --dock-radius: 1.5rem; --dock-shadow: 0 6px 24px oklch(0% 0 0 / 12%); --dock-border-top: 0' : ''">
+      <a href="/native" :aria-current="$route === '/native' ? 'page' : null"><span x-icon="lucide:smartphone"></span>Native</a>
+      <a href="/virtual" :aria-current="$route.startsWith('/virtual') ? 'page' : null"><span x-icon="lucide:list"></span>Virtual</a>
+      <a href="/combobox" :aria-current="$route.startsWith('/combobox') ? 'page' : null"><span x-icon="lucide:chevrons-up-down"></span>Picker</a>
+      <a href="/chat" :aria-current="$route.startsWith('/chat') ? 'page' : null"><span x-icon="lucide:message-circle"></span>Chat</a>
+      <a href="/" :aria-current="$route === '/' ? 'page' : null"><span x-icon="lucide:home"></span>Home</a>
+    </nav>
+  </div>
 
   <!-- Copy input test harness -->
   <div class="col gap-6 p-6 max-w-md" x-route="copy">
