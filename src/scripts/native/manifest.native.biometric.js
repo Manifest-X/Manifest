@@ -22,7 +22,7 @@ async function manifestBiometricVerify(opts) {
     const B = manifestBiometricPlugin();
     if (!B) return { verified: false, error: 'unsupported' };
     try {
-        if (typeof B.authenticate === 'function') { await B.authenticate({ reason: o.reason, ...o }); return { verified: true }; }
+        if (typeof B.authenticate === 'function') { await B.authenticate({ reason: o.reason, title: o.title, subtitle: o.subtitle, cancelTitle: o.cancelTitle }); return { verified: true }; }
         if (typeof B.verifyIdentity === 'function') { await B.verifyIdentity({ reason: o.reason, title: o.title, subtitle: o.subtitle }); return { verified: true }; }
     } catch (e) { return { verified: false, error: (e && (e.message || e.code)) || 'failed' }; }
     return { verified: false, error: 'unsupported' };

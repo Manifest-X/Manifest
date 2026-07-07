@@ -28,11 +28,13 @@ function manifestNativeStamp() {
     } catch (e) {}
 }
 manifestNativeStamp();
-if (typeof initManifestNativeNetwork === 'function') initManifestNativeNetwork();
 
 // Register capability magics once Alpine is available.
 let manifestNativeInitialized = false;
 function initManifestNative() {
+    // Network runs here (not at load) so the Capacitor Network reading can reach
+    // the $device store, which utilities registers on alpine:init.
+    if (typeof initManifestNativeNetwork === 'function') initManifestNativeNetwork();
     if (typeof initManifestShare === 'function') initManifestShare();
     if (typeof initManifestSecure === 'function') initManifestSecure();
     if (typeof initManifestLinks === 'function') initManifestLinks();
@@ -92,11 +94,13 @@ function manifestShare(opts) {
     const payload = opts || {};
     const Share = manifestNativePlugin('Share');
     if (Share) {
+        // When the native sheet is present, never fall through to the web sheet
+        // (that would double-prompt); report the native outcome instead.
         return Share.share({ title: payload.title, text: payload.text, url: payload.url, dialogTitle: payload.dialogTitle })
             .then(() => ({ shared: true, method: 'native' }))
             .catch(e => manifestShareCancelled(e)
                 ? { shared: false, method: 'native', cancelled: true }
-                : manifestShareWeb(payload));
+                : { shared: false, method: 'native', error: (e && (e.message || e.code)) || 'failed' });
     }
     return manifestShareWeb(payload);
 }
@@ -167,7 +171,7 @@ function manifestSecureNativeBackend(plugin) {
         async remove(key) {
             try { if (typeof plugin.removeItem === 'function') await plugin.removeItem(key); else await plugin.remove({ key }); } catch (e) {}
         },
-        async keys() { try { const r = await plugin.keys(); return Array.isArray(r) ? r : (r && r.value) || []; } catch (e) { return []; } },
+        async keys() { try { const r = await plugin.keys(); return Array.isArray(r) ? r : (r && (r.keys || r.value)) || []; } catch (e) { return []; } },
         async clear() { try { await plugin.clear(); } catch (e) {} }
     };
 }
@@ -199,11 +203,18 @@ function initManifestSecure() {
 // deep-linking and testing. Couples with lifecycle + push (tap → route).
 
 function manifestLinkPath(url) {
-    try { const u = new URL(url, window.location.origin); return u.pathname + u.search + u.hash; }
-    catch (e) {
-        const m = String(url).match(/^[a-z][a-z0-9+.-]*:\/\/[^/]*(\/[^\s]*)?$/i);
-        return (m && m[1]) || '/';
+    const s = String(url);
+    const scheme = (s.match(/^([a-z][a-z0-9+.-]*):/i) || [])[1];
+    if (scheme && scheme.toLowerCase() !== 'http' && scheme.toLowerCase() !== 'https') {
+        // Custom scheme (myapp://order/123): treat host + path as the route.
+        const rest = s.slice(scheme.length + 1).replace(/^\/\//, '');
+        const cut = rest.search(/[?#]/);
+        const pathPart = (cut === -1 ? rest : rest.slice(0, cut)).replace(/^\/+/, '');
+        const tail = cut === -1 ? '' : rest.slice(cut);
+        return '/' + pathPart + tail;
     }
+    try { const u = new URL(url, window.location.origin); return u.pathname + u.search + u.hash; }
+    catch (e) { return '/'; }
 }
 
 // Faithful SPA navigation: route through the router's own click interceptor.
@@ -229,7 +240,7 @@ function manifestHandleUrl(url) {
 }
 
 function initManifestLinks() {
-    window.Alpine.store('links', { last: null });
+    if (!window.Alpine.store('links')) window.Alpine.store('links', { last: null });
     window.Alpine.magic('links', () => ({
         on: (fn) => { _manifestLinkHandler = typeof fn === 'function' ? fn : null; },
         open: (url) => manifestHandleUrl(url),
@@ -275,10 +286,13 @@ function manifestPushHandleTap(notification) {
 }
 
 function initManifestPush() {
-    const store = { permission: 'prompt', token: null };
-    try { store.permission = (typeof Notification !== 'undefined') ? manifestPushMapPermission(Notification.permission) : 'unsupported'; }
-    catch (e) { store.permission = 'unsupported'; }
-    window.Alpine.store('push', store);
+    let store = window.Alpine.store('push');
+    if (!store) {
+        store = { permission: 'prompt', token: null };
+        try { store.permission = (typeof Notification !== 'undefined') ? manifestPushMapPermission(Notification.permission) : 'unsupported'; }
+        catch (e) { store.permission = 'unsupported'; }
+        window.Alpine.store('push', store);
+    }
 
     const Push = manifestNativePlugin('PushNotifications');
     if (Push) {
@@ -321,7 +335,7 @@ function manifestAppSetActive(active) {
 
 function initManifestApp() {
     const visible = (typeof document !== 'undefined') ? document.visibilityState !== 'hidden' : true;
-    window.Alpine.store('app', { active: visible });
+    if (!window.Alpine.store('app')) window.Alpine.store('app', { active: visible });
 
     const App = manifestNativePlugin('App');
     if (App) {
@@ -398,7 +412,7 @@ async function manifestBiometricVerify(opts) {
     const B = manifestBiometricPlugin();
     if (!B) return { verified: false, error: 'unsupported' };
     try {
-        if (typeof B.authenticate === 'function') { await B.authenticate({ reason: o.reason, ...o }); return { verified: true }; }
+        if (typeof B.authenticate === 'function') { await B.authenticate({ reason: o.reason, title: o.title, subtitle: o.subtitle, cancelTitle: o.cancelTitle }); return { verified: true }; }
         if (typeof B.verifyIdentity === 'function') { await B.verifyIdentity({ reason: o.reason, title: o.title, subtitle: o.subtitle }); return { verified: true }; }
     } catch (e) { return { verified: false, error: (e && (e.message || e.code)) || 'failed' }; }
     return { verified: false, error: 'unsupported' };
@@ -426,14 +440,25 @@ function manifestCameraWeb(opts) {
             if (o.source !== 'photos') input.setAttribute('capture', 'environment');
             input.style.position = 'fixed';
             input.style.left = '-9999px';
+            let settled = false;
+            const done = (result) => {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('focus', onFocus);
+                input.remove();
+                resolve(result);
+            };
+            // No 'change' fires when the picker is cancelled; detect it on focus return.
+            const onFocus = () => setTimeout(() => { if (!settled && (!input.files || !input.files.length)) done({ cancelled: true }); }, 500);
             input.addEventListener('change', () => {
                 const file = input.files && input.files[0];
-                if (!file) { resolve({ cancelled: true }); input.remove(); return; }
+                if (!file) { done({ cancelled: true }); return; }
                 const reader = new FileReader();
-                reader.onload = () => { resolve({ dataUrl: reader.result, format: (file.type.split('/')[1]) || '' }); input.remove(); };
-                reader.onerror = () => { resolve({ cancelled: true, error: 'read-failed' }); input.remove(); };
+                reader.onload = () => done({ dataUrl: reader.result, format: (file.type.split('/')[1]) || '' });
+                reader.onerror = () => done({ cancelled: true, error: 'read-failed' });
                 reader.readAsDataURL(file);
             });
+            window.addEventListener('focus', onFocus);
             document.body.appendChild(input);
             input.click();
         } catch (e) { resolve({ cancelled: true, error: 'unsupported' }); }

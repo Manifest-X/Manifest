@@ -29,10 +29,13 @@ function manifestPushHandleTap(notification) {
 }
 
 function initManifestPush() {
-    const store = { permission: 'prompt', token: null };
-    try { store.permission = (typeof Notification !== 'undefined') ? manifestPushMapPermission(Notification.permission) : 'unsupported'; }
-    catch (e) { store.permission = 'unsupported'; }
-    window.Alpine.store('push', store);
+    let store = window.Alpine.store('push');
+    if (!store) {
+        store = { permission: 'prompt', token: null };
+        try { store.permission = (typeof Notification !== 'undefined') ? manifestPushMapPermission(Notification.permission) : 'unsupported'; }
+        catch (e) { store.permission = 'unsupported'; }
+        window.Alpine.store('push', store);
+    }
 
     const Push = manifestNativePlugin('PushNotifications');
     if (Push) {

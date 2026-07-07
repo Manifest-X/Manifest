@@ -12,7 +12,7 @@ function manifestAppSetActive(active) {
 
 function initManifestApp() {
     const visible = (typeof document !== 'undefined') ? document.visibilityState !== 'hidden' : true;
-    window.Alpine.store('app', { active: visible });
+    if (!window.Alpine.store('app')) window.Alpine.store('app', { active: visible });
 
     const App = manifestNativePlugin('App');
     if (App) {

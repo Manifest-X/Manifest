@@ -5,11 +5,18 @@
 // deep-linking and testing. Couples with lifecycle + push (tap → route).
 
 function manifestLinkPath(url) {
-    try { const u = new URL(url, window.location.origin); return u.pathname + u.search + u.hash; }
-    catch (e) {
-        const m = String(url).match(/^[a-z][a-z0-9+.-]*:\/\/[^/]*(\/[^\s]*)?$/i);
-        return (m && m[1]) || '/';
+    const s = String(url);
+    const scheme = (s.match(/^([a-z][a-z0-9+.-]*):/i) || [])[1];
+    if (scheme && scheme.toLowerCase() !== 'http' && scheme.toLowerCase() !== 'https') {
+        // Custom scheme (myapp://order/123): treat host + path as the route.
+        const rest = s.slice(scheme.length + 1).replace(/^\/\//, '');
+        const cut = rest.search(/[?#]/);
+        const pathPart = (cut === -1 ? rest : rest.slice(0, cut)).replace(/^\/+/, '');
+        const tail = cut === -1 ? '' : rest.slice(cut);
+        return '/' + pathPart + tail;
     }
+    try { const u = new URL(url, window.location.origin); return u.pathname + u.search + u.hash; }
+    catch (e) { return '/'; }
 }
 
 // Faithful SPA navigation: route through the router's own click interceptor.
@@ -35,7 +42,7 @@ function manifestHandleUrl(url) {
 }
 
 function initManifestLinks() {
-    window.Alpine.store('links', { last: null });
+    if (!window.Alpine.store('links')) window.Alpine.store('links', { last: null });
     window.Alpine.magic('links', () => ({
         on: (fn) => { _manifestLinkHandler = typeof fn === 'function' ? fn : null; },
         open: (url) => manifestHandleUrl(url),

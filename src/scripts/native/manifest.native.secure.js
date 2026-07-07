@@ -38,7 +38,7 @@ function manifestSecureNativeBackend(plugin) {
         async remove(key) {
             try { if (typeof plugin.removeItem === 'function') await plugin.removeItem(key); else await plugin.remove({ key }); } catch (e) {}
         },
-        async keys() { try { const r = await plugin.keys(); return Array.isArray(r) ? r : (r && r.value) || []; } catch (e) { return []; } },
+        async keys() { try { const r = await plugin.keys(); return Array.isArray(r) ? r : (r && (r.keys || r.value)) || []; } catch (e) { return []; } },
         async clear() { try { await plugin.clear(); } catch (e) {} }
     };
 }

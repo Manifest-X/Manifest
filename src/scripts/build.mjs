@@ -178,6 +178,7 @@ const CONFIG = {
         'scripts/payments/**',
         'scripts/edit/**',
         'scripts/chat/**',
+        'scripts/native/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)

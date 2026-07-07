@@ -27,11 +27,13 @@ function manifestShare(opts) {
     const payload = opts || {};
     const Share = manifestNativePlugin('Share');
     if (Share) {
+        // When the native sheet is present, never fall through to the web sheet
+        // (that would double-prompt); report the native outcome instead.
         return Share.share({ title: payload.title, text: payload.text, url: payload.url, dialogTitle: payload.dialogTitle })
             .then(() => ({ shared: true, method: 'native' }))
             .catch(e => manifestShareCancelled(e)
                 ? { shared: false, method: 'native', cancelled: true }
-                : manifestShareWeb(payload));
+                : { shared: false, method: 'native', error: (e && (e.message || e.code)) || 'failed' });
     }
     return manifestShareWeb(payload);
 }

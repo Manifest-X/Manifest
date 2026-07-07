@@ -265,7 +265,8 @@
 	// Plugin dependencies: plugins that require other plugins to be loaded first
 	const PLUGIN_DEPENDENCIES = {
 		'appwrite-data': ['data'],
-		'appwrite-presences': ['data', 'appwrite-auth']
+		'appwrite-presences': ['data', 'appwrite-auth'],
+		'native': ['utilities']
 	};
 
 	// Derive default plugin list from manifest (only load data/localization/components when manifest needs them)
@@ -668,6 +669,11 @@
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {
 					manifestPromise = fetch(manifestUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+				}
+				// Inside a Capacitor container, ensure the native umbrella loads even on
+				// the explicit data-plugins path (matches the derive-path auto-inject).
+				if (typeof window !== 'undefined' && window.Capacitor && !pluginsToLoad.includes('native')) {
+					pluginsToLoad = resolveDependencies([...pluginsToLoad, 'native']);
 				}
 			}
 

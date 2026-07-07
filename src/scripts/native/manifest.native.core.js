@@ -28,11 +28,13 @@ function manifestNativeStamp() {
     } catch (e) {}
 }
 manifestNativeStamp();
-if (typeof initManifestNativeNetwork === 'function') initManifestNativeNetwork();
 
 // Register capability magics once Alpine is available.
 let manifestNativeInitialized = false;
 function initManifestNative() {
+    // Network runs here (not at load) so the Capacitor Network reading can reach
+    // the $device store, which utilities registers on alpine:init.
+    if (typeof initManifestNativeNetwork === 'function') initManifestNativeNetwork();
     if (typeof initManifestShare === 'function') initManifestShare();
     if (typeof initManifestSecure === 'function') initManifestSecure();
     if (typeof initManifestLinks === 'function') initManifestLinks();

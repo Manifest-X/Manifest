@@ -44,7 +44,7 @@ function initManifestDeviceSignal() {
         get os() { return html.getAttribute('data-os') || ''; },
         get touch() { return (navigator.maxTouchPoints || 0) > 1 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) || false; },
         get online() { const s = window.Alpine.store('device'); return s ? s.online !== false : navigator.onLine !== false; },
-        get standalone() { return html.hasAttribute('data-standalone'); },
+        get standalone() { return html.hasAttribute('data-standalone') || (!!window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; },
         get native() { return html.hasAttribute('data-native'); },
         get platform() { return html.getAttribute('data-platform') || (html.hasAttribute('data-native') ? (html.getAttribute('data-os') || 'native') : 'web'); }
     }));

@@ -12,14 +12,25 @@ function manifestCameraWeb(opts) {
             if (o.source !== 'photos') input.setAttribute('capture', 'environment');
             input.style.position = 'fixed';
             input.style.left = '-9999px';
+            let settled = false;
+            const done = (result) => {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('focus', onFocus);
+                input.remove();
+                resolve(result);
+            };
+            // No 'change' fires when the picker is cancelled; detect it on focus return.
+            const onFocus = () => setTimeout(() => { if (!settled && (!input.files || !input.files.length)) done({ cancelled: true }); }, 500);
             input.addEventListener('change', () => {
                 const file = input.files && input.files[0];
-                if (!file) { resolve({ cancelled: true }); input.remove(); return; }
+                if (!file) { done({ cancelled: true }); return; }
                 const reader = new FileReader();
-                reader.onload = () => { resolve({ dataUrl: reader.result, format: (file.type.split('/')[1]) || '' }); input.remove(); };
-                reader.onerror = () => { resolve({ cancelled: true, error: 'read-failed' }); input.remove(); };
+                reader.onload = () => done({ dataUrl: reader.result, format: (file.type.split('/')[1]) || '' });
+                reader.onerror = () => done({ cancelled: true, error: 'read-failed' });
                 reader.readAsDataURL(file);
             });
+            window.addEventListener('focus', onFocus);
             document.body.appendChild(input);
             input.click();
         } catch (e) { resolve({ cancelled: true, error: 'unsupported' }); }
