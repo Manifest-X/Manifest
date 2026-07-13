@@ -106,13 +106,14 @@
             background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
         }
 
-        /* Labels */
-        & label {
+        /* Labels (not inner field-surface wrappers) */
+        & label:not(.unstyle):not(:has(> input[type=search], > input[type=file], > button[command="--copy"])) {
             padding-inline-start: 0.5rem;
             padding-inline-end: 0.5rem;
             cursor: default;
 
-            &:hover {
+            &:hover,
+            &:active {
                 background-color: transparent
             }
 
@@ -121,8 +122,9 @@
             }
         }
 
-        /* Inputs and textareas */
-        & :where(input, textarea) {
+        /* Inputs and textareas placed as direct items */
+        &>:where(input, textarea),
+        & :where(li)>:where(input, textarea) {
             flex-shrink: 0;
 
             &:not(:first-child) {
