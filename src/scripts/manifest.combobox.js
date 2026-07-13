@@ -67,22 +67,34 @@ function initializeComboboxPlugin() {
     const rand = () => Math.random().toString(36).slice(2, 9);
     const ui = () => window.ManifestUI ? window.ManifestUI.resolve('combobox', UI_FALLBACK) : UI_FALLBACK;
 
+    // Alpine binding attributes — never carried onto combobox-owned clones
+    const isBinding = (n) => n[0] === ':' || n[0] === '@' || n.indexOf('x-') === 0;
+
     // Read options from a source element (datalist/select → option, menu → li)
     function readOptions(src) {
         if (!src) return [];
         if (src.tagName === 'MENU') {
-            return Array.from(src.querySelectorAll('li')).map(li => ({
-                value: li.dataset.value != null ? li.dataset.value : li.textContent.trim(),
-                label: li.dataset.label || li.textContent.trim(),
-                pattern: li.dataset.pattern || null,
-                locked: li.hasAttribute('data-locked'),
-                html: li.innerHTML,
-                // Carry the row's own attributes into the option, minus combobox-managed
-                // ones and Alpine bindings (x-/:/@ reference the source's scope, not the clone).
-                attrs: Array.from(li.attributes)
-                    .filter(a => { const n = a.name; return n !== 'role' && n !== 'id' && n !== 'aria-selected' && n[0] !== ':' && n[0] !== '@' && n.indexOf('x-') !== 0; })
-                    .map(a => [a.name, a.value])
-            }));
+            return Array.from(src.querySelectorAll('li')).map(li => {
+                // The clone is a rendered snapshot: strip Alpine bindings (x-/:/@) from the
+                // WHOLE subtree, not just the row — they reference the source's x-for scope
+                // and would throw when Alpine walks the combobox-owned copy. The computed
+                // results (style, class, text) are already baked in and survive.
+                const copy = li.cloneNode(true);
+                copy.querySelectorAll('*').forEach(n => {
+                    Array.from(n.attributes).forEach(a => { if (isBinding(a.name)) n.removeAttribute(a.name); });
+                });
+                return {
+                    value: li.dataset.value != null ? li.dataset.value : li.textContent.trim(),
+                    label: li.dataset.label || li.textContent.trim(),
+                    pattern: li.dataset.pattern || null,
+                    locked: li.hasAttribute('data-locked'),
+                    html: copy.innerHTML,
+                    // Carry the row's own attributes into the option, minus combobox-managed ones.
+                    attrs: Array.from(li.attributes)
+                        .filter(a => { const n = a.name; return n !== 'role' && n !== 'id' && n !== 'aria-selected' && !isBinding(n); })
+                        .map(a => [a.name, a.value])
+                };
+            });
         }
         return Array.from(src.querySelectorAll('option')).map(o => ({
             value: o.value || o.textContent.trim(),
@@ -308,7 +320,10 @@ function initializeComboboxPlugin() {
             // stays a data layer x-for/$x can own (reread below mirrors it), the combobox
             // owns the listbox. readOptions keeps each row's innerHTML, preserving markup.
             menu = document.createElement('menu');
-            document.body.appendChild(menu);   // anchor positioning needs it out of overflow contexts
+            menu.setAttribute('x-ignore', '');  // plugin-owned rows — Alpine must never walk them
+            // Nearest popover host, so an outer auto popover isn't light-dismissed
+            // by listbox clicks; body otherwise (out of overflow contexts either way).
+            (el.closest('[popover]') || document.body).appendChild(menu);
             generatedMenu = menu;               // tracked so cleanup() can remove it on re-render
             if (src) src.style.setProperty('display', 'none', 'important');
             menu.setAttribute('popover', 'manual');
@@ -497,13 +512,31 @@ function initializeComboboxPlugin() {
         let suppressOpen = false;
         function refocus() { suppressOpen = true; el.focus(); setTimeout(() => { suppressOpen = false; }, 0); }
 
+        // The model is written ONLY on explicit user selection; commits also fire a DOM
+        // change event so apps can save on events instead of watching the model.
+        // `dirty` = the user actually edited the text since focus — gates Enter's
+        // free-text commit so a stray Enter on an untouched field can't re-commit the
+        // display label (or, with the menu open, an auto-highlighted option) as a value.
+        let dirty = false;
+        let seeding = false;   // init-time seeding is not a user commit — no change event
+        const fireChange = () => { if (!seeding) el.dispatchEvent(new Event('change', { bubbles: true })); };
+
         function addValue(value, label) {
-            if (!multiple) { selected = [{ value, label }]; render(); syncOut(); announce(label + ' selected'); return; }
+            if (!multiple) {
+                const same = selected[0] && String(selected[0].value) === String(value);
+                selected = [{ value, label }];
+                render();
+                dirty = false;
+                if (!same) { syncOut(); fireChange(); announce(label + ' selected'); }
+                return;
+            }
             if (isSelected(value)) return;
             if (selected.length >= max) { announce('Maximum of ' + max + ' reached'); return; }
             selected.push({ value, label });
             render();
+            dirty = false;
             syncOut();
+            fireChange();
             announce(label + ' added');
         }
         function removeValue(value) {
@@ -513,6 +546,7 @@ function initializeComboboxPlugin() {
             const [g] = selected.splice(i, 1);
             render();
             syncOut();
+            fireChange();
             announce(g.label + ' removed');
             if (menu && !isAsync) filter();
             refocus();
@@ -634,7 +668,7 @@ function initializeComboboxPlugin() {
                 if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(1); }
                 else if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); }
                 else if (e.key === 'Enter' || e.key === ' ') {
-                    if (activeIndex >= 0 || activeIndex === -2) { e.preventDefault(); selectOption(liAt(activeIndex)); }
+                    if (!e.repeat && menu.hasAttribute('data-kbd') && (activeIndex >= 0 || activeIndex === -2)) { e.preventDefault(); selectOption(liAt(activeIndex)); }
                 }
                 else if (e.key === 'Escape') { if (open) { e.preventDefault(); closeMenu(); } }
             });
@@ -643,10 +677,15 @@ function initializeComboboxPlugin() {
                 if (e.key === 'ArrowDown' && menu) { e.preventDefault(); openMenu(); moveActive(1); }
                 else if (e.key === 'ArrowUp' && menu) { e.preventDefault(); moveActive(-1); }
                 else if (e.key === 'Enter') {
-                    if (menu && menu.matches(':popover-open') && (activeIndex >= 0 || activeIndex === -2)) {
+                    // Commit only on deliberate action: an option needs a keyboard-driven
+                    // highlight (data-kbd — arrows or typing), free text needs an actual
+                    // edit since focus (dirty). A stray Enter on an untouched field — key
+                    // repeat, form submit, saving the record — must never write the model.
+                    if (e.repeat) return;
+                    if (menu && menu.matches(':popover-open') && menu.hasAttribute('data-kbd') && (activeIndex >= 0 || activeIndex === -2)) {
                         e.preventDefault();
                         selectOption(liAt(activeIndex));
-                    } else if (!strict || !menu) {
+                    } else if ((!strict || !menu) && dirty) {
                         if (commitText(el.value)) e.preventDefault();
                     }
                 }
@@ -658,19 +697,27 @@ function initializeComboboxPlugin() {
 
             // Separators (and paste) commit from here, the moment one lands in the value.
             el.addEventListener('input', () => {
+                dirty = true;
                 if (menu) menu.setAttribute('data-kbd', '');   // typing drives the highlight onto the first match
                 extractTokens();
                 if (isAsync) asyncRefresh(); else { openMenu(); filter(); }
             });
 
-            el.addEventListener('focus', () => { if (!suppressOpen) openForEntry(true); });
+            el.addEventListener('focus', () => { dirty = false; if (!suppressOpen) openForEntry(true); });
             // Reopen on click even when the field is already focused (focus won't re-fire).
             el.addEventListener('mousedown', () => { if (menu && !menu.matches(':popover-open') && !suppressOpen) openForEntry(false); });
         }
 
-        // Close when focus leaves the field entirely (Tab away).
+        // Close when focus leaves the field entirely (Tab away). A committed single
+        // field also snaps its display back to the selection's label — abandoned typing
+        // never commits, and the model is left untouched.
         el.addEventListener('blur', () => setTimeout(() => {
-            if (menu && !wrap.contains(document.activeElement) && !menu.contains(document.activeElement)) closeMenu();
+            if (wrap.contains(document.activeElement) || (menu && menu.contains(document.activeElement))) return;
+            closeMenu();
+            if (!multiple && !chips && !editorNone && selected[0] && el.value !== selected[0].label) {
+                el.value = selected[0].label;
+                dirty = false;
+            }
         }, 0));
 
         // Click empty shell → focus the trigger
@@ -753,7 +800,9 @@ function initializeComboboxPlugin() {
         if (!modelExpr && !adopt && !editorNone && chips && el.value) {
             const seeds = el.value.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
             el.value = '';
+            seeding = true;
             seeds.forEach(s => commitText(s));
+            seeding = false;
         }
         // In chips/multiple the editor is a typing buffer. Clear value AND remove the
         // attribute: mnfst-render serializes the attribute, so leaving it bakes seed text

@@ -156,8 +156,8 @@
         background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
     }
 
-    /* Nested menu alignment */
-    :where(menu menu):where(:not(.unstyle)) {
+    /* Nested menu alignment (not combobox listboxes, which anchor to their field) */
+    :where(menu menu:not([role=listbox])):where(:not(.unstyle)) {
         position-area: span-end end;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }

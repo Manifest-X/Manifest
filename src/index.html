@@ -430,8 +430,12 @@
       </label>
       <label>
         <data>Country</data>
-        <input x-combobox.multiple.chips="{ separators: ', ' }" placeholder="Any" />
+        <input x-combobox="menu-countries" placeholder="Any" />
       </label>
+      <datalist id="menu-countries">
+        <option>Australia</option><option>Brazil</option><option>Canada</option>
+        <option>Denmark</option><option>France</option><option>Japan</option>
+      </datalist>
       <label>
         Copyable
         <template x-if="true">
