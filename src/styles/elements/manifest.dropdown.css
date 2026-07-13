@@ -45,8 +45,8 @@
         transform-origin: top center;
         overflow-x: hidden;
 
-        /* Options */
-        & :where(li, a, button, [role=button], label):not(.unstyle) {
+        /* Options (labels only when flat items — field wrappers keep form layout) */
+        & :where(li, a, button, [role=button], label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -150,7 +150,7 @@
     }
 
     /* Dark theme */
-    :where(.dark menu[popover]) :where(li, a, button, label):hover {
+    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):hover {
         background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
     }
 

@@ -416,6 +416,29 @@
       <button command="--copy" commandfor="commandfor-source" aria-label="Copy to clipboard"></button>
     </div>
 
+    <h2>Menus with field wrappers</h2>
+
+    <button x-dropdown="copy-menu-demo">Filter menu</button>
+    <menu popover id="copy-menu-demo" class="gap-1 p-3">
+      <small>Filters</small>
+      <button>Regular item</button>
+      <label><input type="checkbox" role="switch" /> Switch item</label>
+      <hr />
+      <label>
+        <span>Handler</span>
+        <input x-combobox.multiple.chips="{ separators: ', ' }" placeholder="Any" />
+      </label>
+      <label>
+        Copyable
+        <template x-if="true">
+          <label>
+            <input value="menu-copy" aria-label="Copyable" />
+            <button command="--copy" aria-label="Copy to clipboard"></button>
+          </label>
+        </template>
+      </label>
+    </menu>
+
     <h2>Wrapper parity: .label vs nested label</h2>
 
     <label>
