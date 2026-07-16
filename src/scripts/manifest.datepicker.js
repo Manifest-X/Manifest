@@ -631,6 +631,8 @@
 		}
 
 		/* ---- Presets ------------------------------------------------- */
+		// Presets never close the menu — the selection updates in place so the
+		// author can refine it or pick another pill.
 		function applyPreset(state, p) {
 			if (!p || typeof p !== 'object') return;
 			if (state.selectionMode === 'range') {
@@ -640,7 +642,6 @@
 				state.rangeStart = s; state.rangeEnd = e; state.rangeHover = null;
 				state.view = { y: s.getFullYear(), m: s.getMonth() + 1 };
 				state.syncOut(); state.bump(); state.render();
-				if (state.mode === 'menu') state.close();
 			} else if (state.selectionMode === 'multiple') {
 				const arr = Array.isArray(p.dates) ? p.dates : (p.value ? [p.value] : []);
 				state.selectedDates = arr.map(x => D.fromISO(x)).filter(Boolean).sort((a, b) => D.compare(a, b));
@@ -648,7 +649,11 @@
 				state.syncOut(); state.bump(); state.render();
 			} else {
 				const d = D.fromISO(p.value || p.start);
-				if (d) state.select(d);
+				if (!d) return;
+				state.selected = d;
+				if (state.withTime) state.timeSet = true;
+				state.view = { y: d.getFullYear(), m: d.getMonth() + 1 };
+				state.syncOut(); state.bump(); state.render();
 			}
 		}
 
@@ -659,6 +664,9 @@
 			state.presets.forEach(p => {
 				const btn = document.createElement('button');
 				btn.type = 'button';
+				// `.unstyle` keeps the shared menu-item / button base styles (which
+				// would force full width) off the chip — only the chip rule applies.
+				btn.className = 'unstyle';
 				btn.textContent = (p && p.label) || ''; // untrusted-safe
 				btn.addEventListener('click', () => applyPreset(state, p));
 				wrap.appendChild(btn);
@@ -756,12 +764,15 @@
 			const wrap = document.createElement('fieldset');
 			const lab = document.createElement('label'); lab.textContent = ui.time;
 			const fieldBox = document.createElement('div'); fieldBox.setAttribute('role', 'group');
-			const mkSeg = (aria) => { const i = document.createElement('input'); i.type = 'text'; i.inputMode = 'numeric'; i.maxLength = 2; i.setAttribute('aria-label', aria); return i; };
+			// `.unstyle` opts these controls out of the shared input/button base
+			// styles so only the compact time-row rules apply (the datepicker's own
+			// selectors still match — the base skips `.unstyle`, the picker doesn't).
+			const mkSeg = (aria) => { const i = document.createElement('input'); i.type = 'text'; i.className = 'unstyle'; i.inputMode = 'numeric'; i.maxLength = 2; i.setAttribute('aria-label', aria); return i; };
 			const hIn = mkSeg('Hours'), mIn = mkSeg('Minutes');
 			const sep = document.createElement('span'); sep.textContent = ':';
 			fieldBox.append(hIn, sep, mIn);
 			let apBtn = null;
-			if (h12) { apBtn = document.createElement('button'); apBtn.type = 'button'; apBtn.setAttribute('aria-label', 'AM or PM'); fieldBox.appendChild(apBtn); }
+			if (h12) { apBtn = document.createElement('button'); apBtn.type = 'button'; apBtn.className = 'unstyle'; apBtn.setAttribute('aria-label', 'AM or PM'); fieldBox.appendChild(apBtn); }
 			segs = { hIn, mIn, apBtn };
 
 			// Columns menu — body-appended popover so the calendar's overflow can't clip it,
@@ -775,6 +786,7 @@
 
 			const trigger = document.createElement('button');
 			trigger.type = 'button';
+			trigger.className = 'unstyle';
 			trigger.id = 'mnfst-dp-time-trigger-' + _uid;
 			trigger.setAttribute('popovertarget', menu.id);
 			trigger.setAttribute('aria-label', ui.time);

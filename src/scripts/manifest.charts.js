@@ -649,25 +649,31 @@
 			const thickness = Math.max(8, r * 0.22);
 			const cx = width / 2, cy = Math.max(PAD, (height - (r + labelBand)) / 2) + r;
 			const g = svg('g', { transform: `translate(${cx},${cy})` }, root);
-			const arc = d3.arc().innerRadius(r - thickness).outerRadius(r).cornerRadius(cssRadius(state.el));
+			// Bands are drawn with square (butt) ends so zone/value joins stay flush;
+			// the whole dial is then clipped to a single rounded full-sweep arc, so
+			// only its two outer corners are rounded — not each interior segment.
+			const arc = d3.arc().innerRadius(r - thickness).outerRadius(r);
+			const clipId = 'mnfst-gauge-' + (++_uid);
+			svg('path', { d: d3.arc().innerRadius(r - thickness).outerRadius(r).cornerRadius(cssRadius(state.el))({ startAngle: START, endAngle: END }) }, svg('clipPath', { id: clipId }, svg('defs', null, root)));
+			const ring = svg('g', { 'clip-path': `url(#${clipId})` }, g);
 
 			// Track, or threshold zone bands when `zones` is given.
 			if (Array.isArray(cfg.zones) && cfg.zones.length) {
 				let from = min;
 				cfg.zones.forEach((z, i) => {
 					const to = num(z.to, max);
-					svg('path', { class: 'gauge-track', d: arc({ startAngle: scale(from), endAngle: scale(to) }), style: `--color-chart-color:${z.color || seriesColorVar(i)}`, opacity: 0.35 }, g);
+					svg('path', { class: 'gauge-track', d: arc({ startAngle: scale(from), endAngle: scale(to) }), style: `--color-chart-color:${z.color || seriesColorVar(i)}`, opacity: 0.35 }, ring);
 					from = to;
 				});
 			} else {
-				svg('path', { class: 'gauge-track', d: arc({ startAngle: START, endAngle: END }) }, g);
+				svg('path', { class: 'gauge-track', d: arc({ startAngle: START, endAngle: END }) }, ring);
 			}
 
 			// Value arc — final geometry set unconditionally, so a background tab that
 			// skips the fade reveal still renders correctly.
 			const color = (cfg.series[0] && cfg.series[0].color) || 'var(--color-chart-1)';
 			const valueAngle = scale(value);
-			const vArc = svg('path', { class: 'gauge-value', d: arc({ startAngle: START, endAngle: valueAngle }), style: `--color-chart-color:${color}` }, g);
+			const vArc = svg('path', { class: 'gauge-value', d: arc({ startAngle: START, endAngle: valueAngle }), style: `--color-chart-color:${color}` }, ring);
 			applyTip(vArc, (cfg.title ? cfg.title + ': ' : '') + value + unit, cfg);
 			animate(vArc, [{ opacity: 0 }, { opacity: 1 }], { duration: 500 });
 
