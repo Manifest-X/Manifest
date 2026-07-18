@@ -261,5 +261,13 @@
         };
     }
 
-    window.ManifestChatStore = { createHandle, mergeHandles, buildTree, flattenTree };
+    window.ManifestChatStore = {
+        createHandle, mergeHandles, buildTree, flattenTree,
+        // Shared revision, readable with zero handles resolved. Pin it in a list
+        // expression (`void $chat.version`) when the handle is looked up through
+        // a key that may not exist yet — an Alpine scheduler bug (queueJob drops
+        // re-triggers of already-flushed jobs) otherwise strands the directive
+        // when a sibling effect creates the handle in the same flush.
+        get version() { return rev().n; }
+    };
 })();

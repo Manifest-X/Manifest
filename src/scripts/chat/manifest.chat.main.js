@@ -23,6 +23,7 @@
             merge(handles, o) { return Store.mergeHandles(handles, o); },
             adapter(name, factory) { if (factory === undefined) return Adapters.resolve(name); Adapters.register(name, factory); },
             flatten(tree) { return Store.flattenTree(tree); },
+            get version() { return Store.version; },   // shared revision — trackable even before any handle resolves
             get sim() { return Adapters.sim; }      // demo/sim hooks; harmless in prod (no callers)
         };
     }
