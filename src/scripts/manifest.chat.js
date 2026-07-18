@@ -58,6 +58,18 @@
         return out;
     }
 
+    // ---- shared revision ----------------------------------------------------
+    // Bumped on every commit of every handle; list getters touch it so any
+    // effect that read chat state — even a stale/empty handle mid-transition —
+    // re-arms on the next commit anywhere. Guards against directive effects
+    // whose dependency edge to a specific handle's state is lost during a
+    // key-flip flush (x-for dying on first load while a sibling x-effect lives).
+    let _rev = null;
+    function rev() {
+        if (!_rev) _rev = window.Alpine.reactive({ n: 0 });
+        return _rev;
+    }
+
     // ---- handle -------------------------------------------------------------
     function createHandle(adapter, conversationId, opts) {
         opts = opts || {};
@@ -80,9 +92,9 @@
         function ordered() { return _msgs.slice().sort(byKey); }
         // Fresh per-message snapshots each commit so a keyed x-for re-renders
         // in-place mutations (streaming appends, status) that identity wouldn't trip.
-        function commit() { state.messages = ordered().map(m => Object.assign({}, m, { body: Object.assign({}, m.body) })); }
-        function commitParticipants() { state.participants = [..._participants.values()]; }
-        function commitTyping() { state.typing = [..._typing.values()]; }
+        function commit() { state.messages = ordered().map(m => Object.assign({}, m, { body: Object.assign({}, m.body) })); rev().n++; }
+        function commitParticipants() { state.participants = [..._participants.values()]; rev().n++; }
+        function commitTyping() { state.typing = [..._typing.values()]; rev().n++; }
 
         function upsert(raw) {
             const incoming = normalize(raw, ++seq);
@@ -146,6 +158,10 @@
                 ingestLoad(await adapter.load(conversationId, opts.around ? { around: opts.around } : undefined));
                 if (adapter.subscribe) { unsub = adapter.subscribe(conversationId, handlers); state.live = true; }
                 state.status = 'ready';
+                // Settled tick: the seed load resolves amid the consumer's own
+                // transition flush; one macrotask commit re-triggers any effect
+                // whose mid-transition run raced it.
+                setTimeout(() => commit(), 0);
             } catch (e) { state.status = 'error'; state.error = String(e && e.message || e); }
         }
 
@@ -179,10 +195,11 @@
             __v_skip: true,                 // keep Alpine from re-proxying the handle when stored in x-data
             id: 'h_' + Math.round(performance.now()) + '_' + (++seq),
             conversationId, isAggregate,
-            get messages() { return state.messages; },
-            get participants() { return state.participants; },
+            get messages() { void rev().n; return state.messages; },
+            get participants() { void rev().n; return state.participants; },
             get me() { return state.me; },
-            get typing() { return state.typing; },
+            get typing() { void rev().n; return state.typing; },
+            get version() { return rev().n; },      // guaranteed-trackable scalar; bumps on every commit
             get status() { return state.status; },
             get live() { return state.live; },
             get atStart() { return state.atStart; },
@@ -198,8 +215,8 @@
                     loadReplies: !!adapter.loadReplies, loadReactions: !!adapter.loadReactions
                 };
             },
-            tree(o) { void state.messages; return buildTree(state.messages, o); },
-            flatTree(o) { void state.messages; return flattenTree(buildTree(state.messages, o)); },
+            tree(o) { void rev().n; void state.messages; return buildTree(state.messages, o); },
+            flatTree(o) { void rev().n; void state.messages; return flattenTree(buildTree(state.messages, o)); },
             send,
             edit: (id, body) => adapter.edit && adapter.edit(conversationId, id, body),
             retract: (id) => adapter.retract && adapter.retract(conversationId, id),
@@ -234,6 +251,7 @@
                 return order === 'ts' ? all.sort(byKey) : all;
             },
             get participants() { const seen = new Map(); for (const h of handles) for (const p of h.participants) seen.set(p.id, p); return [...seen.values()]; },
+            get version() { return rev().n; },
             get status() { return handles.some(h => h.status === 'loading') ? 'loading' : (handles.every(h => h.status === 'ready') ? 'ready' : 'idle'); },
             get live() { return handles.some(h => h.live); },
             can: { send: handles.some(h => h.can.send) },
@@ -245,8 +263,6 @@
 
     window.ManifestChatStore = { createHandle, mergeHandles, buildTree, flattenTree };
 })();
-
-
 /*  Manifest Chat — reference adapters + registry
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
@@ -489,8 +505,6 @@
 
     window.ManifestChatAdapters = { register, resolve, staticAdapter, aggregateAdapter, sim };
 })();
-
-
 /*  Manifest Chat — optional LLM (Claude) adapter
  *  By Andrew Matlock under MIT license · https://manifestx.dev
  *
@@ -593,8 +607,6 @@
         window.ManifestChatAdapters.register('claude', claudeAdapter);
     });
 })();
-
-
 /*  Manifest Chat — Appwrite adapter (conversations as app data)
  *  By Andrew Matlock under MIT license
  *  https://manifestx.dev
@@ -716,8 +728,6 @@
         window.ManifestChatAdapters.register('appwrite', appwriteAdapter);
     });
 })();
-
-
 /*  Manifest Chat — magic + init
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
