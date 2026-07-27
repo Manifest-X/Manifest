@@ -82,6 +82,28 @@
         </menu>
     </section>
 
+    <!-- Rich chips (data-chip fragment) -->
+    <section class="col gap-2" x-data="{ picked: ['bug'], tagClicks: 0, tags: [
+            { id: 'bug',  name: 'Bug',     color: '#e74c3c' },
+            { id: 'feat', name: 'Feature', color: '#2ecc71' },
+            { id: 'docs', name: 'Docs',    color: '#3498db' }
+        ] }">
+        <h5>Rich chips (data-chip)</h5>
+        <input x-combobox.multiple.chips="cbd-tags" x-model="picked" placeholder="Tags">
+        <menu popover id="cbd-tags">
+            <template x-for="t in tags" :key="t.id">
+                <li :data-value="t.id" :data-label="t.name">
+                    <span data-chip @click="tagClicks++" class="row items-center gap-1">
+                        <span :style="`background:${t.color};width:8px;height:8px;border-radius:50%;display:inline-block`"></span>
+                        <span x-text="t.name"></span>
+                    </span>
+                    <span class="small">&nbsp;— pick this tag</span>
+                </li>
+            </template>
+        </menu>
+        <code class="small" x-text="'chip content clicks: ' + tagClicks"></code>
+    </section>
+
     <!-- Textarea editor -->
     <section class="col gap-2">
         <h5>Textarea editor</h5>

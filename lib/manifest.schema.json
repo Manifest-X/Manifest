@@ -269,6 +269,11 @@
                 }
             },
             "additionalProperties": true
+        },
+        "native": {
+            "type": "object",
+            "description": "Opts the app into the native umbrella plugin — $-magics for biometric, push, haptics, share, secure storage, deep links, camera, and app lifecycle, plus $device enrichment. Auto-loaded inside a Capacitor container; declaring this block also loads it on the web build (every capability degrades gracefully off-device, with Capacitor as one adapter). An empty object is enough to opt in.",
+            "additionalProperties": true
         }
     },
     "definitions": {

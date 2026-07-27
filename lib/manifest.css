@@ -28,7 +28,13 @@
         overflow-wrap: break-word;
         -moz-tab-size: 4;
         -o-tab-size: 4;
-        tab-size: 4
+        tab-size: 4;
+
+        /* Device safe-area insets (0 unless viewport-fit=cover on a notched screen) */
+        --safe-top: env(safe-area-inset-top, 0px);
+        --safe-right: env(safe-area-inset-right, 0px);
+        --safe-bottom: env(safe-area-inset-bottom, 0px);
+        --safe-left: env(safe-area-inset-left, 0px)
     }
 
     :where(html),
@@ -952,15 +958,12 @@
     :where(.chat-wrapper) {
         display: flex;
         flex-direction: column;
-        gap: 1rem;
         width: 100%;
         height: 100%;
         box-shadow: var(--shadow);
         overflow: hidden;
 
-        /* Chat log scroll container. column-reverse pins the view to the
-           bottom natively: new messages and a growing composer never hide
-           the latest message, and reading history isn't yanked on updates. */
+        /* Chat log scroll container */
         :where([role="log"]) {
             display: flex;
             flex-direction: column-reverse;
@@ -981,8 +984,7 @@
                 margin-inline-end: auto;
                 padding-inline-start: 1rem;
                 padding-inline-end: 1rem;
-                padding-block-start: 1.5rem;
-                padding-block-end: 5rem;
+                padding-block-end: 3rem
             }
 
             /* Messages */
@@ -990,27 +992,27 @@
 
                 /* Markdown spacing */
                 :where(p) {
-                    margin-block: 0.5rem;
+                    margin-block: 0.5rem
                 }
 
                 :where(p:first-child) {
-                    margin-block-start: 0;
+                    margin-block-start: 0
                 }
 
                 :where(p:last-child) {
-                    margin-block-end: 0;
+                    margin-block-end: 0
                 }
             }
 
             /* Own messages */
-            :where([data-own]) {
+            :where(.own) {
                 width: fit-content;
                 max-width: calc(var(--spacing-content-width, 74rem) - 10rem);
                 margin-inline-start: auto;
                 padding-block: 0.5rem;
                 padding-inline: 0.75rem;
                 background: color-mix(in oklch, var(--color-surface-2) 50%, transparent);
-                border-radius: var(--radius);
+                border-radius: var(--radius)
             }
 
             /* Attachments */
@@ -1019,14 +1021,14 @@
                 max-width: 20rem;
                 max-height: 15rem;
                 margin-block: 0.5rem;
-                border-radius: var(--radius);
+                border-radius: var(--radius)
             }
 
             :where(audio) {
                 display: block;
                 width: 18rem;
                 max-width: 100%;
-                margin-block: 0.5rem;
+                margin-block: 0.5rem
             }
 
             :where(a[download]) {
@@ -1037,123 +1039,68 @@
                 padding-block: 0.35rem;
                 padding-inline: 0.6rem;
                 background: var(--color-surface-2);
-                border-radius: var(--radius);
+                border-radius: var(--radius)
             }
         }
 
         /* Chat input */
-        :where(form) {
-            position: relative;
+        :where(form:not(.unstyle)) {
+            display: flex;
+            flex-flow: row wrap;
+            align-items: end;
+            gap: 0;
             width: var(--spacing-content-width, 74rem);
             max-width: 100%;
             margin-inline-start: auto;
             margin-inline-end: auto;
 
-            :where(textarea) {
-                padding-inline-end: 2.5rem;
+            :where(textarea, .textarea):not(.unstyle) {
+                flex: 1;
+                width: auto;
+                min-height: var(--spacing-field-height, 2.5rem);
                 field-sizing: content;
-                resize: none;
+                resize: none
+            }
+        }
+
+        /* Pending attachments */
+        :where(output:not(.unstyle)) {
+            display: flex;
+            flex-flow: row wrap;
+            gap: 0.325rem;
+            width: 100%;
+            max-width: 100%;
+            height: fit-content;
+            padding: calc(var(--spacing) * 2);
+
+            > :where(:not(template)) {
+                position: relative;
+                flex: 0 0 auto
             }
 
-            &:has(button[data-action="attach"]) :where(textarea) {
-                padding-inline-start: 2.5rem;
+            /* Images */
+            :where(img) {
+                display: block;
+                width: var(--spacing-field-height, 2.5rem);
+                height: var(--spacing-field-height, 2.5rem);
+                object-fit: cover;
+                border-radius: calc(var(--radius, 0.5rem) * 0.75)
             }
 
-            /* Submit button */
-            :where(button[type="submit"]) {
-                position: absolute;
-                bottom: var(--spacing-field-padding, 0.625rem);
-                inset-inline-end: calc(var(--spacing-field-padding, 0.625rem) * 1.3);
-            }
-
-            /* Toolbar buttons (data-action) — attach, formatting, voice, … */
-            :where(button[data-action="attach"]) {
-                position: absolute;
-                bottom: var(--spacing-field-padding, 0.625rem);
-                inset-inline-start: calc(var(--spacing-field-padding, 0.625rem) * 1.3);
-            }
-
-            /* Composer variant — the form itself is the field (.textarea):
-               [ attachment thumbnails               ]
-               [ attach | growing textarea |    send ] */
-            &:where(.textarea) {
-                display: grid;
-                grid-template-columns: auto 1fr auto;
-                align-items: end;
-                gap: 0.25rem;
-                padding: 0.375rem;
-
-                /* Buttons sit in-flow at the row's bottom corners */
-                :where(button[type="submit"], button[data-action]) {
-                    position: static;
-                }
-
-                /* The inner textarea is a bare well inside the field */
-                :where(textarea) {
-                    padding-inline: 0.25rem;
-                    padding-block: 0.45rem;
-
-                    &,
-                    &:hover,
-                    &:active,
-                    &:focus-visible {
-                        background: transparent;
-                    }
-                }
-
-                /* Attachment thumbnails — removable, X-scrollable */
-                :where(menu) {
-                    grid-column: 1 / -1;
-                    display: flex;
-                    gap: 0.5rem;
-                    margin: 0;
-                    padding: 0.375rem 0.25rem 0.125rem;
-                    list-style: none;
-                    overflow-x: auto;
-
-                    :where(li) {
-                        position: relative;
-                        flex: 0 0 auto;
-                    }
-
-                    :where(img) {
-                        display: block;
-                        width: 3.5rem;
-                        height: 3.5rem;
-                        object-fit: cover;
-                        border-radius: calc(var(--radius, 0.5rem) * 0.75);
-                    }
-
-                    /* Non-image attachments — file chip */
-                    :where(li > span) {
-                        display: flex;
-                        align-items: center;
-                        gap: 0.3rem;
-                        height: 3.5rem;
-                        padding-inline: 0.6rem;
-                        font-size: 0.75rem;
-                        white-space: nowrap;
-                        background: var(--color-surface-2);
-                        border-radius: calc(var(--radius, 0.5rem) * 0.75);
-                    }
-
-                    /* Remove button — revealed on hover/focus */
-                    :where(button) {
-                        position: absolute;
-                        inset-block-start: -0.35rem;
-                        inset-inline-end: -0.35rem;
-                        opacity: 0;
-                        transition: var(--transition, all .05s ease-in-out);
-                    }
-
-                    :where(li:hover, li:focus-within) :where(button) {
-                        opacity: 1;
-                    }
-                }
+            /* File chips */
+            > :where(:not(template))> :where(span) {
+                display: flex;
+                align-items: center;
+                gap: 0.3rem;
+                height: fit-content;
+                padding-inline: 0.5rem;
+                font-size: 0.75rem;
+                white-space: nowrap;
+                background: var(--color-line);
+                border-radius: calc(var(--radius, 0.5rem) * 0.75)
             }
         }
     }
-
 }
 
 /* Manifest Checkboxes */
@@ -1955,7 +1902,8 @@
 
 @layer utilities {
 
-    :where([x-date], .date-picker):not(.unstyle) {
+    /* Picker container only (not trigger input/button) */
+    :where([x-date]:not(input, button, select), .date-picker):not(.unstyle) {
         width: fit-content;
         min-width: 17rem;
         background: var(--color-popover-surface, oklch(98.5% 0 0));
@@ -2205,9 +2153,7 @@
             border: none;
             border-top: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
 
-            /* "Time" label — native invoker for the columns popover (for= the
-               chevron button), so it needs width/height resets against
-               dropdown.css's menu-item label styling */
+            /* "Time" label */
             &>label {
                 flex: none;
                 width: auto;
@@ -2229,6 +2175,10 @@
                 align-items: center;
                 justify-content: end;
                 height: var(--spacing-field-height, 2.25rem);
+                /* Override the shared menu-group centering (dropdown.css sets
+                   margin auto) so the time controls sit flush with the row end. */
+                margin: 0;
+                min-width: 0;
                 padding-inline-start: 0.5rem;
                 background: transparent;
                 border: none;
@@ -2243,6 +2193,7 @@
                     min-width: 0;
                     margin: 0;
                     padding: 0 0.25rem;
+                    font-family: inherit;
                     font-size: 0.875rem;
                     line-height: 1.5rem;
                     font-variant-numeric: tabular-nums;
@@ -2272,6 +2223,7 @@
                     min-width: 0;
                     height: 1.5rem;
                     padding: 0 0.375rem;
+                    font-family: inherit;
                     font-size: 0.875rem;
                     line-height: 1.5rem;
                     background: transparent;
@@ -2326,28 +2278,45 @@
             justify-content: space-between;
             gap: 0.25rem;
             width: 100%;
+            contain: inline-size;
             padding: 0.5rem 0;
             border-top: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
 
             /* Today | Clear buttons */
-            & button {
-                width: fit-content
+            &>button {
+                width: fit-content;
+                background: transparent;
+                color: var(--color-content-neutral, oklch(43.9% 0 0));
+
+                &:hover {
+                    background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+                    color: var(--color-content-stark, oklch(20.5% 0 0))
+                }
             }
 
             /* Preset chips */
             &>div {
                 flex: 1;
+                min-width: 0;
                 display: flex;
-                flex-flow: row wrap;
+                flex-wrap: nowrap;
                 align-items: center;
-                justify-content: center;
+                justify-content: safe center;
                 gap: 0.25rem;
+                overflow-x: auto;
+                scrollbar-width: none;
+
+                &::-webkit-scrollbar {
+                    display: none
+                }
 
                 & button {
+                    flex: 0 0 auto;
                     height: auto;
                     min-height: 0;
                     padding: 0.25rem 0.625rem;
                     font-size: 0.75rem;
+                    white-space: nowrap;
                     background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
                     color: var(--color-content-stark, oklch(20.5% 0 0));
                     border: none;
@@ -2640,6 +2609,63 @@
     }
 }
 
+/* Manifest Dock */
+
+@layer components {
+
+    /* Fixed bottom navigation bar. Best practice: <nav dock aria-label="Primary">.
+       Physics (fixed + safe-area + item layout) baked in; skin is themeable via
+       the --dock-* variables. Edge-to-edge by default; set --dock-inset (+ radius)
+       to float it. */
+    :where([dock]) {
+        position: fixed;
+        z-index: 40;
+        inset-inline: var(--dock-inset, 0px);
+        bottom: var(--dock-inset, 0px);
+        display: flex;
+        align-items: stretch;
+        justify-content: space-around;
+        gap: var(--dock-gap, 0px);
+        /* Clear the home indicator in both modes: total bottom clearance == --safe-bottom */
+        padding-bottom: max(calc(var(--safe-bottom, 0px) - var(--dock-inset, 0px)), 0px);
+        background: var(--dock-surface, var(--color-surface-1, oklch(96.7% 0 0)));
+        border-top: var(--dock-border-top, 1px solid var(--color-line, color-mix(in oklch, currentColor 11%, transparent)));
+        border-radius: var(--dock-radius, 0px);
+        box-shadow: var(--dock-shadow, none)
+    }
+
+    /* Dock items */
+    :where([dock] > a, [dock] > button) {
+        flex: 1 1 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.125rem;
+        min-height: 3.25rem;
+        padding: 0.375rem 0.25rem;
+        background: transparent;
+        color: var(--color-content-subtle, oklch(55.6% 0 0));
+        font-size: 0.6875rem;
+        line-height: 1.1;
+        text-decoration: none
+    }
+
+    /* Dock icons */
+    :where([dock] :is([x-icon], svg, img)) {
+        width: 1.375rem;
+        height: 1.375rem;
+        font-size: 1.375rem
+    }
+
+    /* Active item — a hook, not a look (bind :aria-current="$route === '/x' ? 'page' : null') */
+    [dock] > a[aria-current="page"],
+    [dock] > button[aria-current="page"],
+    [dock] > .selected {
+        color: var(--color-content-stark, oklch(14.5% 0 0))
+    }
+}
+
 /* Manifest Dropdowns */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
@@ -2669,8 +2695,8 @@
         transform-origin: top center;
         overflow-x: hidden;
 
-        /* Options */
-        & :where(li, a, button, [role=button], label):not(.unstyle) {
+        /* Options (labels only when flat items — field wrappers keep form layout) */
+        & :where(li, a, button, [role=button], label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -2730,13 +2756,14 @@
             background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
         }
 
-        /* Labels */
-        & label {
+        /* Labels (not inner field-surface wrappers) */
+        & label:not(.unstyle):not(:has(> input[type=search], > input[type=file], > button[command="--copy"])) {
             padding-inline-start: 0.5rem;
             padding-inline-end: 0.5rem;
             cursor: default;
 
-            &:hover {
+            &:hover,
+            &:active {
                 background-color: transparent
             }
 
@@ -2745,8 +2772,9 @@
             }
         }
 
-        /* Inputs and textareas */
-        & :where(input, textarea) {
+        /* Inputs and textareas placed as direct items */
+        &>:where(input, textarea),
+        & :where(li)>:where(input, textarea) {
             flex-shrink: 0;
 
             &:not(:first-child) {
@@ -2774,12 +2802,12 @@
     }
 
     /* Dark theme */
-    :where(.dark menu[popover]) :where(li, a, button, label):hover {
+    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):hover {
         background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
     }
 
-    /* Nested menu alignment */
-    :where(menu menu):where(:not(.unstyle)) {
+    /* Nested menu alignment (not combobox listboxes, which anchor to their field) */
+    :where(menu menu:not([role=listbox])):where(:not(.unstyle)) {
         position-area: span-end end;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
@@ -3099,34 +3127,36 @@
             z-index: 1
         }
 
-        /* Equal-width children (give the wrapper a width if children need more room) */
+        /* Equal-width children */
         &.even>* {
             flex-shrink: initial;
             width: 100%
         }
 
-        & input {
+        & input,
+        & .combobox,
+        & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
             width: fit-content
         }
 
         /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
                 /* First participant */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
 
                 /* Middle participants */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-radius: 0
                 }
 
                 /* Last participant */
-                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -3255,7 +3285,7 @@
     }
 
     /* Label wrapper */
-    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(.unstyle) {
+    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(:has(> button[command="--copy"])):not(.unstyle) {
         display: flex;
         flex-direction: column;
         gap: 0.2ch;
@@ -3273,9 +3303,15 @@
             padding-inline-start: calc(var(--radius, 0.5rem) / 2)
         }
 
-        :where(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea) {
+        &>:where(label, button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea, .combobox, [role=group], [role=tablist]) {
             width: 100%;
             max-width: 100%
+        }
+
+        /* Group inputs flex to fill the label width */
+        &>:where([role=group]) :where(input) {
+            flex: 1;
+            min-width: 0
         }
 
         /* Space out stacked labels for search and file inputs */
@@ -3297,14 +3333,20 @@
             box-shadow: 0 0 0 0
         }
 
-        /* Size buttons and inputs */
-        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist]) {
+        /* Size buttons, inputs, and field wrappers */
+        &>:where(label, .label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist], .combobox) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }
 
-        /* Focus state for .label wrapper for search and file inputs */
-        & .label:focus-within {
+        /* Group inputs flex to fit the sized group */
+        &>:where([role=group]) :where(input) {
+            flex: 1;
+            min-width: 0
+        }
+
+        /* Focus state for nested field wrappers (search, file, copy) */
+        & :where(label, .label):focus-within {
             box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 35%, transparent)
         }
 
@@ -3318,11 +3360,67 @@
         }
     }
 
+    /* Remove button (anchored to parent element) */
+    :where(:has(> button[name=remove])):not(.unstyle) {
+        position: relative;
+
+        /* Button */
+        > :where(button[name=remove]:not(.unstyle)) {
+            position: absolute;
+            inset-block-start: calc(var(--spacing-field-height, 2.5rem) / 2 * -0.5);
+            inset-inline-end: calc(var(--spacing-field-height, 2.5rem) / 2 * -0.5);
+            z-index: 1;
+            min-width: 0;
+            width: calc(var(--spacing-field-height, 2.5rem) / 2);
+            height: calc(var(--spacing-field-height, 2.5rem) / 2);
+            padding: 0;
+            border-radius: var(--spacing-field-height, 2.5rem);
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            opacity: 0;
+            transition: var(--transition);
+
+            /* Icon */
+            &::after {
+                content: "";
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                width: 50%;
+                height: 50%;
+                background-color: var(--color-field-inverse, oklch(43.9% 0 0));
+                mask-image: var(--icon-dismiss, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E"));
+                mask-repeat: no-repeat;
+                mask-size: 100% 100%;
+                transform-origin: center;
+                transform: translateX(-50%) translateY(-50%)
+            }
+        }
+
+        /* Reveal on parent hover/focus */
+        &:is(:hover, :focus-within)> :where(button[name=remove]:not(.unstyle)) {
+            opacity: 1
+        }
+    }
+
     /* Label wrappers for search and file inputs using .label utility */
     label:has(.label):not(.unstyle) {
         justify-content: space-between;
         background-color: transparent;
         cursor: default;
+
+        /* Stack label text above the .label field when not inlined via <data> */
+        &:not(:has(data)) {
+            display: flex;
+            flex-direction: column;
+            align-items: start;
+            gap: 0.2ch;
+            width: 100%;
+            text-indent: calc(var(--radius, 0.5rem) / 2);
+
+            & .label {
+                text-indent: 0
+            }
+        }
 
         :where([type=search]) {
             width: 100%;
@@ -3333,9 +3431,16 @@
 
 /* Manifest Inputs */
 
+:root {
+
+    /* Copy button icons */
+    --icon-field-copy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/g%3E%3C/svg%3E");
+    --icon-field-copied: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Cpath d='m12 15 2 2 4-4'/%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/g%3E%3C/svg%3E")
+}
+
 @layer components {
 
-    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file]), .label:has([type=search], [type=file])):not(.unstyle) {
+    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file], > button[command="--copy"]), .label:has([type=search], [type=file], > button[command="--copy"])):not(.unstyle) {
         width: 100%;
         max-width: 100%;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
@@ -3442,6 +3547,98 @@
             height: 100%;
             margin-inline-end: 0;
             color: var(--color-content-subtle, oklch(55.6% 0 0))
+        }
+    }
+
+    /* Copied confirmation icon (tooltip content) */
+    :where(.field-copied-icon) {
+        display: inline-block;
+        vertical-align: middle;
+        width: 1em;
+        height: 1em;
+        background-color: currentColor;
+        mask-image: var(--icon-field-copied);
+        mask-size: 1em;
+        mask-repeat: no-repeat;
+        mask-position: center;
+
+        /* Fill the line box so the mask centers optically */
+        @supports (height: 1lh) {
+            height: 1lh;
+            vertical-align: top
+        }
+    }
+
+    /* Copy button icon */
+    :where(button[command="--copy"]):not(.unstyle) {
+
+        &::after {
+            content: '';
+            display: block;
+            width: 0.8125rem;
+            height: 0.8125rem;
+            background-color: var(--color-content-neutral, oklch(43.9% 0 0));
+            mask-image: var(--icon-field-copy);
+            mask-size: contain;
+            mask-repeat: no-repeat;
+            mask-position: center
+        }
+
+        &:hover::after,
+        &:active::after,
+        &:focus-visible::after {
+            background-color: var(--color-field-inverse, oklch(43.9% 0 0))
+        }
+
+        &.copied::after {
+            mask-image: var(--icon-field-copied)
+        }
+    }
+
+    /* Label wrapper for inputs with a copy button */
+    :where(label, .label):has(> button[command="--copy"]):not(.unstyle) {
+        display: flex;
+        flex-flow: row;
+        align-items: center;
+        justify-content: start;
+        padding-inline-end: 0.375rem;
+
+        /* Input element overrides */
+        & :where(input) {
+            background: transparent;
+
+            &:hover,
+            &:focus-visible {
+                background: transparent
+            }
+
+            &:focus-visible {
+                box-shadow: 0 0 0 0 transparent
+            }
+        }
+
+        /* Copy button, compact and hidden until reveal */
+        & :where(button[command="--copy"]) {
+            flex-shrink: 0;
+            min-width: 0;
+            width: calc(var(--spacing-field-height, 2.25rem) - 0.75rem);
+            height: calc(var(--spacing-field-height, 2.25rem) - 0.75rem);
+            padding: 0;
+            background-color: transparent;
+            opacity: 0;
+
+            &:hover,
+            &:active,
+            &:focus-visible {
+                background-color: transparent
+            }
+        }
+
+        /* Reveal on hover, focus, or after copying */
+        &:hover :where(button[command="--copy"]),
+        &:focus-within :where(button[command="--copy"]),
+        & :where(button[command="--copy"].copied) {
+            opacity: 1
         }
     }
 
@@ -5522,4 +5719,31 @@
     html[data-os="ios"] .no-ios { display: none !important }
     html[data-os="android"] .no-android { display: none !important }
     html[data-os="macos"] .no-apple, html[data-os="ios"] .no-apple { display: none !important }
+
+    /* Visibility — connectivity & container (html[data-*] set by the $device signal) */
+    html:not([data-online="false"]) .offline-only { display: none !important }
+    html[data-online="false"] .online-only { display: none !important }
+    html:not([data-standalone]) .standalone-only { display: none !important }
+    html:not([data-native]) .native-only { display: none !important }
+    html[data-native] .web-only { display: none !important }
+
+    /* Safe-area padding (var --safe-* is 0 unless viewport-fit=cover on a notched screen) */
+    :where(.pt-safe) { padding-top: var(--safe-top) }
+    :where(.pr-safe) { padding-right: var(--safe-right) }
+    :where(.pb-safe) { padding-bottom: var(--safe-bottom) }
+    :where(.pl-safe) { padding-left: var(--safe-left) }
+    :where(.px-safe) { padding-left: var(--safe-left); padding-right: var(--safe-right) }
+    :where(.py-safe) { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom) }
+    :where(.p-safe) { padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left) }
+
+    /* Dynamic viewport height (avoids the mobile 100vh browser-chrome jump) */
+    :where(.min-h-dvh) { min-height: 100dvh }
+    :where(.h-dvh) { height: 100dvh }
+
+    /* Native — suppress web tells (opt-in) */
+    :where(.no-callout) { -webkit-touch-callout: none }
+    :where(.no-select) { -webkit-user-select: none; user-select: none }
+    :where(.no-tap-zoom) { touch-action: manipulation }
+    :where(.no-overscroll) { overscroll-behavior: none }
+    :where(.no-overscroll-y) { overscroll-behavior-y: none }
 }

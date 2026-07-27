@@ -202,8 +202,7 @@
   </nav>
 
   <!-- Native primitives + $device harness -->
-  <div class="col gap-8 px-6 pt-6 pb-28 max-w-2xl" x-route="native"
-       x-data="{ fakeInsets: false, float: false, toggleInsets() { const h = document.documentElement; if (this.fakeInsets) { h.style.setProperty('--safe-top','59px'); h.style.setProperty('--safe-right','24px'); h.style.setProperty('--safe-bottom','34px'); h.style.setProperty('--safe-left','24px'); } else { ['top','right','bottom','left'].forEach(s => h.style.removeProperty('--safe-'+s)); } } }">
+  <div class="col gap-8 px-6 pt-6 pb-28 max-w-2xl" x-route="native" x-data="{ fakeInsets: false, float: false, toggleInsets() { const h = document.documentElement; if (this.fakeInsets) { h.style.setProperty('--safe-top','59px'); h.style.setProperty('--safe-right','24px'); h.style.setProperty('--safe-bottom','34px'); h.style.setProperty('--safe-left','24px'); } else { ['top','right','bottom','left'].forEach(s => h.style.removeProperty('--safe-'+s)); } } }">
     <h2>Native primitives &amp; $device</h2>
 
     <!-- $device readout -->
@@ -250,7 +249,9 @@
         <div class="h-40 overflow-y-auto no-overscroll">
           <p class="caption subtle">.no-overscroll — scroll to an edge; the page behind won't rubber-band.</p>
           <div class="col gap-2">
-            <template x-for="n in 20" :key="n"><div class="px-3 py-2 rounded bg-surface-1">row <span x-text="n"></span></div></template>
+            <template x-for="n in 20" :key="n">
+              <div class="px-3 py-2 rounded bg-surface-1">row <span x-text="n"></span></div>
+            </template>
           </div>
         </div>
       </div>
@@ -352,8 +353,7 @@
     </section>
 
     <!-- Dock: fixed bottom nav (parent route gates visibility; float via --dock-* vars) -->
-    <nav dock aria-label="Primary"
-         :style="float ? '--dock-inset: 0.75rem; --dock-radius: 1.5rem; --dock-shadow: 0 6px 24px oklch(0% 0 0 / 12%); --dock-border-top: 0' : ''">
+    <nav dock aria-label="Primary" :style="float ? '--dock-inset: 0.75rem; --dock-radius: 1.5rem; --dock-shadow: 0 6px 24px oklch(0% 0 0 / 12%); --dock-border-top: 0' : ''">
       <a href="/native" :aria-current="$route === '/native' ? 'page' : null"><span x-icon="lucide:smartphone"></span>Native</a>
       <a href="/virtual" :aria-current="$route.startsWith('/virtual') ? 'page' : null"><span x-icon="lucide:list"></span>Virtual</a>
       <a href="/combobox" :aria-current="$route.startsWith('/combobox') ? 'page' : null"><span x-icon="lucide:chevrons-up-down"></span>Picker</a>
@@ -433,8 +433,12 @@
         <input x-combobox="menu-countries" placeholder="Any" />
       </label>
       <datalist id="menu-countries">
-        <option>Australia</option><option>Brazil</option><option>Canada</option>
-        <option>Denmark</option><option>France</option><option>Japan</option>
+        <option>Australia</option>
+        <option>Brazil</option>
+        <option>Canada</option>
+        <option>Denmark</option>
+        <option>France</option>
+        <option>Japan</option>
       </datalist>
       <label>
         Copyable
@@ -593,6 +597,16 @@
     </label>
 
     <label>
+      <data>Strict</data>
+      <input x-combobox.strict="menu-countries" placeholder="Select country" />
+    </label>
+
+    <label>
+      <data>Joined</data>
+      <input type="datetime-local" />
+    </label>
+
+    <label>
       <data>Group</data>
       <div role="group">
         <input placeholder="Email" />
@@ -640,6 +654,9 @@
 
   <!-- Combobox test harness -->
   <x-combobox-demo x-route="combobox"></x-combobox-demo>
+
+  <!-- Dropdown auto-close test harness -->
+  <x-dropdown-demo x-route="dropdowns"></x-dropdown-demo>
 
   <!-- Chat plugin ($chat) test harness -->
   <style>
@@ -700,7 +717,7 @@
       get uic() { return this.mode === 'demo' ? this.media : this.llm },
       draft: '', gdraft: '', maxDepth: 4, llmDraft: '', llmFiles: [], maxFiles: 8, cDraft: '',
       kindOf(f) {
-        if (f.type.startsWith('image/')) return 'image';
+        if (/^image\/(png|jpe?g|gif|webp|avif|svg\+xml)$/.test(f.type)) return 'image';   // browser-decodable only (HEIC etc. → chip)
         if (f.type.startsWith('audio/')) return 'audio';
         if (f.type.startsWith('video/')) return 'video';
         return 'document';
@@ -755,7 +772,7 @@
             <template x-for="m in uic.messages" :key="m.id">
 
               <!-- Messages -->
-              <div :data-own="m.author?.id === uic.me?.id || null">
+              <div :class="m.author?.id === uic.me?.id && 'own'">
                 <div x-show="m.body.text" x-html="($store.md && $store.md.ready, window.mdRender(m.body.text))"></div>
 
                 <!-- Attachments & voice notes -->
@@ -779,23 +796,28 @@
         </div>
 
         <!-- Chat input -->
-        <form @submit.prevent="sendLlm()" class="textarea">
+        <form @submit.prevent="sendLlm()" class="bg-popover-surface border border-line focus-within:outlined rounded-lg">
 
           <!-- Pending attachments -->
-          <menu x-show="llmFiles.length">
+          <output x-show="llmFiles.length">
             <template x-for="(a, i) in llmFiles" :key="a.url">
-              <li>
-                <img x-show="a.kind === 'image'" :src="a.url" :alt="a.name">
+              <div>
+                <img x-show="a.kind === 'image'" :src="a.url" :alt="a.name" @error="a.kind = 'document'">
                 <span x-show="a.kind !== 'image'"><i x-icon="lucide:file"></i> <span x-text="a.name"></span></span>
-                <button type="button" class="sm" x-icon="lucide:x" aria-label="Remove attachment" @click="removeFile(i)"></button>
-              </li>
+                <button type="button" name="remove" aria-label="Remove attachment" @click="removeFile(i)"></button>
+              </div>
             </template>
-          </menu>
+          </output>
 
+          <!-- Add attachments -->
           <input type="file" multiple accept="image/*,audio/*,video/*,application/pdf" x-ref="attach" hidden @change="addFiles($event.target.files); $event.target.value = ''">
-          <button type="button" data-action="attach" class="transparent" x-icon="lucide:paperclip" aria-label="Attach files" @click="$refs.attach.click()"></button>
-          <textarea class="transparent" x-model="llmDraft" placeholder="What do you need?" @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); sendLlm(); }"></textarea>
-          <button type="submit" class="transparent" x-icon="lucide:corner-down-left" aria-label="Send"></button>
+          <button type="button" name="attach" class="transparent ms-1 mb-1" x-icon="lucide:paperclip" aria-label="Attach files" @click="$refs.attach.click()"></button>
+
+          <!-- Prompt field -->
+          <textarea class="transparent no-focus" x-model="llmDraft" placeholder="What do you need?" @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); sendLlm(); }"></textarea>
+
+          <!-- Submit prompt -->
+          <button type="submit" class="transparent me-1 mb-1" x-icon="lucide:corner-down-left" aria-label="Send"></button>
 
         </form>
 

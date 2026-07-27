@@ -5,15 +5,12 @@
     :where(.chat-wrapper) {
         display: flex;
         flex-direction: column;
-        gap: 1rem;
         width: 100%;
         height: 100%;
         box-shadow: var(--shadow);
         overflow: hidden;
 
-        /* Chat log scroll container. column-reverse pins the view to the
-           bottom natively: new messages and a growing composer never hide
-           the latest message, and reading history isn't yanked on updates. */
+        /* Chat log scroll container */
         :where([role="log"]) {
             display: flex;
             flex-direction: column-reverse;
@@ -34,8 +31,7 @@
                 margin-inline-end: auto;
                 padding-inline-start: 1rem;
                 padding-inline-end: 1rem;
-                padding-block-start: 1.5rem;
-                padding-block-end: 5rem;
+                padding-block-end: 3rem
             }
 
             /* Messages */
@@ -43,27 +39,27 @@
 
                 /* Markdown spacing */
                 :where(p) {
-                    margin-block: 0.5rem;
+                    margin-block: 0.5rem
                 }
 
                 :where(p:first-child) {
-                    margin-block-start: 0;
+                    margin-block-start: 0
                 }
 
                 :where(p:last-child) {
-                    margin-block-end: 0;
+                    margin-block-end: 0
                 }
             }
 
             /* Own messages */
-            :where([data-own]) {
+            :where(.own) {
                 width: fit-content;
                 max-width: calc(var(--spacing-content-width, 74rem) - 10rem);
                 margin-inline-start: auto;
                 padding-block: 0.5rem;
                 padding-inline: 0.75rem;
                 background: color-mix(in oklch, var(--color-surface-2) 50%, transparent);
-                border-radius: var(--radius);
+                border-radius: var(--radius)
             }
 
             /* Attachments */
@@ -72,14 +68,14 @@
                 max-width: 20rem;
                 max-height: 15rem;
                 margin-block: 0.5rem;
-                border-radius: var(--radius);
+                border-radius: var(--radius)
             }
 
             :where(audio) {
                 display: block;
                 width: 18rem;
                 max-width: 100%;
-                margin-block: 0.5rem;
+                margin-block: 0.5rem
             }
 
             :where(a[download]) {
@@ -90,121 +86,66 @@
                 padding-block: 0.35rem;
                 padding-inline: 0.6rem;
                 background: var(--color-surface-2);
-                border-radius: var(--radius);
+                border-radius: var(--radius)
             }
         }
 
         /* Chat input */
-        :where(form) {
-            position: relative;
+        :where(form:not(.unstyle)) {
+            display: flex;
+            flex-flow: row wrap;
+            align-items: end;
+            gap: 0;
             width: var(--spacing-content-width, 74rem);
             max-width: 100%;
             margin-inline-start: auto;
             margin-inline-end: auto;
 
-            :where(textarea) {
-                padding-inline-end: 2.5rem;
+            :where(textarea, .textarea):not(.unstyle) {
+                flex: 1;
+                width: auto;
+                min-height: var(--spacing-field-height, 2.5rem);
                 field-sizing: content;
-                resize: none;
+                resize: none
+            }
+        }
+
+        /* Pending attachments */
+        :where(output:not(.unstyle)) {
+            display: flex;
+            flex-flow: row wrap;
+            gap: 0.325rem;
+            width: 100%;
+            max-width: 100%;
+            height: fit-content;
+            padding: calc(var(--spacing) * 2);
+
+            > :where(:not(template)) {
+                position: relative;
+                flex: 0 0 auto
             }
 
-            &:has(button[data-action="attach"]) :where(textarea) {
-                padding-inline-start: 2.5rem;
+            /* Images */
+            :where(img) {
+                display: block;
+                width: var(--spacing-field-height, 2.5rem);
+                height: var(--spacing-field-height, 2.5rem);
+                object-fit: cover;
+                border-radius: calc(var(--radius, 0.5rem) * 0.75)
             }
 
-            /* Submit button */
-            :where(button[type="submit"]) {
-                position: absolute;
-                bottom: var(--spacing-field-padding, 0.625rem);
-                inset-inline-end: calc(var(--spacing-field-padding, 0.625rem) * 1.3);
-            }
-
-            /* Toolbar buttons (data-action) — attach, formatting, voice, … */
-            :where(button[data-action="attach"]) {
-                position: absolute;
-                bottom: var(--spacing-field-padding, 0.625rem);
-                inset-inline-start: calc(var(--spacing-field-padding, 0.625rem) * 1.3);
-            }
-
-            /* Composer variant — the form itself is the field (.textarea):
-               [ attachment thumbnails               ]
-               [ attach | growing textarea |    send ] */
-            &:where(.textarea) {
-                display: grid;
-                grid-template-columns: auto 1fr auto;
-                align-items: end;
-                gap: 0.25rem;
-                padding: 0.375rem;
-
-                /* Buttons sit in-flow at the row's bottom corners */
-                :where(button[type="submit"], button[data-action]) {
-                    position: static;
-                }
-
-                /* The inner textarea is a bare well inside the field */
-                :where(textarea) {
-                    padding-inline: 0.25rem;
-                    padding-block: 0.45rem;
-
-                    &,
-                    &:hover,
-                    &:active,
-                    &:focus-visible {
-                        background: transparent;
-                    }
-                }
-
-                /* Attachment thumbnails — removable, X-scrollable */
-                :where(menu) {
-                    grid-column: 1 / -1;
-                    display: flex;
-                    gap: 0.5rem;
-                    margin: 0;
-                    padding: 0.375rem 0.25rem 0.125rem;
-                    list-style: none;
-                    overflow-x: auto;
-
-                    :where(li) {
-                        position: relative;
-                        flex: 0 0 auto;
-                    }
-
-                    :where(img) {
-                        display: block;
-                        width: 3.5rem;
-                        height: 3.5rem;
-                        object-fit: cover;
-                        border-radius: calc(var(--radius, 0.5rem) * 0.75);
-                    }
-
-                    /* Non-image attachments — file chip */
-                    :where(li > span) {
-                        display: flex;
-                        align-items: center;
-                        gap: 0.3rem;
-                        height: 3.5rem;
-                        padding-inline: 0.6rem;
-                        font-size: 0.75rem;
-                        white-space: nowrap;
-                        background: var(--color-surface-2);
-                        border-radius: calc(var(--radius, 0.5rem) * 0.75);
-                    }
-
-                    /* Remove button — revealed on hover/focus */
-                    :where(button) {
-                        position: absolute;
-                        inset-block-start: -0.35rem;
-                        inset-inline-end: -0.35rem;
-                        opacity: 0;
-                        transition: var(--transition, all .05s ease-in-out);
-                    }
-
-                    :where(li:hover, li:focus-within) :where(button) {
-                        opacity: 1;
-                    }
-                }
+            /* File chips */
+            > :where(:not(template))> :where(span) {
+                display: flex;
+                align-items: center;
+                gap: 0.3rem;
+                height: fit-content;
+                padding-inline: 0.5rem;
+                font-size: 0.75rem;
+                white-space: nowrap;
+                background: var(--color-line);
+                border-radius: calc(var(--radius, 0.5rem) * 0.75)
             }
         }
     }
-
 }

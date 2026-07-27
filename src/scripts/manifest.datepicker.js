@@ -191,6 +191,7 @@
 				showClear: true,           // Clear action (config: clear:false)
 				min: null, max: null,
 				disabled: [],              // ISO strings, {from,to} ranges, or a predicate fn
+				format: null,              // trigger display format (see formatValue)
 				mode: 'inline',            // 'inline' (authored container) | 'menu' (plugin-owned dropdown)
 				field: null,               // trigger element, if any
 				fieldPlaceholder: '',      // captured initial label/placeholder text
@@ -218,10 +219,34 @@
 					return false;
 				},
 
+				// Trigger display text. `format` (config/attr) overrides the default
+				// localized medium style: a dateStyle keyword ('short'|'medium'|
+				// 'long'|'full'), an Intl.DateTimeFormat options object, 'iso',
+				// 'relative', or a (date) => string function. The emitted/model
+				// value stays ISO regardless — this only restyles the visible text.
 				formatValue(date) {
 					if (!date) return '';
-					try { return new Intl.DateTimeFormat(this.locale(), { dateStyle: 'medium' }).format(date); }
-					catch (_) { return D.toISO(date); }
+					const f = this.format, loc = this.locale();
+					try {
+						if (typeof f === 'function') return String(f(date));
+						if (f === 'iso') return D.toISO(date);
+						if (f === 'relative') {
+							const a = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+							const b = new Date(); b.setHours(0, 0, 0, 0);
+							const days = Math.round((a - b) / 86400000), abs = Math.abs(days);
+							const rtf = new Intl.RelativeTimeFormat(loc, { numeric: 'auto' });
+							if (abs < 7) return rtf.format(days, 'day');
+							if (abs < 30) return rtf.format(Math.round(days / 7), 'week');
+							if (abs < 365) return rtf.format(Math.round(days / 30), 'month');
+							return rtf.format(Math.round(days / 365), 'year');
+						}
+						if (f && typeof f === 'object') return new Intl.DateTimeFormat(loc, f).format(date);
+						if (typeof f === 'string') return new Intl.DateTimeFormat(loc, { dateStyle: f }).format(date);
+						return new Intl.DateTimeFormat(loc, { dateStyle: 'medium' }).format(date);
+					} catch (_) {
+						try { return new Intl.DateTimeFormat(loc, { dateStyle: 'medium' }).format(date); }
+						catch (_) { return D.toISO(date); }
+					}
 				},
 
 				formatTime() {
@@ -246,6 +271,7 @@
 						return this.selectedDates.length + ' dates';
 					}
 					if (this.withTime && this.selected) {
+						if (this.format) return this.formatValue(this.selected) + ' ' + this.formatTime();
 						try {
 							const [h, mi] = this.time.split(':').map(Number);
 							const dt = new Date(this.selected.getFullYear(), this.selected.getMonth(), this.selected.getDate(), h || 0, mi || 0);
@@ -919,6 +945,8 @@
 			const max = el.getAttribute('max');
 			if (min) state.min = D.fromISO(min);
 			if (max) state.max = D.fromISO(max);
+			const format = el.getAttribute('format');
+			if (format) state.format = format;   // string presets only; objects/fns via config
 		}
 		function bindConfigValue(state, el, expression) {
 			if (!expression) return;
@@ -935,6 +963,7 @@
 				if (cfg.max !== undefined) { state.max = cfg.max ? D.fromISO(cfg.max) : null; dirty = true; }
 				if (cfg.disabled !== undefined && (Array.isArray(cfg.disabled) || typeof cfg.disabled === 'function')) { state.disabled = cfg.disabled; dirty = true; }
 				if (Array.isArray(cfg.presets)) { state.presets = cfg.presets; dirty = true; }
+				if (cfg.format !== undefined) { state.format = cfg.format || null; dirty = true; }
 				if (dirty) { state.bump(); if (state._mounted) state.render(); }
 			});
 		}

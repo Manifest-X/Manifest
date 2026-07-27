@@ -70,25 +70,34 @@ function initializeComboboxPlugin() {
     // Alpine binding attributes — never carried onto combobox-owned clones
     const isBinding = (n) => n[0] === ':' || n[0] === '@' || n.indexOf('x-') === 0;
 
+    // Rendered-snapshot clone: strip Alpine bindings (x-/:/@) from the whole subtree —
+    // they reference the source's x-for scope and would throw when Alpine walks the
+    // combobox-owned copy. Computed results (style, class, text) are baked in and survive.
+    function stripClone(root) {
+        Array.from(root.attributes).forEach(a => { if (isBinding(a.name)) root.removeAttribute(a.name); });
+        root.querySelectorAll('*').forEach(n => {
+            Array.from(n.attributes).forEach(a => { if (isBinding(a.name)) n.removeAttribute(a.name); });
+        });
+        return root;
+    }
+
     // Read options from a source element (datalist/select → option, menu → li)
     function readOptions(src) {
         if (!src) return [];
         if (src.tagName === 'MENU') {
             return Array.from(src.querySelectorAll('li')).map(li => {
-                // The clone is a rendered snapshot: strip Alpine bindings (x-/:/@) from the
-                // WHOLE subtree, not just the row — they reference the source's x-for scope
-                // and would throw when Alpine walks the combobox-owned copy. The computed
-                // results (style, class, text) are already baked in and survive.
-                const copy = li.cloneNode(true);
-                copy.querySelectorAll('*').forEach(n => {
-                    Array.from(n.attributes).forEach(a => { if (isBinding(a.name)) n.removeAttribute(a.name); });
-                });
+                const copy = stripClone(li.cloneNode(true));
+                // A [data-chip] element inside the row is the chip's rich content: the chip
+                // shows its rendered clone, and clicks are mirrored back to this live source
+                // fragment so author @click handlers run in their own x-for scope.
+                const chipSrc = li.querySelector('[data-chip]');
                 return {
                     value: li.dataset.value != null ? li.dataset.value : li.textContent.trim(),
                     label: li.dataset.label || li.textContent.trim(),
                     pattern: li.dataset.pattern || null,
                     locked: li.hasAttribute('data-locked'),
                     html: copy.innerHTML,
+                    chip: chipSrc ? (n => ({ node: n, src: chipSrc, sig: n.outerHTML }))(stripClone(chipSrc.cloneNode(true))) : null,
                     // Carry the row's own attributes into the option, minus combobox-managed ones.
                     attrs: Array.from(li.attributes)
                         .filter(a => { const n = a.name; return n !== 'role' && n !== 'id' && n !== 'aria-selected' && !isBinding(n); })
@@ -98,7 +107,9 @@ function initializeComboboxPlugin() {
         }
         return Array.from(src.querySelectorAll('option')).map(o => ({
             value: o.value || o.textContent.trim(),
-            label: o.textContent.trim() || o.value,
+            // o.label is the native `label` IDL prop: the `label` attribute when set, else
+            // the option's text — so <option value="SE" label="Sweden"> works natively.
+            label: (o.label || '').trim() || o.value,
             pattern: o.getAttribute('data-pattern') || null,
             locked: o.hasAttribute('data-locked'),
             html: null
@@ -225,6 +236,20 @@ function initializeComboboxPlugin() {
         // ----- Source / options -----
         const sourceId = cfg.source ? String(cfg.source).replace(/^#/, '') : null;
         const src = sourceId ? document.getElementById(sourceId) : null;
+
+        // A named source that isn't in the DOM yet (it renders after us — a later sibling,
+        // an x-if branch, an async component) would otherwise leave the field menu-less and
+        // unable to resolve labels forever. Nothing is mutated before this point, so wait
+        // for it and cleanly re-enter build(); give up after ~5s → a source-less field.
+        if (sourceId && !src && !isAsync) {
+            if ((el.__cbSourceTries = (el.__cbSourceTries || 0) + 1) <= 100) {
+                el.__mnfstCombobox = false;
+                setTimeout(() => build(el, modifiers, expression, cleanup), 50);
+                return;
+            }
+            // fell through: never appeared — proceed as a source-less (free-entry) field
+        }
+
         let options = readOptions(src);
         const hasMenu = !!src || isAsync;
         if (editorNone && !hasMenu) return;     // a button trigger needs a list
@@ -245,6 +270,17 @@ function initializeComboboxPlugin() {
         el.setAttribute('autocomplete', 'off');
         if (!editorNone) el.removeAttribute('placeholder');
         if (name) el.removeAttribute('name');   // hidden inputs carry the value(s)
+
+        // A wrapping <label> with no `for` targets its FIRST labelable descendant —
+        // that's the first chip's remove button, not the editor. Hovering the label then
+        // hover-lights that ×, and clicking the label (or a chip's text) activates it,
+        // deleting chips. Bind the label to the editor explicitly; clicks on interactive
+        // chip content (the ×, or any links/handlers) still land on it, not the label.
+        const ownerLabel = wrap.closest('label');
+        if (ownerLabel && !ownerLabel.hasAttribute('for')) {
+            if (!el.id) el.id = 'combobox-editor-' + rand();
+            ownerLabel.setAttribute('for', el.id);
+        }
 
         // Live region for add/remove announcements
         const live = document.createElement('span');
@@ -321,6 +357,21 @@ function initializeComboboxPlugin() {
             // owns the listbox. readOptions keeps each row's innerHTML, preserving markup.
             menu = document.createElement('menu');
             menu.setAttribute('x-ignore', '');  // plugin-owned rows — Alpine must never walk them
+            // An authored <menu> source is the data layer; its presentation belongs to the
+            // rendered copy. Mirror the author's class and data-*/aria-* onto it — live, so
+            // bound values (:class, :aria-label="$x…") keep applying as state changes:
+            // Alpine writes the computed attribute onto the source, the observer relays it.
+            if (src && src.tagName === 'MENU') {
+                const carries = (n) => n === 'class' || (n.indexOf('data-') === 0 && n !== 'data-kbd') || (n.indexOf('aria-') === 0 && n !== 'aria-multiselectable');
+                const mirrorMenuAttrs = () => {
+                    Array.from(menu.attributes).forEach(a => { if (carries(a.name) && !src.hasAttribute(a.name)) menu.removeAttribute(a.name); });
+                    Array.from(src.attributes).forEach(a => { if (carries(a.name)) menu.setAttribute(a.name, a.value); });
+                };
+                mirrorMenuAttrs();
+                const menuAttrObserver = new MutationObserver(mirrorMenuAttrs);
+                menuAttrObserver.observe(src, { attributes: true });
+                if (cleanup) cleanup(() => menuAttrObserver.disconnect());
+            }
             // Nearest popover host, so an outer auto popover isn't light-dismissed
             // by listbox clicks; body otherwise (out of overflow contexts either way).
             (el.closest('[popover]') || document.body).appendChild(menu);
@@ -557,10 +608,46 @@ function initializeComboboxPlugin() {
             chip.className = 'combobox-chip';
             chip.dataset.value = s.value;
             const label = document.createElement('span');
-            label.textContent = s.label;
+            setChipContent(label, s);
             chip.appendChild(label);
             applyLock(chip, s.value, s.label);
             return chip;
+        }
+        // Chip content: the option's [data-chip] fragment when present (rendered clone,
+        // refreshed in place on reread — updating innerHTML never re-inserts the chip
+        // node, so the WebKit focused-insert collapse can't trigger), else the text
+        // label. Links in the clone navigate natively (computed href carries); other
+        // clicks are mirrored onto the same element in the LIVE source fragment, where
+        // the author's @click runs in its own x-for scope.
+        function setChipContent(span, s) {
+            const o = options.find(o => String(o.value).toLowerCase() === String(s.value).toLowerCase());
+            const rich = o && o.chip;
+            const sig = rich ? o.chip.sig : 't:' + s.label;
+            if (span.__cbSig === sig) return;
+            span.__cbSig = sig;
+            if (!rich) { span.textContent = s.label; span.__cbSrc = null; return; }
+            span.innerHTML = '';
+            span.appendChild(o.chip.node.cloneNode(true));
+            span.__cbSrc = o.chip.src;
+            if (span.__cbDelegated) return;
+            span.__cbDelegated = true;
+            span.addEventListener('click', (e) => {
+                const srcRoot = span.__cbSrc;
+                if (!srcRoot || !srcRoot.isConnected) return;
+                if (e.target.closest && e.target.closest('a[href]')) return;   // native nav owns it
+                const cloneRoot = span.firstElementChild;
+                let n = e.target === span ? cloneRoot : e.target;
+                const path = [];
+                while (n && n !== cloneRoot) {
+                    const p = n.parentElement;
+                    if (!p) return;
+                    path.unshift(Array.prototype.indexOf.call(p.children, n));
+                    n = p;
+                }
+                let t = srcRoot;
+                for (const i of path) { t = t.children[i]; if (!t) return; }
+                t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            });
         }
         // Add/drop the × to match locked state. Re-run from render() so a reactive
         // `locked` change toggles existing chips too.
@@ -600,7 +687,11 @@ function initializeComboboxPlugin() {
                     const key = norm(s.value);
                     const node = have.get(key);
                     if (!node) { const n = makeChip(s); have.set(key, n); wrap.insertBefore(n, el); }
-                    else applyLock(node, s.value, s.label);
+                    else {
+                        applyLock(node, s.value, s.label);
+                        const sp = node.querySelector(':scope > span');
+                        if (sp) setChipContent(sp, s);   // in-place refresh; node identity kept
+                    }
                 });
                 // Reorder only when order differs — needless re-insertion collapses chips
                 // in WebKit; the common append path (order matches) skips this.
@@ -787,21 +878,32 @@ function initializeComboboxPlugin() {
                 if (menu && menu.matches(':popover-open')) filter();
             };
             const mo = new MutationObserver(reread);
-            // childList/characterData: x-for row edits. attributes: bound data-* toggles.
-            mo.observe(src, {
-                childList: true, subtree: true, characterData: true,
-                attributes: true, attributeFilter: ['data-value', 'data-label', 'data-locked', 'data-pattern']
-            });
+            // childList/characterData: x-for row edits. attributes unfiltered: ANY bound
+            // attribute inside a row (style, class, data-*) changes the rendered snapshot
+            // the menu and rich chips clone, so all must re-trigger. Mutations coalesce
+            // per microtask, so a state flush costs one reread.
+            mo.observe(src, { childList: true, subtree: true, characterData: true, attributes: true });
             if (cleanup) cleanup(() => mo.disconnect());
         }
 
-        // ----- Seed initial chips from value="a, b" — only when no x-model (it wins)
-        //        and no adopted wrapper (already seeded). -----
-        if (!modelExpr && !adopt && !editorNone && chips && el.value) {
-            const seeds = el.value.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
-            el.value = '';
+        // ----- Seed the initial value from the value attribute — only when there's no
+        //        x-model (it wins). Chips split on separators; a SINGLE field takes the
+        //        whole value and resolves it to its label (async options fill in via the
+        //        reread). Seeding never writes the model or fires change. -----
+        if (!modelExpr && !editorNone && el.value) {
             seeding = true;
-            seeds.forEach(s => commitText(s));
+            if (chips) {
+                // Fresh only — an adopted (prerendered) wrapper already recovered its chips.
+                if (!adopt) {
+                    const seeds = el.value.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
+                    el.value = '';
+                    seeds.forEach(s => commitText(s));
+                }
+            } else if (!multiple) {
+                // Runs fresh AND on hydration: el.value is the value attribute either way,
+                // so a single field re-derives its selection even in an adopted wrapper.
+                addValue(el.value.trim(), labelFor(el.value.trim()));
+            }
             seeding = false;
         }
         // In chips/multiple the editor is a typing buffer. Clear value AND remove the

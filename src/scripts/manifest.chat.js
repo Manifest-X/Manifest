@@ -271,6 +271,8 @@
         get version() { return rev().n; }
     };
 })();
+
+
 /*  Manifest Chat — reference adapters + registry
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
@@ -513,6 +515,8 @@
 
     window.ManifestChatAdapters = { register, resolve, staticAdapter, aggregateAdapter, sim };
 })();
+
+
 /*  Manifest Chat — optional LLM (Claude) adapter
  *  By Andrew Matlock under MIT license · https://manifestx.dev
  *
@@ -615,6 +619,8 @@
         window.ManifestChatAdapters.register('claude', claudeAdapter);
     });
 })();
+
+
 /*  Manifest Chat — Appwrite adapter (conversations as app data)
  *  By Andrew Matlock under MIT license
  *  https://manifestx.dev
@@ -736,6 +742,8 @@
         window.ManifestChatAdapters.register('appwrite', appwriteAdapter);
     });
 })();
+
+
 /*  Manifest Chat — magic + init
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev

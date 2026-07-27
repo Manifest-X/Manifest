@@ -118,7 +118,7 @@
     }
 
     /* Focus state */
-    :where(:focus-visible, label:has(input[type=search], input[type=file]):focus-within) {
+    :where(:focus-visible, :is(label, .label):has(> input[type=search], > input[type=file], > button[command="--copy"]):focus-within) {
         outline: none;
         box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark) 30%, transparent)
     }

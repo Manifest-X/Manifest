@@ -11,6 +11,7 @@
   "display": "standalone",
   "orientation": "any",
   "background_color": "#FFFFFF",
+  "theme_color": "#FFFFFF",
   "icons": [
     {
       "src": "/assets/icons/192x192.png",

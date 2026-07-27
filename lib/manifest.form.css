@@ -16,34 +16,36 @@
             z-index: 1
         }
 
-        /* Equal-width children (give the wrapper a width if children need more room) */
+        /* Equal-width children */
         &.even>* {
             flex-shrink: initial;
             width: 100%
         }
 
-        & input {
+        & input,
+        & .combobox,
+        & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
             width: fit-content
         }
 
         /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
                 /* First participant */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
 
                 /* Middle participants */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-radius: 0
                 }
 
                 /* Last participant */
-                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -172,7 +174,7 @@
     }
 
     /* Label wrapper */
-    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(.unstyle) {
+    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(:has(> button[command="--copy"])):not(.unstyle) {
         display: flex;
         flex-direction: column;
         gap: 0.2ch;
@@ -190,9 +192,15 @@
             padding-inline-start: calc(var(--radius, 0.5rem) / 2)
         }
 
-        :where(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea) {
+        &>:where(label, button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea, .combobox, [role=group], [role=tablist]) {
             width: 100%;
             max-width: 100%
+        }
+
+        /* Group inputs flex to fill the label width */
+        &>:where([role=group]) :where(input) {
+            flex: 1;
+            min-width: 0
         }
 
         /* Space out stacked labels for search and file inputs */
@@ -214,14 +222,20 @@
             box-shadow: 0 0 0 0
         }
 
-        /* Size buttons and inputs */
-        & :where(.label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist]) {
+        /* Size buttons, inputs, and field wrappers */
+        &>:where(label, .label, button, input:not([type=checkbox], [type=radio]), select, textarea, [role=group], [role=tablist], .combobox) {
             width: calc(var(--spacing-field-height, 2.25rem) * 8);
             max-width: 50%;
         }
 
-        /* Focus state for .label wrapper for search and file inputs */
-        & .label:focus-within {
+        /* Group inputs flex to fit the sized group */
+        &>:where([role=group]) :where(input) {
+            flex: 1;
+            min-width: 0
+        }
+
+        /* Focus state for nested field wrappers (search, file, copy) */
+        & :where(label, .label):focus-within {
             box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 35%, transparent)
         }
 
@@ -235,11 +249,67 @@
         }
     }
 
+    /* Remove button (anchored to parent element) */
+    :where(:has(> button[name=remove])):not(.unstyle) {
+        position: relative;
+
+        /* Button */
+        > :where(button[name=remove]:not(.unstyle)) {
+            position: absolute;
+            inset-block-start: calc(var(--spacing-field-height, 2.5rem) / 2 * -0.5);
+            inset-inline-end: calc(var(--spacing-field-height, 2.5rem) / 2 * -0.5);
+            z-index: 1;
+            min-width: 0;
+            width: calc(var(--spacing-field-height, 2.5rem) / 2);
+            height: calc(var(--spacing-field-height, 2.5rem) / 2);
+            padding: 0;
+            border-radius: var(--spacing-field-height, 2.5rem);
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            opacity: 0;
+            transition: var(--transition);
+
+            /* Icon */
+            &::after {
+                content: "";
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                width: 50%;
+                height: 50%;
+                background-color: var(--color-field-inverse, oklch(43.9% 0 0));
+                mask-image: var(--icon-dismiss, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E"));
+                mask-repeat: no-repeat;
+                mask-size: 100% 100%;
+                transform-origin: center;
+                transform: translateX(-50%) translateY(-50%)
+            }
+        }
+
+        /* Reveal on parent hover/focus */
+        &:is(:hover, :focus-within)> :where(button[name=remove]:not(.unstyle)) {
+            opacity: 1
+        }
+    }
+
     /* Label wrappers for search and file inputs using .label utility */
     label:has(.label):not(.unstyle) {
         justify-content: space-between;
         background-color: transparent;
         cursor: default;
+
+        /* Stack label text above the .label field when not inlined via <data> */
+        &:not(:has(data)) {
+            display: flex;
+            flex-direction: column;
+            align-items: start;
+            gap: 0.2ch;
+            width: 100%;
+            text-indent: calc(var(--radius, 0.5rem) / 2);
+
+            & .label {
+                text-indent: 0
+            }
+        }
 
         :where([type=search]) {
             width: 100%;
