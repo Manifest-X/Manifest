@@ -1,0 +1,135 @@
+<!-- Dropdown auto-close test harness -->
+<div class="col gap-8 p-6" style="max-width: 40rem; margin-inline: auto;"
+     x-data="{ picked: '—', log: [], note(v) { this.picked = v; this.log.unshift(v); this.log = this.log.slice(0, 6); } }">
+
+    <div class="col gap-1">
+        <h2>Dropdown auto-close</h2>
+        <small class="subtle">Last selection: <strong x-text="picked"></strong></small>
+    </div>
+
+    <!-- A: per-item opt-in -->
+    <section class="col gap-2">
+        <h5>A — per-item <code>close</code></h5>
+        <small class="subtle">Only the two marked rows close the menu.</small>
+        <div>
+            <button x-dropdown="dd-item"><span>Actions</span><span x-icon="lucide:chevron-down" class="trailing"></span></button>
+            <menu popover id="dd-item" class="w-60">
+                <small>Closes</small>
+                <li close @click="note('A: Duplicate')"><span x-icon="lucide:copy"></span><span>Duplicate</span></li>
+                <a href="#a" close><span x-icon="lucide:external-link"></span><span>Open link</span></a>
+                <hr>
+                <small>Stays open</small>
+                <li @click="note('A: Increment')"><span x-icon="lucide:plus"></span><span>Stays open</span></li>
+                <label><input type="checkbox"><span>Also stays open</span></label>
+            </menu>
+        </div>
+    </section>
+
+    <!-- B: menu-wide modifier -->
+    <section class="col gap-2">
+        <h5>B — <code>x-dropdown.close</code></h5>
+        <small class="subtle">Every row closes except embedded controls, and <code>keep-open</code> rows.</small>
+        <div>
+            <button x-dropdown.close="dd-all"><span>Select one</span><span x-icon="lucide:chevron-down" class="trailing"></span></button>
+            <menu popover id="dd-all" class="w-60 max-h-160">
+                <small>List items</small>
+                <li @click="note('B: Rename')"><span x-icon="lucide:pencil"></span><span>Rename</span></li>
+                <li @click="note('B: Archive')"><span x-icon="lucide:archive"></span><span>Archive</span></li>
+                <li class="negative" @click="note('B: Delete')"><span x-icon="lucide:trash-2"></span><span>Delete</span></li>
+
+                <hr>
+                <small>Links &amp; buttons (rows)</small>
+                <a href="#b"><span x-icon="lucide:home"></span><span>Link row</span></a>
+                <button @click="note('B: Button row')"><span x-icon="lucide:zap"></span><span>Button row</span></button>
+                <li><a href="#b2" @click="note('B: Nested link')">Link nested in li</a></li>
+
+                <hr>
+                <small>Row with nested button</small>
+                <li @click="note('B: Row w/ nested')"><span>Row body closes</span><button class="ghost small trailing" @click.stop="note('B: Nested button')">Nested</button></li>
+
+                <hr>
+                <small>Embedded controls (stay open)</small>
+                <label><input type="checkbox" @change="note('B: Checkbox')"><span>Checkbox</span></label>
+                <label for="dd-sw">Switch<input id="dd-sw" role="switch" type="checkbox" @change="note('B: Switch')"></label>
+                <label><input type="radio" name="dd-radio" checked><span>Radio A</span></label>
+                <label><input type="radio" name="dd-radio"><span>Radio B</span></label>
+                <input placeholder="Text input">
+
+                <hr>
+                <small>Explicit opt-out</small>
+                <li keep-open @click="note('B: keep-open row')"><span x-icon="lucide:pin"></span><span>keep-open row</span></li>
+            </menu>
+        </div>
+    </section>
+
+    <!-- C: nested submenu -->
+    <section class="col gap-2">
+        <h5>C — nested submenu</h5>
+        <small class="subtle">The submenu trigger stays open; picking a submenu item closes both menus.</small>
+        <div>
+            <button x-dropdown.close="dd-nested">Main menu</button>
+            <menu popover id="dd-nested" class="w-60">
+                <li @click="note('C: Top level')">Top-level item</li>
+                <hr>
+                <li>
+                    <button x-dropdown="dd-sub"><span>Submenu</span><span x-icon="lucide:chevron-right" class="trailing"></span></button>
+                    <menu popover id="dd-sub" class="w-48">
+                        <li close @click="note('C: Sub one')">Sub one</li>
+                        <li close @click="note('C: Sub two')">Sub two</li>
+                    </menu>
+                </li>
+            </menu>
+        </div>
+    </section>
+
+    <!-- D: hover + context -->
+    <section class="col gap-2">
+        <h5>D — hover and context menus</h5>
+        <div class="row gap-3 items-start">
+            <div>
+                <button x-dropdown.hover.close="dd-hover">Hover me</button>
+                <menu popover id="dd-hover" class="w-48">
+                    <li @click="note('D: Hover one')">Hover one</li>
+                    <li @click="note('D: Hover two')">Hover two</li>
+                </menu>
+            </div>
+            <div x-dropdown.context="dd-ctx" class="p-4 text-center" style="border: 1px dashed var(--color-line); border-radius: var(--radius);">Right-click here</div>
+            <menu popover id="dd-ctx" class="w-48">
+                <li @click="note('D: Context cut')">Cut</li>
+                <li @click="note('D: Context paste')">Paste</li>
+                <hr>
+                <label><input type="checkbox" @change="note('D: Context checkbox')"><span>Stays open</span></label>
+            </menu>
+
+            <div x-dropdown.context.close="dd-ctx-stacked" class="p-4 text-center" style="border: 1px dashed var(--color-line); border-radius: var(--radius);">Right-click (stacked)</div>
+            <menu popover id="dd-ctx-stacked" class="w-48">
+                <li @click="note('D: Stacked cut')">Cut</li>
+                <label><input type="checkbox" @change="note('D: Stacked checkbox')"><span>Stays open</span></label>
+            </menu>
+        </div>
+    </section>
+
+    <!-- E: shared menu, two triggers -->
+    <section class="col gap-2">
+        <h5>E — one menu, two triggers</h5>
+        <div class="row gap-3">
+            <button x-dropdown.close="dd-shared">Trigger 1</button>
+            <button x-dropdown.close="dd-shared">Trigger 2</button>
+            <menu popover id="dd-shared" class="w-48">
+                <li @click="note('E: Alpha')">Alpha</li>
+                <li @click="note('E: Beta')">Beta</li>
+            </menu>
+        </div>
+    </section>
+
+    <!-- Log -->
+    <section class="col gap-2">
+        <h5>Selection log</h5>
+        <ul class="col gap-1">
+            <template x-for="(entry, i) in log" :key="i">
+                <li><small x-text="entry"></small></li>
+            </template>
+        </ul>
+    </section>
+
+</div>
