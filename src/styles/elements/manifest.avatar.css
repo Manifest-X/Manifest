@@ -72,6 +72,19 @@
         }
     }
 
+    /* Sizes */
+    :where(.avatar.sm) {
+        width: 1.5rem;
+        height: 1.5rem;
+        font-size: 0.75rem
+    }
+
+    :where(.avatar.lg) {
+        width: 3rem;
+        height: 3rem;
+        font-size: 1.25rem
+    }
+
     /* Wide version */
     :where(.avatar-wide) {
         display: flex;
