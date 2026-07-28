@@ -310,9 +310,11 @@ function initializeDropdownPlugin() {
                         const ROW = 'li, a, button, label, [role=menuitem], [role=option]';
                         const CONTROL = 'input, select, textarea, [contenteditable]:not([contenteditable=false]), [role=switch], .combobox, [x-dropdown], [popovertarget], [keep-open]';
 
-                        // Close the item's menu plus any menus it was nested in
+                        // Close the item's menu plus any menus it was nested in. The owned
+                        // popover isn't always a <menu> (e.g. .dropdown-menu on a div), so
+                        // fall back to it rather than relying on the ancestor lookup.
                         const closeFrom = (node) => {
-                            let m = node.closest('menu[popover]');
+                            let m = node.closest('menu[popover]') || menu;
                             while (m) {
                                 if (m.matches(':popover-open')) m.hidePopover();
                                 m = m.parentElement?.closest('menu[popover]');
