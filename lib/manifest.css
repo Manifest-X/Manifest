@@ -3299,8 +3299,8 @@
             text-indent: 0
         }
 
-        /* Indent label text in spans */
-        :where(span:first-of-type) {
+        /* Indent label text in spans (direct child only — never reach into a nested field's content, e.g. combobox chips) */
+        &>:where(span:first-of-type) {
             padding-inline-start: calc(var(--radius, 0.5rem) / 2)
         }
 
