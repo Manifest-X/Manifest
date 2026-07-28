@@ -1745,8 +1745,9 @@
         padding-inline-start: calc(var(--spacing, 0.25rem) * 2);
         font-size: 0.875rem;
         line-height: normal;
-        color: var(--color-content-stark, oklch(43.9% 0 0));
-        background-color: var(--color-popover-surface, oklch(100% 0 0));
+        /* Optional per-field/global override: set --combobox-chip-surface / -content */
+        color: var(--combobox-chip-content, var(--color-content-stark, oklch(43.9% 0 0)));
+        background-color: var(--combobox-chip-surface, var(--color-popover-surface, oklch(100% 0 0)));
         border: 0;
         border-radius: calc(var(--radius, 0.5rem) * 0.7);
         overflow: hidden;
@@ -1783,14 +1784,14 @@
             border-radius: 0;
             font-size: 1em;
             line-height: 1;
-            color: var(--color-content-neutral, oklch(43.9% 0 0));
+            color: var(--combobox-chip-content, var(--color-content-neutral, oklch(43.9% 0 0)));
             background: transparent;
             box-shadow: none;
             cursor: pointer;
 
             &:hover {
-                color: var(--color-content-stark, oklch(43.9% 0 0));
-                background: color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 12%, transparent)
+                color: var(--combobox-chip-content, var(--color-content-stark, oklch(43.9% 0 0)));
+                background: color-mix(in oklch, var(--combobox-chip-content, var(--color-content-stark, oklch(43.9% 0 0))) 12%, transparent)
             }
         }
 
