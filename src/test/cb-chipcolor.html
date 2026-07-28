@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>combobox per-chip colour</title>
+<link rel="stylesheet" href="/styles/core/manifest.theme.css">
+<link rel="stylesheet" href="/styles/core/manifest.reset.css">
+<link rel="stylesheet" href="/styles/elements/manifest.combobox.css">
+<link rel="stylesheet" href="/styles/elements/manifest.dropdown.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+<script src="/scripts/manifest.combobox.js"></script>
+<script src="/scripts/manifest.dropdowns.js"></script>
+</head>
+<body x-data="{}" style="padding:2rem;display:flex;flex-direction:column;gap:2rem">
+
+<!-- T1: colours declared on the <li> itself -->
+<div id="T1" x-data="{ tags: ['KYC','LEGAL','OPEN'] }">
+  <h3>T1 — vars on &lt;li&gt;</h3>
+  <input x-combobox.multiple.chips="t1-opts" x-model="tags">
+</div>
+<menu popover id="t1-opts">
+  <li data-value="KYC"   data-label="KYC"   style="--combobox-chip-surface:#7c3aed;--combobox-chip-content:#fff">KYC</li>
+  <li data-value="LEGAL" data-label="Legal" style="--combobox-chip-surface:#0891b2;--combobox-chip-content:#fff">Legal</li>
+  <li data-value="OPEN"  data-label="Open">Open</li>
+</menu>
+
+<!-- T2: colours declared on the [data-chip] fragment -->
+<div id="T2" x-data="{ tags: ['RED','GREEN'] }">
+  <h3>T2 — vars on [data-chip]</h3>
+  <input x-combobox.multiple.chips="t2-opts" x-model="tags">
+</div>
+<menu popover id="t2-opts">
+  <li data-value="RED"   data-label="Red"><span data-chip style="--combobox-chip-surface:#dc2626;--combobox-chip-content:#fff">Red</span></li>
+  <li data-value="GREEN" data-label="Green"><span data-chip style="--combobox-chip-surface:#16a34a;--combobox-chip-content:#fff">Green</span></li>
+</menu>
+
+<!-- T3: reactive colour (Alpine :style on the li) — menu inside the x-data scope -->
+<div id="T3" x-data="{ tags: ['X'], c: '#b45309' }">
+  <h3>T3 — reactive</h3>
+  <input x-combobox.multiple.chips="t3-opts" x-model="tags">
+  <button type="button" @click="c = c === '#b45309' ? '#4338ca' : '#b45309'">toggle colour</button>
+  <menu popover id="t3-opts">
+    <li data-value="X" data-label="X" :style="`--combobox-chip-surface:${c};--combobox-chip-content:#fff`">X</li>
+  </menu>
+</div>
+
+</body>
+</html>
