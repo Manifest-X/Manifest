@@ -214,7 +214,13 @@ function initializeComboboxPlugin() {
         if (expr.startsWith('{')) {
             try { cfg = window.Alpine.evaluate(el, expr) || {}; } catch (_) { cfg = {}; }
         } else if (expr) {
-            cfg.source = expr;
+            // Template-literal ids (`${uid}-options`) are evaluated, matching x-dropdown;
+            // a bare id is used as-is.
+            if (expr.includes('${') || expr.includes('`')) {
+                try { cfg.source = window.Alpine.evaluate(el, expr); } catch (_) { cfg.source = expr; }
+            } else {
+                cfg.source = expr;
+            }
         }
 
         const editorNone = el.tagName === 'BUTTON';
