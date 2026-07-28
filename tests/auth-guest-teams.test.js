@@ -105,3 +105,64 @@ describe('guest team auto-seed (startup race)', () => {
         expect(store.teams).toEqual([])
     }, 5000)
 })
+
+describe('seeding audience gate + confirmed-load guard', () => {
+    const withDefaults = over => ({
+        teams: true, guestTeams: true, authenticatedTeams: true,
+        templateTeams: ['Acme Games'], permanentTeams: null, ...over,
+    })
+
+    // The reported production incident: an authenticated user already in a real team
+    // read as teamless during the settle window and had a guest-sandbox template minted.
+    it('never seeds an AUTHENTICATED session when teams.authenticated is false (guest-only)', async () => {
+        let seeded = false
+        const ensureDefaultTeams = async () => { seeded = true }
+        const cfg = withDefaults({ authenticatedTeams: false }) // guests:true, authenticated:false
+        const store = loadStore({ appwriteConfig: cfg, ensureDefaultTeams })
+        store.isAuthenticated = true
+        store.isAnonymous = false // signed-in user
+        store.listTeams = async function () { this.teams = [{ $id: 'real', name: 'acme-demo' }]; return { success: true, teams: this.teams } }
+
+        await store._loadTeamsAndSeed(cfg)
+        expect(seeded).toBe(false)
+    })
+
+    it('still seeds an authenticated session by default (authenticatedTeams true) — back-compat', async () => {
+        let seeded = false
+        const ensureDefaultTeams = async () => { seeded = true }
+        const cfg = withDefaults({ guestTeams: false }) // default authenticated seeding
+        const store = loadStore({ appwriteConfig: cfg, ensureDefaultTeams })
+        store.isAuthenticated = true
+        store.isAnonymous = false
+        store.listTeams = async function () { this.teams = []; return { success: true, teams: [] } }
+
+        await store._loadTeamsAndSeed(cfg)
+        expect(seeded).toBe(true)
+    })
+
+    it('still seeds a guest session when teams.guests is true', async () => {
+        let seeded = false
+        const ensureDefaultTeams = async () => { seeded = true }
+        const cfg = withDefaults({ authenticatedTeams: false }) // guest-only config
+        const store = loadStore({ appwriteConfig: cfg, ensureDefaultTeams })
+        store.isAuthenticated = true
+        store.isAnonymous = true // anonymous guest
+        store.listTeams = async function () { this.teams = []; return { success: true, teams: [] } }
+
+        await store._loadTeamsAndSeed(cfg)
+        expect(seeded).toBe(true)
+    })
+
+    it('does NOT seed when the team list fails to load (no mis-provision off an unconfirmed read)', async () => {
+        let seeded = false
+        const ensureDefaultTeams = async () => { seeded = true }
+        const cfg = withDefaults({})
+        const store = loadStore({ appwriteConfig: cfg, ensureDefaultTeams })
+        store.isAuthenticated = true
+        store.isAnonymous = false
+        store.listTeams = async function () { return { success: false, error: 'network' } } // failed read
+
+        await store._loadTeamsAndSeed(cfg)
+        expect(seeded).toBe(false)
+    })
+})

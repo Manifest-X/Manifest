@@ -73,6 +73,11 @@ async function getAppwriteConfig() {
     const templateTeams = appwriteConfig.auth?.teams?.template || null; // deletable + reappliable
     const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // ms, null = disabled
     const guestTeams = !!appwriteConfig.auth?.teams?.guests; // seed default teams for guests
+    // Seed default teams for authenticated (non-anonymous) sessions. Defaults to true
+    // (historical behavior). Set teams.authenticated:false with teams.guests:true to make
+    // seeding guest-only — e.g. a per-guest sandbox that must never be minted for a
+    // signed-in user who already belongs to their real workspace.
+    const authenticatedTeams = appwriteConfig.auth?.teams?.authenticated !== false;
 
     // Guest upgrade: preserve the anonymous account + teams on sign-in (magic/oauth;
     // OTP can't convert anonymous accounts). Defaults to guestTeams.
@@ -124,6 +129,7 @@ async function getAppwriteConfig() {
         templateTeams: templateTeams,
         teamsPollInterval: teamsPollInterval,
         guestTeams: guestTeams,
+        authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
         guestUpgrade: guestUpgrade,
         guestMigrationFunctionId: guestMigrationFunctionId,
         memberRoles: memberRoles,
@@ -668,8 +674,26 @@ function initializeAuthStore() {
                 console.warn('[Manifest Appwrite Auth] Teams module never became ready; skipping team load/seed.');
                 return;
             }
-            await this.listTeams();
-            if (needsSeed && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
+            // Always load the user's real teams. Capture the result — never seed defaults
+            // off an unconfirmed team list: a failed/incomplete load must not read as
+            // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
+            const loadResult = await this.listTeams();
+            if (!needsSeed) {
+                return;
+            }
+            if (loadResult && loadResult.success === false) {
+                console.warn('[Manifest Appwrite Auth] Team list did not load; skipping seed to avoid mis-provisioning.');
+                return;
+            }
+            // Audience gate: seed defaults only for the configured session type. Guests
+            // need teams.guests; authenticated (non-anonymous) sessions need
+            // teams.authenticated (default true). Keeps a per-guest sandbox from being
+            // minted for a signed-in user who already holds their real workspace.
+            const audienceAllows = this.isAnonymous ? !!cfg.guestTeams : (cfg.authenticatedTeams !== false);
+            if (!audienceAllows) {
+                return;
+            }
+            if (window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
                 await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
             }
         },

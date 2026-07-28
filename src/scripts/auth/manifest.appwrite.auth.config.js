@@ -73,6 +73,11 @@ async function getAppwriteConfig() {
     const templateTeams = appwriteConfig.auth?.teams?.template || null; // deletable + reappliable
     const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // ms, null = disabled
     const guestTeams = !!appwriteConfig.auth?.teams?.guests; // seed default teams for guests
+    // Seed default teams for authenticated (non-anonymous) sessions. Defaults to true
+    // (historical behavior). Set teams.authenticated:false with teams.guests:true to make
+    // seeding guest-only — e.g. a per-guest sandbox that must never be minted for a
+    // signed-in user who already belongs to their real workspace.
+    const authenticatedTeams = appwriteConfig.auth?.teams?.authenticated !== false;
 
     // Guest upgrade: preserve the anonymous account + teams on sign-in (magic/oauth;
     // OTP can't convert anonymous accounts). Defaults to guestTeams.
@@ -124,6 +129,7 @@ async function getAppwriteConfig() {
         templateTeams: templateTeams,
         teamsPollInterval: teamsPollInterval,
         guestTeams: guestTeams,
+        authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
         guestUpgrade: guestUpgrade,
         guestMigrationFunctionId: guestMigrationFunctionId,
         memberRoles: memberRoles,

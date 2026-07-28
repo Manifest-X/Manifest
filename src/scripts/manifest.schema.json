@@ -176,7 +176,8 @@
                             "properties": {
                                 "permanent": { "type": "array", "items": { "type": "string" } },
                                 "template": { "type": "array", "items": { "type": "string" } },
-                                "guests": { "type": "boolean", "description": "Seed permanent/template teams for guest (anonymous) sessions too. Off by default." }
+                                "guests": { "type": "boolean", "description": "Seed permanent/template teams for guest (anonymous) sessions too. Off by default." },
+                                "authenticated": { "type": "boolean", "description": "Seed permanent/template teams for authenticated (non-anonymous) sessions. On by default; set false (with guests:true) to make seeding guest-only." }
                             }
                         },
                         "guestUpgrade": { "type": "boolean", "description": "Preserve a guest's account (and its teams) when they sign in, instead of replacing it. Works with magic links and OAuth; email OTP cannot convert anonymous accounts (Appwrite limitation). Defaults to the value of teams.guests." },
