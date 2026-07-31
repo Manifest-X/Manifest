@@ -12,10 +12,14 @@
         align-items: center;
         gap: calc(var(--spacing, 0.25rem) * 2);
         z-index: 100;
+        /* Never capture clicks over the page — gaps and any stuck exited toast stay click-through */
+        pointer-events: none;
     }
 
     :where(.toast) {
         display: flex;
+        /* Live toasts are interactive (dismiss button); the container is not */
+        pointer-events: auto;
         max-width: 90vw;
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
         border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
@@ -87,6 +91,8 @@
     /* Exit animation */
     :where(.toast-exit) {
         opacity: 0;
-        transform: translateY(1rem)
+        transform: translateY(1rem);
+        /* An exiting/stuck toast is invisible — it must never sit as a dead zone over the page */
+        pointer-events: none
     }
 }
