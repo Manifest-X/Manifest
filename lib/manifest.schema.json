@@ -80,6 +80,11 @@
             "description": "Components loaded eagerly on initial page load (header, logo, etc.).",
             "items": { "type": "string" }
         },
+        "publishIgnore": {
+            "type": "array",
+            "description": "Gitignore-style patterns for files to exclude from the published bundle, independent of git. Applied on top of .gitignore and the built-in secret guards. A .manifestignore file at the project root works the same way.",
+            "items": { "type": "string" }
+        },
         "data": {
             "type": "object",
             "description": "Named data sources made available via $x.<sourceName>. Each value is either a string path/URL or a config object.",

@@ -202,6 +202,63 @@ export function isExcludedPath(rel) {
   return false;
 }
 
+// Publish-time exclusions, declared per-project and DECOUPLED from git — so a file
+// can stay versioned yet never ship. Sourced from a `.manifestignore` file
+// (gitignore-style) and/or a `publishIgnore: []` array in manifest.json. Supports
+// comments (#), directory patterns (`dir/`), path-anchored patterns (`a/b`), and
+// `*` / `**` / `?` globs. Returns a matcher; matches nothing when there are no rules.
+export function makePublishIgnore(rawPatterns) {
+  const rules = [];
+  for (let p of rawPatterns || []) {
+    if (typeof p !== 'string') continue;
+    p = p.trim();
+    if (!p || p.startsWith('#')) continue;
+    const dirOnly = p.endsWith('/');
+    if (dirOnly) p = p.slice(0, -1);
+    const anchored = p.startsWith('/');
+    if (anchored) p = p.replace(/^\/+/, '');
+    if (!p) continue;
+    const pathScoped = anchored || p.includes('/');
+    const body = p
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, ' ')
+      .replace(/\*/g, '[^/]*')
+      .replace(/ /g, '.*')
+      .replace(/\?/g, '[^/]');
+    rules.push({ dirOnly, pathScoped, exact: new RegExp('^' + body + '$'), prefix: new RegExp('^' + body + '/') });
+  }
+  if (!rules.length) return () => false;
+  return (rel) => {
+    for (const r of rules) {
+      if (r.pathScoped) {
+        if (!r.dirOnly && r.exact.test(rel)) return true; // exact file/path
+        if (r.prefix.test(rel)) return true;              // anything under the dir/prefix
+      } else {
+        // Unanchored, no slash: match any path segment (a dir name, or a basename).
+        const segs = rel.split('/');
+        for (let i = 0; i < segs.length; i++) {
+          if (r.dirOnly && i === segs.length - 1) continue; // a `dir/` rule can't match the file itself
+          if (r.exact.test(segs[i])) return true;
+        }
+      }
+    }
+    return false;
+  };
+}
+
+export function loadPublishIgnore(root) {
+  const patterns = [];
+  const ignoreFile = join(root, '.manifestignore');
+  if (existsSync(ignoreFile)) {
+    try { patterns.push(...readFileSync(ignoreFile, 'utf8').split(/\r?\n/)); } catch { /* ignore */ }
+  }
+  try {
+    const mf = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+    if (Array.isArray(mf.publishIgnore)) patterns.push(...mf.publishIgnore);
+  } catch { /* no / invalid manifest.json — nothing to add */ }
+  return makePublishIgnore(patterns);
+}
+
 export function collectFiles(root) {
   const git = spawnSync('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root, encoding: 'utf8' });
   let rels;
@@ -221,8 +278,11 @@ export function collectFiles(root) {
     };
     walk(root);
   }
-  // Final guard — drops nested secret files the git/walk lists may include.
-  return rels.filter((r) => !isExcludedPath(r));
+  // Final guards — drop nested secret files, then project-declared publish exclusions.
+  // .manifestignore applies ON TOP of gitignore, so a versioned file can still be
+  // kept out of the published bundle.
+  const publishIgnored = loadPublishIgnore(root);
+  return rels.filter((r) => !isExcludedPath(r) && !publishIgnored(r));
 }
 
 // --- Minimal ZIP writer (DEFLATE), pure Node, no deps ----------------------
