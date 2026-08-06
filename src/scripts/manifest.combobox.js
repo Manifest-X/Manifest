@@ -337,6 +337,12 @@ function initializeComboboxPlugin() {
         let lockedSet = computeLocked();
         const isLocked = (v) => lockedSet.has(String(v).toLowerCase());
 
+        // ----- Disabled -----
+        // Native `disabled` on the editor (input/textarea/button), live so `:disabled`
+        // tracks. Chips drop their × entirely — CSS pointer-events can't stop keyboard
+        // activation, and an .unstyle field has no CSS at all.
+        const isDisabled = () => !!el.disabled;
+
         // ----- Reactive model (x-model), owned here -----
         // Preserve the author's shape (array or CSV; array default for .multiple). Chips
         // show labels, the model carries values. Read/effect/set wired near mount.
@@ -617,7 +623,7 @@ function initializeComboboxPlugin() {
             announce(label + ' added');
         }
         function removeValue(value) {
-            if (isLocked(value)) return;     // locked chips stay put
+            if (isLocked(value) || isDisabled()) return;     // locked/disabled chips stay put
             const i = selected.findIndex(s => String(s.value).toLowerCase() === String(value).toLowerCase());
             if (i < 0) return;
             const [g] = selected.splice(i, 1);
@@ -685,13 +691,13 @@ function initializeComboboxPlugin() {
                 t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             });
         }
-        // Add/drop the × to match locked state. Re-run from render() so a reactive
-        // `locked` change toggles existing chips too.
+        // Add/drop the × to match locked/disabled state. Re-run from render() so a
+        // reactive `locked` or `:disabled` change toggles existing chips too.
         function applyLock(chip, value, label) {
             const locked = isLocked(value);
             chip.toggleAttribute('data-locked', locked);
             const btn = chip.querySelector(':scope > button');
-            if (locked) { if (btn) btn.remove(); return; }
+            if (locked || isDisabled()) { if (btn) btn.remove(); return; }
             if (btn) return;
             const x = document.createElement('button');
             x.type = 'button';
@@ -705,11 +711,15 @@ function initializeComboboxPlugin() {
             h.type = 'hidden';
             h.name = name;
             h.value = value;
+            h.disabled = isDisabled();   // native: a disabled field doesn't submit
             h.setAttribute('data-cb', '');
             return h;
         }
 
         function render() {
+            // Styling hook — CSS keys off this, not :has(:disabled), so a <button>
+            // editor dims too.
+            wrap.toggleAttribute('data-disabled', isDisabled());
             if (chips) {
                 // Incremental: keep existing chip nodes, add/drop/refresh only. Recreating
                 // all re-inserts next to the focused editor, collapsing them in WebKit.
@@ -866,6 +876,12 @@ function initializeComboboxPlugin() {
         // The generated menu lives in <body>; remove it on teardown so it doesn't orphan
         // as a stale duplicate. Authored/adopted menus go with their container.
         if (cleanup && generatedMenu) cleanup(() => { if (generatedMenu.isConnected) generatedMenu.remove(); });
+
+        // `:disabled` is written straight onto the editor by Alpine — observe it so
+        // toggling re-renders (chips regain their × when re-enabled).
+        const disabledObserver = new MutationObserver(() => { closeMenu(); render(); });
+        disabledObserver.observe(el, { attributes: true, attributeFilter: ['disabled'] });
+        if (cleanup) cleanup(() => disabledObserver.disconnect());
 
         // ----- Reactive model (x-model) -----
         // Render chips from the bound value on init and external change; write back on

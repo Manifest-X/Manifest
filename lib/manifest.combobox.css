@@ -35,9 +35,12 @@
             padding-inline: calc(var(--spacing, 0.25rem) * 1.25)
         }
 
-        &:has(> :where(input, textarea):disabled) {
+        /* Plugin-set from render(), so it tracks any editor type — including a
+           <button> editor, which the old :has(> input:disabled) rule missed. */
+        &[data-disabled] {
             opacity: .5;
-            pointer-events: none
+            pointer-events: none;
+            cursor: default
         }
 
         /* Inner typing surface */

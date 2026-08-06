@@ -141,7 +141,9 @@
     <!-- Disabled -->
     <section class="col gap-2">
         <h5>Disabled</h5>
-        <input x-combobox.multiple.chips="cbd-skills" placeholder="Disabled" disabled>
+        <input x-combobox.multiple.chips="cbd-skills" name="skills" value="Design, Research" placeholder="Disabled" disabled>
+        <button x-combobox.multiple.chips="cbd-priority" disabled>Select priorities</button>
+        <input x-combobox.multiple.chips="cbd-skills" value="Design" placeholder="Disabled" disabled x-data="{ off: true }" :disabled="off">
     </section>
 
 </div>
