@@ -371,17 +371,31 @@ export async function main() {
   }
 
   const root = opts.root ? opts.root : findRoot(process.cwd());
-  const key = readApiKey(root, opts.key);
-  if (!key) fail('no API key found. Expected MANIFEST_API_KEY in .env (this folder doesn’t look like a Manifest project, or it isn’t set up for publishing).');
   const url = readMcpUrl(root, opts.mcp);
   const source = detectSource(root, opts.source);
 
-  // Promote a previously-staged build straight to production (no upload).
+  // A connector-driven publish passes a pre-authorised, one-time upload URL in
+  // the environment (minted by the manifest_publish tool for the signed-in
+  // user). When present, no API key is needed — the token IS the authorisation,
+  // so an invited teammate publishes without ever handling a project secret.
+  const injectedUpload = process.env.MNFST_PUBLISH_UPLOAD_URL || null;
+  const key = readApiKey(root, opts.key);
+
+  // Promote a previously-staged build straight to production (no upload). Headless
+  // convenience; interactive users promote via the connector's manifest_promote
+  // tool (no key). Needs a key.
   if (opts.promote) {
+    if (!key) fail('no API key found for --promote. Set MANIFEST_API_KEY in .env for headless use, or promote from Claude with the Manifest connector (no key needed).');
     log('Promoting the staged version to production…');
     const res = await callTool(url, key, 'manifest_promote', {});
     log('✓ Live: ' + (res.url || res._text || 'production updated'));
     return;
+  }
+
+  // A normal publish needs either the injected one-time URL (connector) or a
+  // stored key (headless/CI). Without either, there's nothing to authorise with.
+  if (!injectedUpload && !key) {
+    fail('no API key found. Publish from Claude with the Manifest connector (no key needed), or set MANIFEST_API_KEY in .env for headless/CI use.');
   }
 
   if (source === 'render' && opts.render !== false) {
@@ -407,11 +421,18 @@ export async function main() {
     }
   }
 
-  log(`Preparing ${opts.env} deploy…`);
-  const handshake = await callTool(url, key, 'manifest_publish', { env: opts.env, source, via_cli: true });
-  if (handshake.already_pro) { /* not applicable */ }
-  const uploadUrl = handshake.upload_url;
-  if (!uploadUrl) fail(handshake._text || 'could not start the publish (no upload URL returned).');
+  let uploadUrl;
+  if (injectedUpload) {
+    // Connector path: the manifest_publish tool already minted the deployment
+    // and a one-time upload URL for the signed-in user. No handshake, no key.
+    uploadUrl = injectedUpload;
+  } else {
+    // Headless/CI: authenticate the handshake with the key to get an upload URL.
+    log(`Preparing ${opts.env} deploy…`);
+    const handshake = await callTool(url, key, 'manifest_publish', { env: opts.env, source, via_cli: true });
+    uploadUrl = handshake.upload_url;
+    if (!uploadUrl) fail(handshake._text || 'could not start the publish (no upload URL returned).');
+  }
   // The upload carries the whole project. Only POST it to an HTTPS endpoint on
   // the SAME host as the MCP server — never to an arbitrary URL a tampered
   // response or misconfigured .mcp.json could inject.
