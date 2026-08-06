@@ -697,10 +697,13 @@ function initializeComboboxPlugin() {
             const locked = isLocked(value);
             chip.toggleAttribute('data-locked', locked);
             const btn = chip.querySelector(':scope > button');
-            if (locked || isDisabled()) { if (btn) btn.remove(); return; }
-            if (btn) return;
+            if (locked) { if (btn) btn.remove(); return; }   // locked drops the × by design
+            // Disabled keeps the × for layout but makes it inert: a disabled button is
+            // out of the tab order and can't be activated by mouse or keyboard.
+            if (btn) { btn.disabled = isDisabled(); return; }
             const x = document.createElement('button');
             x.type = 'button';
+            x.disabled = isDisabled();
             x.setAttribute('aria-label', 'Remove ' + (label || (chip.querySelector(':scope > span') || {}).textContent || value));
             x.textContent = '×';
             x.addEventListener('click', () => removeValue(value));

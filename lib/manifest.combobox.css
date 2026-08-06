@@ -40,7 +40,14 @@
         &[data-disabled] {
             opacity: .5;
             pointer-events: none;
-            cursor: default
+            cursor: default;
+
+            /* The × stays (layout), inert — the field is already dimmed as a whole,
+               so don't let the global :disabled dimming stack on top of it. */
+            .combobox-chip>button:disabled {
+                opacity: 1;
+                cursor: default
+            }
         }
 
         /* Inner typing surface */
