@@ -39,7 +39,9 @@
 
                 <hr>
                 <small>Links &amp; buttons (rows)</small>
-                <a href="#b"><span x-icon="lucide:home"></span><span>Link row</span></a>
+                <a href="#b"><span x-icon="lucide:home"></span><span>Hash link (router ignores)</span></a>
+                <a href="/copy"><span x-icon="lucide:route"></span><span>Route link (router intercepts)</span></a>
+                <a href="/copy" keep-open><span x-icon="lucide:pin"></span><span>Route link, keep-open</span></a>
                 <button @click="note('B: Button row')"><span x-icon="lucide:zap"></span><span>Button row</span></button>
                 <li><a href="#b2" @click="note('B: Nested link')">Link nested in li</a></li>
 
