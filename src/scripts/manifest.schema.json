@@ -75,6 +75,14 @@
             "description": "Component HTML files registered as <x-name> tags.",
             "items": { "type": "string" }
         },
+        "version": {
+            "type": ["string", "number"],
+            "description": "Optional author-set release stamp. Appended as ?v= to component HTML fetches so browser caches bust on change. mnfst-publish injects a content-derived `deployment` stamp automatically, which takes precedence."
+        },
+        "deployment": {
+            "type": "string",
+            "description": "Publish-injected content hash of the component files (set by mnfst-publish; not hand-authored). Appended as ?v= to component HTML fetches."
+        },
         "preloadedComponents": {
             "type": "array",
             "description": "Components loaded eagerly on initial page load (header, logo, etc.).",

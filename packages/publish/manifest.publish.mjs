@@ -285,6 +285,44 @@ export function collectFiles(root) {
   return rels.filter((r) => !isExcludedPath(r) && !publishIgnored(r));
 }
 
+// --- Component version stamp ------------------------------------------------
+
+// Stamp each shipped manifest.json (project root, and the prerender output copy)
+// with `deployment`: a content hash of its component HTML files. The components
+// plugin appends it as ?v= to component fetches, so browser caches bust exactly
+// when component markup changes and persist when it doesn't. Purely publish-time:
+// the on-disk manifest.json is never modified.
+export function stampManifests(root, rels) {
+  const overrides = new Map();
+  const relSet = new Set(rels);
+  const outDir = prerenderOutputDir(root);
+  for (const mfRel of ['manifest.json', outDir + '/manifest.json']) {
+    if (!relSet.has(mfRel)) continue;
+    let mf;
+    try {
+      mf = JSON.parse(readFileSync(join(root, mfRel), 'utf8'));
+    } catch {
+      continue; // invalid JSON — ship as-is
+    }
+    const dir = mfRel.includes('/') ? mfRel.slice(0, mfRel.lastIndexOf('/') + 1) : '';
+    const paths = [...(mf.preloadedComponents || []), ...(mf.components || [])]
+      .filter((p) => typeof p === 'string' && !p.startsWith('http'))
+      .map((p) => dir + p.replace(/^\/+/, ''))
+      .filter((p) => relSet.has(p))
+      .sort();
+    if (!paths.length) continue;
+    const hash = createHash('sha256');
+    for (const p of paths) {
+      hash.update(p + '\0');
+      hash.update(readFileSync(join(root, p)));
+      hash.update('\0');
+    }
+    mf.deployment = hash.digest('hex').slice(0, 12);
+    overrides.set(mfRel, Buffer.from(JSON.stringify(mf, null, 2) + '\n', 'utf8'));
+  }
+  return overrides;
+}
+
 // --- Minimal ZIP writer (DEFLATE), pure Node, no deps ----------------------
 
 function crc32(buf) {
@@ -296,7 +334,7 @@ function crc32(buf) {
   return (~c) >>> 0;
 }
 
-function buildZip(root, rels) {
+function buildZip(root, rels, overrides = new Map()) {
   // This packer writes classic (non-Zip64) ZIP records: file count is a uint16
   // and offsets are uint32. Fail loudly rather than emit a silently-corrupt
   // archive past those limits.
@@ -310,7 +348,7 @@ function buildZip(root, rels) {
     if (offset > 0xffffffff) {
       fail('project is too large to package (>4 GB). Contact support.');
     }
-    const data = readFileSync(join(root, rel));
+    const data = overrides.get(rel) ?? readFileSync(join(root, rel));
     const nameBuf = Buffer.from(rel, 'utf8');
     const crc = crc32(data);
     const deflated = deflateRawSync(data);
@@ -448,7 +486,7 @@ export async function main() {
 
   const rels = collectFiles(root);
   if (!rels.length) fail('nothing to publish (no files found).');
-  const zip = buildZip(root, rels);
+  const zip = buildZip(root, rels, stampManifests(root, rels));
   log(`Uploading ${rels.length} files (${(zip.length / 1048576).toFixed(1)} MB)…`);
 
   const up = await fetchRetry(
