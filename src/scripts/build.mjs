@@ -75,7 +75,6 @@ const CONFIG = {
         'core/manifest.data.store.js',
         'core/manifest.data.loaders.js',
         'core/manifest.data.api.js',  // Basic read-only API support (for localization compatibility)
-        'core/manifest.data.errors.js',
         'shared/manifest.data.mutations.js',         // Unified mutation system (optimistic updates)
         'shared/manifest.data.proxies.core.js',      // Basic proxy utilities
         'shared/manifest.data.proxies.cache.js',     // Cache management
@@ -185,9 +184,6 @@ const CONFIG = {
         'scripts/manifest.code.js',
         'scripts/manifest/slides.js',
         '**/tailwind.*.js',
-        'scripts/rollup.js',
-        'scripts/rollup.alpine.tailwind.js',
-        'scripts/rollup.alpine.tailwind.temp.js',
     ],
 
     // Dependencies
