@@ -1,6 +1,6 @@
 {
   "name": "mnfst-publish",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "One-command managed publishing for Manifest projects — render, zip, upload, live URL.",
   "type": "module",
   "bin": {
