@@ -1,5 +1,7 @@
 /* Manifest Edit */
 
+@layer base, components, utilities;
+
 /* Authors override any of this without specificity battles: every rule is wrapped
    in :where(), state lives on data-attributes, and injected affordances use plain
    semantic class names (.edit-handle, .edit-frame) — no framework-prefixed litter. */

@@ -1,5 +1,7 @@
 /* Manifest Slides */
 
+@layer base, components, utilities;
+
 @layer components {
 
     [x-carousel] {

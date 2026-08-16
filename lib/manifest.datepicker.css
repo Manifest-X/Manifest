@@ -1,5 +1,7 @@
 /* Manifest Date Picker */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     /* Picker container only (not trigger input/button) */

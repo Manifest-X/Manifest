@@ -1,5 +1,7 @@
 /* Manifest Chat */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     :where(.chat-wrapper) {

@@ -1,5 +1,7 @@
 /* Manifest Forms */
 
+@layer base, components, utilities;
+
 @layer components {
 
     /* Group & tab bar wrappers */

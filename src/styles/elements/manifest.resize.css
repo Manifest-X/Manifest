@@ -1,5 +1,7 @@
 /* Manifest Resize Handles */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     :where([x-resize]) {

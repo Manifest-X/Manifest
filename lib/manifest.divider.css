@@ -1,5 +1,7 @@
 /* Manifest Dividers */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     :where(.divider) {

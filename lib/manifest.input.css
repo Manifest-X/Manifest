@@ -1,5 +1,7 @@
 /* Manifest Inputs */
 
+@layer base, components, utilities;
+
 :root {
 
     /* Copy button icons */

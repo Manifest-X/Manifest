@@ -717,7 +717,7 @@ function registerFilesDirective() {
                             const databaseIsStale = databaseFileIds && databaseFileIdsJson !== lastFileIds;
 
                             if (storeIsStale || databaseIsStale) {
-                                console.warn('[UPLOAD DEBUG] Store/Database fileIds is STALE - cleaning up:', {
+                                console.warn('[Manifest Data] Store/Database fileIds is STALE - cleaning up:', {
                                     directiveInstanceId,
                                     projectId: currentProjectId,
                                     storeFileIds: storeFileIdsJson,
@@ -757,7 +757,7 @@ function registerFilesDirective() {
                                             }
                                         }
                                     } catch (dbUpdateError) {
-                                        console.error('[UPLOAD DEBUG] Failed to update Appwrite database:', dbUpdateError);
+                                        console.error('[Manifest Data] Failed to update Appwrite database:', dbUpdateError);
                                         // Don't throw - store is already updated, database will sync via realtime eventually
                                     }
                                 }

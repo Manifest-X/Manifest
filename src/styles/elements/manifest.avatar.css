@@ -1,5 +1,7 @@
 /* Manifest Avatars */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     :where(.avatar) {

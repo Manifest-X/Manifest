@@ -109,7 +109,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
             errorState.value = bucketError;
 
         } catch (err) {
-            console.error('[createComputedFilesArray] Error recomputing files:', err);
+            console.error('[Manifest Data] Error recomputing files:', err);
             errorState.value = err.message || 'Failed to compute files';
             loadingState.value = false;
         }
@@ -604,7 +604,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                                 }
                             }
                         }).catch(err => {
-                            console.error('[ReactiveFileManager] Failed to load files after fileIds change:', err);
+                            console.error('[Manifest Data] Failed to load files after fileIds change:', err);
                         });
                     } else if (lastSeenFileIds === null) {
                         // Initialize lastSeenFileIds on first run
@@ -621,7 +621,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                     if (!fileIdsMatch && !loading && lastSeenFileIds !== null) {
                         lastSeenFileIds = JSON.stringify(currentFileIds);
                         loadFiles().catch(err => {
-                            console.error('[ReactiveFileManager] Failed to reload files after sync check:', err);
+                            console.error('[Manifest Data] Failed to reload files after sync check:', err);
                         });
                     }
                 }
@@ -729,7 +729,7 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
 
     // CRITICAL DEBUG: Log missing files to understand where stale fileIds come from
     if (missingFileIds.length > 0) {
-        console.warn('[getFilesForEntry] Found missing fileIds in database entry:', {
+        console.warn('[Manifest Data] Found missing fileIds in database entry:', {
             tableName,
             entryId,
             missingFileIds,
@@ -1078,13 +1078,13 @@ async function unlinkFileFromAllEntries(fileId) {
                         .then(() => {
                         })
                         .catch(error => {
-                            console.debug('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
+                            console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
                         })
                 );
             }
         } catch (error) {
             // Silently continue - not all tables may have fileIds
-            console.debug('[Manifest Data] Could not process', tableName, ':', error.message);
+            console.warn('[Manifest Data] Could not process', tableName, ':', error.message);
         }
     }
 

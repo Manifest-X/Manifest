@@ -1,5 +1,7 @@
 /* Manifest Buttons */
 
+@layer base, components, utilities;
+
 @layer components {
 
     :where(button:not(.link), [role=button], [type=button], [type=reset], [type=submit], select):not(code, .unstyle) {

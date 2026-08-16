@@ -538,7 +538,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     });
                     attachedMethods.push(methodName);
                 } catch (e) {
-                    console.warn(`[Array Proxy] Failed to attach ${methodName}:`, e);
+                    console.warn(`[Manifest Data] Failed to attach ${methodName}:`, e);
                 }
             }
         });
@@ -747,7 +747,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         return bound;
                     }
                     // Return undefined if target is invalid
-                    console.warn(`[Array Proxy] Could not provide array method: ${key}`, {
+                    console.warn(`[Manifest Data] Could not provide array method: ${key}`, {
                         targetType: typeof target,
                         hasLength: target && 'length' in target,
                         lengthType: target && typeof target.length
@@ -1084,7 +1084,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         })()
                     });
                 } catch (e) {
-                    console.warn(`[Array Proxy] Failed to define ${methodName} on proxy:`, e);
+                    console.warn(`[Manifest Data] Failed to define ${methodName} on proxy:`, e);
                 }
             }
         });

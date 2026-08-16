@@ -18,7 +18,7 @@ function handleCircularReference({
     }
 
     if (shouldLog) {
-        console.warn(`[Proxy] ⚠️ CIRCULAR ${fullPath} | depth:${currentDepth} | triggered by:${triggeredBy} | This is likely Alpine re-evaluation`);
+        console.warn(`[Manifest Data] ⚠️ CIRCULAR ${fullPath} | depth:${currentDepth} | triggered by:${triggeredBy} | This is likely Alpine re-evaluation`);
     }
 
     // Prop already in flight (Alpine re-evaluating): hand back the cached plain
@@ -77,13 +77,13 @@ function handleCircularReference({
         }
     } catch (e) {
         if (shouldLog) {
-            console.error(`[Proxy] ${fullPath} | Error in circular check:`, e);
+            console.error(`[Manifest Data] ${fullPath} | Error in circular check:`, e);
         }
     }
 
     // If we can't return a cached copy, return undefined to break the cycle
     if (shouldLog) {
-        console.warn(`[Proxy] ${fullPath} | ⚠️ CIRCULAR - returning undefined to break cycle`);
+        console.warn(`[Manifest Data] ${fullPath} | ⚠️ CIRCULAR - returning undefined to break cycle`);
     }
     if (activeProps) {
         activeProps.delete(propKey);

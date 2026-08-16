@@ -1,5 +1,7 @@
 /* Manifest Typography */
 
+@layer base, components, utilities;
+
 @layer base {
 
     /* All text elements */

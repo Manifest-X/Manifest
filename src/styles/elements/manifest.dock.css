@@ -1,5 +1,7 @@
 /* Manifest Dock */
 
+@layer base, components, utilities;
+
 @layer components {
 
     /* Fixed bottom navigation bar. Best practice: <nav dock aria-label="Primary">.

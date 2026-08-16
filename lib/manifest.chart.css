@@ -1,5 +1,7 @@
 /* Manifest Charts */
 
+@layer base, components, utilities;
+
 :root {
     /* Chart guidance */
     --color-chart-grid: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));

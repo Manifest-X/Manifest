@@ -1,5 +1,7 @@
 /* Manifest Checkboxes */
 
+@layer base, components, utilities;
+
 @layer components {
 
     input[type=checkbox]:not([role=switch], .unstyle) {

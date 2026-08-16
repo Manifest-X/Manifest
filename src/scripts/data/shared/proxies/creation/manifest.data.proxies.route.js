@@ -227,7 +227,7 @@ function createRouteProxy(dataSourceData, pathKey, dataSourceName) {
                 }
                 return undefined;
             } catch (error) {
-                console.error('[Route Proxy Get] Error:', error);
+                console.error('[Manifest Data] Error:', error);
                 return undefined;
             }
         },

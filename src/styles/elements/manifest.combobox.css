@@ -1,5 +1,7 @@
 /* Manifest Combobox */
 
+@layer base, components, utilities;
+
 @layer components {
 
     /* Wrapper */

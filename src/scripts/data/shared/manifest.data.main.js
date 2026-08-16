@@ -403,7 +403,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                             // Incoming missing files + not clearly newer = stale event
                             // racing an optimistic update; ignore it to protect the upload.
                             if (isMissingFiles && !isDefinitelyNewer) {
-                                console.warn('[Realtime] Ignoring stale realtime update (protecting optimistic update):', {
+                                console.warn('[Manifest Data] Ignoring stale realtime update (protecting optimistic update):', {
                                     projectId: row.$id,
                                     existingFileIds: existingFileIds,
                                     incomingFileIds: incomingFileIds,

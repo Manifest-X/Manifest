@@ -1,5 +1,7 @@
 /* Manifest Utilities */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     /* Center in flex parent */

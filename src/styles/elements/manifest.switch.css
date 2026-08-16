@@ -1,5 +1,7 @@
 /* Manifest Switches */
 
+@layer base, components, utilities;
+
 @layer components {
 
     :where(input[role=switch]):not(.unstyle) {

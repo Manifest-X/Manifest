@@ -1,5 +1,7 @@
 /* Manifest Reset - browser style normalizer */
 
+@layer base, components, utilities;
+
 @layer base {
 
     *,

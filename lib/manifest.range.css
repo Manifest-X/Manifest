@@ -1,5 +1,7 @@
 /* Manifest Range */
 
+@layer base, components, utilities;
+
 @layer components {
 
     input[type=range]:not(.unstyle) {

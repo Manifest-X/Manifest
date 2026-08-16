@@ -1,5 +1,7 @@
 /* Manifest Tables */
 
+@layer base, components, utilities;
+
 @layer components {
 
     :where(.grid-table):not(.unstyle) {

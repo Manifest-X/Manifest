@@ -4,6 +4,8 @@
 /*  Modify values to customize your project theme
 */
 
+@layer base, components, utilities;
+
 :root,
 ::selection {
 

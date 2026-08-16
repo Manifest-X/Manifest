@@ -1,5 +1,7 @@
 /* ManifestToasts */
 
+@layer base, components, utilities;
+
 @layer utilities {
 
     :where(.toast-container) {

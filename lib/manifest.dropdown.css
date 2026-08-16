@@ -1,5 +1,7 @@
 /* Manifest Dropdowns */
 
+@layer base, components, utilities;
+
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
