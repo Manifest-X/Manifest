@@ -3209,6 +3209,40 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             }
 
             const term = searchTerm.toLowerCase().trim();
+
+            // Weighted mode: $search(term, { title: 3, body: 1 }) — ranks by the
+            // best-matching field's weight per whitespace-separated term (prefix
+            // match gets a small boost); every term must match somewhere.
+            const first = attributes[0];
+            if (attributes.length === 1 && first && typeof first === 'object' && !Array.isArray(first)) {
+                const fields = Object.keys(first);
+                const terms = term.split(/\s+/).filter(Boolean);
+                const scored = [];
+                for (const item of array) {
+                    if (!item || typeof item !== 'object') continue;
+                    let total = 0, ok = true;
+                    for (const t of terms) {
+                        let best = 0;
+                        for (const f of fields) {
+                            const v = item[f];
+                            if (v == null) continue;
+                            const s = String(v).toLowerCase();
+                            if (!s.includes(t)) continue;
+                            let w = Number(first[f]) || 0;
+                            if (s.startsWith(t)) w *= 1.2;
+                            if (w > best) best = w;
+                        }
+                        if (!best) { ok = false; break; }
+                        total += best;
+                    }
+                    if (ok) scored.push([total, item]);
+                }
+                scored.sort((a, b) => b[0] - a[0]);
+                const ranked = scored.map(e => e[1]);
+                attachArrayMethods(ranked, dataSourceName, reloadDataSource);
+                return ranked;
+            }
+
             const attrs = attributes.length > 0 ? attributes : Object.keys(array[0] || {});
 
             const filtered = array.filter(item => {
@@ -8409,6 +8443,19 @@ function registerXMagicMethod(loadDataSource) {
                 try {
                     if (prop === Symbol.iterator || prop === 'then' || prop === 'catch' || prop === 'finally') {
                         return undefined;
+                    }
+
+                    // $x.$register(name, data) — install/replace a client-side source at
+                    // runtime (array or object). Reactive like any manifest.json source.
+                    if (prop === '$register') {
+                        return (name, data) => {
+                            if (!name || typeof name !== 'string') return undefined;
+                            const stamped = Array.isArray(data)
+                                ? data.map(d => (d && typeof d === 'object' && !('contentType' in d)) ? { contentType: name, ...d } : d)
+                                : data;
+                            window.ManifestDataStore?.updateStore?.(name, stamped, { loading: false, error: null, ready: true, allowDuringInit: true });
+                            return true;
+                        };
                     }
 
                     // Resolve+cache from raw data BEFORE reading Alpine.store('data'):

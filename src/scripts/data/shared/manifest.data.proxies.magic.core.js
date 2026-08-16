@@ -194,6 +194,19 @@ function registerXMagicMethod(loadDataSource) {
                         return undefined;
                     }
 
+                    // $x.$register(name, data) — install/replace a client-side source at
+                    // runtime (array or object). Reactive like any manifest.json source.
+                    if (prop === '$register') {
+                        return (name, data) => {
+                            if (!name || typeof name !== 'string') return undefined;
+                            const stamped = Array.isArray(data)
+                                ? data.map(d => (d && typeof d === 'object' && !('contentType' in d)) ? { contentType: name, ...d } : d)
+                                : data;
+                            window.ManifestDataStore?.updateStore?.(name, stamped, { loading: false, error: null, ready: true, allowDuringInit: true });
+                            return true;
+                        };
+                    }
+
                     // Resolve+cache from raw data BEFORE reading Alpine.store('data'):
                     // the store read registers a reactive dep that can re-run this
                     // effect and re-enter get() → stack overflow. Caching first makes
