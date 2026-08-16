@@ -1801,6 +1801,56 @@ function computeGlobalAssetSignature(rootDir) {
 }
 
 /**
+ * Wait for the page to visually settle before OG fingerprint/screenshot.
+ * manifest:render-ready covers tracked data sources, but async work can land
+ * after it — x-markdown article fetches, runtime-compiled utility CSS, and
+ * webfonts — and screenshotting early captures a blank article region.  Two
+ * conditions gate the snapshot: every [x-markdown] region has rendered
+ * content (or the cap expires — some regions are legitimately empty in
+ * prerender, e.g. demos), and a cheap DOM signature (text length + injected
+ * style bytes + font status + empty-markdown count) holds steady.  Then let
+ * fonts finish and the compositor paint.
+ */
+async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capMs = 8000 } = {}) {
+  try {
+    await page.evaluate(async ({ settleMs, mdWaitMs, capMs }) => {
+      const state = () => {
+        let styleLen = 0;
+        for (const s of document.querySelectorAll('style')) styleLen += (s.textContent || '').length;
+        let mdEmpty = 0;
+        for (const e of document.querySelectorAll('[x-markdown]')) {
+          if (!e.innerHTML.trim()) mdEmpty++;
+        }
+        const sig = `${mdEmpty}:${document.body?.innerText.length || 0}:${styleLen}:${document.fonts ? document.fonts.status : ''}`;
+        return { sig, mdEmpty };
+      };
+      const start = Date.now();
+      let last = state();
+      let stableSince = Date.now();
+      while (Date.now() - start < capMs) {
+        await new Promise((r) => setTimeout(r, 100));
+        const cur = state();
+        const mdPending = cur.mdEmpty > 0 && Date.now() - start < mdWaitMs;
+        if (cur.sig !== last.sig || mdPending) {
+          last = cur;
+          stableSince = Date.now();
+        } else if (Date.now() - stableSince >= settleMs) {
+          break;
+        }
+      }
+      if (document.fonts?.ready) { try { await document.fonts.ready; } catch { /* best-effort */ } }
+      // Let the compositor paint the settled state — but raced against a
+      // timeout: a frame-idle headless page may never fire rAF, and an
+      // unresolved evaluate() wedges the whole render worker.
+      await new Promise((r) => {
+        const t = setTimeout(r, 250);
+        requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(); }));
+      });
+    }, { settleMs, mdWaitMs, capMs });
+  } catch { /* settle is best-effort — never blocks the snapshot */ }
+}
+
+/**
  * Snapshot the page at 1200×630 and write to <output>/og/<slug>.png.  Cache
  * sidecar lives in <root>/.mnfst-cache/og/ — outside the output dir, which is
  * wiped at the start of every prerender.  On cache hit, the cached PNG is
@@ -1811,6 +1861,10 @@ function computeGlobalAssetSignature(rootDir) {
  *   - html.className (theme variant: light/dark/etc.)
  */
 async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, cacheDir) {
+  // Settle BEFORE the cache fingerprint: the hash must describe the same
+  // steady-state DOM the screenshot captures, or late-arriving content makes
+  // the cache key unstable across runs.
+  await waitForVisualSettle(page);
   // The 404 page must NOT share the homepage's 'index' slug: both pages render
   // concurrently and would otherwise race on the same og/index.png + cache
   // files. The 404 (route hidden, near-empty body) screenshots blank, and that
