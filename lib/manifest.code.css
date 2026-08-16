@@ -284,7 +284,7 @@
 
                     &:hover {
                         color: var(--color-content-stark, oklch(43.9% 0 0));
-                        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
                     }
 
                     &[aria-selected="true"] {

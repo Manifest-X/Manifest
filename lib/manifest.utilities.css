@@ -63,12 +63,12 @@
     :where(.outlined) {
         border-width: 1px;
         border-style: solid;
-        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 90%, var(--color-field-inverse, oklch(43.9% 0 0)))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 90%, var(--color-field-inverse, oklch(43.9% 0 0)))
     }
 
     /* Dark theme override */
     .dark :where(.outlined) {
-        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
     }
 
     /* Transparent */
@@ -226,8 +226,8 @@
             padding: calc(var(--spacing, 0.25rem) * 4);
             border-radius: calc(var(--radius, 0.5rem) * 2);
             color: var(--color-content-stark, oklch(43.9% 0 0));
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 20%, transparent);
-            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 20%, transparent);
+            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
 
             /* Auto format asides with icons */
             &:has([x-icon]):not([x-code-group] aside, aside.frame) {
@@ -398,7 +398,7 @@
     /* Accent colors */
     :where(.accent) {
         --color-field-surface: var(--color-accent-surface, oklch(43.9% 0 0));
-        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(oklch(20.5% 0 0) 90%, oklch(98.5% 0 0)));
+        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 90%, oklch(98.5% 0 0)));
         --color-field-inverse: var(--color-accent-inverse, oklch(98.5% 0 0));
         --color-content-stark: var(--color-accent-content, oklch(43.9% 0 0));
         --color-content-neutral: color-mix(in oklch, var(--color-accent-content, oklch(43.9% 0 0)) 85%, transparent);

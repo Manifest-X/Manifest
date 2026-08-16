@@ -15,7 +15,7 @@
         text-align: center;
         text-transform: uppercase;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         background-clip: content-box;
         background-size: cover;
         background-position: center;
@@ -47,7 +47,7 @@
             width: 9px;
             height: 9px;
             z-index: 1;
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
             border: 1px solid var(--color-page, oklch(98.5% 0 0));
             border-radius: 50%
         }
@@ -59,7 +59,7 @@
         background-blend-mode: normal;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
             background-blend-mode: multiply;
 
             & img {
@@ -111,7 +111,7 @@
         padding-inline-end: 1.5ch;
 
         &:hover .avatar {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
             transition: var(--transition, all .05s ease-in-out)
         }
     }

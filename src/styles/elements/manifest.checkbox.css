@@ -16,13 +16,13 @@
         &:checked {
 
             &:hover {
-                background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
-                border-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+                background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+                border-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
             }
 
             &:active {
-                background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
-                border-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+                background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+                border-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
             }
         }
 

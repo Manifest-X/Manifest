@@ -114,7 +114,7 @@
 
     /* Text selection */
     ::selection {
-        background-color: color-mix(currentColor 25%, transparent)
+        background-color: color-mix(in oklch, currentColor 25%, transparent)
     }
 
     /* Focus state */

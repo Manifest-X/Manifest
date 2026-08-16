@@ -180,7 +180,7 @@
     :where(hr) {
         height: 1px;
         color: inherit;
-        background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 12%, transparent));
+        background-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 12%, transparent));
         border: 0 none
     }
 
@@ -430,7 +430,7 @@
                 order: 1;
                 width: 1rem;
                 height: 1rem;
-                background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 50%, var(--color-field-inverse, oklch(43.9% 0 0)));
+                background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 50%, var(--color-field-inverse, oklch(43.9% 0 0)));
                 -webkit-mask-image: var(--icon-accordion, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E"));
                 mask-image: var(--icon-accordion, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E"));
                 -webkit-mask-repeat: no-repeat;
@@ -473,7 +473,7 @@
         text-align: center;
         text-transform: uppercase;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         background-clip: content-box;
         background-size: cover;
         background-position: center;
@@ -505,7 +505,7 @@
             width: 9px;
             height: 9px;
             z-index: 1;
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
             border: 1px solid var(--color-page, oklch(98.5% 0 0));
             border-radius: 50%
         }
@@ -517,7 +517,7 @@
         background-blend-mode: normal;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
             background-blend-mode: multiply;
 
             & img {
@@ -569,7 +569,7 @@
         padding-inline-end: 1.5ch;
 
         &:hover .avatar {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
             transition: var(--transition, all .05s ease-in-out)
         }
     }
@@ -607,12 +607,12 @@
         white-space: nowrap;
         text-overflow: ellipsis;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-width: 0;
         border-style: solid;
         border-color: transparent;
         border-radius: var(--radius, 0.5rem);
-        outline-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        outline-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         cursor: pointer;
         transition: var(--transition, all .05s ease-in-out);
         appearance: button;
@@ -641,15 +641,15 @@
         }
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
         }
 
         &:active {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
         }
 
         &:focus-visible {
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
     }
 
@@ -1134,13 +1134,13 @@
         &:checked {
 
             &:hover {
-                background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
-                border-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+                background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+                border-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
             }
 
             &:active {
-                background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
-                border-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+                background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+                border-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
             }
         }
 
@@ -1178,7 +1178,7 @@
 /* Manifest Color Picker */
 
 :root {
-    --color-picker-swatch: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+    --color-picker-swatch: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
     --icon-color-solid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-paint-roller-icon lucide-paint-roller'%3E%3Crect width='16' height='6' x='2' y='2' rx='2'/%3E%3Cpath d='M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2'/%3E%3Crect width='4' height='6' x='8' y='16' rx='1'/%3E%3C/svg%3E");
     --icon-color-gradient: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-blend-icon lucide-blend'%3E%3Ccircle cx='9' cy='9' r='7'/%3E%3Ccircle cx='15' cy='15' r='7'/%3E%3C/svg%3E");
     --icon-color-library: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-swatch-book-icon lucide-swatch-book'%3E%3Cpath d='M11 17a4 4 0 0 1-8 0V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2Z'/%3E%3Cpath d='M16.7 13H19a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H7'/%3E%3Cpath d='M 7 17h.01'/%3E%3Cpath d='m11 8 2.3-2.3a2.4 2.4 0 0 1 3.404.004L18.6 7.6a2.4 2.4 0 0 1 .026 3.434L9.9 19.8'/%3E%3C/svg%3E");
@@ -1260,7 +1260,7 @@
             display: flex;
             width: 100%;
             padding: 2px;
-            border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
             /* Distribute button widths equally */
             & button {
@@ -1435,7 +1435,7 @@
 
             /* Gradient layers */
             & :where(.layer-options-wrapper) {
-                border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
                 /* Layer options inputs */
                 & :where(.layer-options-inputs) {
@@ -1485,7 +1485,7 @@
                         margin-inline-end: 0.5rem;
                         border-radius: 1rem;
                         cursor: pointer;
-                        background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                        background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
                         /* Stop handle */
                         & :where(.stop-handle) {
@@ -1574,7 +1574,7 @@
 
                     /* Only apply border to all except last library-group */
                     &:not(:last-child) {
-                        border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                        border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
                     }
 
                     /* Palette wrapper */
@@ -1932,7 +1932,7 @@
         min-width: 17rem;
         background: var(--color-popover-surface, oklch(98.5% 0 0));
         color: var(--color-content-stark, oklch(20.5% 0 0));
-        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: var(--radius, 0.5rem);
 
         /* Shell */
@@ -1967,7 +1967,7 @@
                 transition: var(--transition, all .05s ease-in-out);
 
                 &:hover {
-                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                    background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
                     color: var(--color-content-stark, oklch(20.5% 0 0))
                 }
             }
@@ -2059,7 +2059,7 @@
                 transition: var(--transition, all .05s ease-in-out);
 
                 &:hover:not(:disabled):not([aria-selected=true]) {
-                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                    background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
                 }
 
                 &:focus-visible {
@@ -2075,7 +2075,7 @@
 
                 /* Today marker */
                 &[aria-current=date]:not([aria-selected=true]) {
-                    border-color: var(--color-line, color-mix(oklch(20.5% 0 0) 18%, transparent));
+                    border-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 18%, transparent));
                     font-weight: 600
                 }
 
@@ -2136,11 +2136,11 @@
                 transition: var(--transition, all .05s ease-in-out);
 
                 &:hover:not(:disabled) {
-                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                    background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
                 }
 
                 &[aria-current=true] {
-                    border-color: var(--color-line, color-mix(oklch(20.5% 0 0) 18%, transparent));
+                    border-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 18%, transparent));
                     font-weight: 600
                 }
 
@@ -2175,7 +2175,7 @@
             padding-bottom: 0.5rem;
             padding-inline-start: 0.5rem;
             border: none;
-            border-top: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            border-top: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
             /* "Time" label */
             &>label {
@@ -2231,7 +2231,7 @@
 
                     &:hover,
                     &:focus {
-                        background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                        background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
                     }
                 }
 
@@ -2258,7 +2258,7 @@
                     transition: var(--transition, all .05s ease-in-out);
 
                     &:hover {
-                        background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                        background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
                     }
                 }
 
@@ -2304,7 +2304,7 @@
             width: 100%;
             contain: inline-size;
             padding: 0.5rem 0;
-            border-top: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            border-top: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
             /* Today | Clear buttons */
             &>button {
@@ -2341,7 +2341,7 @@
                     padding: 0.25rem 0.625rem;
                     font-size: 0.75rem;
                     white-space: nowrap;
-                    background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                    background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
                     color: var(--color-content-stark, oklch(20.5% 0 0));
                     border: none;
                     border-radius: calc(var(--radius, 0.5rem) * 2);
@@ -2349,7 +2349,7 @@
                     transition: var(--transition, all .05s ease-in-out);
 
                     &:hover {
-                        background: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 16%, transparent))
+                        background: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 16%, transparent))
                     }
                 }
             }
@@ -2404,7 +2404,7 @@
             transition: var(--transition, all .05s ease-in-out);
 
             &:hover {
-                background: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                background: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
             }
 
             &[aria-selected=true] {
@@ -2579,7 +2579,7 @@
             flex: 1;
             width: auto;
             height: 1px;
-            background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            background-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Space between lines and content */
@@ -2745,12 +2745,12 @@
             &:hover {
                 color: var(--color-field-inverse, oklch(43.9% 0 0));
                 text-decoration: inherit;
-                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
             }
 
             &:active {
                 color: var(--color-field-inverse, oklch(43.9% 0 0));
-                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
             }
 
             & span,
@@ -2777,7 +2777,7 @@
             margin-inline-start: calc(0.25rem * -1);
             margin-top: 0.25rem;
             margin-bottom: 0.25rem;
-            background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            background-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Labels (not inner field-surface wrappers) */
@@ -2827,7 +2827,7 @@
 
     /* Dark theme */
     :where(.dark menu[popover]) :where(li, a, button, label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):hover {
-        background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+        background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
     }
 
     /* Nested menu alignment (not combobox listboxes, which anchor to their field) */
@@ -3283,7 +3283,7 @@
     :where(fieldset:has(legend)):not(.unstyle) {
         padding: 1ch 1.5ch 1.5ch 1.5ch;
         border-radius: var(--radius, 0.5rem);
-        border-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-style: solid;
         border-width: 1px;
 
@@ -3468,7 +3468,7 @@
         width: 100%;
         max-width: 100%;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-width: 0;
         border-style: solid;
         border-color: transparent;
@@ -3478,15 +3478,15 @@
         appearance: none;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
         }
 
         &:active {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
         }
 
         &:focus-visible {
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         &::placeholder {
@@ -3494,7 +3494,7 @@
         }
 
         &::selection {
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
         }
 
         &[type=file] {
@@ -3733,14 +3733,14 @@
 
         &::-webkit-slider-runnable-track {
             height: calc(var(--spacing, 0.25rem) * 2);
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
             border-radius: var(--radius, 0.5rem);
             cursor: pointer;
             transition: var(--transition, all .05s ease-in-out)
         }
 
         &:hover::-webkit-slider-runnable-track {
-            background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent));
+            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
         }
 
         &::-webkit-slider-thumb {
@@ -3750,7 +3750,7 @@
             width: calc(var(--spacing-field-height, 2.25rem) * 0.5);
             height: calc(var(--spacing-field-height, 2.25rem) * 0.5);
             transform: translateY(-50%);
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
             border-radius: 200px;
             box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
             cursor: pointer;
@@ -3758,7 +3758,7 @@
         }
 
         &::-webkit-slider-thumb:hover {
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 30%, var(--color-field-inverse, oklch(43.9% 0 0)));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 30%, var(--color-field-inverse, oklch(43.9% 0 0)));
         }
     }
 
@@ -3816,7 +3816,7 @@
 
             &:hover::before,
             &:active::before {
-                background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+                background-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
             }
         }
 
@@ -4199,14 +4199,14 @@
             width: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             height: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             border-radius: 50%;
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
             box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
             transition: var(--transition, all .05s ease-in-out)
         }
 
         /* Checked */
         &:checked {
-            background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
             /* Marker */
             &::before {
@@ -4215,7 +4215,7 @@
             }
 
             &:hover {
-                background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+                background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
             }
         }
     }
@@ -4246,7 +4246,7 @@
         /* Header row */
         :where(thead, .grid-header > *) {
             background-color: var(--color-surface-1, oklch(97% 0 0));
-            border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Header cell */
@@ -4256,7 +4256,7 @@
 
         /* Row */
         :where(tr, .grid-row > *) {
-            border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Cell */
@@ -4329,7 +4329,7 @@
         pointer-events: auto;
         max-width: 90vw;
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
-        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: calc(var(--radius, 0.5rem) * 2);
         box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
         overflow: hidden;
@@ -4382,7 +4382,7 @@
     /* Brand, accent, positive, negative utility class overrides (see Utilities) */
     :where(.toast.brand, .toast.accent, .toast.positive, .toast.negative) {
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
         :where(.toast-dismiss-button) {
             border-inline-start: 1px solid color-mix(in oklch, var(--color-field-inverse, oklch(43.9% 0 0)) 20%, transparent);
@@ -4684,7 +4684,7 @@
     /* Asides */
     :where(aside):not(.unstyle) {
         padding: calc(var(--spacing, 0.25rem) * 4);
-        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: var(--radius, 0.5rem)
     }
 
@@ -4701,7 +4701,7 @@
         font-size: 0.75rem;
         line-height: 1;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(97% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(97% 0 0) 10%, transparent));
         border-radius: 100px;
 
         /* Solo icons */
@@ -4944,7 +4944,7 @@
         font-size: 0.8125rem;
         line-height: 1.7;
         background-color: var(--color-page, oklch(98.5% 0 0));
-        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: var(--radius, 0.5rem);
         overflow: hidden;
         tab-size: 4;
@@ -5337,12 +5337,12 @@
     :where(.outlined) {
         border-width: 1px;
         border-style: solid;
-        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 90%, var(--color-field-inverse, oklch(43.9% 0 0)))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 90%, var(--color-field-inverse, oklch(43.9% 0 0)))
     }
 
     /* Dark theme override */
     .dark :where(.outlined) {
-        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
+        border-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 80%, var(--color-field-inverse, oklch(43.9% 0 0)))
     }
 
     /* Transparent */
@@ -5500,8 +5500,8 @@
             padding: calc(var(--spacing, 0.25rem) * 4);
             border-radius: calc(var(--radius, 0.5rem) * 2);
             color: var(--color-content-stark, oklch(43.9% 0 0));
-            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 20%, transparent);
-            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
+            background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 20%, transparent);
+            border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
 
             /* Auto format asides with icons */
             &:has([x-icon]):not([x-code-group] aside, aside.frame) {
@@ -5672,7 +5672,7 @@
     /* Accent colors */
     :where(.accent) {
         --color-field-surface: var(--color-accent-surface, oklch(43.9% 0 0));
-        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(oklch(20.5% 0 0) 90%, oklch(98.5% 0 0)));
+        --color-field-surface-hover: var(--color-accent-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 90%, oklch(98.5% 0 0)));
         --color-field-inverse: var(--color-accent-inverse, oklch(98.5% 0 0));
         --color-content-stark: var(--color-accent-content, oklch(43.9% 0 0));
         --color-content-neutral: color-mix(in oklch, var(--color-accent-content, oklch(43.9% 0 0)) 85%, transparent);

@@ -23,7 +23,7 @@
         /* Header row */
         :where(thead, .grid-header > *) {
             background-color: var(--color-surface-1, oklch(97% 0 0));
-            border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Header cell */
@@ -33,7 +33,7 @@
 
         /* Row */
         :where(tr, .grid-row > *) {
-            border-bottom: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            border-bottom: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Cell */

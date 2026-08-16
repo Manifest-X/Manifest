@@ -71,12 +71,12 @@
             &:hover {
                 color: var(--color-field-inverse, oklch(43.9% 0 0));
                 text-decoration: inherit;
-                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
             }
 
             &:active {
                 color: var(--color-field-inverse, oklch(43.9% 0 0));
-                background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent))
+                background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
             }
 
             & span,
@@ -103,7 +103,7 @@
             margin-inline-start: calc(0.25rem * -1);
             margin-top: 0.25rem;
             margin-bottom: 0.25rem;
-            background-color: var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent))
+            background-color: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent))
         }
 
         /* Labels (not inner field-surface wrappers) */
@@ -153,7 +153,7 @@
 
     /* Dark theme */
     :where(.dark menu[popover]) :where(li, a, button, label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):hover {
-        background-color: var(--color-field-surface-hover, color-mix(oklch(20.5% 0 0) 15%, transparent))
+        background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
     }
 
     /* Nested menu alignment (not combobox listboxes, which anchor to their field) */

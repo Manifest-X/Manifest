@@ -22,7 +22,7 @@
         pointer-events: auto;
         max-width: 90vw;
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
-        border: 1px solid var(--color-line, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        border: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: calc(var(--radius, 0.5rem) * 2);
         box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
         overflow: hidden;
@@ -75,7 +75,7 @@
     /* Brand, accent, positive, negative utility class overrides (see Utilities) */
     :where(.toast.brand, .toast.accent, .toast.positive, .toast.negative) {
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(oklch(20.5% 0 0) 10%, transparent));
+        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
 
         :where(.toast-dismiss-button) {
             border-inline-start: 1px solid color-mix(in oklch, var(--color-field-inverse, oklch(43.9% 0 0)) 20%, transparent);
