@@ -4,9 +4,8 @@
 
 ```bash
 npm run start:src      # Serve /src (framework test project)
-npm run start:docs     # Serve /docs (documentation website)
 npm run start:starter  # Serve /templates/starter (starter template)
-npm run start:dist     # Serve /src/test-prerender (prerendered MPA output)
+npm run start:dist     # Serve /src/test-prerender (prerendered MPA output; run `npm run render` first)
 ```
 
 All servers use `mnfst-run` (`packages/run/serve.mjs`) with zero npm dependencies. SPA vs MPA mode is auto-detected from the served `index.html`.
@@ -32,8 +31,7 @@ Only the dynamic loader (`manifest.js`) is produced — it loads plugins on-dema
 ## Prerender
 
 ```bash
-npm run prerender           # Prerender /src → /src/test-prerender
-npm run prerender:docs      # Prerender /docs → /docs/website
+npm run render              # Prerender /src → /src/test-prerender (untracked output)
 npm run prerender:starter   # Prerender /templates/starter
 ```
 

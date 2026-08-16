@@ -30,7 +30,7 @@
 git clone https://github.com/YOUR_USERNAME/Manifest.git
 cd Manifest
 npm install
-npm run start:docs
+npm run start:src
 ```
 
 ## What We Don't Accept

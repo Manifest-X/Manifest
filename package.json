@@ -7,7 +7,10 @@
         "packages/render",
         "packages/types",
         "packages/test",
-        "packages/export"
+        "packages/export",
+        "packages/run",
+        "packages/publish",
+        "packages/create-starter"
     ],
     "main": "lib/manifest.js",
     "style": "lib/manifest.css",
@@ -19,13 +22,10 @@
     "scripts": {
         "clean": "rimraf src/styles/manifest.css src/styles/manifest.min.css src/styles/manifest.theme.css src/styles/manifest.code.css src/styles/manifest.code.min.css lib",
         "build": "cd src && node scripts/build.mjs",
-        "build:docs": "echo 'Docs is a static website - no build needed'",
         "start:src": "node packages/run/serve.mjs src",
-        "start:docs": "node packages/run/serve.mjs docs",
         "start:starter": "node packages/run/serve.mjs templates/starter --port 3001",
         "start:dist": "node packages/run/serve.mjs src/test-prerender --port 5003",
         "render": "node src/scripts/manifest.render.mjs --root src",
-        "prerender:docs": "node src/scripts/manifest.render.mjs --root docs",
         "prerender:starter": "node src/scripts/manifest.render.mjs --root templates/starter",
         "release": "node scripts/release-bump.mjs . && npm publish && node scripts/cdn-warm.mjs --detach",
         "release:run": "node scripts/release-bump.mjs packages/run && cd packages/run && npm publish --auth-type=web",
