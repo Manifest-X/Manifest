@@ -1,3 +1,7 @@
+/* manifest.edit.js — built from scripts/edit/ */
+
+(function () {
+
 /* Manifest Edit — SPIKE.
 
    Compiled from src/scripts/edit/*.js into src/scripts/manifest.edit.js by build.mjs
@@ -843,4 +847,7 @@
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);
+})();
+
+
 })();

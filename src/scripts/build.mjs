@@ -656,7 +656,11 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
     // Only write the file if we found at least one subscript
     if (filesFound > 0) {
         const outputPath = path.join('scripts', outputFile);
-        fs.writeFileSync(outputPath, combinedContent.join('\n\n'));
+        // Wrap the combined bundle in an IIFE so subscript top-level declarations
+        // stay out of window scope. Cross-plugin surface is explicit window.*
+        // exports only; subscript sources stay bare for direct/vm loading.
+        const wrapped = `/* ${outputFile} — built from scripts/${systemName}/ */\n\n(function () {\n\n${combinedContent.join('\n\n')}\n\n})();\n`;
+        fs.writeFileSync(outputPath, wrapped);
         console.log(`  ✓ Created ${outputFile}`);
     } else {
         console.log(`  ⚠ No files found for ${systemName}, skipping ${outputFile}`);

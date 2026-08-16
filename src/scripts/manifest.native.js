@@ -1,3 +1,7 @@
+/* manifest.native.js — built from scripts/native/ */
+
+(function () {
+
 // Manifest Native — umbrella core: Capacitor detection + $device enrichment.
 // Capacitor injects window.Capacitor (+ window.Capacitor.Plugins.<Name>) in the
 // native container. Every capability degrades to a web equivalent when absent,
@@ -482,3 +486,6 @@ function initManifestCamera() {
         pick: (opts) => manifestCameraPhoto(Object.assign({}, opts || {}, { source: 'photos' }))
     }));
 }
+
+
+})();

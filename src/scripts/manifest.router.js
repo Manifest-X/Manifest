@@ -1,3 +1,7 @@
+/* manifest.router.js — built from scripts/router/ */
+
+(function () {
+
 /* Manifest Router */
 
 // Main routing initialization
@@ -1565,3 +1569,6 @@ if (typeof Alpine !== 'undefined' && window.ManifestRoutingNavigation && window.
 window.ManifestRoutingMagic = {
     initialize: initializeRouterMagic
 };
+
+
+})();

@@ -1,3 +1,7 @@
+/* manifest.utilities.js — built from scripts/utilities/ */
+
+(function () {
+
 // Utility generators
 // Functions that generate CSS utilities from CSS variable suffixes
 
@@ -3637,3 +3641,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+
+
+})();

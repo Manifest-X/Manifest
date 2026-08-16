@@ -1,3 +1,7 @@
+/* manifest.payments.js — built from scripts/payments/ */
+
+(function () {
+
 /*  Manifest Payments — config
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
@@ -492,3 +496,6 @@ if (typeof Alpine !== 'undefined') {
 }
 
 window.ManifestPaymentsMain = { boot: bootPayments };
+
+
+})();

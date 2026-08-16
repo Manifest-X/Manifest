@@ -1,3 +1,7 @@
+/* manifest.chat.js — built from scripts/chat/ */
+
+(function () {
+
 /*  Manifest Chat — store / engine
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
@@ -802,4 +806,7 @@
         }, 10);
         setTimeout(() => clearInterval(check), 5000);
     }
+})();
+
+
 })();

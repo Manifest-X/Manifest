@@ -1,3 +1,7 @@
+/* manifest.components.js — built from scripts/components/ */
+
+(function () {
+
 /* Manifest Components */
 
 // Base URL for manifest-relative paths (e.g. "../" when viewing dist/index.html). Used by component loader, data loaders, localization.
@@ -939,3 +943,5 @@ if (document.readyState === 'loading') {
 window.ManifestComponents = {
     initialize: initializeComponents
 };
+
+})();
