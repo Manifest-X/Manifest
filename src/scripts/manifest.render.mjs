@@ -2890,9 +2890,12 @@ function startStaticServer(rootDir) {
 }
 
 // --- Copy project into output so website is self-contained (e.g. for Appwrite). ---
+// Internal/tooling files stay out of the published output: agent instructions,
+// the schema copy, and OS metadata anywhere in the tree.
 const COPY_EXCLUDE = new Set([
   'node_modules', '.git', 'package.json', 'package-lock.json',
   'index.html', 'prerender.mjs', 'prerender.js', '_redirects',
+  'CLAUDE.md', 'AGENTS.md', 'manifest.schema.json',
 ]);
 
 function copyProjectIntoDist(rootResolved, outputResolved) {
@@ -2904,7 +2907,10 @@ function copyProjectIntoDist(rootResolved, outputResolved) {
     if (COPY_EXCLUDE.has(name) || name.startsWith('.')) continue;
     const src = join(rootResolved, name);
     const dest = join(outputResolved, name);
-    cpSync(src, dest, { recursive: true });
+    cpSync(src, dest, {
+      recursive: true,
+      filter: (p) => { const b = basename(p); return b !== '.DS_Store' && b !== 'Thumbs.db'; },
+    });
   }
   COPY_EXCLUDE.delete(outputDirName);
 }
