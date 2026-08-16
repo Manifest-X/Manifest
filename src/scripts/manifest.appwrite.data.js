@@ -863,7 +863,7 @@ function debugAuthStore() {
         if (store.user) {
         }
     } catch (error) {
-        console.error('[Manifest Data Debug] Error inspecting auth store:', error);
+        console.error('[Manifest Data] Error inspecting auth store:', error);
     }
 }
 

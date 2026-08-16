@@ -1,5 +1,8 @@
 /* Manifest Markdown */
 
+(function () {
+
+
 let markedPromise = null;
 
 const markdownCache = new Map();
@@ -922,3 +925,5 @@ document.addEventListener('alpine:init', ensureMarkdownPluginInitialized);
 if (window.Alpine && typeof window.Alpine.directive === 'function') {
     ensureMarkdownPluginInitialized();
 } 
+
+})();

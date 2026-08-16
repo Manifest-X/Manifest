@@ -1,5 +1,8 @@
 /* Manifest Export — x-export / $export download of pages, regions, or data (pdf/png/jpeg/webp/csv/json) */
 
+(function () {
+
+
 function initializeExportPlugin() {
 
     Alpine.directive('export', (el, { modifiers, expression }, { evaluate, cleanup }) => {
@@ -518,3 +521,6 @@ if (window.Alpine && typeof window.Alpine.directive === 'function') {
     }, 10);
     setTimeout(() => clearInterval(checkAlpine), 5000);
 }
+
+
+})();

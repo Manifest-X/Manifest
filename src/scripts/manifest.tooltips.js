@@ -1,5 +1,8 @@
 /* Manifest Tooltips */
 
+(function () {
+
+
 // Hover delay from CSS var (with time-unit parsing). Defaults to 500ms.
 function getTooltipHoverDelay(element) {
     let computedStyle = getComputedStyle(element);
@@ -361,3 +364,6 @@ if (window.Alpine && typeof window.Alpine.directive === 'function') {
     }, 50);
     setTimeout(() => clearInterval(checkAlpine), 5000);
 }
+
+
+})();

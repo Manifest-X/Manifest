@@ -1,5 +1,8 @@
 /* Manifest Resizer */
 
+(function () {
+
+
 function initializeResizablePlugin() {
     // Cache for unit conversions to avoid repeated DOM manipulation
     const unitCache = new Map();
@@ -481,3 +484,5 @@ if (window.Alpine && typeof window.Alpine.directive === 'function') {
     }, 10);
     setTimeout(() => clearInterval(checkAlpine), 5000);
 }
+
+})();

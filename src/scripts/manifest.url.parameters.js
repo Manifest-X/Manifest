@@ -1,5 +1,8 @@
 /* Manifest URL Parameters */
 
+(function () {
+
+
 function initializeUrlParametersPlugin() {
     const DEBOUNCE_DELAY = 300;
 
@@ -191,3 +194,6 @@ if (window.Alpine && typeof window.Alpine.directive === 'function') {
     }, 10);
     setTimeout(() => clearInterval(checkAlpine), 5000);
 }
+
+
+})();

@@ -2816,7 +2816,7 @@ function handleCircularReference({
     }
 
     if (shouldLog) {
-        console.warn(`[Proxy] ⚠️ CIRCULAR ${fullPath} | depth:${currentDepth} | triggered by:${triggeredBy} | This is likely Alpine re-evaluation`);
+        console.warn(`[Manifest Data] ⚠️ CIRCULAR ${fullPath} | depth:${currentDepth} | triggered by:${triggeredBy} | This is likely Alpine re-evaluation`);
     }
 
     // Prop already in flight (Alpine re-evaluating): hand back the cached plain
@@ -2875,13 +2875,13 @@ function handleCircularReference({
         }
     } catch (e) {
         if (shouldLog) {
-            console.error(`[Proxy] ${fullPath} | Error in circular check:`, e);
+            console.error(`[Manifest Data] ${fullPath} | Error in circular check:`, e);
         }
     }
 
     // If we can't return a cached copy, return undefined to break the cycle
     if (shouldLog) {
-        console.warn(`[Proxy] ${fullPath} | ⚠️ CIRCULAR - returning undefined to break cycle`);
+        console.warn(`[Manifest Data] ${fullPath} | ⚠️ CIRCULAR - returning undefined to break cycle`);
     }
     if (activeProps) {
         activeProps.delete(propKey);
@@ -3652,7 +3652,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     });
                     attachedMethods.push(methodName);
                 } catch (e) {
-                    console.warn(`[Array Proxy] Failed to attach ${methodName}:`, e);
+                    console.warn(`[Manifest Data] Failed to attach ${methodName}:`, e);
                 }
             }
         });
@@ -3861,7 +3861,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         return bound;
                     }
                     // Return undefined if target is invalid
-                    console.warn(`[Array Proxy] Could not provide array method: ${key}`, {
+                    console.warn(`[Manifest Data] Could not provide array method: ${key}`, {
                         targetType: typeof target,
                         hasLength: target && 'length' in target,
                         lengthType: target && typeof target.length
@@ -4198,7 +4198,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         })()
                     });
                 } catch (e) {
-                    console.warn(`[Array Proxy] Failed to define ${methodName} on proxy:`, e);
+                    console.warn(`[Manifest Data] Failed to define ${methodName} on proxy:`, e);
                 }
             }
         });
@@ -5196,7 +5196,7 @@ function createRouteProxy(dataSourceData, pathKey, dataSourceName) {
                 }
                 return undefined;
             } catch (error) {
-                console.error('[Route Proxy Get] Error:', error);
+                console.error('[Manifest Data] Error:', error);
                 return undefined;
             }
         },
@@ -5386,7 +5386,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
             errorState.value = bucketError;
 
         } catch (err) {
-            console.error('[createComputedFilesArray] Error recomputing files:', err);
+            console.error('[Manifest Data] Error recomputing files:', err);
             errorState.value = err.message || 'Failed to compute files';
             loadingState.value = false;
         }
@@ -5881,7 +5881,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                                 }
                             }
                         }).catch(err => {
-                            console.error('[ReactiveFileManager] Failed to load files after fileIds change:', err);
+                            console.error('[Manifest Data] Failed to load files after fileIds change:', err);
                         });
                     } else if (lastSeenFileIds === null) {
                         // Initialize lastSeenFileIds on first run
@@ -5898,7 +5898,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                     if (!fileIdsMatch && !loading && lastSeenFileIds !== null) {
                         lastSeenFileIds = JSON.stringify(currentFileIds);
                         loadFiles().catch(err => {
-                            console.error('[ReactiveFileManager] Failed to reload files after sync check:', err);
+                            console.error('[Manifest Data] Failed to reload files after sync check:', err);
                         });
                     }
                 }
@@ -6006,7 +6006,7 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
 
     // CRITICAL DEBUG: Log missing files to understand where stale fileIds come from
     if (missingFileIds.length > 0) {
-        console.warn('[getFilesForEntry] Found missing fileIds in database entry:', {
+        console.warn('[Manifest Data] Found missing fileIds in database entry:', {
             tableName,
             entryId,
             missingFileIds,
@@ -6355,13 +6355,13 @@ async function unlinkFileFromAllEntries(fileId) {
                         .then(() => {
                         })
                         .catch(error => {
-                            console.debug('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
+                            console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
                         })
                 );
             }
         } catch (error) {
             // Silently continue - not all tables may have fileIds
-            console.debug('[Manifest Data] Could not process', tableName, ':', error.message);
+            console.warn('[Manifest Data] Could not process', tableName, ':', error.message);
         }
     }
 
@@ -10180,7 +10180,7 @@ function registerFilesDirective() {
                             const databaseIsStale = databaseFileIds && databaseFileIdsJson !== lastFileIds;
 
                             if (storeIsStale || databaseIsStale) {
-                                console.warn('[UPLOAD DEBUG] Store/Database fileIds is STALE - cleaning up:', {
+                                console.warn('[Manifest Data] Store/Database fileIds is STALE - cleaning up:', {
                                     directiveInstanceId,
                                     projectId: currentProjectId,
                                     storeFileIds: storeFileIdsJson,
@@ -10220,7 +10220,7 @@ function registerFilesDirective() {
                                             }
                                         }
                                     } catch (dbUpdateError) {
-                                        console.error('[UPLOAD DEBUG] Failed to update Appwrite database:', dbUpdateError);
+                                        console.error('[Manifest Data] Failed to update Appwrite database:', dbUpdateError);
                                         // Don't throw - store is already updated, database will sync via realtime eventually
                                     }
                                 }
@@ -10888,7 +10888,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                             // Incoming missing files + not clearly newer = stale event
                             // racing an optimistic update; ignore it to protect the upload.
                             if (isMissingFiles && !isDefinitelyNewer) {
-                                console.warn('[Realtime] Ignoring stale realtime update (protecting optimistic update):', {
+                                console.warn('[Manifest Data] Ignoring stale realtime update (protecting optimistic update):', {
                                     projectId: row.$id,
                                     existingFileIds: existingFileIds,
                                     incomingFileIds: incomingFileIds,
