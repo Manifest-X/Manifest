@@ -139,41 +139,49 @@ export interface ManifestLocale {
     set(locale: string): void;
 }
 
-/** `$toast` from the toasts plugin. */
-export interface ManifestToast {
-    (message: string, opts?: { type?: 'info' | 'success' | 'warning' | 'error'; duration?: number }): void;
-    info(message: string, opts?: Record<string, unknown>): void;
-    success(message: string, opts?: Record<string, unknown>): void;
-    warning(message: string, opts?: Record<string, unknown>): void;
-    error(message: string, opts?: Record<string, unknown>): void;
-    dismiss(id?: string): void;
+/** One toast flavor: callable, with `.dismiss` (adds a close button) and `.fixed` (sticky) variants. */
+export interface ManifestToastVariant {
+    (message: string, opts?: Record<string, unknown>): void;
+    dismiss(message: string, opts?: Record<string, unknown>): void;
+    fixed(message: string, opts?: Record<string, unknown>): void;
 }
 
-/** `$colors` from the themes plugin. */
-export interface ManifestTheme {
-    readonly current: 'light' | 'dark' | 'system';
-    set(theme: 'light' | 'dark' | 'system'): void;
-    toggle(): void;
+/** `$toast` from the toasts plugin. Typed variants: `$toast.brand(...)`, `$toast.positive.dismiss(...)`. */
+export interface ManifestToast extends ManifestToastVariant {
+    brand: ManifestToastVariant;
+    accent: ManifestToastVariant;
+    positive: ManifestToastVariant;
+    negative: ManifestToastVariant;
 }
 
-/** `$colors` from the colors plugin. */
-export interface ManifestColors {
-    [name: string]: string | ManifestColors;
+/** `$color` from the color plugin — the current light/dark/system color mode. */
+export interface ManifestColor {
+    current: 'light' | 'dark' | 'system' | string;
 }
 
-/** `$colorpicker` from the colorpicker plugin. */
+/** `$colorpicker` from the colorpicker plugin. Loose by design. */
 export interface ManifestColorpicker {
-    open(opts?: Record<string, unknown>): void;
-    close(): void;
+    (id?: string): Record<string, unknown>;
     [extra: string]: unknown;
 }
 
-/** `$url` from the url-parameters plugin: read/write URL query params reactively. */
+/** One URL query parameter handle from `$url.<name>` (reactive). */
+export interface ManifestUrlParam {
+    /** Current value (get/set; empty string when absent). */
+    value: string;
+    /** First value when the param repeats. */
+    readonly first: string;
+    /** All values for a repeating param. */
+    readonly all: string[];
+    set(value: string): void;
+    add(value: string): void;
+    remove(value?: string): void;
+    clear(): void;
+}
+
+/** `$url` from the url-parameters plugin: `$url.tab.value`, `$url.tag.add('x')`, ... */
 export interface ManifestUrl {
-    get(name: string): string | null;
-    set(name: string, value: string | null): void;
-    has(name: string): boolean;
-    [name: string]: unknown;
+    [param: string]: ManifestUrlParam;
 }
 
 /** `$route` magic — true if the current route matches the given pattern. */
@@ -188,6 +196,152 @@ export type ManifestModify = (attr: string) => string | undefined;
 /** `$try(fn)` — run a callback and swallow any thrown error, returning undefined on failure. */
 export type ManifestTry = <T>(fn: () => T) => T | undefined;
 
+/** `$pay` from the payments plugin: callable to start checkout, plus portal/state helpers. */
+export interface ManifestPay {
+    (ref: string, payload?: Record<string, unknown>): Promise<unknown>;
+    portal(ref?: string, payload?: Record<string, unknown>): Promise<unknown>;
+    refresh(): Promise<unknown>;
+    register(name: string, adapter: unknown): void;
+    readonly state: Record<string, unknown> | undefined;
+    readonly loading: boolean | undefined;
+    [extra: string]: unknown;
+}
+
+/** A conversation handle returned by `$chat.open(...)`. Loose by design. */
+export interface ManifestChatHandle {
+    readonly messages: unknown[];
+    readonly participants: unknown[];
+    readonly typing: unknown[];
+    readonly me: unknown;
+    [extra: string]: unknown;
+}
+
+/** `$chat` from the chat plugin — adapter-based conversation projection. */
+export interface ManifestChat {
+    open(conversationId: string, opts?: Record<string, unknown>): ManifestChatHandle;
+    merge(handles: ManifestChatHandle[], opts?: Record<string, unknown>): ManifestChatHandle;
+    adapter(name: string, factory?: unknown): unknown;
+    flatten(tree: unknown): unknown[];
+    /** Shared revision counter — trackable even before any handle resolves. */
+    readonly version: number;
+    [extra: string]: unknown;
+}
+
+/** One `$status.<name>` entry. */
+export interface ManifestStatusEntry {
+    readonly state: string;
+    [extra: string]: unknown;
+}
+
+/** `$status` from the status plugin: `$status.api.state`, iterable, stringifies to the overall state. */
+export interface ManifestStatus extends Iterable<ManifestStatusEntry> {
+    readonly [name: string]: any;
+}
+
+/** `$presence` from the Appwrite presences plugin. */
+export interface ManifestPresence {
+    start(opts?: Record<string, unknown>): Promise<unknown>;
+    stop(): void;
+    set(values: Record<string, unknown>): Promise<unknown>;
+    clear(): Promise<unknown>;
+    of(userId: string): unknown;
+    all(): unknown[];
+    readonly records: Record<string, unknown>;
+    readonly list: unknown[];
+    readonly ready: boolean;
+    readonly error: unknown;
+    readonly me: unknown;
+}
+
+/** `$date(id?)` from the datepicker plugin — the picker API for the nearest (or given) instance. */
+export type ManifestDate = (id?: string) => Record<string, unknown>;
+
+/** `$chart(id?)` from the charts plugin — the chart API for the nearest (or given) instance. */
+export type ManifestChart = (id?: string) => Record<string, unknown>;
+
+/** `$export(opts)` from the export plugin — export the page or a data source (pdf/csv/json/...). */
+export type ManifestExport = (opts?: {
+    format?: string;
+    filename?: string;
+    source?: string;
+    data?: unknown;
+    [extra: string]: unknown;
+}) => Promise<unknown>;
+
+/** `$device` from the utilities plugin (enriched by the native plugin when present). */
+export interface ManifestDevice {
+    readonly os: string;
+    readonly touch: boolean;
+    readonly online: boolean;
+    readonly standalone: boolean;
+    readonly native: boolean;
+    readonly platform: string;
+}
+
+/** `$share` from the native plugin — native sheet, web share, or clipboard fallback. */
+export type ManifestShare = (opts?: { title?: string; text?: string; url?: string }) =>
+    Promise<{ shared: boolean; method: string; cancelled?: boolean }>;
+
+/** `$push` from the native plugin — push/notification permissions and token. */
+export interface ManifestPush {
+    request(): Promise<string>;
+    readonly permission: string;
+    [extra: string]: unknown;
+}
+
+/** `$secure` from the native plugin — secure key-value storage (native keychain or fallback). */
+export interface ManifestSecure {
+    get(key: string): Promise<string | null>;
+    set(key: string, value: string): Promise<void>;
+    remove(key: string): Promise<void>;
+    keys(): Promise<string[]>;
+    clear(): Promise<void>;
+    use(adapter: unknown): void;
+}
+
+/** `$links` from the native plugin — deep/universal link handling. */
+export interface ManifestLinks {
+    on(handler: (url: string) => void): void;
+    open(url: string): void;
+    readonly last: string | null;
+}
+
+/** `$app` from the native plugin — foreground/background state. */
+export interface ManifestApp {
+    readonly active: boolean;
+    onChange(handler: (active: boolean) => void): void;
+}
+
+/** `$haptics` from the native plugin — haptic feedback with web vibration fallback. */
+export interface ManifestHaptics {
+    impact(style?: string): Promise<unknown>;
+    notification(type?: string): Promise<unknown>;
+    [extra: string]: unknown;
+}
+
+/** `$biometric` from the native plugin. */
+export interface ManifestBiometric {
+    available(): Promise<boolean>;
+    verify(opts?: Record<string, unknown>): Promise<unknown>;
+}
+
+/** `$camera` from the native plugin. */
+export interface ManifestCamera {
+    photo(opts?: Record<string, unknown>): Promise<unknown>;
+    pick(opts?: Record<string, unknown>): Promise<unknown>;
+}
+
+/**
+ * Manifest's custom-element/attribute authoring surface (documentation aid —
+ * these are HTML attributes, not JS globals). Element styles pair with most.
+ */
+export type ManifestDirective =
+    | 'x-route' | 'x-anchors'
+    | 'x-icon' | 'x-svg' | 'x-markdown' | 'x-code' | 'x-code-group'
+    | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize'
+    | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
+    | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files';
+
 // ---------------------------------------------------------------------------
 // Global declarations (what Alpine exposes inside `x-data`, `x-show`, etc.)
 // ---------------------------------------------------------------------------
@@ -201,20 +355,50 @@ declare global {
     const $modify: ManifestModify;
     /** Run a callback safely, returning undefined on error. */
     const $try: ManifestTry;
-    /** Appwrite auth plugin (only present when the plugin is loaded). */
+    /** Appwrite auth plugin (present when the plugin is loaded). */
     const $auth: ManifestAuth;
     /** Localization plugin. */
     const $locale: ManifestLocale;
     /** Toasts plugin. */
     const $toast: ManifestToast;
-    /** Themes plugin. */
-    const $colors: ManifestTheme;
-    /** Colors plugin. */
-    const $colors: ManifestColors;
+    /** Color-mode plugin (`$color.current = 'dark'`). */
+    const $color: ManifestColor;
     /** Colorpicker plugin. */
     const $colorpicker: ManifestColorpicker;
-    /** URL parameters plugin. */
+    /** URL parameters plugin (`$url.tab.value`). */
     const $url: ManifestUrl;
+    /** Payments plugin. */
+    const $pay: ManifestPay;
+    /** Chat plugin. */
+    const $chat: ManifestChat;
+    /** Status plugin. */
+    const $status: ManifestStatus;
+    /** Appwrite presences plugin. */
+    const $presence: ManifestPresence;
+    /** Datepicker plugin. */
+    const $date: ManifestDate;
+    /** Charts plugin. */
+    const $chart: ManifestChart;
+    /** Export plugin. */
+    const $export: ManifestExport;
+    /** Device/platform info (utilities; enriched by the native plugin). */
+    const $device: ManifestDevice;
+    /** Native share (native plugin). */
+    const $share: ManifestShare;
+    /** Push permissions (native plugin). */
+    const $push: ManifestPush;
+    /** Secure storage (native plugin). */
+    const $secure: ManifestSecure;
+    /** Deep links (native plugin). */
+    const $links: ManifestLinks;
+    /** App foreground state (native plugin). */
+    const $app: ManifestApp;
+    /** Haptics (native plugin). */
+    const $haptics: ManifestHaptics;
+    /** Biometric auth (native plugin). */
+    const $biometric: ManifestBiometric;
+    /** Camera (native plugin). */
+    const $camera: ManifestCamera;
 
     /** Window-level Manifest namespace exposed by the loader. */
     interface Window {

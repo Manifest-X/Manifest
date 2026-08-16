@@ -269,6 +269,35 @@
                 ]
             }
         },
+        "payments": {
+            "type": "object",
+            "description": "Payments plugin config. Presence of this block auto-loads the payments plugin ($pay / x-pay).",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Payment adapter name (built-in or registered)."
+                },
+                "endpoint": {
+                    "type": "string",
+                    "description": "Backend endpoint for checkout/portal/state calls. Supports env() references."
+                }
+            },
+            "additionalProperties": true
+        },
+        "ai": {
+            "description": "Chat plugin config. Presence (object or bare true) auto-loads the chat plugin ($chat). Custom-adapter projects can use true with no config.",
+            "oneOf": [
+                { "type": "boolean" },
+                { "type": "object", "additionalProperties": true }
+            ]
+        },
+        "chat": {
+            "description": "Alias of ai — presence auto-loads the chat plugin ($chat).",
+            "oneOf": [
+                { "type": "boolean" },
+                { "type": "object", "additionalProperties": true }
+            ]
+        },
         "render": {
             "type": "object",
             "description": "Static rendering configuration consumed by mnfst-render.",
