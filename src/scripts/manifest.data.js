@@ -860,6 +860,7 @@ function checkAndDispatchRenderReady() {
                 'en';
             const sources = Object.keys(store).filter(k => !k.startsWith('_') && k !== 'all');
 
+            window.__manifestRenderReady = true;
             window.dispatchEvent(new CustomEvent('manifest:render-ready', {
                 detail: { locale, sources }
             }));

@@ -722,7 +722,14 @@ TailwindCompiler.prototype.filterCriticalUtilities = function(criticalText, laye
 
 // Main compilation method
 TailwindCompiler.prototype.compile = async function () {
-    if (this.usesStaticPrerenderUtilities) return;
+    if (this.usesStaticPrerenderUtilities) {
+        // Static utilities shipped with the page — nothing to compile.
+        if (!window.__manifestUtilitiesReady) {
+            window.__manifestUtilitiesReady = true;
+            window.dispatchEvent(new CustomEvent('manifest:utilities-ready'));
+        }
+        return;
+    }
 
     const compileStart = performance.now();
 
@@ -902,6 +909,11 @@ TailwindCompiler.prototype.compile = async function () {
         console.error('[Manifest Utilities] Error compiling Tailwind CSS:', error);
     } finally {
         this.isCompiling = false;
+        // First-compile settle signal for the manifest:ready coordinator.
+        if (!window.__manifestUtilitiesReady) {
+            window.__manifestUtilitiesReady = true;
+            window.dispatchEvent(new CustomEvent('manifest:utilities-ready'));
+        }
     }
 };
 

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>manifest:ready harness</title>
+  <script src="/scripts/manifest.js" data-tailwind></script>
+</head>
+<body>
+  <main x-data>
+    <h1>Ready-signal harness</h1>
+    <div x-markdown="'/test/sample.md'"></div>
+    <p x-text="'alpine alive'"></p>
+  </main>
+  <script>
+    window.__readyLog = [];
+    window.addEventListener('manifest:ready', () => window.__readyLog.push(['ready', performance.now()]));
+    window.addEventListener('manifest:utilities-ready', () => window.__readyLog.push(['utilities', performance.now()]));
+    window.addEventListener('manifest:markdown-idle', () => window.__readyLog.push(['markdown-idle', performance.now()]));
+    window.addEventListener('manifest:render-ready', () => window.__readyLog.push(['render', performance.now()]));
+  </script>
+</body>
+</html>

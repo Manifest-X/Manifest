@@ -1814,6 +1814,20 @@ function computeGlobalAssetSignature(rootDir) {
 async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capMs = 8000 } = {}) {
   try {
     await page.evaluate(async ({ settleMs, mdWaitMs, capMs }) => {
+      // Preferred: the framework's own settled signal (loader ≥0.5.190).
+      if (window.__manifestReadyCoordinator) {
+        const start = Date.now();
+        while (!window.__manifestReady && Date.now() - start < capMs + 8000) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        if (document.fonts?.ready) { try { await document.fonts.ready; } catch { /* best-effort */ } }
+        await new Promise((r) => {
+          const t = setTimeout(r, 250);
+          requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(); }));
+        });
+        return;
+      }
+      // Fallback heuristic for older framework builds:
       const state = () => {
         let styleLen = 0;
         for (const s of document.querySelectorAll('style')) styleLen += (s.textContent || '').length;
@@ -4352,6 +4366,37 @@ async function runPrerender(config) {
           if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
           tag(tpl._x_currentIfEl);
         });
+
+        // Clones inside CLOSED popovers carry no crawler value and are wiped
+        // at boot anyway (Alpine re-renders from the template) — drop them from
+        // the output entirely. A colorpicker's palette library alone can be
+        // several MB of such markup per page.
+        document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
+          if (!document.contains(el)) return;
+          const pop = el.closest('[popover]');
+          if (pop && !pop.matches(':popover-open')) el.remove();
+        });
+      });
+
+      // Deterministic output: randomized CSS anchor-positioning names
+      // (--dropdown-x7f2, --popover-…, --anchor-…) are regenerated per run and
+      // made every render a phantom diff. Renumber them sequentially in DOM
+      // order so identical content serializes identically.
+      await page.evaluate(() => {
+        const RE = /--(dropdown|popover|anchor)-[a-z0-9]+/g;
+        const map = new Map();
+        const counters = { dropdown: 0, popover: 0, anchor: 0 };
+        const rename = (m, kind) => {
+          if (!map.has(m)) map.set(m, `--${kind}-p${++counters[kind]}`);
+          return map.get(m);
+        };
+        for (const el of document.querySelectorAll('*')) {
+          for (const attr of el.attributes) {
+            if (!attr.value || attr.value.indexOf('--') === -1) continue;
+            const next = attr.value.replace(RE, (m, kind) => rename(m, kind));
+            if (next !== attr.value) el.setAttribute(attr.name, next);
+          }
+        }
       });
 
       // SEO / AEO meta injection — see resolveConfig().seo for precedence layers.

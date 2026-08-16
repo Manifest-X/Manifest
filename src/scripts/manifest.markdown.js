@@ -451,6 +451,17 @@ async function initializeMarkdownPlugin() {
         );
 
         // Register markdown directive
+        // Live count of in-flight renders for the manifest:ready coordinator.
+        const mdTrack = () => {
+            window.__manifestMarkdownPending = (window.__manifestMarkdownPending || 0) + 1;
+            return () => {
+                window.__manifestMarkdownPending = Math.max(0, (window.__manifestMarkdownPending || 1) - 1);
+                if (window.__manifestMarkdownPending === 0) {
+                    window.dispatchEvent(new CustomEvent('manifest:markdown-idle'));
+                }
+            };
+        };
+
         Alpine.directive('markdown', (el, { expression, modifiers }, { effect, evaluateLater }) => {
 
             // Handle null/undefined expressions gracefully
@@ -496,6 +507,7 @@ async function initializeMarkdownPlugin() {
             const updateContent = async (element, newContent = null) => {
                 if (isUpdating) return;
                 isUpdating = true;
+                const mdDone = mdTrack();
 
                 try {
                     // Update source if new content provided
@@ -551,6 +563,7 @@ async function initializeMarkdownPlugin() {
                     }
                 } finally {
                     isUpdating = false;
+                    mdDone();
                 }
             };
 
@@ -630,6 +643,8 @@ async function initializeMarkdownPlugin() {
 
             effect(() => {
                 getMarkdownContent(async (pathOrContent) => {
+                    const mdDone = mdTrack();
+                    try {
                     // Reset visibility if content is empty/undefined
                     if (!pathOrContent || pathOrContent === undefined || pathOrContent === '') {
                         el.style.opacity = '0';
@@ -770,6 +785,9 @@ async function initializeMarkdownPlugin() {
                             window._manifestHeadings = {};
                         }
                         window._manifestHeadings[sectionId] = headings;
+                    }
+                    } finally {
+                        mdDone();
                     }
                 });
             });
