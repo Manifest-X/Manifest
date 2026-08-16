@@ -1,6 +1,0 @@
-id,name,price,stock,category,description,path
-1,Widget,9.99,100,Electronics,"A versatile widget, great for everyday use. Get it now!",widget
-2,Gadget,19.99,50,Electronics,"High-quality gadget with advanced features",gadget
-3,Tool,14.99,75,Hardware,"Essential tool for your workshop",tool
-4,Device,29.99,25,Electronics,"Premium device with smart capabilities",device
-5,Accessory,4.99,200,Electronics,"Affordable accessory for all devices",accessory

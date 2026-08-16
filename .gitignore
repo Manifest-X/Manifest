@@ -61,6 +61,8 @@ jspm_packages/
 dist/
 build/
 out/
+.out/
+src/test-prerender/
 *.tgz
 .mnfst-cache
 .next/
