@@ -1736,6 +1736,9 @@ function initializeColorpickerPlugin() {
             // library div) without tearing down others' x-dropdown.context timers.
             _renderIntoContainer(container) {
                 if (!container || !container.isConnected) return;
+                // Runtime-regenerated: the prerenderer empties stamped containers
+                // at serialize (this method rebuilds them from scratch at boot).
+                container.setAttribute('data-mnfst-generated', '');
                 const groups = this._resolveLibraryGroups();
                 const layoutTpl = this.libraryTemplate || _defaultLibraryLayoutTpl;
                 container.innerHTML = '';

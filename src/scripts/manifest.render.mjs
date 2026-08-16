@@ -4369,12 +4369,25 @@ async function runPrerender(config) {
 
         // Clones inside CLOSED popovers carry no crawler value and are wiped
         // at boot anyway (Alpine re-renders from the template) — drop them from
-        // the output entirely. A colorpicker's palette library alone can be
-        // several MB of such markup per page.
+        // the output entirely.
         document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
           if (!document.contains(el)) return;
           const pop = el.closest('[popover]');
           if (pop && !pop.matches(':popover-open')) el.remove();
+        });
+
+        // Containers stamped data-mnfst-generated are fully rebuilt by their
+        // plugin at boot (e.g. a colorpicker's palette library — thousands of
+        // swatch nodes with full palette JSON in x-data). Serialize them empty.
+        document.querySelectorAll('[data-mnfst-generated]').forEach((el) => {
+          if (document.contains(el)) el.innerHTML = '';
+        });
+
+        // Legacy bridge for colorpickers older than the stamp (<0.5.190): the
+        // palette library wrapper is rebuilt from scratch at boot regardless,
+        // so drop it from the output. Remove once sites pin a stamped build.
+        document.querySelectorAll('.library-wrapper').forEach((el) => {
+          if (el.querySelector('.library-palette, [data-cp-library-group]')) el.remove();
         });
       });
 
@@ -4396,6 +4409,18 @@ async function runPrerender(config) {
             const next = attr.value.replace(RE, (m, kind) => rename(m, kind));
             if (next !== attr.value) el.setAttribute(attr.name, next);
           }
+        }
+
+        // Component bookkeeping attrs land in whichever order the swap raced —
+        // re-set the pair canonically so it can't flip between runs. (They are
+        // not Alpine directives; position carries no behavior.)
+        for (const el of document.querySelectorAll('[data-component][data-order]')) {
+          const c = el.getAttribute('data-component');
+          const o = el.getAttribute('data-order');
+          el.removeAttribute('data-component');
+          el.removeAttribute('data-order');
+          el.setAttribute('data-component', c);
+          el.setAttribute('data-order', o);
         }
       });
 
