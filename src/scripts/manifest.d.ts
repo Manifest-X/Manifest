@@ -184,8 +184,8 @@ export interface ManifestUrl {
     [param: string]: ManifestUrlParam;
 }
 
-/** `$route` magic — true if the current route matches the given pattern. */
-export type ManifestRoute = (pattern: string) => boolean;
+/** `$route` magic — the current route path (e.g. '/docs/elements'). */
+export type ManifestRoute = string;
 
 /**
  * `$modify('attr')` — exposed in component HTML. Returns the value of an
@@ -349,7 +349,7 @@ export type ManifestDirective =
 declare global {
     /** Project data sources registered in manifest.json. */
     const $x: ManifestSources;
-    /** Match the current route against a pattern (e.g. `$route('/about')`). */
+    /** The current route path (compare or .startsWith against it). */
     const $route: ManifestRoute;
     /** Read a parent component attribute (Manifest's prop mechanism). */
     const $modify: ManifestModify;
