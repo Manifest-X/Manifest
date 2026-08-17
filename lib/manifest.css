@@ -1185,6 +1185,8 @@
 
 @layer base, components, utilities;
 
+
+
 :root {
     --color-picker-swatch: var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
     --icon-color-solid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='lucide lucide-paint-roller-icon lucide-paint-roller'%3E%3Crect width='16' height='6' x='2' y='2' rx='2'/%3E%3Cpath d='M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2'/%3E%3Crect width='4' height='6' x='8' y='16' rx='1'/%3E%3C/svg%3E");
@@ -1936,6 +1938,8 @@
 
 @layer base, components, utilities;
 
+
+
 @layer utilities {
 
     /* Picker container only (not trigger input/button) */
@@ -2469,6 +2473,8 @@
 
 
 
+
+
 @layer components {
 
     :where(dialog[popover], .dialog):not(.unstyle) {
@@ -2709,6 +2715,8 @@
 /* Manifest Dropdowns */
 
 @layer base, components, utilities;
+
+
 
 
 
@@ -3820,6 +3828,8 @@
 /* Manifest Sidebars */
 
 @layer base, components, utilities;
+
+
 
 
 

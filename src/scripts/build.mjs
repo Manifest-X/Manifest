@@ -310,6 +310,37 @@ async function buildStylesheets() {
 }
 
 
+// Remove the inlined popover base when concatenating into manifest.css — the
+// reset provides it there. Every copy must match styles/snippets/manifest.popover.css
+// exactly, so the standalone stylesheets can never drift apart.
+const POPOVER_START = '/* mnfst:popover-base:start';
+const POPOVER_END = '/* mnfst:popover-base:end */';
+let canonicalPopoverBase = null;
+
+function stripPopoverBase(content, fileName) {
+    const start = content.indexOf(POPOVER_START);
+    if (start === -1) return content;
+    const end = content.indexOf(POPOVER_END, start);
+    if (end === -1) {
+        console.error(`  \u2716 ${fileName}: popover-base start marker has no matching end`);
+        process.exit(1);
+    }
+    if (canonicalPopoverBase === null) {
+        const snippet = fs.readFileSync('styles/snippets/manifest.popover.css', 'utf8');
+        canonicalPopoverBase = normalizeCss(snippet.split('*/').slice(1).join('*/'));
+    }
+    const block = content.slice(content.indexOf('*/', start) + 2, end);
+    if (normalizeCss(block) !== canonicalPopoverBase) {
+        console.error(`  \u2716 ${fileName}: popover base drifted from styles/snippets/manifest.popover.css`);
+        process.exit(1);
+    }
+    return (content.slice(0, start) + content.slice(end + POPOVER_END.length)).trim();
+}
+
+function normalizeCss(css) {
+    return css.replace(/\s+/g, ' ').trim();
+}
+
 // Build the main manifest.css file
 function buildMainStylesheet() {
     console.log('Building main manifest.css...');
@@ -338,6 +369,10 @@ function buildMainStylesheet() {
     for (const elementFile of elementFiles) {
         const elementPath = path.join('styles/elements', elementFile);
         let content = fs.readFileSync(elementPath, 'utf8').trim();
+
+        // Popover-dependent stylesheets carry the popover base inline so they
+        // work standalone; the bundle gets it once, from the reset.
+        content = stripPopoverBase(content, elementFile);
 
         mainContent.push(content);
         console.log(`  ✓ Added element: ${elementFile}`);
@@ -671,22 +706,18 @@ function copyFilesToDist() {
     // Popover-dependent standalone stylesheets get the shared popover base
     // prepended (single source: styles/snippets/manifest.popover.css; the
     // bundle carries it via the reset).
-    const popoverSnippet = fs.readFileSync('styles/snippets/manifest.popover.css', 'utf8');
-
     let copiedCount = 0;
     for (const file of filesToCopy) {
         if (fs.existsSync(file.source)) {
             const baseName = path.basename(file.source);
-            const needsPopover = CONFIG.stylesheets.popoverDependent.includes(baseName);
             const snippets = CONFIG.stylesheets.snippetDependent[baseName] || [];
-            if (needsPopover || snippets.length) {
+            if (snippets.length) {
                 const src = fs.readFileSync(file.source, 'utf8');
-                const head = needsPopover ? `${popoverSnippet}\n` : '';
                 const tail = snippets
                     .map(name => `\n${fs.readFileSync(path.join('styles/snippets', name), 'utf8')}`)
                     .join('');
-                fs.writeFileSync(file.dest, `${head}${src}${tail}`);
-                const notes = [needsPopover && 'popover base', ...snippets].filter(Boolean).join(', ');
+                fs.writeFileSync(file.dest, `${src}${tail}`);
+                const notes = snippets.join(', ');
                 console.log(`  ✓ Copied ${file.source} → ${file.dest} (+${notes})`);
                 copiedCount++;
                 continue;

@@ -1,7 +1,7 @@
-/* Popover base — single source; the build prepends this to standalone
-   popover-dependent stylesheets. The bundle gets it via the reset. */
-
-@layer base, components, utilities;
+/* Canonical popover base. Copied verbatim between the mnfst:popover-base
+   markers in every popover-dependent stylesheet so each one works when used
+   alone; the build strips those blocks from manifest.css (the reset provides
+   it there) and fails if any copy drifts from this file. */
 
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;

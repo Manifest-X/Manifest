@@ -1,8 +1,9 @@
-/* Popover base — single source; the build prepends this to standalone
-   popover-dependent stylesheets. The bundle gets it via the reset. */
+/* Manifest Dropdowns */
 
 @layer base, components, utilities;
 
+/* mnfst:popover-base:start — self-contained so this stylesheet works on
+   its own; the build strips it from manifest.css. Edit styles/snippets/manifest.popover.css. */
 [popover]:not(.unstyle):not(:popover-open) {
     display: none;
 }
@@ -24,10 +25,7 @@
         animation: mnfst-popover-in .15s ease-in both
     }
 }
-
-/* Manifest Dropdowns */
-
-@layer base, components, utilities;
+/* mnfst:popover-base:end */
 
 
 

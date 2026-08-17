@@ -2,6 +2,31 @@
 
 @layer base, components, utilities;
 
+/* mnfst:popover-base:start — self-contained so this stylesheet works on
+   its own; the build strips it from manifest.css. Edit styles/snippets/manifest.popover.css. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
+@layer base {
+
+    @keyframes mnfst-popover-in {
+        from {
+            transform: scale(.9)
+        }
+
+        to {
+            transform: none
+        }
+    }
+
+    :where([popover]):not(.unstyle):popover-open {
+        display: flex;
+        animation: mnfst-popover-in .15s ease-in both
+    }
+}
+/* mnfst:popover-base:end */
+
 @layer utilities {
 
     /* Picker container only (not trigger input/button) */
