@@ -78,8 +78,7 @@ function initializeAuthMagic() {
                     if (typeof value === 'function') {
                         return value.bind(store);
                     }
-                    // CRITICAL: If property exists but is not a function, check if it should be a convenience method
-                    // This handles cases where the store was recreated and methods are missing
+                    // Non-function value that should be a convenience method → store was recreated
                     if (typeof prop === 'string') {
                         const convenienceMethodNames = [
                             'isCreatingTeam', 'isUpdatingTeam', 'isDeletingTeam', 'isInvitingMember',
@@ -94,12 +93,10 @@ function initializeAuthMagic() {
                         ];
 
                         if (convenienceMethodNames.includes(prop)) {
-                            // This should be a function but isn't - try to reinitialize synchronously
+                            // Reinitialize synchronously, then re-check
                             if (window.ManifestAppwriteAuthTeamsConvenience && window.ManifestAppwriteAuthTeamsConvenience.initialize) {
                                 try {
-                                    // Call initialize which will check and re-add methods if needed
                                     window.ManifestAppwriteAuthTeamsConvenience.initialize();
-                                    // Immediately check again - initialize should have added the method
                                     const reinitializedValue = store[prop];
                                     if (typeof reinitializedValue === 'function') {
                                         return reinitializedValue.bind(store);
@@ -108,8 +105,7 @@ function initializeAuthMagic() {
                                     // Failed to reinitialize, continue to fallback
                                 }
                             }
-                            // Return a safe fallback function that returns false/empty
-                            // This prevents "is not a function" errors while methods are being reinitialized
+                            // Safe fallbacks while methods reinitialize
                             if (prop.startsWith('is') || prop.startsWith('can') || prop.startsWith('has')) {
                                 return () => false;
                             }
@@ -122,8 +118,7 @@ function initializeAuthMagic() {
                             return () => ({ success: false, error: 'Method not initialized' });
                         }
                     }
-                    // CRITICAL: Handle null values - return loading proxy to allow safe chaining
-                    // This prevents errors when accessing $auth.user.email when user is null
+                    // Null/undefined: loading proxy keeps $auth.user.email chains safe
                     if (value === null || value === undefined) {
                         return createAuthLoadingProxy();
                     }
@@ -163,9 +158,7 @@ function initializeAuthMagic() {
                     return value;
                 }
 
-                // CRITICAL: If property doesn't exist, check if convenience methods need reinitialization
-                // This prevents "$auth.isCreatingTeam is not a function" errors after idle/reinitialization
-                // Only check for known convenience method names to avoid unnecessary work
+                // Missing property: reinitialize known convenience methods (guards post-idle errors)
                 const convenienceMethodNames = [
                     'isCreatingTeam', 'isUpdatingTeam', 'isDeletingTeam', 'isInvitingMember',
                     'isUpdatingMember', 'isDeletingMember', 'createTeamFromName', 'updateCurrentTeamName',

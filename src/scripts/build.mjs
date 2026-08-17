@@ -68,8 +68,7 @@ const CONFIG = {
     ],
 
     // Data core subscripts (for manifest.data.js)
-    // NOTE: manifest.data.api.js provides basic read-only API support needed for localization.
-    // Full CRUD operations will be available via manifest.api.data.js plugin (planned).
+    // manifest.data.api.js: basic read-only API support needed for localization
     dataCoreSubscripts: [
         'core/manifest.data.config.js',
         'core/manifest.data.store.js',

@@ -20,8 +20,7 @@ function validateRoleConfig(memberRoles, creatorRole) {
     const errors = [];
     const warnings = [];
 
-    // If teams not enabled, roles are ignored (graceful degradation)
-    // This validation assumes teams are enabled
+    // Assumes teams enabled; roles are ignored otherwise
 
     // Validate memberRoles structure
     if (memberRoles && typeof memberRoles !== 'object') {
@@ -46,8 +45,7 @@ function validateRoleConfig(memberRoles, creatorRole) {
             if (typeof permission !== 'string') {
                 errors.push(`Role "${roleName}" has invalid permission type. Permissions must be strings.`);
             } else if (!OWNER_PERMISSIONS.includes(permission)) {
-                // Custom permission - this is allowed, just log for info
-                // No error, as custom permissions are valid
+                // Custom permissions are valid; no error
             }
         }
     }
@@ -102,8 +100,7 @@ async function getUserGeneratedRoles(teamId, appwrite) {
         const prefs = await appwrite.teams.getPrefs({ teamId });
         return prefs?.roles || null;
     } catch (error) {
-        // Team preferences might not have roles yet, or team might be deleted (404)
-        // Silently return null for deleted teams (expected behavior)
+        // Prefs may lack roles, or team deleted (404) → null
         if (error.message && error.message.includes('could not be found')) {
             return null;
         }
@@ -226,20 +223,12 @@ function hasPermission(userRoles, permission, memberRoles, userGeneratedRoles = 
         return userRoles.includes('owner');
     }
 
-    // IMPORTANT: When custom roles are defined, we ONLY check custom roles, NOT the owner role.
-    // This is because Appwrite automatically grants "owner" role to users with custom roles
-    // that have native permissions, but we want to restrict them to ONLY the permissions
-    // explicitly defined in their custom role(s).
-
-    // Get user's custom roles (excluding "owner")
+    // With custom roles defined, check ONLY custom roles — Appwrite auto-grants "owner"
+    // alongside them, but permissions must stay limited to the custom role(s).
     const customRoles = userRoles.filter(role => role !== 'owner');
 
-    // If user has no custom roles (only "owner" or empty), grant all permissions
-    // This handles edge cases where:
-    // - User's role was deleted
-    // - User was never assigned a custom role
+    // No custom roles (deleted or never assigned) → full owner permissions
     if (customRoles.length === 0) {
-        // User has no custom roles, so they should have all owner permissions
         return true;
     }
 

@@ -418,7 +418,6 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         return existing;
     }
 
-    // CRITICAL: Make files array reactive so Alpine can track changes
     const files = typeof Alpine !== 'undefined' && Alpine.reactive
         ? Alpine.reactive([])
         : [];
@@ -441,8 +440,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                 throw new Error(`[Manifest Data] Table "${tableName}" not found`);
             }
 
-            // CRITICAL: parseStorageConfig uses getManifest() which might return null
-            // Instead, parse the storage config directly using the manifest we already have
+            // Parse storage config directly; parseStorageConfig's getManifest() may be null here
             const storageConfigObj = tableDataSource?.storage;
             if (!storageConfigObj || typeof storageConfigObj !== 'object') {
                 throw new Error(`[Manifest Data] Storage bucket "${bucketName}" not configured for table "${tableName}"`);
@@ -491,8 +489,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             files.length = 0;
             files.push(...loadedFiles);
 
-            // Update lastSeenFileIds to match what was actually loaded
-            // This prevents false positives when the watch effect runs
+            // Sync lastSeenFileIds so the watch effect doesn't false-positive
             const $x = window.Alpine?.magic?.('x')?.();
             if ($x && $x[tableName] && Array.isArray($x[tableName])) {
                 const entry = $x[tableName].find(item => item.$id === entryId);
@@ -518,8 +515,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             const eventTableName = e.detail?.tableName || 'projects'; // Default to 'projects' for backward compat
 
             if (eventTableName === tableName && eventEntryId === entryId) {
-                // Use requestAnimationFrame for immediate execution in next frame
-                // This ensures DOM updates are complete but doesn't add unnecessary delay
+                // rAF: run after DOM updates settle
                 requestAnimationFrame(() => {
                     loadFiles();
                 });
@@ -571,8 +567,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         });
     };
 
-    // Watch table data for fileIds changes
-    // CRITICAL: Track last seen fileIds for THIS specific entry to prevent false positives
+    // Watch table data for fileIds changes; tracked per entry to avoid false positives
     let lastSeenFileIds = null;
 
     const watchTableData = () => {
@@ -586,15 +581,13 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                     const currentFileIds = entry[columnName || 'fileIds'] || [];
                     const currentFileIdsStr = JSON.stringify(currentFileIds);
 
-                    // Only reload if fileIds actually changed for THIS entry
-                    // Compare with lastSeenFileIds, not with files array (which might be stale)
+                    // Reload only when fileIds changed for THIS entry (files array may be stale);
+                    // set lastSeenFileIds before loading to prevent duplicate loads
                     if (lastSeenFileIds !== currentFileIdsStr && !loading) {
-                        // Update lastSeenFileIds BEFORE loading to prevent duplicate loads
                         lastSeenFileIds = currentFileIdsStr;
 
-                        // Load files immediately - don't wait for next frame
                         loadFiles().then(() => {
-                            // After loading, verify fileIds still match (in case they changed during load)
+                            // Re-verify fileIds in case they changed during load
                             const $xAfter = window.Alpine?.magic?.('x')?.();
                             if ($xAfter && $xAfter[tableName] && Array.isArray($xAfter[tableName])) {
                                 const entryAfter = $xAfter[tableName].find(item => item.$id === entryId);
@@ -607,13 +600,10 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                             console.error('[Manifest Data] Failed to load files after fileIds change:', err);
                         });
                     } else if (lastSeenFileIds === null) {
-                        // Initialize lastSeenFileIds on first run
                         lastSeenFileIds = currentFileIdsStr;
                     }
 
-                    // CRITICAL: Also check if files array is out of sync with fileIds
-                    // This handles cases where fileIds changed but watch didn't trigger
-                    // Use the already-declared currentFileIds variable
+                    // Sync check: fileIds may have changed without triggering the watch
                     const filesFileIds = files.map(f => f.$id);
                     const fileIdsMatch = currentFileIds.length === filesFileIds.length &&
                         currentFileIds.every(id => filesFileIds.includes(id));
@@ -707,27 +697,21 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
         return [];
     }
 
-    // Get all files from the bucket by calling Appwrite storage directly
-    // This bypasses any scope filtering that might be applied in loadDataSource
-    // We need ALL files the user has access to, not just those matching the current scope
+    // List bucket files via Appwrite directly — bypasses loadDataSource scope filtering
     const services = await window.ManifestDataAppwrite._getAppwriteDataServices?.();
     if (!services?.storage) {
         throw new Error('[Manifest Data] Appwrite Storage service not available');
     }
 
-    // Call Appwrite storage.listFiles directly to get all files user has access to
-    // This returns files based on Appwrite's permission system, not our scope filtering
     const response = await services.storage.listFiles(bucketId, []);
     const allFiles = response?.files || [];
 
     // Filter to only files that are in the entry's fileIds array
     let entryFiles = allFiles.filter(file => fileIds.includes(file.$id));
 
-    // Check for missing files - these might have been uploaded with incorrect permissions
-    // (e.g., before we fixed buildStoragePermissions to use project team permissions)
+    // Missing files: may exist with different permissions, or be deleted
     const missingFileIds = fileIds.filter(id => !entryFiles.some(f => f.$id === id));
 
-    // CRITICAL DEBUG: Log missing files to understand where stale fileIds come from
     if (missingFileIds.length > 0) {
         console.warn('[Manifest Data] Found missing fileIds in database entry:', {
             tableName,
@@ -738,13 +722,10 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
         });
     }
 
-    // Note: missingFileIds are silently skipped - they may have been deleted
-    // CRITICAL: If we have missing fileIds, we should clean them up from the database
-    // instead of trying to fetch them (which causes 404s)
-    const confirmedMissingFileIds = []; // Track fileIds confirmed to be deleted (404s)
+    // Stale fileIds get cleaned from the database rather than refetched (avoids 404s)
+    const confirmedMissingFileIds = []; // fileIds confirmed deleted (404s)
 
     if (missingFileIds.length > 0) {
-        // Log warning about stale fileIds
         console.warn('[Manifest Data] Found stale fileIds in database entry:', {
             tableName,
             entryId,
@@ -753,12 +734,9 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
             suggestion: 'These fileIds will be cleaned up automatically'
         });
 
-        // Try to fetch missing files individually ONLY if they might exist with different permissions
-        // Skip files that are clearly deleted (404s) to avoid unnecessary API calls
+        // Fetch missing files individually; getFile is more reliable than getFileView for existence checks
         for (const missingFileId of missingFileIds) {
             try {
-                // Try to get file metadata directly using getFile if available
-                // This is more reliable than getFileView for checking if a file exists
                 let fileMetadata = null;
                 let fileExists = false;
 
@@ -900,9 +878,7 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
         throw new Error(`[Manifest Data] Invalid Appwrite configuration for "${tableName}"`);
     }
 
-    // CRITICAL: Read from store FIRST to get the latest optimistic updates
-    // This prevents race conditions when multiple files are uploaded concurrently
-    // If store has the entry, use it; otherwise fall back to database
+    // Read store first for latest optimistic updates (concurrent uploads race otherwise)
     let fileIds = null;
     const store = typeof Alpine !== 'undefined' && Alpine.store ? Alpine.store('data') : null;
     if (store && store[tableName] && Array.isArray(store[tableName])) {
@@ -1233,8 +1209,7 @@ async function buildStoragePermissions(scope, dataSource = {}) {
         return [];
     }
 
-    // Check if file belongs to a database entry (e.g., a project)
-    // This allows files to inherit permissions from a table entry
+    // belongsTo: file inherits permissions from a table entry
     if (dataSource.belongsTo) {
         const { table, id } = dataSource.belongsTo;
         if (table && id) {

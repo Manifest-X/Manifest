@@ -1147,8 +1147,7 @@ function initializeAuthMagic() {
                     if (typeof value === 'function') {
                         return value.bind(store);
                     }
-                    // CRITICAL: If property exists but is not a function, check if it should be a convenience method
-                    // This handles cases where the store was recreated and methods are missing
+                    // Non-function value that should be a convenience method → store was recreated
                     if (typeof prop === 'string') {
                         const convenienceMethodNames = [
                             'isCreatingTeam', 'isUpdatingTeam', 'isDeletingTeam', 'isInvitingMember',
@@ -1163,12 +1162,10 @@ function initializeAuthMagic() {
                         ];
 
                         if (convenienceMethodNames.includes(prop)) {
-                            // This should be a function but isn't - try to reinitialize synchronously
+                            // Reinitialize synchronously, then re-check
                             if (window.ManifestAppwriteAuthTeamsConvenience && window.ManifestAppwriteAuthTeamsConvenience.initialize) {
                                 try {
-                                    // Call initialize which will check and re-add methods if needed
                                     window.ManifestAppwriteAuthTeamsConvenience.initialize();
-                                    // Immediately check again - initialize should have added the method
                                     const reinitializedValue = store[prop];
                                     if (typeof reinitializedValue === 'function') {
                                         return reinitializedValue.bind(store);
@@ -1177,8 +1174,7 @@ function initializeAuthMagic() {
                                     // Failed to reinitialize, continue to fallback
                                 }
                             }
-                            // Return a safe fallback function that returns false/empty
-                            // This prevents "is not a function" errors while methods are being reinitialized
+                            // Safe fallbacks while methods reinitialize
                             if (prop.startsWith('is') || prop.startsWith('can') || prop.startsWith('has')) {
                                 return () => false;
                             }
@@ -1191,8 +1187,7 @@ function initializeAuthMagic() {
                             return () => ({ success: false, error: 'Method not initialized' });
                         }
                     }
-                    // CRITICAL: Handle null values - return loading proxy to allow safe chaining
-                    // This prevents errors when accessing $auth.user.email when user is null
+                    // Null/undefined: loading proxy keeps $auth.user.email chains safe
                     if (value === null || value === undefined) {
                         return createAuthLoadingProxy();
                     }
@@ -1232,9 +1227,7 @@ function initializeAuthMagic() {
                     return value;
                 }
 
-                // CRITICAL: If property doesn't exist, check if convenience methods need reinitialization
-                // This prevents "$auth.isCreatingTeam is not a function" errors after idle/reinitialization
-                // Only check for known convenience method names to avoid unnecessary work
+                // Missing property: reinitialize known convenience methods (guards post-idle errors)
                 const convenienceMethodNames = [
                     'isCreatingTeam', 'isUpdatingTeam', 'isDeletingTeam', 'isInvitingMember',
                     'isUpdatingMember', 'isDeletingMember', 'createTeamFromName', 'updateCurrentTeamName',
@@ -3141,8 +3134,7 @@ function validateRoleConfig(memberRoles, creatorRole) {
     const errors = [];
     const warnings = [];
 
-    // If teams not enabled, roles are ignored (graceful degradation)
-    // This validation assumes teams are enabled
+    // Assumes teams enabled; roles are ignored otherwise
 
     // Validate memberRoles structure
     if (memberRoles && typeof memberRoles !== 'object') {
@@ -3167,8 +3159,7 @@ function validateRoleConfig(memberRoles, creatorRole) {
             if (typeof permission !== 'string') {
                 errors.push(`Role "${roleName}" has invalid permission type. Permissions must be strings.`);
             } else if (!OWNER_PERMISSIONS.includes(permission)) {
-                // Custom permission - this is allowed, just log for info
-                // No error, as custom permissions are valid
+                // Custom permissions are valid; no error
             }
         }
     }
@@ -3223,8 +3214,7 @@ async function getUserGeneratedRoles(teamId, appwrite) {
         const prefs = await appwrite.teams.getPrefs({ teamId });
         return prefs?.roles || null;
     } catch (error) {
-        // Team preferences might not have roles yet, or team might be deleted (404)
-        // Silently return null for deleted teams (expected behavior)
+        // Prefs may lack roles, or team deleted (404) → null
         if (error.message && error.message.includes('could not be found')) {
             return null;
         }
@@ -3347,20 +3337,12 @@ function hasPermission(userRoles, permission, memberRoles, userGeneratedRoles = 
         return userRoles.includes('owner');
     }
 
-    // IMPORTANT: When custom roles are defined, we ONLY check custom roles, NOT the owner role.
-    // This is because Appwrite automatically grants "owner" role to users with custom roles
-    // that have native permissions, but we want to restrict them to ONLY the permissions
-    // explicitly defined in their custom role(s).
-
-    // Get user's custom roles (excluding "owner")
+    // With custom roles defined, check ONLY custom roles — Appwrite auto-grants "owner"
+    // alongside them, but permissions must stay limited to the custom role(s).
     const customRoles = userRoles.filter(role => role !== 'owner');
 
-    // If user has no custom roles (only "owner" or empty), grant all permissions
-    // This handles edge cases where:
-    // - User's role was deleted
-    // - User was never assigned a custom role
+    // No custom roles (deleted or never assigned) → full owner permissions
     if (customRoles.length === 0) {
-        // User has no custom roles, so they should have all owner permissions
         return true;
     }
 
@@ -6582,9 +6564,7 @@ function initializeOAuth() {
     const waitForStore = () => {
         const store = Alpine.store('auth');
         if (store && !store.loginOAuth) {
-            // Add OAuth method to store
-            // Note: Appwrite accepts any provider string (google, github, etc.) and validates on their side
-            // No need to maintain a registry of supported providers
+            // Appwrite validates provider strings server-side; no registry needed here
             store.loginOAuth = async function (provider, successUrl = window.location.href, failureUrl = window.location.href) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
@@ -6604,11 +6584,8 @@ function initializeOAuth() {
                 const cleanSuccessUrl = `${currentUrl.origin}${currentUrl.pathname}`;
                 const cleanFailureUrl = `${currentUrl.origin}${currentUrl.pathname}`;
 
-                // Delete any existing anonymous sessions before OAuth
-                // This prevents conflicts where anonymous sessions might interfere with OAuth
-                // Appwrite will create a new account for OAuth if needed.
-                // EXCEPTION: when guest upgrade is enabled we keep the anonymous session
-                // active so Appwrite can link the OAuth identity to it (preserving teams).
+                // Drop anonymous sessions before OAuth — except with guestUpgrade, where the
+                // session stays so Appwrite links the OAuth identity to it (preserving teams)
                 if (this.isAnonymous && this.session && !appwriteConfig?.guestUpgrade) {
                     try {
                         await this._appwrite.account.deleteSession(this.session.$id);
@@ -6641,9 +6618,8 @@ function initializeOAuth() {
                 this.error = null;
 
                 try {
-                    // Use createOAuth2Token (like the working implementation)
-                    // This returns a token/redirect URL that we manually navigate to
-                    // After OAuth, Appwrite redirects back with userId and secret in URL params
+                    // createOAuth2Token returns a URL we navigate to; Appwrite redirects
+                    // back with userId + secret in URL params
                     const token = await this._appwrite.account.createOAuth2Token(
                         provider,
                         cleanSuccessUrl,
@@ -6651,8 +6627,7 @@ function initializeOAuth() {
                         ['email'] // Scopes
                     );
 
-                    // Check for redirectUrl - Appwrite may return it in various formats
-                    // Try multiple property names and formats
+                    // Appwrite may return the redirect URL in several formats
                     let redirectUrl = null;
 
                     if (typeof token === 'string') {
@@ -6669,30 +6644,23 @@ function initializeOAuth() {
                         }
                     }
 
-                    // Clear error state before redirect (whether we found URL or not)
-                    // This prevents any error flash before redirect
+                    // Clear error before redirect to avoid an error flash
                     this.error = null;
 
                     if (redirectUrl) {
-                        // Use requestAnimationFrame to ensure Alpine processes the error clearing
-                        // before redirect happens, preventing error flash
+                        // rAF lets Alpine process the error clear before navigating
                         requestAnimationFrame(() => {
                             window.location.href = redirectUrl;
                         });
-                        // Return immediately - redirect will happen asynchronously
                         return { success: true, redirectUrl: redirectUrl };
                     } else {
-                        // If we can't find redirect URL, log it but don't show error to user
-                        // The redirect might still work via Appwrite's internal handling
+                        // No extractable URL: warn but stay silent — Appwrite's own redirect may still fire
                         console.warn('[Manifest Appwrite Auth] Could not extract redirect URL from token:', token);
-                        // Don't set error - just return failure silently
-                        // This prevents error flash when redirect might still succeed
                         this.inProgress = false;
                         return { success: false, error: 'Could not extract redirect URL' };
                     }
                 } catch (error) {
-                    // Don't show "No redirect URL" errors - they're usually false positives
-                    // Only show other meaningful errors
+                    // "No redirect URL" errors are usually false positives; surface the rest
                     if (!error.message.includes('No redirect URL') && !error.message.includes('redirect')) {
                         this.error = error.message;
                         this.inProgress = false;
@@ -6738,8 +6706,7 @@ function handleOAuthCallbacks() {
         }
         if (storedProvider) {
             store._oauthProvider = storedProvider;
-            // Keep it in localStorage (cleared on logout)
-            // This allows us to show the correct provider name even after page refresh
+            // Stays in localStorage until logout so the provider name survives refresh
         } else {
             console.warn('[Manifest Appwrite Auth] No OAuth provider found in storage');
         }

@@ -1,4 +1,5 @@
-/* Manifest Dropdowns */
+/* Popover base — single source; the build prepends this to standalone
+   popover-dependent stylesheets. The bundle gets it via the reset. */
 
 @layer base, components, utilities;
 
@@ -8,7 +9,7 @@
 
 @layer base {
 
-    @keyframes popover-in {
+    @keyframes mnfst-popover-in {
         from {
             transform: scale(.9)
         }
@@ -20,9 +21,15 @@
 
     :where([popover]):not(.unstyle):popover-open {
         display: flex;
-        animation: popover-in .15s ease-in both
+        animation: mnfst-popover-in .15s ease-in both
     }
 }
+
+/* Manifest Dropdowns */
+
+@layer base, components, utilities;
+
+
 
 @layer components {
 

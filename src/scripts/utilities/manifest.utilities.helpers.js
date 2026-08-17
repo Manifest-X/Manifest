@@ -844,13 +844,8 @@ TailwindCompiler.prototype.extractCustomUtilities = function (cssText) {
         // Tolerate parsing errors; this is best-effort
     }
 
-    // Dedupe captured entries per class. The four parser passes above (flat
-    // regex, :where() extractor, compound-selector fallback, universal nested
-    // resolver) can each capture the same source rule with slightly different
-    // whitespace or selector ordering. Without this, the generator emits
-    // duplicate variant blocks at runtime (e.g. four `.\!brand { … }` rules
-    // where one suffices). Normalize whitespace before comparing so trivial
-    // formatting differences collapse.
+    // Dedupe per class: the four parser passes can capture the same rule with
+    // differing whitespace/selector order; normalize before comparing.
     for (const [className, value] of utilities.entries()) {
         if (!Array.isArray(value)) continue;
         const seen = new Set();

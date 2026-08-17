@@ -2344,8 +2344,10 @@ async function injectMetaInDom(page, ctx) {
         if (existingTypes.has(type)) continue;
         if (def === false) continue;
         if (type === 'BreadcrumbList' && def === true) {
-          // Auto-derive from URL path segments.
+          // Auto-derive from URL path segments; skip crumbs whose URL has no
+          // rendered page (avoids linking soft-404 intermediate paths).
           const parts = location.pathname.split('/').filter(Boolean);
+          const rendered = Array.isArray(ctx.renderedPaths) ? new Set(ctx.renderedPaths) : null;
           const items = [{
             '@type': 'ListItem',
             position: 1,
@@ -2353,11 +2355,13 @@ async function injectMetaInDom(page, ctx) {
             item: liveBase ? liveBase + '/' : '/',
           }];
           parts.forEach((seg, i) => {
+            const crumbPath = parts.slice(0, i + 1).join('/');
+            if (rendered && !rendered.has(crumbPath)) return;
             items.push({
               '@type': 'ListItem',
-              position: i + 2,
+              position: items.length + 1,
               name: seg.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-              item: liveBase ? `${liveBase}/${parts.slice(0, i + 1).join('/')}` : '/' + parts.slice(0, i + 1).join('/'),
+              item: liveBase ? `${liveBase}/${crumbPath}` : '/' + crumbPath,
             });
           });
           blocks.push({ '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: items });
@@ -4532,6 +4536,7 @@ async function runPrerender(config) {
         liveUrl: (config.liveUrl || '').replace(/\/$/, ''),
         pathSeg: is404 ? '__404__' : pathSeg,
         snapshotUrl: earlySnapshotUrl,
+        renderedPaths: pathList.filter((p) => p !== NOT_FOUND_PATH),
       });
 
       let html = await page.evaluate(() => document.documentElement.outerHTML);

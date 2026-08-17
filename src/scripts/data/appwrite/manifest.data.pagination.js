@@ -1,12 +1,7 @@
 /* Manifest Data Sources - Pagination (Appwrite) */
 
-/**
- * Get first page of results (cursor-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply (from manifest or scope)
- * @returns {Promise<{items: Array, cursor: string|null, total: number, hasMore: boolean}>}
- */
+// First page, cursor-based
+// Returns { items, cursor, total, hasMore }
 async function getFirstPage(dataSourceName, limit, baseQueries = []) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     if (!manifest?.data) {
@@ -87,14 +82,8 @@ async function getFirstPage(dataSourceName, limit, baseQueries = []) {
     }
 }
 
-/**
- * Get next page of results (cursor-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {string} cursor - Cursor from previous page
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply
- * @returns {Promise<{items: Array, cursor: string|null, total: number, hasMore: boolean}>}
- */
+// Next page from cursor
+// Returns { items, cursor, total, hasMore }
 async function getNextPage(dataSourceName, cursor, limit, baseQueries = []) {
     if (!cursor) {
         throw new Error('[Manifest Data] Cursor is required for next page');
@@ -172,14 +161,8 @@ async function getNextPage(dataSourceName, cursor, limit, baseQueries = []) {
     }
 }
 
-/**
- * Get previous page of results (cursor-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {string} cursor - Cursor from current page
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply
- * @returns {Promise<{items: Array, cursor: string|null, total: number, hasMore: boolean}>}
- */
+// Previous page from cursor
+// Returns { items, cursor, total, hasMore }
 async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
     if (!cursor) {
         throw new Error('[Manifest Data] Cursor is required for previous page');
@@ -257,14 +240,8 @@ async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
     }
 }
 
-/**
- * Get specific page (offset-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {number} pageNumber - Page number (1-based)
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply
- * @returns {Promise<{items: Array, page: number, total: number, totalPages: number, hasMore: boolean}>}
- */
+// Specific page (1-based), offset-based
+// Returns { items, page, total, totalPages, hasMore }
 async function getPage(dataSourceName, pageNumber, limit, baseQueries = []) {
     if (pageNumber < 1) {
         throw new Error('[Manifest Data] Page number must be >= 1');

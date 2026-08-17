@@ -23,9 +23,18 @@ Get [CDN links](https://manifestx.dev/getting-started/setup) for existing projec
 **Alpine Plugins:**
 - Color Themes
 - Components
-- Data Sources
+- Data Sources (local, API & Appwrite)
+- Authentication & Teams (Appwrite)
 - Localization
 - SPA Routing
+- Payments
+- Chat
+- Charts
+- Presence & Status
+- Virtual Scrolling
+- Datepicker, Colorpicker & Combobox
+- Markdown, Code & Icons
+- Native App Support (Capacitor)
 
 **UX/UI:**
 - Global Theme
@@ -38,7 +47,14 @@ Get [CDN links](https://manifestx.dev/getting-started/setup) for existing projec
 
 ## 📚 Documentation
 
-For full documentation visit [manifestx.dev](https://manifestx.dev).
+For full documentation visit [manifestx.dev](https://manifestx.dev) — every article is searchable with ⌘K.
+
+<br>
+
+## 🛠 Development
+
+- `npm run start:src` — dev server for the `src/` test project
+- `npm run build` — regenerate `lib/` from `src/` and re-sync `packages/*`
 
 <br>
 
@@ -51,9 +67,11 @@ Each package publishes independently to npm. The `release:*` scripts auto-bump t
 | `npm run release` | `mnfst` | (root) |
 | `npm run release:run` | `mnfst-run` | `packages/run/` |
 | `npm run release:render` | `mnfst-render` | `packages/render/` |
+| `npm run release:publish` | `mnfst-publish` | `packages/publish/` |
+| `npm run release:types` | `mnfst-types` | `packages/types/` |
 | `npm run release:starter` | `mnfst-starter` | `packages/create-starter/` |
 
-Run only the scripts whose package you actually changed.
+Run only the scripts whose package you actually changed (`npm run release:all` publishes everything).
 
 For a **minor** or **major** bump, run `npm version minor` (or `major`) inside the relevant package directory before publishing:
 ```sh

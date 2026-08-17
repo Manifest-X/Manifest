@@ -781,16 +781,12 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                         }
 
-                                        // CRITICAL: Handle base plugin methods ($search, $route, $query) FIRST
-                                        // These are attached directly to arrays by attachArrayMethods
-                                        // Check BEFORE other handlers to ensure they're accessible even if Alpine wraps the array
+                                        // Base plugin methods first — must resolve even when Alpine wraps the array;
+                                        // empty-array fallback covers the loading window
                                         if (key === '$search' || key === '$query') {
-                                            // Check if method exists on target (works even if Alpine wrapped it)
                                             if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                 return target[key].bind(target);
                                             }
-                                            // Fallback: return safe function that returns empty array
-                                            // This prevents Alpine errors when method doesn't exist yet (during loading)
                                             return function () {
                                                 return [];
                                             };
@@ -798,11 +794,9 @@ function registerXMagicMethod(loadDataSource) {
 
                                         // Handle $route function
                                         if (key === '$route') {
-                                            // First check if it exists as a method on the array
                                             if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                 return target[key].bind(target);
                                             }
-                                            // Otherwise create the function
                                             return function (pathKey) {
                                                 if (target && typeof target === 'object') {
                                                     const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
@@ -876,18 +870,14 @@ function registerXMagicMethod(loadDataSource) {
                                                 const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                                                 return createLoadingProxy ? createLoadingProxy(prop) : {};
                                             }
-                                            // CRITICAL: Handle ALL array methods - Alpine may access these before other handlers
-                                            // Check if this is ANY array method from Array.prototype (like createArrayProxyWithRoute does)
+                                            // Array methods bound to target (works even when Alpine proxies the array)
                                             if (typeof key === 'string' && typeof Array.prototype[key] === 'function') {
-                                                // First try to use the method from the target if it exists and is callable
                                                 if (typeof target[key] === 'function') {
                                                     const bound = target[key].bind(target);
-                                                    // Ensure function has proper prototype for Alpine's instanceof checks
+                                                    // Proper Function prototype for Alpine's instanceof checks
                                                     Object.setPrototypeOf(bound, Function.prototype);
                                                     return bound;
                                                 }
-                                                // Fallback: use Array.prototype method bound to target
-                                                // This ensures methods work even if Alpine proxies the array
                                                 const bound = Array.prototype[key].bind(target);
                                                 Object.setPrototypeOf(bound, Function.prototype);
                                                 return bound;
@@ -900,11 +890,9 @@ function registerXMagicMethod(loadDataSource) {
                                             return createLoadingProxy ? createLoadingProxy(prop) : {};
                                         }
 
-                                        // CRITICAL: If target is frozen, return properties directly without proxying
-                                        // Frozen objects are plain copies returned from nested proxies to prevent recursion
+                                        // Frozen targets are plain copies from nested proxies — return directly, never proxy
                                         if (Object.isFrozen(target)) {
                                             const value = target[key];
-                                            // Return primitives directly, don't proxy anything from frozen objects
                                             return value;
                                         }
 
@@ -913,24 +901,19 @@ function registerXMagicMethod(loadDataSource) {
 
                                         if (nestedValue !== undefined && nestedValue !== null) {
                                             if (Array.isArray(nestedValue)) {
-                                                // CRITICAL: For arrays accessed from dataSourceProxy (like $x.json.products),
-                                                // we need to wrap them in a proxy that handles $route and array methods
-                                                // at the proxy level, just like we do in createNestedObjectProxy
+                                                // Nested arrays (e.g. $x.json.products) get $route/array methods at the
+                                                // proxy level, mirroring createNestedObjectProxy
                                                 const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                                 let arrayWithMethods = nestedValue;
                                                 if (attachArrayMethods) {
                                                     arrayWithMethods = attachArrayMethods(nestedValue, prop, reloadDataSource);
                                                 }
 
-                                                // Create a proxy that handles $route and array methods at the top level
-                                                // This ensures Alpine's wrapper can see them (like Appwrite methods)
                                                 const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
                                                 const dataSourceName = prop; // Capture outer prop (data source name like 'json')
                                                 const arrayKey = key; // Capture the array property name (like 'products')
 
-                                                // CRITICAL: Create a Proxy that properly forwards array methods AND Appwrite methods
-                                                // This ensures both work even when Alpine wraps this proxy
-                                                // We use a Proxy with proper get/has/getOwnPropertyDescriptor traps
+                                                // Forward array methods AND Appwrite methods so both survive Alpine wrapping
                                                 const appwriteMethodNames = ['$create', '$update', '$delete', '$query', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove'];
                                                 const baseMethodNames = ['$search', '$route', '$query']; // Base plugin methods available for all data sources
 
@@ -942,8 +925,7 @@ function registerXMagicMethod(loadDataSource) {
                                                             if (target && typeof target === 'object' && prop in target && typeof target[prop] === 'function') {
                                                                 return target[prop].bind(target);
                                                             }
-                                                            // Fallback: return safe function that returns empty array
-                                                            // This prevents Alpine errors when method doesn't exist yet (during loading)
+                                                            // Empty-array fallback covers the loading window
                                                             if (prop === '$search' || prop === '$query') {
                                                                 return function () {
                                                                     return [];
@@ -1072,8 +1054,7 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                             // Only create proxy for objects, return primitives directly
                                             if (typeof nestedValue === 'object' && nestedValue !== null) {
-                                                // CRITICAL: If object is frozen, return it directly without proxying
-                                                // Frozen objects are plain copies returned from nested proxies to prevent recursion
+                                                // Frozen objects are plain copies from nested proxies — never re-proxy
                                                 if (Object.isFrozen(nestedValue)) {
                                                     return nestedValue;
                                                 }
@@ -1090,10 +1071,7 @@ function registerXMagicMethod(loadDataSource) {
                                             // Return primitive values directly
                                             return nestedValue;
                                         }
-                                        // When nestedValue is undefined/null, return an empty array with methods attached
-                                        // This ensures ($x.example.products || []) works correctly - the array will have $search/$query methods
-                                        // We can't know if it should be an array, but returning an array with methods is safer than undefined
-                                        // because it allows method chaining without errors
+                                        // Undefined/null: empty array with methods so ($x.example.products || []) chains safely
                                         const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                         const emptyArray = [];
                                         if (attachArrayMethods) {

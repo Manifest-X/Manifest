@@ -86,7 +86,7 @@
             &>:is(.selected, [aria-selected=true], [aria-current]) {
                 color: var(--color-field-inverse, oklch(20.5% 0 0));
                 background-color: var(--color-field-surface, oklch(87% 0 0));
-                box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)
+                box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1))
             }
 
             /* Background slider for selected tab) */
@@ -111,7 +111,7 @@
                     height: anchor-size(height);
                     background-color: var(--color-page, oklch(98.5% 0 0));
                     border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
-                    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+                    box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1));
                     transition: var(--tab-slide-transition, all 0.15s ease-in-out)
                 }
 
@@ -266,7 +266,7 @@
             height: calc(var(--spacing-field-height, 2.5rem) / 2);
             padding: 0;
             border-radius: var(--spacing-field-height, 2.5rem);
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            box-shadow: var(--shadow-md, 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1));
             opacity: 0;
             transition: var(--transition);
 

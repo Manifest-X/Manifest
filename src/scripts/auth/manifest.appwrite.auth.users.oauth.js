@@ -15,9 +15,7 @@ function initializeOAuth() {
     const waitForStore = () => {
         const store = Alpine.store('auth');
         if (store && !store.loginOAuth) {
-            // Add OAuth method to store
-            // Note: Appwrite accepts any provider string (google, github, etc.) and validates on their side
-            // No need to maintain a registry of supported providers
+            // Appwrite validates provider strings server-side; no registry needed here
             store.loginOAuth = async function (provider, successUrl = window.location.href, failureUrl = window.location.href) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
@@ -37,11 +35,8 @@ function initializeOAuth() {
                 const cleanSuccessUrl = `${currentUrl.origin}${currentUrl.pathname}`;
                 const cleanFailureUrl = `${currentUrl.origin}${currentUrl.pathname}`;
 
-                // Delete any existing anonymous sessions before OAuth
-                // This prevents conflicts where anonymous sessions might interfere with OAuth
-                // Appwrite will create a new account for OAuth if needed.
-                // EXCEPTION: when guest upgrade is enabled we keep the anonymous session
-                // active so Appwrite can link the OAuth identity to it (preserving teams).
+                // Drop anonymous sessions before OAuth — except with guestUpgrade, where the
+                // session stays so Appwrite links the OAuth identity to it (preserving teams)
                 if (this.isAnonymous && this.session && !appwriteConfig?.guestUpgrade) {
                     try {
                         await this._appwrite.account.deleteSession(this.session.$id);
@@ -74,9 +69,8 @@ function initializeOAuth() {
                 this.error = null;
 
                 try {
-                    // Use createOAuth2Token (like the working implementation)
-                    // This returns a token/redirect URL that we manually navigate to
-                    // After OAuth, Appwrite redirects back with userId and secret in URL params
+                    // createOAuth2Token returns a URL we navigate to; Appwrite redirects
+                    // back with userId + secret in URL params
                     const token = await this._appwrite.account.createOAuth2Token(
                         provider,
                         cleanSuccessUrl,
@@ -84,8 +78,7 @@ function initializeOAuth() {
                         ['email'] // Scopes
                     );
 
-                    // Check for redirectUrl - Appwrite may return it in various formats
-                    // Try multiple property names and formats
+                    // Appwrite may return the redirect URL in several formats
                     let redirectUrl = null;
 
                     if (typeof token === 'string') {
@@ -102,30 +95,23 @@ function initializeOAuth() {
                         }
                     }
 
-                    // Clear error state before redirect (whether we found URL or not)
-                    // This prevents any error flash before redirect
+                    // Clear error before redirect to avoid an error flash
                     this.error = null;
 
                     if (redirectUrl) {
-                        // Use requestAnimationFrame to ensure Alpine processes the error clearing
-                        // before redirect happens, preventing error flash
+                        // rAF lets Alpine process the error clear before navigating
                         requestAnimationFrame(() => {
                             window.location.href = redirectUrl;
                         });
-                        // Return immediately - redirect will happen asynchronously
                         return { success: true, redirectUrl: redirectUrl };
                     } else {
-                        // If we can't find redirect URL, log it but don't show error to user
-                        // The redirect might still work via Appwrite's internal handling
+                        // No extractable URL: warn but stay silent — Appwrite's own redirect may still fire
                         console.warn('[Manifest Appwrite Auth] Could not extract redirect URL from token:', token);
-                        // Don't set error - just return failure silently
-                        // This prevents error flash when redirect might still succeed
                         this.inProgress = false;
                         return { success: false, error: 'Could not extract redirect URL' };
                     }
                 } catch (error) {
-                    // Don't show "No redirect URL" errors - they're usually false positives
-                    // Only show other meaningful errors
+                    // "No redirect URL" errors are usually false positives; surface the rest
                     if (!error.message.includes('No redirect URL') && !error.message.includes('redirect')) {
                         this.error = error.message;
                         this.inProgress = false;
@@ -171,8 +157,7 @@ function handleOAuthCallbacks() {
         }
         if (storedProvider) {
             store._oauthProvider = storedProvider;
-            // Keep it in localStorage (cleared on logout)
-            // This allows us to show the correct provider name even after page refresh
+            // Stays in localStorage until logout so the provider name survives refresh
         } else {
             console.warn('[Manifest Appwrite Auth] No OAuth provider found in storage');
         }

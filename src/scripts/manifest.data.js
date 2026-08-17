@@ -364,10 +364,8 @@ function updateStore(dataSourceName, data, options = {}) {
         checkAndDispatchRenderReady();
     }
 
-    // Attach methods to array if it's an array (for new architecture)
-    // This ensures methods are available on the new array reference
+    // Re-attach methods on the new array reference
     if (Array.isArray(reactiveData) && window.ManifestDataProxies?.attachArrayMethods) {
-        // Get the loadDataSource function from main module
         const loadDataSource = window.ManifestDataMain?.loadDataSource;
         if (loadDataSource) {
             window.ManifestDataProxies.attachArrayMethods(reactiveData, dataSourceName, loadDataSource);
@@ -397,8 +395,7 @@ function getRawData(dataSourceName) {
     return rawDataStore.get(dataSourceName);
 }
 
-// Create new object/array references for Alpine reactivity
-// This ensures nested arrays (like fileIds) get new references so Alpine can track changes
+// New object/array references (incl. nested arrays like fileIds) so Alpine tracks changes
 function createReactiveReferences(data, dataSourceName = null) {
     if (data === null || data === undefined) {
         return data;
@@ -771,10 +768,7 @@ function setupTeamChangeListener() {
                     }
                 });
 
-                // Actually reload the data sources (not just clear cache)
-                // This ensures data is fresh when team changes
-
-                // Reload each data source by calling loadDataSource directly
+                // Reload (not just cache-clear) so data is fresh for the new team
                 const loadDataSource = window.ManifestDataMain?.loadDataSource;
                 if (loadDataSource) {
                     // Reload all team-scoped data sources with new team context
@@ -964,8 +958,7 @@ function setupLocaleChangeListener() {
                 }
                 promisesToDelete.forEach(key => loadingPromises.delete(key));
 
-                // Clear nested proxy cache for this data source
-                // This ensures fresh proxies are created with new locale data
+                // Clear nested proxy cache so fresh proxies use the new locale data
                 if (window.ManifestDataProxies?.clearNestedProxyCacheForDataSource) {
                     window.ManifestDataProxies.clearNestedProxyCacheForDataSource(dataSourceName);
                 }
@@ -1795,9 +1788,7 @@ window.ManifestDataLoaders = {
 };
 
 /* Manifest Data Sources - Cloud API Loader */
-// NOTE: This is basic read-only API support included in core for localization compatibility.
-// Full CRUD operations will be available via manifest.api.data.js plugin (planned).
-// When the API plugin is available, it will extend this functionality.
+// Basic read-only API support, included in core for localization compatibility
 
 // Load from API endpoint (read-only)
 async function loadFromAPI(dataSource) {
@@ -4258,21 +4249,17 @@ if (typeof window !== 'undefined') {
 
 
 /* Manifest Data Sources - Object Proxy Creation */
-// Create proxies for nested objects that properly handles arrays and further nesting
-// Simplified: Only proxy arrays, return objects directly (like backup)
+// Proxies nested objects/arrays for $x access. path = keys from the source root,
+// used to resolve values from the raw store without triggering Alpine reactivity.
+// Note (applies throughout): Alpine may wrap our proxies in its own, so always read
+// via rawTarget/the raw store — never `target` — and cache one proxy per raw object,
+// or Alpine sees a "new" object each access and re-evaluates forever.
 function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSource = null, path = []) {
-    // path: array of keys representing the path to this object (e.g., ['specialHeader'] for $x.example.specialHeader)
-    // This allows us to directly access nested values in the raw store without triggering Alpine reactivity
-
-    // CRITICAL: Check if objTarget is already a proxy we created to prevent infinite recursion
-    // Alpine may wrap our proxy, but we should never proxy a proxy we already created
     if (window.ManifestDataProxiesCore?.nestedObjectProxyCache?.has(objTarget)) {
-        // This object is already proxied, return the cached proxy
         return window.ManifestDataProxiesCore.nestedObjectProxyCache.get(objTarget);
     }
 
-    // Get the raw object from the store using the path to ensure we cache the correct object
-    // This is critical because objTarget might be Alpine-wrapped (e.g. when raw wasn't ready at first access)
+    // Resolve the raw object from the store by path (objTarget may be Alpine-wrapped)
     let rawObjectForCache = objTarget;
     if (path.length >= 0 && window.ManifestDataStore?.getRawData && dataSourceName) {
         const rawDataSource = window.ManifestDataStore.getRawData(dataSourceName);
@@ -4294,19 +4281,14 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
         }
     }
 
-    // Check cache first to prevent infinite recursion and ensure same proxy instance is returned
-    // This is critical for Alpine reactivity - if we create a new proxy each time,
-    // Alpine sees it as a "new" object and triggers re-evaluation, causing infinite loops
-    // Use the raw object from store as cache key (WeakMap requires object keys)
+    // Cache check keyed by raw object
     if (window.ManifestDataProxiesCore?.nestedObjectProxyCache?.has(rawObjectForCache)) {
         const cached = window.ManifestDataProxiesCore.nestedObjectProxyCache.get(rawObjectForCache);
 
         return cached;
     }
 
-    // Track active property accesses to prevent circular references
-    // Use a WeakMap to track active accesses per target object (works even with Alpine proxies)
-    // CRITICAL: Use rawObjectForCache as the key, not objTarget, because objTarget might be Alpine-wrapped
+    // Active property accesses per raw target (circular-reference guard)
     if (!window.ManifestDataProxiesCore) {
         window.ManifestDataProxiesCore = {};
     }
@@ -4315,22 +4297,13 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
     }
     const activePropsMap = window.ManifestDataProxiesCore.nestedProxyActiveProps;
 
-    // Initialize active props set for this target if not already present
-    // Use rawObjectForCache as key to ensure consistency even when Alpine wraps the proxy
     if (!activePropsMap.has(rawObjectForCache)) {
         activePropsMap.set(rawObjectForCache, new Set());
     }
 
-    // Store reference to raw target to avoid Alpine proxy wrapping issues
-    // CRITICAL: Alpine may wrap our proxy in its own proxy, making 'target' in the get trap
-    // actually be Alpine's wrapped version. By storing the raw object reference separately,
-    // we can always access the true raw data without triggering Alpine's reactivity
-    // CRITICAL: Always use rawObjectForCache for tracking, not objTarget which might be Alpine-wrapped
+    // rawTarget: the true raw data (see header note); also used as the Proxy target
     const rawTarget = rawObjectForCache;
 
-    // CRITICAL: Use rawTarget as the Proxy target, not objTarget
-    // This ensures Alpine wraps a proxy around raw data, not Alpine-wrapped data
-    // When Alpine wraps our proxy and accesses properties, it won't trigger reactivity loops
     const proxyTarget = rawTarget;
 
     // Track call depth for debugging recursion
@@ -4377,7 +4350,6 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                     } catch (e) { /* ignore */ }
                 }
 
-                // CRITICAL: If rawTarget is already a proxy we created, get value directly from store
                 const isRawTargetProxied = window.ManifestDataProxiesCore?.nestedObjectProxyCache?.has(rawTarget);
 
                 // Required by handleCircularReference (no debug stack capture)
@@ -4391,13 +4363,12 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                 // Handle toPrimitive for text content
                 if (key === Symbol.toPrimitive) {
                     return function () {
-                        // Use rawTarget (rawObjectForCache) to avoid Alpine reactivity issues
                         try {
                             const getRawData = window.ManifestDataStore?.getRawData;
                             if (getRawData && dataSourceName && path.length >= 0) {
                                 const rawDataSource = getRawData(dataSourceName);
                                 if (rawDataSource && typeof rawDataSource === 'object') {
-                                    // Use a helper function to safely access properties without triggering proxies
+                                    // Safe property access without triggering proxies
                                     const safeGet = (obj, prop) => {
                                         if (obj && typeof obj === 'object' && prop in obj) {
                                             try {
@@ -4414,7 +4385,6 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
 
                                     let current = rawDataSource;
                                     let pathValid = true;
-                                    // Traverse the full path including the current key to get the final value
                                     const fullPath = [...path, key];
                                     for (let i = 0; i < fullPath.length; i++) {
                                         const pathKey = fullPath[i];
@@ -4438,13 +4408,10 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                     };
                 }
 
-                // Check for circular reference using WeakMap
-                // Use rawTarget (rawObjectForCache) instead of target to ensure we're tracking the correct object
-                // This is critical because target might be Alpine's wrapped version
+                // Circular reference check
                 const activeProps = activePropsMap.get(rawTarget);
                 const propKey = String(key);
 
-                // Use extracted circular reference handler
                 const handleCircularReference = window.ManifestDataProxiesHandlers?.handleCircularReference;
                 if (handleCircularReference) {
                     const circularResult = handleCircularReference({
@@ -4458,13 +4425,12 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                         triggeredBy,
                         shouldLog: false,
                     });
-                    // If handler returned a value (including undefined), use it
-                    // null means not a circular reference, continue normal flow
+                    // null means not circular; any other value (incl. undefined) is the result
                     if (circularResult !== null) {
                         return circularResult;
                     }
                 } else {
-                    // Fallback to inline handling if handler not available (shouldn't happen in production)
+                    // Inline fallback if handler unavailable
                     if (activeProps && activeProps.has(propKey)) {
                         if (activeProps) {
                             activeProps.delete(propKey);
@@ -4473,34 +4439,23 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                     }
                 }
 
-                // Mark this property as being accessed (temporarily, will remove after getting value)
-                // CRITICAL: Do this BEFORE any async operations or proxy creation to prevent re-entry
+                // Mark property as in-flight before any proxy creation (re-entry guard)
                 if (activeProps) {
                     activeProps.add(propKey);
                 }
 
-                // CRITICAL: Always use rawTarget directly, never target
-                // Even though we set proxyTarget to rawTarget, Alpine may wrap our proxy
-                // and replace 'target' with an Alpine-wrapped version
-                // By always using rawTarget (captured in closure), we ensure we're accessing raw data
                 let value;
 
                 try {
-                    // Use a safe property accessor that bypasses proxies
                     const safeGet = (obj, prop) => {
                         if (!obj || typeof obj !== 'object') return undefined;
-                        // Use Object.prototype.hasOwnProperty to check existence without triggering getters
                         if (Object.prototype.hasOwnProperty.call(obj, prop)) {
-                            // Use direct property access - this bypasses proxy getters
                             return obj[prop];
                         }
                         return undefined;
                     };
 
-                    // ALWAYS use rawTarget, never target (which might be Alpine-wrapped)
-                    // For nested paths, traverse step by step using safe property access
-                    // rawTarget is always the object at this path (path from root to this proxy).
-                    // So we only need to read the requested key from rawTarget, never re-traverse path.
+                    // rawTarget is already the object at `path`; just read the requested key
                     value = safeGet(rawTarget, key);
                 } catch (e) {
                     // Silently handle errors
@@ -4528,23 +4483,19 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                     return fallback !== undefined ? fallback : '';
                 }
 
-                // CRITICAL: Return primitives immediately to prevent Alpine wrapping issues
-                // This must come BEFORE array/object checks to handle primitive values correctly
+                // Primitives return immediately (must precede array/object checks)
                 if (value === null ||
                     typeof value === 'string' || typeof value === 'number' ||
                     typeof value === 'boolean' || typeof value === 'symbol') {
-                    // Remove from activeProps before returning
                     if (activeProps) {
                         activeProps.delete(propKey);
                     }
-                    // Reset depth after returning primitive
                     callDepthMap.delete(rawTarget);
                     return value;
                 }
 
-                // If the property is an array, create a proxy that handles array methods and $route at the top level
+                // Arrays: proxy with array methods and $route handled at the top level
                 if (Array.isArray(value)) {
-                    // First attach methods directly to the array (for compatibility)
                     let arrayWithMethods = value;
                     try {
                         const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
@@ -4555,19 +4506,17 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                         // Silently handle error attaching methods
                     }
 
-                    // CRITICAL: Store reference to key and dataSourceName for toJSON access
                     const arrayKey = key;
                     const arrayDataSourceName = dataSourceName;
 
-                    // CRITICAL: Define toJSON on the array before proxying
-                    // JSON.stringify checks for toJSON before accessing properties
+                    // toJSON must exist before proxying — JSON.stringify checks it first
                     if (typeof arrayWithMethods.toJSON !== 'function') {
                         Object.defineProperty(arrayWithMethods, 'toJSON', {
                             enumerable: false,
                             configurable: true,
                             writable: false,
                             value: function () {
-                                // Get raw array from store for serialization
+                                // Serialize from the raw store array
                                 try {
                                     const getRawData = window.ManifestDataStore?.getRawData;
                                     if (getRawData && arrayDataSourceName) {
@@ -4575,35 +4524,28 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                                         if (rawDataSource && typeof rawDataSource === 'object') {
                                             const rawArray = rawDataSource[arrayKey];
                                             if (Array.isArray(rawArray)) {
-                                                return rawArray; // Return raw array directly
+                                                return rawArray;
                                             }
                                         }
                                     }
                                 } catch (e) {
                                     // Fallback
                                 }
-                                // Fallback to arrayWithMethods (should be a plain array)
                                 return Array.isArray(arrayWithMethods) ? arrayWithMethods : arrayWithMethods;
                             }
                         });
                     }
 
-                    // Create a proxy for the array that handles methods at the top level
-                    // This is similar to how Appwrite methods work - handled in proxy's get trap
                     const arrayProxy = new Proxy(arrayWithMethods, {
                         get(proxyTarget, prop) {
-                            // CRITICAL: Handle toJSON for JSON.stringify compatibility
-                            // JSON.stringify calls toJSON if it exists, otherwise it accesses properties
                             if (prop === 'toJSON') {
-                                // Return the toJSON method directly from the target
                                 return proxyTarget.toJSON;
                             }
 
-                            // CRITICAL: Handle Symbol.toPrimitive for string conversion
+                            // String conversion
                             if (prop === Symbol.toPrimitive) {
                                 return function (hint) {
                                     if (hint === 'string' || hint === 'default') {
-                                        // Use toJSON if available, otherwise stringify directly
                                         if (typeof proxyTarget.toJSON === 'function') {
                                             return JSON.stringify(proxyTarget.toJSON());
                                         }
@@ -4613,20 +4555,16 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                                 };
                             }
 
-                            // Handle $search and $query at proxy level with safe fallbacks
+                            // $search/$query with empty-array fallback while loading
                             if (prop === '$search' || prop === '$query') {
-                                // Check if method exists on target
                                 if (proxyTarget && typeof proxyTarget === 'object' && prop in proxyTarget && typeof proxyTarget[prop] === 'function') {
                                     return proxyTarget[prop].bind(proxyTarget);
                                 }
-                                // Fallback: return safe function that returns empty array
-                                // This prevents Alpine errors when method doesn't exist yet (during loading)
                                 return function () {
                                     return [];
                                 };
                             }
 
-                            // Handle $route at proxy level (like Appwrite methods)
                             if (prop === '$route') {
                                 const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
                                 if (!createRouteProxy) {
@@ -4636,11 +4574,9 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                                     if (proxyTarget && Array.isArray(proxyTarget)) {
                                         const getRawData = window.ManifestDataStore?.getRawData;
                                         let dataToUse = proxyTarget;
-                                        // Try to get the nested array from raw data if needed
                                         if (dataSourceName && getRawData) {
                                             const rawData = getRawData(dataSourceName);
                                             if (rawData && typeof rawData === 'object' && !Array.isArray(rawData)) {
-                                                // If raw data is an object, try to find the nested array
                                                 if (rawData[key] && Array.isArray(rawData[key])) {
                                                     dataToUse = rawData[key];
                                                 }
@@ -4659,16 +4595,15 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                                     }
                                     return new Proxy({}, { get: () => undefined });
                                 };
-                                // Ensure function has proper prototype for Alpine's instanceof checks
+                                // Proper Function prototype for Alpine's instanceof checks
                                 Object.setPrototypeOf(routeFunction, Function.prototype);
-                                // Mark as callable
                                 routeFunction.call = Function.prototype.call;
                                 routeFunction.apply = Function.prototype.apply;
                                 routeFunction.bind = Function.prototype.bind;
                                 return routeFunction;
                             }
 
-                            // Handle ALL array methods at proxy level (like Appwrite methods)
+                            // Array methods bound to the target
                             if (typeof prop === 'string' && typeof Array.prototype[prop] === 'function') {
                                 if (typeof proxyTarget[prop] === 'function') {
                                     const bound = proxyTarget[prop].bind(proxyTarget);
@@ -4680,12 +4615,11 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                                 return bound;
                             }
 
-                            // Fall through to target for other properties (including numeric indices)
+                            // Fall through (including numeric indices)
                             return proxyTarget[prop];
                         },
-                        // CRITICAL: Alpine uses has() to check if properties exist before accessing them
+                        // Alpine checks has() before property access
                         has(target, prop) {
-                            // Always report that base plugin methods exist (we provide fallbacks)
                             if (prop === '$route' || prop === '$search' || prop === '$query') {
                                 return true;
                             }
@@ -4694,10 +4628,9 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                             }
                             return prop in target;
                         },
-                        // CRITICAL: Alpine uses getOwnPropertyDescriptor to introspect properties
+                        // Alpine introspects via getOwnPropertyDescriptor; mirror get()
                         getOwnPropertyDescriptor(target, prop) {
                             if (prop === '$route') {
-                                // Create the same function as in get() to ensure consistency
                                 const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
                                 if (!createRouteProxy) {
                                     return {
@@ -4759,14 +4692,13 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                             }
                             return Reflect.getOwnPropertyDescriptor(target, prop);
                         },
-                        // CRITICAL: Include $route in ownKeys so Alpine sees it as an own property
+                        // $route/toJSON must appear as own keys for Alpine and JSON.stringify
                         ownKeys(target) {
                             const keys = Reflect.ownKeys(target);
                             const result = [...keys];
                             if (!result.includes('$route')) {
                                 result.push('$route');
                             }
-                            // CRITICAL: Include toJSON for JSON.stringify compatibility
                             if (!result.includes('toJSON')) {
                                 result.push('toJSON');
                             }
@@ -4774,7 +4706,6 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                         }
                     });
 
-                    // Remove from activeProps after creating array proxy
                     if (activeProps) {
                         activeProps.delete(propKey);
                     }
@@ -4782,22 +4713,11 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                     return arrayProxy;
                 }
 
-                // If the property is an object, wrap it recursively for further nesting
-                // (activeProps is already declared above)
-                // Pass along dataSourceName and reloadDataSource to maintain context
+                // Objects: wrap recursively for further nesting
                 if (typeof value === 'object' && value !== null) {
-                    // NOTE: activeProps was already removed above after getting the value
-                    // This prevents false circular reference detection when Alpine wraps our proxy
-
-                    // CRITICAL: Always use the raw value we got from the store using path-based access
-                    // The 'value' variable already contains the raw data from the store (via path traversal)
-                    // This ensures we never use Alpine-wrapped objects
                     let objectToProxy = value;
 
-                    // CRITICAL FIX: For simple objects accessed through nested proxies,
-                    // return a plain object copy instead of creating another proxy.
-                    // This prevents infinite recursion when Alpine wraps our proxy and accesses properties.
-                    // Use extracted simple object handler
+                    // Simple objects return as plain copies instead of proxies (recursion guard)
                     const handleSimpleObject = window.ManifestDataProxiesSimple?.handleSimpleObject;
                     if (handleSimpleObject && !Array.isArray(value)) {
                         const plainCopy = handleSimpleObject(value, {
@@ -4807,17 +4727,14 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                             fullPath,
                             callDepthMap
                         });
-                        // If handler returned a plain copy, use it (null means not a simple object or failed)
+                        // null means not a simple object; fall through to proxy creation
                         if (plainCopy !== null) {
                             return plainCopy;
                         }
-                        // Fall through to proxy creation if not a simple object or copy failed
                     }
 
-                    // CRITICAL: If rawTarget is already proxied, check if the value itself is proxied before creating new proxy
-                    // This prevents infinite recursion when Alpine wraps our proxy and accesses nested properties
+                    // If rawTarget is already proxied, resolve the nested raw object and reuse its cached proxy
                     if (isRawTargetProxied) {
-                        // Get the raw nested object from store to check cache
                         const newPath = [...path, key];
                         let rawNestedObject = objectToProxy;
 
@@ -4846,7 +4763,6 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                             // Silently handle errors
                         }
 
-                        // If the nested object is already proxied, return the cached proxy
                         if (window.ManifestDataProxiesCore?.nestedObjectProxyCache?.has(rawNestedObject)) {
                             const cachedProxy = window.ManifestDataProxiesCore.nestedObjectProxyCache.get(rawNestedObject);
                             if (cachedProxy) {
@@ -4857,13 +4773,9 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                             }
                         }
 
-                        // If rawTarget is proxied but nested object isn't, we still need to create a proxy
-                        // But use the raw nested object from store as the target
                         objectToProxy = rawNestedObject;
                     }
 
-                    // CRITICAL: Check if this object is already a proxy we created to prevent infinite recursion
-                    // This can happen when Alpine wraps our proxy and accesses properties on the wrapped proxy
                     if (window.ManifestDataProxiesCore?.nestedObjectProxyCache?.has(objectToProxy)) {
                         const cachedProxy = window.ManifestDataProxiesCore.nestedObjectProxyCache.get(objectToProxy);
                         if (activeProps) {
@@ -4872,17 +4784,14 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                         return cachedProxy;
                     }
 
-                    // Final check: if still undefined or null, return undefined
                     if (objectToProxy === undefined || objectToProxy === null) {
                         return undefined;
                     }
 
-                    // CRITICAL FIX: Check cache BEFORE calling createNestedObjectProxy to avoid function call overhead
-                    // Get the raw nested object from store to use as cache key
+                    // Cache check before createNestedObjectProxy (avoids call overhead)
                     const newPath = [...path, key];
                     let rawNestedObject = objectToProxy;
 
-                    // Try to get the raw object from store using the new path
                     const getRawData = window.ManifestDataStore?.getRawData;
                     if (getRawData && dataSourceName) {
                         const rawDataSource = getRawData(dataSourceName);
@@ -4907,7 +4816,6 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
                     if (window.ManifestDataProxiesCore?.nestedObjectProxyCache?.has(rawNestedObject)) {
                         const cachedProxy = window.ManifestDataProxiesCore.nestedObjectProxyCache.get(rawNestedObject);
                         if (cachedProxy) {
-                            // Remove from activeProps before returning cached proxy
                             if (activeProps) {
                                 activeProps.delete(propKey);
                             }
@@ -4917,33 +4825,27 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
 
                     const nestedProxy = createNestedObjectProxy(objectToProxy, dataSourceName, reloadDataSource, newPath);
 
-                    // Remove from activeProps after creating nested proxy
-                    // This allows Alpine to access nested properties without false circular detection
                     if (activeProps) {
                         activeProps.delete(propKey);
                     }
 
-                    // Don't reset depth here - nested proxy will handle it
+                    // Depth reset handled by the nested proxy
                     return nestedProxy;
                 }
 
-                // If value is undefined, return a loading proxy to maintain chain and prevent errors
+                // Undefined: loading proxy keeps the chain alive
                 if (value === undefined) {
-                    // Remove from activeProps before returning
                     if (activeProps) {
                         activeProps.delete(propKey);
                     }
-                    // Reset depth
                     callDepthMap.delete(rawTarget);
                     return window.ManifestDataProxiesCore.createLoadingProxy(dataSourceName);
                 }
 
-                // Remove from activeProps before returning
                 if (activeProps) {
                     activeProps.delete(propKey);
                 }
 
-                // Reset depth
                 callDepthMap.delete(rawTarget);
                 return value;
             } finally {
@@ -4952,9 +4854,7 @@ function createNestedObjectProxy(objTarget, dataSourceName = null, reloadDataSou
         }
     });
 
-    // Cache the proxy before returning to prevent re-proxying the same object
-    // Use the raw object from store as cache key (WeakMap requires object keys)
-    // Critical for Alpine reactivity - prevents infinite re-evaluation loops
+    // Cache keyed by raw object (see header note)
     if (window.ManifestDataProxiesCore?.nestedObjectProxyCache) {
         window.ManifestDataProxiesCore.nestedObjectProxyCache.set(rawObjectForCache, proxy);
 
@@ -5700,7 +5600,6 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         return existing;
     }
 
-    // CRITICAL: Make files array reactive so Alpine can track changes
     const files = typeof Alpine !== 'undefined' && Alpine.reactive
         ? Alpine.reactive([])
         : [];
@@ -5723,8 +5622,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                 throw new Error(`[Manifest Data] Table "${tableName}" not found`);
             }
 
-            // CRITICAL: parseStorageConfig uses getManifest() which might return null
-            // Instead, parse the storage config directly using the manifest we already have
+            // Parse storage config directly; parseStorageConfig's getManifest() may be null here
             const storageConfigObj = tableDataSource?.storage;
             if (!storageConfigObj || typeof storageConfigObj !== 'object') {
                 throw new Error(`[Manifest Data] Storage bucket "${bucketName}" not configured for table "${tableName}"`);
@@ -5773,8 +5671,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             files.length = 0;
             files.push(...loadedFiles);
 
-            // Update lastSeenFileIds to match what was actually loaded
-            // This prevents false positives when the watch effect runs
+            // Sync lastSeenFileIds so the watch effect doesn't false-positive
             const $x = window.Alpine?.magic?.('x')?.();
             if ($x && $x[tableName] && Array.isArray($x[tableName])) {
                 const entry = $x[tableName].find(item => item.$id === entryId);
@@ -5800,8 +5697,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             const eventTableName = e.detail?.tableName || 'projects'; // Default to 'projects' for backward compat
 
             if (eventTableName === tableName && eventEntryId === entryId) {
-                // Use requestAnimationFrame for immediate execution in next frame
-                // This ensures DOM updates are complete but doesn't add unnecessary delay
+                // rAF: run after DOM updates settle
                 requestAnimationFrame(() => {
                     loadFiles();
                 });
@@ -5853,8 +5749,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         });
     };
 
-    // Watch table data for fileIds changes
-    // CRITICAL: Track last seen fileIds for THIS specific entry to prevent false positives
+    // Watch table data for fileIds changes; tracked per entry to avoid false positives
     let lastSeenFileIds = null;
 
     const watchTableData = () => {
@@ -5868,15 +5763,13 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                     const currentFileIds = entry[columnName || 'fileIds'] || [];
                     const currentFileIdsStr = JSON.stringify(currentFileIds);
 
-                    // Only reload if fileIds actually changed for THIS entry
-                    // Compare with lastSeenFileIds, not with files array (which might be stale)
+                    // Reload only when fileIds changed for THIS entry (files array may be stale);
+                    // set lastSeenFileIds before loading to prevent duplicate loads
                     if (lastSeenFileIds !== currentFileIdsStr && !loading) {
-                        // Update lastSeenFileIds BEFORE loading to prevent duplicate loads
                         lastSeenFileIds = currentFileIdsStr;
 
-                        // Load files immediately - don't wait for next frame
                         loadFiles().then(() => {
-                            // After loading, verify fileIds still match (in case they changed during load)
+                            // Re-verify fileIds in case they changed during load
                             const $xAfter = window.Alpine?.magic?.('x')?.();
                             if ($xAfter && $xAfter[tableName] && Array.isArray($xAfter[tableName])) {
                                 const entryAfter = $xAfter[tableName].find(item => item.$id === entryId);
@@ -5889,13 +5782,10 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                             console.error('[Manifest Data] Failed to load files after fileIds change:', err);
                         });
                     } else if (lastSeenFileIds === null) {
-                        // Initialize lastSeenFileIds on first run
                         lastSeenFileIds = currentFileIdsStr;
                     }
 
-                    // CRITICAL: Also check if files array is out of sync with fileIds
-                    // This handles cases where fileIds changed but watch didn't trigger
-                    // Use the already-declared currentFileIds variable
+                    // Sync check: fileIds may have changed without triggering the watch
                     const filesFileIds = files.map(f => f.$id);
                     const fileIdsMatch = currentFileIds.length === filesFileIds.length &&
                         currentFileIds.every(id => filesFileIds.includes(id));
@@ -5989,27 +5879,21 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
         return [];
     }
 
-    // Get all files from the bucket by calling Appwrite storage directly
-    // This bypasses any scope filtering that might be applied in loadDataSource
-    // We need ALL files the user has access to, not just those matching the current scope
+    // List bucket files via Appwrite directly — bypasses loadDataSource scope filtering
     const services = await window.ManifestDataAppwrite._getAppwriteDataServices?.();
     if (!services?.storage) {
         throw new Error('[Manifest Data] Appwrite Storage service not available');
     }
 
-    // Call Appwrite storage.listFiles directly to get all files user has access to
-    // This returns files based on Appwrite's permission system, not our scope filtering
     const response = await services.storage.listFiles(bucketId, []);
     const allFiles = response?.files || [];
 
     // Filter to only files that are in the entry's fileIds array
     let entryFiles = allFiles.filter(file => fileIds.includes(file.$id));
 
-    // Check for missing files - these might have been uploaded with incorrect permissions
-    // (e.g., before we fixed buildStoragePermissions to use project team permissions)
+    // Missing files: may exist with different permissions, or be deleted
     const missingFileIds = fileIds.filter(id => !entryFiles.some(f => f.$id === id));
 
-    // CRITICAL DEBUG: Log missing files to understand where stale fileIds come from
     if (missingFileIds.length > 0) {
         console.warn('[Manifest Data] Found missing fileIds in database entry:', {
             tableName,
@@ -6020,13 +5904,10 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
         });
     }
 
-    // Note: missingFileIds are silently skipped - they may have been deleted
-    // CRITICAL: If we have missing fileIds, we should clean them up from the database
-    // instead of trying to fetch them (which causes 404s)
-    const confirmedMissingFileIds = []; // Track fileIds confirmed to be deleted (404s)
+    // Stale fileIds get cleaned from the database rather than refetched (avoids 404s)
+    const confirmedMissingFileIds = []; // fileIds confirmed deleted (404s)
 
     if (missingFileIds.length > 0) {
-        // Log warning about stale fileIds
         console.warn('[Manifest Data] Found stale fileIds in database entry:', {
             tableName,
             entryId,
@@ -6035,12 +5916,9 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
             suggestion: 'These fileIds will be cleaned up automatically'
         });
 
-        // Try to fetch missing files individually ONLY if they might exist with different permissions
-        // Skip files that are clearly deleted (404s) to avoid unnecessary API calls
+        // Fetch missing files individually; getFile is more reliable than getFileView for existence checks
         for (const missingFileId of missingFileIds) {
             try {
-                // Try to get file metadata directly using getFile if available
-                // This is more reliable than getFileView for checking if a file exists
                 let fileMetadata = null;
                 let fileExists = false;
 
@@ -6182,9 +6060,7 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
         throw new Error(`[Manifest Data] Invalid Appwrite configuration for "${tableName}"`);
     }
 
-    // CRITICAL: Read from store FIRST to get the latest optimistic updates
-    // This prevents race conditions when multiple files are uploaded concurrently
-    // If store has the entry, use it; otherwise fall back to database
+    // Read store first for latest optimistic updates (concurrent uploads race otherwise)
     let fileIds = null;
     const store = typeof Alpine !== 'undefined' && Alpine.store ? Alpine.store('data') : null;
     if (store && store[tableName] && Array.isArray(store[tableName])) {
@@ -6515,8 +6391,7 @@ async function buildStoragePermissions(scope, dataSource = {}) {
         return [];
     }
 
-    // Check if file belongs to a database entry (e.g., a project)
-    // This allows files to inherit permissions from a table entry
+    // belongsTo: file inherits permissions from a table entry
     if (dataSource.belongsTo) {
         const { table, id } = dataSource.belongsTo;
         if (table && id) {
@@ -9037,16 +8912,12 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                         }
 
-                                        // CRITICAL: Handle base plugin methods ($search, $route, $query) FIRST
-                                        // These are attached directly to arrays by attachArrayMethods
-                                        // Check BEFORE other handlers to ensure they're accessible even if Alpine wraps the array
+                                        // Base plugin methods first — must resolve even when Alpine wraps the array;
+                                        // empty-array fallback covers the loading window
                                         if (key === '$search' || key === '$query') {
-                                            // Check if method exists on target (works even if Alpine wrapped it)
                                             if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                 return target[key].bind(target);
                                             }
-                                            // Fallback: return safe function that returns empty array
-                                            // This prevents Alpine errors when method doesn't exist yet (during loading)
                                             return function () {
                                                 return [];
                                             };
@@ -9054,11 +8925,9 @@ function registerXMagicMethod(loadDataSource) {
 
                                         // Handle $route function
                                         if (key === '$route') {
-                                            // First check if it exists as a method on the array
                                             if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
                                                 return target[key].bind(target);
                                             }
-                                            // Otherwise create the function
                                             return function (pathKey) {
                                                 if (target && typeof target === 'object') {
                                                     const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
@@ -9132,18 +9001,14 @@ function registerXMagicMethod(loadDataSource) {
                                                 const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                                                 return createLoadingProxy ? createLoadingProxy(prop) : {};
                                             }
-                                            // CRITICAL: Handle ALL array methods - Alpine may access these before other handlers
-                                            // Check if this is ANY array method from Array.prototype (like createArrayProxyWithRoute does)
+                                            // Array methods bound to target (works even when Alpine proxies the array)
                                             if (typeof key === 'string' && typeof Array.prototype[key] === 'function') {
-                                                // First try to use the method from the target if it exists and is callable
                                                 if (typeof target[key] === 'function') {
                                                     const bound = target[key].bind(target);
-                                                    // Ensure function has proper prototype for Alpine's instanceof checks
+                                                    // Proper Function prototype for Alpine's instanceof checks
                                                     Object.setPrototypeOf(bound, Function.prototype);
                                                     return bound;
                                                 }
-                                                // Fallback: use Array.prototype method bound to target
-                                                // This ensures methods work even if Alpine proxies the array
                                                 const bound = Array.prototype[key].bind(target);
                                                 Object.setPrototypeOf(bound, Function.prototype);
                                                 return bound;
@@ -9156,11 +9021,9 @@ function registerXMagicMethod(loadDataSource) {
                                             return createLoadingProxy ? createLoadingProxy(prop) : {};
                                         }
 
-                                        // CRITICAL: If target is frozen, return properties directly without proxying
-                                        // Frozen objects are plain copies returned from nested proxies to prevent recursion
+                                        // Frozen targets are plain copies from nested proxies — return directly, never proxy
                                         if (Object.isFrozen(target)) {
                                             const value = target[key];
-                                            // Return primitives directly, don't proxy anything from frozen objects
                                             return value;
                                         }
 
@@ -9169,24 +9032,19 @@ function registerXMagicMethod(loadDataSource) {
 
                                         if (nestedValue !== undefined && nestedValue !== null) {
                                             if (Array.isArray(nestedValue)) {
-                                                // CRITICAL: For arrays accessed from dataSourceProxy (like $x.json.products),
-                                                // we need to wrap them in a proxy that handles $route and array methods
-                                                // at the proxy level, just like we do in createNestedObjectProxy
+                                                // Nested arrays (e.g. $x.json.products) get $route/array methods at the
+                                                // proxy level, mirroring createNestedObjectProxy
                                                 const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                                 let arrayWithMethods = nestedValue;
                                                 if (attachArrayMethods) {
                                                     arrayWithMethods = attachArrayMethods(nestedValue, prop, reloadDataSource);
                                                 }
 
-                                                // Create a proxy that handles $route and array methods at the top level
-                                                // This ensures Alpine's wrapper can see them (like Appwrite methods)
                                                 const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
                                                 const dataSourceName = prop; // Capture outer prop (data source name like 'json')
                                                 const arrayKey = key; // Capture the array property name (like 'products')
 
-                                                // CRITICAL: Create a Proxy that properly forwards array methods AND Appwrite methods
-                                                // This ensures both work even when Alpine wraps this proxy
-                                                // We use a Proxy with proper get/has/getOwnPropertyDescriptor traps
+                                                // Forward array methods AND Appwrite methods so both survive Alpine wrapping
                                                 const appwriteMethodNames = ['$create', '$update', '$delete', '$query', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove'];
                                                 const baseMethodNames = ['$search', '$route', '$query']; // Base plugin methods available for all data sources
 
@@ -9198,8 +9056,7 @@ function registerXMagicMethod(loadDataSource) {
                                                             if (target && typeof target === 'object' && prop in target && typeof target[prop] === 'function') {
                                                                 return target[prop].bind(target);
                                                             }
-                                                            // Fallback: return safe function that returns empty array
-                                                            // This prevents Alpine errors when method doesn't exist yet (during loading)
+                                                            // Empty-array fallback covers the loading window
                                                             if (prop === '$search' || prop === '$query') {
                                                                 return function () {
                                                                     return [];
@@ -9328,8 +9185,7 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                             // Only create proxy for objects, return primitives directly
                                             if (typeof nestedValue === 'object' && nestedValue !== null) {
-                                                // CRITICAL: If object is frozen, return it directly without proxying
-                                                // Frozen objects are plain copies returned from nested proxies to prevent recursion
+                                                // Frozen objects are plain copies from nested proxies — never re-proxy
                                                 if (Object.isFrozen(nestedValue)) {
                                                     return nestedValue;
                                                 }
@@ -9346,10 +9202,7 @@ function registerXMagicMethod(loadDataSource) {
                                             // Return primitive values directly
                                             return nestedValue;
                                         }
-                                        // When nestedValue is undefined/null, return an empty array with methods attached
-                                        // This ensures ($x.example.products || []) works correctly - the array will have $search/$query methods
-                                        // We can't know if it should be an array, but returning an array with methods is safer than undefined
-                                        // because it allows method chaining without errors
+                                        // Undefined/null: empty array with methods so ($x.example.products || []) chains safely
                                         const attachArrayMethods = window.ManifestDataProxies?.attachArrayMethods;
                                         const emptyArray = [];
                                         if (attachArrayMethods) {
@@ -11632,11 +11485,8 @@ async function initializeDataSourcesPlugin() {
             _currentUrl: existingStore._currentUrl || window.location.pathname
         });
 
-        // Pre-load local file-backed sources so $x.* has real data on the first
-        // render pass (avoids SPA flash + missing prerender data). At most one
-        // fetch each (localized objects load only the current + default locale).
-        // Skipped/on-demand: Appwrite (needs auth), API-URL (side-effects), and
-        // the special "manifest" key (handled separately below).
+        // Pre-load local file-backed sources so $x.* renders real data first pass;
+        // Appwrite, API-URL, and "manifest" sources stay on-demand.
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             const locale = (typeof document !== 'undefined' && document.documentElement?.lang) || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';

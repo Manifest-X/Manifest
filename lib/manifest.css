@@ -290,13 +290,13 @@
         }
     }
 
-    :where([popover]) {
+    :where([popover]):not(.unstyle):not(:popover-open) {
         display: none;
+    }
 
-        &:popover-open {
-            display: flex;
-            animation: mnfst-popover-in .15s ease-in both;
-        }
+    :where([popover]):not(.unstyle):popover-open {
+        display: flex;
+        animation: mnfst-popover-in .15s ease-in both;
     }
 
     :where(progress) {
@@ -985,7 +985,6 @@
         flex-direction: column;
         width: 100%;
         height: 100%;
-        box-shadow: var(--shadow);
         overflow: hidden;
 
         /* Chat log scroll container */
@@ -2470,11 +2469,9 @@
 }
 
 /* Manifest Dialogs */
+
 @layer base, components, utilities;
 
-[popover]:not(.unstyle):not(:popover-open) {
-    display: none;
-}
 
 
 @layer components {
@@ -2493,7 +2490,7 @@
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
         border: 0 none;
         border-radius: calc(var(--radius, 0.5rem) * 2);
-        box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        box-shadow: var(--shadow-lg, 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1));
 
         &::backdrop {
             background-color: rgba(0, 0, 0, 0.2);
@@ -2717,11 +2714,9 @@
 }
 
 /* Manifest Dropdowns */
+
 @layer base, components, utilities;
 
-[popover]:not(.unstyle):not(:popover-open) {
-    display: none;
-}
 
 
 @layer components {
@@ -2870,6 +2865,7 @@
     }
 
     /* Top alignment */
+
     :where(menu.top) {
         position-area: top;
         margin: var(--spacing-popover-offset, 0.5rem) 0
@@ -3251,7 +3247,7 @@
             &>:is(.selected, [aria-selected=true], [aria-current]) {
                 color: var(--color-field-inverse, oklch(20.5% 0 0));
                 background-color: var(--color-field-surface, oklch(87% 0 0));
-                box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)
+                box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1))
             }
 
             /* Background slider for selected tab) */
@@ -3276,7 +3272,7 @@
                     height: anchor-size(height);
                     background-color: var(--color-page, oklch(98.5% 0 0));
                     border-radius: max(calc(var(--radius, 0.5rem) - var(--spacing, 0.25rem) / 2), 0px);
-                    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+                    box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1));
                     transition: var(--tab-slide-transition, all 0.15s ease-in-out)
                 }
 
@@ -3431,7 +3427,7 @@
             height: calc(var(--spacing-field-height, 2.5rem) / 2);
             padding: 0;
             border-radius: var(--spacing-field-height, 2.5rem);
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            box-shadow: var(--shadow-md, 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1));
             opacity: 0;
             transition: var(--transition);
 
@@ -3790,7 +3786,7 @@
             transform: translateY(-50%);
             background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
             border-radius: 200px;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            box-shadow: var(--shadow-md, 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1));
             cursor: pointer;
             transition: var(--transition, all .05s ease-in-out)
         }
@@ -4057,11 +4053,9 @@
 }
 
 /* Manifest Sidebars */
+
 @layer base, components, utilities;
 
-[popover]:not(.unstyle):not(:popover-open) {
-    display: none;
-}
 
 
 @layer components {
@@ -4246,7 +4240,7 @@
             height: calc(var(--spacing-field-height, 2.25rem) * 0.65 - 0.125rem * 2);
             border-radius: 50%;
             background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
-            box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+            box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1));
             transition: var(--transition, all .05s ease-in-out)
         }
 
@@ -4381,7 +4375,7 @@
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
         border: 1px solid var(--color-line, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
         border-radius: calc(var(--radius, 0.5rem) * 2);
-        box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        box-shadow: var(--shadow-lg, 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1));
         overflow: hidden;
         opacity: 0;
         transform: translateY(1rem);
@@ -4455,11 +4449,9 @@
 }
 
 /* Manifest Tooltips */
+
 @layer base, components, utilities;
 
-[popover]:not(.unstyle):not(:popover-open) {
-    display: none;
-}
 
 
 @layer utilities {
@@ -4474,7 +4466,7 @@
         background-color: var(--color-content-stark, oklch(43.9% 0 0));
         border: 0 none;
         border-radius: var(--radius, 0.5rem);
-        box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+        box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1));
 
         /* Leading icon */
         & [x-icon]:first-child {

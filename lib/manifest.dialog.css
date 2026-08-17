@@ -1,4 +1,5 @@
-/* Manifest Dialogs */
+/* Popover base — single source; the build prepends this to standalone
+   popover-dependent stylesheets. The bundle gets it via the reset. */
 
 @layer base, components, utilities;
 
@@ -10,19 +11,25 @@
 
     @keyframes mnfst-popover-in {
         from {
-            transform: scale(.9);
+            transform: scale(.9)
         }
 
         to {
-            transform: none;
+            transform: none
         }
     }
 
     :where([popover]):not(.unstyle):popover-open {
         display: flex;
-        animation: mnfst-popover-in .15s ease-in both;
+        animation: mnfst-popover-in .15s ease-in both
     }
 }
+
+/* Manifest Dialogs */
+
+@layer base, components, utilities;
+
+
 
 @layer components {
 
@@ -40,7 +47,7 @@
         background-color: var(--color-popover-surface, oklch(98.5% 0 0));
         border: 0 none;
         border-radius: calc(var(--radius, 0.5rem) * 2);
-        box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        box-shadow: var(--shadow-lg, 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1));
 
         &::backdrop {
             background-color: rgba(0, 0, 0, 0.2);

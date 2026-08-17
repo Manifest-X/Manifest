@@ -1142,11 +1142,8 @@ async function initializeDataSourcesPlugin() {
             _currentUrl: existingStore._currentUrl || window.location.pathname
         });
 
-        // Pre-load local file-backed sources so $x.* has real data on the first
-        // render pass (avoids SPA flash + missing prerender data). At most one
-        // fetch each (localized objects load only the current + default locale).
-        // Skipped/on-demand: Appwrite (needs auth), API-URL (side-effects), and
-        // the special "manifest" key (handled separately below).
+        // Pre-load local file-backed sources so $x.* renders real data first pass;
+        // Appwrite, API-URL, and "manifest" sources stay on-demand.
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             const locale = (typeof document !== 'undefined' && document.documentElement?.lang) || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';

@@ -1,7 +1,5 @@
 /* Manifest Data Sources - Cloud API Loader */
-// NOTE: This is basic read-only API support included in core for localization compatibility.
-// Full CRUD operations will be available via manifest.api.data.js plugin (planned).
-// When the API plugin is available, it will extend this functionality.
+// Basic read-only API support, included in core for localization compatibility
 
 // Load from API endpoint (read-only)
 async function loadFromAPI(dataSource) {

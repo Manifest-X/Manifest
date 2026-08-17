@@ -110,10 +110,8 @@ function updateStore(dataSourceName, data, options = {}) {
         checkAndDispatchRenderReady();
     }
 
-    // Attach methods to array if it's an array (for new architecture)
-    // This ensures methods are available on the new array reference
+    // Re-attach methods on the new array reference
     if (Array.isArray(reactiveData) && window.ManifestDataProxies?.attachArrayMethods) {
-        // Get the loadDataSource function from main module
         const loadDataSource = window.ManifestDataMain?.loadDataSource;
         if (loadDataSource) {
             window.ManifestDataProxies.attachArrayMethods(reactiveData, dataSourceName, loadDataSource);
@@ -143,8 +141,7 @@ function getRawData(dataSourceName) {
     return rawDataStore.get(dataSourceName);
 }
 
-// Create new object/array references for Alpine reactivity
-// This ensures nested arrays (like fileIds) get new references so Alpine can track changes
+// New object/array references (incl. nested arrays like fileIds) so Alpine tracks changes
 function createReactiveReferences(data, dataSourceName = null) {
     if (data === null || data === undefined) {
         return data;
@@ -517,10 +514,7 @@ function setupTeamChangeListener() {
                     }
                 });
 
-                // Actually reload the data sources (not just clear cache)
-                // This ensures data is fresh when team changes
-
-                // Reload each data source by calling loadDataSource directly
+                // Reload (not just cache-clear) so data is fresh for the new team
                 const loadDataSource = window.ManifestDataMain?.loadDataSource;
                 if (loadDataSource) {
                     // Reload all team-scoped data sources with new team context
@@ -710,8 +704,7 @@ function setupLocaleChangeListener() {
                 }
                 promisesToDelete.forEach(key => loadingPromises.delete(key));
 
-                // Clear nested proxy cache for this data source
-                // This ensures fresh proxies are created with new locale data
+                // Clear nested proxy cache so fresh proxies use the new locale data
                 if (window.ManifestDataProxies?.clearNestedProxyCacheForDataSource) {
                     window.ManifestDataProxies.clearNestedProxyCacheForDataSource(dataSourceName);
                 }
