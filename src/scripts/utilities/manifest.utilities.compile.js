@@ -734,17 +734,27 @@ TailwindCompiler.prototype.compile = async function () {
     const compileStart = performance.now();
 
     try {
-        // Prevent too frequent compilations
+        // Throttled or busy: don't DROP the request — queue exactly one retry
+        // so late-discovered classes (md: variants on swapped-in components)
+        // always get compiled. The pending counter lets manifest:ready and the
+        // prerenderer's settle hold until utilities are actually current.
         const now = Date.now();
-        if (now - this.lastCompileTime < this.minCompileInterval) {
+        if (now - this.lastCompileTime < this.minCompileInterval || this.isCompiling) {
+            if (!this._retryQueued) {
+                this._retryQueued = true;
+                window.__manifestUtilitiesPending = (window.__manifestUtilitiesPending || 0) + 1;
+                setTimeout(() => {
+                    this._retryQueued = false;
+                    window.__manifestUtilitiesPending = Math.max(0, (window.__manifestUtilitiesPending || 1) - 1);
+                    this.compile();
+                }, this.minCompileInterval + 50);
+            }
             return;
         }
         this.lastCompileTime = now;
-
-        if (this.isCompiling) {
-            return;
-        }
         this.isCompiling = true;
+        window.__manifestUtilitiesPending = (window.__manifestUtilitiesPending || 0) + 1;
+        this._compileCounted = true;
 
         // On first run, scan static classes and CSS variables
         if (!this.hasScannedStatic) {
@@ -909,6 +919,13 @@ TailwindCompiler.prototype.compile = async function () {
         console.error('[Manifest Utilities] Error compiling Tailwind CSS:', error);
     } finally {
         this.isCompiling = false;
+        if (this._compileCounted) {
+            this._compileCounted = false;
+            window.__manifestUtilitiesPending = Math.max(0, (window.__manifestUtilitiesPending || 1) - 1);
+            if (!window.__manifestUtilitiesPending) {
+                window.dispatchEvent(new CustomEvent('manifest:utilities-idle'));
+            }
+        }
         // First-compile settle signal for the manifest:ready coordinator.
         if (!window.__manifestUtilitiesReady) {
             window.__manifestUtilitiesReady = true;

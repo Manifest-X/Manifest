@@ -1874,7 +1874,8 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
         const bootPending = !!window.__manifestReadyCoordinator && !window.__manifestReady;
         const inflight = (window.__manifestMarkdownPending || 0) > 0;
         const mdPending = cur.mdEmpty > 0 && Date.now() - start < mdWaitMs;
-        const utilPending = elapsed < mdWaitMs + 4000 && unresolvedVariants() > 0;
+        const utilPending = (window.__manifestUtilitiesPending || 0) > 0
+          || (elapsed < mdWaitMs + 4000 && unresolvedVariants() > 0);
         // A throttled compiler can DROP the request that would resolve them —
         // a class mutation re-triggers its observer's schedule.
         if (utilPending && elapsed % 500 < 100) document.body.classList.toggle('mnfst-og-nudge');
