@@ -4,7 +4,7 @@
 
 @layer components {
 
-    [x-carousel] {
+    :where([x-carousel]) {
         position: relative;
         display: flex;
         flex-direction: column;
@@ -12,16 +12,16 @@
         overflow: hidden;
 
         /* Slides container */
-        .carousel-slides {
+        :where(.carousel-slides) {
             display: flex;
             transition: transform 300ms ease-in-out;
             width: 100%;
             aspect-ratio: 16 / 9
         }
 
-        /* Previous & next buttons */
-        & button[\@click="prev()"],
-        & button[\@click="next()"] {
+        /* Previous & next buttons. Arrow markup is author-written; the
+           @click="prev()" selectors are deprecated aliases for the hooks. */
+        & :where([data-carousel-prev], [data-carousel-next], button[\@click="prev()"], button[\@click="next()"]) {
             position: absolute;
             top: 50%;
             transform: translateY(-50%);
@@ -32,17 +32,17 @@
             }
         }
 
-        & button[\@click="prev()"] {
+        & :where([data-carousel-prev], button[\@click="prev()"]) {
             left: calc(var(--spacing, 0.25rem) * 4)
         }
 
-        & button[\@click="next()"] {
+        & :where([data-carousel-next], button[\@click="next()"]) {
             left: auto;
             right: calc(var(--spacing, 0.25rem) * 4)
         }
 
-        /* Dots container */
-        .carousel-dots {
+        /* Dots container (author markup, driven by the plugin's `dots` getter) */
+        :where(.carousel-dots) {
             position: absolute;
             bottom: calc(var(--spacing, 0.25rem) * 4);
             left: 50%;
@@ -52,7 +52,6 @@
             max-width: 100%;
             padding: 0 calc(var(--spacing, 0.25rem) * 4);
             overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
 
             &::-webkit-scrollbar {
@@ -60,7 +59,7 @@
             }
 
             /* Dot button */
-            & span {
+            & :where(span) {
                 flex-shrink: 0;
                 width: 0.625rem;
                 height: 0.625rem;
