@@ -1,0 +1,32 @@
+{
+  "name": "mnfst-docs",
+  "version": "0.1.0",
+  "description": "Documentation site template for Manifest — sidebar, markdown articles, ⌘K search, prerender-ready.",
+  "bin": {
+    "mnfst-docs": "./bin/mnfst-docs.mjs"
+  },
+  "files": [
+    "bin",
+    "components",
+    "template",
+    "README.md"
+  ],
+  "scripts": {
+    "prepare:source": "node scripts/sync-docs.mjs",
+    "prepack": "node scripts/sync-docs.mjs"
+  },
+  "keywords": [
+    "manifest",
+    "mnfst",
+    "docs",
+    "documentation",
+    "template"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Manifest-X/Manifest.git",
+    "directory": "packages/docs"
+  },
+  "homepage": "https://manifestx.dev/docs"
+}

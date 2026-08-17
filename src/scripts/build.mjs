@@ -303,6 +303,7 @@ async function buildStylesheets() {
     // it as `npm run prepare:source`. Each also has a prepack hook as a safety
     // net for direct `npm publish`.
     syncPackage('create-starter', 'starter template');
+    syncPackage('docs', 'docs template');
     syncPackage('render', 'render source');
     syncPackage('types', 'types template');
 

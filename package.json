@@ -10,7 +10,8 @@
         "packages/export",
         "packages/run",
         "packages/publish",
-        "packages/create-starter"
+        "packages/create-starter",
+        "packages/docs"
     ],
     "main": "lib/manifest.js",
     "style": "lib/manifest.css",
@@ -35,12 +36,13 @@
         "release:export": "node scripts/release-bump.mjs packages/export && cd packages/export && npm publish --auth-type=web",
         "release:starter": "node scripts/release-bump.mjs packages/create-starter && cd packages/create-starter && npm publish --auth-type=web",
         "release:publish": "node scripts/release-bump.mjs packages/publish && cd packages/publish && npm publish --auth-type=web",
-        "release:all": "npm run release:run && npm run release:render && npm run release:types && npm run release:test && npm run release:export && npm run release:starter && npm run release:publish && npm run release",
+        "release:all": "npm run release:run && npm run release:render && npm run release:types && npm run release:test && npm run release:export && npm run release:starter && npm run release:publish && npm run release:docs && npm run release",
         "prepublishOnly": "npm run build",
         "test": "vitest run",
         "test:e2e": "node tests/e2e/payments.e2e.mjs",
         "test:e2e:sdk": "node tests/e2e/payments.sdk.e2e.mjs",
-        "lint": "echo 'No linting configured'"
+        "lint": "echo 'No linting configured'",
+        "release:docs": "node scripts/release-bump.mjs packages/docs && cd packages/docs && npm publish --auth-type=web"
     },
     "devDependencies": {
         "@rollup/plugin-commonjs": "^28.0.1",

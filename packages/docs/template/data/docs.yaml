@@ -1,0 +1,21 @@
+- group: "Getting Started"
+  slug: "getting-started"
+  description: "Install the project and ship something small."
+  items:
+    - name: "Introduction"
+      path: "introduction"
+      icon: "lucide:book-open"
+      doc: "/articles/getting-started/introduction.md"
+    - name: "Installation"
+      path: "installation"
+      icon: "lucide:terminal"
+      doc: "/articles/getting-started/installation.md"
+
+- group: "Guides"
+  slug: "guides"
+  description: "Task-oriented walkthroughs."
+  items:
+    - name: "Writing Articles"
+      path: "writing-articles"
+      icon: "lucide:file-text"
+      doc: "/articles/guides/writing-articles.md"

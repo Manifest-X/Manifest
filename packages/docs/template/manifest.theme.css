@@ -1,0 +1,268 @@
+/*  Manifest Theme CSS
+/*  By Andrew Matlock under MIT license
+/*  https://manifestx.dev/styles/theme
+/*  Modify values to customize your project theme
+*/
+
+:root,
+::selection {
+
+    /* Light mode */
+    --color-page: var(--color-neutral-50);
+    --color-surface-1: var(--color-neutral-100);
+    --color-surface-2: var(--color-neutral-200);
+    --color-surface-3: var(--color-neutral-300);
+    --color-content-stark: var(--color-neutral-900);
+    --color-content-neutral: var(--color-neutral-700);
+    --color-content-subtle: var(--color-neutral-600);
+    --color-field-surface: var(--color-neutral-300);
+    --color-field-surface-hover: var(--color-neutral-400);
+    --color-field-inverse: var(--color-content-stark);
+    --color-popover-surface: var(--color-page);
+    --color-line: color-mix(var(--color-content-stark) 11%, transparent);
+    --color-brand-surface: var(--color-yellow-300);
+    --color-brand-surface-hover: var(--color-yellow-400);
+    --color-brand-inverse: var(--color-yellow-700);
+    --color-brand-content: var(--color-yellow-600);
+    --color-accent-surface: var(--color-neutral-900);
+    --color-accent-surface-hover: var(--color-neutral-700);
+    --color-accent-inverse: var(--color-neutral-50);
+    --color-accent-content: var(--color-neutral-900);
+    --color-positive-surface: var(--color-green-300);
+    --color-positive-surface-hover: var(--color-green-400);
+    --color-positive-inverse: var(--color-green-800);
+    --color-positive-content: var(--color-green-600);
+    --color-negative-surface: var(--color-red-300);
+    --color-negative-surface-hover: var(--color-red-400);
+    --color-negative-inverse: var(--color-red-800);
+    --color-negative-content: var(--color-red-600);
+
+    /* Fonts */
+    --font-sans: Manrope, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+
+    /* Sizes */
+    --radius: 0.5rem;
+    --spacing: 0.25rem;
+    --spacing-content-width: 74rem;
+    --spacing-field-padding: calc(var(--spacing) * 2.5);
+    --spacing-field-height: calc(var(--spacing) * 9);
+    --spacing-popover-offset: calc(var(--spacing) * 2);
+    --spacing-resize-handle: 1rem;
+    --spacing-viewport-padding: 2rem;
+
+    /* Effects */
+    --transition: all .05s ease-in-out;
+    --tooltip-hover-delay: .5s;
+    --view-transition-duration: 200ms;
+    --view-transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Icons */
+    --icon-accordion: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em' viewBox='0 0 256 256'%3E%3Cpath fill='%23000' d='m184.49 136.49l-80 80a12 12 0 0 1-17-17L159 128L87.51 56.49a12 12 0 1 1 17-17l80 80a12 12 0 0 1-.02 17'/%3E%3C/svg%3E");
+    --icon-checkbox: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E");
+    --icon-toast-dismiss: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M18 6L6 18M6 6l12 12'/%3E%3C/svg%3E");
+}
+
+/* Dark mode overrides */
+.dark {
+    --color-page: var(--color-neutral-950);
+    --color-surface-1: var(--color-neutral-900);
+    --color-surface-2: var(--color-neutral-800);
+    --color-surface-3: var(--color-neutral-700);
+    --color-field-surface: var(--color-neutral-700);
+    --color-field-surface-hover: var(--color-neutral-600);
+    --color-popover-surface: var(--color-neutral-800);
+    --color-content-stark: var(--color-neutral-50);
+    --color-content-neutral: var(--color-neutral-400);
+    --color-content-subtle: var(--color-neutral-500);
+    --color-brand-surface: var(--color-yellow-400);
+    --color-brand-surface-hover: var(--color-yellow-500);
+    --color-brand-inverse: var(--color-yellow-800);
+    --color-brand-content: var(--color-yellow-500);
+    --color-accent-surface: var(--color-neutral-50);
+    --color-accent-surface-hover: var(--color-neutral-200);
+    --color-accent-inverse: var(--color-neutral-900);
+    --color-accent-content: var(--color-neutral-50);
+    --color-positive-surface: var(--color-green-400);
+    --color-positive-surface-hover: var(--color-green-500);
+    --color-positive-inverse: var(--color-green-900);
+    --color-positive-content: var(--color-green-500);
+    --color-negative-surface: var(--color-red-400);
+    --color-negative-surface-hover: var(--color-red-500);
+    --color-negative-inverse: var(--color-red-900);
+    --color-negative-content: var(--color-red-500);
+}
+
+@font-face {
+    font-family: 'Manrope';
+    src: url('/assets/fonts/Manrope.woff2') format('woff2-variations');
+    font-display: swap;
+    font-style: normal
+}
+
+@layer base {
+
+    /* Default font and colors */
+    :where(html),
+    :host {
+        line-height: 1.5;
+        font-family: var(--font-sans);
+        color: var(--color-content-stark, inherit);
+        background-color: var(--color-page, inherit)
+    }
+
+    /* Text selection */
+    ::selection {
+        background-color: color-mix(in oklch, var(--color-surface-1) 92%, var(--color-content-stark))
+    }
+
+    /* Focus state */
+    :where(:focus-visible),
+    :where(label:has(input[type=search], input[type=file]):focus-within) {
+        outline: none;
+        box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-content-stark) 35%, transparent);
+    }
+
+    /* Disabled state */
+    :where([disabled], :disabled, [aria-disabled=true], .disabled) {
+        opacity: .5;
+        cursor: default;
+        pointer-events: none
+    }
+}
+
+/* CUSTOM */
+
+/* Large */
+.lg {
+    font-size: initial
+}
+
+/* Theme editor */
+.theme-button-wrapper {
+    display: flex;
+    gap: 1px;
+    max-width: 100%;
+    height: 2rem;
+    border-radius: var(--radius, 0.5rem);
+    outline: 1px solid var(--color-line);
+    outline-offset: 1px;
+
+    & button {
+        flex-grow: 1;
+        height: 100%
+    }
+}
+
+.theme-example-wrapper {
+    display: flex;
+    flex-direction: row;
+    flex-flow: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: calc(var(--spacing) * 4, 1rem);
+    width: 100%;
+    max-width: 100%;
+
+    &>button {
+        opacity: 0
+    }
+
+    &:hover>button {
+        opacity: 100%
+    }
+
+    textarea.theme-input {
+        background-color: transparent;
+        box-shadow: none;
+        resize: none;
+        field-sizing: content
+    }
+
+    .theme-example-wrapper .blockquote {
+        margin: 0
+    }
+
+}
+
+/* X pattern */
+.pattern {
+    position: relative;
+    overflow: hidden;
+    z-index: 0;
+
+    &::before,
+    &::after {
+        content: "";
+        position: absolute;
+        z-index: -1;
+        pointer-events: none;
+        background: none;
+    }
+
+    /* Diagonal line: top-left to bottom-right */
+    &::before {
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        border-top: 0;
+        border-left: 0;
+        background: linear-gradient(to bottom right,
+                transparent calc(50% - 1px),
+                color-mix(in oklch, var(--color-surface-1), transparent),
+                transparent calc(50% + 2px));
+    }
+
+    /* Diagonal line: top-right to bottom-left */
+    &::after {
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(to bottom left,
+                transparent calc(50% - 1px),
+                color-mix(in oklch, var(--color-surface-1), transparent),
+                transparent calc(50% + 2px));
+    }
+}
+/* Static copy of the viewport-padding utility so first paint has gutters
+   before the runtime utility compiler runs (dev/SPA mode). */
+.px-viewport-padding {
+    padding-inline: var(--spacing-viewport-padding, 2rem);
+}
+
+/* Static copies of the docs shell's layout utilities. Variants of semantic
+   classes are runtime-compiled and can land ~1s after the markup, collapsing
+   the shell to a column until they do. */
+@media (min-width: 40rem) {
+    .sm\:grid-cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 48rem) {
+    .md\:row {
+        flex-direction: row;
+    }
+
+    .md\:block {
+        display: block;
+    }
+
+    .md\:max-w-\[calc\(100\%-17rem\)\] {
+        max-width: calc(100% - 17rem);
+    }
+}
+
+@media (min-width: 64rem) {
+    .lg\:grid-cols-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 80rem) {
+    .xl\:col {
+        display: flex;
+        flex-direction: column;
+    }
+}

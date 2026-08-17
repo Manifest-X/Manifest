@@ -1,0 +1,26 @@
+{
+    "$schema": "https://manifestx.dev/manifest.schema.json",
+    "name": "Docs",
+    "short_name": "Docs",
+    "description": "Documentation.",
+    "start_url": "/",
+    "scope": "/",
+    "display": "browser",
+    "render": {
+        "icons": "lazy",
+        "structuredData": {
+            "WebSite": true,
+            "Article": true,
+            "BreadcrumbList": true
+        }
+    },
+    "preloadedComponents": [
+        "components/docs.html",
+        "components/docs-nav.html",
+        "components/docs-search.html",
+        "components/docs-footer.html"
+    ],
+    "data": {
+        "docs": "/data/docs.yaml"
+    }
+}

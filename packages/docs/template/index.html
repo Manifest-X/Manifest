@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Docs</title>
+  <meta name="description" content="Documentation.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="manifest" href="/manifest.json">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://cdn.manifestx.dev/npm/mnfst@latest/lib/manifest.min.css">
+  <link rel="stylesheet" href="https://cdn.manifestx.dev/npm/mnfst@latest/lib/manifest.code.min.css">
+  <link rel="stylesheet" href="/manifest.theme.css">
+
+  <!-- Scripts -->
+  <script src="https://cdn.manifestx.dev/npm/mnfst@latest/lib/manifest.min.js" data-tailwind></script>
+
+</head>
+
+<body class="bg-surface-1">
+
+  <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-10 focus:px-4 focus:py-2 focus:bg-surface-1 focus:border focus:border-line focus:rounded-full">Skip to content</a>
+
+  <!-- Host header. Replace with your own; keep the two docs controls. -->
+  <header class="fixed top-0 left-0 right-0 z-5 row items-center justify-between gap-4 px-viewport-padding py-3 bg-surface-1/65 backdrop-blur-xl">
+    <a href="/" class="no-underline text-lg font-semibold tracking-tighter">Docs</a>
+    <div class="row items-center gap-2">
+      <button popovertarget="docs-search" class="sm transparent outlined rounded-full" aria-label="Search docs">
+        <span x-icon="lucide:search"></span>
+        <span class="hidden md:inline text-xs text-content-subtle">⌘K</span>
+      </button>
+      <button class="ghost flex md:hidden" popovertarget="docs-nav" x-icon="lucide:menu" aria-label="Documentation menu"></button>
+    </div>
+  </header>
+
+  <x-docs-search></x-docs-search>
+  <x-docs-nav></x-docs-nav>
+
+  <main id="main" class="pt-[69px] px-viewport-padding">
+
+    <!-- Mount the docs at any base path: base="/docs" must match this route. -->
+    <x-docs x-route="docs" intro="Guides and reference for the project."></x-docs>
+
+  </main>
+
+</body>
+
+</html>
