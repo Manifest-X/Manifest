@@ -1814,20 +1814,9 @@ function computeGlobalAssetSignature(rootDir) {
 async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capMs = 8000 } = {}) {
   try {
     await page.evaluate(async ({ settleMs, mdWaitMs, capMs }) => {
-      // Preferred: the framework's own settled signal (loader ≥0.5.190).
-      if (window.__manifestReadyCoordinator) {
-        const start = Date.now();
-        while (!window.__manifestReady && Date.now() - start < capMs + 8000) {
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        if (document.fonts?.ready) { try { await document.fonts.ready; } catch { /* best-effort */ } }
-        await new Promise((r) => {
-          const t = setTimeout(r, 250);
-          requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(); }));
-        });
-        return;
-      }
-      // Fallback heuristic for older framework builds:
+      // The framework's boot signal (loader ≥0.5.190) gates the start, but it
+      // fires once per page — per-ROUTE work is tracked by the live markdown
+      // pending counter and the DOM heuristic below, so all three AND together.
       const state = () => {
         let styleLen = 0;
         for (const s of document.querySelectorAll('style')) styleLen += (s.textContent || '').length;
@@ -1838,14 +1827,58 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
         const sig = `${mdEmpty}:${document.body?.innerText.length || 0}:${styleLen}:${document.fonts ? document.fonts.status : ''}`;
         return { sig, mdEmpty };
       };
+      // Alpine 3.x can strand already-flushed effects when a sibling effect
+      // creates state mid-flush — a route's x-if chain then never stamps until
+      // something re-queues it. Bumping the data store's version re-runs every
+      // store-reading effect: a no-op on settled pages, an unstick on stuck ones.
+      const nudge = () => {
+        try {
+          if (window.Alpine?.store) {
+            const s = window.Alpine.store('data');
+            if (s) window.Alpine.store('data', { ...s, _dataVersion: (s._dataVersion || 0) + 1 });
+          }
+        } catch { /* best-effort */ }
+      };
+      // Responsive/variant utilities (md:row, dark:bg-*) are compiled at
+      // runtime and the compiler throttles recompiles — a late-discovered
+      // variant class leaves the layout in its mobile/stacked state at capture.
+      // Hold while any variant class used in the DOM has no matching CSS rule.
+      const unresolvedVariants = () => {
+        try {
+          const used = new Set();
+          for (const el of document.querySelectorAll('[class*=":"]')) {
+            for (const c of el.classList) if (c.includes(':') && !c.startsWith('[')) used.add(c);
+            if (used.size > 300) break;
+          }
+          if (!used.size) return 0;
+          let selectors = '';
+          for (const sheet of document.styleSheets) {
+            try { for (const r of sheet.cssRules) if (r.selectorText) selectors += r.selectorText + '\n'; } catch { /* cross-origin */ }
+          }
+          let missing = 0;
+          for (const c of used) {
+            if (!selectors.includes('.' + CSS.escape(c))) missing++;
+          }
+          return missing;
+        } catch { return 0; }
+      };
       const start = Date.now();
       let last = state();
       let stableSince = Date.now();
+      let nudged = 0;
       while (Date.now() - start < capMs) {
         await new Promise((r) => setTimeout(r, 100));
+        const elapsed = Date.now() - start;
+        if ((nudged === 0 && elapsed > 300) || (nudged === 1 && elapsed > 2000)) { nudged++; nudge(); }
         const cur = state();
+        const bootPending = !!window.__manifestReadyCoordinator && !window.__manifestReady;
+        const inflight = (window.__manifestMarkdownPending || 0) > 0;
         const mdPending = cur.mdEmpty > 0 && Date.now() - start < mdWaitMs;
-        if (cur.sig !== last.sig || mdPending) {
+        const utilPending = elapsed < mdWaitMs + 4000 && unresolvedVariants() > 0;
+        // A throttled compiler can DROP the request that would resolve them —
+        // a class mutation re-triggers its observer's schedule.
+        if (utilPending && elapsed % 500 < 100) document.body.classList.toggle('mnfst-og-nudge');
+        if (cur.sig !== last.sig || bootPending || inflight || mdPending || utilPending) {
           last = cur;
           stableSince = Date.now();
         } else if (Date.now() - stableSince >= settleMs) {
@@ -1953,6 +1986,11 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
     // body min-h-screen + flex grow) can otherwise screenshot as blank if
     // the compositor doesn't repaint between setViewport and screenshot.
     await page.evaluate(() => window.scrollTo(0, 0));
+    // Throwaway shot first: it forces the compositor to produce a fresh frame,
+    // so the real capture below reflects the current DOM rather than a stale
+    // surface (headless pages can sit frames behind after heavy updates).
+    await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 8, height: 8 }, captureBeyondViewport: false }).catch(() => { });
+    await new Promise((r) => setTimeout(r, 120));
     await page.screenshot({
       path: filePath,
       type: 'png',
@@ -3322,6 +3360,24 @@ async function runPrerender(config) {
         const apply = () => {
           try {
             if (locale && typeof locale === 'string') document.documentElement.lang = locale;
+            // View transitions freeze a snapshot layer over the updated DOM in
+            // headless — OG screenshots then capture stale pre-route pixels.
+            // Router opt-out for SPA swaps, plus a late <style> so the reset's
+            // cross-document @view-transition{navigation:auto} is overridden
+            // (appended after stylesheets; last descriptor wins).
+            document.documentElement.setAttribute('data-no-view-transitions', '');
+            const killCrossDocVT = () => {
+              try {
+                const s = document.createElement('style');
+                s.textContent = '@view-transition { navigation: none }';
+                (document.head || document.documentElement).appendChild(s);
+              } catch { /* no-op */ }
+            };
+            if (document.readyState === 'loading') {
+              document.addEventListener('DOMContentLoaded', killCrossDocVT, { once: true });
+            } else {
+              killCrossDocVT();
+            }
           } catch {
             /* no-op */
           }
