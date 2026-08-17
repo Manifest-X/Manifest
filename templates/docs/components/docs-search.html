@@ -1,0 +1,131 @@
+<!-- Docs search: Cmd/Ctrl-K dialog, filters all articles by title, headings, and content -->
+<div x-data="{
+        base: $modify('base') ?? '/docs',
+        src: $modify('source') ?? 'docs',
+        q: '',
+        items: [],
+        ready: false,
+        loading: false,
+        active: 0,
+
+        // Fetch every article's markdown once, on first open; index title, description, headings, body.
+        async build() {
+            if (this.ready || this.loading) return;
+            this.loading = true;
+            for (let i = 0; i < 20 && (!$x[this.src] || !$x[this.src].length); i++) await new Promise(r => setTimeout(r, 100));
+            const jobs = [];
+            for (const g of ($x[this.src] || [])) {
+                for (const it of (g.items || [])) {
+                    if (!it.name || !it.doc) continue;
+                    const href = this.base + '/' + g.slug + '/' + it.path;
+                    jobs.push(fetch(it.doc)
+                        .then(r => r.ok ? r.text() : '')
+                        .catch(() => '')
+                        .then(md => {
+                            const desc = (md.match(/^#\s.+\n+([^#\n][^\n]*)/m)?.[1] || '')
+                                .replace(/<[^>]+>/g, '').replace(/[*_`\[\]]/g, '').trim();
+                            const headings = [...md.matchAll(/^#{2,3}\s+(.+)$/gm)].map(m => m[1].trim());
+                            const body = md
+                                .replace(/```[\s\S]*?```/g, ' ')
+                                .replace(/:::[^\n]*/g, ' ')
+                                .replace(/<[^>]+>/g, ' ')
+                                .replace(/[#>*_`\[\]()|]/g, ' ')
+                                .replace(/-{2,}/g, ' ')
+                                .replace(/\s+/g, ' ');
+                            this.items.push({
+                                name: it.name, group: g.group, icon: it.icon, href, desc,
+                                headings,
+                                hhay: headings.join(' · ').toLowerCase(),
+                                body, bhay: body.toLowerCase(),
+                            });
+                        }));
+                }
+            }
+            await Promise.all(jobs);
+            $x.$register('searchIndex', this.items);
+            this.ready = true;
+            this.loading = false;
+        },
+
+        results() {
+            const terms = this.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+            if (!terms.length) return this.items.map(it => ({ ...it, caption: it.desc }));
+            const ranked = $x.searchIndex.$search(this.q, { name: 100, hhay: 40, bhay: 15 });
+            return ranked.slice(0, 20).map(it => ({ ...it, caption: this.caption(it, terms[0]) }));
+        },
+
+        // Matched heading, content excerpt, or the article description.
+        caption(it, t0) {
+            const h = it.headings.find(h => h.toLowerCase().includes(t0));
+            if (h) return h;
+            if (!it.name.toLowerCase().includes(t0)) {
+                const i = it.bhay.indexOf(t0);
+                if (i > -1) return (i > 30 ? '…' : '') + it.body.slice(Math.max(0, i - 30), i + 70).trim() + '…';
+            }
+            return it.desc;
+        },
+
+        openDialog() { document.getElementById('docs-search')?.showPopover(); },
+        // The router swallows result clicks before element handlers run, so the
+        // dialog closes on the route-change event rather than the click itself.
+        closeDialog() { try { document.getElementById('docs-search')?.hidePopover(); } catch (e) { } },
+        async onToggle(e) {
+            if (e.newState !== 'open') return;
+            this.$nextTick(() => { this.$refs.input.focus(); this.$refs.input.select(); });
+            await this.build();
+            this.$nextTick(() => { if (this.$refs.list) this.$refs.list.scrollTop = 0; });
+        },
+        move(d) {
+            const n = this.results().length;
+            if (!n) return;
+            this.active = (this.active + d + n) % n;
+            this.$nextTick(() => this.$refs.list?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest' }));
+        },
+        go() { this.$refs.list?.querySelector('[data-active] a')?.click(); },
+    }"
+    x-init="$watch('q', () => active = 0)"
+    @keydown.window.meta.k.prevent="openDialog()"
+    @keydown.window.ctrl.k.prevent="openDialog()"
+    @manifest:route-change.window="closeDialog()">
+
+    <dialog popover id="docs-search" @toggle="onToggle($event)"
+        @keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)" @keydown.enter.prevent="go()"
+        class="col gap-0 p-0 w-[min(38rem,92vw)] h-[min(30rem,80vh)] overflow-hidden">
+
+        <!-- Query -->
+        <div class="shrink-0 px-4 pt-4 pb-3 border-b border-line">
+            <label class="row items-center gap-2 w-full">
+                <span x-icon="lucide:search" class="text-content-subtle shrink-0"></span>
+                <input x-ref="input" type="search" x-model="q" placeholder="Search docs">
+            </label>
+        </div>
+
+        <!-- Results -->
+        <div x-ref="list" class="col grow overflow-y-auto no-scrollbar px-4 [overflow-anchor:none]">
+            <div class="h-2 shrink-0"></div>
+            <p x-show="loading && !ready" class="px-3 py-2 text-sm text-content-subtle">Indexing articles…</p>
+            <p x-show="ready && q.trim() && !results().length" class="px-3 py-2 text-sm text-content-subtle">
+                No matches for “<span x-text="q.trim()"></span>”.
+            </p>
+            <template x-for="(r, i) in results()" :key="r.href">
+                <div :data-active="i === active ? '' : null" @mouseenter="active = i">
+                    <a :href="r.href" role="button"
+                        :class="i === active ? 'bg-surface-2 !text-content-stark' : 'text-content-neutral'"
+                        class="ghost justify-start w-full h-auto py-2 no-underline">
+                        <span class="col gap-0.5 min-w-0 grow text-left">
+                            <span class="row items-center gap-2">
+                                <span x-icon="r.icon" x-show="r.icon" class="shrink-0"></span>
+                                <span class="text-content-stark" x-text="r.name"></span>
+                                <span class="text-content-subtle font-normal">·</span>
+                                <small class="text-content-subtle font-normal" x-text="r.group"></small>
+                            </span>
+                            <small class="text-content-subtle font-normal truncate w-full pl-6" x-show="r.caption" x-text="r.caption"></small>
+                        </span>
+                    </a>
+                </div>
+            </template>
+            <div class="h-2 shrink-0"></div>
+        </div>
+
+    </dialog>
+</div>

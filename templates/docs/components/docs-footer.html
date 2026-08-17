@@ -1,0 +1,14 @@
+<!-- Chrome under every docs article. Replace this file with your own. -->
+<footer class="mt-20">
+  <hr>
+  <div class="row-wrap justify-between items-center gap-4 pt-4">
+
+    <figcaption class="text-content-subtle" x-text="'© ' + new Date().getFullYear()"></figcaption>
+
+    <div role="group" class="outlined rounded-full">
+      <button x-color="'light'" class="sm rounded-s-full" :class="$color.current === 'light' ? 'bg-brand-surface/50 dark:bg-brand-surface/35 text-brand-content pointer-events-none' : 'ghost'" x-icon="lucide:sun" aria-label="Light mode"></button>
+      <button x-color="'dark'" class="sm ghost" :class="$color.current === 'dark' ? 'bg-brand-surface/50 dark:bg-brand-surface/35 text-brand-content pointer-events-none' : 'ghost'" x-icon="lucide:moon" aria-label="Dark mode"></button>
+      <button x-color="'system'" class="sm ghost rounded-e-full" :class="$color.current === 'system' ? 'bg-brand-surface/50 dark:bg-brand-surface/35 text-brand-content pointer-events-none' : 'ghost'" x-icon="lucide:sun-moon" aria-label="Auto mode"></button>
+    </div>
+  </div>
+</footer>

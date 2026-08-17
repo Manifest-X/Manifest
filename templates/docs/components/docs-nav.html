@@ -1,0 +1,24 @@
+<!-- Mobile docs navigation. Open from anywhere with popovertarget="docs-nav". -->
+<nav aria-label="Documentation" data-static popover id="docs-nav" data-no-view-transition class="col w-64 h-full pt-8 pb-64 px-4 shadow-xl overflow-y-auto no-scrollbar" x-data="{
+        base: $modify('base') ?? '/docs',
+        src: $modify('source') ?? 'docs',
+        get groups() { return $x[this.src] || [] },
+        get article() { return $x[this.src].$route('path') },
+    }" @manifest:route-change.window="$el.hidePopover()">
+    <template x-for="group in groups" :key="group.group">
+        <div class="col gap-6 py-4">
+            <small class="pl-2.5 text-content-subtle" x-text="group.group"></small>
+            <div class="col">
+                <template x-for="(item, index) in group.items" :key="item.path || index">
+                    <a x-show="item.name" role="button" :href="base + '/' + group.slug + '/' + item.path" :aria-current="article?.path === item.path ? 'page' : null" class="ghost justify-start w-full text-content-neutral" :class="[
+                              article?.path === item.path ? 'selected brand !text-content-stark pointer-events-none' : ''
+                            ]">
+                        <span x-icon="item.icon"></span>
+                        <span x-text="item.name"></span>
+                    </a>
+                </template>
+            </div>
+            <hr>
+        </div>
+    </template>
+</nav>
