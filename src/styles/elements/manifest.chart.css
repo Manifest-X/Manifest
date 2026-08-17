@@ -184,9 +184,9 @@
 
             /* On a filled segment (bar/slice center) — read against the fill */
             &.inverse {
-                fill: black;
+                fill: var(--color-content-stark, oklch(20.5% 0 0));
                 paint-order: stroke;
-                stroke: rgba(255, 255, 255, 0.75);
+                stroke: color-mix(in oklch, var(--color-page, oklch(98.5% 0 0)) 75%, transparent);
                 stroke-width: 1.5px
             }
         }

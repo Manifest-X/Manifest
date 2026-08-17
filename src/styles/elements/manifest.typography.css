@@ -257,7 +257,6 @@
     /* Labels */
     :where(label):not(.unstyle),
     .label {
-        width: -moz-fit-content;
         width: fit-content;
         user-select: none
     }
@@ -385,7 +384,6 @@
         tab-size: 4;
         white-space: pre;
         white-space-collapse: preserve;
-        overflow: hidden;
 
         &>code {
             flex-grow: 1;
