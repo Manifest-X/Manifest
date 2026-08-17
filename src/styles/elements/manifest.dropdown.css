@@ -2,27 +2,7 @@
 
 @layer base, components, utilities;
 
-[popover]:not(.unstyle):not(:popover-open) {
-    display: none;
-}
 
-@layer base {
-
-    @keyframes popover-in {
-        from {
-            transform: scale(.9)
-        }
-
-        to {
-            transform: none
-        }
-    }
-
-    :where([popover]):not(.unstyle):popover-open {
-        display: flex;
-        animation: popover-in .15s ease-in both
-    }
-}
 
 @layer components {
 

@@ -2,27 +2,7 @@
 
 @layer base, components, utilities;
 
-[popover]:not(.unstyle):not(:popover-open) {
-    display: none;
-}
 
-@layer base {
-
-    @keyframes popover-in {
-        from {
-            transform: scale(.9)
-        }
-
-        to {
-            transform: none
-        }
-    }
-
-    :where([popover]):not(.unstyle):popover-open {
-        display: flex;
-        animation: popover-in .15s ease-in both
-    }
-}
 
 @layer utilities {
 
@@ -36,7 +16,7 @@
         background-color: var(--color-content-stark, oklch(43.9% 0 0));
         border: 0 none;
         border-radius: var(--radius, 0.5rem);
-        box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+        box-shadow: var(--shadow-sm, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1));
 
         /* Leading icon */
         & [x-icon]:first-child {

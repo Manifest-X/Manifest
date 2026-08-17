@@ -282,7 +282,6 @@ async function buildStylesheets() {
     distributeStandaloneFiles();
 
     // Step 4: Handle special popover-dependent files
-    handlePopoverDependentFiles();
 
     // Step 5: Handle special group-dependent files
     handleGroupDependentFiles();
@@ -328,11 +327,6 @@ function buildMainStylesheet() {
     for (const elementFile of elementFiles) {
         const elementPath = path.join('styles/elements', elementFile);
         let content = fs.readFileSync(elementPath, 'utf8').trim();
-
-        // Strip base layer popover styles from popover-dependent files when compiling into main manifest.css
-        if (CONFIG.stylesheets.popoverDependent.includes(elementFile)) {
-            content = stripBaseLayerPopoverStyles(content);
-        }
 
         mainContent.push(content);
         console.log(`  ✓ Added element: ${elementFile}`);
@@ -453,108 +447,6 @@ async function minifyCssFile(cssFileName) {
 }
 
 // Strip base layer popover styles from content (used when compiling into main manifest.css)
-function stripBaseLayerPopoverStyles(content) {
-    // Remove the base layer popover styles that are already included in manifest.reset.css
-    // This function finds @layer base blocks that contain :where([popover]) and removes them
-
-    const lines = content.split('\n');
-    const result = [];
-    let inBaseLayer = false;
-    let braceCount = 0;
-    let foundPopover = false;
-    let baseLayerStart = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        // Check if this line contains @layer base
-        if (line.includes('@layer base')) {
-            inBaseLayer = true;
-            braceCount = 0;
-            foundPopover = false;
-            baseLayerStart = i;
-        }
-
-        if (inBaseLayer) {
-            // Count braces to track nesting
-            for (const char of line) {
-                if (char === '{') braceCount++;
-                if (char === '}') braceCount--;
-            }
-
-            // Check if this line contains :where([popover])
-            if (line.includes(':where([popover])')) {
-                foundPopover = true;
-            }
-
-            // If we've closed all braces and found popover styles, skip this block
-            if (braceCount === 0 && foundPopover) {
-                inBaseLayer = false;
-                foundPopover = false;
-                baseLayerStart = -1;
-                continue; // Skip adding this line
-            }
-
-            // If we've closed all braces but didn't find popover styles, add the block
-            if (braceCount === 0 && !foundPopover) {
-                // Add all lines from baseLayerStart to current line
-                for (let j = baseLayerStart; j <= i; j++) {
-                    result.push(lines[j]);
-                }
-                inBaseLayer = false;
-                foundPopover = false;
-                baseLayerStart = -1;
-                continue;
-            }
-
-            // If we're still inside the block, continue without adding
-            if (braceCount > 0) {
-                continue;
-            }
-        }
-
-        // Add line if we're not in a base layer block
-        if (!inBaseLayer) {
-            result.push(line);
-        }
-    }
-
-    // Clean up extra blank lines that might have been left after removing @layer base blocks
-    const cleanedResult = [];
-    for (let i = 0; i < result.length; i++) {
-        const line = result[i];
-        const nextLine = result[i + 1];
-        const prevLine = result[i - 1];
-
-        // Skip blank lines that are followed by another blank line
-        if (line.trim() === '' && nextLine && nextLine.trim() === '') {
-            continue;
-        }
-
-        // Skip blank lines that are at the start of a file
-        if (line.trim() === '' && cleanedResult.length === 0) {
-            continue;
-        }
-
-        // Skip blank lines that come right after a comment (like /* Dropdowns */)
-        if (line.trim() === '' && prevLine && prevLine.trim().startsWith('/*') && prevLine.trim().endsWith('*/')) {
-            continue;
-        }
-
-        cleanedResult.push(line);
-    }
-
-    return cleanedResult.join('\n');
-}
-
-// Handle files that need popover.css appended
-function handlePopoverDependentFiles() {
-    console.log('Processing popover-dependent files...');
-    console.log('  ✓ Popover-dependent files are handled in main manifest.css build');
-    console.log('  ✓ Individual files available in styles/elements/ for standalone use');
-    console.log('');
-}
-
 // Run a package's own `prepare:source` script — each package owns the truth of
 // what gets synced into it (templates, render source, etc.). Build orchestrates.
 function syncPackage(packageName, label) {
@@ -753,9 +645,22 @@ function copyFilesToDist() {
         { source: 'styles/utilities/manifest.colors.css', dest: '../lib/manifest.colors.css' }
     ];
 
+    // Popover-dependent standalone stylesheets get the shared popover base
+    // prepended (single source: styles/snippets/manifest.popover.css; the
+    // bundle carries it via the reset).
+    const popoverSnippet = fs.readFileSync('styles/snippets/manifest.popover.css', 'utf8');
+
     let copiedCount = 0;
     for (const file of filesToCopy) {
         if (fs.existsSync(file.source)) {
+            const baseName = path.basename(file.source);
+            if (CONFIG.stylesheets.popoverDependent.includes(baseName)) {
+                const src = fs.readFileSync(file.source, 'utf8');
+                fs.writeFileSync(file.dest, `${popoverSnippet}\n${src}`);
+                console.log(`  ✓ Copied ${file.source} → ${file.dest} (+popover base)`);
+                copiedCount++;
+                continue;
+            }
             fs.copyFileSync(file.source, file.dest);
             console.log(`  ✓ Copied ${file.source} → ${file.dest}`);
             copiedCount++;

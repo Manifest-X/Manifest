@@ -284,13 +284,13 @@
         }
     }
 
-    :where([popover]) {
+    :where([popover]):not(.unstyle):not(:popover-open) {
         display: none;
+    }
 
-        &:popover-open {
-            display: flex;
-            animation: mnfst-popover-in .15s ease-in both;
-        }
+    :where([popover]):not(.unstyle):popover-open {
+        display: flex;
+        animation: mnfst-popover-in .15s ease-in both;
     }
 
     :where(progress) {

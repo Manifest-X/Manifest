@@ -31,7 +31,7 @@
             transform: translateY(-50%);
             background-color: color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 60%, var(--color-field-inverse, oklch(43.9% 0 0)));
             border-radius: 200px;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            box-shadow: var(--shadow-md, 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1));
             cursor: pointer;
             transition: var(--transition, all .05s ease-in-out)
         }
