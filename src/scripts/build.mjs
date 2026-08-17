@@ -198,6 +198,17 @@ const CONFIG = {
         // Files that need popover.css appended
         popoverDependent: ['manifest.dropdown.css', 'manifest.dialog.css', 'manifest.sidebar.css', 'manifest.tooltip.css'],
 
+        // Shared snippets appended to standalone copies (the bundle gets each
+        // once, in buildMainStylesheet). Source of truth: styles/snippets/.
+        snippetDependent: {
+            'manifest.dropdown.css': ['manifest.alignment.css'],
+            'manifest.tooltip.css': ['manifest.alignment.css'],
+            'manifest.resize.css': ['manifest.handles.css']
+        },
+
+        // Snippets folded into the bundle, after the element files they serve
+        bundleSnippets: ['manifest.alignment.css', 'manifest.handles.css'],
+
         // Files that need group.css appended
         groupDependent: [],
 
@@ -331,7 +342,19 @@ function buildMainStylesheet() {
         console.log(`  ✓ Added element: ${elementFile}`);
     }
 
-    // Step 3: Add utilities files in alphabetical order
+    // Step 3: Add shared element snippets once, after the files they serve
+    // (standalone copies get the same content appended in copyFilesToDist).
+    for (const snippet of CONFIG.stylesheets.bundleSnippets) {
+        const snippetPath = path.join('styles/snippets', snippet);
+        if (!fs.existsSync(snippetPath)) {
+            console.warn(`  ⚠ Warning: ${snippet} not found, skipping`);
+            continue;
+        }
+        mainContent.push(fs.readFileSync(snippetPath, 'utf8').trim());
+        console.log(`  ✓ Added snippet: ${snippet}`);
+    }
+
+    // Step 4: Add utilities files in alphabetical order
     const utilityFiles = glob.sync('styles/utilities/*.css')
         .map(file => path.basename(file))
         .sort();
@@ -653,10 +676,17 @@ function copyFilesToDist() {
     for (const file of filesToCopy) {
         if (fs.existsSync(file.source)) {
             const baseName = path.basename(file.source);
-            if (CONFIG.stylesheets.popoverDependent.includes(baseName)) {
+            const needsPopover = CONFIG.stylesheets.popoverDependent.includes(baseName);
+            const snippets = CONFIG.stylesheets.snippetDependent[baseName] || [];
+            if (needsPopover || snippets.length) {
                 const src = fs.readFileSync(file.source, 'utf8');
-                fs.writeFileSync(file.dest, `${popoverSnippet}\n${src}`);
-                console.log(`  ✓ Copied ${file.source} → ${file.dest} (+popover base)`);
+                const head = needsPopover ? `${popoverSnippet}\n` : '';
+                const tail = snippets
+                    .map(name => `\n${fs.readFileSync(path.join('styles/snippets', name), 'utf8')}`)
+                    .join('');
+                fs.writeFileSync(file.dest, `${head}${src}${tail}`);
+                const notes = [needsPopover && 'popover base', ...snippets].filter(Boolean).join(', ');
+                console.log(`  ✓ Copied ${file.source} → ${file.dest} (+${notes})`);
                 copiedCount++;
                 continue;
             }

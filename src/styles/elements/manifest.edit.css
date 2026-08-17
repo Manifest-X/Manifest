@@ -77,7 +77,7 @@
     /* ---- Size (resize handles) — injected overlay children, fully stylable ---- */
     /* The element keeps its own markup untouched, so its native :hover/:focus still
        fire. Handles are separate elements with pointer-events; the body of the
-       element stays interactive. */
+       element stays interactive. Geometry: styles/snippets/manifest.handles.css. */
     :where([data-edit-sizable]) {
         position: relative;
 
@@ -103,28 +103,11 @@
             }
         }
 
-        .edit-handle-top, .edit-handle-bottom { left: 0; width: 100%; height: var(--h); cursor: ns-resize; &::before { width: 100%; } }
-        .edit-handle-left, .edit-handle-right, .edit-handle-start, .edit-handle-end { top: 0; height: 100%; width: var(--h); cursor: ew-resize; &::before { height: 100%; } }
-        .edit-handle-top { top: calc(var(--h) * -0.5); }
-        .edit-handle-bottom { bottom: calc(var(--h) * -0.5); }
-        .edit-handle-left { left: calc(var(--h) * -0.5); }
-        .edit-handle-right { right: calc(var(--h) * -0.5); }
-        /* Logical edges — inset-inline-* auto-flips for RTL */
-        .edit-handle-start { inset-inline-start: calc(var(--h) * -0.5); }
-        .edit-handle-end { inset-inline-end: calc(var(--h) * -0.5); }
-
-        .edit-handle-top-left, .edit-handle-top-right, .edit-handle-bottom-left, .edit-handle-bottom-right,
-        .edit-handle-top-start, .edit-handle-top-end, .edit-handle-bottom-start, .edit-handle-bottom-end {
-            width: var(--h); height: var(--h);
-        }
-        .edit-handle-top-left { top: calc(var(--h) * -0.5); left: calc(var(--h) * -0.5); cursor: nwse-resize; }
-        .edit-handle-top-right { top: calc(var(--h) * -0.5); right: calc(var(--h) * -0.5); cursor: nesw-resize; }
-        .edit-handle-bottom-left { bottom: calc(var(--h) * -0.5); left: calc(var(--h) * -0.5); cursor: nesw-resize; }
-        .edit-handle-bottom-right { bottom: calc(var(--h) * -0.5); right: calc(var(--h) * -0.5); cursor: nwse-resize; }
-        .edit-handle-top-start { top: calc(var(--h) * -0.5); inset-inline-start: calc(var(--h) * -0.5); cursor: nwse-resize; }
-        .edit-handle-top-end { top: calc(var(--h) * -0.5); inset-inline-end: calc(var(--h) * -0.5); cursor: nesw-resize; }
-        .edit-handle-bottom-start { bottom: calc(var(--h) * -0.5); inset-inline-start: calc(var(--h) * -0.5); cursor: nesw-resize; }
-        .edit-handle-bottom-end { bottom: calc(var(--h) * -0.5); inset-inline-end: calc(var(--h) * -0.5); cursor: nwse-resize; }
+        /* Corner cursors (geometry is shared; resize handles use nw/ne/sw/se) */
+        .edit-handle-top-left, .edit-handle-bottom-right,
+        .edit-handle-top-start, .edit-handle-bottom-end { cursor: nwse-resize; }
+        .edit-handle-top-right, .edit-handle-bottom-left,
+        .edit-handle-top-end, .edit-handle-bottom-start { cursor: nesw-resize; }
     }
 
     /* Collapsed state (size dropped below --edit-size-collapse-*) — authors restyle freely */
@@ -170,7 +153,7 @@
         box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
     }
     :where(.edit-classes)[hidden] { display: none; }
-    :where(.edit-classes) input { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; }
+    :where(.edit-classes) input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.75rem; }
     :where(.edit-classes) .muted { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-content-subtle); }
 
     :where(.edit-toolbar) button[disabled] { opacity: 0.35; pointer-events: none; }

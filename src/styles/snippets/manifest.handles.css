@@ -1,0 +1,116 @@
+/* Drag-handle geometry — single source for x-resize and x-edit handles.
+   The build appends this to standalone copies and adds it once to the bundle.
+   Hosts set --h (handle thickness) and keep their own chrome: hairline colour,
+   transition, and corner cursors (resize uses nw/ne/sw/se, edit nwse/nesw). */
+
+@layer base, components, utilities;
+
+@layer utilities {
+
+    /* Horizontal edges */
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top, .resize-handle-bottom, .edit-handle-top, .edit-handle-bottom) {
+        left: 0;
+        width: 100%;
+        height: var(--h);
+        cursor: ns-resize;
+
+        &::before {
+            width: 100%
+        }
+    }
+
+    /* Vertical edges */
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-left, .resize-handle-right, .resize-handle-start, .resize-handle-end, .edit-handle-left, .edit-handle-right, .edit-handle-start, .edit-handle-end) {
+        top: 0;
+        width: var(--h);
+        height: 100%;
+        cursor: ew-resize;
+
+        &::before {
+            height: 100%
+        }
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top, .edit-handle-top) {
+        top: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom, .edit-handle-bottom) {
+        bottom: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-left, .edit-handle-left) {
+        left: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-right, .edit-handle-right) {
+        right: calc(var(--h) * -0.5)
+    }
+
+    /* Logical edges — inset-inline-* auto-flips for RTL */
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-start, .edit-handle-start) {
+        inset-inline-start: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-end, .edit-handle-end) {
+        inset-inline-end: calc(var(--h) * -0.5)
+    }
+
+    /* Corners — square and inset; cursors stay with each host */
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-left, .edit-handle-top-left) {
+        width: var(--h);
+        height: var(--h);
+        top: calc(var(--h) * -0.5);
+        left: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-right, .edit-handle-top-right) {
+        width: var(--h);
+        height: var(--h);
+        top: calc(var(--h) * -0.5);
+        right: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-left, .edit-handle-bottom-left) {
+        width: var(--h);
+        height: var(--h);
+        bottom: calc(var(--h) * -0.5);
+        left: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-right, .edit-handle-bottom-right) {
+        width: var(--h);
+        height: var(--h);
+        bottom: calc(var(--h) * -0.5);
+        right: calc(var(--h) * -0.5)
+    }
+
+    /* Logical corners — inset-inline-* auto-flips for RTL */
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-start, .edit-handle-top-start) {
+        width: var(--h);
+        height: var(--h);
+        top: calc(var(--h) * -0.5);
+        inset-inline-start: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-end, .edit-handle-top-end) {
+        width: var(--h);
+        height: var(--h);
+        top: calc(var(--h) * -0.5);
+        inset-inline-end: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-start, .edit-handle-bottom-start) {
+        width: var(--h);
+        height: var(--h);
+        bottom: calc(var(--h) * -0.5);
+        inset-inline-start: calc(var(--h) * -0.5)
+    }
+
+    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-end, .edit-handle-bottom-end) {
+        width: var(--h);
+        height: var(--h);
+        bottom: calc(var(--h) * -0.5);
+        inset-inline-end: calc(var(--h) * -0.5)
+    }
+}
