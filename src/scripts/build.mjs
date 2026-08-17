@@ -196,7 +196,7 @@ const CONFIG = {
         coreFiles: ['manifest.reset.css'],
 
         // Files that need popover.css appended
-        popoverDependent: ['manifest.dropdown.css', 'manifest.dialog.css', 'manifest.sidebar.css', 'manifest.tooltip.css'],
+        popoverDependent: ['manifest.dropdown.css', 'manifest.dialog.css', 'manifest.sidebar.css', 'manifest.tooltip.css', 'manifest.colorpicker.css', 'manifest.datepicker.css'],
 
         // Shared snippets appended to standalone copies (the bundle gets each
         // once, in buildMainStylesheet). Source of truth: styles/snippets/.

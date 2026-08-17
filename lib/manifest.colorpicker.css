@@ -1,3 +1,30 @@
+/* Popover base — single source; the build prepends this to standalone
+   popover-dependent stylesheets. The bundle gets it via the reset. */
+
+@layer base, components, utilities;
+
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
+}
+
+@layer base {
+
+    @keyframes mnfst-popover-in {
+        from {
+            transform: scale(.9)
+        }
+
+        to {
+            transform: none
+        }
+    }
+
+    :where([popover]):not(.unstyle):popover-open {
+        display: flex;
+        animation: mnfst-popover-in .15s ease-in both
+    }
+}
+
 /* Manifest Color Picker */
 
 @layer base, components, utilities;
