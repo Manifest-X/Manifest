@@ -4,6 +4,8 @@
 
 @layer components {
 
+    /* Deliberately unflattened: manifest.input.css supplies the field chrome via
+       a lower-specificity rule that sorts later, so this must outrank it. */
     input[type=radio]:not(.unstyle) {
         position: relative;
         min-width: calc(var(--spacing-field-height, 2.25rem) * 0.625);

@@ -50,9 +50,7 @@
     }
 
     /* Active item — a hook, not a look (bind :aria-current="$route === '/x' ? 'page' : null') */
-    [dock] > a[aria-current="page"],
-    [dock] > button[aria-current="page"],
-    [dock] > .selected {
+    :where([dock] > a[aria-current="page"], [dock] > button[aria-current="page"], [dock] > .selected) {
         color: var(--color-content-stark, oklch(14.5% 0 0))
     }
 }

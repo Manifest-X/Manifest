@@ -4,6 +4,8 @@
 
 @layer components {
 
+    /* Deliberately unflattened: manifest.input.css supplies the field chrome via
+       a lower-specificity rule that sorts later, so this must outrank it. */
     input[type=checkbox]:not([role=switch], .unstyle) {
         position: relative;
         min-width: calc(var(--spacing-field-height, 2.25rem) * 0.6);
@@ -37,11 +39,8 @@
             width: 60%;
             height: 60%;
             background-color: var(--color-field-inverse, oklch(43.9% 0 0));
-            -webkit-mask-image: var(--icon-check, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
             mask-image: var(--icon-check, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='currentColor' d='m0 11l2-2l5 5L18 3l2 2L7 18z'/%3E%3C/svg%3E"));
-            -webkit-mask-repeat: no-repeat;
             mask-repeat: no-repeat;
-            -webkit-mask-size: 100% 100%;
             mask-size: 100% 100%;
             transform-origin: center;
             transition: var(--transition, all .05s ease-in-out);

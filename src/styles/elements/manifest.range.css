@@ -4,7 +4,7 @@
 
 @layer components {
 
-    input[type=range]:not(.unstyle) {
+    :where(input[type=range]):not(.unstyle) {
         appearance: none;
         background-color: transparent;
         border-radius: var(--radius, 0.5rem);
@@ -56,7 +56,7 @@
         }
     }
 
-    label:has(input[type=range]):not(.unstyle) {
+    :where(label:has(input[type=range])):not(.unstyle) {
         cursor: default;
     }
 }
