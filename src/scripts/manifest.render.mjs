@@ -2,7 +2,7 @@
 
 /* Manifest Render */
 
-import { readFileSync, readSync, mkdirSync, writeFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync, renameSync } from 'node:fs';
+import { readFileSync, readSync, mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync, renameSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve, dirname, relative, basename, sep } from 'node:path';
 import { createServer } from 'node:http';
@@ -282,6 +282,10 @@ function resolveConfig() {
       : [],
     dryRun: !!cli.dryRun,
     debugPrerender: !!cli.debugPrerender,
+    // render.icons: "lazy" strips prerender-inlined x-icon SVGs from the
+    // output — the icons plugin re-renders them at boot (decorative content;
+    // an icon-heavy nav duplicates kilobytes of identical SVG per link).
+    lazyIcons: pre.icons === 'lazy',
     // Cap on the manifest:render-ready wait.  When the data plugin dispatches
     // the event, we resolve immediately; when it doesn't (most projects), we
     // fall back to the timeout.  10s gives slow data plugin pipelines a
@@ -1127,6 +1131,18 @@ function stripRedundantImgSrcBindings(html) {
  */
 // Prerender inlined Iconify SVG under <i x-icon="iterator.icon">; clear x-icon value so Alpine does not evaluate
 // loop/item expressions while the attribute remains for CSS (e.g. inline layout that keys off [x-icon]).
+// render.icons: "lazy" — drop prerender-inlined icon SVGs from the output.
+// Each svg carries its resolved name (data-icon), which is written back into
+// the host's x-icon attribute as a static, scope-free value — so the icons
+// plugin re-renders it at boot even on baked clones whose expression attrs
+// were emptied. Only svg-as-first-child hosts match; anything else stays inline.
+function stripLazyIconSvgs(html) {
+  return html.replace(
+    /(x-icon\s*=\s*")[^"]*("[^>]*>\s*)<svg\b[^>]*\bdata-icon="([^"]+)"[^>]*>[\s\S]*?<\/svg>/gi,
+    (m, pre, post, name) => `${pre}${name}${post}`
+  );
+}
+
 function stripResolvedXIconDirectives(html) {
   return html.replace(/<i\b([^>]*)>([\s\S]*?)<\/i>/gi, (full, attrs, inner) => {
     if (isHydrateMarkedAttrs(attrs)) return full;
@@ -1593,6 +1609,7 @@ function generateLocaleVariantHtml({
   html = stripRedundantImgSrcBindings(html);
   html = stripEmptyInlineMaskStyles(html);
   html = stripResolvedXIconDirectives(html);
+  if (config.lazyIcons) html = stripLazyIconSvgs(html);
   // markPrerenderedManifestComponents must run BEFORE stripPrerenderHydrateMarkers so it can
   // detect data-hydrate markers and skip components inside hydrate islands.
   html = markPrerenderedManifestComponents(html);
@@ -1992,13 +2009,26 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
     // surface (headless pages can sit frames behind after heavy updates).
     await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 8, height: 8 }, captureBeyondViewport: false }).catch(() => { });
     await new Promise((r) => setTimeout(r, 120));
-    await page.screenshot({
+    const shoot = () => page.screenshot({
       path: filePath,
       type: 'png',
       clip: { x: 0, y: 0, width: 1200, height: 630 },
       omitBackground: false,
       captureBeyondViewport: false,
     });
+    await shoot();
+    // Residual-race retry: a text-heavy page yielding a shell-weight card
+    // means the main content missed the frame — settle again and reshoot.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let size = 0;
+      try { size = statSync(filePath).size; } catch { break; }
+      if (size >= 34 * 1024) break;
+      const textLen = await page.evaluate(() => document.body?.innerText.length || 0).catch(() => 0);
+      if (textLen < 2500) break;
+      await new Promise((r) => setTimeout(r, 1200));
+      await waitForVisualSettle(page, { settleMs: 400, capMs: 5000 });
+      await shoot();
+    }
     // Sanity check: a blank 1200×630 PNG (header only, white body) is ~8–10KB;
     // a content-rich page is 50KB+.  When the resulting file is suspiciously
     // small the snapshot is treated as failed and the renderer falls through
@@ -4448,6 +4478,16 @@ async function runPrerender(config) {
         });
       });
 
+      // (render.icons: "lazy" is applied on the serialized HTML string — see
+      // stripLazyIconSvgs. Doing it in the live DOM re-triggers the icons
+      // plugin's observer, which re-injects every svg before serialization.)
+
+      // x-virtual recomputes spacer geometry at boot; measured heights vary
+      // run to run — zero them so identical content serializes identically.
+      await page.evaluate(() => {
+        document.querySelectorAll('[data-virtual-spacer]').forEach((el) => { el.style.height = '0px'; });
+      });
+
       // Deterministic output: randomized CSS anchor-positioning names
       // (--dropdown-x7f2, --popover-…, --anchor-…) are regenerated per run and
       // made every render a phantom diff. Renumber them sequentially in DOM
@@ -4548,6 +4588,7 @@ async function runPrerender(config) {
       html = stripRedundantImgSrcBindings(html);
       html = stripEmptyInlineMaskStyles(html);
       html = stripResolvedXIconDirectives(html);
+      if (config.lazyIcons) html = stripLazyIconSvgs(html);
       html = markPrerenderedManifestComponents(html);
 
       // Prefix internal <a> links with the locale for non-default locales so
@@ -4791,9 +4832,18 @@ async function runPrerender(config) {
   if (bundleUtilities) {
     const utilMerged = mergeUtilityCssBlocks(utilityBlocks);
     if (utilMerged.trim()) {
-      writeFileSync(join(outputResolved, 'prerender.utilities.css'), `${utilMerged}\n`, 'utf8');
-      process.stdout.write('prerender: wrote prerender.utilities.css (Manifest custom utilities)\n');
-      postProcessInjectStylesheetLink(outputResolved, 'prerender.utilities.css', routerBasePath || '');
+      // Append to prerender.tailwind.css when it exists — one render-blocking
+      // stylesheet instead of two, same cascade order (utilities last). The
+      // separate file remains only for projects without a Tailwind build.
+      const twPath = join(outputResolved, 'prerender.tailwind.css');
+      if (existsSync(twPath)) {
+        appendFileSync(twPath, `\n/* Manifest custom utilities */\n${utilMerged}\n`, 'utf8');
+        process.stdout.write('prerender: merged custom utilities into prerender.tailwind.css\n');
+      } else {
+        writeFileSync(join(outputResolved, 'prerender.utilities.css'), `${utilMerged}\n`, 'utf8');
+        process.stdout.write('prerender: wrote prerender.utilities.css (Manifest custom utilities)\n');
+        postProcessInjectStylesheetLink(outputResolved, 'prerender.utilities.css', routerBasePath || '');
+      }
     }
   }
 
