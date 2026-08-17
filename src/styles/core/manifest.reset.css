@@ -278,10 +278,6 @@
         }
     }
 
-    :where([popover]):not(.unstyle):not(:popover-open) {
-        display: none;
-    }
-
     :where([popover]):not(.unstyle):popover-open {
         display: flex;
         animation: mnfst-popover-in .15s ease-in both;
@@ -361,4 +357,9 @@
 /* Cross-document view transitions opt-in */
 @view-transition {
     navigation: auto
+}
+
+/* Unlayered on purpose: a closed popover must beat layer-based layout classes. */
+[popover]:not(.unstyle):not(:popover-open) {
+    display: none;
 }
