@@ -858,6 +858,16 @@ function checkAndDispatchRenderReady() {
             window.dispatchEvent(new CustomEvent('manifest:render-ready', {
                 detail: { locale, sources }
             }));
+            // Alpine 3.x can strand effects re-queued mid-flush (scheduler
+            // swallow) — an x-if that read this store before data arrived may
+            // never re-run. One post-settle bump on a fresh task re-runs
+            // anything dropped.
+            setTimeout(() => {
+                try {
+                    const s = Alpine.store('data');
+                    if (s) Alpine.store('data', { ...s, _dataVersion: (s._dataVersion || 0) + 1 });
+                } catch (_) { /* no-op */ }
+            }, 50);
         } catch {
             // Silently fail — the render script has its own timeout fallback
         }
