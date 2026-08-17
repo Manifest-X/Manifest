@@ -167,7 +167,6 @@
 
     /* No spinners */
     .no-spinner {
-        -moz-appearance: textfield !important;
         appearance: textfield !important;
 
         &::-webkit-inner-spin-button,

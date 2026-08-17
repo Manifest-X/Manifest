@@ -171,110 +171,17 @@
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
-    /* Center alignment */
+    /* Center alignment (dropdown-only; tooltips have no .center) */
     :where(menu.center) {
         position-area: center
     }
+}
 
-    /* Top alignment */
+/* Directional alignment lives in styles/snippets/manifest.alignment.css */
 
-    :where(menu.top) {
-        position-area: top;
-        margin: var(--spacing-popover-offset, 0.5rem) 0
-    }
+@layer utilities {
 
-    /* Bottom alignment */
-    :where(menu.bottom) {
-        position-area: bottom;
-        margin: var(--spacing-popover-offset, 0.5rem) 0
-    }
-
-    /* Start alignment */
-    :where(menu.start) {
-        position-area: center start;
-        margin: 0 var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* End alignment */
-    :where(menu.end) {
-        position-area: center end;
-        margin: 0 var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Top start alignment */
-    :where(menu.top-start) {
-        position-area: start span-end;
-        margin: var(--spacing-popover-offset, 0.5rem) 0
-    }
-
-    /* Top end alignment */
-    :where(menu.top-end) {
-        position-area: start span-start;
-        margin: var(--spacing-popover-offset, 0.5rem) 0
-    }
-
-    /* Bottom start alignment */
-    :where(menu.bottom-start) {
-        position-area: end span-end;
-        margin: var(--spacing-popover-offset, 0.5rem) 0
-    }
-
-    /* Bottom end alignment */
-    :where(menu.bottom-end) {
-        position-area: end span-start;
-        margin: var(--spacing-popover-offset, 0.5rem) 0
-    }
-
-    /* Start top alignment */
-    :where(menu.start-top) {
-        position-area: span-end start;
-        margin: 0 var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Start bottom alignment */
-    :where(menu.start-bottom) {
-        position-area: span-start start;
-        margin: 0 var(--spacing-popover-offset, 0.5rem)
-    }
-
-
-    /* End top alignment */
-    :where(menu.end-top) {
-        position-area: span-end end;
-        margin: 0 var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* End bottom alignment */
-    :where(menu.end-bottom) {
-        position-area: span-start end;
-        margin: 0 var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Top start corner alignment */
-    :where(menu.top-start-corner, menu.start-top-corner) {
-        position-area: start start;
-        margin: var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Top end corner alignment */
-    :where(menu.top-end-corner, menu.end-top-corner) {
-        position-area: start end;
-        margin: var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Bottom start corner alignment */
-    :where(menu.bottom-start-corner, menu.start-bottom-corner) {
-        position-area: end start;
-        margin: var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Bottom end corner alignment */
-    :where(menu.bottom-end-corner, menu.end-bottom-corner) {
-        position-area: end end;
-        margin: var(--spacing-popover-offset, 0.5rem)
-    }
-
-    /* Touchscreen version */
+    /* Touchscreen version — outranks the shared alignment table on specificity */
     @media (pointer: coarse) {
         menu[popover]:not(.unstyle) {
             position: fixed;
@@ -290,5 +197,110 @@
                 margin-inline-end: 0.8125rem
             }
         }
+    }
+}
+/* Anchored popover alignment — single source shared by dropdowns and tooltips.
+   The build appends this to standalone copies and adds it once to the bundle.
+   Zero specificity throughout, so the coarse-pointer sheet and author rules
+   still win. Dropdown-only variants (.center) stay in manifest.dropdown.css. */
+
+@layer base, components, utilities;
+
+@layer utilities {
+
+    /* Top alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).top) {
+        position-area: top;
+        margin: var(--spacing-popover-offset, 0.5rem) 0
+    }
+
+    /* Bottom alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).bottom) {
+        position-area: bottom;
+        margin: var(--spacing-popover-offset, 0.5rem) 0
+    }
+
+    /* Start alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).start) {
+        position-area: center start;
+        margin: 0 var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* End alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).end) {
+        position-area: center end;
+        margin: 0 var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* Top start alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).top-start) {
+        position-area: start span-end;
+        margin: var(--spacing-popover-offset, 0.5rem) 0
+    }
+
+    /* Top end alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).top-end) {
+        position-area: start span-start;
+        margin: var(--spacing-popover-offset, 0.5rem) 0
+    }
+
+    /* Bottom start alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).bottom-start) {
+        position-area: end span-end;
+        margin: var(--spacing-popover-offset, 0.5rem) 0
+    }
+
+    /* Bottom end alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).bottom-end) {
+        position-area: end span-start;
+        margin: var(--spacing-popover-offset, 0.5rem) 0
+    }
+
+    /* Start top alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).start-top) {
+        position-area: span-end start;
+        margin: 0 var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* Start bottom alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).start-bottom) {
+        position-area: span-start start;
+        margin: 0 var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* End top alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).end-top) {
+        position-area: span-end end;
+        margin: 0 var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* End bottom alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).end-bottom) {
+        position-area: span-start end;
+        margin: 0 var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* Top start corner alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.top-start-corner, .start-top-corner)) {
+        position-area: start start;
+        margin: var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* Top end corner alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.top-end-corner, .end-top-corner)) {
+        position-area: start end;
+        margin: var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* Bottom start corner alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.bottom-start-corner, .start-bottom-corner)) {
+        position-area: end start;
+        margin: var(--spacing-popover-offset, 0.5rem)
+    }
+
+    /* Bottom end corner alignment */
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.bottom-end-corner, .end-bottom-corner)) {
+        position-area: end end;
+        margin: var(--spacing-popover-offset, 0.5rem)
     }
 }

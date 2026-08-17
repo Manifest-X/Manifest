@@ -89,98 +89,110 @@
         }
     }
 
+}
+
+/* Directional alignment lives in styles/snippets/manifest.alignment.css */
+/* Anchored popover alignment — single source shared by dropdowns and tooltips.
+   The build appends this to standalone copies and adds it once to the bundle.
+   Zero specificity throughout, so the coarse-pointer sheet and author rules
+   still win. Dropdown-only variants (.center) stay in manifest.dropdown.css. */
+
+@layer base, components, utilities;
+
+@layer utilities {
+
     /* Top alignment */
-    :where(.tooltip.top) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).top) {
         position-area: top;
         margin: var(--spacing-popover-offset, 0.5rem) 0
     }
 
     /* Bottom alignment */
-    :where(.tooltip.bottom) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).bottom) {
         position-area: bottom;
         margin: var(--spacing-popover-offset, 0.5rem) 0
     }
 
     /* Start alignment */
-    :where(.tooltip.start) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).start) {
         position-area: center start;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
     /* End alignment */
-    :where(.tooltip.end) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).end) {
         position-area: center end;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
     /* Top start alignment */
-    :where(.tooltip.top-start) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).top-start) {
         position-area: start span-end;
         margin: var(--spacing-popover-offset, 0.5rem) 0
     }
 
     /* Top end alignment */
-    :where(.tooltip.top-end) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).top-end) {
         position-area: start span-start;
         margin: var(--spacing-popover-offset, 0.5rem) 0
     }
 
     /* Bottom start alignment */
-    :where(.tooltip.bottom-start) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).bottom-start) {
         position-area: end span-end;
         margin: var(--spacing-popover-offset, 0.5rem) 0
     }
 
     /* Bottom end alignment */
-    :where(.tooltip.bottom-end) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).bottom-end) {
         position-area: end span-start;
         margin: var(--spacing-popover-offset, 0.5rem) 0
     }
 
     /* Start top alignment */
-    :where(.tooltip.start-top) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).start-top) {
         position-area: span-end start;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
     /* Start bottom alignment */
-    :where(.tooltip.start-bottom) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).start-bottom) {
         position-area: span-start start;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
     /* End top alignment */
-    :where(.tooltip.end-top) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).end-top) {
         position-area: span-end end;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
     /* End bottom alignment */
-    :where(.tooltip.end-bottom) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip).end-bottom) {
         position-area: span-start end;
         margin: 0 var(--spacing-popover-offset, 0.5rem)
     }
 
     /* Top start corner alignment */
-    :where(.tooltip.top-start-corner, .tooltip.start-top-corner) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.top-start-corner, .start-top-corner)) {
         position-area: start start;
         margin: var(--spacing-popover-offset, 0.5rem)
     }
 
     /* Top end corner alignment */
-    :where(.tooltip.top-end-corner, .tooltip.end-top-corner) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.top-end-corner, .end-top-corner)) {
         position-area: start end;
         margin: var(--spacing-popover-offset, 0.5rem)
     }
 
     /* Bottom start corner alignment */
-    :where(.tooltip.bottom-start-corner, .tooltip.start-bottom-corner) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.bottom-start-corner, .start-bottom-corner)) {
         position-area: end start;
         margin: var(--spacing-popover-offset, 0.5rem)
     }
 
     /* Bottom end corner alignment */
-    :where(.tooltip.bottom-end-corner, .tooltip.end-bottom-corner) {
+    :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.bottom-end-corner, .end-bottom-corner)) {
         position-area: end end;
         margin: var(--spacing-popover-offset, 0.5rem)
     }

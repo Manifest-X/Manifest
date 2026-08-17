@@ -3,7 +3,7 @@
 /*  https://manifestx.dev/styles/code
 */
 
-@layer base, components, utilities;
+@layer base, components, utilities, syntax;
 
 
 :root {
@@ -79,136 +79,137 @@
     --color-code-char: #deb887;
 }
 
-/* Code syntax styles for highlight.js */
-@layer utilities {
+/* Code syntax styles for highlight.js. Own layer, ordered after utilities, so
+   token colors outrank the block chrome without !important. */
+@layer syntax {
     .hljs-comment {
-        color: var(--color-code-comment) !important
+        color: var(--color-code-comment)
     }
 
     .hljs-keyword {
-        color: var(--color-code-keyword) !important
+        color: var(--color-code-keyword)
     }
 
     .hljs-string {
-        color: var(--color-code-string) !important
+        color: var(--color-code-string)
     }
 
     .hljs-number {
-        color: var(--color-code-number) !important
+        color: var(--color-code-number)
     }
 
     .hljs-literal {
-        color: var(--color-code-constant) !important
+        color: var(--color-code-constant)
     }
 
     .hljs-type {
-        color: var(--color-code-class-name) !important
+        color: var(--color-code-class-name)
     }
 
     .hljs-variable {
-        color: var(--color-code-property) !important
+        color: var(--color-code-property)
     }
 
     .hljs-variable.language_ {
-        color: var(--color-code-keyword) !important
+        color: var(--color-code-keyword)
     }
 
     .hljs-variable.constant_ {
-        color: var(--color-code-constant) !important
+        color: var(--color-code-constant)
     }
 
     .hljs-title {
-        color: var(--color-code-function) !important
+        color: var(--color-code-function)
     }
 
     .hljs-title.class_.inherited__ {
-        color: var(--color-code-class-name) !important
+        color: var(--color-code-class-name)
     }
 
     .hljs-title.function_.invoke__ {
-        color: var(--color-code-function) !important
+        color: var(--color-code-function)
     }
 
     .hljs-params {
-        color: var(--color-code-property) !important
+        color: var(--color-code-property)
     }
 
     .hljs-doctag {
-        color: var(--color-code-keyword) !important;
-        font-weight: 600 !important
+        color: var(--color-code-keyword);
+        font-weight: 600
     }
 
     .hljs-meta {
-        color: var(--color-code-comment) !important
+        color: var(--color-code-comment)
     }
 
     .hljs-meta.prompt_ {
-        color: var(--color-code-keyword) !important
+        color: var(--color-code-keyword)
     }
 
     .hljs-meta.keyword_ {
-        color: var(--color-code-keyword) !important
+        color: var(--color-code-keyword)
     }
 
     .hljs-meta.string_ {
-        color: var(--color-code-string) !important
+        color: var(--color-code-string)
     }
 
     .hljs-section {
-        color: var(--color-code-keyword) !important;
-        font-weight: 600 !important
+        color: var(--color-code-keyword);
+        font-weight: 600
     }
 
     .hljs-name {
-        color: var(--color-code-tag) !important
+        color: var(--color-code-tag)
     }
 
     .hljs-attribute {
-        color: var(--color-code-attr-name) !important
+        color: var(--color-code-attr-name)
     }
 
     .hljs-bullet {
-        color: var(--color-code-punctuation) !important
+        color: var(--color-code-punctuation)
     }
 
     .hljs-code {
-        color: var(--color-code-property) !important
+        color: var(--color-code-property)
     }
 
     .hljs-formula {
-        color: var(--color-code-number) !important
+        color: var(--color-code-number)
     }
 
     .hljs-quote {
-        color: var(--color-code-string) !important
+        color: var(--color-code-string)
     }
 
     .hljs-selector-id {
-        color: var(--color-code-selector) !important
+        color: var(--color-code-selector)
     }
 
     .hljs-selector-class {
-        color: var(--color-code-selector) !important
+        color: var(--color-code-selector)
     }
 
     .hljs-selector-attr {
-        color: var(--color-code-selector) !important
+        color: var(--color-code-selector)
     }
 
     .hljs-selector-pseudo {
-        color: var(--color-code-selector) !important
+        color: var(--color-code-selector)
     }
 
     .hljs-template-tag {
-        color: var(--color-code-tag) !important
+        color: var(--color-code-tag)
     }
 
     .hljs-template-variable {
-        color: var(--color-code-property) !important
+        color: var(--color-code-property)
     }
 
     .hljs-subst {
-        color: var(--color-code-string) !important
+        color: var(--color-code-string)
     }
 }
 
@@ -406,7 +407,6 @@
             font-weight: unset;
             color: unset;
             background: unset;
-            border: unset;
             box-shadow: unset;
             border: 0 none;
             white-space: normal;

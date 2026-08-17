@@ -216,9 +216,7 @@
     /* Hide search input cancel button */
     :where(input[type=search]):not(.unstyle)::-webkit-search-cancel-button {
         appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        appearance: none
+        -webkit-appearance: none
     }
 
     /* Textarea-specific styles */
