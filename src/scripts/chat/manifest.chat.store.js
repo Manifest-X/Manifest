@@ -96,13 +96,17 @@
         function commitParticipants() { state.participants = [..._participants.values()]; rev().n++; }
         function commitTyping() { state.typing = [..._typing.values()]; rev().n++; }
 
+        // server echo reconciles body/media/status onto the local copy
+        function merge(target, incoming) {
+            Object.assign(target.body, incoming.body);
+            for (const k of Object.keys(incoming)) if (k !== 'body' && k !== '_seq') target[k] = incoming[k];
+        }
+
         function upsert(raw) {
             const incoming = normalize(raw, ++seq);
             const prev = incoming.id != null ? _byId.get(incoming.id) : null;
             if (prev) {
-                // merge — server echo reconciles body/media/status onto the local copy
-                Object.assign(prev.body, incoming.body);
-                for (const k of Object.keys(incoming)) if (k !== 'body' && k !== '_seq') prev[k] = incoming[k];
+                merge(prev, incoming);
             } else {
                 _msgs.push(incoming);
                 if (incoming.id != null) _byId.set(incoming.id, incoming);
@@ -174,7 +178,16 @@
             try {
                 const ack = await adapter.send(conversationId, Object.assign({}, draft, { body }));
                 _byId.delete(tmp);
-                local.id = ack.id; local.ts = ack.ts; local.status = 'sent'; local._optimistic = false;
+                // A bus that echoes our own send can beat the ack; that echo lands
+                // while this row is still tmp-keyed, so it appended as its own entry.
+                const echo = ack.id != null ? _byId.get(ack.id) : null;
+                if (echo && echo !== local) {
+                    merge(local, echo);
+                    const at = _msgs.indexOf(echo); if (at > -1) _msgs.splice(at, 1);
+                }
+                local.id = ack.id; local._optimistic = false;
+                if (ack.ts != null) local.ts = ack.ts;
+                if (local.status === 'pending') local.status = 'sent';
                 if (ack.conversationId && ack.conversationId !== local.conversationId) {
                     const from = local.conversationId; local.conversationId = ack.conversationId;
                     if (!isAggregate) state.lastRehome = { from, to: ack.conversationId };   // single-chat: cockpit must retarget
