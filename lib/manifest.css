@@ -3712,137 +3712,6 @@
     }
 }
 
-/* Manifest Prose */
-
-@layer base, components, utilities;
-
-/* Self-contained. The editor is a field first: it borrows the same tokens inputs
-   and textareas use, so it sits in a form without looking bolted on. */
-
-@layer components {
-
-    :where([data-prose]) {
-        display: flex;
-        flex-direction: column;
-        background: var(--color-surface-1);
-        border: 1px solid var(--color-line);
-        border-radius: var(--radius);
-        overflow: hidden;
-
-        &:focus-within {
-            border-color: var(--color-content-subtle);
-        }
-    }
-
-    :where([data-prose-toolbar]) {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.125rem;
-        padding: 0.25rem;
-        border-block-end: 1px solid var(--color-line);
-        background: var(--color-surface-2);
-
-        & button {
-            padding: 0.35rem;
-            line-height: 0;
-        }
-
-        & svg {
-            width: 1rem;
-            height: 1rem;
-        }
-
-        & [data-prose-active] {
-            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
-            color: var(--color-content-stark);
-        }
-    }
-
-    :where([data-prose-input]) {
-        flex: 1;
-        min-height: var(--prose-min-height, 8rem);
-        max-height: var(--prose-max-height, none);
-        overflow-y: auto;
-        padding: var(--prose-padding, 0.75rem);
-        outline: none;
-
-        /* Empty state — :empty misses the <p><br></p> a contenteditable keeps */
-        &:has(> p:only-child > br:only-child)::before {
-            content: attr(data-prose-placeholder);
-            color: var(--color-content-subtle);
-            pointer-events: none;
-        }
-    }
-
-    /* Sticky toolbar for long documents */
-    :where([data-prose-sticky]) [data-prose-toolbar] {
-        position: sticky;
-        inset-block-start: 0;
-        z-index: 1;
-    }
-
-    /* ---- Editable content ----
-       The editor authors real block elements, so style them as elements. Deliberately
-       lighter than the .prose class, which sets a reading measure this field can't use. */
-    :where([data-prose-input]) {
-
-        & > * + * {
-            margin-block-start: 0.75em;
-        }
-
-        & :where(h1, h2, h3, h4, h5, h6) {
-            font-weight: 600;
-            line-height: 1.25;
-        }
-
-        & h1 { font-size: 1.6em }
-        & h2 { font-size: 1.35em }
-        & h3 { font-size: 1.15em }
-
-        & :where(ul, ol) {
-            padding-inline-start: 1.5em;
-        }
-
-        & li {
-            list-style: revert;
-        }
-
-        & blockquote {
-            padding-inline-start: 0.85em;
-            border-inline-start: 2px solid var(--color-line);
-            color: var(--color-content-neutral);
-        }
-
-        & code {
-            padding: 0.1em 0.3em;
-            border-radius: 4px;
-            font-size: 0.9em;
-            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
-        }
-
-        & pre {
-            padding: 0.75em;
-            border-radius: var(--radius);
-            overflow-x: auto;
-            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
-
-            & code {
-                padding: 0;
-                background: none;
-            }
-        }
-
-        & a {
-            color: var(--color-brand-content);
-            text-decoration: underline;
-        }
-
-        & hr {
-            margin-block: 1em;
-        }
-    }
-}
-
 /* Manifest Radios */
 
 @layer base, components, utilities;
@@ -4436,6 +4305,164 @@
             :where(tr, .grid-row) {
                 border-bottom: 0 none
             }
+        }
+    }
+}
+
+/* Manifest Text Edit */
+
+@layer base, components, utilities;
+
+/* Self-contained. The editable area is a field first — it borrows the tokens inputs
+   and textareas use, so it sits in a form without looking bolted on. Controls are
+   styled where they are, not by where they sit, because they can be anywhere. */
+
+@layer components {
+
+    :where([data-text-edit]) {
+        min-height: var(--text-edit-min-height, 8rem);
+        max-height: var(--text-edit-max-height, none);
+        overflow-y: auto;
+        padding: var(--text-edit-padding, 0.75rem);
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        outline: none;
+
+        &:focus {
+            border-color: var(--color-content-subtle);
+        }
+
+        /* :empty misses the <p><br></p> a contenteditable keeps */
+        &:has(> p:only-child > br:only-child)::before {
+            content: attr(placeholder);
+            color: var(--color-content-subtle);
+            pointer-events: none;
+        }
+    }
+
+    /* ---- Controls ----
+       A control is marked wherever it lives, so a toolbar is optional markup and
+       never a requirement. The reset already dims [aria-disabled=true]. */
+    :where([data-text-edit-control]) {
+        &[data-text-edit-active] {
+            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
+            color: var(--color-content-stark);
+        }
+
+        & > svg {
+            width: 1rem;
+            height: 1rem;
+        }
+    }
+
+    :where(button[data-text-edit-control]) {
+        padding: 0.35rem;
+        line-height: 0;
+    }
+
+    /* ---- Field ----
+       Only present when .toolbar asked for chrome; it takes the area's place in
+       the author's layout, so it has to fill the same box. */
+    :where([data-text-edit-field]) {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    /* ---- Toolbar ----
+       Only a layout row. Sitting directly above an area joins the two visually;
+       anywhere else it is just a row of controls. */
+    :where([data-text-edit-toolbar]) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.125rem;
+        align-items: center;
+        padding: 0.25rem;
+    }
+
+    :where([data-text-edit-toolbar]:has(+ [data-text-edit])) {
+        background: var(--color-surface-2);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius) var(--radius) 0 0;
+        border-block-end: 0;
+    }
+
+    :where([data-text-edit-toolbar] + [data-text-edit]) {
+        border-start-start-radius: 0;
+        border-start-end-radius: 0;
+    }
+
+    :where([data-text-edit-sticky]) {
+        overflow-y: visible;
+        max-height: none;
+    }
+
+    :where([data-text-edit-toolbar]:has(+ [data-text-edit-sticky])) {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 1;
+    }
+
+    /* ---- Editable content ----
+       The editor authors real block elements, so style them as elements. Deliberately
+       lighter than the .prose class, which sets a reading measure this field can't use. */
+    :where([data-text-edit]) {
+
+        & > * + * {
+            margin-block-start: 0.75em;
+        }
+
+        & :where(h1, h2, h3, h4, h5, h6) {
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        & h1 { font-size: 1.6em }
+        & h2 { font-size: 1.35em }
+        & h3 { font-size: 1.15em }
+
+        & :where(ul, ol) {
+            padding-inline-start: 1.5em;
+        }
+
+        & li {
+            list-style: revert;
+        }
+
+        & blockquote {
+            padding-inline-start: 0.85em;
+            border-inline-start: 2px solid var(--color-line);
+            color: var(--color-content-neutral);
+        }
+
+        & code {
+            padding: 0.1em 0.3em;
+            border-radius: 4px;
+            font-size: 0.9em;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+        }
+
+        & pre {
+            padding: 0.75em;
+            border-radius: var(--radius);
+            overflow-x: auto;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+
+            & code {
+                padding: 0;
+                background: none;
+            }
+        }
+
+        & a {
+            color: var(--color-brand-content);
+            text-decoration: underline;
+        }
+
+        & hr {
+            margin-block: 1em;
         }
     }
 }

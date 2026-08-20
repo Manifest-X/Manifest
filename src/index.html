@@ -46,7 +46,7 @@
   <link rel="stylesheet" href="/styles/elements/manifest.range.css">
   <link rel="stylesheet" href="/styles/elements/manifest.resize.css">
   <link rel="stylesheet" href="/styles/elements/manifest.edit.css">
-  <link rel="stylesheet" href="/styles/elements/manifest.prose.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.text.edit.css">
   <link rel="stylesheet" href="/styles/elements/manifest.sidebar.css">
   <link rel="stylesheet" href="/styles/elements/manifest.slides.css">
   <link rel="stylesheet" href="/styles/elements/manifest.switch.css">
@@ -84,7 +84,7 @@
   <script src="/scripts/manifest.payments.js"></script>
   <script src="/scripts/manifest.resize.js"></script>
   <script src="/scripts/manifest.edit.js"></script>
-  <script src="/scripts/manifest.prose.js"></script>
+  <script src="/scripts/manifest.text.edit.js"></script>
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
@@ -205,28 +205,31 @@
     <a href="/combobox">Combobox</a>
     <a href="/dropdowns">Dropdowns</a>
     <a href="/copy">Copy input</a>
-    <a href="/prose">Prose</a>
+    <a href="/text-edit">Text edit</a>
     <a href="/native">Native</a>
   </nav>
 
-  <!-- Prose text editor -->
-  <div class="col gap-8 p-6 max-w-3xl" x-route="prose" x-data="{
-    post: '# Bloom &amp; Bramble\n\nSeasonal arrangements, **delivered weekly**.\n\n- Cut this morning\n- Within 50 miles\n- [Book a consultation](/weddings)\n\n> Every stem is local.',
-    note: '',
+  <!-- Text editor -->
+  <div class="col gap-8 p-6 max-w-3xl" x-route="text-edit" x-data="{
+    post: '# Bloom &amp; Bramble\n\nSeasonal arrangements, **delivered weekly**.\n\n- Cut this morning\n- Within 50 miles\n- [Book a consultation](/weddings)\n\n&gt; Every stem is local.',
+    page: '',
     bio: 'Florist. *Ten years* of it.',
-    page: ''
+    note: '',
+    url: 'https://',
+    draftA: 'Reply to **Ana**.',
+    draftB: 'Reply to *Ben*.'
   }">
 
     <div class="col gap-1">
-      <h1 class="h3">Prose</h1>
-      <span class="caption text-content-subtle">x-prose — rich text in, markdown out. Edit on the left, read the stored value on the right.</span>
+      <h1 class="h3">Text edit</h1>
+      <span class="caption text-content-subtle">x-text-edit — one directive: no command modifier marks the editable area, a command modifier turns anything into a control for it.</span>
     </div>
 
-    <!-- Markdown mode: default toolbar, value round-trips through x-markdown -->
+    <!-- Built-in toolbar: .toolbar writes the same markup you would -->
     <div class="col gap-2">
-      <strong class="small">Markdown <span class="caption text-content-subtle">· x-prose</span></strong>
+      <strong class="small">Built-in toolbar <span class="caption text-content-subtle">· x-text-edit.toolbar</span></strong>
       <div class="col md:row gap-4 items-start">
-        <div x-prose="post" placeholder="Write a post…" aria-label="Post body" class="grow"></div>
+        <div class="grow"><div x-text-edit.toolbar="post" placeholder="Write a post…" aria-label="Post body"></div></div>
         <div class="col gap-2 grow min-w-0">
           <pre class="p-3 bg-surface-2 text-xs overflow-x-auto" style="border-radius: var(--radius)" x-text="post"></pre>
           <div class="p-3 bg-surface-1 border border-line" style="border-radius: var(--radius)" x-markdown="post"></div>
@@ -234,32 +237,75 @@
       </div>
     </div>
 
-    <!-- Custom toolbar driven by $prose -->
+    <!-- Scattered controls: no toolbar element, no shared parent, a select and a URL field -->
     <div class="col gap-2">
-      <strong class="small">Custom toolbar <span class="caption text-content-subtle">· x-prose.bare + $prose</span></strong>
-      <div class="col gap-2">
-        <div class="row-wrap gap-1">
-          <button class="ghost sm" :class="$prose.active('bold') && 'selected'" @click="$prose.run('bold')">Bold</button>
-          <button class="ghost sm" :class="$prose.active('italic') && 'selected'" @click="$prose.run('italic')">Italic</button>
-          <button class="ghost sm" :class="$prose.active('h2') && 'selected'" @click="$prose.run('h2')">Heading</button>
-          <button class="ghost sm" :class="$prose.active('ul') && 'selected'" @click="$prose.run('ul')">List</button>
-          <button class="ghost sm" @click="$prose.run('link')">Link</button>
-        </div>
-        <div x-prose.bare="page" placeholder="No built-in toolbar here…" aria-label="Page body"></div>
+      <strong class="small">Scattered controls <span class="caption text-content-subtle">· arbitrary markup, resolved by containment</span></strong>
+      <div class="row-wrap gap-2 items-end">
+        <label class="col gap-1">
+          <span class="caption">Block</span>
+          <select x-text-edit.block class="sm">
+            <option value="p">Paragraph</option>
+            <option value="h2">Heading</option>
+            <option value="h3">Subheading</option>
+            <option value="quote">Quote</option>
+            <option value="pre">Code block</option>
+          </select>
+        </label>
+        <button class="ghost sm" x-text-edit.bold>Bold</button>
+        <button class="ghost sm" x-text-edit.italic>Italic</button>
+        <button class="ghost sm" x-text-edit.bullets>List</button>
+      </div>
+      <div class="row-wrap gap-2 items-end">
+        <label class="col gap-1 grow">
+          <span class="caption">Link URL</span>
+          <input type="url" class="sm" x-model="url" placeholder="https://">
+        </label>
+        <button class="ghost sm" x-text-edit.link="url">Link</button>
+        <button class="ghost sm" x-text-edit.unlink>Unlink</button>
+        <button class="ghost sm" x-text-edit.clear>Clear</button>
+      </div>
+      <div x-text-edit="page" placeholder="Controls above drive this one…" aria-label="Page body"></div>
+    </div>
+
+    <!-- Two dialogs, one DOM: each toolbar drives its own area, and a pinned control drives A from outside -->
+    <div class="col gap-2">
+      <strong class="small">Two dialogs, one DOM <span class="caption text-content-subtle">· nearest area wins; x-text-edit-for pins across</span></strong>
+      <div class="row-wrap gap-2">
+        <button class="sm" popovertarget="reply-a">Reply to Ana</button>
+        <button class="sm" popovertarget="reply-b">Reply to Ben</button>
+        <span x-text-edit-for="#body-a">
+          <button class="ghost sm" x-text-edit.bold>Bold in A, from out here</button>
+        </span>
+      </div>
+
+      <dialog popover id="reply-a" class="col gap-3 p-4" style="min-width: 22rem">
+        <strong class="small">Reply to Ana</strong>
+        <div x-text-edit.toolbar.minimal="draftA" id="body-a" placeholder="Write a reply…" aria-label="Reply to Ana" style="--text-edit-min-height: 5rem"></div>
+        <div class="row gap-2 justify-end"><button class="ghost sm" popovertarget="reply-a" popovertargetaction="hide">Close</button></div>
+      </dialog>
+
+      <dialog popover id="reply-b" class="col gap-3 p-4" style="min-width: 22rem">
+        <strong class="small">Reply to Ben</strong>
+        <div x-text-edit.toolbar.minimal="draftB" id="body-b" placeholder="Write a reply…" aria-label="Reply to Ben" style="--text-edit-min-height: 5rem"></div>
+        <div class="row gap-2 justify-end"><button class="ghost sm" popovertarget="reply-b" popovertargetaction="hide">Close</button></div>
+      </dialog>
+
+      <div class="row-wrap gap-4">
+        <span class="caption text-content-subtle">A: <span x-text="draftA"></span></span>
+        <span class="caption text-content-subtle">B: <span x-text="draftB"></span></span>
       </div>
     </div>
 
-    <!-- Minimal: inline marks only -->
+    <!-- Minimal and plain -->
     <div class="col gap-2">
-      <strong class="small">Minimal <span class="caption text-content-subtle">· x-prose.minimal — inline marks, no blocks</span></strong>
-      <div x-prose.minimal="bio" placeholder="Short bio…" aria-label="Bio" style="--prose-min-height: 4rem"></div>
+      <strong class="small">Minimal <span class="caption text-content-subtle">· x-text-edit.minimal — inline marks only, block controls disable themselves</span></strong>
+      <div x-text-edit.toolbar.minimal="bio" placeholder="Short bio…" aria-label="Bio" style="--text-edit-min-height: 4rem"></div>
       <span class="caption text-content-subtle" x-text="bio || '(empty)'"></span>
     </div>
 
-    <!-- Plain: multiline text, no formatting -->
     <div class="col gap-2">
-      <strong class="small">Plain <span class="caption text-content-subtle">· x-prose.plain</span></strong>
-      <div x-prose.plain="note" placeholder="Internal note…" aria-label="Note" style="--prose-min-height: 4rem"></div>
+      <strong class="small">Plain <span class="caption text-content-subtle">· x-text-edit.plain</span></strong>
+      <div x-text-edit.plain="note" placeholder="Internal note…" aria-label="Note" style="--text-edit-min-height: 4rem"></div>
     </div>
 
   </div>

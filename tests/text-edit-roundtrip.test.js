@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  *
- * x-prose stores markdown, so its two serializers have to be exact inverses over
+ * x-text-edit stores markdown, so its two serializers have to be exact inverses over
  * everything the toolbar can author. A drift here is silent: the editor still looks
  * right while the stored value quietly loses structure on every save.
  */
@@ -14,9 +14,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // The plugin registers on alpine:init and exports its serializers on the window.
 await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(
-    readFileSync(path.join(__dirname, '../src/scripts/manifest.prose.js'), 'utf8')
+    readFileSync(path.join(__dirname, '../src/scripts/manifest.text.edit.js'), 'utf8')
 ))
-const { toMarkdown, fromMarkdown, sanitize } = window.ManifestProse
+const { toMarkdown, fromMarkdown, sanitize } = window.ManifestTextEdit
 
 const roundTrip = (md) => {
     const host = document.createElement('div')
@@ -24,7 +24,7 @@ const roundTrip = (md) => {
     return toMarkdown(host)
 }
 
-describe('x-prose markdown round trip', () => {
+describe('x-text-edit markdown round trip', () => {
     it.each([
         ['heading', '# Title'],
         ['inline marks', 'A **bold** and *italic* and ~~struck~~ and `code` line.'],
@@ -47,7 +47,7 @@ describe('x-prose markdown round trip', () => {
     })
 })
 
-describe('x-prose sanitize', () => {
+describe('x-text-edit sanitize', () => {
     it('unwraps tags outside the allowlist but keeps their text', () => {
         expect(sanitize('<div><script>alert(1)</script>hi</div>', false)).toBe('hi')
     })
@@ -76,7 +76,7 @@ describe('x-prose sanitize', () => {
     })
 })
 
-describe('x-prose parser hardening', () => {
+describe('x-text-edit parser hardening', () => {
     it('drops a javascript: link at parse time', () => {
         expect(fromMarkdown('[x](javascript:evil())')).not.toContain('javascript:')
     })

@@ -355,15 +355,18 @@ export interface ManifestEdit {
     export(): { log: unknown[]; cursor: number };
 }
 
-/** Text editor (`x-prose`) — the editor this element sits in, or the focused one. */
-export interface ManifestProse {
+/** Text editor (`x-text-edit`) — the area this element sits in, or the last focused one. */
+export interface ManifestTextEdit {
     /** The stored value, in the mode the directive was given. */
     value: string;
     focus(): void;
-    /** Apply a toolbar command: bold, italic, strike, code, h1, h2, quote, ul, ol, link, rule. */
-    run(command: string): void;
-    /** Whether that command is active at the caret — for custom toolbars. */
+    /** Apply a command: bold, italic, strike, code, heading, paragraph, quote,
+     *  bullets, numbers, divider, link, unlink, clear, undo, redo, block. */
+    run(command: string, arg?: string | number): void;
+    /** Whether that command is active at the caret. */
     active(command: string): boolean;
+    /** Whether that command is available in this area's mode. */
+    can(command: string): boolean;
     /** Read the content as markdown regardless of the storage mode. */
     markdown(): string;
     /** Read the content as sanitized HTML regardless of the storage mode. */
@@ -380,7 +383,7 @@ export type ManifestDirective =
     | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
     | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files'
-    | 'x-edit' | 'x-prose';
+    | 'x-edit' | 'x-text-edit';
 
 // ---------------------------------------------------------------------------
 // Global declarations (what Alpine exposes inside `x-data`, `x-show`, etc.)
@@ -423,8 +426,8 @@ declare global {
     const $export: ManifestExport;
     /** Element editor (edit plugin; opt-in). */
     const $edit: ManifestEdit;
-    /** Text editor (prose plugin). */
-    const $prose: ManifestProse;
+    /** Text editor (text-edit plugin). */
+    const $text: ManifestTextEdit;
     /** Device/platform info (utilities; enriched by the native plugin). */
     const $device: ManifestDevice;
     /** Native share (native plugin). */
