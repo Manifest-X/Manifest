@@ -153,5 +153,66 @@
         & hr {
             margin-block: 1em;
         }
+
+        & img {
+            max-width: 100%;
+        }
+
+        & table {
+            width: 100%;
+            table-layout: fixed;
+
+            & :where(td, th) {
+                padding: 0.35em 0.5em;
+                border: 1px solid var(--color-line);
+            }
+        }
+
+        /* Task lists — the checkbox replaces the marker */
+        & :where(ul[data-checklist]) {
+            padding-inline-start: 0.25em;
+            list-style: none;
+
+            & li {
+                display: flex;
+                align-items: baseline;
+                gap: 0.5em;
+                list-style: none;
+            }
+        }
+
+        & :where(dt) {
+            font-weight: 600;
+        }
+
+        & :where(dd) {
+            margin-inline-start: 1.5em;
+        }
+
+        & :where(kbd) {
+            padding: 0.1em 0.35em;
+            border: 1px solid var(--color-line);
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.85em;
+        }
+
+        & :where(mark) {
+            background: color-mix(in oklch, var(--color-brand-content) 25%, transparent);
+            color: inherit;
+        }
+
+        & :where(small) {
+            font-size: 0.8em;
+        }
+
+        & :where(figcaption) {
+            font-size: 0.8em;
+            color: var(--color-content-neutral);
+        }
+
+        & :where(abbr, dfn) {
+            text-decoration: underline dotted;
+        }
     }
 }

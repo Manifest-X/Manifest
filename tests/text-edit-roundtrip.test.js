@@ -42,8 +42,38 @@ describe('x-text-edit markdown round trip', () => {
         ['escapes', 'Escaped \\*not italic\\* here.'],
         ['nested marks', 'Mixed **bold `code` inside** text.'],
         ['document', '# Head\n\n- a\n- b\n\n> quote\n\nTail.'],
+        ['image', 'An ![alt text](/cat.png) inline.'],
+        ['task list', '- [ ] open\n- [x] done'],
+        ['task list nested', '- [ ] parent\n    - [x] child'],
+        ['deep headings', '#### Four\n\n##### Five\n\n###### Six'],
     ])('%s', (_name, md) => {
         expect(roundTrip(md)).toBe(md)
+    })
+})
+
+describe('x-text-edit command surface', () => {
+    const commands = window.ManifestTextEdit.commands()
+
+    it('names every command for the tag it produces', () => {
+        // The whole point of the rename: no Manifest vocabulary to map onto HTML.
+        for (const tag of ['strong', 'em', 'b', 'i', 'u', 's', 'del', 'ins', 'code', 'mark', 'small',
+            'sub', 'sup', 'kbd', 'samp', 'var', 'abbr', 'cite', 'q', 'dfn', 'time',
+            'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'address',
+            'figure', 'figcaption', 'dl', 'dt', 'dd', 'ul', 'ol', 'hr', 'a', 'img', 'table']) {
+            expect(commands, `missing command .${tag}`).toContain(tag)
+        }
+    })
+
+    it('has no invented synonym for a tag that exists', () => {
+        for (const invented of ['quote', 'bold', 'italic', 'strike', 'bullets', 'numbers', 'divider', 'link', 'paragraph']) {
+            expect(commands, `.${invented} should be the tag name instead`).not.toContain(invented)
+        }
+    })
+
+    it('keeps the operations that have no tag of their own', () => {
+        for (const op of ['indent', 'outdent', 'align', 'color', 'background', 'font', 'size', 'checklist', 'clear', 'undo', 'redo', 'block']) {
+            expect(commands).toContain(op)
+        }
     })
 })
 
@@ -63,7 +93,7 @@ describe('x-text-edit sanitize', () => {
 
     it('removes a script hoisted out of a stripped wrapper', () => {
         expect(sanitize('<div><script>alert(1)</script>hi</div>', false)).toBe('hi')
-        expect(sanitize('<section><b><script>alert(1)</script>x</b></section>', true)).toBe('<b>x</b>')
+        expect(sanitize('<section><b><script>alert(1)</script>x</b></section>', true)).toBe('<section><b>x</b></section>')
     })
 
     it('strips an event handler smuggled under an allowed wrapper', () => {

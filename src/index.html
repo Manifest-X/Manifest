@@ -210,24 +210,23 @@
   </nav>
 
   <!-- Text editor -->
-  <div class="col gap-8 p-6 max-w-3xl" x-route="text-edit" x-data="{
-    post: '# Bloom &amp; Bramble\n\nSeasonal arrangements, **delivered weekly**.\n\n- Cut this morning\n- Within 50 miles\n- [Book a consultation](/weddings)\n\n&gt; Every stem is local.',
-    page: '',
+  <div class="col gap-8 p-6 max-w-4xl" x-route="text-edit" x-data="{
+    post: '# Bloom &amp; Bramble\n\nSeasonal arrangements, **delivered weekly**.\n\n- [x] Cut this morning\n- [ ] Within 50 miles\n- [Book a consultation](/weddings)\n\n&gt; Every stem is local.',
+    page: '&lt;p&gt;Colour, font and alignment need &lt;code&gt;.html&lt;/code&gt; mode — markdown has no syntax for them.&lt;/p&gt;',
     bio: 'Florist. *Ten years* of it.',
     note: '',
-    url: 'https://',
     draftA: 'Reply to **Ana**.',
     draftB: 'Reply to *Ben*.'
   }">
 
     <div class="col gap-1">
       <h1 class="h3">Text edit</h1>
-      <span class="caption text-content-subtle">x-text-edit — one directive: no command modifier marks the editable area, a command modifier turns anything into a control for it.</span>
+      <span class="caption text-content-subtle">x-text-edit — commands are named for the tag they produce. No command modifier marks the editable area; a command modifier turns anything into a control for it.</span>
     </div>
 
-    <!-- Built-in toolbar: .toolbar writes the same markup you would -->
+    <!-- Markdown mode with the built-in toolbar -->
     <div class="col gap-2">
-      <strong class="small">Built-in toolbar <span class="caption text-content-subtle">· x-text-edit.toolbar</span></strong>
+      <strong class="small">Markdown <span class="caption text-content-subtle">· x-text-edit.toolbar — Tab indents, Shift+Tab outdents, Escape leaves</span></strong>
       <div class="col md:row gap-4 items-start">
         <div class="grow"><div x-text-edit.toolbar="post" placeholder="Write a post…" aria-label="Post body"></div></div>
         <div class="col gap-2 grow min-w-0">
@@ -237,44 +236,87 @@
       </div>
     </div>
 
-    <!-- Scattered controls: no toolbar element, no shared parent, a select and a URL field -->
+    <!-- HTML mode: everything markdown can't carry, plus scattered controls -->
     <div class="col gap-2">
-      <strong class="small">Scattered controls <span class="caption text-content-subtle">· arbitrary markup, resolved by containment</span></strong>
+      <strong class="small">HTML mode <span class="caption text-content-subtle">· x-text-edit.html — colour, font, size and alignment, with options you wrote</span></strong>
+
       <div class="row-wrap gap-2 items-end">
         <label class="col gap-1">
           <span class="caption">Block</span>
           <select x-text-edit.block class="sm">
-            <option value="p">Paragraph</option>
-            <option value="h2">Heading</option>
-            <option value="h3">Subheading</option>
-            <option value="quote">Quote</option>
-            <option value="pre">Code block</option>
+            <option value="p">p</option>
+            <option value="h1">h1</option>
+            <option value="h2">h2</option>
+            <option value="h3">h3</option>
+            <option value="blockquote">blockquote</option>
+            <option value="pre">pre</option>
+            <option value="address">address</option>
+            <option value="figcaption">figcaption</option>
           </select>
         </label>
-        <button class="ghost sm" x-text-edit.bold>Bold</button>
-        <button class="ghost sm" x-text-edit.italic>Italic</button>
-        <button class="ghost sm" x-text-edit.bullets>List</button>
+        <label class="col gap-1">
+          <span class="caption">Font</span>
+          <select x-text-edit.font class="sm">
+            <option value="inherit">Default</option>
+            <option value="Arial">Arial</option>
+            <option value="Georgia">Georgia</option>
+            <option value="ui-monospace">Mono</option>
+          </select>
+        </label>
+        <label class="col gap-1">
+          <span class="caption">Size</span>
+          <select x-text-edit.size class="sm">
+            <option value="12px">12</option>
+            <option value="14px">14</option>
+            <option value="16px">16</option>
+            <option value="24px">24</option>
+            <option value="32px">32</option>
+          </select>
+        </label>
+        <label class="col gap-1">
+          <span class="caption">Text</span>
+          <input type="color" x-text-edit.color aria-label="Text colour">
+        </label>
+        <label class="col gap-1">
+          <span class="caption">Highlight</span>
+          <input type="color" x-text-edit.background aria-label="Highlight colour">
+        </label>
       </div>
+
+      <div class="row-wrap gap-2 items-end">
+        <button class="ghost sm" x-text-edit.strong>strong</button>
+        <button class="ghost sm" x-text-edit.em>em</button>
+        <button class="ghost sm" x-text-edit.mark>mark</button>
+        <button class="ghost sm" x-text-edit.kbd>kbd</button>
+        <button class="ghost sm" x-text-edit.sub>sub</button>
+        <button class="ghost sm" x-text-edit.sup>sup</button>
+        <button class="ghost sm" x-text-edit.small>small</button>
+        <button class="ghost sm" x-text-edit.align.center>align centre</button>
+        <button class="ghost sm" x-text-edit.align.start>align start</button>
+        <button class="ghost sm" x-text-edit.table.3x3>table</button>
+      </div>
+
+      <!-- Link: define, edit and clear from one field. Empty it to unlink. -->
       <div class="row-wrap gap-2 items-end">
         <label class="col gap-1 grow">
-          <span class="caption">Link URL</span>
-          <input type="url" class="sm" x-model="url" placeholder="https://">
+          <span class="caption">Link (shows the current href; empty it to unlink)</span>
+          <input type="url" class="sm" x-text-edit.a placeholder="https://">
         </label>
-        <button class="ghost sm" x-text-edit.link="url">Link</button>
-        <button class="ghost sm" x-text-edit.unlink>Unlink</button>
-        <button class="ghost sm" x-text-edit.clear>Clear</button>
+        <button class="ghost sm" x-text-edit.clear>clear formatting</button>
       </div>
-      <div x-text-edit="page" placeholder="Controls above drive this one…" aria-label="Page body"></div>
+
+      <div x-text-edit.html="page" placeholder="Select some text, then use the controls above…" aria-label="Page body"></div>
+      <pre class="p-3 bg-surface-2 text-xs overflow-x-auto" style="border-radius: var(--radius)" x-text="page"></pre>
     </div>
 
-    <!-- Two dialogs, one DOM: each toolbar drives its own area, and a pinned control drives A from outside -->
+    <!-- Two dialogs, one DOM -->
     <div class="col gap-2">
       <strong class="small">Two dialogs, one DOM <span class="caption text-content-subtle">· nearest area wins; x-text-edit-for pins across</span></strong>
       <div class="row-wrap gap-2">
         <button class="sm" popovertarget="reply-a">Reply to Ana</button>
         <button class="sm" popovertarget="reply-b">Reply to Ben</button>
         <span x-text-edit-for="#body-a">
-          <button class="ghost sm" x-text-edit.bold>Bold in A, from out here</button>
+          <button class="ghost sm" x-text-edit.strong>Bold in A, from out here</button>
         </span>
       </div>
 
@@ -298,7 +340,7 @@
 
     <!-- Minimal and plain -->
     <div class="col gap-2">
-      <strong class="small">Minimal <span class="caption text-content-subtle">· x-text-edit.minimal — inline marks only, block controls disable themselves</span></strong>
+      <strong class="small">Minimal <span class="caption text-content-subtle">· x-text-edit.minimal — inline only; block controls disable themselves</span></strong>
       <div x-text-edit.toolbar.minimal="bio" placeholder="Short bio…" aria-label="Bio" style="--text-edit-min-height: 4rem"></div>
       <span class="caption text-content-subtle" x-text="bio || '(empty)'"></span>
     </div>

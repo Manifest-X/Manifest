@@ -360,8 +360,12 @@ export interface ManifestTextEdit {
     /** The stored value, in the mode the directive was given. */
     value: string;
     focus(): void;
-    /** Apply a command: bold, italic, strike, code, heading, paragraph, quote,
-     *  bullets, numbers, divider, link, unlink, clear, undo, redo, block. */
+    /** The href at the caret; assign to set it, assign '' to unlink. */
+    link: string;
+    /** Apply a command. Commands are named for the tag they produce — 'strong',
+     *  'blockquote', 'h2', 'ul', 'a', 'img', 'table' — plus the operations with no
+     *  tag of their own: 'indent', 'outdent', 'align', 'color', 'background',
+     *  'font', 'size', 'checklist', 'clear', 'undo', 'redo', 'block'. */
     run(command: string, arg?: string | number): void;
     /** Whether that command is active at the caret. */
     active(command: string): boolean;
