@@ -10,7 +10,16 @@
          --edit-size-collapse-x/-y  120px                        collapse below this → [data-edit-collapsed] + 'edit:collapse' event
        (min/max come from the element's native min-/max-width/height.) */
     let overlayEl;
-    function showOverlay() { if (!overlayEl) { overlayEl = document.createElement('div'); overlayEl.className = 'edit-overlay'; document.body.appendChild(overlayEl); } overlayEl.style.display = 'block'; return overlayEl; }
+    // Fires while dragging (done:false) and once on commit (done:true), so consumers
+    // that must re-measure — charts, virtual lists — can track the drag and settle.
+    function sizeEvent(el, done) {
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new CustomEvent('edit:size', {
+            bubbles: true,
+            detail: { width: r.width, height: r.height, css: { width: el.style.width, height: el.style.height }, collapsed: el.hasAttribute('data-edit-collapsed'), done }
+        }));
+    }
+    function showOverlay() { if (!overlayEl) { overlayEl = document.createElement('div'); overlayEl.setAttribute('data-edit-overlay', ''); document.body.appendChild(overlayEl); } overlayEl.style.display = 'block'; return overlayEl; }
     function hideOverlay() { if (overlayEl) overlayEl.style.display = 'none'; }
 
     const isRTL = (el) => getComputedStyle(el).direction === 'rtl';
@@ -34,7 +43,7 @@
         edges.forEach(pos => {
             const phys = physical(pos, el);                  // keep logical class for CSS; resolve to physical for behavior
             const h = document.createElement('span');
-            h.className = `edit-handle edit-handle-${pos}`;
+            h.setAttribute('data-edit-handle', pos);      // logical value drives the CSS; `phys` drives behaviour
             h.tabIndex = 0; h.setAttribute('role', 'slider'); h.setAttribute('aria-label', `Resize ${pos}`);
             h.addEventListener('pointerdown', (e) => startSize(e, el, phys));
             h.addEventListener('keydown', (e) => keyResize(e, el, phys));
@@ -55,7 +64,8 @@
         const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity, minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
         if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
         if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
-        clearTimeout(_keyTimer); _keyTimer = setTimeout(() => { _keyTimer = null; commitStyle(area, el); }, 350);   // coalesce key bursts into one delta
+        sizeEvent(el, false);
+        clearTimeout(_keyTimer); _keyTimer = setTimeout(() => { _keyTimer = null; commitStyle(area, el); sizeEvent(el, true); }, 350);   // coalesce key bursts into one delta
     }
     function snapStops(el, axisVar, dim) {
         const list = cssVar(el, axisVar, '') || cssVar(el, '--edit-size-snap', '');
@@ -85,11 +95,12 @@
             if (top || bottom) { lastH = snap(clamp(baseH + (bottom ? dy : -dy), minH, maxH), snapH, tolY); el.style.height = toUnit(lastH, hu, el, el.parentElement, 'h') + hu; }
             const collapsed = (collapseX != null && lastW < collapseX) || (collapseY != null && lastH < collapseY);
             el.toggleAttribute('data-edit-collapsed', collapsed);
+            sizeEvent(el, false);
         };
         const up = () => {
             document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov);
             if (el.hasAttribute('data-edit-collapsed')) el.dispatchEvent(new CustomEvent('edit:collapse', { bubbles: true }));
-            commitStyle(area, el);
+            commitStyle(area, el); sizeEvent(el, true);
         };
         document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
     }

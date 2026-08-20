@@ -3,7 +3,7 @@
        Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel. */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
     let lastMoveX = 0, lastMoveY = 0, grabbed = null, liveRegion;
-    function announce(msg) { if (!liveRegion) { liveRegion = document.createElement('div'); liveRegion.className = 'edit-sr'; liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
+    function announce(msg) { if (!liveRegion) { liveRegion = document.createElement('div'); liveRegion.setAttribute('data-edit-live', ''); liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
 
     function makeSortable(container) {
         sortableChildren(container).forEach(child => {
@@ -19,7 +19,7 @@
     function onPointerDown(e) {
         const item = this, area = item.closest('[data-edit-area]');
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
-        if (e.target.isContentEditable || e.target.classList.contains('edit-handle')) return;   // text/size win
+        if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
         const container = item.parentElement, sx = e.clientX, sy = e.clientY; let active = false;
         const onMove = (ev) => {
             if (!active) {
@@ -80,7 +80,7 @@
         el.setAttribute('data-edit-movable', ''); el.tabIndex = 0; el.setAttribute('role', 'application'); el.setAttribute('aria-label', 'Draggable; arrow keys to move');
         el.addEventListener('pointerdown', (e) => {
             const area = el.closest('[data-edit-area]');
-            if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e.target.isContentEditable || e.target.classList.contains('edit-handle')) return;
+            if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;
             e.preventDefault(); el._preStyle = el.getAttribute('style') || '';
             const cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';

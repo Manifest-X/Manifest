@@ -46,6 +46,7 @@
   <link rel="stylesheet" href="/styles/elements/manifest.range.css">
   <link rel="stylesheet" href="/styles/elements/manifest.resize.css">
   <link rel="stylesheet" href="/styles/elements/manifest.edit.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.prose.css">
   <link rel="stylesheet" href="/styles/elements/manifest.sidebar.css">
   <link rel="stylesheet" href="/styles/elements/manifest.slides.css">
   <link rel="stylesheet" href="/styles/elements/manifest.switch.css">
@@ -83,6 +84,7 @@
   <script src="/scripts/manifest.payments.js"></script>
   <script src="/scripts/manifest.resize.js"></script>
   <script src="/scripts/manifest.edit.js"></script>
+  <script src="/scripts/manifest.prose.js"></script>
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
@@ -203,8 +205,64 @@
     <a href="/combobox">Combobox</a>
     <a href="/dropdowns">Dropdowns</a>
     <a href="/copy">Copy input</a>
+    <a href="/prose">Prose</a>
     <a href="/native">Native</a>
   </nav>
+
+  <!-- Prose text editor -->
+  <div class="col gap-8 p-6 max-w-3xl" x-route="prose" x-data="{
+    post: '# Bloom &amp; Bramble\n\nSeasonal arrangements, **delivered weekly**.\n\n- Cut this morning\n- Within 50 miles\n- [Book a consultation](/weddings)\n\n> Every stem is local.',
+    note: '',
+    bio: 'Florist. *Ten years* of it.',
+    page: ''
+  }">
+
+    <div class="col gap-1">
+      <h1 class="h3">Prose</h1>
+      <span class="caption text-content-subtle">x-prose — rich text in, markdown out. Edit on the left, read the stored value on the right.</span>
+    </div>
+
+    <!-- Markdown mode: default toolbar, value round-trips through x-markdown -->
+    <div class="col gap-2">
+      <strong class="small">Markdown <span class="caption text-content-subtle">· x-prose</span></strong>
+      <div class="col md:row gap-4 items-start">
+        <div x-prose="post" placeholder="Write a post…" aria-label="Post body" class="grow"></div>
+        <div class="col gap-2 grow min-w-0">
+          <pre class="p-3 bg-surface-2 text-xs overflow-x-auto" style="border-radius: var(--radius)" x-text="post"></pre>
+          <div class="p-3 bg-surface-1 border border-line" style="border-radius: var(--radius)" x-markdown="post"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom toolbar driven by $prose -->
+    <div class="col gap-2">
+      <strong class="small">Custom toolbar <span class="caption text-content-subtle">· x-prose.bare + $prose</span></strong>
+      <div class="col gap-2">
+        <div class="row-wrap gap-1">
+          <button class="ghost sm" :class="$prose.active('bold') && 'selected'" @click="$prose.run('bold')">Bold</button>
+          <button class="ghost sm" :class="$prose.active('italic') && 'selected'" @click="$prose.run('italic')">Italic</button>
+          <button class="ghost sm" :class="$prose.active('h2') && 'selected'" @click="$prose.run('h2')">Heading</button>
+          <button class="ghost sm" :class="$prose.active('ul') && 'selected'" @click="$prose.run('ul')">List</button>
+          <button class="ghost sm" @click="$prose.run('link')">Link</button>
+        </div>
+        <div x-prose.bare="page" placeholder="No built-in toolbar here…" aria-label="Page body"></div>
+      </div>
+    </div>
+
+    <!-- Minimal: inline marks only -->
+    <div class="col gap-2">
+      <strong class="small">Minimal <span class="caption text-content-subtle">· x-prose.minimal — inline marks, no blocks</span></strong>
+      <div x-prose.minimal="bio" placeholder="Short bio…" aria-label="Bio" style="--prose-min-height: 4rem"></div>
+      <span class="caption text-content-subtle" x-text="bio || '(empty)'"></span>
+    </div>
+
+    <!-- Plain: multiline text, no formatting -->
+    <div class="col gap-2">
+      <strong class="small">Plain <span class="caption text-content-subtle">· x-prose.plain</span></strong>
+      <div x-prose.plain="note" placeholder="Internal note…" aria-label="Note" style="--prose-min-height: 4rem"></div>
+    </div>
+
+  </div>
 
   <!-- Native primitives + $device harness -->
   <div class="col gap-8 px-6 pt-6 pb-28 max-w-2xl" x-route="native" x-data="{ fakeInsets: false, float: false, toggleInsets() { const h = document.documentElement; if (this.fakeInsets) { h.style.setProperty('--safe-top','59px'); h.style.setProperty('--safe-right','24px'); h.style.setProperty('--safe-bottom','34px'); h.style.setProperty('--safe-left','24px'); } else { ['top','right','bottom','left'].forEach(s => h.style.removeProperty('--safe-'+s)); } } }">

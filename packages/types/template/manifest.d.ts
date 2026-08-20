@@ -331,6 +331,45 @@ export interface ManifestCamera {
     pick(opts?: Record<string, unknown>): Promise<unknown>;
 }
 
+/** Element editor (`x-edit`) — opt-in authoring plugin. */
+export interface ManifestEdit {
+    /** True while a `.gated` area is editable. */
+    active: boolean;
+    canUndo: boolean;
+    canRedo: boolean;
+    /** Set a handler to route patches somewhere other than the dev server. */
+    onPublish: ((patches: unknown[], state: { log: unknown[]; cursor: number }) => unknown) | null;
+    toggle(): void;
+    on(): void;
+    off(): void;
+    undo(): void;
+    redo(): void;
+    /** Lock an element and its subtree out of editing (runtime, not logged). */
+    lock(el: Element): void;
+    unlock(el: Element): void;
+    /** Resolve the edit log into source patches and send them. */
+    publish(): Promise<unknown>;
+    /** The resolved source patches, without sending them. */
+    patches(): unknown[];
+    /** The raw delta log — persist it yourself to move edits between devices. */
+    export(): { log: unknown[]; cursor: number };
+}
+
+/** Text editor (`x-prose`) — the editor this element sits in, or the focused one. */
+export interface ManifestProse {
+    /** The stored value, in the mode the directive was given. */
+    value: string;
+    focus(): void;
+    /** Apply a toolbar command: bold, italic, strike, code, h1, h2, quote, ul, ol, link, rule. */
+    run(command: string): void;
+    /** Whether that command is active at the caret — for custom toolbars. */
+    active(command: string): boolean;
+    /** Read the content as markdown regardless of the storage mode. */
+    markdown(): string;
+    /** Read the content as sanitized HTML regardless of the storage mode. */
+    html(): string;
+}
+
 /**
  * Manifest's custom-element/attribute authoring surface (documentation aid —
  * these are HTML attributes, not JS globals). Element styles pair with most.
@@ -340,7 +379,8 @@ export type ManifestDirective =
     | 'x-icon' | 'x-svg' | 'x-markdown' | 'x-code' | 'x-code-group'
     | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
-    | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files';
+    | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files'
+    | 'x-edit' | 'x-prose';
 
 // ---------------------------------------------------------------------------
 // Global declarations (what Alpine exposes inside `x-data`, `x-show`, etc.)
@@ -381,6 +421,10 @@ declare global {
     const $chart: ManifestChart;
     /** Export plugin. */
     const $export: ManifestExport;
+    /** Element editor (edit plugin; opt-in). */
+    const $edit: ManifestEdit;
+    /** Text editor (prose plugin). */
+    const $prose: ManifestProse;
     /** Device/platform info (utilities; enriched by the native plugin). */
     const $device: ManifestDevice;
     /** Native share (native plugin). */

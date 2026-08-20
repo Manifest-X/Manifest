@@ -2,7 +2,7 @@
     // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
     function armText(area) {
         area.querySelectorAll('*').forEach(el => {
-            if (el.children.length || !el.textContent.trim() || el.closest('template') || el.classList.contains('edit-handle')) return;
+            if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
@@ -23,7 +23,7 @@
         sortableChildren(area).forEach(clone => {
             const id = clone.getAttribute('data-key'); if (id == null) return;
             clone.querySelectorAll('*').forEach(el => {
-                if (el.children.length || el.classList.contains('edit-handle')) return;
+                if (el.children.length || el.hasAttribute('data-edit-handle')) return;
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
                 const m = expr.match(fieldRe); if (!m) return;
                 const field = m[1];
@@ -58,11 +58,11 @@
     function armComponent(area) {
         const root = area.querySelector('[data-component]'); if (!root) return;
         if (!area._editScope) { area._editScope = 'instance'; area.setAttribute('data-edit-scope', 'instance'); }
-        area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {};
+        area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {};
         // Mark the root AND every element with a path → all are class-editable (incl. the parent).
-        const markClass = (el) => { const p = pathOf(el, root); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; };
+        const markClass = (el) => { const p = pathOf(el, root); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
         markClass(root);
-        root.querySelectorAll('*').forEach(el => { if (!el.classList.contains('edit-handle')) markClass(el); });
+        root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
         // Text leaves also become contenteditable. Capture innerHTML (not textContent) so
         // nested inline elements like <i>/<br> the user adds are preserved.
         root.querySelectorAll('[data-edit-path]').forEach(el => {
@@ -83,7 +83,7 @@
         if (!isActive(area)) return; e.preventDefault(); e.stopPropagation();
         const target = e.target.closest('[data-edit-path]');
         if (!cmpMenu) {
-            cmpMenu = document.createElement('div'); cmpMenu.className = 'edit-classes'; cmpMenu.hidden = true;
+            cmpMenu = document.createElement('div'); cmpMenu.setAttribute('data-edit-menu', ''); cmpMenu.hidden = true;
             cmpMenu.addEventListener('pointerdown', ev => ev.stopPropagation());
             document.body.appendChild(cmpMenu);
             document.addEventListener('pointerdown', () => { if (cmpMenu) cmpMenu.hidden = true; });
@@ -91,9 +91,9 @@
         if (target) target._preClass = target.getAttribute('class') || '';
         const cur = area._editScope || 'instance';
         cmpMenu.innerHTML =
-            `<div class="muted">Scope · ${componentName(area)}</div>`
+            `<small>Scope · ${componentName(area)}</small>`
             + `<div class="row"><button class="ghost sm" data-s="instance">${cur === 'instance' ? '✓ ' : ''}This instance</button><button class="ghost sm" data-s="main">${cur === 'main' ? '✓ ' : ''}All</button></div>`
-            + (target ? `<div class="muted">Classes · ${target.tagName.toLowerCase()} <span style="opacity:.6">· live</span></div><input type="text" spellcheck="false" data-cls>` : '')
+            + (target ? `<small>Classes · ${target.tagName.toLowerCase()} · live</small><input type="text" spellcheck="false" data-cls>` : '')
             + `<div class="row">${target ? '<button class="ghost sm" data-a="revert">Revert element</button>' : ''}<button class="ghost sm" data-a="revertall">Revert all</button></div>`;
         cmpMenu.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { area._editScope = b.getAttribute('data-s'); area.setAttribute('data-edit-scope', area._editScope); area.setAttribute('data-edit-label', `${key(area)} · component · ${area._editScope}`); openComponentMenu(e, area); });
         const cls = cmpMenu.querySelector('[data-cls]');

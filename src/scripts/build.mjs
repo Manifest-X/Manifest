@@ -202,12 +202,11 @@ const CONFIG = {
         // once, in buildMainStylesheet). Source of truth: styles/snippets/.
         snippetDependent: {
             'manifest.dropdown.css': ['manifest.alignment.css'],
-            'manifest.tooltip.css': ['manifest.alignment.css'],
-            'manifest.resize.css': ['manifest.handles.css']
+            'manifest.tooltip.css': ['manifest.alignment.css']
         },
 
         // Snippets folded into the bundle, after the element files they serve
-        bundleSnippets: ['manifest.alignment.css', 'manifest.handles.css'],
+        bundleSnippets: ['manifest.alignment.css'],
 
         // Files that need group.css appended
         groupDependent: [],
@@ -649,11 +648,13 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.charts.js', dest: '../lib/manifest.charts.js' },
         { source: 'scripts/manifest.data.js', dest: '../lib/manifest.data.js' },
         { source: 'scripts/manifest.dropdowns.js', dest: '../lib/manifest.dropdowns.js' },
+        { source: 'scripts/manifest.edit.js', dest: '../lib/manifest.edit.js' },
         { source: 'scripts/manifest.export.js', dest: '../lib/manifest.export.js' },
         { source: 'scripts/manifest.icons.js', dest: '../lib/manifest.icons.js' },
         { source: 'scripts/manifest.localization.js', dest: '../lib/manifest.localization.js' },
         { source: 'scripts/manifest.markdown.js', dest: '../lib/manifest.markdown.js' },
         { source: 'scripts/manifest.payments.js', dest: '../lib/manifest.payments.js' },
+        { source: 'scripts/manifest.prose.js', dest: '../lib/manifest.prose.js' },
         { source: 'scripts/manifest.resize.js', dest: '../lib/manifest.resize.js' },
         { source: 'scripts/manifest.router.js', dest: '../lib/manifest.router.js' },
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
@@ -687,8 +688,10 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.dialog.css', dest: '../lib/manifest.dialog.css' },
         { source: 'styles/elements/manifest.divider.css', dest: '../lib/manifest.divider.css' },
         { source: 'styles/elements/manifest.dropdown.css', dest: '../lib/manifest.dropdown.css' },
+        { source: 'styles/elements/manifest.edit.css', dest: '../lib/manifest.edit.css' },
         { source: 'styles/elements/manifest.form.css', dest: '../lib/manifest.form.css' },
         { source: 'styles/elements/manifest.input.css', dest: '../lib/manifest.input.css' },
+        { source: 'styles/elements/manifest.prose.css', dest: '../lib/manifest.prose.css' },
         { source: 'styles/elements/manifest.radio.css', dest: '../lib/manifest.radio.css' },
         { source: 'styles/elements/manifest.range.css', dest: '../lib/manifest.range.css' },
         { source: 'styles/elements/manifest.resize.css', dest: '../lib/manifest.resize.css' },

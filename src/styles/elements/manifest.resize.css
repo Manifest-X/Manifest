@@ -1,4 +1,7 @@
-/* Manifest Resize Handles */
+/* Manifest Resize Handles
+
+   Superseded by x-edit.size (manifest.edit.css) — kept for existing projects.
+   Self-contained: handle geometry lives here, not in a shared snippet. */
 
 @layer base, components, utilities;
 
@@ -7,7 +10,7 @@
     :where([x-resize]) {
         position: relative;
 
-        /* Resize handle area (geometry: styles/snippets/manifest.handles.css) */
+        /* Resize handle area */
         .resize-handle {
             position: absolute;
             display: block;
@@ -39,7 +42,81 @@
             }
         }
 
-        /* Corner cursors (geometry is shared; edit handles use nwse/nesw) */
+        /* Handle geometry — edges span their axis, corners stay square */
+        .resize-handle-top,
+        .resize-handle-bottom {
+            left: 0;
+            width: 100%;
+            height: var(--h);
+            cursor: ns-resize;
+
+            &::before {
+                width: 100%
+            }
+        }
+
+        .resize-handle-left,
+        .resize-handle-right,
+        .resize-handle-start,
+        .resize-handle-end {
+            top: 0;
+            width: var(--h);
+            height: 100%;
+            cursor: ew-resize;
+
+            &::before {
+                height: 100%
+            }
+        }
+
+        .resize-handle-top {
+            top: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-bottom {
+            bottom: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-left,
+        .resize-handle-top-left,
+        .resize-handle-bottom-left {
+            left: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-right,
+        .resize-handle-top-right,
+        .resize-handle-bottom-right {
+            right: calc(var(--h) * -0.5)
+        }
+
+        /* Logical edges — inset-inline-* auto-flips for RTL */
+        .resize-handle-start,
+        .resize-handle-top-start,
+        .resize-handle-bottom-start {
+            inset-inline-start: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-end,
+        .resize-handle-top-end,
+        .resize-handle-bottom-end {
+            inset-inline-end: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-top-left,
+        .resize-handle-top-right,
+        .resize-handle-top-start,
+        .resize-handle-top-end {
+            top: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-bottom-left,
+        .resize-handle-bottom-right,
+        .resize-handle-bottom-start,
+        .resize-handle-bottom-end {
+            bottom: calc(var(--h) * -0.5)
+        }
+
+        /* Corner cursors */
         .resize-handle-top-left,
         .resize-handle-top-start {
             cursor: nw-resize;

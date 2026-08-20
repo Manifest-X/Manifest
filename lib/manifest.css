@@ -2893,9 +2893,10 @@
 
 @layer base, components, utilities;
 
-/* Authors override any of this without specificity battles: every rule is wrapped
-   in :where(), state lives on data-attributes, and injected affordances use plain
-   semantic class names (.edit-handle, .edit-frame) — no framework-prefixed litter. */
+/* Self-contained: every rule the plugin needs lives here, so this stylesheet works
+   on its own. Authors override without specificity battles — rules are :where()
+   wrapped and keyed off data-edit-* attributes, including the injected affordances
+   (handles, overlay, live region, toolbar, menu). No class names to collide with. */
 
 @layer utilities {
 
@@ -2925,31 +2926,32 @@
         touch-action: none;
         transition: opacity 0.12s ease, outline-color 0.12s ease;
     }
+
     :where([data-edit-sortable]):hover {
         outline: 1px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
-    :where([data-edit-sortable]):focus-visible,
-    :where([data-edit-movable]):focus-visible {
+
+    :where([data-edit-sortable], [data-edit-movable]):focus-visible {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
-    :where([data-edit-dragging]) { opacity: 0.4; }
+
+    :where([data-edit-dragging]) {
+        opacity: 0.4;
+    }
+
     :where([data-edit-grabbed]) {
         outline: 2px dashed var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
 
-    /* Screen-reader announcement region (keyboard grab/move/drop) */
-    :where(.edit-sr) {
-        position: absolute;
-        width: 1px; height: 1px;
-        margin: -1px; padding: 0; border: 0;
-        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    /* ---- Move (positioned children) ---- */
+    :where([data-edit-movable]) {
+        cursor: move;
+        touch-action: none;
     }
 
-    /* ---- Move (positioned children) ---- */
-    :where([data-edit-movable]) { cursor: move; touch-action: none; }
     :where([data-edit-movable]):hover {
         outline: 1px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 2px;
@@ -2957,70 +2959,162 @@
 
     /* ---- Inline text ---- */
     :where([data-edit-armed]) [contenteditable="true"] {
-        outline: 1px solid color-mix(in srgb, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
+        outline: 1px solid color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
         outline-offset: 2px;
         border-radius: 3px;
     }
+
     :where([data-edit-armed]) [contenteditable="true"]:focus {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
     }
 
-    /* ---- Size (resize handles) — injected overlay children, fully stylable ---- */
-    /* The element keeps its own markup untouched, so its native :hover/:focus still
-       fire. Handles are separate elements with pointer-events; the body of the
-       element stays interactive. Geometry: styles/snippets/manifest.handles.css. */
+    /* ---- Size handles ----
+       Injected as siblings of the element's own markup, so its native :hover and
+       :focus still fire and its body stays interactive. */
     :where([data-edit-sizable]) {
         position: relative;
-
-        .edit-handle {
-            position: absolute;
-            z-index: 100;
-            background: transparent;
-            --h: var(--edit-size-handle, 1rem);
-
-            &::before {
-                content: '';
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                width: 1px;
-                height: 1px;
-                background: transparent;
-                transition: background-color 0.15s ease;
-            }
-            &:hover::before, &:active::before {
-                background-color: var(--edit-accent, var(--color-brand-content));
-            }
-        }
-
-        /* Corner cursors (geometry is shared; resize handles use nw/ne/sw/se) */
-        .edit-handle-top-left, .edit-handle-bottom-right,
-        .edit-handle-top-start, .edit-handle-bottom-end { cursor: nwse-resize; }
-        .edit-handle-top-right, .edit-handle-bottom-left,
-        .edit-handle-top-end, .edit-handle-bottom-start { cursor: nesw-resize; }
     }
 
-    /* Collapsed state (size dropped below --edit-size-collapse-*) — authors restyle freely */
-    :where([data-edit-collapsed]) { opacity: 0.45; }
+    :where([data-edit-handle]) {
+        position: absolute;
+        z-index: 100;
+        background: transparent;
+        --h: var(--edit-size-handle, 1rem);
 
-    /* Full-viewport capture layer during a size/move drag (mirrors resize overlay) */
-    :where(.edit-overlay) {
+        /* Hairline, revealed on hover */
+        &::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 1px;
+            height: 1px;
+            background: transparent;
+            transition: background-color 0.15s ease;
+            pointer-events: none;
+        }
+
+        &:hover::before,
+        &:active::before {
+            background-color: var(--edit-accent, var(--color-brand-content));
+        }
+    }
+
+    :where([data-edit-handle]):focus-visible {
+        outline: 2px solid var(--edit-accent, var(--color-brand-content));
+    }
+
+    /* Edges span their axis; corners are square. A corner value contains a hyphen. */
+    :where([data-edit-handle="top"], [data-edit-handle="bottom"]) {
+        left: 0;
+        width: 100%;
+        height: var(--h);
+        cursor: ns-resize;
+
+        &::before {
+            width: 100%;
+        }
+    }
+
+    :where([data-edit-handle="left"], [data-edit-handle="right"], [data-edit-handle="start"], [data-edit-handle="end"]) {
+        top: 0;
+        width: var(--h);
+        height: 100%;
+        cursor: ew-resize;
+
+        &::before {
+            height: 100%;
+        }
+    }
+
+    :where([data-edit-handle*="-"]) {
+        width: var(--h);
+        height: var(--h);
+    }
+
+    /* Inset — each handle straddles its edge; a corner matches one rule per axis.
+       inset-inline-* carries the logical start/end values, so they flip for RTL. */
+    :where([data-edit-handle^="top"]) {
+        top: calc(var(--h) * -0.5);
+    }
+
+    :where([data-edit-handle^="bottom"]) {
+        bottom: calc(var(--h) * -0.5);
+    }
+
+    :where([data-edit-handle$="left"]) {
+        left: calc(var(--h) * -0.5);
+    }
+
+    :where([data-edit-handle$="right"]) {
+        right: calc(var(--h) * -0.5);
+    }
+
+    :where([data-edit-handle$="start"]) {
+        inset-inline-start: calc(var(--h) * -0.5);
+    }
+
+    :where([data-edit-handle$="end"]) {
+        inset-inline-end: calc(var(--h) * -0.5);
+    }
+
+    /* Corner cursors; the logical pair flips with direction. */
+    :where([data-edit-handle="top-left"], [data-edit-handle="bottom-right"], [data-edit-handle="top-start"], [data-edit-handle="bottom-end"]) {
+        cursor: nwse-resize;
+    }
+
+    :where([data-edit-handle="top-right"], [data-edit-handle="bottom-left"], [data-edit-handle="top-end"], [data-edit-handle="bottom-start"]) {
+        cursor: nesw-resize;
+    }
+
+    [dir=rtl] :where([data-edit-handle="top-start"], [data-edit-handle="bottom-end"]) {
+        cursor: nesw-resize;
+    }
+
+    [dir=rtl] :where([data-edit-handle="top-end"], [data-edit-handle="bottom-start"]) {
+        cursor: nwse-resize;
+    }
+
+    /* Collapsed past --edit-size-collapse-* — authors restyle freely */
+    :where([data-edit-collapsed]) {
+        opacity: 0.45;
+    }
+
+    /* Full-viewport capture layer during a size or move drag */
+    :where([data-edit-overlay]) {
         position: fixed;
         inset: 0;
         z-index: 9999;
         background: transparent;
     }
 
+    /* Screen-reader announcements (keyboard grab / move / drop) */
+    :where([data-edit-live]) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
     @media (prefers-reduced-motion: reduce) {
-        :where([data-edit-armed]) > [draggable="true"], :where([data-edit-sizable]) .edit-handle::before { transition: none; }
+
+        :where([data-edit-armed]) > [draggable="true"],
+        :where([data-edit-handle])::before {
+            transition: none;
+        }
     }
 }
 
-/* ---- Plugin dev chrome (spike-only: toolbar + class/scope menu) ---- */
+/* ---- Authoring chrome (toolbar + class/scope menu) ---- */
 @layer components {
 
-    :where(.edit-toolbar) {
+    :where([data-edit-toolbar]) {
         position: fixed;
         inset-block-end: 1rem;
         inset-inline-end: 1rem;
@@ -3028,12 +3122,17 @@
         display: flex;
         gap: 0.5rem;
         align-items: center;
+
+        & button[disabled] {
+            opacity: 0.35;
+            pointer-events: none;
+        }
     }
 
-    :where(.edit-classes) {
+    :where([data-edit-menu]) {
         position: fixed;
         z-index: 10000;
-        width: 260px;
+        width: 16rem;
         padding: 0.6rem;
         display: flex;
         flex-direction: column;
@@ -3042,12 +3141,24 @@
         border: 1px solid var(--color-line);
         border-radius: var(--radius);
         box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
-    }
-    :where(.edit-classes)[hidden] { display: none; }
-    :where(.edit-classes) input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.75rem; }
-    :where(.edit-classes) .muted { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-content-subtle); }
 
-    :where(.edit-toolbar) button[disabled] { opacity: 0.35; pointer-events: none; }
+        &[hidden] {
+            display: none;
+        }
+
+        & input {
+            width: 100%;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.75rem;
+        }
+
+        & small {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--color-content-subtle);
+        }
+    }
 }
 
 /* Manifest Forms */
@@ -3601,6 +3712,137 @@
     }
 }
 
+/* Manifest Prose */
+
+@layer base, components, utilities;
+
+/* Self-contained. The editor is a field first: it borrows the same tokens inputs
+   and textareas use, so it sits in a form without looking bolted on. */
+
+@layer components {
+
+    :where([data-prose]) {
+        display: flex;
+        flex-direction: column;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        overflow: hidden;
+
+        &:focus-within {
+            border-color: var(--color-content-subtle);
+        }
+    }
+
+    :where([data-prose-toolbar]) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.125rem;
+        padding: 0.25rem;
+        border-block-end: 1px solid var(--color-line);
+        background: var(--color-surface-2);
+
+        & button {
+            padding: 0.35rem;
+            line-height: 0;
+        }
+
+        & svg {
+            width: 1rem;
+            height: 1rem;
+        }
+
+        & [data-prose-active] {
+            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
+            color: var(--color-content-stark);
+        }
+    }
+
+    :where([data-prose-input]) {
+        flex: 1;
+        min-height: var(--prose-min-height, 8rem);
+        max-height: var(--prose-max-height, none);
+        overflow-y: auto;
+        padding: var(--prose-padding, 0.75rem);
+        outline: none;
+
+        /* Empty state — :empty misses the <p><br></p> a contenteditable keeps */
+        &:has(> p:only-child > br:only-child)::before {
+            content: attr(data-prose-placeholder);
+            color: var(--color-content-subtle);
+            pointer-events: none;
+        }
+    }
+
+    /* Sticky toolbar for long documents */
+    :where([data-prose-sticky]) [data-prose-toolbar] {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 1;
+    }
+
+    /* ---- Editable content ----
+       The editor authors real block elements, so style them as elements. Deliberately
+       lighter than the .prose class, which sets a reading measure this field can't use. */
+    :where([data-prose-input]) {
+
+        & > * + * {
+            margin-block-start: 0.75em;
+        }
+
+        & :where(h1, h2, h3, h4, h5, h6) {
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        & h1 { font-size: 1.6em }
+        & h2 { font-size: 1.35em }
+        & h3 { font-size: 1.15em }
+
+        & :where(ul, ol) {
+            padding-inline-start: 1.5em;
+        }
+
+        & li {
+            list-style: revert;
+        }
+
+        & blockquote {
+            padding-inline-start: 0.85em;
+            border-inline-start: 2px solid var(--color-line);
+            color: var(--color-content-neutral);
+        }
+
+        & code {
+            padding: 0.1em 0.3em;
+            border-radius: 4px;
+            font-size: 0.9em;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+        }
+
+        & pre {
+            padding: 0.75em;
+            border-radius: var(--radius);
+            overflow-x: auto;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+
+            & code {
+                padding: 0;
+                background: none;
+            }
+        }
+
+        & a {
+            color: var(--color-brand-content);
+            text-decoration: underline;
+        }
+
+        & hr {
+            margin-block: 1em;
+        }
+    }
+}
+
 /* Manifest Radios */
 
 @layer base, components, utilities;
@@ -3707,7 +3949,10 @@
     }
 }
 
-/* Manifest Resize Handles */
+/* Manifest Resize Handles
+
+   Superseded by x-edit.size (manifest.edit.css) — kept for existing projects.
+   Self-contained: handle geometry lives here, not in a shared snippet. */
 
 @layer base, components, utilities;
 
@@ -3716,7 +3961,7 @@
     :where([x-resize]) {
         position: relative;
 
-        /* Resize handle area (geometry: styles/snippets/manifest.handles.css) */
+        /* Resize handle area */
         .resize-handle {
             position: absolute;
             display: block;
@@ -3748,7 +3993,81 @@
             }
         }
 
-        /* Corner cursors (geometry is shared; edit handles use nwse/nesw) */
+        /* Handle geometry — edges span their axis, corners stay square */
+        .resize-handle-top,
+        .resize-handle-bottom {
+            left: 0;
+            width: 100%;
+            height: var(--h);
+            cursor: ns-resize;
+
+            &::before {
+                width: 100%
+            }
+        }
+
+        .resize-handle-left,
+        .resize-handle-right,
+        .resize-handle-start,
+        .resize-handle-end {
+            top: 0;
+            width: var(--h);
+            height: 100%;
+            cursor: ew-resize;
+
+            &::before {
+                height: 100%
+            }
+        }
+
+        .resize-handle-top {
+            top: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-bottom {
+            bottom: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-left,
+        .resize-handle-top-left,
+        .resize-handle-bottom-left {
+            left: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-right,
+        .resize-handle-top-right,
+        .resize-handle-bottom-right {
+            right: calc(var(--h) * -0.5)
+        }
+
+        /* Logical edges — inset-inline-* auto-flips for RTL */
+        .resize-handle-start,
+        .resize-handle-top-start,
+        .resize-handle-bottom-start {
+            inset-inline-start: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-end,
+        .resize-handle-top-end,
+        .resize-handle-bottom-end {
+            inset-inline-end: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-top-left,
+        .resize-handle-top-right,
+        .resize-handle-top-start,
+        .resize-handle-top-end {
+            top: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-bottom-left,
+        .resize-handle-bottom-right,
+        .resize-handle-bottom-start,
+        .resize-handle-bottom-end {
+            bottom: calc(var(--h) * -0.5)
+        }
+
+        /* Corner cursors */
         .resize-handle-top-left,
         .resize-handle-top-start {
             cursor: nw-resize;
@@ -4806,123 +5125,6 @@
     :where(:is(menu[popover], .dropdown-menu, .tooltip):is(.bottom-end-corner, .end-bottom-corner)) {
         position-area: end end;
         margin: var(--spacing-popover-offset, 0.5rem)
-    }
-}
-
-/* Drag-handle geometry — single source for x-resize and x-edit handles.
-   The build appends this to standalone copies and adds it once to the bundle.
-   Hosts set --h (handle thickness) and keep their own chrome: hairline colour,
-   transition, and corner cursors (resize uses nw/ne/sw/se, edit nwse/nesw). */
-
-@layer base, components, utilities;
-
-@layer utilities {
-
-    /* Horizontal edges */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top, .resize-handle-bottom, .edit-handle-top, .edit-handle-bottom) {
-        left: 0;
-        width: 100%;
-        height: var(--h);
-        cursor: ns-resize;
-
-        &::before {
-            width: 100%
-        }
-    }
-
-    /* Vertical edges */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-left, .resize-handle-right, .resize-handle-start, .resize-handle-end, .edit-handle-left, .edit-handle-right, .edit-handle-start, .edit-handle-end) {
-        top: 0;
-        width: var(--h);
-        height: 100%;
-        cursor: ew-resize;
-
-        &::before {
-            height: 100%
-        }
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top, .edit-handle-top) {
-        top: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom, .edit-handle-bottom) {
-        bottom: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-left, .edit-handle-left) {
-        left: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-right, .edit-handle-right) {
-        right: calc(var(--h) * -0.5)
-    }
-
-    /* Logical edges — inset-inline-* auto-flips for RTL */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-start, .edit-handle-start) {
-        inset-inline-start: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-end, .edit-handle-end) {
-        inset-inline-end: calc(var(--h) * -0.5)
-    }
-
-    /* Corners — square and inset; cursors stay with each host */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-left, .edit-handle-top-left) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        left: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-right, .edit-handle-top-right) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        right: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-left, .edit-handle-bottom-left) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        left: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-right, .edit-handle-bottom-right) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        right: calc(var(--h) * -0.5)
-    }
-
-    /* Logical corners — inset-inline-* auto-flips for RTL */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-start, .edit-handle-top-start) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        inset-inline-start: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-end, .edit-handle-top-end) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        inset-inline-end: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-start, .edit-handle-bottom-start) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        inset-inline-start: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-end, .edit-handle-bottom-end) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        inset-inline-end: calc(var(--h) * -0.5)
     }
 }
 

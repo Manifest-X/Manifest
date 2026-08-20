@@ -1,0 +1,130 @@
+/* Manifest Prose */
+
+@layer base, components, utilities;
+
+/* Self-contained. The editor is a field first: it borrows the same tokens inputs
+   and textareas use, so it sits in a form without looking bolted on. */
+
+@layer components {
+
+    :where([data-prose]) {
+        display: flex;
+        flex-direction: column;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        overflow: hidden;
+
+        &:focus-within {
+            border-color: var(--color-content-subtle);
+        }
+    }
+
+    :where([data-prose-toolbar]) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.125rem;
+        padding: 0.25rem;
+        border-block-end: 1px solid var(--color-line);
+        background: var(--color-surface-2);
+
+        & button {
+            padding: 0.35rem;
+            line-height: 0;
+        }
+
+        & svg {
+            width: 1rem;
+            height: 1rem;
+        }
+
+        & [data-prose-active] {
+            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
+            color: var(--color-content-stark);
+        }
+    }
+
+    :where([data-prose-input]) {
+        flex: 1;
+        min-height: var(--prose-min-height, 8rem);
+        max-height: var(--prose-max-height, none);
+        overflow-y: auto;
+        padding: var(--prose-padding, 0.75rem);
+        outline: none;
+
+        /* Empty state — :empty misses the <p><br></p> a contenteditable keeps */
+        &:has(> p:only-child > br:only-child)::before {
+            content: attr(data-prose-placeholder);
+            color: var(--color-content-subtle);
+            pointer-events: none;
+        }
+    }
+
+    /* Sticky toolbar for long documents */
+    :where([data-prose-sticky]) [data-prose-toolbar] {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 1;
+    }
+
+    /* ---- Editable content ----
+       The editor authors real block elements, so style them as elements. Deliberately
+       lighter than the .prose class, which sets a reading measure this field can't use. */
+    :where([data-prose-input]) {
+
+        & > * + * {
+            margin-block-start: 0.75em;
+        }
+
+        & :where(h1, h2, h3, h4, h5, h6) {
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        & h1 { font-size: 1.6em }
+        & h2 { font-size: 1.35em }
+        & h3 { font-size: 1.15em }
+
+        & :where(ul, ol) {
+            padding-inline-start: 1.5em;
+        }
+
+        & li {
+            list-style: revert;
+        }
+
+        & blockquote {
+            padding-inline-start: 0.85em;
+            border-inline-start: 2px solid var(--color-line);
+            color: var(--color-content-neutral);
+        }
+
+        & code {
+            padding: 0.1em 0.3em;
+            border-radius: 4px;
+            font-size: 0.9em;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+        }
+
+        & pre {
+            padding: 0.75em;
+            border-radius: var(--radius);
+            overflow-x: auto;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+
+            & code {
+                padding: 0;
+                background: none;
+            }
+        }
+
+        & a {
+            color: var(--color-brand-content);
+            text-decoration: underline;
+        }
+
+        & hr {
+            margin-block: 1em;
+        }
+    }
+}

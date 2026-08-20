@@ -1,4 +1,7 @@
-/* Manifest Resize Handles */
+/* Manifest Resize Handles
+
+   Superseded by x-edit.size (manifest.edit.css) — kept for existing projects.
+   Self-contained: handle geometry lives here, not in a shared snippet. */
 
 @layer base, components, utilities;
 
@@ -7,7 +10,7 @@
     :where([x-resize]) {
         position: relative;
 
-        /* Resize handle area (geometry: styles/snippets/manifest.handles.css) */
+        /* Resize handle area */
         .resize-handle {
             position: absolute;
             display: block;
@@ -39,7 +42,81 @@
             }
         }
 
-        /* Corner cursors (geometry is shared; edit handles use nwse/nesw) */
+        /* Handle geometry — edges span their axis, corners stay square */
+        .resize-handle-top,
+        .resize-handle-bottom {
+            left: 0;
+            width: 100%;
+            height: var(--h);
+            cursor: ns-resize;
+
+            &::before {
+                width: 100%
+            }
+        }
+
+        .resize-handle-left,
+        .resize-handle-right,
+        .resize-handle-start,
+        .resize-handle-end {
+            top: 0;
+            width: var(--h);
+            height: 100%;
+            cursor: ew-resize;
+
+            &::before {
+                height: 100%
+            }
+        }
+
+        .resize-handle-top {
+            top: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-bottom {
+            bottom: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-left,
+        .resize-handle-top-left,
+        .resize-handle-bottom-left {
+            left: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-right,
+        .resize-handle-top-right,
+        .resize-handle-bottom-right {
+            right: calc(var(--h) * -0.5)
+        }
+
+        /* Logical edges — inset-inline-* auto-flips for RTL */
+        .resize-handle-start,
+        .resize-handle-top-start,
+        .resize-handle-bottom-start {
+            inset-inline-start: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-end,
+        .resize-handle-top-end,
+        .resize-handle-bottom-end {
+            inset-inline-end: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-top-left,
+        .resize-handle-top-right,
+        .resize-handle-top-start,
+        .resize-handle-top-end {
+            top: calc(var(--h) * -0.5)
+        }
+
+        .resize-handle-bottom-left,
+        .resize-handle-bottom-right,
+        .resize-handle-bottom-start,
+        .resize-handle-bottom-end {
+            bottom: calc(var(--h) * -0.5)
+        }
+
+        /* Corner cursors */
         .resize-handle-top-left,
         .resize-handle-top-start {
             cursor: nw-resize;
@@ -113,121 +190,5 @@
 
     [dir=rtl] :where([x-resize]) .resize-handle-bottom-end {
         cursor: sw-resize;
-    }
-}
-/* Drag-handle geometry — single source for x-resize and x-edit handles.
-   The build appends this to standalone copies and adds it once to the bundle.
-   Hosts set --h (handle thickness) and keep their own chrome: hairline colour,
-   transition, and corner cursors (resize uses nw/ne/sw/se, edit nwse/nesw). */
-
-@layer base, components, utilities;
-
-@layer utilities {
-
-    /* Horizontal edges */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top, .resize-handle-bottom, .edit-handle-top, .edit-handle-bottom) {
-        left: 0;
-        width: 100%;
-        height: var(--h);
-        cursor: ns-resize;
-
-        &::before {
-            width: 100%
-        }
-    }
-
-    /* Vertical edges */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-left, .resize-handle-right, .resize-handle-start, .resize-handle-end, .edit-handle-left, .edit-handle-right, .edit-handle-start, .edit-handle-end) {
-        top: 0;
-        width: var(--h);
-        height: 100%;
-        cursor: ew-resize;
-
-        &::before {
-            height: 100%
-        }
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top, .edit-handle-top) {
-        top: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom, .edit-handle-bottom) {
-        bottom: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-left, .edit-handle-left) {
-        left: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-right, .edit-handle-right) {
-        right: calc(var(--h) * -0.5)
-    }
-
-    /* Logical edges — inset-inline-* auto-flips for RTL */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-start, .edit-handle-start) {
-        inset-inline-start: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-end, .edit-handle-end) {
-        inset-inline-end: calc(var(--h) * -0.5)
-    }
-
-    /* Corners — square and inset; cursors stay with each host */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-left, .edit-handle-top-left) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        left: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-right, .edit-handle-top-right) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        right: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-left, .edit-handle-bottom-left) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        left: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-right, .edit-handle-bottom-right) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        right: calc(var(--h) * -0.5)
-    }
-
-    /* Logical corners — inset-inline-* auto-flips for RTL */
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-start, .edit-handle-top-start) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        inset-inline-start: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-top-end, .edit-handle-top-end) {
-        width: var(--h);
-        height: var(--h);
-        top: calc(var(--h) * -0.5);
-        inset-inline-end: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-start, .edit-handle-bottom-start) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        inset-inline-start: calc(var(--h) * -0.5)
-    }
-
-    :where([x-resize], [data-edit-sizable]) :is(.resize-handle-bottom-end, .edit-handle-bottom-end) {
-        width: var(--h);
-        height: var(--h);
-        bottom: calc(var(--h) * -0.5);
-        inset-inline-end: calc(var(--h) * -0.5)
     }
 }

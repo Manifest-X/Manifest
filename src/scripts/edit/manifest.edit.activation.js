@@ -5,7 +5,7 @@
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const markEl = (el) => { const p = pathOf(el, area); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
         markEl(area);
-        area.querySelectorAll('*').forEach(el => { if (!el.classList.contains('edit-handle')) markEl(el); });
+        area.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markEl(el); });
         if (!area._baseOrder) area._baseOrder = sortableChildren(area).map(staticKey);
         if (!(key(area) in lastOrder)) lastOrder[key(area)] = area._baseOrder;
     }
@@ -21,7 +21,7 @@
         if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
     }
     function disarmArea(area) {
-        area.querySelectorAll('.edit-handle').forEach(h => h.remove());
+        area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
         area.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
         area.querySelectorAll('[data-edit-sortable]').forEach(e => { ['data-edit-sortable', 'data-edit-grabbed', 'data-edit-dragging', 'tabindex', 'role', 'draggable'].forEach(a => e.removeAttribute(a)); e._dragBound = false; });
         [area, ...area.querySelectorAll('[data-edit-sizable],[data-edit-movable]')].forEach(e => { e.removeAttribute('data-edit-sizable'); e.removeAttribute('data-edit-movable'); e._sizeBound = false; });
@@ -69,7 +69,7 @@
         if (!el) return;
         if (!el._edit) { el._edit = { key: `lock-${++autoN}`, caps: new Set(), lock: val, gated: false }; el.setAttribute('data-edit-area', ''); editEls.add(el); }
         else { el._edit.lock = val; if (val) el._edit.caps = new Set(); }
-        if (val) { el.querySelectorAll('.edit-handle').forEach(h => h.remove()); el.removeAttribute('draggable'); el.removeAttribute('contenteditable'); el.removeAttribute('data-edit-sizable'); el._sizeBound = false; el.querySelectorAll('[draggable],[contenteditable]').forEach(n => { n.removeAttribute('draggable'); n.removeAttribute('contenteditable'); }); }
+        if (val) { el.querySelectorAll('[data-edit-handle]').forEach(h => h.remove()); el.removeAttribute('draggable'); el.removeAttribute('contenteditable'); el.removeAttribute('data-edit-sizable'); el._sizeBound = false; el.querySelectorAll('[draggable],[contenteditable]').forEach(n => { n.removeAttribute('draggable'); n.removeAttribute('contenteditable'); }); }
         const area = areas().find(a => a === el || a.contains(el));
         if (area && isActive(area)) armArea(area);
     }

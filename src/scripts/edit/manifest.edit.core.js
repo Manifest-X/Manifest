@@ -13,7 +13,7 @@
 
 (function () {
     const LS_KEY = 'mnfst-edit-log';
-    const SCHEMA = 5;                  // overlay schema version — bump when the delta shape changes
+    const SCHEMA = 6;                  // overlay schema version — bump when the delta shape changes
     const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
     const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
     let dragged = null, autoN = 0;
@@ -82,7 +82,7 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.classList.contains('edit-handle'));
+    const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.hasAttribute('data-edit-handle'));
     const STRUCT_ATTRS = new Set(['class', 'style', 'data-component', 'data-edit-area', 'data-edit-field', 'data-edit-sizable', 'data-edit-movable', 'draggable', 'contenteditable', 'x-text', 'x-html', 'id']);
     const componentParams = (area) => { const r = area.querySelector('[data-component]') || area; return [...r.attributes].filter(a => !STRUCT_ATTRS.has(a.name) && a.value.trim()); };
 

@@ -7,8 +7,8 @@
     }
     function ensureMenu() {
         if (menu) return menu;
-        menu = document.createElement('div'); menu.className = 'edit-classes'; menu.hidden = true;
-        menu.innerHTML = '<div class="muted">Classes <span data-tag></span> <span style="opacity:.6">· live</span></div><input type="text" spellcheck="false"><div class="row"><button class="ghost sm" data-a="close">Done</button></div>';
+        menu = document.createElement('div'); menu.setAttribute('data-edit-menu', ''); menu.hidden = true;
+        menu.innerHTML = '<small>Classes <span data-tag></span> · live</small><input type="text" spellcheck="false"><div class="row"><button class="ghost sm" data-a="close">Done</button></div>';
         menu.addEventListener('pointerdown', e => e.stopPropagation());
         const input = menu.querySelector('input');
         input.addEventListener('input', () => { if (menu._target) { menu._target.setAttribute('class', input.value); menu._dirty = true; } });
@@ -31,7 +31,7 @@
         area.addEventListener('contextmenu', (e) => {
             if (!isActive(area)) return;
             let t = e.target;
-            while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.classList.contains('edit-handle'))) t = t.parentElement;
+            while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.hasAttribute('data-edit-handle'))) t = t.parentElement;
             if (!t || !capOf(t, 'style') || locked(t)) return;
             e.preventDefault(); e.stopPropagation();
             openMenu(t, e.clientX, e.clientY);
