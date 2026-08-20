@@ -2,7 +2,7 @@
        Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
        Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel. */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
-    let lastMoveX = 0, lastMoveY = 0, grabbed = null, liveRegion;
+    let grabbed = null, liveRegion;
     function announce(msg) { if (!liveRegion) { liveRegion = document.createElement('div'); liveRegion.setAttribute('data-edit-live', ''); liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
 
     function makeSortable(container) {
@@ -15,46 +15,92 @@
             child.addEventListener('keydown', onItemKeydown);
         });
         container.setAttribute('role', 'list');
+        // x-for rows and any other late arrivals are not sortable unless we notice
+        // them — arming only ever ran once, so a list that grows loses its handles.
+        if (!container._sortObserver) {
+            container._sortObserver = new MutationObserver(() => {
+                if (dragged) return;                        // never re-arm mid-drag
+                if (isActive(container.closest('[data-edit-area]'))) makeSortable(container);
+            });
+            container._sortObserver.observe(container, { childList: true });
+        }
     }
     function onPointerDown(e) {
         const item = this, area = item.closest('[data-edit-area]');
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
-        const container = item.parentElement, sx = e.clientX, sy = e.clientY; let active = false;
+        const container = item.parentElement;
+        const homeNext = item.nextElementSibling;          // where to put it back if cancelled
+        const start = item.getBoundingClientRect();
+        const grabX = e.clientX - start.left, grabY = e.clientY - start.top;
+        const sx = e.clientX, sy = e.clientY;
+        let active = false, frame = 0, px = sx, py = sy;
+
+        // The item follows the pointer while staying in flow, so its own slot is the
+        // gap. Its position is re-based every frame because a reorder moves that slot
+        // out from under it — measure with the transform cleared, since a transformed
+        // rect would compound the offset it already carries.
+        const paint = () => {
+            frame = 0;
+            item.style.transform = '';
+            const home = item.getBoundingClientRect();
+            item.style.transform = `translate(${px - grabX - home.left}px, ${py - grabY - home.top}px)`;
+        };
+
         const onMove = (ev) => {
+            px = ev.clientX; py = ev.clientY;
             if (!active) {
-                if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;   // threshold so taps/clicks still work
-                active = true; dragged = item; item.setAttribute('data-edit-dragging', ''); lastMoveX = ev.clientX; lastMoveY = ev.clientY;
+                if (Math.hypot(px - sx, py - sy) < 5) return;   // threshold so taps/clicks still work
+                active = true; dragged = item;
+                item.setAttribute('data-edit-dragging', '');
+                area.setAttribute('data-edit-dragging-in', '');
+                try { item.setPointerCapture(ev.pointerId); } catch { }
             }
             ev.preventDefault();
-            reorderOver(container, ev.clientX, ev.clientY);
+            reorderOver(container, px, py);
+            if (!frame) frame = requestAnimationFrame(paint);
         };
-        const onUp = () => {
-            document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp);
-            if (active) { item.removeAttribute('data-edit-dragging'); dragged = null; finishReorder(area); }
+        const settle = (cancelled) => {
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('keydown', onKey, true);
+            if (frame) cancelAnimationFrame(frame);
+            if (!active) return;
+            if (cancelled) { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); }
+            item.style.removeProperty('transform');
+            if (!item.getAttribute('style')) item.removeAttribute('style');
+            item.removeAttribute('data-edit-dragging');
+            area.removeAttribute('data-edit-dragging-in');
+            dragged = null;
+            if (cancelled) announce('Cancelled'); else finishReorder(area);
         };
-        document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
+        const onUp = () => settle(false);
+        // Escape puts it back, the way every drag is expected to be escapable.
+        const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('keydown', onKey, true);
     }
-    function reorderOver(container, x, y) {   // hysteresis dead-zone kills the reflow swap-back oscillation
+    function reorderOver(container, x, y) {
         if (!dragged || dragged.parentElement !== container) return;
-        if (Math.hypot(x - lastMoveX, y - lastMoveY) < 6) return;
-        lastMoveX = x; lastMoveY = y;
         const ref = afterElement(container, x, y);
         if (ref === dragged || ref === dragged.nextElementSibling) return;
         if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
     }
-    function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => c.getAttribute('data-key'))); commit(area); } else commitStaticOrder(area); }
-    function afterElement(c, x, y) {   // reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow
-        let best = null, bestDist = Infinity;
+    function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
+    // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.
+    // The FIRST sibling past the pointer, not the nearest — nearest can pick an
+    // element further down the list and makes the drop point jump around. Taking the
+    // first is also self-stabilising: once the item lands, that sibling's midpoint is
+    // behind the pointer, so it does not immediately swap back.
+    function afterElement(c, x, y) {
         for (const el of sortableChildren(c)) {
             if (el === dragged || locked(el)) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
             const sameRow = Math.abs(cy - y) <= b.height / 2;
-            if (!((cy - y > b.height / 2) || (sameRow && cx > x))) continue;
-            const d = (cx - x) ** 2 + (cy - y) ** 2;
-            if (d < bestDist) { bestDist = d; best = el; }
+            if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
         }
-        return best;
+        return null;
     }
     // Keyboard reorder: grab → arrows move among siblings → drop.
     function onItemKeydown(e) {

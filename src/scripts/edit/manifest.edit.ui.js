@@ -22,7 +22,7 @@
     const onScreen = (el) => el.checkVisibility ? el.checkVisibility() : !!el.offsetParent;
     function refresh() {
         if (estore) { estore.canUndo = cursor > 0; estore.canRedo = cursor < log.length; }
-        if (!areas().some(a => isActive(a) && onScreen(a))) { if (bar) bar.hidden = true; return; }
+        if (!areas().some(a => isActive(a) && onScreen(a) && !a._edit.quiet)) { if (bar) bar.hidden = true; return; }
         buildUI().hidden = false;
         bar.querySelector('[data-a="undo"]').disabled = cursor === 0;
         bar.querySelector('[data-a="redo"]').disabled = cursor >= log.length;

@@ -1,7 +1,7 @@
     /* ---- Snapshots (static/data are area-snapshotted; component uses per-node deltas) ---- */
     const REVERT = '\u2205revert';   // sentinel; must not collide with a real class/text value
     function snapshot(area, kind) {
-        if (kind === 'data') return { source: dataSourceName(area), order: sortableChildren(area).map(c => c.getAttribute('data-key')) };
+        if (kind === 'data') return { source: dataSourceName(area), order: sortableChildren(area).map(c => itemKey(c, area)) };
         return {};   // static & component use per-node typed deltas, not area snapshots
     }
     function cleanStaticHTML(area) {
@@ -125,7 +125,11 @@
                 setAttr('style', eff('style'));
             });
             const want = order[region] || area._baseOrder;
-            if (want) { const by = {}; sortableChildren(area).forEach(k => { by[staticKey(k)] = k; }); want.forEach(kk => { const el = by[kk]; if (el) area.appendChild(el); }); }
+            if (want) {
+                const by = {}, kids = sortableChildren(area), keys = staticKeys(area);
+                kids.forEach((el, i) => { by[keys[i]] = el; });
+                want.forEach(kk => { const el = by[kk]; if (el) area.appendChild(el); });
+            }
         });
     }
     function commitStaticNode(area, el, prop, value) {
@@ -169,7 +173,7 @@
         else if (kind === 'static') commitStaticNode(area, el, 'style', v);
     }
     function commitStaticOrder(area) {
-        const region = key(area), order = sortableChildren(area).map(staticKey), before = lastOrder[region] || order;
+        const region = key(area), order = staticKeys(area), before = lastOrder[region] || order;
         if (eq(before, order)) return;
         log.splice(cursor); log.push({ kind: 'st-order', region, order, before }); cursor = log.length; lastOrder[region] = order; saveState(); refresh();
     }

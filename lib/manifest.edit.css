@@ -9,15 +9,19 @@
 
 @layer utilities {
 
-    /* ---- Editable area (armed) ---- */
+    /* ---- Editable area (armed) ----
+       .quiet areas opt out of the chrome: a sortable list should look like a list. */
     :where([data-edit-armed]) {
         position: relative;
+    }
+
+    :where([data-edit-armed]:not([data-edit-quiet])) {
         outline: 1px dashed var(--color-line);
         outline-offset: 6px;
         border-radius: var(--radius);
     }
 
-    :where([data-edit-armed])::before {
+    :where([data-edit-armed]:not([data-edit-quiet]))::before {
         content: attr(data-edit-label);
         position: absolute;
         inset-block-start: -1.5rem;
@@ -46,8 +50,23 @@
         outline-offset: 3px;
     }
 
-    :where([data-edit-dragging]) {
-        opacity: 0.4;
+    /* Lifted while dragging: it follows the pointer and its own slot is the gap. */
+    :where([data-edit-sortable][data-edit-dragging]) {
+        position: relative;
+        z-index: 10;
+        opacity: 0.9;
+        cursor: grabbing;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    }
+
+    /* Nothing else should react while a drag is in progress */
+    :where([data-edit-dragging-in]) {
+        cursor: grabbing;
+        user-select: none;
+
+        & :where([data-edit-sortable]:not([data-edit-dragging])) {
+            cursor: grabbing;
+        }
     }
 
     :where([data-edit-grabbed]) {

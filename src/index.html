@@ -205,9 +205,56 @@
     <a href="/combobox">Combobox</a>
     <a href="/dropdowns">Dropdowns</a>
     <a href="/copy">Copy input</a>
+    <a href="/sortable">Sortable</a>
     <a href="/text-edit">Text edit</a>
     <a href="/native">Native</a>
   </nav>
+
+  <!-- The simplest thing the edit plugin can do: a drag-to-reorder list -->
+  <div class="col gap-8 p-6 max-w-2xl" x-route="sortable" x-data="{
+    tasks: [
+      { id: 't1', label: 'Cut the stems' },
+      { id: 't2', label: 'Condition overnight' },
+      { id: 't3', label: 'Arrange by height' },
+      { id: 't4', label: 'Wrap and label' },
+      { id: 't5', label: 'Load the van' }
+    ]
+  }">
+
+    <div class="col gap-1">
+      <h1 class="h3">Sortable</h1>
+      <span class="caption text-content-subtle">x-edit.sort.data.quiet — one attribute. No toolbar, no outline, no authoring chrome; the array reorders under it.</span>
+    </div>
+
+    <!-- Data regime: the x-for array is the source of truth -->
+    <ul class="col gap-2 unstyle" x-edit.sort.data.quiet="tasks">
+      <template x-for="task in tasks" :key="task.id">
+        <li class="row items-center gap-3 p-3 bg-surface-1 border border-line rounded">
+          <span x-icon="lucide:grip-vertical" class="text-content-subtle"></span>
+          <span x-text="task.label"></span>
+        </li>
+      </template>
+    </ul>
+
+    <div class="col gap-1">
+      <strong class="small">Array order</strong>
+      <code class="small text-content-subtle" x-text="tasks.map(t => t.id).join(' → ')"></code>
+    </div>
+
+    <!-- Static regime: no data source at all, just markup -->
+    <div class="col gap-1">
+      <strong class="small">Static list <span class="caption text-content-subtle">· x-edit.sort.quiet, no x-for</span></strong>
+      <div class="row-wrap gap-2" x-edit.sort.quiet="chips">
+        <span class="p-2 px-3 bg-surface-2 rounded">Roses</span>
+        <span class="p-2 px-3 bg-surface-2 rounded">Peonies</span>
+        <span class="p-2 px-3 bg-surface-2 rounded">Eucalyptus</span>
+        <span class="p-2 px-3 bg-surface-2 rounded">Ranunculus</span>
+      </div>
+    </div>
+
+    <span class="caption text-content-subtle">Drag, or focus an item and press Space then the arrow keys.</span>
+
+  </div>
 
   <!-- Text editor — one page editor, all controls authored -->
   <div class="col gap-4 p-4" x-route="text-edit" x-data="{

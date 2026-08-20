@@ -23,8 +23,25 @@
     // Content-derived key for a static sortable child — stable across reorder AND reload
     // (same content → same key), so reorder can be stored as a tiny key permutation.
     const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    // Two identical siblings — the same word twice in a chip list — derive the same
+    // key, and a stored order would then map both slots to one element and drop the
+    // other. An occurrence ordinal keeps them apart while staying content-derived.
+    function staticKeys(container) {
+        const seen = Object.create(null);
+        return sortableChildren(container).map(el => {
+            const base = staticKey(el);
+            const n = seen[base] = (seen[base] || 0) + 1;
+            return n > 1 ? base + '#' + n : base;
+        });
+    }
     const loadState = () => { try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; } else if (s) localStorage.removeItem(LS_KEY); } catch {} };
-    const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log, cursor })); };
+    // A .quiet area is application UI, not a page being authored: the app owns the
+    // state, so its deltas neither travel to the source nor survive in the overlay.
+    // They stay in the in-memory log, so undo still works for the session.
+    const quietRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.quiet); };
+    const persistable = (d) => !quietRegion(d.region);
+
+    const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const cssVar = (el, name, fallback) => { const v = getComputedStyle(el).getPropertyValue(name).trim(); return v || fallback; };
 
@@ -62,7 +79,7 @@
         if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
         if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
         if ((expression || '').trim() && [...editEls].some(e => e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
-        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme };
+        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, quiet: modifiers.includes('quiet') };
         el.setAttribute('data-edit-area', '');
         editEls.add(el);
     }
@@ -83,6 +100,17 @@
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
     const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.hasAttribute('data-edit-handle'));
+    // Identity of a row in a data area. `data-key` is the explicit form; without it,
+    // fall back to the x-for's own :key so a plain list needs no extra attribute.
+    let _keyWarned = false;
+    function itemKey(el, area) {
+        const explicit = el.getAttribute('data-key');
+        if (explicit != null) return explicit;
+        const tpl = area.querySelector('template[x-for]'), expr = tpl && tpl._x_keyExpression;
+        if (expr) { try { const v = window.Alpine.evaluate(el, expr); if (v != null) return String(v); } catch { } }
+        if (!_keyWarned) { _keyWarned = true; console.warn('[edit] data area rows have no identity — add :key to the x-for or :data-key to the row, or the order cannot be stored'); }
+        return null;
+    }
     const STRUCT_ATTRS = new Set(['class', 'style', 'data-component', 'data-edit-area', 'data-edit-field', 'data-edit-sizable', 'data-edit-movable', 'draggable', 'contenteditable', 'x-text', 'x-html', 'id']);
     const componentParams = (area) => { const r = area.querySelector('[data-component]') || area; return [...r.attributes].filter(a => !STRUCT_ATTRS.has(a.name) && a.value.trim()); };
 
