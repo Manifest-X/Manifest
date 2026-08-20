@@ -30,6 +30,8 @@
         if (area._styleBound) return; area._styleBound = true;
         area.addEventListener('contextmenu', (e) => {
             if (!isActive(area)) return;
+            if (onBlockContext(e)) return;                      // a project menu took it
+            if (!area._edit.authoring) return;                  // the class menu is authoring chrome
             let t = e.target;
             while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.hasAttribute('data-edit-handle'))) t = t.parentElement;
             if (!t || !capOf(t, 'style') || locked(t)) return;

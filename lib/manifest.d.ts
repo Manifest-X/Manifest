@@ -354,6 +354,18 @@ export interface ManifestEdit {
     patches(): unknown[];
     /** The raw delta log — persist it yourself to move edits between devices. */
     export(): { log: unknown[]; cursor: number };
+    /** The block a context menu is acting on — set by the last right-click, or
+     *  assignable. Block operations default to it when called with no element. */
+    target: Element | null;
+    /** Whether an operation applies right now: copy, cut, paste, duplicate, remove. */
+    can(op: string, el?: Element): boolean;
+    copy(el?: Element): boolean;
+    cut(el?: Element): boolean;
+    paste(el?: Element): boolean;
+    duplicate(el?: Element): boolean;
+    remove(el?: Element): boolean;
+    /** The addressable block containing a node, or null. */
+    block(node: Element): Element | null;
 }
 
 /** Text editor (`x-text-edit`) — the area this element sits in, or the last focused one. */
@@ -370,6 +382,14 @@ export interface ManifestTextEdit {
     page: Record<string, string>;
     /** Select the whole document. */
     selectAll(): void;
+    /** The current selection and its geometry, or null. Also emitted as a
+     *  `text-edit:selection` event and as --text-edit-selection-* custom properties
+     *  on the area, for anchoring a menu to it. */
+    selection: {
+        collapsed: boolean; text: string;
+        x: number; y: number; width: number; height: number;
+        top: number; bottom: number; left: number; right: number;
+    } | null;
     /** Apply a command. Commands are named for the tag they produce — 'strong',
      *  'blockquote', 'h2', 'ul', 'a', 'img', 'table' — plus the operations with no
      *  tag of their own: 'indent', 'outdent', 'align', 'color', 'background',

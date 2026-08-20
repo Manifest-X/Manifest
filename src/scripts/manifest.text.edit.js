@@ -1112,17 +1112,50 @@
             const own = el.closest('[data-text-edit]');
             const a = own && areas.has(own) ? own : preferred([...areas]);
             return a ? a._te.api : {
-                value: '', link: '', run() { }, active: () => false, can: () => false,
-                focus() { }, markdown: () => '', html: () => ''
+                value: '', link: '', selection: null, page: {}, run() { }, active: () => false,
+                can: () => false, focus() { }, selectAll() { }, markdown: () => '', html: () => ''
             };
         });
 
         document.addEventListener('selectionchange', () => {
             const r = range(); if (!r) return;
             const a = [...areas].find(x => x.contains(r.startContainer));
-            if (a) { saveRange(a); lastFocused = a; }
+            if (a) { saveRange(a); lastFocused = a; report(a); }
             sync();
         });
+    }
+
+    /* ---- Selection reporting ----
+       Everything a selection-anchored menu needs, in both the forms an author might
+       reach for: an event carrying the geometry, and the same geometry as custom
+       properties on the area, so a popover can be placed without any script at all.
+       The plugin renders no menu of its own — where and what that is belongs to the
+       project, not to us. */
+    function selectionOf(area) {
+        const r = range();
+        if (!r || !area.contains(r.startContainer)) return null;
+        const box = r.getBoundingClientRect();
+        return {
+            collapsed: r.collapsed,
+            text: r.toString(),
+            x: box.left, y: box.top, width: box.width, height: box.height,
+            top: box.top, bottom: box.bottom, left: box.left, right: box.right
+        };
+    }
+
+    function report(area) {
+        const sel = selectionOf(area);
+        area._selection = sel;
+        const px = (n) => Math.round(n) + 'px';
+        if (sel && !sel.collapsed) {
+            area.style.setProperty('--text-edit-selection-x', px(sel.x));
+            area.style.setProperty('--text-edit-selection-y', px(sel.y));
+            area.style.setProperty('--text-edit-selection-width', px(sel.width));
+            area.style.setProperty('--text-edit-selection-height', px(sel.height));
+            area.style.setProperty('--text-edit-selection-center', px(sel.x + sel.width / 2));
+        }
+        area.toggleAttribute('data-text-edit-selected', !!sel && !sel.collapsed);
+        area.dispatchEvent(new CustomEvent('text-edit:selection', { bubbles: true, detail: sel }));
     }
 
     function control(el, id, modifiers, expression, evaluate, cleanup) {
@@ -1308,6 +1341,7 @@
             },
             get page() { return pageStyle(el); },
             set page(v) { setPageStyle(el, v); sync(); },
+            get selection() { return el._selection || null; },
             get link() { return linkHref(); },
             set link(v) { run(el, 'a', v); },
             focus: () => el.focus(),

@@ -138,6 +138,7 @@ const CONFIG = {
     editSubscripts: [
         'manifest.edit.core.js',
         'manifest.edit.log.js',
+        'manifest.edit.blocks.js',
         'manifest.edit.drag.js',
         'manifest.edit.size.js',
         'manifest.edit.text.js',

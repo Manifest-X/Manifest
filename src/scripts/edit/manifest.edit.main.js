@@ -17,6 +17,17 @@
             toggle() { this.active ? off() : on(); }, on() { on(); }, off() { off(); },
             undo() { undo(); }, redo() { redo(); }, lock(el) { setLock(el, true); }, unlock(el) { setLock(el, false); },
             publish() { return publish(); },
+            // Block operations. Called with no element they act on the block the last
+            // right-click reported, which is what a context menu wants.
+            get target() { return blockTarget(); },
+            set target(el) { setBlockTarget(el); },
+            can(op, el) { return canDo(op, el); },
+            copy(el) { return copyBlock(el); },
+            cut(el) { return cutBlock(el); },
+            paste(el) { return pasteBlock(el); },
+            duplicate(el) { return duplicateBlock(el); },
+            remove(el) { return removeBlock(el); },
+            block(node) { return blockOf(node); },
             patches() { return buildPatches(); },            // resolved B-side source patches
             export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)
         });

@@ -93,8 +93,9 @@
     // what makes undo total: a prop with no surviving op is restored to baseline
     // instead of being left holding the edit. (applyThemeState works the same way.)
     function staticState() {
-        const node = {}, order = {}, sigs = {}, base = {};
+        const node = {}, order = {}, sigs = {}, base = {}, html = {};
         for (const d of log) {
+            if (d.kind === 'st-children' && d.html) Object.assign(html[d.region] = html[d.region] || {}, d.html);
             if (d.kind !== 'st-node') continue;
             const bk = d.region + '|' + d.path;
             const b = base[bk] = base[bk] || {};
@@ -104,12 +105,56 @@
         for (let i = 0; i < cursor; i++) {
             const d = log[i];
             if (d.kind === 'st-node') { (node[d.region] = node[d.region] || {}); (node[d.region][d.path] = node[d.region][d.path] || {})[d.prop] = d.value; }
-            else if (d.kind === 'st-order') order[d.region] = d.order;
+            else if (d.kind === 'st-order' || d.kind === 'st-children') order[d.region] = d.order;
         }
-        return { node, order, sigs, base };
+        // The markup for anything added or removed comes from the WHOLE log, the same
+        // way baselines do — undoing a delete has to be able to rebuild the element,
+        // and the delta that knows its markup is no longer applied.
+        return { node, order, sigs, base, html };
     }
+
+    // A data area's own deltas carry only the id order, which can restore a sequence
+    // but cannot resurrect a record — so adding and removing rows record the record
+    // itself. In-session history only: what the array should hold is the app's to
+    // persist, so these never travel to the source.
+    function commitSplice(area, index, record, op) {
+        log.splice(cursor);
+        log.push({ kind: 'data-splice', region: key(area), source: dataSourceName(area), index, op, record: JSON.parse(JSON.stringify(record)) });
+        cursor = log.length; saveState(); refresh();
+        setTimeout(() => { lastSnap[key(area)] = snapshot(area, classify(area)); }, 0);
+    }
+
+    function applySplice(d, undo) {
+        const area = areaByKey(d.region); if (!area) return;
+        const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
+        if (!tpl || !expr) return;
+        let arr; try { arr = window.Alpine.evaluate(tpl, expr); } catch { return; }
+        if (!Array.isArray(arr)) return;
+        const inserting = undo ? d.op === 'remove' : d.op === 'insert';
+        if (inserting) arr.splice(Math.min(d.index, arr.length), 0, JSON.parse(JSON.stringify(d.record)));
+        else arr.splice(d.index, 1);
+        setTimeout(() => { lastSnap[d.region] = snapshot(area, classify(area)); }, 0);
+    }
+
+    // Structural change to a container's children: duplicate, delete, paste. Stored
+    // as the resulting key order plus the markup of whatever the log introduced or
+    // took away, so it stays proportional to the edit rather than snapshotting.
+    function commitStructure(area, markup) {
+        const region = key(area), order = staticKeys(area), before = lastOrder[region] || area._baseOrder || order;
+        if (eq(before, order) && !Object.keys(markup || {}).length) return;
+        log.splice(cursor);
+        log.push({ kind: 'st-children', region, order, before, html: markup || {} });
+        cursor = log.length; lastOrder[region] = order; saveState(); refresh();
+    }
+    const materialize = (markup) => {
+        if (!markup) return null;
+        const t = document.createElement('template');
+        t.innerHTML = markup.trim();
+        return t.content.firstElementChild;
+    };
+
     function applyStaticState() {
-        const { node, order, sigs, base } = staticState();
+        const { node, order, sigs, base, html } = staticState();
         document.querySelectorAll('[data-edit-area]').forEach(area => {
             if (!area._edit || classify(area) !== 'static') return;
             const region = key(area);
@@ -128,7 +173,10 @@
             if (want) {
                 const by = {}, kids = sortableChildren(area), keys = staticKeys(area);
                 kids.forEach((el, i) => { by[keys[i]] = el; });
-                want.forEach(kk => { const el = by[kk]; if (el) area.appendChild(el); });
+                const markup = html[region] || {};
+                const next = want.map(kk => by[kk] || materialize(markup[kk])).filter(Boolean);
+                kids.forEach(el => { if (!next.includes(el)) el.remove(); });
+                next.forEach(el => area.appendChild(el));
             }
         });
     }
@@ -189,13 +237,15 @@
     const dispatchApply = (d) => { if (d.kind === 'cmp-main' || d.kind === 'cmp-inst') applyComponentState(); else if (d.kind === 'data-val') applyDataValues(); else if (d.kind === 'theme') applyThemeState(); else applyStaticState(); };
     async function undo() {
         if (cursor === 0) return; const d = log[--cursor];
-        if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
+        if (d.kind === 'data-splice') applySplice(d, true);
+        else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
         else dispatchApply(d);
         saveState(); refresh();
     }
     async function redo() {
         if (cursor >= log.length) return; const d = log[cursor++];
-        if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
+        if (d.kind === 'data-splice') applySplice(d, false);
+        else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
         else dispatchApply(d);
         saveState(); refresh();
     }

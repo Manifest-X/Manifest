@@ -28,6 +28,7 @@
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
         if (kind === 'static') armStyle(area);
+        if (!area._ctxBound) { area._ctxBound = true; area.addEventListener('contextmenu', onBlockContext); }
         if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
     }
     function disarmArea(area) {

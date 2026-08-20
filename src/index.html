@@ -219,7 +219,12 @@
       { id: 't4', label: 'Wrap and label' },
       { id: 't5', label: 'Load the van' }
     ]
-  }">
+  }" @edit:context="
+      $event.preventDefault();
+      const m = document.getElementById('block-menu');
+      m.style.left = $event.detail.x + 'px'; m.style.top = $event.detail.y + 'px';
+      m.showPopover();
+    ">
 
     <div class="col gap-1">
       <h1 class="h3">Sortable</h1>
@@ -252,7 +257,28 @@
       </div>
     </div>
 
-    <span class="caption text-content-subtle">Drag, or focus an item and press Space then the arrow keys.</span>
+    <span class="caption text-content-subtle">Drag, or focus an item and press Space then the arrow keys. Right-click a row for block actions; ⌘D duplicates, Delete removes, ⌘C/⌘X/⌘V copy, cut and paste.</span>
+
+    <!-- Block menu: the plugin reports the block and the pointer, we draw the menu -->
+    <menu popover id="block-menu" class="p-1 col" style="min-width: 11rem"
+          x-data @toggle="if (!$event.newState || $event.newState === 'closed') $edit.target = null">
+      <button class="ghost sm trailing" :disabled="!$edit.can('duplicate')"
+              @click="$edit.duplicate(); $el.closest('menu').hidePopover()">
+        <span x-icon="lucide:copy-plus"></span>Duplicate <kbd class="caption">⌘D</kbd></button>
+      <button class="ghost sm trailing" :disabled="!$edit.can('copy')"
+              @click="$edit.copy(); $el.closest('menu').hidePopover()">
+        <span x-icon="lucide:copy"></span>Copy <kbd class="caption">⌘C</kbd></button>
+      <button class="ghost sm trailing" :disabled="!$edit.can('cut')"
+              @click="$edit.cut(); $el.closest('menu').hidePopover()">
+        <span x-icon="lucide:scissors"></span>Cut <kbd class="caption">⌘X</kbd></button>
+      <button class="ghost sm trailing" :disabled="!$edit.can('paste')"
+              @click="$edit.paste(); $el.closest('menu').hidePopover()">
+        <span x-icon="lucide:clipboard-paste"></span>Paste <kbd class="caption">⌘V</kbd></button>
+      <hr class="divider">
+      <button class="ghost sm negative trailing" :disabled="!$edit.can('remove')"
+              @click="$edit.remove(); $el.closest('menu').hidePopover()">
+        <span x-icon="lucide:trash-2"></span>Delete <kbd class="caption">⌫</kbd></button>
+    </menu>
 
   </div>
 
@@ -261,9 +287,10 @@
     doc: '&lt;h1&gt;Bloom &amp;amp; Bramble&lt;/h1&gt;&lt;p&gt;Seasonal arrangements, &lt;strong&gt;delivered weekly&lt;/strong&gt;. Type &lt;code&gt;## &lt;/code&gt; or &lt;code&gt;- &lt;/code&gt; at the start of a line, or &lt;code&gt;**bold**&lt;/code&gt; anywhere, and it becomes the real thing.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Cut this morning&lt;/li&gt;&lt;li&gt;Within 50 miles&lt;/li&gt;&lt;/ul&gt;&lt;blockquote&gt;Every stem is local.&lt;/blockquote&gt;',
     imageUrl: '',
     tableSize: '3x3',
+    sel: null,
     get words() { return (this.doc.replace(/<[^>]*>/g, ' ').trim().match(/\S+/g) || []).length },
     newPage() { this.doc = ''; $text.page = {}; $text.focus(); }
-  }">
+  }" @text-edit:selection="sel = $event.detail">
 
     <!-- Toolbar: ordinary Manifest elements. The plugin injects none of this. -->
     <div class="col gap-1 p-2 bg-surface-1 border border-line rounded sticky top-0 z-10">
@@ -422,6 +449,22 @@
         <span class="caption text-content-subtle" x-text="words + ' words'"></span>
         <span class="caption text-content-subtle">Tab indents · Esc leaves · ⌘Z undoes</span>
       </div>
+    </div>
+
+    <!-- Selection bubble: the plugin reports the selection, the menu is ours -->
+    <div class="row gap-1 p-1 bg-surface-1 border border-line rounded shadow"
+         x-show="sel && !sel.collapsed" x-cloak
+         style="position: fixed; z-index: 50; transform: translate(-50%, -125%)"
+         :style="sel && { left: (sel.x + sel.width / 2) + 'px', top: sel.top + 'px' }">
+      <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
+      <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
+      <button class="ghost sm" x-text-edit.code aria-label="Code"><span x-icon="lucide:code"></span></button>
+      <button class="ghost sm" x-text-edit.h2 aria-label="Heading"><span x-icon="lucide:heading-2"></span></button>
+      <button class="ghost sm" x-text-edit.blockquote aria-label="Quote"><span x-icon="lucide:text-quote"></span></button>
+      <button class="ghost sm" x-dropdown="bubble-link" aria-label="Link"><span x-icon="lucide:link"></span></button>
+      <menu popover id="bubble-link" class="p-2" style="min-width: 16rem">
+        <input type="url" class="sm" x-text-edit.a placeholder="https://">
+      </menu>
     </div>
 
     <!-- The page -->

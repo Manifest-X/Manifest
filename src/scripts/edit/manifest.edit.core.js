@@ -40,7 +40,7 @@
     // those deltas neither travel to the source nor survive in the overlay. They stay
     // in the in-memory log, so undo still works for the session.
     const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
-    const persistable = (d) => d.region == null || authoringRegion(d.region);
+    const persistable = (d) => d.kind !== 'data-splice' && (d.region == null || authoringRegion(d.region));
 
     const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);

@@ -13,6 +13,7 @@
             if (child._dragBound) return; child._dragBound = true;
             child.addEventListener('pointerdown', onPointerDown);
             child.addEventListener('keydown', onItemKeydown);
+            child.addEventListener('keydown', onBlockKey);
         });
         container.setAttribute('role', 'list');
         // x-for rows and any other late arrivals are not sortable unless we notice
