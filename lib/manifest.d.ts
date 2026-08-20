@@ -357,11 +357,18 @@ export interface ManifestEdit {
 
 /** Text editor (`x-text-edit`) — the area this element sits in, or the last focused one. */
 export interface ManifestTextEdit {
-    /** The stored value, in the mode the directive was given. */
+    /** The stored value, in the mode the directive was given. Assigning replaces the
+     *  document and resets undo history. */
     value: string;
     focus(): void;
     /** The href at the caret; assign to set it, assign '' to unlink. */
     link: string;
+    /** Page-level styles (font, size, leading, align, color, background) as CSS
+     *  custom properties on the area. Presentation, not document content — persist
+     *  it yourself. Assign `{}` to clear. */
+    page: Record<string, string>;
+    /** Select the whole document. */
+    selectAll(): void;
     /** Apply a command. Commands are named for the tag they produce — 'strong',
      *  'blockquote', 'h2', 'ul', 'a', 'img', 'table' — plus the operations with no
      *  tag of their own: 'indent', 'outdent', 'align', 'color', 'background',

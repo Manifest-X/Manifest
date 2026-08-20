@@ -213,7 +213,9 @@
   <div class="col gap-4 p-4" x-route="text-edit" x-data="{
     doc: '&lt;h1&gt;Bloom &amp;amp; Bramble&lt;/h1&gt;&lt;p&gt;Seasonal arrangements, &lt;strong&gt;delivered weekly&lt;/strong&gt;. Type &lt;code&gt;## &lt;/code&gt; or &lt;code&gt;- &lt;/code&gt; at the start of a line, or &lt;code&gt;**bold**&lt;/code&gt; anywhere, and it becomes the real thing.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Cut this morning&lt;/li&gt;&lt;li&gt;Within 50 miles&lt;/li&gt;&lt;/ul&gt;&lt;blockquote&gt;Every stem is local.&lt;/blockquote&gt;',
     imageUrl: '',
-    tableSize: '3x3'
+    tableSize: '3x3',
+    get words() { return (this.doc.replace(/<[^>]*>/g, ' ').trim().match(/\S+/g) || []).length },
+    newPage() { this.doc = ''; $text.page = {}; $text.focus(); }
   }">
 
     <!-- Toolbar: ordinary Manifest elements. The plugin injects none of this. -->
@@ -327,7 +329,50 @@
         <button class="ghost sm" x-text-edit.abbr aria-label="Abbreviation" x-tooltip="Abbreviation"><span x-icon="lucide:whole-word"></span></button>
         <button class="ghost sm" x-text-edit.small aria-label="Small" x-tooltip="Small"><span x-icon="lucide:a-large-small"></span></button>
 
+        <div class="divider vertical h-6"></div>
+
+        <!-- Page-level: writes CSS variables on the area, not into the document -->
+        <button class="ghost sm" x-dropdown="page-setup" aria-label="Page setup" x-tooltip="Page setup"><span x-icon="lucide:file-cog"></span></button>
+        <menu popover id="page-setup" class="p-3 col gap-2" style="min-width: 16rem">
+          <small>Page — applies to the whole document</small>
+          <label class="col gap-1">
+            <span class="caption">Font</span>
+            <select x-text-edit.font.page class="sm">
+              <option value="">Default</option>
+              <option value="Georgia">Georgia</option>
+              <option value="Arial">Arial</option>
+              <option value="ui-monospace">Mono</option>
+            </select>
+          </label>
+          <label class="col gap-1">
+            <span class="caption">Base size</span>
+            <select x-text-edit.size.page class="sm">
+              <option value="">Default</option>
+              <option value="14px">14</option>
+              <option value="16px">16</option>
+              <option value="18px">18</option>
+            </select>
+          </label>
+          <label class="col gap-1">
+            <span class="caption">Line spacing</span>
+            <select x-text-edit.leading.page class="sm">
+              <option value="">Default</option>
+              <option value="1.4">Tight</option>
+              <option value="1.6">Normal</option>
+              <option value="2">Double</option>
+            </select>
+          </label>
+          <label class="row items-center justify-between gap-2">
+            <span class="caption">Page colour</span>
+            <input type="color" class="unstyle w-6 h-6 rounded border border-line" x-text-edit.background.page aria-label="Page colour">
+          </label>
+          <button class="ghost sm" @click="$text.page = {}">Reset page styles</button>
+        </menu>
+
+        <button class="ghost sm" @click="newPage()" x-tooltip="New page"><span x-icon="lucide:file-plus"></span></button>
+
         <span class="grow"></span>
+        <span class="caption text-content-subtle" x-text="words + ' words'"></span>
         <span class="caption text-content-subtle">Tab indents · Esc leaves · ⌘Z undoes</span>
       </div>
     </div>

@@ -175,7 +175,7 @@
     // marks while dropping its markup.
     const DROP = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'MATH']);
 
-    function sanitize(html, allowBlocks) {
+    function sanitize(html, allowBlocks, keepStyle) {
         const t = document.createElement('template');
         t.innerHTML = String(html == null ? '' : html);
         const ok = new Set(allowBlocks ? [...INLINE_OK, ...BLOCK, 'INPUT', 'TR', 'TBODY', 'THEAD', 'CAPTION', 'DT', 'DD'] : INLINE_OK);
@@ -192,7 +192,7 @@
                 if (c.tagName === 'A' && n === 'href' && !/^\s*javascript:/i.test(a.value)) return;
                 if (c.tagName === 'IMG' && (n === 'src' || n === 'alt') && !/^\s*javascript:/i.test(a.value)) return;
                 if (c.tagName === 'INPUT' && (n === 'type' || n === 'checked')) return;
-                if (n === 'style' && !/expression|url\s*\(|javascript:/i.test(a.value)) return;   // colour, font and alignment live here
+                if (n === 'style' && keepStyle && !/expression|url\s*\(|javascript:/i.test(a.value)) return;   // our own colour, font and alignment
                 c.removeAttribute(a.name);
             });
         });
@@ -554,15 +554,36 @@
     /* ---- Command table ----
        Every inline and block tag is a command named for itself; the rest are the
        operations that have no tag of their own. `md` means markdown can carry it. */
+    /* ---- Page-level styling ----
+       Document-wide font, size, colour and so on are presentation, not content — the
+       stored value is the area's markup, and burying a wrapper in it to carry a font
+       would be a lie about what the document says. They are written as custom
+       properties on the area instead, which the stylesheet consumes and $text.page
+       hands back as a plain object for the author to persist beside the document. */
+    const PAGE_VARS = {
+        font: '--text-edit-font', size: '--text-edit-size', leading: '--text-edit-leading',
+        align: '--text-edit-align', color: '--text-edit-color', background: '--text-edit-background'
+    };
+    const pageStyle = (area) => Object.fromEntries(Object.entries(PAGE_VARS)
+        .map(([k, v]) => [k, area.style.getPropertyValue(v).trim()]).filter(([, v]) => v));
+    const setPageStyle = (area, values) => Object.entries(PAGE_VARS).forEach(([k, v]) => {
+        const next = values && values[k];
+        if (next) area.style.setProperty(v, next); else area.style.removeProperty(v);
+    });
+
     const COMMANDS = {};
     Object.entries(INLINE_TAGS).forEach(([tag, meta]) => {
-        COMMANDS[tag] = { md: meta.md, run: () => toggleInline(tag), active: () => !!ancestor(tag) };
+        COMMANDS[tag] = {
+            md: meta.md,
+            run: (v, area) => hasSelection() ? toggleInline(tag) : armPending(area, tag),
+            active: (v, area) => !!ancestor(tag) || pendingHas(area, tag)
+        };
     });
     Object.entries(BLOCK_TAGS).forEach(([tag, meta]) => {
         COMMANDS[tag] = { md: meta.md, block: 1, run: () => setBlock(tag), active: () => blockTag() === tag.toUpperCase() };
     });
     Object.assign(COMMANDS, {
-        a: { md: 1, run: setLink, active: () => !!ancestor('a'), reflect: linkHref, clearable: 1 },
+        a: { md: 1, run: setLink, active: () => !!ancestor('a'), reflect: linkHref, enabled: () => !!ancestor('a') || hasSelection() },
         ul: { md: 1, block: 1, run: () => toggleList('ul'), active: () => !!ancestor('ul') && !ancestor('ul').hasAttribute('data-checklist') },
         ol: { md: 1, block: 1, run: () => toggleList('ol'), active: () => !!ancestor('ol') },
         checklist: { md: 1, block: 1, run: toggleChecklist, active: () => !!ancestor('ul[data-checklist]') },
@@ -573,17 +594,62 @@
         table: { block: 1, run: (v) => insertTable(v), active: () => false },
         indent: { md: 1, block: 1, run: (v, area) => indent(1, area), active: () => false, enabled: (a) => canIndent(a) },
         outdent: { md: 1, block: 1, run: (v, area) => indent(-1, area), active: () => false, enabled: (a) => canOutdent(a) },
-        align: { block: 1, run: (v) => styleBlock('textAlign', v || 'start'), active: () => false, reflect: () => readBlockStyle('textAlign') },
-        color: { run: (v) => wrapInline('span', { color: v }), active: () => false, reflect: () => rgbToHex(readInlineStyle('color')) },
-        background: { run: (v) => wrapInline('span', { backgroundColor: v }), active: () => false, reflect: () => rgbToHex(readInlineStyle('backgroundColor')) },
-        font: { run: (v) => wrapInline('span', { fontFamily: v }), active: () => false, reflect: () => readInlineStyle('fontFamily').split(',')[0].replace(/['"]/g, '') },
-        size: { run: (v) => wrapInline('span', { fontSize: /^\d+$/.test(String(v)) ? v + 'px' : v }), active: () => false, reflect: () => readInlineStyle('fontSize') },
+        align: { block: 1, page: 1, run: (v) => styleBlock('textAlign', v || 'start'), active: () => false, reflect: () => readBlockStyle('textAlign') },
+        color: { page: 1, needsSelection: 1, run: (v) => wrapInline('span', { color: v }), active: () => false, reflect: () => rgbToHex(readInlineStyle('color')) },
+        background: { page: 1, needsSelection: 1, run: (v) => wrapInline('span', { backgroundColor: v }), active: () => false, reflect: () => rgbToHex(readInlineStyle('backgroundColor')) },
+        font: { page: 1, needsSelection: 1, run: (v) => wrapInline('span', { fontFamily: v }), active: () => false, reflect: () => readInlineStyle('fontFamily').split(',')[0].replace(/['"]/g, '') },
+        size: { page: 1, needsSelection: 1, run: (v) => wrapInline('span', { fontSize: px(v) }), active: () => false, reflect: () => readInlineStyle('fontSize') },
+        leading: { page: 1, block: 1, run: (v) => styleBlock('lineHeight', v), active: () => false, reflect: () => readBlockStyle('lineHeight') },
 
         clear: { md: 1, run: clearFormatting, active: () => false },
         undo: { md: 1, history: 1, run: (v, area) => step(area, -1), active: () => false, enabled: (a) => a._history.at > 0 },
         redo: { md: 1, history: 1, run: (v, area) => step(area, 1), active: () => false, enabled: (a) => a._history.at < a._history.stack.length - 1 },
         block: { md: 1, block: 1, run: (v) => setBlock(String(v || 'p').toLowerCase()), active: () => false, reflect: () => (blockTag() || 'P').toLowerCase() }
     });
+
+    const px = (v) => /^\d+(\.\d+)?$/.test(String(v)) ? v + 'px' : v;
+    const hasSelection = () => { const r = range(); return !!r && !r.collapsed; };
+
+    /* ---- Pending marks ----
+       Bold with nothing selected arms the tag for what you type next, the way a word
+       processor does. It cannot be done by wrapping an empty element and putting the
+       caret inside — the browser normalizes the caret straight back out — so the mark
+       is remembered and applied to the first characters that arrive. The anchor is
+       checked on the way in: move the caret elsewhere and the arming lapses rather
+       than firing somewhere unexpected. */
+    function armPending(area, tag) {
+        const r = range(); if (!r || !r.collapsed) return;
+        const at = area._pending;
+        const tags = at && at.node === r.startContainer && at.offset === r.startOffset ? at.tags : new Set();
+        tags.has(tag) ? tags.delete(tag) : tags.add(tag);
+        area._pending = tags.size ? { tags, node: r.startContainer, offset: r.startOffset } : null;
+    }
+
+    const pendingHas = (area, tag) => !!(area && area._pending && area._pending.tags.has(tag));
+
+    function applyPending(area, typed) {
+        const at = area._pending; if (!at) return false;
+        const r = range();
+        if (!r || !r.collapsed || r.startContainer !== at.node || r.startOffset !== at.offset + typed.length) {
+            area._pending = null;
+            return false;
+        }
+        const node = r.startContainer, start = at.offset;
+        const span = document.createRange();
+        span.setStart(node, start); span.setEnd(node, r.startOffset);
+        span.deleteContents();
+        let outer = null, inner = null;
+        at.tags.forEach(tag => {
+            const el = document.createElement(tag);
+            if (inner) inner.appendChild(el); else outer = el;
+            inner = el;
+        });
+        inner.textContent = typed;
+        span.insertNode(outer);
+        area._pending = null;                       // the caret is inside the tags now
+        caretIn(inner, typed.length);
+        return true;
+    }
 
     function readInlineStyle(prop) {
         const el = elementAt(range() && range().startContainer);
@@ -785,6 +851,61 @@
     };
     const ownsEnter = (e) => !e.shiftKey && (!ancestor('pre') || leavingCode());
 
+    /* ---- Backspace ----
+       Left to the browser, Backspace at the start of a heading merges it into the
+       paragraph above and inlines the heading's computed styles as a <span> to keep
+       the look — so the document quietly fills with font-size and font-weight spans.
+       Deleting the last character of a table's only cell takes the whole table with
+       it. Both are surprising enough to be worth owning. */
+    const atBlockStart = () => { const b = ancestor('li') || blockEl(); return !!b && offsetIn(b) === 0; };
+
+    function cellCoversAll() {
+        const cell = ancestor('td, th'); if (!cell) return null;
+        const r = range(); if (!r) return null;
+        const all = document.createRange(); all.selectNodeContents(cell);
+        const covers = r.collapsed
+            ? cell.textContent.length <= 1
+            : r.toString().length >= cell.textContent.length;
+        return covers ? cell : null;
+    }
+
+    function backspaceAtStart(area) {
+        const li = ancestor('li');
+        if (li) {
+            if (li.previousElementSibling) {                      // merge into the item above
+                const prev = li.previousElementSibling, at = prev.textContent.length;
+                while (li.firstChild) { const n = li.firstChild; if (n.nodeName === 'INPUT') n.remove(); else prev.appendChild(n); }
+                li.remove();
+                caretIn(prev, at);
+                return;
+            }
+            const list = li.closest('ul, ol'), p = document.createElement('p');
+            [...li.childNodes].forEach(n => { if (n.nodeName !== 'INPUT') p.appendChild(n); });
+            list.before(p);
+            li.remove();
+            if (!list.children.length) list.remove();
+            caretIn(p, 0);
+            return;
+        }
+        const b = blockEl(); if (!b) return;
+        const prev = b.previousElementSibling;
+        if (!prev) { if (b.tagName !== 'P') retagBlock(b, 'p').focus?.(); caretIn(blockEl() || b, 0); return; }
+        if (prev.tagName === 'HR') { prev.remove(); caretIn(b, 0); return; }
+        if (/^(UL|OL)$/.test(prev.tagName)) {                     // join onto the last item
+            const last = prev.lastElementChild; if (!last) return;
+            const at = last.textContent.length;
+            while (b.firstChild) last.appendChild(b.firstChild);
+            b.remove();
+            caretIn(last, at);
+            return;
+        }
+        const at = prev.textContent.length;
+        prev.querySelectorAll(':scope > br:last-child').forEach(br => br.remove());
+        while (b.firstChild) prev.appendChild(b.firstChild);
+        b.remove();
+        caretIn(prev, at);
+    }
+
     function onEnter(area, autoformat) {
         let holder = ancestor('li') || blockEl() || ensureBlock(area);
 
@@ -916,20 +1037,33 @@
 
     // markdown can only carry the tags it has syntax for. Rather than let a command
     // write something the next save would drop, it reports itself unavailable.
-    function allows(area, id) {
+    function allows(area, id, ctrl) {
         const spec = COMMANDS[id], cfg = area && area._te;
         if (!spec || !cfg || cfg.mode === 'plain') return false;
-        if (cfg.minimal && spec.block) return false;
-        if (cfg.mode !== 'html' && !spec.md) return false;
-        // Some commands are only meaningful where the caret currently is. A control
-        // that is enabled but does nothing reads as broken, so ask before offering.
+        const page = !!(ctrl && ctrl.page && spec.page);
+        if (cfg.minimal && spec.block && !page) return false;
+        if (cfg.mode !== 'html' && !spec.md && !page) return false;
+        if (page) return true;                       // writes to the area, needs no caret
+        // A wrap has nothing to wrap without a selection, and a control that is lit
+        // but does nothing reads as broken — so say so rather than no-op.
+        if (spec.needsSelection && !hasSelection()) return false;
         return !spec.enabled || spec.enabled(area);
     }
 
-    function run(area, id, arg) {
-        restoreRange(area);                     // availability can depend on the caret
-        if (!allows(area, id)) return;
-        const spec = COMMANDS[id];
+    function run(area, id, arg, ctrl) {
+        const spec = COMMANDS[id]; if (!spec) return;
+        const page = !!(ctrl && ctrl.page && spec.page);
+        if (!page) restoreRange(area);          // availability can depend on the caret
+        if (!allows(area, id, ctrl)) return;
+        if (page) {
+            area.style.setProperty(PAGE_VARS[id], id === 'size' ? px(arg) : arg);
+            if (!arg) area.style.removeProperty(PAGE_VARS[id]);
+            area.dispatchEvent(new CustomEvent('text-edit:page', { bubbles: true, detail: pageStyle(area) }));
+            sync();
+            return;
+        }
+        const arming = spec.md !== undefined && INLINE_TAGS[id] && !hasSelection();
+        if (arming) { spec.run(arg, area); sync(); return; }   // nothing changed yet
         if (!spec.history) record(area);        // undo/redo drive the stack themselves
         spec.run(arg, area);
         normalizeLists(area);
@@ -943,12 +1077,13 @@
     function sync() {
         controls.forEach(c => {
             const cfg = c._te, area = resolve(c);
-            const usable = !!area && allows(area, cfg.id);
+            const usable = !!area && allows(area, cfg.id, cfg);
             const spec = COMMANDS[cfg.id];
-            c.toggleAttribute('data-text-edit-active', usable && !!spec.active(cfg.arg()));
+            const page = !!(cfg.page && spec.page);
+            c.toggleAttribute('data-text-edit-active', usable && !page && !!spec.active(cfg.arg(), area));
             c.setAttribute('aria-disabled', String(!usable));
-            if (usable && spec.reflect && 'value' in c && c !== document.activeElement) {
-                const v = spec.reflect();
+            if (usable && (page || spec.reflect) && 'value' in c && c !== document.activeElement) {
+                const v = page ? area.style.getPropertyValue(PAGE_VARS[cfg.id]).trim() : spec.reflect();
                 // Never blank a <select> by assigning a value the author didn't offer —
                 // computed styles report plenty that no option list would carry.
                 const offered = c.tagName !== 'SELECT' || [...c.options].some(o => o.value === v);
@@ -993,21 +1128,24 @@
     function control(el, id, modifiers, expression, evaluate, cleanup) {
         // `.h2` and `.align.center` carry a static argument as the next modifier; an
         // expression is the dynamic form (`x-text-edit.a="url"`).
-        const literal = modifiers[modifiers.indexOf(id) + 1];
+        const page = modifiers.includes('page');
+        const next = modifiers[modifiers.indexOf(id) + 1];
+        const literal = next === 'page' ? undefined : next;
         const arg = () => literal !== undefined ? literal : (expression ? evaluate(expression) : undefined);
-        el._te = { id, arg };
+        el._te = { id, arg, page };
+        if (page) el.setAttribute('data-text-edit-page', '');
         el.setAttribute('data-text-edit-control', id);
         if (el.tagName === 'BUTTON' && !el.hasAttribute('type')) el.type = 'button';
         controls.add(el);
 
         const valued = 'value' in el && el.tagName !== 'BUTTON';
         if (valued) {
-            const fire = () => { const a = resolve(el); if (a) run(a, id, el.value); };
+            const fire = () => { const a = resolve(el); if (a) run(a, id, el.value, el._te); };
             el.addEventListener('change', fire);
             el.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fire(); } });
         } else {
             el.addEventListener('pointerdown', e => e.preventDefault());   // never take the caret
-            el.addEventListener('click', e => { e.preventDefault(); const a = resolve(el); if (a) run(a, id, arg()); });
+            el.addEventListener('click', e => { e.preventDefault(); const a = resolve(el); if (a) run(a, id, arg(), el._te); });
         }
         setTimeout(sync, 0);
         cleanup(() => { controls.delete(el); });
@@ -1025,11 +1163,11 @@
         if (minimal) el.setAttribute('data-text-edit-minimal', '');
 
         const read = () => mode === 'plain' ? el.innerText.replace(/\n{3,}/g, '\n\n').trim()
-            : mode === 'html' ? sanitize(el.innerHTML, true)
+            : mode === 'html' ? sanitize(el.innerHTML, true, true)
                 : toMarkdown(el);
         const write = (v) => {
             if (mode === 'plain') el.textContent = v == null ? '' : String(v);
-            else el.innerHTML = mode === 'html' ? sanitize(v, true) : fromMarkdown(v);
+            else el.innerHTML = mode === 'html' ? sanitize(v, true, true) : fromMarkdown(v);
             if (!el.childNodes.length) el.innerHTML = '<p><br></p>';
             normalizeLists(el);
         };
@@ -1042,6 +1180,10 @@
                 const s = v == null ? '' : String(v);
                 if (s === last) return;                       // our own write coming back
                 last = s; writing = true; write(s); writing = false;
+                // The document was replaced from outside — a new page, or a different
+                // one loaded. Undo must not reach back into the document before it.
+                if (el._history) { el._history.stack = [{ html: el.innerHTML, caret: 0 }]; el._history.at = 0; }
+                settle();
             }));
             commitValue = () => { last = read(); setValue(() => { }, { scope: { __textEditValue: last } }); };
             el.addEventListener('input', () => { if (!writing) commitValue(); });
@@ -1051,9 +1193,30 @@
 
         el._history = { stack: [{ html: el.innerHTML, caret: 0 }], at: 0, timer: null, restoring: false };
 
+        // Wiping the document leaves whatever the first block was, so a page that
+        // opened with a heading keeps making headings. Reset to a paragraph, and flag
+        // emptiness for the placeholder — :empty never matches the <br> a
+        // contenteditable keeps, and the tag it sits in is not predictable.
+        function settle() {
+            if (!el.textContent.trim() && !el.querySelector('img, table, hr')) {
+                if (el.children.length !== 1 || el.firstElementChild.tagName !== 'P') el.replaceChildren();
+                if (!el.firstChild) { el.innerHTML = '<p><br></p>'; if (document.activeElement === el) caretIn(el.firstElementChild, 0); }
+                el.toggleAttribute('data-text-edit-empty', true);
+            } else el.toggleAttribute('data-text-edit-empty', false);
+        }
+
         el.addEventListener('focusin', () => { lastFocused = el; sync(); });
-        el.addEventListener('input', sync);
-        el.addEventListener('change', e => { if (e.target.type === 'checkbox') { record(el); el.dispatchEvent(new Event('input', { bubbles: true })); } });
+        el.addEventListener('input', (e) => {
+            if (!writing && e.data && applyPending(el, e.data)) { commitValue(); }
+            settle(); sync();
+        });
+        el.addEventListener('change', e => {
+            if (e.target.type !== 'checkbox') return;
+            // Clicking sets the property; only the attribute survives serialization.
+            e.target.toggleAttribute('checked', e.target.checked);
+            record(el);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        });
 
         // A finished line resolves to what its markdown described, unless .literal.
         const autoformat = mode !== 'plain' && !modifiers.includes('literal');
@@ -1076,6 +1239,24 @@
                 commitValue();
                 sync();
                 return;
+            }
+            if (e.key === 'Backspace' && mode !== 'plain') {
+                const cell = cellCoversAll();
+                if (cell) {                                   // clear the cell, keep the table
+                    e.preventDefault(); record(el);
+                    cell.replaceChildren(document.createElement('br'));
+                    caretIn(cell, 0);
+                    record(el); commitValue(); sync();
+                    return;
+                }
+                const r = range();
+                if (r && r.collapsed && atBlockStart()) {
+                    e.preventDefault(); record(el);
+                    backspaceAtStart(el);
+                    normalizeLists(el);
+                    record(el); commitValue(); sync();
+                    return;
+                }
             }
             if (e.key === 'Tab') {
                 if (mode === 'plain') return;
@@ -1102,25 +1283,36 @@
             e.preventDefault();
             const dt = e.clipboardData; if (!dt) return;
             const html = dt.getData('text/html');
+            // No keepStyle: a paste brings the text and its marks, never the source
+            // application's fonts and colours.
             insertHTML(mode === 'plain' ? escHtml(dt.getData('text/plain'))
                 : html ? sanitize(html, !minimal)
-                    : fromMarkdown(dt.getData('text/plain')));
+                    : fromMarkdown(dt.getData('text/plain').replace(/([^\n])\n(?!\n)/g, '$1  \n')));
         });
 
         const api = {
             get value() { return read(); },
-            set value(v) { write(v); el.dispatchEvent(new Event('input', { bubbles: true })); },
+            set value(v) {
+                write(v);
+                el._history.stack = [{ html: el.innerHTML, caret: 0 }]; el._history.at = 0;
+                settle();
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            },
+            get page() { return pageStyle(el); },
+            set page(v) { setPageStyle(el, v); sync(); },
             get link() { return linkHref(); },
             set link(v) { run(el, 'a', v); },
             focus: () => el.focus(),
             run: (id, arg) => run(el, id, arg),
-            active: (id) => allows(el, id) && COMMANDS[id].active(),
+            active: (id) => allows(el, id) && COMMANDS[id].active(undefined, el),
             can: (id) => allows(el, id),
+            selectAll: () => { el.focus(); selectNode(el); sync(); },
             markdown: () => toMarkdown(el),
-            html: () => sanitize(el.innerHTML, true)
+            html: () => sanitize(el.innerHTML, true, true)
         };
         el._te = { mode, minimal, api };
         areas.add(el);
+        settle();
 
         if (modifiers.includes('autofocus')) setTimeout(() => el.focus(), 0);
         setTimeout(sync, 0);

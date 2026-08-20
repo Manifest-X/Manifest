@@ -13,17 +13,26 @@
         max-height: var(--text-edit-max-height, none);
         overflow-y: auto;
         padding: var(--text-edit-padding, 0.75rem);
-        background: var(--color-surface-1);
+        background: var(--text-edit-background, var(--color-surface-1));
         border: 1px solid var(--color-line);
         border-radius: var(--radius);
         outline: none;
+
+        /* Page-level styling — set by .page controls, read back by $text.page.
+           Presentation, so it lives here rather than inside the stored markup. */
+        font-family: var(--text-edit-font, inherit);
+        font-size: var(--text-edit-size, inherit);
+        line-height: var(--text-edit-leading, inherit);
+        text-align: var(--text-edit-align, start);
+        color: var(--text-edit-color, inherit);
 
         &:focus {
             border-color: var(--color-content-subtle);
         }
 
-        /* :empty misses the <p><br></p> a contenteditable keeps */
-        &:has(> p:only-child > br:only-child)::before {
+        /* Flagged from script: :empty never matches the <br> a contenteditable
+           keeps, and the tag holding it is not predictable after a wipe. */
+        &[data-text-edit-empty]::before {
             content: attr(placeholder);
             color: var(--color-content-subtle);
             pointer-events: none;
