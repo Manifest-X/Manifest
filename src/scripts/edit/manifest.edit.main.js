@@ -19,9 +19,10 @@
             publish() { return publish(); },
             // Block operations. Called with no element they act on the block the last
             // right-click reported, which is what a context menu wants.
-            get target() { return blockTarget(); },
+            targetVersion: 0,                                // trackable: see blocks.js
+            get target() { void this.targetVersion; return blockTarget(); },
             set target(el) { setBlockTarget(el); },
-            can(op, el) { return canDo(op, el); },
+            can(op, el) { void this.targetVersion; return canDo(op, el); },
             copy(el) { return copyBlock(el); },
             cut(el) { return cutBlock(el); },
             paste(el) { return pasteBlock(el); },

@@ -95,11 +95,6 @@
             el.addEventListener('input', () => liveMainPropagate(area, el, 'text', el.innerHTML));
             el.addEventListener('blur', () => commitComponentNode(area, el, 'text', el.innerHTML.trim()));
         });
-        if (area._cmpMenuBound) return; area._cmpMenuBound = true;
-        area.addEventListener('contextmenu', e => {
-            if (onBlockContext(e)) return;                      // a project menu took it
-            if (area._edit.authoring) openComponentMenu(e, area);
-        });
     }
     let cmpMenu;
     function openComponentMenu(e, area) {

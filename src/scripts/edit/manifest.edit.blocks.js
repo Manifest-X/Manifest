@@ -7,13 +7,24 @@
     let clipboard = null;                       // { html, source } — the plugin's own, not the OS clipboard
     let target = null;                          // the block a menu is acting on
 
-    // The addressable block for a node: the sortable child that contains it.
+    // A menu binds :disabled to can(), so what can() depends on has to be trackable.
+    // The target and the clipboard are plain values, so changes to them are announced
+    // through a counter on the store, which is reactive.
+    const bump = () => { if (estore) estore.targetVersion = (estore.targetVersion || 0) + 1; };
+    const setTarget = (el) => { target = el; bump(); };
+
+    // The addressable block for a node: the sortable child that contains it, or —
+    // where the region is not sortable at all — the outermost element inside the area
+    // that contains it. Deleting a heading should not require the region to have been
+    // declared reorderable.
     function blockOf(node) {
         const area = node && node.closest && node.closest('[data-edit-area]');
         if (!area) return null;
-        let el = node.closest('[data-edit-sortable]');
-        if (el && el.closest('[data-edit-area]') === area) return el;
-        return null;
+        const sortable = node.closest('[data-edit-sortable]');
+        if (sortable && sortable.closest('[data-edit-area]') === area) return sortable;
+        let el = node;
+        while (el && el.parentElement && el.parentElement !== area) el = el.parentElement;
+        return el && el.parentElement === area ? el : null;
     }
 
     const blockArea = (el) => el && el.closest('[data-edit-area]');
@@ -61,7 +72,7 @@
         if (op === 'paste') return !!clipboard && !!(block ? blockArea(block) : areas().find(isActive));
         if (!block || locked(block)) return false;
         const area = blockArea(block);
-        if (!area || !isActive(area) || !capOf(block, 'sort')) return false;
+        if (!area || !isActive(area)) return false;
         if (classify(area) === 'component') return false;          // instances are overridden, not restructured
         return true;
     }
@@ -69,6 +80,7 @@
     function copyBlock(el) {
         const block = el || target; if (!block) return false;
         clipboard = { html: blockHTML(block), source: key(blockArea(block)) };
+        bump();
         return true;
     }
 
@@ -106,7 +118,7 @@
         const keys = staticKeys(area), gone = keys[sortableChildren(area).indexOf(block)];
         const markup = blockHTML(block);
         block.remove();
-        if (target === block) target = null;
+        if (target === block) setTarget(null);
         commitStructure(area, { [gone]: markup });                 // keep the markup so undo can rebuild it
         return true;
     }
@@ -154,18 +166,34 @@
         if (done) { e.preventDefault(); e.stopPropagation(); }
     }
 
-    // Right-click reports the block and the pointer; the project decides what opens.
-    // Calling preventDefault on the event suppresses the built-in authoring menus.
-    function onBlockContext(e) {
-        const block = blockOf(e.target);
-        target = block;
+    /* ---- Right-click ----
+       The event waits for the pointer to come up. A popover opened while the button
+       is still down is closed again by the release that follows it — the browser's
+       light dismiss decides on pointerup, and by then the menu was not yet open when
+       the press was recorded. Firing after the release is the only way a menu opened
+       in the handler survives. The context-menu key sends no release, so a short
+       timer covers it. */
+    let pendingContext = null;
+
+    function onBlockContext(e, builtIn) {
         const area = blockArea(e.target);
-        if (!area || !isActive(area)) return;
-        const detail = { target: block, area, x: e.clientX, y: e.clientY, can: (op) => canDo(op, block) };
-        const ev = new CustomEvent('edit:context', { bubbles: true, cancelable: true, detail });
-        if (!(area.dispatchEvent(ev))) e.preventDefault();          // a listener took it
-        return ev.defaultPrevented;
+        if (!area || !isActive(area)) return false;
+        const block = blockOf(e.target);
+        if (!block) return false;                                  // off-block: leave the native menu alone
+        setTarget(block);
+        e.preventDefault();
+
+        const fire = () => {
+            clearTimeout(pendingContext); pendingContext = null;
+            document.removeEventListener('pointerup', fire, true);
+            const detail = { target: block, area, x: e.clientX, y: e.clientY, can: (op) => canDo(op, block) };
+            const ev = new CustomEvent('edit:context', { bubbles: true, cancelable: true, detail });
+            if (area.dispatchEvent(ev) && builtIn) builtIn();       // nobody took it
+        };
+        document.addEventListener('pointerup', fire, true);
+        pendingContext = setTimeout(fire, 300);
+        return true;
     }
 
     const blockTarget = () => target;
-    const setBlockTarget = (el) => { target = el && el.nodeType === 1 ? blockOf(el) || el : null; };
+    const setBlockTarget = (el) => setTarget(el && el.nodeType === 1 ? blockOf(el) || el : null);

@@ -27,8 +27,19 @@
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
-        if (kind === 'static') armStyle(area);
-        if (!area._ctxBound) { area._ctxBound = true; area.addEventListener('contextmenu', onBlockContext); }
+        if (!area._ctxBound) {
+            area._ctxBound = true;
+            // One binding for the whole area: report the block, and fall back to the
+            // built-in authoring menu only if the project did not take the event.
+            area.addEventListener('contextmenu', (e) => {
+                if (!isActive(area)) return;
+                const builtIn = () => classify(area) === 'component' ? openComponentMenu(e, area) : openClassMenu(area, e);
+                if (onBlockContext(e, builtIn)) return;
+                if (!area._edit.authoring) return;
+                e.preventDefault();
+                builtIn();
+            });
+        }
         if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
     }
     function disarmArea(area) {

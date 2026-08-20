@@ -26,16 +26,11 @@
         m.style.left = Math.min(x, innerWidth - 280) + 'px'; m.style.top = Math.min(y, innerHeight - 130) + 'px'; m.hidden = false;
         setTimeout(() => { input.focus(); input.select(); }, 0);
     }
-    function armStyle(area) {
-        if (area._styleBound) return; area._styleBound = true;
-        area.addEventListener('contextmenu', (e) => {
-            if (!isActive(area)) return;
-            if (onBlockContext(e)) return;                      // a project menu took it
-            if (!area._edit.authoring) return;                  // the class menu is authoring chrome
-            let t = e.target;
-            while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.hasAttribute('data-edit-handle'))) t = t.parentElement;
-            if (!t || !capOf(t, 'style') || locked(t)) return;
-            e.preventDefault(); e.stopPropagation();
-            openMenu(t, e.clientX, e.clientY);
-        });
+    // The class menu is authoring chrome, so it only opens where chrome was asked for.
+    function openClassMenu(area, e) {
+        if (!area._edit.authoring) return;
+        let t = e.target;
+        while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.hasAttribute('data-edit-handle'))) t = t.parentElement;
+        if (!t || !capOf(t, 'style') || locked(t)) return;
+        openMenu(t, e.clientX, e.clientY);
     }
