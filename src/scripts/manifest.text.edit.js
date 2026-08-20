@@ -53,12 +53,16 @@
         return out;
     }
 
+    // <br> inside a <pre> is a line break; textContent alone would run the lines together.
+    const preText = (n) => [...n.childNodes].map(c =>
+        c.nodeName === 'BR' ? '\n' : c.nodeType === 3 ? c.nodeValue : preText(c)).join('');
+
     function block(node, depth) {
         if (node.nodeType === 3) { const t = node.textContent.trim(); return t ? esc(t) : ''; }
         if (node.nodeType !== 1) return '';
         const tag = node.tagName;
         if (tag === 'HR') return '---';
-        if (tag === 'PRE') return '```\n' + node.textContent.replace(/\n$/, '') + '\n```';
+        if (tag === 'PRE') return '```\n' + preText(node).replace(/\n+$/, '') + '\n```';
         if (/^H[1-6]$/.test(tag)) return '#'.repeat(+tag[1]) + ' ' + inline(node).trim();
         if (tag === 'BLOCKQUOTE') return blocks(node, depth).split('\n').map(l => ('> ' + l).trimEnd()).join('\n');
         if (tag === 'UL' || tag === 'OL') {
@@ -604,83 +608,228 @@
     const MODES = new Set(['html', 'plain', 'minimal', 'literal', 'autofocus']);
 
     /* ---- Autoformat ----
-       Typing markdown produces the element, so the page shows what the stored value
-       means. Without it the two drift apart on purpose-built input: "## Title" typed
-       into a paragraph stores as a heading and comes back as one on the next load,
-       having looked like body text the whole time it was being written. */
-    const BLOCK_RULES = [
-        [/^(#{1,6})$/, (m) => setBlock('h' + m[1].length)],
-        [/^[-*+]$/, () => toggleList('ul')],
-        [/^\d+\.$/, () => toggleList('ol')],
-        [/^>$/, () => setBlock('blockquote')],
-        [/^```$/, () => setBlock('pre')],
-        [/^\[([ xX])\]$/, (m) => { toggleChecklist(); const box = ancestor('li') && ancestor('li').querySelector('input[type=checkbox]'); if (box) box.checked = /[xX]/.test(m[1]); }]
-    ];
-    // `pre` is a guard group that must not be consumed — it keeps the single-asterisk
-    // rule from firing on the first star of a closing `**`, which would wrap the wrong
-    // half of the text as soon as you started closing a bold run.
-    const ZWSP = '\u200B';
-    const INLINE_RULES = [
-        { re: /\*\*([^*]+)\*\*$/, tag: 'strong' },
-        { re: /__([^_]+)__$/, tag: 'strong' },
-        { re: /(^|[^*])\*([^*\s][^*]*)\*$/, tag: 'em', pre: 1, content: 2 },
-        { re: /~~([^~]+)~~$/, tag: 'del' },
-        { re: /`([^`]+)`$/, tag: 'code' },
-        { re: /\[([^\]]+)\]\(([^)\s]+)\)$/, tag: 'a', href: 2 }
+       A line converts when it is finished, not while it is being typed: press Enter
+       and the line you are leaving becomes what its markdown described. Converting
+       mid-keystroke fought the writer — a "*" was reinterpreted the moment a second
+       one appeared — and made literal markdown impossible to type. Deferring it also
+       means what you see and what is stored only ever disagree within one line.
+
+       Without conversion the two genuinely drift: "## Title" left in a paragraph is
+       stored as a heading and comes back as one, having looked like body text the
+       whole time it was being written. */
+    const LINE_RULES = [
+        { re: /^(#{1,6})\s+/, make: (b, m) => retagBlock(b, 'h' + m[1].length) },
+        { re: /^[-*+]\s+/, make: (b) => listify(b, 'ul') },
+        { re: /^\d+\.\s+/, make: (b) => listify(b, 'ol') },
+        { re: /^\[([ xX])\]\s+/, make: (b, m) => listify(b, 'ul', /[xX]/.test(m[1])) },
+        { re: /^>\s+/, make: (b) => retagBlock(b, 'blockquote') },
+        { re: /^```\s*$/, make: (b) => retagBlock(b, 'pre') },
+        { re: /^(-{3,}|\*{3,}|_{3,})\s*$/, make: (b) => { const hr = document.createElement('hr'); b.replaceWith(hr); return hr; } }
     ];
 
-    function autoformatBlock(area) {
-        const b = blockEl(), r = range();
-        if (!b || !r || !r.collapsed || b.tagName === 'PRE') return false;
-        const pre = document.createRange();
-        pre.selectNodeContents(b);
-        pre.setEnd(r.startContainer, r.startOffset);
-        const typed = pre.toString();
-        if (!/\s$/.test(typed)) return false;
-        const prefix = typed.slice(0, -1);
-        for (const [re, apply] of BLOCK_RULES) {
-            const m = prefix.match(re); if (!m) continue;
-            pre.deleteContents();
-            // deleteContents updates the range but leaves the document selection
-            // pointing at nodes it just removed. Everything downstream reads the
-            // selection, so re-seat it on the live collapsed range first.
-            pre.collapse(true);
-            const s = sel(); s.removeAllRanges(); s.addRange(pre);
-            caretIn(ensureBlock(area), 0);
-            apply(m);
-            const made = ancestor('li') || blockEl();
-            if (made) caretIn(made, 0);
-            return true;
-        }
-        return false;
+    const INLINE_RULES = [
+        { re: /\*\*([^*]+)\*\*/, tag: 'strong' },
+        { re: /__([^_]+)__/, tag: 'strong' },
+        { re: /(^|[^*])\*([^*\s][^*]*)\*/, tag: 'em', pre: 1, content: 2 },
+        { re: /~~([^~]+)~~/, tag: 'del' },
+        { re: /`([^`]+)`/, tag: 'code' },
+        { re: /!\[([^\]]*)\]\(([^)\s]+)\)/, tag: 'img', alt: 1, src: 2 },
+        { re: /\[([^\]]+)\]\(([^)\s]+)\)/, tag: 'a', href: 2 }
+    ];
+    const unsafe = (url) => /^\s*javascript:/i.test(url || '');
+
+    function retagBlock(b, tag) {
+        const n = document.createElement(tag);
+        while (b.firstChild) n.appendChild(b.firstChild);
+        b.replaceWith(n);
+        return n;
     }
 
-    function autoformatInline() {
-        const r = range();
-        if (!r || !r.collapsed || r.startContainer.nodeType !== 3) return false;
-        if (ancestor('pre, code')) return false;
-        const node = r.startContainer, at = r.startOffset, before = node.nodeValue.slice(0, at);
-        for (const rule of INLINE_RULES) {
-            const m = before.match(rule.re); if (!m) continue;
-            const eaten = m[0].length - (rule.pre ? m[rule.pre].length : 0);
-            const el = document.createElement(rule.tag);
-            el.textContent = m[rule.content || 1];
-            if (rule.href) { if (/^\s*javascript:/i.test(m[rule.href])) return false; el.setAttribute('href', m[rule.href]); }
-            const span = document.createRange();
-            span.setStart(node, at - eaten); span.setEnd(node, at);
-            span.deleteContents();
-            span.insertNode(el);
-            // A zero-width space after the element is what keeps the next keystroke
-            // outside it; an empty text node collapses and the caret falls back in.
-            // read() strips them, so they never reach the stored value.
-            const tail = document.createTextNode(ZWSP);
-            el.parentNode.insertBefore(tail, el.nextSibling);
-            const after = document.createRange();
-            after.setStart(tail, tail.length); after.collapse(true);
-            sel().removeAllRanges(); sel().addRange(after);
-            return true;
+    // Consecutive lines join the list above rather than each starting their own.
+    function listify(b, tag, checked) {
+        const item = document.createElement('li');
+        while (b.firstChild) item.appendChild(b.firstChild);
+        const prev = b.previousElementSibling;
+        const list = prev && prev.tagName === tag.toUpperCase() ? prev : document.createElement(tag);
+        if (checked != null) {
+            list.setAttribute('data-checklist', '');
+            const box = document.createElement('input');
+            box.type = 'checkbox'; box.checked = checked;
+            item.insertBefore(box, item.firstChild);
         }
-        return false;
+        list.appendChild(item);
+        if (list !== prev) b.replaceWith(list); else b.remove();
+        return item;
+    }
+
+    // Strip the marker text the rule matched, without disturbing the rest of the line.
+    function stripLead(el, count) {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let left = count;
+        for (let n = walker.nextNode(); n && left > 0; n = walker.nextNode()) {
+            const take = Math.min(left, n.length);
+            n.deleteData(0, take);
+            left -= take;
+        }
+    }
+
+    function inlineEl(rule, m) {
+        const el = document.createElement(rule.tag);
+        if (rule.tag === 'img') {
+            if (unsafe(m[rule.src])) return null;
+            el.setAttribute('src', m[rule.src]); el.setAttribute('alt', m[rule.alt] || '');
+            return el;
+        }
+        el.textContent = m[rule.content || 1];
+        if (rule.href) { if (unsafe(m[rule.href])) return null; el.setAttribute('href', m[rule.href]); }
+        return el;
+    }
+
+    function firstInline(text) {
+        let best = null;
+        for (const rule of INLINE_RULES) {
+            const m = text.match(rule.re); if (!m) continue;
+            const skip = rule.pre ? m[rule.pre].length : 0;
+            const start = m.index + skip;
+            if (!best || start < best.start) best = { rule, m, start, len: m[0].length - skip };
+        }
+        return best;
+    }
+
+    function convertInline(root) {
+        const nodes = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+        nodes.forEach(node => {
+            if (!node.parentElement || node.parentElement.closest('code, pre, a')) return;
+            let cur = node;
+            for (let guard = 0; guard < 50; guard++) {
+                const hit = firstInline(cur.nodeValue); if (!hit) return;
+                const el = inlineEl(hit.rule, hit.m); if (!el) return;
+                const tail = cur.splitText(hit.start);
+                tail.deleteData(0, hit.len);
+                tail.parentNode.insertBefore(el, tail);
+                cur = tail;
+            }
+        });
+    }
+
+    // Returns the element now holding the line's content — an <li> for a list, so the
+    // caller knows to continue the list rather than start a paragraph.
+    function convertLine(b) {
+        if (!b || b.closest('pre')) return b;
+        const text = b.textContent;
+        for (const rule of LINE_RULES) {
+            const m = text.match(rule.re); if (!m) continue;
+            stripLead(b, m[0].length);
+            const made = rule.make(b, m);
+            if (made.tagName !== 'HR') convertInline(made);
+            return made;
+        }
+        convertInline(b);
+        return b;
+    }
+
+    /* ---- Enter ----
+       Owned outright rather than post-processed: the split has to know what the line
+       became, headings and quotes must not continue themselves, and lists and code
+       blocks need a way out that is not the mouse. */
+    const CONTINUES = new Set(['LI', 'PRE']);
+
+    function splitInto(b, tag) {
+        const n = document.createElement(tag);
+        const r = range();
+        if (b.lastChild && r && b.contains(r.startContainer)) {
+            const tail = document.createRange();
+            tail.setStart(r.startContainer, r.startOffset);
+            tail.setEndAfter(b.lastChild);
+            n.appendChild(tail.extractContents());
+        }
+        b.after(n);
+        if (!b.textContent.length && !b.querySelector('br, img')) b.appendChild(document.createElement('br'));
+        return n;
+    }
+
+    function exitList(li, area) {
+        const list = li.closest('ul, ol');
+        const p = document.createElement('p');
+        const after = [...list.children].slice([...list.children].indexOf(li) + 1);
+        list.after(p);
+        if (after.length) {
+            const tail = document.createElement(list.tagName.toLowerCase());
+            if (list.hasAttribute('data-checklist')) tail.setAttribute('data-checklist', '');
+            after.forEach(n => tail.appendChild(n));
+            p.after(tail);
+        }
+        li.remove();
+        if (!list.children.length) list.remove();
+        caretIn(p, 0);
+        void area;
+    }
+
+    // Enter is only taken over where the wanted behaviour differs from the browser's.
+    // Inside a code block, and for Shift+Enter, the native handling is already right —
+    // and doing it by hand goes wrong, because a caret placed by script next to a <br>
+    // or a bare newline gets normalized back over it before the next character lands.
+    // Chrome writes <br> inside a <pre> rather than a newline, so an empty last line
+    // is a pair of trailing breaks — not a trailing "\n" as the markup suggests.
+    const codeEndsBlank = (pre) => {
+        const last = pre.lastChild;
+        if (last && last.nodeName === 'BR' && last.previousSibling && last.previousSibling.nodeName === 'BR') return true;
+        return /\n[^\S\n]*$/.test(pre.textContent);
+    };
+    const leavingCode = () => {
+        const pre = ancestor('pre'); if (!pre) return false;
+        const r = range();
+        return !!r && r.collapsed && codeEndsBlank(pre);
+    };
+    const ownsEnter = (e) => !e.shiftKey && (!ancestor('pre') || leavingCode());
+
+    function onEnter(area, autoformat) {
+        let holder = ancestor('li') || blockEl() || ensureBlock(area);
+
+        const pre = holder.closest('pre');
+        if (pre) {
+            // An empty last line leaves the code block — the one case the browser
+            // cannot do, and without it the block has no keyboard exit.
+            while (pre.lastChild && (pre.lastChild.nodeName === 'BR' || !pre.lastChild.textContent.trim())) pre.lastChild.remove();
+            if (/\n[^\S\n]*$/.test(pre.textContent)) pre.textContent = pre.textContent.replace(/\n[^\S\n]*$/, '');
+            const p = document.createElement('p');
+            pre.after(p);
+            if (!pre.textContent.length) pre.remove();
+            caretIn(p, 0);
+            return;
+        }
+
+        if (holder.tagName === 'LI' && !holder.textContent.length) return exitList(holder, area);
+
+        // Split BEFORE converting. Conversion strips the marker text, which would
+        // leave the caret offset pointing past the end of its own text node.
+        const next = splitInto(holder, holder.tagName === 'LI' ? 'li' : 'p');
+        if (autoformat) holder = convertLine(holder) || holder;
+
+        if (holder.tagName === 'HR') { caretIn(next, 0); return; }
+
+        // A finished ``` line opens the code block rather than starting a line after it.
+        if (holder.tagName === 'PRE') { next.remove(); caretIn(holder, 0); return; }
+
+        // The line became a list item, so the new line continues the list.
+        if (holder.tagName === 'LI') {
+            const item = next.tagName === 'LI' ? next : retagBlock(next, 'li');
+            holder.after(item);
+            const box = holder.querySelector(':scope > input[type=checkbox]');
+            if (box && !item.querySelector(':scope > input[type=checkbox]')) {
+                const fresh = document.createElement('input');
+                fresh.type = 'checkbox';
+                item.insertBefore(fresh, item.firstChild);
+            }
+            caretIn(item, 0);
+            return;
+        }
+
+        // Everything else starts a plain paragraph. A heading or a quote does not
+        // continue itself — the next line is body text, which is what a writer means.
+        caretIn(next, 0);
     }
 
     /* ---- History ----
@@ -875,10 +1024,9 @@
         el.setAttribute('aria-multiline', 'true');
         if (minimal) el.setAttribute('data-text-edit-minimal', '');
 
-        const strip = (v) => v.split(ZWSP).join('');
-        const read = () => strip(mode === 'plain' ? el.innerText.replace(/\n{3,}/g, '\n\n').trim()
+        const read = () => mode === 'plain' ? el.innerText.replace(/\n{3,}/g, '\n\n').trim()
             : mode === 'html' ? sanitize(el.innerHTML, true)
-                : toMarkdown(el));
+                : toMarkdown(el);
         const write = (v) => {
             if (mode === 'plain') el.textContent = v == null ? '' : String(v);
             else el.innerHTML = mode === 'html' ? sanitize(v, true) : fromMarkdown(v);
@@ -907,24 +1055,28 @@
         el.addEventListener('input', sync);
         el.addEventListener('change', e => { if (e.target.type === 'checkbox') { record(el); el.dispatchEvent(new Event('input', { bubbles: true })); } });
 
-        // Typing markdown resolves to the element it describes, unless .literal.
+        // A finished line resolves to what its markdown described, unless .literal.
         const autoformat = mode !== 'plain' && !modifiers.includes('literal');
-        el.addEventListener('input', (e) => {
+        el.addEventListener('input', () => {
             if (writing) return;
             recordSoon(el);
-            if (ancestor('li')) normalizeLists(el);        // Enter and Backspace reshape lists too
-            if (!autoformat || !e.data) return;
-            const changed = /\s/.test(e.data) ? autoformatBlock(el) : ')*_`~'.includes(e.data) && autoformatInline();
-            if (!changed) return;
-            record(el);
-            normalizeLists(el);
-            commitValue();
-            sync();
+            if (ancestor('li')) normalizeLists(el);        // Backspace reshapes lists too
         });
 
         el.addEventListener('keydown', (e) => {
             // Tab indents rather than leaving the field, the way every editor behaves.
             // Escape is the way out, so keyboard users are never trapped.
+            if (e.key === 'Enter' && mode !== 'plain') {
+                if (!ownsEnter(e)) return;              // let the browser do the ones it does well
+                e.preventDefault();
+                record(el);
+                onEnter(el, autoformat);
+                normalizeLists(el);
+                record(el);
+                commitValue();
+                sync();
+                return;
+            }
             if (e.key === 'Tab') {
                 if (mode === 'plain') return;
                 e.preventDefault();

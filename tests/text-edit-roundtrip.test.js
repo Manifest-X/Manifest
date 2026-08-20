@@ -86,6 +86,22 @@ describe('x-text-edit command surface', () => {
     })
 })
 
+describe('x-text-edit code blocks', () => {
+    it('reads a <br> inside a <pre> as a line break', () => {
+        // Chrome writes <br> into a <pre> rather than a newline. textContent alone
+        // runs the lines together, which silently flattens every code block on save.
+        const host = document.createElement('div')
+        host.innerHTML = '<pre>const x = 1;<br>return x;</pre>'
+        expect(toMarkdown(host)).toBe('```\nconst x = 1;\nreturn x;\n```')
+    })
+
+    it('does not accumulate trailing blank lines', () => {
+        const host = document.createElement('div')
+        host.innerHTML = '<pre>code<br><br></pre>'
+        expect(toMarkdown(host)).toBe('```\ncode\n```')
+    })
+})
+
 describe('x-text-edit sanitize', () => {
     it('unwraps tags outside the allowlist but keeps their text', () => {
         expect(sanitize('<div><script>alert(1)</script>hi</div>', false)).toBe('hi')
