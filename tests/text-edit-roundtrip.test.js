@@ -64,6 +64,15 @@ describe('x-text-edit command surface', () => {
         }
     })
 
+    it('excludes generic containers', () => {
+        // The editable area is itself a <div>. Treating div/section as blocks lets the
+        // block lookup walk past the paragraph onto the area, and a block command then
+        // replaces the whole editor.
+        for (const container of ['div', 'section', 'article', 'aside', 'main', 'body']) {
+            expect(commands, `.${container} must not be a block command`).not.toContain(container)
+        }
+    })
+
     it('has no invented synonym for a tag that exists', () => {
         for (const invented of ['quote', 'bold', 'italic', 'strike', 'bullets', 'numbers', 'divider', 'link', 'paragraph']) {
             expect(commands, `.${invented} should be the tag name instead`).not.toContain(invented)
@@ -93,7 +102,7 @@ describe('x-text-edit sanitize', () => {
 
     it('removes a script hoisted out of a stripped wrapper', () => {
         expect(sanitize('<div><script>alert(1)</script>hi</div>', false)).toBe('hi')
-        expect(sanitize('<section><b><script>alert(1)</script>x</b></section>', true)).toBe('<section><b>x</b></section>')
+        expect(sanitize('<section><b><script>alert(1)</script>x</b></section>', true)).toBe('<b>x</b>')
     })
 
     it('strips an event handler smuggled under an allowed wrapper', () => {

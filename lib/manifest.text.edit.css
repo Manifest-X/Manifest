@@ -50,50 +50,6 @@
         line-height: 0;
     }
 
-    /* ---- Field ----
-       Only present when .toolbar asked for chrome; it takes the area's place in
-       the author's layout, so it has to fill the same box. */
-    :where([data-text-edit-field]) {
-        display: flex;
-        flex-direction: column;
-        flex: 1 1 auto;
-        min-width: 0;
-    }
-
-    /* ---- Toolbar ----
-       Only a layout row. Sitting directly above an area joins the two visually;
-       anywhere else it is just a row of controls. */
-    :where([data-text-edit-toolbar]) {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.125rem;
-        align-items: center;
-        padding: 0.25rem;
-    }
-
-    :where([data-text-edit-toolbar]:has(+ [data-text-edit])) {
-        background: var(--color-surface-2);
-        border: 1px solid var(--color-line);
-        border-radius: var(--radius) var(--radius) 0 0;
-        border-block-end: 0;
-    }
-
-    :where([data-text-edit-toolbar] + [data-text-edit]) {
-        border-start-start-radius: 0;
-        border-start-end-radius: 0;
-    }
-
-    :where([data-text-edit-sticky]) {
-        overflow-y: visible;
-        max-height: none;
-    }
-
-    :where([data-text-edit-toolbar]:has(+ [data-text-edit-sticky])) {
-        position: sticky;
-        inset-block-start: 0;
-        z-index: 1;
-    }
-
     /* ---- Editable content ----
        The editor authors real block elements, so style them as elements. Deliberately
        lighter than the .prose class, which sets a reading measure this field can't use. */

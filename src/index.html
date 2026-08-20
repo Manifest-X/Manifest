@@ -209,146 +209,140 @@
     <a href="/native">Native</a>
   </nav>
 
-  <!-- Text editor -->
-  <div class="col gap-8 p-6 max-w-4xl" x-route="text-edit" x-data="{
-    post: '# Bloom &amp; Bramble\n\nSeasonal arrangements, **delivered weekly**.\n\n- [x] Cut this morning\n- [ ] Within 50 miles\n- [Book a consultation](/weddings)\n\n&gt; Every stem is local.',
-    page: '&lt;p&gt;Colour, font and alignment need &lt;code&gt;.html&lt;/code&gt; mode — markdown has no syntax for them.&lt;/p&gt;',
-    bio: 'Florist. *Ten years* of it.',
-    note: '',
-    draftA: 'Reply to **Ana**.',
-    draftB: 'Reply to *Ben*.'
+  <!-- Text editor — one page editor, all controls authored -->
+  <div class="col gap-4 p-4" x-route="text-edit" x-data="{
+    doc: '&lt;h1&gt;Bloom &amp;amp; Bramble&lt;/h1&gt;&lt;p&gt;Seasonal arrangements, &lt;strong&gt;delivered weekly&lt;/strong&gt;. Type &lt;code&gt;## &lt;/code&gt; or &lt;code&gt;- &lt;/code&gt; at the start of a line, or &lt;code&gt;**bold**&lt;/code&gt; anywhere, and it becomes the real thing.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Cut this morning&lt;/li&gt;&lt;li&gt;Within 50 miles&lt;/li&gt;&lt;/ul&gt;&lt;blockquote&gt;Every stem is local.&lt;/blockquote&gt;',
+    imageUrl: '',
+    tableSize: '3x3'
   }">
 
-    <div class="col gap-1">
-      <h1 class="h3">Text edit</h1>
-      <span class="caption text-content-subtle">x-text-edit — commands are named for the tag they produce. No command modifier marks the editable area; a command modifier turns anything into a control for it.</span>
-    </div>
+    <!-- Toolbar: ordinary Manifest elements. The plugin injects none of this. -->
+    <div class="col gap-1 p-2 bg-surface-1 border border-line rounded sticky top-0 z-10">
 
-    <!-- Markdown mode with the built-in toolbar -->
-    <div class="col gap-2">
-      <strong class="small">Markdown <span class="caption text-content-subtle">· x-text-edit.toolbar — Tab indents, Shift+Tab outdents, Escape leaves</span></strong>
-      <div class="col md:row gap-4 items-start">
-        <div class="grow"><div x-text-edit.toolbar="post" placeholder="Write a post…" aria-label="Post body"></div></div>
-        <div class="col gap-2 grow min-w-0">
-          <pre class="p-3 bg-surface-2 text-xs overflow-x-auto" style="border-radius: var(--radius)" x-text="post"></pre>
-          <div class="p-3 bg-surface-1 border border-line" style="border-radius: var(--radius)" x-markdown="post"></div>
-        </div>
+      <div class="row-wrap gap-1 items-center">
+        <button class="ghost sm" x-text-edit.undo aria-label="Undo" x-tooltip="Undo"><span x-icon="lucide:undo-2"></span></button>
+        <button class="ghost sm" x-text-edit.redo aria-label="Redo" x-tooltip="Redo"><span x-icon="lucide:redo-2"></span></button>
+        <button class="ghost sm" x-text-edit.clear aria-label="Clear formatting" x-tooltip="Clear formatting"><span x-icon="lucide:remove-formatting"></span></button>
+
+        <div class="divider vertical h-6"></div>
+
+        <select x-text-edit.block class="sm hug" aria-label="Paragraph style">
+          <option value="p">Normal</option>
+          <option value="h1">Heading 1</option>
+          <option value="h2">Heading 2</option>
+          <option value="h3">Heading 3</option>
+          <option value="h4">Heading 4</option>
+          <option value="blockquote">Quote</option>
+          <option value="pre">Code block</option>
+          <option value="address">Address</option>
+          <option value="figcaption">Caption</option>
+        </select>
+
+        <select x-text-edit.font class="sm hug" aria-label="Font">
+          <option value="inherit">Default</option>
+          <option value="Arial">Arial</option>
+          <option value="Georgia">Georgia</option>
+          <option value="Times New Roman">Times</option>
+          <option value="ui-monospace">Mono</option>
+        </select>
+
+        <select x-text-edit.size class="sm hug" aria-label="Font size">
+          <option value="12px">12</option>
+          <option value="14px">14</option>
+          <option value="16px">16</option>
+          <option value="18px">18</option>
+          <option value="24px">24</option>
+          <option value="32px">32</option>
+          <option value="48px">48</option>
+        </select>
+
+        <div class="divider vertical h-6"></div>
+
+        <button class="ghost sm" x-text-edit.strong aria-label="Bold" x-tooltip="Bold ⌘B"><span x-icon="lucide:bold"></span></button>
+        <button class="ghost sm" x-text-edit.em aria-label="Italic" x-tooltip="Italic ⌘I"><span x-icon="lucide:italic"></span></button>
+        <button class="ghost sm" x-text-edit.u aria-label="Underline" x-tooltip="Underline ⌘U"><span x-icon="lucide:underline"></span></button>
+        <button class="ghost sm" x-text-edit.s aria-label="Strikethrough" x-tooltip="Strikethrough"><span x-icon="lucide:strikethrough"></span></button>
+        <button class="ghost sm" x-text-edit.code aria-label="Inline code" x-tooltip="Code"><span x-icon="lucide:code"></span></button>
+        <button class="ghost sm" x-text-edit.sup aria-label="Superscript" x-tooltip="Superscript"><span x-icon="lucide:superscript"></span></button>
+        <button class="ghost sm" x-text-edit.sub aria-label="Subscript" x-tooltip="Subscript"><span x-icon="lucide:subscript"></span></button>
+
+        <label class="row items-center gap-1 hug" x-tooltip="Text colour">
+          <span x-icon="lucide:baseline"></span>
+          <input type="color" x-text-edit.color aria-label="Text colour" class="unstyle w-6 h-6 rounded border border-line">
+        </label>
+        <label class="row items-center gap-1 hug" x-tooltip="Highlight">
+          <span x-icon="lucide:highlighter"></span>
+          <input type="color" x-text-edit.background aria-label="Highlight colour" class="unstyle w-6 h-6 rounded border border-line">
+        </label>
+        <button class="ghost sm" x-text-edit.mark aria-label="Mark" x-tooltip="Mark"><span x-icon="lucide:pen-line"></span></button>
+      </div>
+
+      <div class="row-wrap gap-1 items-center">
+        <select x-text-edit.align class="sm hug" aria-label="Alignment">
+          <option value="start">Align start</option>
+          <option value="center">Centre</option>
+          <option value="end">Align end</option>
+          <option value="justify">Justify</option>
+        </select>
+
+        <button class="ghost sm" x-text-edit.ul aria-label="Bulleted list" x-tooltip="Bulleted list"><span x-icon="lucide:list"></span></button>
+        <button class="ghost sm" x-text-edit.ol aria-label="Numbered list" x-tooltip="Numbered list"><span x-icon="lucide:list-ordered"></span></button>
+        <button class="ghost sm" x-text-edit.checklist aria-label="Checklist" x-tooltip="Checklist"><span x-icon="lucide:list-checks"></span></button>
+        <button class="ghost sm" x-text-edit.outdent aria-label="Outdent" x-tooltip="Outdent ⇧Tab"><span x-icon="lucide:indent-decrease"></span></button>
+        <button class="ghost sm" x-text-edit.indent aria-label="Indent" x-tooltip="Indent Tab"><span x-icon="lucide:indent-increase"></span></button>
+
+        <div class="divider vertical h-6"></div>
+
+        <button class="ghost sm" x-dropdown="insert-link" aria-label="Link" x-tooltip="Link ⌘K"><span x-icon="lucide:link"></span></button>
+        <menu popover id="insert-link" class="p-2" style="min-width: 18rem">
+          <label class="col gap-1">
+            <span class="caption">Link URL — empty it to unlink</span>
+            <input type="url" class="sm" x-text-edit.a placeholder="https://">
+          </label>
+        </menu>
+
+        <button class="ghost sm" x-dropdown="insert-image" aria-label="Image" x-tooltip="Image"><span x-icon="lucide:image"></span></button>
+        <menu popover id="insert-image" class="p-2 col gap-2" style="min-width: 18rem">
+          <label class="col gap-1">
+            <span class="caption">Image URL</span>
+            <input type="url" class="sm" x-model="imageUrl" placeholder="https://">
+          </label>
+          <button class="brand sm" x-text-edit.img="imageUrl">Insert image</button>
+        </menu>
+
+        <button class="ghost sm" x-dropdown="insert-table" aria-label="Table" x-tooltip="Table"><span x-icon="lucide:table"></span></button>
+        <menu popover id="insert-table" class="p-2 col gap-2" style="min-width: 14rem">
+          <label class="col gap-1">
+            <span class="caption">Rows × columns</span>
+            <input type="text" class="sm" x-model="tableSize" placeholder="3x3">
+          </label>
+          <button class="brand sm" x-text-edit.table="tableSize">Insert table</button>
+          <span class="caption text-content-subtle">Tab moves cell to cell, and adds a row at the end.</span>
+        </menu>
+
+        <button class="ghost sm" x-text-edit.hr aria-label="Horizontal line" x-tooltip="Horizontal line"><span x-icon="lucide:minus"></span></button>
+        <button class="ghost sm" x-text-edit.figure aria-label="Figure" x-tooltip="Figure"><span x-icon="lucide:frame"></span></button>
+        <button class="ghost sm" x-text-edit.dl aria-label="Definition list" x-tooltip="Definition list"><span x-icon="lucide:book-a"></span></button>
+        <button class="ghost sm" x-text-edit.kbd aria-label="Keyboard key" x-tooltip="Keyboard key"><span x-icon="lucide:keyboard"></span></button>
+        <button class="ghost sm" x-text-edit.abbr aria-label="Abbreviation" x-tooltip="Abbreviation"><span x-icon="lucide:whole-word"></span></button>
+        <button class="ghost sm" x-text-edit.small aria-label="Small" x-tooltip="Small"><span x-icon="lucide:a-large-small"></span></button>
+
+        <span class="grow"></span>
+        <span class="caption text-content-subtle">Tab indents · Esc leaves · ⌘Z undoes</span>
       </div>
     </div>
 
-    <!-- HTML mode: everything markdown can't carry, plus scattered controls -->
-    <div class="col gap-2">
-      <strong class="small">HTML mode <span class="caption text-content-subtle">· x-text-edit.html — colour, font, size and alignment, with options you wrote</span></strong>
-
-      <div class="row-wrap gap-2 items-end">
-        <label class="col gap-1">
-          <span class="caption">Block</span>
-          <select x-text-edit.block class="sm">
-            <option value="p">p</option>
-            <option value="h1">h1</option>
-            <option value="h2">h2</option>
-            <option value="h3">h3</option>
-            <option value="blockquote">blockquote</option>
-            <option value="pre">pre</option>
-            <option value="address">address</option>
-            <option value="figcaption">figcaption</option>
-          </select>
-        </label>
-        <label class="col gap-1">
-          <span class="caption">Font</span>
-          <select x-text-edit.font class="sm">
-            <option value="inherit">Default</option>
-            <option value="Arial">Arial</option>
-            <option value="Georgia">Georgia</option>
-            <option value="ui-monospace">Mono</option>
-          </select>
-        </label>
-        <label class="col gap-1">
-          <span class="caption">Size</span>
-          <select x-text-edit.size class="sm">
-            <option value="12px">12</option>
-            <option value="14px">14</option>
-            <option value="16px">16</option>
-            <option value="24px">24</option>
-            <option value="32px">32</option>
-          </select>
-        </label>
-        <label class="col gap-1">
-          <span class="caption">Text</span>
-          <input type="color" x-text-edit.color aria-label="Text colour">
-        </label>
-        <label class="col gap-1">
-          <span class="caption">Highlight</span>
-          <input type="color" x-text-edit.background aria-label="Highlight colour">
-        </label>
-      </div>
-
-      <div class="row-wrap gap-2 items-end">
-        <button class="ghost sm" x-text-edit.strong>strong</button>
-        <button class="ghost sm" x-text-edit.em>em</button>
-        <button class="ghost sm" x-text-edit.mark>mark</button>
-        <button class="ghost sm" x-text-edit.kbd>kbd</button>
-        <button class="ghost sm" x-text-edit.sub>sub</button>
-        <button class="ghost sm" x-text-edit.sup>sup</button>
-        <button class="ghost sm" x-text-edit.small>small</button>
-        <button class="ghost sm" x-text-edit.align.center>align centre</button>
-        <button class="ghost sm" x-text-edit.align.start>align start</button>
-        <button class="ghost sm" x-text-edit.table.3x3>table</button>
-      </div>
-
-      <!-- Link: define, edit and clear from one field. Empty it to unlink. -->
-      <div class="row-wrap gap-2 items-end">
-        <label class="col gap-1 grow">
-          <span class="caption">Link (shows the current href; empty it to unlink)</span>
-          <input type="url" class="sm" x-text-edit.a placeholder="https://">
-        </label>
-        <button class="ghost sm" x-text-edit.clear>clear formatting</button>
-      </div>
-
-      <div x-text-edit.html="page" placeholder="Select some text, then use the controls above…" aria-label="Page body"></div>
-      <pre class="p-3 bg-surface-2 text-xs overflow-x-auto" style="border-radius: var(--radius)" x-text="page"></pre>
+    <!-- The page -->
+    <div class="center">
+      <div x-text-edit.html="doc" placeholder="Write something…" aria-label="Document"
+           class="w-full max-w-[52rem]"
+           style="--text-edit-min-height: 60vh; --text-edit-padding: 4rem 4.5rem"></div>
     </div>
 
-    <!-- Two dialogs, one DOM -->
-    <div class="col gap-2">
-      <strong class="small">Two dialogs, one DOM <span class="caption text-content-subtle">· nearest area wins; x-text-edit-for pins across</span></strong>
-      <div class="row-wrap gap-2">
-        <button class="sm" popovertarget="reply-a">Reply to Ana</button>
-        <button class="sm" popovertarget="reply-b">Reply to Ben</button>
-        <span x-text-edit-for="#body-a">
-          <button class="ghost sm" x-text-edit.strong>Bold in A, from out here</button>
-        </span>
-      </div>
-
-      <dialog popover id="reply-a" class="col gap-3 p-4" style="min-width: 22rem">
-        <strong class="small">Reply to Ana</strong>
-        <div x-text-edit.toolbar.minimal="draftA" id="body-a" placeholder="Write a reply…" aria-label="Reply to Ana" style="--text-edit-min-height: 5rem"></div>
-        <div class="row gap-2 justify-end"><button class="ghost sm" popovertarget="reply-a" popovertargetaction="hide">Close</button></div>
-      </dialog>
-
-      <dialog popover id="reply-b" class="col gap-3 p-4" style="min-width: 22rem">
-        <strong class="small">Reply to Ben</strong>
-        <div x-text-edit.toolbar.minimal="draftB" id="body-b" placeholder="Write a reply…" aria-label="Reply to Ben" style="--text-edit-min-height: 5rem"></div>
-        <div class="row gap-2 justify-end"><button class="ghost sm" popovertarget="reply-b" popovertargetaction="hide">Close</button></div>
-      </dialog>
-
-      <div class="row-wrap gap-4">
-        <span class="caption text-content-subtle">A: <span x-text="draftA"></span></span>
-        <span class="caption text-content-subtle">B: <span x-text="draftB"></span></span>
-      </div>
-    </div>
-
-    <!-- Minimal and plain -->
-    <div class="col gap-2">
-      <strong class="small">Minimal <span class="caption text-content-subtle">· x-text-edit.minimal — inline only; block controls disable themselves</span></strong>
-      <div x-text-edit.toolbar.minimal="bio" placeholder="Short bio…" aria-label="Bio" style="--text-edit-min-height: 4rem"></div>
-      <span class="caption text-content-subtle" x-text="bio || '(empty)'"></span>
-    </div>
-
-    <div class="col gap-2">
-      <strong class="small">Plain <span class="caption text-content-subtle">· x-text-edit.plain</span></strong>
-      <div x-text-edit.plain="note" placeholder="Internal note…" aria-label="Note" style="--text-edit-min-height: 4rem"></div>
-    </div>
+    <details class="max-w-[52rem] mx-auto w-full">
+      <summary class="small">Stored value</summary>
+      <pre class="p-3 bg-surface-2 text-xs overflow-x-auto" style="border-radius: var(--radius)" x-text="doc"></pre>
+    </details>
 
   </div>
 
