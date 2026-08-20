@@ -331,7 +331,8 @@ export interface ManifestCamera {
     pick(opts?: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Element editor (`x-edit`) — opt-in authoring plugin. */
+/** Element editor (`x-edit`) — opt-in plugin. Sortable lists and resizable elements
+ *  by default; add `.authoring` where a region is a page being edited. */
 export interface ManifestEdit {
     /** True while a `.gated` area is editable. */
     active: boolean;

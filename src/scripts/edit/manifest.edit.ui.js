@@ -22,8 +22,12 @@
     const onScreen = (el) => el.checkVisibility ? el.checkVisibility() : !!el.offsetParent;
     function refresh() {
         if (estore) { estore.canUndo = cursor > 0; estore.canRedo = cursor < log.length; }
-        if (!areas().some(a => isActive(a) && onScreen(a) && !a._edit.quiet)) { if (bar) bar.hidden = true; return; }
-        buildUI().hidden = false;
+        // Script decides presence — it is the only thing that knows which route is on
+        // screen. The stylesheet decides whether it is seen.
+        const authoring = areas().some(a => a._edit.authoring && isActive(a) && onScreen(a));
+        document.documentElement.toggleAttribute('data-edit-active', authoring);
+        if (!authoring) return;
+        buildUI();
         bar.querySelector('[data-a="undo"]').disabled = cursor === 0;
         bar.querySelector('[data-a="redo"]').disabled = cursor >= log.length;
     }

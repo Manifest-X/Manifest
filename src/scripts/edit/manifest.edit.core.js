@@ -35,11 +35,12 @@
         });
     }
     const loadState = () => { try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; } else if (s) localStorage.removeItem(LS_KEY); } catch {} };
-    // A .quiet area is application UI, not a page being authored: the app owns the
-    // state, so its deltas neither travel to the source nor survive in the overlay.
-    // They stay in the in-memory log, so undo still works for the session.
-    const quietRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.quiet); };
-    const persistable = (d) => !quietRegion(d.region);
+    // Only an .authoring area is a page being edited. Everywhere else the plugin is
+    // behaviour — a sortable list, a resizable panel — and the app owns the state, so
+    // those deltas neither travel to the source nor survive in the overlay. They stay
+    // in the in-memory log, so undo still works for the session.
+    const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
+    const persistable = (d) => d.region == null || authoringRegion(d.region);
 
     const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -53,6 +54,13 @@
     // else (attributes, scripts, comments, javascript: hrefs). Critical once overlays can
     // come from other users (cloud). Unknown tags are unwrapped to their text.
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
+    // An element owned by the rich editor carries block markup this plugin's own
+    // allowlist would flatten, so let that plugin vet its own content. Everything
+    // else keeps the conservative inline-only policy.
+    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
+        ? window.ManifestTextEdit.sanitize(html, true, true)
+        : sanitizeHTML(html);
+
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
         const walk = (node) => [...node.childNodes].forEach(c => {
@@ -79,7 +87,7 @@
         if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
         if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
         if ((expression || '').trim() && [...editEls].some(e => e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
-        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, quiet: modifiers.includes('quiet') };
+        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, authoring: modifiers.includes('authoring') };
         el.setAttribute('data-edit-area', '');
         editEls.add(el);
     }

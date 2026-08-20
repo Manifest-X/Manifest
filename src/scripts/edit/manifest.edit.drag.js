@@ -32,46 +32,67 @@
         const container = item.parentElement;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
+        const preStyle = item.getAttribute('style');
         const grabX = e.clientX - start.left, grabY = e.clientY - start.top;
         const sx = e.clientX, sy = e.clientY;
-        let active = false, frame = 0, px = sx, py = sy;
+        let active = false, frame = 0, px = sx, py = sy, ghost = null;
 
-        // The item follows the pointer while staying in flow, so its own slot is the
-        // gap. Its position is re-based every frame because a reorder moves that slot
-        // out from under it — measure with the transform cleared, since a transformed
-        // rect would compound the offset it already carries.
+        // The item leaves the flow and a stand-in takes its slot, so the gap that
+        // opens is a real element the author can style — by default a translucent
+        // copy of what is being dragged, showing exactly where it would land.
+        const lift = (ev) => {
+            ghost = item.cloneNode(true);
+            ghost.setAttribute('data-edit-ghost', '');
+            ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
+            ghost.removeAttribute('id');
+            ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+            [ghost, ...ghost.querySelectorAll('*')].forEach(n => {
+                [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && a.name !== 'data-edit-ghost') n.removeAttribute(a.name); });
+                n.removeAttribute('contenteditable'); n.removeAttribute('tabindex'); n.removeAttribute('draggable');
+            });
+            item.before(ghost);
+            item.style.position = 'fixed';
+            item.style.width = start.width + 'px';
+            item.style.height = start.height + 'px';
+            item.style.margin = '0';
+            item.style.pointerEvents = 'none';
+            item.setAttribute('data-edit-dragging', '');
+            area.setAttribute('data-edit-dragging-in', '');
+            dragged = ghost;
+            try { item.setPointerCapture(ev.pointerId); } catch { }
+        };
+
         const paint = () => {
             frame = 0;
-            item.style.transform = '';
-            const home = item.getBoundingClientRect();
-            item.style.transform = `translate(${px - grabX - home.left}px, ${py - grabY - home.top}px)`;
+            item.style.left = (px - grabX) + 'px';
+            item.style.top = (py - grabY) + 'px';
         };
 
         const onMove = (ev) => {
             px = ev.clientX; py = ev.clientY;
             if (!active) {
                 if (Math.hypot(px - sx, py - sy) < 5) return;   // threshold so taps/clicks still work
-                active = true; dragged = item;
-                item.setAttribute('data-edit-dragging', '');
-                area.setAttribute('data-edit-dragging-in', '');
-                try { item.setPointerCapture(ev.pointerId); } catch { }
+                active = true; lift(ev); paint();
             }
             ev.preventDefault();
             reorderOver(container, px, py);
             if (!frame) frame = requestAnimationFrame(paint);
         };
+
         const settle = (cancelled) => {
             document.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerup', onUp);
             document.removeEventListener('keydown', onKey, true);
             if (frame) cancelAnimationFrame(frame);
             if (!active) return;
-            if (cancelled) { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); }
-            item.style.removeProperty('transform');
-            if (!item.getAttribute('style')) item.removeAttribute('style');
+            if (cancelled) {
+                ghost.remove();
+                if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item);
+            } else ghost.replaceWith(item);
+            if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
-            dragged = null;
+            ghost = null; dragged = null;
             if (cancelled) announce('Cancelled'); else finishReorder(area);
         };
         const onUp = () => settle(false);
@@ -95,7 +116,7 @@
     // behind the pointer, so it does not immediately swap back.
     function afterElement(c, x, y) {
         for (const el of sortableChildren(c)) {
-            if (el === dragged || locked(el)) continue;
+            if (el === dragged || locked(el) || el.hasAttribute('data-edit-dragging')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
             const sameRow = Math.abs(cy - y) <= b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;

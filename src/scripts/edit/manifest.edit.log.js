@@ -67,7 +67,7 @@
                 const base = area._baseText || {}, baseC = area._baseClass || {}, baseS = area._baseStyle || {};
                 const pick = (prop, fallback) => iv[prop] !== undefined ? iv[prop] : (mv[prop] !== undefined ? mv[prop] : fallback);
                 const text = pick('text', base[p]), cls = pick('class', baseC[p]), sty = pick('style', baseS[p]);
-                if (text !== undefined) { const safe = sanitizeHTML(text); if (el.innerHTML !== safe) el.innerHTML = safe; }   // sanitize on apply (cloud overlays)
+                if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }   // sanitize on apply (cloud overlays)
                 if (cls !== undefined && el.getAttribute('class') !== cls) el.setAttribute('class', cls);
                 if (sty !== undefined && el.getAttribute('style') !== sty) { if (sty === '') el.removeAttribute('style'); else el.setAttribute('style', sty); }
             });
@@ -75,7 +75,7 @@
     }
     function commitComponentNode(area, el, prop, value) {
         const path = el.getAttribute('data-edit-path'), scope = area._editScope || 'instance', component = componentName(area), region = key(area);
-        if (prop === 'text') value = sanitizeHTML(value);   // sanitize contentEditable on capture
+        if (prop === 'text') value = sanitizeFor(el, value);   // sanitize contentEditable on capture
         const before = prop === 'text' ? el._preEdit : prop === 'style' ? el._preStyle : el._preClass;
         if (before === value) return;
         log.splice(cursor);
@@ -120,7 +120,7 @@
                 const expect = sigs[bk]; if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale static node', region, p); return; }
                 const eff = (prop) => ops && ops[prop] !== undefined ? ops[prop] : baseline && baseline[prop];
                 const setAttr = (name, v) => { if (v === undefined) return; if (v === '') el.removeAttribute(name); else if (el.getAttribute(name) !== v) el.setAttribute(name, v); };
-                const text = eff('text'); if (text !== undefined) { const safe = sanitizeHTML(text); if (el.innerHTML !== safe) el.innerHTML = safe; }
+                const text = eff('text'); if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }
                 setAttr('class', eff('class'));
                 setAttr('style', eff('style'));
             });
@@ -134,7 +134,7 @@
     }
     function commitStaticNode(area, el, prop, value) {
         const region = key(area), path = el.getAttribute('data-edit-path');
-        if (prop === 'text') value = sanitizeHTML(value);
+        if (prop === 'text') value = sanitizeFor(el, value);
         const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
         if (before === value) return;
         log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();

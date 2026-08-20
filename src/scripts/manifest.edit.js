@@ -39,11 +39,12 @@
         });
     }
     const loadState = () => { try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; } else if (s) localStorage.removeItem(LS_KEY); } catch {} };
-    // A .quiet area is application UI, not a page being authored: the app owns the
-    // state, so its deltas neither travel to the source nor survive in the overlay.
-    // They stay in the in-memory log, so undo still works for the session.
-    const quietRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.quiet); };
-    const persistable = (d) => !quietRegion(d.region);
+    // Only an .authoring area is a page being edited. Everywhere else the plugin is
+    // behaviour — a sortable list, a resizable panel — and the app owns the state, so
+    // those deltas neither travel to the source nor survive in the overlay. They stay
+    // in the in-memory log, so undo still works for the session.
+    const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
+    const persistable = (d) => d.region == null || authoringRegion(d.region);
 
     const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -57,6 +58,13 @@
     // else (attributes, scripts, comments, javascript: hrefs). Critical once overlays can
     // come from other users (cloud). Unknown tags are unwrapped to their text.
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
+    // An element owned by the rich editor carries block markup this plugin's own
+    // allowlist would flatten, so let that plugin vet its own content. Everything
+    // else keeps the conservative inline-only policy.
+    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
+        ? window.ManifestTextEdit.sanitize(html, true, true)
+        : sanitizeHTML(html);
+
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
         const walk = (node) => [...node.childNodes].forEach(c => {
@@ -83,7 +91,7 @@
         if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
         if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
         if ((expression || '').trim() && [...editEls].some(e => e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
-        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, quiet: modifiers.includes('quiet') };
+        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, authoring: modifiers.includes('authoring') };
         el.setAttribute('data-edit-area', '');
         editEls.add(el);
     }
@@ -205,7 +213,7 @@
                 const base = area._baseText || {}, baseC = area._baseClass || {}, baseS = area._baseStyle || {};
                 const pick = (prop, fallback) => iv[prop] !== undefined ? iv[prop] : (mv[prop] !== undefined ? mv[prop] : fallback);
                 const text = pick('text', base[p]), cls = pick('class', baseC[p]), sty = pick('style', baseS[p]);
-                if (text !== undefined) { const safe = sanitizeHTML(text); if (el.innerHTML !== safe) el.innerHTML = safe; }   // sanitize on apply (cloud overlays)
+                if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }   // sanitize on apply (cloud overlays)
                 if (cls !== undefined && el.getAttribute('class') !== cls) el.setAttribute('class', cls);
                 if (sty !== undefined && el.getAttribute('style') !== sty) { if (sty === '') el.removeAttribute('style'); else el.setAttribute('style', sty); }
             });
@@ -213,7 +221,7 @@
     }
     function commitComponentNode(area, el, prop, value) {
         const path = el.getAttribute('data-edit-path'), scope = area._editScope || 'instance', component = componentName(area), region = key(area);
-        if (prop === 'text') value = sanitizeHTML(value);   // sanitize contentEditable on capture
+        if (prop === 'text') value = sanitizeFor(el, value);   // sanitize contentEditable on capture
         const before = prop === 'text' ? el._preEdit : prop === 'style' ? el._preStyle : el._preClass;
         if (before === value) return;
         log.splice(cursor);
@@ -258,7 +266,7 @@
                 const expect = sigs[bk]; if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale static node', region, p); return; }
                 const eff = (prop) => ops && ops[prop] !== undefined ? ops[prop] : baseline && baseline[prop];
                 const setAttr = (name, v) => { if (v === undefined) return; if (v === '') el.removeAttribute(name); else if (el.getAttribute(name) !== v) el.setAttribute(name, v); };
-                const text = eff('text'); if (text !== undefined) { const safe = sanitizeHTML(text); if (el.innerHTML !== safe) el.innerHTML = safe; }
+                const text = eff('text'); if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }
                 setAttr('class', eff('class'));
                 setAttr('style', eff('style'));
             });
@@ -272,7 +280,7 @@
     }
     function commitStaticNode(area, el, prop, value) {
         const region = key(area), path = el.getAttribute('data-edit-path');
-        if (prop === 'text') value = sanitizeHTML(value);
+        if (prop === 'text') value = sanitizeFor(el, value);
         const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
         if (before === value) return;
         log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();
@@ -380,46 +388,67 @@
         const container = item.parentElement;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
+        const preStyle = item.getAttribute('style');
         const grabX = e.clientX - start.left, grabY = e.clientY - start.top;
         const sx = e.clientX, sy = e.clientY;
-        let active = false, frame = 0, px = sx, py = sy;
+        let active = false, frame = 0, px = sx, py = sy, ghost = null;
 
-        // The item follows the pointer while staying in flow, so its own slot is the
-        // gap. Its position is re-based every frame because a reorder moves that slot
-        // out from under it — measure with the transform cleared, since a transformed
-        // rect would compound the offset it already carries.
+        // The item leaves the flow and a stand-in takes its slot, so the gap that
+        // opens is a real element the author can style — by default a translucent
+        // copy of what is being dragged, showing exactly where it would land.
+        const lift = (ev) => {
+            ghost = item.cloneNode(true);
+            ghost.setAttribute('data-edit-ghost', '');
+            ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
+            ghost.removeAttribute('id');
+            ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+            [ghost, ...ghost.querySelectorAll('*')].forEach(n => {
+                [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && a.name !== 'data-edit-ghost') n.removeAttribute(a.name); });
+                n.removeAttribute('contenteditable'); n.removeAttribute('tabindex'); n.removeAttribute('draggable');
+            });
+            item.before(ghost);
+            item.style.position = 'fixed';
+            item.style.width = start.width + 'px';
+            item.style.height = start.height + 'px';
+            item.style.margin = '0';
+            item.style.pointerEvents = 'none';
+            item.setAttribute('data-edit-dragging', '');
+            area.setAttribute('data-edit-dragging-in', '');
+            dragged = ghost;
+            try { item.setPointerCapture(ev.pointerId); } catch { }
+        };
+
         const paint = () => {
             frame = 0;
-            item.style.transform = '';
-            const home = item.getBoundingClientRect();
-            item.style.transform = `translate(${px - grabX - home.left}px, ${py - grabY - home.top}px)`;
+            item.style.left = (px - grabX) + 'px';
+            item.style.top = (py - grabY) + 'px';
         };
 
         const onMove = (ev) => {
             px = ev.clientX; py = ev.clientY;
             if (!active) {
                 if (Math.hypot(px - sx, py - sy) < 5) return;   // threshold so taps/clicks still work
-                active = true; dragged = item;
-                item.setAttribute('data-edit-dragging', '');
-                area.setAttribute('data-edit-dragging-in', '');
-                try { item.setPointerCapture(ev.pointerId); } catch { }
+                active = true; lift(ev); paint();
             }
             ev.preventDefault();
             reorderOver(container, px, py);
             if (!frame) frame = requestAnimationFrame(paint);
         };
+
         const settle = (cancelled) => {
             document.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerup', onUp);
             document.removeEventListener('keydown', onKey, true);
             if (frame) cancelAnimationFrame(frame);
             if (!active) return;
-            if (cancelled) { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); }
-            item.style.removeProperty('transform');
-            if (!item.getAttribute('style')) item.removeAttribute('style');
+            if (cancelled) {
+                ghost.remove();
+                if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item);
+            } else ghost.replaceWith(item);
+            if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
-            dragged = null;
+            ghost = null; dragged = null;
             if (cancelled) announce('Cancelled'); else finishReorder(area);
         };
         const onUp = () => settle(false);
@@ -443,7 +472,7 @@
     // behind the pointer, so it does not immediately swap back.
     function afterElement(c, x, y) {
         for (const el of sortableChildren(c)) {
-            if (el === dragged || locked(el)) continue;
+            if (el === dragged || locked(el) || el.hasAttribute('data-edit-dragging')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
             const sameRow = Math.abs(cy - y) <= b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
@@ -607,10 +636,28 @@
 
 
     /* ---- Inline text editing ---- */
+    // Where x-text-edit is declared, it owns the element: this plugin neither makes
+    // its leaves contenteditable nor competes for the caret. If the rich editor has
+    // no expression of its own, we capture what it produces as an ordinary text
+    // delta, so a rich field inside a page-editing region publishes like any other.
+    function armRichText(area) {
+        area.querySelectorAll('[data-text-edit]:not([data-text-edit-bound])').forEach(el => {
+            if (!capOf(el, 'text') || locked(el)) return;
+            if (el._richBound) return; el._richBound = true;
+            el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
+            el.addEventListener('blur', () => {
+                const commit = classify(area) === 'component' ? commitComponentNode : commitStaticNode;
+                commit(area, el, 'text', el.innerHTML.trim());
+            }, true);
+        });
+    }
+
     // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
     function armText(area) {
+        armRichText(area);
         area.querySelectorAll('*').forEach(el => {
             if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
@@ -673,8 +720,10 @@
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
         // Text leaves also become contenteditable. Capture innerHTML (not textContent) so
         // nested inline elements like <i>/<br> the user adds are preserved.
+        armRichText(area);
         root.querySelectorAll('[data-edit-path]').forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
+            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             const p = el.getAttribute('data-edit-path');
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');
@@ -837,17 +886,24 @@
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const markEl = (el) => { const p = pathOf(el, area); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
         markEl(area);
-        area.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markEl(el); });
+        // Stop at a rich editor: its internals are its own, and marking them would
+        // both litter its content and let applyStaticState fight it for the same nodes.
+        area.querySelectorAll('*').forEach(el => {
+            if (el.hasAttribute('data-edit-handle')) return;
+            if (el.parentElement && el.parentElement.closest('[data-text-edit]')) return;
+            markEl(el);
+        });
         if (!area._baseOrder) area._baseOrder = staticKeys(area);
         if (!(key(area) in lastOrder)) lastOrder[key(area)] = area._baseOrder;
     }
     function armArea(area) {
         const kind = classify(area);
         area.setAttribute('data-edit-armed', '');
-        // .quiet drops the authoring chrome — no outline, no label, no toolbar — so a
-        // plain sortable list looks like itself rather than like a page being edited.
-        area.toggleAttribute('data-edit-quiet', !!area._edit.quiet);
-        if (!area._edit.quiet) area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
+        // Chrome is opt-in: a sortable list should look like a list, not like a page
+        // being edited. The attributes are all CSS asks for — what is shown, and
+        // whether it is shown at all, is decided in the stylesheet.
+        area.toggleAttribute('data-edit-authoring', !!area._edit.authoring);
+        area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
         if (kind === 'static') markStatic(area);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
@@ -871,11 +927,11 @@
     // Build B-side source patches from the edit set (storage-agnostic; overlay
     // already auto-persists to localStorage on commit).
     function buildPatches() {
-        const patches = Object.entries(fold()).filter(([k]) => !quietRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
+        const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
         const toEdits = (paths) => { const e = []; Object.entries(paths).forEach(([p, props]) => Object.entries(props).forEach(([prop, value]) => e.push({ path: p, prop, value }))); return e; };
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
-            if (quietRegion(region)) return;
+            if (!authoringRegion(region)) return;
             const edits = toEdits(ss.node[region] || {});
             if (edits.length || ss.order[region]) patches.push({ kind: 'static', region, edits, order: ss.order[region] || null });
         });
@@ -935,8 +991,12 @@
     const onScreen = (el) => el.checkVisibility ? el.checkVisibility() : !!el.offsetParent;
     function refresh() {
         if (estore) { estore.canUndo = cursor > 0; estore.canRedo = cursor < log.length; }
-        if (!areas().some(a => isActive(a) && onScreen(a) && !a._edit.quiet)) { if (bar) bar.hidden = true; return; }
-        buildUI().hidden = false;
+        // Script decides presence — it is the only thing that knows which route is on
+        // screen. The stylesheet decides whether it is seen.
+        const authoring = areas().some(a => a._edit.authoring && isActive(a) && onScreen(a));
+        document.documentElement.toggleAttribute('data-edit-active', authoring);
+        if (!authoring) return;
+        buildUI();
         bar.querySelector('[data-a="undo"]').disabled = cursor === 0;
         bar.querySelector('[data-a="redo"]').disabled = cursor >= log.length;
     }

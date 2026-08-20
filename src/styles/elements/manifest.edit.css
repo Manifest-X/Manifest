@@ -10,18 +10,20 @@
 @layer utilities {
 
     /* ---- Editable area (armed) ----
-       .quiet areas opt out of the chrome: a sortable list should look like a list. */
+       Chrome is opt-in. Most uses of this plugin are a resize handle or a sortable
+       list, which should look like themselves; only .authoring gets the outline and
+       the region label. */
     :where([data-edit-armed]) {
         position: relative;
     }
 
-    :where([data-edit-armed]:not([data-edit-quiet])) {
+    :where([data-edit-armed][data-edit-authoring]) {
         outline: 1px dashed var(--color-line);
         outline-offset: 6px;
         border-radius: var(--radius);
     }
 
-    :where([data-edit-armed]:not([data-edit-quiet]))::before {
+    :where([data-edit-armed][data-edit-authoring])::before {
         content: attr(data-edit-label);
         position: absolute;
         inset-block-start: -1.5rem;
@@ -50,13 +52,20 @@
         outline-offset: 3px;
     }
 
-    /* Lifted while dragging: it follows the pointer and its own slot is the gap. */
+    /* Lifted out of the flow and following the pointer. */
     :where([data-edit-sortable][data-edit-dragging]) {
-        position: relative;
-        z-index: 10;
-        opacity: 0.9;
+        z-index: 1000;
         cursor: grabbing;
         box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    }
+
+    /* The stand-in holding the slot the drop would land in — a translucent copy of
+       the element by default, because the clearest preview of where it lands is the
+       thing itself. Restyle it freely: hide its contents for an empty outlined slot,
+       give it a background, animate it. */
+    :where([data-edit-ghost]) {
+        opacity: var(--edit-ghost-opacity, 0.4);
+        pointer-events: none;
     }
 
     /* Nothing else should react while a drag is in progress */
@@ -242,12 +251,14 @@
 /* ---- Authoring chrome (toolbar + class/scope menu) ---- */
 @layer components {
 
+    /* Presence is script's business — it knows which route is on screen. Whether it
+       is seen is not, so the toolbar is styled and revealed here. */
     :where([data-edit-toolbar]) {
+        display: none;
         position: fixed;
         inset-block-end: 1rem;
         inset-inline-end: 1rem;
         z-index: 9999;
-        display: flex;
         gap: 0.5rem;
         align-items: center;
 
@@ -255,6 +266,10 @@
             opacity: 0.35;
             pointer-events: none;
         }
+    }
+
+    :root[data-edit-active] :where([data-edit-toolbar]) {
+        display: flex;
     }
 
     :where([data-edit-menu]) {

@@ -5,17 +5,24 @@
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const markEl = (el) => { const p = pathOf(el, area); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
         markEl(area);
-        area.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markEl(el); });
+        // Stop at a rich editor: its internals are its own, and marking them would
+        // both litter its content and let applyStaticState fight it for the same nodes.
+        area.querySelectorAll('*').forEach(el => {
+            if (el.hasAttribute('data-edit-handle')) return;
+            if (el.parentElement && el.parentElement.closest('[data-text-edit]')) return;
+            markEl(el);
+        });
         if (!area._baseOrder) area._baseOrder = staticKeys(area);
         if (!(key(area) in lastOrder)) lastOrder[key(area)] = area._baseOrder;
     }
     function armArea(area) {
         const kind = classify(area);
         area.setAttribute('data-edit-armed', '');
-        // .quiet drops the authoring chrome — no outline, no label, no toolbar — so a
-        // plain sortable list looks like itself rather than like a page being edited.
-        area.toggleAttribute('data-edit-quiet', !!area._edit.quiet);
-        if (!area._edit.quiet) area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
+        // Chrome is opt-in: a sortable list should look like a list, not like a page
+        // being edited. The attributes are all CSS asks for — what is shown, and
+        // whether it is shown at all, is decided in the stylesheet.
+        area.toggleAttribute('data-edit-authoring', !!area._edit.authoring);
+        area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
         if (kind === 'static') markStatic(area);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
@@ -39,11 +46,11 @@
     // Build B-side source patches from the edit set (storage-agnostic; overlay
     // already auto-persists to localStorage on commit).
     function buildPatches() {
-        const patches = Object.entries(fold()).filter(([k]) => !quietRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
+        const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
         const toEdits = (paths) => { const e = []; Object.entries(paths).forEach(([p, props]) => Object.entries(props).forEach(([prop, value]) => e.push({ path: p, prop, value }))); return e; };
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
-            if (quietRegion(region)) return;
+            if (!authoringRegion(region)) return;
             const edits = toEdits(ss.node[region] || {});
             if (edits.length || ss.order[region]) patches.push({ kind: 'static', region, edits, order: ss.order[region] || null });
         });

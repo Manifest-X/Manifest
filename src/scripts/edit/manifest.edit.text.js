@@ -1,8 +1,26 @@
     /* ---- Inline text editing ---- */
+    // Where x-text-edit is declared, it owns the element: this plugin neither makes
+    // its leaves contenteditable nor competes for the caret. If the rich editor has
+    // no expression of its own, we capture what it produces as an ordinary text
+    // delta, so a rich field inside a page-editing region publishes like any other.
+    function armRichText(area) {
+        area.querySelectorAll('[data-text-edit]:not([data-text-edit-bound])').forEach(el => {
+            if (!capOf(el, 'text') || locked(el)) return;
+            if (el._richBound) return; el._richBound = true;
+            el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
+            el.addEventListener('blur', () => {
+                const commit = classify(area) === 'component' ? commitComponentNode : commitStaticNode;
+                commit(area, el, 'text', el.innerHTML.trim());
+            }, true);
+        });
+    }
+
     // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
     function armText(area) {
+        armRichText(area);
         area.querySelectorAll('*').forEach(el => {
             if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
@@ -65,8 +83,10 @@
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
         // Text leaves also become contenteditable. Capture innerHTML (not textContent) so
         // nested inline elements like <i>/<br> the user adds are preserved.
+        armRichText(area);
         root.querySelectorAll('[data-edit-path]').forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
+            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             const p = el.getAttribute('data-edit-path');
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');
