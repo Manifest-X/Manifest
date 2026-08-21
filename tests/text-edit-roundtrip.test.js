@@ -102,6 +102,27 @@ describe('x-text-edit code blocks', () => {
     })
 })
 
+describe('x-text-edit tables', () => {
+    it('keeps a merged cell merged', () => {
+        // Without colspan/rowspan surviving, every merge comes apart on the next save
+        // and the feature is decorative.
+        expect(sanitize('<table><tbody><tr><td colspan="2">a</td></tr></tbody></table>', true, true))
+            .toBe('<table><tbody><tr><td colspan="2">a</td></tr></tbody></table>')
+        expect(sanitize('<table><tbody><tr><td rowspan="3">a</td></tr></tbody></table>', true, true))
+            .toBe('<table><tbody><tr><td rowspan="3">a</td></tr></tbody></table>')
+    })
+
+    it('keeps a header row', () => {
+        const html = '<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>b</td></tr></tbody></table>'
+        expect(sanitize(html, true, true)).toBe(html)
+    })
+
+    it('refuses a span that is not a plain count', () => {
+        expect(sanitize('<td colspan="evil()">a</td>', true, true)).toBe('<td>a</td>')
+        expect(sanitize('<td colspan="0">a</td>', true, true)).toBe('<td>a</td>')
+    })
+})
+
 describe('x-text-edit sanitize', () => {
     it('unwraps tags outside the allowlist but keeps their text', () => {
         expect(sanitize('<div><script>alert(1)</script>hi</div>', false)).toBe('hi')

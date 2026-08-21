@@ -27,12 +27,15 @@
     // Content-derived key for a static sortable child — stable across reorder AND reload
     // (same content → same key), so reorder can be stored as a tiny key permutation.
     const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-    // Two identical siblings — the same word twice in a chip list — derive the same
-    // key, and a stored order would then map both slots to one element and drop the
-    // other. An occurrence ordinal keeps them apart while staying content-derived.
+    // The SAME identity markStatic assigned, not a fresh derivation. Recomputing from
+    // current content would drift the moment text is edited, and the child order
+    // recorded before that edit would then fail to find the element it named.
+    // Two identical siblings are told apart by the ordinal markStatic gave them.
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
+            const assigned = el.getAttribute('data-edit-key');
+            if (assigned) return assigned;
             const base = staticKey(el);
             const n = seen[base] = (seen[base] || 0) + 1;
             return n > 1 ? base + '#' + n : base;
@@ -292,11 +295,16 @@
         log.push({ kind: 'st-children', region, order, before, html: markup || {} });
         cursor = log.length; lastOrder[region] = order; saveState(); refresh();
     }
-    const materialize = (markup) => {
+    // Rebuilt markup carries no identity — blockHTML strips it so a duplicate cannot
+    // inherit its original's. Stamp the key we are rebuilding it for, or the element
+    // comes back nameless and the next fold drops it again.
+    const materialize = (markup, k) => {
         if (!markup) return null;
         const t = document.createElement('template');
         t.innerHTML = markup.trim();
-        return t.content.firstElementChild;
+        const el = t.content.firstElementChild;
+        if (el && k) el.setAttribute('data-edit-key', k);
+        return el;
     };
 
     function applyStaticState() {
@@ -304,8 +312,8 @@
         document.querySelectorAll('[data-edit-area]').forEach(area => {
             if (!area._edit || classify(area) !== 'static') return;
             const region = key(area);
-            [area, ...area.querySelectorAll('[data-edit-path]')].forEach(el => {
-                const p = el.getAttribute('data-edit-path'), bk = region + '|' + p;
+            [area, ...area.querySelectorAll('[data-edit-key]')].forEach(el => {
+                const p = el.getAttribute('data-edit-key'), bk = region + '|' + p;
                 const ops = (node[region] || {})[p], baseline = base[bk];
                 if (!ops && !baseline) return;
                 const expect = sigs[bk]; if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale static node', region, p); return; }
@@ -320,14 +328,15 @@
                 const by = {}, kids = sortableChildren(area), keys = staticKeys(area);
                 kids.forEach((el, i) => { by[keys[i]] = el; });
                 const markup = html[region] || {};
-                const next = want.map(kk => by[kk] || materialize(markup[kk])).filter(Boolean);
+                const next = want.map(kk => by[kk] || materialize(markup[kk], kk)).filter(Boolean);
                 kids.forEach(el => { if (!next.includes(el)) el.remove(); });
                 next.forEach(el => area.appendChild(el));
             }
         });
     }
     function commitStaticNode(area, el, prop, value) {
-        const region = key(area), path = el.getAttribute('data-edit-path');
+        const region = key(area), path = el.getAttribute('data-edit-key');
+        if (!path) return;                          // not an addressable node
         if (prop === 'text') value = sanitizeFor(el, value);
         const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
         if (before === value) return;
@@ -1127,11 +1136,36 @@
 
 
     /* ---- Arm / disarm an area for its regime + caps ---- */
-    // Static: address each element by structural path, capture per-node baselines
-    // and child order so edits store as typed ops/permutations.
+    // Static nodes are addressed by a content-derived key, not by their position
+    // among siblings. Position was stable while the tree was, but adding, removing or
+    // duplicating a block shifts every address after it — so an edit recorded before
+    // a structural change replayed onto the wrong element afterwards.
+    //
+    // The key is derived once, from what the element held when the area was first
+    // armed, and never recomputed for an element that already has one. That is what
+    // makes it survive both kinds of change: a later text edit does not move the
+    // address, and a reload derives the same key again because the source it loads is
+    // the same source the key was first taken from.
     function markStatic(area) {
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
-        const markEl = (el) => { const p = pathOf(el, area); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
+        const seen = Object.create(null);
+        const markEl = (el) => {
+            let k = el.getAttribute('data-edit-key');
+            if (k) {
+                // Keep the tally in step so a new element never claims an ordinal
+                // an existing one already holds.
+                const [base, n] = k.split('#');
+                seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
+            } else {
+                const base = el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+                const n = seen[base] = (seen[base] || 0) + 1;
+                k = n > 1 ? base + '#' + n : base;
+                el.setAttribute('data-edit-key', k);
+            }
+            el.setAttribute('data-edit-path', pathOf(el, area));   // still what the source writer navigates by
+            if (!(k in area._baseClass)) area._baseClass[k] = el.getAttribute('class') || '';
+            if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
+        };
         markEl(area);
         // Stop at a rich editor: its internals are its own, and marking them would
         // both litter its content and let applyStaticState fight it for the same nodes.
@@ -1187,11 +1221,23 @@
     // already auto-persists to localStorage on commit).
     function buildPatches() {
         const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
-        const toEdits = (paths) => { const e = []; Object.entries(paths).forEach(([p, props]) => Object.entries(props).forEach(([prop, value]) => e.push({ path: p, prop, value }))); return e; };
+        const toEdits = (paths, area) => {
+            const e = [];
+            Object.entries(paths).forEach(([k, props]) => {
+                // Keys address across a session; the source writer navigates by
+                // position, so resolve to where the element actually sits now. An
+                // element that has since been deleted has nothing to write.
+                const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
+                const path = el ? el.getAttribute('data-edit-path') : k;
+                if (area && !el) return;
+                Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
+            });
+            return e;
+        };
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
             if (!authoringRegion(region)) return;
-            const edits = toEdits(ss.node[region] || {});
+            const edits = toEdits(ss.node[region] || {}, areaByKey(region));
             if (edits.length || ss.order[region]) patches.push({ kind: 'static', region, edits, order: ss.order[region] || null });
         });
         const dv = dataValueState();   // data-value edits → field writes (local file / cloud $update)

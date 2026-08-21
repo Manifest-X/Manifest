@@ -23,12 +23,15 @@
     // Content-derived key for a static sortable child — stable across reorder AND reload
     // (same content → same key), so reorder can be stored as a tiny key permutation.
     const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-    // Two identical siblings — the same word twice in a chip list — derive the same
-    // key, and a stored order would then map both slots to one element and drop the
-    // other. An occurrence ordinal keeps them apart while staying content-derived.
+    // The SAME identity markStatic assigned, not a fresh derivation. Recomputing from
+    // current content would drift the moment text is edited, and the child order
+    // recorded before that edit would then fail to find the element it named.
+    // Two identical siblings are told apart by the ordinal markStatic gave them.
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
+            const assigned = el.getAttribute('data-edit-key');
+            if (assigned) return assigned;
             const base = staticKey(el);
             const n = seen[base] = (seen[base] || 0) + 1;
             return n > 1 ? base + '#' + n : base;

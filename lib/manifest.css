@@ -2908,10 +2908,18 @@
         position: relative;
     }
 
+    /* Quiet until touched. A page covered in dashed boxes reads as a diagram of
+       itself; the affordance only has to be there when you go looking for it. */
     :where([data-edit-armed][data-edit-authoring]) {
-        outline: 1px dashed var(--color-line);
+        outline: 1px dashed transparent;
         outline-offset: 6px;
         border-radius: var(--radius);
+        transition: outline-color 0.12s ease;
+    }
+
+    :where([data-edit-armed][data-edit-authoring]):hover,
+    :where([data-edit-armed][data-edit-authoring]):focus-within {
+        outline-color: var(--color-line);
     }
 
     :where([data-edit-armed][data-edit-authoring])::before {
@@ -2924,6 +2932,13 @@
         text-transform: uppercase;
         color: var(--color-content-subtle);
         pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.12s ease;
+    }
+
+    :where([data-edit-armed][data-edit-authoring]):hover::before,
+    :where([data-edit-armed][data-edit-authoring]):focus-within::before {
+        opacity: 1;
     }
 
     /* ---- Reorder (pointer + keyboard; touch-action:none lets touch-drag beat scroll) ---- */
@@ -2933,7 +2948,8 @@
         transition: opacity 0.12s ease, outline-color 0.12s ease;
     }
 
-    :where([data-edit-sortable]):hover {
+    :where([data-edit-sortable]):hover,
+    :where([data-edit-sortable]):focus-within {
         outline: 1px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
@@ -2987,9 +3003,14 @@
 
     /* ---- Inline text ---- */
     :where([data-edit-armed]) [contenteditable="true"] {
-        outline: 1px solid color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
+        outline: 1px solid transparent;
         outline-offset: 2px;
         border-radius: 3px;
+        transition: outline-color 0.12s ease;
+    }
+
+    :where([data-edit-armed]) [contenteditable="true"]:hover {
+        outline-color: color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
     }
 
     :where([data-edit-armed]) [contenteditable="true"]:focus {
@@ -3001,6 +3022,17 @@
        :focus still fire and its body stays interactive. */
     :where([data-edit-sizable]) {
         position: relative;
+    }
+
+    /* Handles reveal on approach rather than sitting on the element permanently */
+    :where([data-edit-sizable]) :where([data-edit-handle])::before {
+        opacity: 0;
+        transition: opacity 0.12s ease, background-color 0.15s ease;
+    }
+
+    :where([data-edit-sizable]):hover :where([data-edit-handle])::before,
+    :where([data-edit-sizable]):focus-within :where([data-edit-handle])::before {
+        opacity: 1;
     }
 
     :where([data-edit-handle]) {
@@ -3232,8 +3264,10 @@
 
             &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
-                /* First participant */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &) {
+                /* First participant — only when something follows it. A lone
+                   participant matched this AND the last rule, squaring all four
+                   corners of what is really just a single field. */
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
@@ -3243,8 +3277,8 @@
                     border-radius: 0
                 }
 
-                /* Last participant */
-                &:not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                /* Last participant — only when something precedes it */
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -4475,6 +4509,13 @@
             & :where(td, th) {
                 padding: 0.35em 0.5em;
                 border: 1px solid var(--color-line);
+                vertical-align: top;
+            }
+
+            & th {
+                font-weight: 600;
+                text-align: start;
+                background: var(--color-surface-2);
             }
         }
 

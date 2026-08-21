@@ -146,11 +146,16 @@
         log.push({ kind: 'st-children', region, order, before, html: markup || {} });
         cursor = log.length; lastOrder[region] = order; saveState(); refresh();
     }
-    const materialize = (markup) => {
+    // Rebuilt markup carries no identity — blockHTML strips it so a duplicate cannot
+    // inherit its original's. Stamp the key we are rebuilding it for, or the element
+    // comes back nameless and the next fold drops it again.
+    const materialize = (markup, k) => {
         if (!markup) return null;
         const t = document.createElement('template');
         t.innerHTML = markup.trim();
-        return t.content.firstElementChild;
+        const el = t.content.firstElementChild;
+        if (el && k) el.setAttribute('data-edit-key', k);
+        return el;
     };
 
     function applyStaticState() {
@@ -158,8 +163,8 @@
         document.querySelectorAll('[data-edit-area]').forEach(area => {
             if (!area._edit || classify(area) !== 'static') return;
             const region = key(area);
-            [area, ...area.querySelectorAll('[data-edit-path]')].forEach(el => {
-                const p = el.getAttribute('data-edit-path'), bk = region + '|' + p;
+            [area, ...area.querySelectorAll('[data-edit-key]')].forEach(el => {
+                const p = el.getAttribute('data-edit-key'), bk = region + '|' + p;
                 const ops = (node[region] || {})[p], baseline = base[bk];
                 if (!ops && !baseline) return;
                 const expect = sigs[bk]; if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale static node', region, p); return; }
@@ -174,14 +179,15 @@
                 const by = {}, kids = sortableChildren(area), keys = staticKeys(area);
                 kids.forEach((el, i) => { by[keys[i]] = el; });
                 const markup = html[region] || {};
-                const next = want.map(kk => by[kk] || materialize(markup[kk])).filter(Boolean);
+                const next = want.map(kk => by[kk] || materialize(markup[kk], kk)).filter(Boolean);
                 kids.forEach(el => { if (!next.includes(el)) el.remove(); });
                 next.forEach(el => area.appendChild(el));
             }
         });
     }
     function commitStaticNode(area, el, prop, value) {
-        const region = key(area), path = el.getAttribute('data-edit-path');
+        const region = key(area), path = el.getAttribute('data-edit-key');
+        if (!path) return;                          // not an addressable node
         if (prop === 'text') value = sanitizeFor(el, value);
         const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
         if (before === value) return;

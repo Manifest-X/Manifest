@@ -58,7 +58,6 @@
   <!-- Shared snippets — the build folds these into manifest.css; served
        separately here because this page links the sources directly. -->
   <link rel="stylesheet" href="/styles/snippets/manifest.alignment.css">
-  <link rel="stylesheet" href="/styles/snippets/manifest.handles.css">
   <link rel="stylesheet" href="/styles/utilities/manifest.colors.css">
   <link rel="stylesheet" href="/styles/utilities/manifest.utilities.css">
 
@@ -387,13 +386,27 @@
         </menu>
 
         <button class="ghost sm" x-dropdown="insert-table" aria-label="Table" x-tooltip="Table"><span x-icon="lucide:table"></span></button>
-        <menu popover id="insert-table" class="p-2 col gap-2" style="min-width: 14rem">
+        <menu popover id="insert-table" class="p-2 col gap-1" style="min-width: 15rem">
           <label class="col gap-1">
             <span class="caption">Rows × columns</span>
             <input type="text" class="sm" x-model="tableSize" placeholder="3x3">
           </label>
           <button class="brand sm" x-text-edit.table="tableSize">Insert table</button>
-          <span class="caption text-content-subtle">Tab moves cell to cell, and adds a row at the end.</span>
+          <hr class="divider">
+          <small>In a table</small>
+          <button class="ghost sm trailing" x-text-edit.row-before><span x-icon="lucide:between-vertical-end"></span>Row above</button>
+          <button class="ghost sm trailing" x-text-edit.row-after><span x-icon="lucide:between-vertical-start"></span>Row below</button>
+          <button class="ghost sm trailing" x-text-edit.column-before><span x-icon="lucide:between-horizontal-end"></span>Column before</button>
+          <button class="ghost sm trailing" x-text-edit.column-after><span x-icon="lucide:between-horizontal-start"></span>Column after</button>
+          <hr class="divider">
+          <button class="ghost sm trailing" x-text-edit.merge><span x-icon="lucide:table-cells-merge"></span>Merge cells</button>
+          <button class="ghost sm trailing" x-text-edit.split><span x-icon="lucide:table-cells-split"></span>Split cell</button>
+          <button class="ghost sm trailing" x-text-edit.table-header><span x-icon="lucide:table-columns-split"></span>Header row</button>
+          <hr class="divider">
+          <button class="ghost sm negative trailing" x-text-edit.row-remove><span x-icon="lucide:rows-3"></span>Delete row</button>
+          <button class="ghost sm negative trailing" x-text-edit.column-remove><span x-icon="lucide:columns-3"></span>Delete column</button>
+          <button class="ghost sm negative trailing" x-text-edit.table-remove><span x-icon="lucide:trash-2"></span>Delete table</button>
+          <span class="caption text-content-subtle">Tab moves cell to cell and adds a row at the end. Arrows cross the text first, then the grid.</span>
         </menu>
 
         <button class="ghost sm" x-text-edit.hr aria-label="Horizontal line" x-tooltip="Horizontal line"><span x-icon="lucide:minus"></span></button>
@@ -1390,7 +1403,7 @@
 
   </div>
 
-  <div class="editor" x-route="/">
+  <div class="editor" x-route="/" x-data="{ sel: null }" @text-edit:selection.window="sel = $event.detail">
 
     <!-- Side panel — OUTSIDE the canvas; theme controls target the canvas via its scope key -->
     <aside class="editor-panel">
@@ -1409,6 +1422,36 @@
         <label>Corner radius <input type="range" min="0" max="2" step="0.125" data-unit="rem" x-edit.cssvar="site:--radius"></label>
       </div>
 
+      <!-- Rich text controls. No x-text-edit-for: they follow the focused field. -->
+      <div class="group">
+        <h2>Text</h2>
+        <div class="row-wrap gap-1">
+          <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
+          <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
+          <button class="ghost sm" x-text-edit.u aria-label="Underline"><span x-icon="lucide:underline"></span></button>
+          <button class="ghost sm" x-text-edit.s aria-label="Strikethrough"><span x-icon="lucide:strikethrough"></span></button>
+          <button class="ghost sm" x-text-edit.code aria-label="Code"><span x-icon="lucide:code"></span></button>
+          <button class="ghost sm" x-text-edit.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>
+        </div>
+        <div class="row-wrap gap-1">
+          <button class="ghost sm" x-text-edit.ul aria-label="Bulleted list"><span x-icon="lucide:list"></span></button>
+          <button class="ghost sm" x-text-edit.ol aria-label="Numbered list"><span x-icon="lucide:list-ordered"></span></button>
+          <button class="ghost sm" x-text-edit.blockquote aria-label="Quote"><span x-icon="lucide:text-quote"></span></button>
+          <button class="ghost sm" x-text-edit.clear aria-label="Clear formatting"><span x-icon="lucide:remove-formatting"></span></button>
+        </div>
+        <label>Block
+          <select x-text-edit.block class="sm">
+            <option value="p">Paragraph</option>
+            <option value="h1">Heading 1</option>
+            <option value="h2">Heading 2</option>
+            <option value="h3">Heading 3</option>
+            <option value="blockquote">Quote</option>
+          </select>
+        </label>
+        <label>Text colour <input type="color" x-text-edit.color></label>
+        <label>Link <input type="url" class="sm" x-text-edit.a placeholder="https://"></label>
+      </div>
+
       <!-- Global theme: bare "--var" writes onto :root — affects this panel + anything not scoped -->
       <div class="group">
         <h2>Project theme <span class="caption text-content-subtle">(global)</span></h2>
@@ -1417,24 +1460,31 @@
       </div>
     </aside>
 
+    <!-- Selection bubble, shared by every rich field on the canvas -->
+    <div class="row gap-1 p-1 bg-surface-1 border border-line rounded" x-show="sel && !sel.collapsed" x-cloak
+         style="position: fixed; z-index: 60; transform: translate(-50%, -125%)"
+         :style="sel && { left: (sel.x + sel.width / 2) + 'px', top: sel.top + 'px' }">
+      <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
+      <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
+      <button class="ghost sm" x-text-edit.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>
+      <button class="ghost sm" x-text-edit.h2 aria-label="Heading"><span x-icon="lucide:heading-2"></span></button>
+    </div>
+
     <!-- Canvas — a partially built webpage; pure theme scope "site" (cascade target, not an area) -->
     <main class="canvas bg-page col gap-6" x-edit.theme="site" data-edit-theme-file="test/themes/site.css" style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
 
       <!-- Static text -->
       <!-- x-text-edit inside an x-edit region: the rich editor owns the element,
            x-edit captures what it produces as an ordinary text delta -->
-      <header class="col gap-2" x-edit.text.authoring="hero">
-        <h1 class="h2" style="color: var(--color-content-stark);">Bloom &amp; Bramble</h1>
-        <p style="color: var(--color-content-neutral);">Seasonal arrangements, delivered weekly. Click any text to rewrite it.</p>
-        <!-- The rich editor owns this element; x-edit stops competing for it and
-             stores what it produces as an ordinary text delta -->
-        <div x-text-edit.html.minimal style="--text-edit-min-height: 2.5rem; --text-edit-padding: .25rem 0; border: 0; background: none">Or use <strong>rich text</strong> right here.</div>
+      <header class="col gap-2" x-edit.sort.text.style.size.authoring="hero">
+        <div x-text-edit.html class="h2" style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><h1>Bloom &amp; Bramble</h1></div>
+        <div x-text-edit.html style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><p>Seasonal arrangements, <strong>delivered weekly</strong>. Select any text for the bubble menu, or use the panel.</p></div>
       </header>
 
       <!-- Static sort + text + style -->
       <section class="col gap-2">
         <small class="caption" style="color: var(--color-content-neutral);">Features · drag to reorder · click text · right-click for classes · 3rd is locked</small>
-        <div class="row-wrap gap-3" x-edit.sort.text.style.authoring="features">
+        <div class="row-wrap gap-3" x-edit.sort.text.style.size.authoring="features">
           <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
             <strong style="color: var(--color-content-stark);">Fresh daily</strong><span class="small" style="color: var(--color-content-neutral);">Cut this morning.</span>
           </div>
@@ -1450,7 +1500,7 @@
       <!-- Data sort + value editing -->
       <section class="col gap-2">
         <small class="caption" style="color: var(--color-content-neutral);">Catalog · drag to reorder · edit names (writes products.csv; price read-only)</small>
-        <div class="row-wrap gap-3" x-edit.sort.data.authoring="catalog">
+        <div class="row-wrap gap-3" x-edit.sort.data.size.authoring="catalog">
           <template x-for="p in $x.products" :key="p.id">
             <div class="col gap-1 p-4 bg-surface-1" :data-key="p.id" style="border-radius: var(--radius); min-width: 150px;">
               <strong x-text="p.name" style="color: var(--color-content-stark);"></strong>
@@ -1464,8 +1514,8 @@
       <section class="col gap-2">
         <small class="caption" style="color: var(--color-content-neutral);">Promos · two &lt;x-promo-card&gt; · right-click for scope (this / all) + classes</small>
         <div class="row-wrap gap-3">
-          <div x-edit.text.authoring="promoA"><x-promo-card headline="Spring sale" body="20% off all bouquets."></x-promo-card></div>
-          <div x-edit.text.authoring="promoB"><x-promo-card headline="Weddings" body="Book a consultation."></x-promo-card></div>
+          <div x-edit.text.size.authoring="promoA"><x-promo-card headline="Spring sale" body="20% off all bouquets."></x-promo-card></div>
+          <div x-edit.text.size.authoring="promoB"><x-promo-card headline="Weddings" body="Book a consultation."></x-promo-card></div>
         </div>
       </section>
 
