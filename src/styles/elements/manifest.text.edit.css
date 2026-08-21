@@ -140,6 +140,13 @@
             }
         }
 
+        /* Borders read as grabbable only when the pointer is on one */
+        &[data-text-edit-border="x"] { cursor: col-resize }
+        &[data-text-edit-border="y"] { cursor: row-resize }
+        &[data-text-edit-resizing] { user-select: none }
+        &[data-text-edit-resizing="x"] { cursor: col-resize }
+        &[data-text-edit-resizing="y"] { cursor: row-resize }
+
         /* Task lists — the checkbox replaces the marker */
         & :where(ul[data-checklist]) {
             padding-inline-start: 0.25em;

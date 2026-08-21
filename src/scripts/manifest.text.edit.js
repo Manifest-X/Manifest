@@ -178,7 +178,7 @@
     function sanitize(html, allowBlocks, keepStyle) {
         const t = document.createElement('template');
         t.innerHTML = String(html == null ? '' : html);
-        const ok = new Set(allowBlocks ? [...INLINE_OK, ...BLOCK, 'INPUT', 'TR', 'TBODY', 'THEAD', 'CAPTION', 'DT', 'DD'] : INLINE_OK);
+        const ok = new Set(allowBlocks ? [...INLINE_OK, ...BLOCK, 'INPUT', 'TR', 'TBODY', 'THEAD', 'CAPTION', 'DT', 'DD', 'COLGROUP', 'COL'] : INLINE_OK);
         // Depth-first: children are cleaned before their parent unwraps, so nothing
         // hoisted out of a stripped wrapper escapes the walk.
         const walk = (node) => [...node.childNodes].forEach(c => {
@@ -376,26 +376,62 @@
     const rowsOf = (table) => [...table.rows];
     const emptyCell = () => { const td = document.createElement('td'); td.appendChild(document.createElement('br')); return td; };
 
-    // Column index accounting for colspan, so a merged cell does not throw the count.
+    /* The occupancy grid: every slot maps to the cell covering it, so a cell that
+       spans rows is present in each row it covers. Counting children instead — as
+       this did — loses track the moment anything is merged, which is how rows end up
+       with different lengths and cells appear to go missing. */
+    function tableGrid(table) {
+        const grid = [];
+        rowsOf(table).forEach((row, r) => {
+            grid[r] = grid[r] || [];
+            let c = 0;
+            for (const cell of row.cells) {
+                while (grid[r][c]) c++;
+                for (let dr = 0; dr < (cell.rowSpan || 1); dr++) {
+                    grid[r + dr] = grid[r + dr] || [];
+                    for (let dc = 0; dc < (cell.colSpan || 1); dc++) grid[r + dr][c + dc] = cell;
+                }
+                c += cell.colSpan || 1;
+            }
+        });
+        return grid;
+    }
+
     function gridPosition(cell) {
-        const row = cell.parentElement;
-        let col = 0;
-        for (const c of row.children) { if (c === cell) break; col += c.colSpan || 1; }
-        return { row: [...cell.closest('table').rows].indexOf(row), col };
-    }
-
-    // The cell covering a column in a row, following spans.
-    function cellCovering(row, col) {
-        let at = 0;
-        for (const c of row.children) {
-            const span = c.colSpan || 1;
-            if (col < at + span) return c;
-            at += span;
+        const table = cell.closest('table'), grid = tableGrid(table);
+        for (let r = 0; r < grid.length; r++) {
+            for (let c = 0; c < (grid[r] || []).length; c++) if (grid[r][c] === cell) return { row: r, col: c, grid };
         }
-        return row.lastElementChild;
+        return { row: 0, col: 0, grid };
     }
 
-    const columnCount = (table) => Math.max(...rowsOf(table).map(r => [...r.children].reduce((n, c) => n + (c.colSpan || 1), 0)), 0);
+    const cellCovering = (row, col) => {
+        const table = row.closest('table'), grid = tableGrid(table);
+        const r = rowsOf(table).indexOf(row);
+        return (grid[r] || [])[col] || row.lastElementChild;
+    };
+
+    const columnCount = (table) => Math.max(0, ...tableGrid(table).map(r => r.length));
+
+    // Rows left short by an edit are padded back out, which is what repairs a table
+    // whose cells look like they went missing — there is no way to click into a slot
+    // that does not exist, so it cannot be fixed by hand.
+    function normalizeTables(root) {
+        root.querySelectorAll('table').forEach(table => {
+            const rows = rowsOf(table); if (!rows.length) return;
+            const grid = tableGrid(table);
+            const width = Math.max(0, ...grid.map(r => r.length));
+            rows.forEach((row, r) => {
+                const have = (grid[r] || []).filter(Boolean).length;
+                for (let i = have; i < width; i++) row.appendChild(emptyCell());
+            });
+            if (!table.querySelector('tbody, thead')) {          // stray rows outside a section
+                const body = document.createElement('tbody');
+                while (table.firstChild) body.appendChild(table.firstChild);
+                table.appendChild(body);
+            }
+        });
+    }
 
     function addRow(where) {
         const cell = cellAt(); if (!cell) return;
@@ -408,15 +444,18 @@
 
     function addColumn(where) {
         const cell = cellAt(); if (!cell) return;
-        const table = cell.closest('table'), { col } = gridPosition(cell);
-        rowsOf(table).forEach(row => {
-            const at = cellCovering(row, col);
-            const fresh = document.createElement(at && at.tagName === 'TH' ? 'th' : 'td');
+        const table = cell.closest('table'), { col, grid } = gridPosition(cell);
+        const seen = new Set();
+        rowsOf(table).forEach((row, r) => {
+            const at = (grid[r] || [])[col];
+            if (!at || seen.has(at)) return;                     // a row-spanning cell is handled once
+            seen.add(at);
+            const fresh = document.createElement(at.tagName === 'TH' ? 'th' : 'td');
             fresh.appendChild(document.createElement('br'));
             if (where < 0) at.before(fresh); else at.after(fresh);
         });
-        const now = cellCovering(rowsOf(table)[gridPosition(cell).row], where < 0 ? col : col + 1);
-        caretIn(now, 0);
+        normalizeTables(table.parentElement || table);
+        caretIn(cellCovering(rowsOf(table)[gridPosition(cell).row], where < 0 ? col : col + 1), 0);
     }
 
     function removeRow() {
@@ -430,11 +469,12 @@
 
     function removeColumn() {
         const cell = cellAt(); if (!cell) return;
-        const table = cell.closest('table'), { col } = gridPosition(cell);
+        const table = cell.closest('table'), { col, grid } = gridPosition(cell);
         if (columnCount(table) <= 1) return removeTable();
-        rowsOf(table).forEach(row => { const at = cellCovering(row, col); if (at) at.remove(); });
-        const row = rowsOf(table)[0];
-        caretIn(cellCovering(row, Math.max(0, col - 1)), 0);
+        const seen = new Set();
+        grid.forEach(row => { const at = row[col]; if (!at || seen.has(at)) return; seen.add(at); at.remove(); });
+        normalizeTables(table.parentElement || table);
+        caretIn(cellCovering(rowsOf(table)[0], Math.max(0, col - 1)), 0);
     }
 
     function removeTable() {
@@ -446,37 +486,56 @@
 
     // Merge takes the cells the selection touches; with a collapsed caret it takes
     // the one to the right, which is what a single "merge" press usually means.
+    // A merge covers a RECTANGLE, so the spans come from the block's bounds — summing
+    // the cells' own spans turns a 2x2 selection into one cell four rows tall.
     function mergeCells() {
         const cell = cellAt(); if (!cell) return;
         const picked = selectedCells();
-        const cells = picked.length > 1 ? picked : [cell, cell.nextElementSibling].filter(Boolean);
+        // With nothing selected, merge with the neighbour to the right — the reading
+        // of a single "merge" press, and the only one available in an empty cell.
+        const cells = picked.length > 1 ? picked : [cell, nextCell(cell)].filter(Boolean);
         if (cells.length < 2) return;
-        const first = cells[0];
-        const sameRow = cells.every(c => c.parentElement === first.parentElement);
-        if (!sameRow) return mergeDown(cells);
-        first.colSpan = cells.reduce((n, c) => n + (c.colSpan || 1), 0);
-        cells.slice(1).forEach(c => {
+
+        const at = cells.map(gridPosition);
+        const r0 = Math.min(...at.map(p => p.row));
+        const r1 = Math.max(...at.map((p, i) => p.row + (cells[i].rowSpan || 1) - 1));
+        const c0 = Math.min(...at.map(p => p.col));
+        const c1 = Math.max(...at.map((p, i) => p.col + (cells[i].colSpan || 1) - 1));
+
+        const grid = at[0].grid;
+        const first = (grid[r0] || [])[c0] || cells[0];
+        const cols = c1 - c0 + 1, rows = r1 - r0 + 1;
+        if (cols > 1) first.colSpan = cols; else first.removeAttribute('colspan');
+        if (rows > 1) first.rowSpan = rows; else first.removeAttribute('rowspan');
+
+        cells.forEach(c => {
+            if (c === first) return;
             if (c.textContent.trim()) first.append(' ', ...c.childNodes);
             c.remove();
         });
+        tidyCell(first);
+        const table = first.closest('table');
+        normalizeTables(table.parentElement || table);
         caretIn(first, first.textContent.length);
     }
 
-    function mergeDown(cells) {
-        const first = cells[0];
-        first.rowSpan = cells.reduce((n, c) => n + (c.rowSpan || 1), 0);
-        cells.slice(1).forEach(c => {
-            if (c.textContent.trim()) first.append(' ', ...c.childNodes);
-            c.remove();
-        });
-        caretIn(first, first.textContent.length);
-    }
+    const nextCell = (cell) => {
+        const { row, col, grid } = gridPosition(cell);
+        const span = cell.colSpan || 1;
+        return (grid[row] || [])[col + span] || null;
+    };
+
+    // Joining cells leaves the placeholder breaks of the empty ones behind.
+    const tidyCell = (cell) => {
+        if (!cell.textContent.trim()) { cell.replaceChildren(document.createElement('br')); return; }
+        cell.querySelectorAll(':scope > br').forEach(br => br.remove());
+    };
 
     function splitCell() {
         const cell = cellAt(); if (!cell) return;
         const cols = cell.colSpan || 1, rows = cell.rowSpan || 1;
         if (cols < 2 && rows < 2) return;
-        cell.colSpan = 1; cell.rowSpan = 1;
+        cell.removeAttribute('colspan'); cell.removeAttribute('rowspan');
         for (let i = 1; i < cols; i++) cell.after(emptyCell());
         if (rows > 1) {
             const table = cell.closest('table'), { row, col } = gridPosition(cell);
@@ -487,13 +546,28 @@
                 if (at) at.before(fresh); else target.appendChild(fresh);
             }
         }
+        normalizeTables(cell.closest('table').parentElement || cell.closest('table'));
         caretIn(cell, 0);
     }
 
+    // An empty cell holds no text to select, so a text selection can never reach one.
+    // The anchor and focus cells bound a rectangle instead, which is how a
+    // spreadsheet selection works and is the only way empty cells participate.
     function selectedCells() {
-        const r = range(); if (!r || r.collapsed) return [];
         const table = tableAt(); if (!table) return [];
-        return [...table.querySelectorAll('td, th')].filter(c => r.intersectsNode(c));
+        const s = sel(); if (!s || !s.anchorNode || !s.focusNode) return [];
+        const from = elementAt(s.anchorNode), to = elementAt(s.focusNode);
+        const a = from && from.closest('td, th'), b = to && to.closest('td, th');
+        if (!a || !b || a === b) return [];
+        const pa = gridPosition(a), pb = gridPosition(b), grid = pa.grid;
+        const r0 = Math.min(pa.row, pb.row), r1 = Math.max(pa.row, pb.row);
+        const c0 = Math.min(pa.col, pb.col), c1 = Math.max(pa.col, pb.col);
+        const out = [];
+        for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+            const cell = (grid[r] || [])[c];
+            if (cell && !out.includes(cell)) out.push(cell);
+        }
+        return out;
     }
 
     function toggleHeaderRow() {
@@ -527,6 +601,74 @@
         caretIn(table.rows[0].firstElementChild, 0);
     }
 
+    /* ---- Column and row sizing ----
+       Dragging a cell border, the way a spreadsheet does. Widths live on a <colgroup>
+       rather than on the first row's cells, so a merged or spanning cell in row one
+       cannot throw them off; heights live on the row. */
+    const EDGE = 5;
+
+    function ensureCols(table) {
+        let group = table.querySelector(':scope > colgroup');
+        if (!group) { group = document.createElement('colgroup'); table.prepend(group); }
+        const want = columnCount(table);
+        while (group.children.length < want) group.appendChild(document.createElement('col'));
+        while (group.children.length > want) group.lastElementChild.remove();
+        // Freeze what is there now, so dragging one border does not reflow the rest.
+        const widths = [...table.rows[0].cells];
+        [...group.children].forEach((col, i) => {
+            if (col.style.width) return;
+            const at = (tableGrid(table)[0] || [])[i];
+            if (at) col.style.width = Math.round(at.getBoundingClientRect().width / (at.colSpan || 1)) + 'px';
+            void widths;
+        });
+        return group;
+    }
+
+    // Which border, if any, the pointer is over.
+    function borderAt(x, y) {
+        const el = document.elementFromPoint(x, y);
+        const cell = el && el.closest && el.closest('td, th');
+        if (!cell || !cell.closest('[data-text-edit]')) return null;
+        const b = cell.getBoundingClientRect();
+        if (Math.abs(x - b.right) <= EDGE) return { axis: 'x', cell };
+        if (Math.abs(x - b.left) <= EDGE) { const prev = previousCell(cell); return prev ? { axis: 'x', cell: prev } : null; }
+        if (Math.abs(y - b.bottom) <= EDGE) return { axis: 'y', cell };
+        if (Math.abs(y - b.top) <= EDGE) { const row = cell.parentElement.previousElementSibling; return row ? { axis: 'y', cell: row.cells[0] } : null; }
+        return null;
+    }
+
+    function startResize(e, hit) {
+        const cell = hit.cell, table = cell.closest('table');
+        const area = cell.closest('[data-text-edit]');
+        e.preventDefault();
+        area.setAttribute('data-text-edit-resizing', hit.axis);
+
+        let apply;
+        if (hit.axis === 'x') {
+            const group = ensureCols(table);
+            const { col } = gridPosition(cell);
+            const index = Math.min(col + (cell.colSpan || 1) - 1, group.children.length - 1);
+            const target = group.children[index];
+            const start = target.getBoundingClientRect ? parseFloat(target.style.width) || cell.getBoundingClientRect().width : 0;
+            const from = e.clientX;
+            apply = (ev) => { target.style.width = Math.max(28, Math.round(start + ev.clientX - from)) + 'px'; };
+        } else {
+            const row = cell.parentElement;
+            const start = row.getBoundingClientRect().height, from = e.clientY;
+            apply = (ev) => { row.style.height = Math.max(20, Math.round(start + ev.clientY - from)) + 'px'; };
+        }
+
+        const move = (ev) => { ev.preventDefault(); apply(ev); };
+        const up = () => {
+            document.removeEventListener('pointermove', move);
+            document.removeEventListener('pointerup', up);
+            area.removeAttribute('data-text-edit-resizing');
+            area.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+    }
+
     // Tab walks the grid and grows it at the end, the way every editor's tables do.
     function moveCell(dir) {
         const cell = cellAt(); if (!cell) return false;
@@ -543,46 +685,79 @@
         return true;
     }
 
-    // Vertical arrows move between rows, not along the markup. Horizontal arrows only
-    // leave a cell once the caret has run out of text in that direction, so typing
-    // and navigating feel like one thing.
+    // Where a caret would land at a point, whichever API the engine offers.
+    function caretAtPoint(x, y) {
+        if (document.caretPositionFromPoint) {
+            const pos = document.caretPositionFromPoint(x, y);
+            return pos ? { node: pos.offsetNode, offset: pos.offset } : null;
+        }
+        if (document.caretRangeFromPoint) {
+            const r = document.caretRangeFromPoint(x, y);
+            return r ? { node: r.startContainer, offset: r.startOffset } : null;
+        }
+        return null;
+    }
+
+    function placeAtPoint(x, y) {
+        const hit = caretAtPoint(x, y); if (!hit) return null;
+        const r = document.createRange();
+        try { r.setStart(hit.node, hit.offset); } catch { return null; }
+        r.collapse(true);
+        const s = sel(); s.removeAllRanges(); s.addRange(r);
+        return hit;
+    }
+
+    const cellOf = (node) => { const el = elementAt(node); return el && el.closest('td, th'); };
+
+    /* Vertical arrows move a line at a time, and only leave the cell once the caret
+       is on its last or first line — a cell holding several lines has to be walkable
+       like any other text. Horizontal arrows cross the cell's text first.
+
+       Both aim at a point rather than an offset: stepping one line from where the
+       caret actually is keeps the column, which is what makes returning to a cell
+       land under where you left rather than at an arbitrary end. */
     function arrowInTable(e) {
         const cell = cellAt(); if (!cell) return false;
         const r = range(); if (!r || !r.collapsed) return false;
-        const table = cell.closest('table'), { row, col } = gridPosition(cell);
-        const vertical = e.key === 'ArrowDown' || e.key === 'ArrowUp';
-        if (!vertical) {
-            const at = offsetIn(cell);
-            const len = cell.textContent.length;
-            if (e.key === 'ArrowRight' && at < len) return false;   // still text to cross
+        const here = r.getBoundingClientRect();
+
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            const at = offsetIn(cell), len = cell.textContent.length;
+            if (e.key === 'ArrowRight' && at < len) return false;
             if (e.key === 'ArrowLeft' && at > 0) return false;
-            return moveCell(e.key === 'ArrowRight' ? 1 : -1);
+            const next = e.key === 'ArrowRight' ? nextCell(cell) : previousCell(cell);
+            if (!next) return e.key === 'ArrowRight' ? moveCell(1) : moveCell(-1);
+            caretIn(next, e.key === 'ArrowRight' ? 0 : next.textContent.length);
+            return true;
         }
-        // Down or up only leaves the cell from its last or first visual line.
-        if (!atCellEdge(cell, e.key === 'ArrowDown')) return false;
-        const target = rowsOf(table)[row + (e.key === 'ArrowDown' ? 1 : -1)];
-        if (!target) return escapeTable(table, e.key === 'ArrowDown');
-        const next = cellCovering(target, col);
-        if (!next) return false;
-        caretIn(next, e.key === 'ArrowDown' ? 0 : next.textContent.length);
+
+        const down = e.key === 'ArrowDown';
+        const line = here.height || parseFloat(getComputedStyle(cell).lineHeight) || 16;
+        const x = here.left;
+        const probeY = down ? here.bottom + line * 0.5 : here.top - line * 0.5;
+
+        // Still inside this cell: another line to cross, so let the browser do it.
+        const ahead = caretAtPoint(x, probeY);
+        if (ahead && cellOf(ahead.node) === cell) return false;
+
+        const table = cell.closest('table'), { row, col, grid } = gridPosition(cell);
+        const targetRow = row + (down ? (cell.rowSpan || 1) : -1);
+        const next = (grid[targetRow] || [])[col];
+        if (!next) return escapeTable(table, down);
+
+        // Land under the column the caret was in, not at an end of the target.
+        const box = next.getBoundingClientRect();
+        const aimY = down ? box.top + line * 0.5 : box.bottom - line * 0.5;
+        if (placeAtPoint(Math.min(Math.max(x, box.left + 2), box.right - 2), aimY)) return true;
+        caretIn(next, down ? 0 : next.textContent.length);
         return true;
     }
 
-    // Whether the caret sits on the cell's first or last rendered line. Compared
-    // against where a caret at the very start or end of the cell would sit, not
-    // against the cell's box — padding and line leading put those several pixels
-    // apart, which no fixed tolerance gets right.
-    function atCellEdge(cell, down) {
-        const r = range(); if (!r) return true;
-        const here = r.getBoundingClientRect();
-        if (!here.height) return true;
-        const probe = document.createRange();
-        probe.selectNodeContents(cell);
-        probe.collapse(!down);
-        const edge = probe.getBoundingClientRect();
-        if (!edge.height) return true;
-        return down ? here.bottom >= edge.bottom - 2 : here.top <= edge.top + 2;
-    }
+    const previousCell = (cell) => {
+        const { row, col, grid } = gridPosition(cell);
+        for (let c = col - 1; c >= 0; c--) if ((grid[row] || [])[c] && grid[row][c] !== cell) return grid[row][c];
+        return null;
+    };
 
     // A table at the very end of a document has nothing after it to click into.
     function escapeTable(table, down) {
@@ -1273,9 +1448,20 @@
         for (let n = control.parentElement; n; n = n.parentElement) {
             const found = inside(n);
             if (found.length === 1) return found[0];
-            if (found.length > 1) return preferred(found);
+            if (found.length > 1) return unambiguous(found);
         }
-        return preferred([...areas]);
+        return unambiguous([...areas]);
+    }
+
+    // A control acts on one area or on none. Where several are in scope the focused
+    // one decides; before anything has been focused there is no answer, and guessing
+    // sends the command somewhere the writer was not looking — a panel button that
+    // silently rewrites the first heading on the page rather than the line they are
+    // in. Reporting the control unavailable is the honest reading.
+    function unambiguous(found) {
+        if (lastFocused && found.includes(lastFocused) && lastFocused.isConnected && onScreen(lastFocused)) return lastFocused;
+        const visible = found.filter(onScreen);
+        return visible.length === 1 ? visible[0] : null;
     }
 
     /* ---- Caret custody ----
@@ -1338,6 +1524,7 @@
         controls.forEach(c => {
             const cfg = c._te, area = resolve(c);
             const usable = !!area && allows(area, cfg.id, cfg);
+            if (!area) { c.removeAttribute('data-text-edit-active'); c.setAttribute('aria-disabled', 'true'); if (c.tagName === 'BUTTON') c.setAttribute('aria-pressed', 'false'); return; }
             const spec = COMMANDS[cfg.id];
             const page = !!(cfg.page && spec.page);
             c.toggleAttribute('data-text-edit-active', usable && !page && !!spec.active(cfg.arg(), area));
@@ -1467,6 +1654,7 @@
             else el.innerHTML = mode === 'html' ? sanitize(v, true, true) : fromMarkdown(v);
             if (!el.childNodes.length) el.innerHTML = '<p><br></p>';
             normalizeLists(el);
+            if (el.querySelector('table')) normalizeTables(el);
             ensureTrailingBlock(el);
         };
 
@@ -1500,6 +1688,7 @@
         // emptiness for the placeholder — :empty never matches the <br> a
         // contenteditable keeps, and the tag it sits in is not predictable.
         function settle() {
+            if (el.querySelector('table')) normalizeTables(el);
             if (ensureTrailingBlock(el)) { /* somewhere to land after a trailing block */ }
             if (!el.textContent.trim() && !el.querySelector('img, table, hr')) {
                 if (el.children.length !== 1 || el.firstElementChild.tagName !== 'P') el.replaceChildren();
@@ -1507,6 +1696,21 @@
                 el.toggleAttribute('data-text-edit-empty', true);
             } else el.toggleAttribute('data-text-edit-empty', false);
         }
+
+        // Table borders are draggable. Bound on the area so it costs nothing until a
+        // table exists, and reads the pointer rather than injecting handles into the
+        // grid — a handle per border would be markup inside the document's own table.
+        el.addEventListener('pointermove', (ev) => {
+            if (ev.buttons || !el.querySelector('table')) return;
+            const hit = borderAt(ev.clientX, ev.clientY);
+            el.setAttribute('data-text-edit-border', hit ? hit.axis : '');
+            if (!hit) el.removeAttribute('data-text-edit-border');
+        });
+        el.addEventListener('pointerdown', (ev) => {
+            if (ev.button !== 0 || !el.querySelector('table')) return;
+            const hit = borderAt(ev.clientX, ev.clientY);
+            if (hit) startResize(ev, hit);
+        });
 
         el.addEventListener('focusin', () => { lastFocused = el; sync(); });
         el.addEventListener('input', (e) => {

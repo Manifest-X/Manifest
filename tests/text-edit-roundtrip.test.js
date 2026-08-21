@@ -112,6 +112,12 @@ describe('x-text-edit tables', () => {
             .toBe('<table><tbody><tr><td rowspan="3">a</td></tr></tbody></table>')
     })
 
+    it('keeps column widths', () => {
+        // Widths live on a colgroup; losing it on save would undo every resize.
+        const html = '<table><colgroup><col style="width: 120px;"></colgroup><tbody><tr><td>a</td></tr></tbody></table>'
+        expect(sanitize(html, true, true)).toBe(html)
+    })
+
     it('keeps a header row', () => {
         const html = '<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>b</td></tr></tbody></table>'
         expect(sanitize(html, true, true)).toBe(html)

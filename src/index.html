@@ -1486,10 +1486,12 @@
         <small class="caption" style="color: var(--color-content-neutral);">Features · drag to reorder · click text · right-click for classes · 3rd is locked</small>
         <div class="row-wrap gap-3" x-edit.sort.text.style.size.authoring="features">
           <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
-            <strong style="color: var(--color-content-stark);">Fresh daily</strong><span class="small" style="color: var(--color-content-neutral);">Cut this morning.</span>
+            <div x-text-edit.html.minimal style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><strong>Fresh daily</strong></div>
+            <div x-text-edit.html.minimal class="small" style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none">Cut this morning.</div>
           </div>
           <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
-            <strong style="color: var(--color-content-stark);">Local growers</strong><span class="small" style="color: var(--color-content-neutral);">Within 50 miles.</span>
+            <div x-text-edit.html.minimal style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><strong>Local growers</strong></div>
+            <div x-text-edit.html.minimal class="small" style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none">Within 50 miles.</div>
           </div>
           <div class="col gap-1 p-4 bg-surface-1" x-edit.lock="" style="border-radius: var(--radius); min-width: 150px;">
             <strong style="color: var(--color-content-stark);">Guaranteed</strong><span class="small" style="color: var(--color-content-neutral);">x-edit.lock — read-only.</span>
