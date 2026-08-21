@@ -220,7 +220,10 @@ function initializeDropdownPlugin() {
                                 clearTimeout(autoCloseTimeout);
 
                                 pointMenuHere();
-                                menu.showPopover();
+                                // A hover open never runs the trigger's activation behaviour, so
+                                // popovertarget alone doesn't register it as the invoker — say so
+                                // here, or the menu light-dismisses whatever contains its trigger.
+                                menu.showPopover({ source: el });
                             }
                         };
 
