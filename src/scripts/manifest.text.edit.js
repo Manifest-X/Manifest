@@ -208,11 +208,24 @@
 
     function elementAt(node) { while (node && node.nodeType !== 1) node = node.parentNode; return node; }
 
+    // Stops at the editable area, like blockEl does. Without that boundary an area
+    // that is itself a formatting element — <strong x-text-edit> is a perfectly
+    // reasonable thing to write — reports its own tag as formatting on the text
+    // inside it, and toggling that tag off unwraps the editor.
     function ancestor(match) {
         const r = range(); if (!r) return null;
-        const el = elementAt(r.startContainer);
-        return el ? el.closest(match) : null;
+        const el = elementAt(r.startContainer); if (!el) return null;
+        const found = el.closest(match); if (!found) return null;
+        const area = el.closest('[data-text-edit]');
+        if (area && (found === area || !area.contains(found))) return null;
+        return found;
     }
+
+    const withinArea = (node, found) => {
+        if (!found) return false;
+        const el = elementAt(node), area = el && el.closest('[data-text-edit]');
+        return !area || (found !== area && area.contains(found));
+    };
 
     // Stops at the editable area. Without that boundary a caret sitting between blocks
     // resolves to the area itself, and a block command replaces the whole editor.
@@ -336,9 +349,18 @@
     function unwrapInline(tag) {
         const nodes = selectedTextNodes();
         const targets = new Set();
-        nodes.forEach(n => { const el = elementAt(n) && elementAt(n).closest(tag); if (el) targets.add(el); });
+        nodes.forEach(n => { const el = elementAt(n) && elementAt(n).closest(tag); if (withinArea(n, el)) targets.add(el); });
         const host = ancestor(tag); if (host) targets.add(host);
         targets.forEach(el => el.replaceWith(...el.childNodes));
+        // replaceWith tears down the range, which left the caret parked in front of
+        // the text and nothing selected — so turning a style off lost the selection
+        // that turning it on had kept. The same text goes back under selection.
+        const live = nodes.filter(n => n.isConnected && n.length);
+        if (!live.length) return;
+        const r = document.createRange();
+        r.setStart(live[0], 0);
+        r.setEnd(live[live.length - 1], live[live.length - 1].length);
+        const s = sel(); s.removeAllRanges(); s.addRange(r);
     }
 
     // Whether EVERY part of the selection already carries the tag. Asking the range's
@@ -355,7 +377,8 @@
         for (let n = walker.nextNode(); n; n = walker.nextNode()) {
             if (!r.intersectsNode(n) || !n.nodeValue.trim()) continue;
             any = true;
-            if (!n.parentElement || !n.parentElement.closest(tag)) return false;
+            if (!n.parentElement) return false;
+            if (!withinArea(n, n.parentElement.closest(tag))) return false;
         }
         return any;
     }
@@ -1537,6 +1560,18 @@
     // sends the command somewhere the writer was not looking — a panel button that
     // silently rewrites the first heading on the page rather than the line they are
     // in. Reporting the control unavailable is the honest reading.
+    // Letting go of the target has to be announced. A menu anchored to the selection
+    // is watching for it, and without a final null it hangs about over content it no
+    // longer has anything to do with.
+    function release() {
+        const was = lastFocused;
+        lastFocused = null;
+        if (!was) return;
+        was._selection = null;
+        was.removeAttribute('data-text-edit-selected');
+        was.dispatchEvent(new CustomEvent('text-edit:selection', { bubbles: true, detail: null }));
+    }
+
     const editableElsewhere = (node) => {
         const el = elementAt(node);
         return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName));
@@ -1663,7 +1698,7 @@
             const r = range(); if (!r) return;
             const a = [...areas].find(x => x.contains(r.startContainer));
             if (a) { saveRange(a); lastFocused = a; report(a); }
-            else if (lastFocused && editableElsewhere(r.startContainer)) lastFocused = null;
+            else if (lastFocused && editableElsewhere(r.startContainer)) release();
             sync();
         });
 
@@ -1677,7 +1712,7 @@
             if (!t || !t.closest) return;
             if (t.closest('[data-text-edit]') || t.closest('[data-text-edit-control]')) return;
             if (!lastFocused) return;
-            lastFocused = null;
+            release();
             sync();
         }, true);
     }

@@ -42,13 +42,24 @@
             const id = clone.getAttribute('data-key'); if (id == null) return;
             clone.querySelectorAll('*').forEach(el => {
                 if (el.children.length || el.hasAttribute('data-edit-handle')) return;
+                const rich = el.hasAttribute('x-html');
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
                 const m = expr.match(fieldRe); if (!m) return;
                 const field = m[1];
-                el.setAttribute('contenteditable', 'true'); el.setAttribute('data-edit-field', field);
+                el.setAttribute('data-edit-field', field);
+                // A field bound with x-html can hold markup, so it is styleable like
+                // any other text — the value simply carries the tags. Bound with
+                // x-text it cannot, and offering the controls there would write
+                // markup the binding renders as literal characters. The author's
+                // choice of binding is the whole distinction.
+                el.toggleAttribute('data-edit-rich', rich);
+                // The rich editor owns the caret where it is present.
+                if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
-                el.addEventListener('focus', () => { el._preEdit = el.textContent; });
-                el.addEventListener('blur', () => commitDataValue(area, source, id, field, el.textContent, el));
+                const read = () => rich ? el.innerHTML.trim() : el.textContent;
+                el.addEventListener('focus', () => { el._preEdit = read(); });
+                el.addEventListener('focusin', () => { el._preEdit = read(); });
+                el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
             });
         });
     }

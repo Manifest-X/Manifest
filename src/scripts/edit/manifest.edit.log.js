@@ -212,7 +212,9 @@
         });
     }
     function commitDataValue(area, source, id, field, value, el) {
-        value = String(value); const before = el ? el._preEdit : undefined;
+        value = String(value);
+        if (el && el.hasAttribute('data-edit-rich')) value = sanitizeFor(el, value);
+        const before = el ? el._preEdit : undefined;
         if (before === value) return;
         log.splice(cursor); log.push({ kind: 'data-val', source, id, field, value, before }); cursor = log.length; saveState();
         applyDataValues(); refresh();

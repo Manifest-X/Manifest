@@ -1508,7 +1508,9 @@
         <div class="row-wrap gap-3" x-edit.sort.data.size.authoring="catalog">
           <template x-for="p in $x.products" :key="p.id">
             <div class="col gap-1 p-4 bg-surface-1" :data-key="p.id" style="border-radius: var(--radius); min-width: 150px;">
-              <strong x-text="p.name" style="color: var(--color-content-stark);"></strong>
+              <!-- The rich editor bound straight to the data field: the record holds
+                   markup, so the name is styleable like any other text -->
+              <div x-text-edit.html.minimal="p.name" style="color: var(--color-content-stark); font-weight: 700; --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"></div>
               <span class="small" x-text="'$' + p.price" style="color: var(--color-brand-content);"></span>
             </div>
           </template>
