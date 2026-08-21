@@ -287,9 +287,17 @@
     imageUrl: '',
     tableSize: '3x3',
     sel: null,
+    // showPopover throws if it is already open, so ask before telling.
+    bubble(detail) {
+      this.sel = detail;
+      const el = this.$refs.bubble; if (!el) return;
+      const want = !!detail && !detail.collapsed;
+      if (want && !el.matches(':popover-open')) el.showPopover();
+      if (!want && el.matches(':popover-open')) el.hidePopover();
+    },
     get words() { return (this.doc.replace(/<[^>]*>/g, ' ').trim().match(/\S+/g) || []).length },
     newPage() { this.doc = ''; $text.page = {}; $text.focus(); }
-  }" @text-edit:selection="sel = $event.detail">
+  }" @text-edit:selection="bubble($event.detail)">
 
     <!-- Toolbar: ordinary Manifest elements. The plugin injects none of this. -->
     <div class="col gap-1 p-2 bg-surface-1 border border-line rounded sticky top-0 z-10">
@@ -464,11 +472,13 @@
       </div>
     </div>
 
-    <!-- Selection bubble: the plugin reports the selection, the menu is ours -->
-    <div class="row gap-1 p-1 bg-surface-1 border border-line rounded shadow"
-         x-show="sel && !sel.collapsed" x-cloak
-         style="position: fixed; z-index: 50; transform: translate(-50%, -125%)"
-         :style="sel && { left: (sel.x + sel.width / 2) + 'px', top: sel.top + 'px' }">
+    <!-- Selection bubble: the plugin reports the selection, the menu is ours. A real
+         popover, so the top layer keeps it above resize handles and anything else
+         with a z-index — no stacking contest to lose. -->
+    <div popover="manual" x-ref="bubble"
+         class="row gap-1 p-1 bg-surface-1 border border-line rounded shadow"
+         style="position: fixed; margin: 0; inset: auto; transform: translate(-50%, -125%);
+                left: var(--text-edit-selection-center); top: var(--text-edit-selection-y)">
       <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
       <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
       <button class="ghost sm" x-text-edit.code aria-label="Code"><span x-icon="lucide:code"></span></button>
@@ -1403,7 +1413,17 @@
 
   </div>
 
-  <div class="editor" x-route="/" x-data="{ sel: null }" @text-edit:selection.window="sel = $event.detail">
+  <div class="editor" x-route="/" x-data="{
+    sel: null,
+    // showPopover throws if it is already open, so ask before telling.
+    bubble(detail) {
+      this.sel = detail;
+      const el = this.$refs.bubble; if (!el) return;
+      const want = !!detail && !detail.collapsed;
+      if (want && !el.matches(':popover-open')) el.showPopover();
+      if (!want && el.matches(':popover-open')) el.hidePopover();
+    },
+  }" @text-edit:selection.window="bubble($event.detail)">
 
     <!-- Side panel — OUTSIDE the canvas; theme controls target the canvas via its scope key -->
     <aside class="editor-panel">
@@ -1463,10 +1483,13 @@
       </div>
     </aside>
 
-    <!-- Selection bubble, shared by every rich field on the canvas -->
-    <div class="row gap-1 p-1 bg-surface-1 border border-line rounded" x-show="sel && !sel.collapsed" x-cloak
-         style="position: fixed; z-index: 60; transform: translate(-50%, -125%)"
-         :style="sel && { left: (sel.x + sel.width / 2) + 'px', top: sel.top + 'px' }">
+    <!-- Selection bubble, shared by every rich field on the canvas. A popover, so
+         the resize handles on the canvas cannot paint over it. Positioned entirely
+         from the custom properties the plugin mirrors onto the root. -->
+    <div popover="manual" x-ref="bubble"
+         class="row gap-1 p-1 bg-surface-1 border border-line rounded"
+         style="position: fixed; margin: 0; inset: auto; transform: translate(-50%, -125%);
+                left: var(--text-edit-selection-center); top: var(--text-edit-selection-y)">
       <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
       <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
       <button class="ghost sm" x-text-edit.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>

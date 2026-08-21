@@ -10,13 +10,18 @@
 
 @layer base {
 
+    /* Animates `scale`, not `transform`. With fill mode `both` a transform
+       animation keeps its final value forever, which silently overrides any
+       transform an author put on a popover — so a menu positioned with
+       translate(-50%) simply would not move. The standalone property leaves
+       transform free. */
     @keyframes mnfst-popover-in {
         from {
-            transform: scale(.9)
+            scale: .9
         }
 
         to {
-            transform: none
+            scale: 1
         }
     }
 

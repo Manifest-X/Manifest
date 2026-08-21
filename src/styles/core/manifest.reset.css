@@ -268,13 +268,16 @@
         color: color-mix(in oklab, currentcolor 50%, transparent)
     }
 
+    /* Animates `scale`, not `transform`: a transform animation with fill `both`
+       keeps its final value and would override any transform an author sets on
+       a popover of their own. */
     @keyframes mnfst-popover-in {
         from {
-            transform: scale(.9);
+            scale: .9;
         }
 
         to {
-            transform: none;
+            scale: 1;
         }
     }
 

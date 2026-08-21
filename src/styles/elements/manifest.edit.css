@@ -304,9 +304,11 @@
         display: flex;
     }
 
+    /* A popover: the top layer sits above every stacking context, so no handle,
+       overlay or z-index anywhere on the page can paint over it. */
     :where([data-edit-menu]) {
         position: fixed;
-        z-index: 10000;
+        margin: 0;
         width: 16rem;
         padding: 0.6rem;
         display: flex;
@@ -316,10 +318,6 @@
         border: 1px solid var(--color-line);
         border-radius: var(--radius);
         box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
-
-        &[hidden] {
-            display: none;
-        }
 
         & input {
             width: 100%;

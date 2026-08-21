@@ -112,10 +112,10 @@
         if (!isActive(area)) return; e.preventDefault(); e.stopPropagation();
         const target = e.target.closest('[data-edit-path]');
         if (!cmpMenu) {
-            cmpMenu = document.createElement('div'); cmpMenu.setAttribute('data-edit-menu', ''); cmpMenu.hidden = true;
+            cmpMenu = document.createElement('div'); cmpMenu.setAttribute('data-edit-menu', ''); cmpMenu.setAttribute('popover', 'manual');
             cmpMenu.addEventListener('pointerdown', ev => ev.stopPropagation());
             document.body.appendChild(cmpMenu);
-            document.addEventListener('pointerdown', () => { if (cmpMenu) cmpMenu.hidden = true; });
+            document.addEventListener('pointerdown', () => { if (cmpMenu && cmpMenu.matches(':popover-open')) cmpMenu.hidePopover(); });
         }
         if (target) target._preClass = target.getAttribute('class') || '';
         const cur = area._editScope || 'instance';
@@ -132,8 +132,10 @@
             cls.addEventListener('change', () => commitComponentNode(area, target, 'class', cls.value));
             cls.addEventListener('keydown', ev => { if (ev.key === 'Enter') cls.blur(); });
         }
-        const rv = cmpMenu.querySelector('[data-a="revert"]'); if (rv) rv.onclick = () => { revertNode(area, target); cmpMenu.hidden = true; };
-        cmpMenu.querySelector('[data-a="revertall"]').onclick = () => { revertAll(area); cmpMenu.hidden = true; };
-        cmpMenu.style.left = Math.min(e.clientX, innerWidth - 240) + 'px'; cmpMenu.style.top = Math.min(e.clientY, innerHeight - 180) + 'px'; cmpMenu.hidden = false;
+        const hide = () => { if (cmpMenu.matches(':popover-open')) cmpMenu.hidePopover(); };
+        const rv = cmpMenu.querySelector('[data-a="revert"]'); if (rv) rv.onclick = () => { revertNode(area, target); hide(); };
+        cmpMenu.querySelector('[data-a="revertall"]').onclick = () => { revertAll(area); hide(); };
+        cmpMenu.style.left = Math.min(e.clientX, innerWidth - 240) + 'px'; cmpMenu.style.top = Math.min(e.clientY, innerHeight - 180) + 'px';
+        if (!cmpMenu.matches(':popover-open')) { try { cmpMenu.showPopover(); } catch { } }
         if (cls) setTimeout(() => cls.focus(), 0);
     }
