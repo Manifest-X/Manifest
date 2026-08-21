@@ -4519,6 +4519,13 @@
             }
         }
 
+        /* A block selection across cells. The browser can only highlight text, so an
+           empty cell shows nothing — this is what makes a spreadsheet-style
+           selection visible. */
+        & :where(td, th)[data-text-edit-cell] {
+            background: color-mix(in oklch, var(--color-brand-content) 18%, transparent);
+        }
+
         /* Borders read as grabbable only when the pointer is on one */
         &[data-text-edit-border="x"] { cursor: col-resize }
         &[data-text-edit-border="y"] { cursor: row-resize }

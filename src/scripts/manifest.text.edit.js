@@ -627,8 +627,24 @@
     // Which border, if any, the pointer is over.
     function borderAt(x, y) {
         const el = document.elementFromPoint(x, y);
-        const cell = el && el.closest && el.closest('td, th');
-        if (!cell || !cell.closest('[data-text-edit]')) return null;
+        let cell = el && el.closest && el.closest('td, th');
+        if (!cell) {
+            // Aiming at the outer edge puts the pointer past the last cell — on the
+            // table if you are exact, on the page behind it if you overshoot. Both
+            // are where people aim, so both count.
+            const scope = el && el.closest && (el.closest('table') || el.closest('[data-text-edit]'));
+            if (!scope) return null;
+            const tables = scope.tagName === 'TABLE' ? [scope] : [...scope.querySelectorAll('table')];
+            for (const table of tables) {
+                const box = table.getBoundingClientRect();
+                const row = [...table.rows].find(rw => { const b = rw.getBoundingClientRect(); return y >= b.top - EDGE && y <= b.bottom + EDGE; });
+                if (!row || !row.cells.length) continue;
+                if (Math.abs(x - box.right) <= EDGE) return { axis: 'x', cell: row.cells[row.cells.length - 1] };
+                if (Math.abs(y - box.bottom) <= EDGE && x >= box.left && x <= box.right) return { axis: 'y', cell: row.cells[0] };
+            }
+            return null;
+        }
+        if (!cell.closest('[data-text-edit]')) return null;
         const b = cell.getBoundingClientRect();
         if (Math.abs(x - b.right) <= EDGE) return { axis: 'x', cell };
         if (Math.abs(x - b.left) <= EDGE) { const prev = previousCell(cell); return prev ? { axis: 'x', cell: prev } : null; }
@@ -649,9 +665,19 @@
             const { col } = gridPosition(cell);
             const index = Math.min(col + (cell.colSpan || 1) - 1, group.children.length - 1);
             const target = group.children[index];
-            const start = target.getBoundingClientRect ? parseFloat(target.style.width) || cell.getBoundingClientRect().width : 0;
+            const start = parseFloat(target.style.width) || cell.getBoundingClientRect().width;
             const from = e.clientX;
-            apply = (ev) => { target.style.width = Math.max(28, Math.round(start + ev.clientX - from)) + 'px'; };
+            // The rightmost border is the table's own edge. Sizing only the column
+            // there does nothing visible — the table still fills its width and the
+            // other columns simply absorb the difference — so the table is sized too.
+            const outer = index === group.children.length - 1;
+            const tableStart = table.getBoundingClientRect().width;
+            if (outer) table.style.width = Math.round(tableStart) + 'px';
+            apply = (ev) => {
+                const delta = ev.clientX - from;
+                target.style.width = Math.max(28, Math.round(start + delta)) + 'px';
+                if (outer) table.style.width = Math.max(60, Math.round(tableStart + delta)) + 'px';
+            };
         } else {
             const row = cell.parentElement;
             const start = row.getBoundingClientRect().height, from = e.clientY;
@@ -736,9 +762,20 @@
         const x = here.left;
         const probeY = down ? here.bottom + line * 0.5 : here.top - line * 0.5;
 
-        // Still inside this cell: another line to cross, so let the browser do it.
+        // Landing in the same cell is not enough to mean there is another line — a
+        // point just past the caret is still inside the cell's own padding. Only a
+        // position on a DIFFERENT line means there is somewhere left to go.
         const ahead = caretAtPoint(x, probeY);
-        if (ahead && cellOf(ahead.node) === cell) return false;
+        if (ahead && cellOf(ahead.node) === cell) {
+            const probe = document.createRange();
+            let onAnotherLine = false;
+            try {
+                probe.setStart(ahead.node, ahead.offset); probe.collapse(true);
+                const box = probe.getBoundingClientRect();
+                onAnotherLine = !!box.height && Math.abs(box.top - here.top) > 2;
+            } catch { }
+            if (onAnotherLine) return false;
+        }
 
         const table = cell.closest('table'), { row, col, grid } = gridPosition(cell);
         const targetRow = row + (down ? (cell.rowSpan || 1) : -1);
@@ -1476,8 +1513,11 @@
     function restoreRange(area) {
         const r = range();
         if (r && area.contains(r.startContainer)) return;
+        // Only go back somewhere we have actually been. Focusing regardless puts a
+        // caret at the start of an area that was never edited, which is how a control
+        // ends up rewriting the first field on the page instead of doing nothing.
+        if (!area._range || !area.contains(area._range.startContainer)) return;
         area.focus();
-        if (!area._range) return;
         const s = sel(); s.removeAllRanges(); s.addRange(area._range);
     }
 
@@ -1499,7 +1539,15 @@
     function run(area, id, arg, ctrl) {
         const spec = COMMANDS[id]; if (!spec) return;
         const page = !!(ctrl && ctrl.page && spec.page);
-        if (!page) restoreRange(area);          // availability can depend on the caret
+        if (!page) {
+            restoreRange(area);
+            // If the caret could not be put in this area — it was never focused, or
+            // the saved range has gone stale — do nothing. Running anyway rewrites
+            // whichever area resolution happened to land on, which reads as the
+            // command changing some other element's text.
+            const r = range();
+            if (!r || !area.contains(r.startContainer)) return;
+        }
         if (!allows(area, id, ctrl)) return;
         if (page) {
             area.style.setProperty(PAGE_VARS[id], id === 'size' ? px(arg) : arg);
@@ -1590,7 +1638,14 @@
         };
     }
 
+    // A text selection cannot highlight an empty cell, so the block is painted here.
+    function paintCells(area) {
+        area.querySelectorAll('[data-text-edit-cell]').forEach(c => c.removeAttribute('data-text-edit-cell'));
+        selectedCells().forEach(c => c.setAttribute('data-text-edit-cell', ''));
+    }
+
     function report(area) {
+        if (area.querySelector('table')) paintCells(area);
         const sel = selectionOf(area);
         area._selection = sel;
         const px = (n) => Math.round(n) + 'px';
