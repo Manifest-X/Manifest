@@ -1422,8 +1422,10 @@
         <label>Corner radius <input type="range" min="0" max="2" step="0.125" data-unit="rem" x-edit.cssvar="site:--radius"></label>
       </div>
 
-      <!-- Rich text controls. No x-text-edit-for: they follow the focused field. -->
-      <div class="group">
+      <!-- Rich text controls. No x-text-edit-for: they follow the focused field.
+           The pointerdown guard keeps a miss between buttons from blurring the field
+           and losing the selection the controls are about to act on. -->
+      <div class="group" @pointerdown="if (!$event.target.closest('input, select, textarea')) $event.preventDefault()">
         <h2>Text</h2>
         <div class="row-wrap gap-1">
           <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
