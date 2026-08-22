@@ -106,8 +106,11 @@
     /* Hide dropdowns when dialogs are open */
     html:has(dialog:popover-open) {
 
-        /* Hide dropdowns outside of any dialog */
-        & menu[popover]:not(dialog *) {
+        /* Hide dropdowns outside of any dialog. A generated popover (a datepicker
+           calendar, a colorpicker panel) is appended to <body>, so DOM position alone
+           can't tell page chrome from a menu the dialog itself opened —
+           data-popover-nested marks the latter, which CSS has no way to work out. */
+        & menu[popover]:not(dialog *):not([data-popover-nested]) {
             opacity: 0;
             scale: .9;
             pointer-events: none;

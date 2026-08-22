@@ -124,6 +124,45 @@
         </div>
     </section>
 
+    <!-- F: popovers opened from inside another popover -->
+    <section class="col gap-2">
+        <h5>F — nesting</h5>
+        <small class="subtle">A popover opened programmatically has to name its trigger, or the browser
+            treats it as top level and light-dismisses whatever contains it. Everything here should stack:
+            nothing below closes the dialog or the menu it opened from.</small>
+        <div class="row gap-3">
+            <button popovertarget="dd-dialog">Open dialog</button>
+            <button x-dropdown="dd-in-menu">Open menu</button>
+        </div>
+
+        <dialog popover id="dd-dialog" class="col gap-3 p-4" style="min-width: 22rem">
+            <h5>Dialog</h5>
+            <label>Date<input x-date.time placeholder="Date and time"></label>
+            <div class="row gap-2 items-center">
+                <span>Colour</span><button x-colorpicker.swatch></button>
+            </div>
+            <div class="row gap-2">
+                <div>
+                    <button x-dropdown="dd-dialog-sub">Submenu</button>
+                    <menu popover id="dd-dialog-sub" class="w-48">
+                        <li close @click="note('F: Dialog submenu')">Closes the submenu only</li>
+                    </menu>
+                </div>
+                <div>
+                    <button x-dropdown.hover="dd-dialog-hover">Hover submenu</button>
+                    <menu popover id="dd-dialog-hover" class="w-48">
+                        <li @click="note('F: Dialog hover')">Hover item</li>
+                    </menu>
+                </div>
+            </div>
+        </dialog>
+
+        <menu popover id="dd-in-menu" class="w-72">
+            <li><label class="w-full">Date<input x-date placeholder="Pick a date"></label></li>
+            <li @click="note('F: Menu row')">An ordinary row</li>
+        </menu>
+    </section>
+
     <!-- Log -->
     <section class="col gap-2">
         <h5>Selection log</h5>
