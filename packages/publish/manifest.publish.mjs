@@ -30,6 +30,7 @@ function parseArgs(argv) {
     else if (a === '--production' || a === '--prod') out.env = 'production';
     else if (a === '--env') out.env = argv[++i];
     else if (a === '--source') out.source = argv[++i];
+    else if (a === '--output-dir') out.outputDir = argv[++i];
     else if (a === '--no-render') out.render = false;
     else if (a === '--render') out.render = true;
     else if (a === '--promote') out.promote = true;
@@ -259,11 +260,29 @@ export function loadPublishIgnore(root) {
   return makePublishIgnore(patterns);
 }
 
-export function collectFiles(root) {
+export function collectFiles(root, outputDir) {
   const git = spawnSync('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root, encoding: 'utf8' });
   let rels;
   if (git.status === 0) {
     rels = git.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    // Non-Manifest builds usually write to a GITIGNORED folder (dist/, build/…)
+    // — force-include the declared output dir or the publish ships no site.
+    if (outputDir && existsSync(join(root, outputDir))) {
+      const seen = new Set(rels);
+      const walkOut = (dir) => {
+        for (const name of readdirSync(dir)) {
+          if (EXCLUDED_DIRS.has(name)) continue;
+          const abs = join(dir, name);
+          const st = statSync(abs);
+          if (st.isDirectory()) walkOut(abs);
+          else {
+            const rel = relative(root, abs).split(sep).join('/');
+            if (!seen.has(rel)) { seen.add(rel); rels.push(rel); }
+          }
+        }
+      };
+      walkOut(join(root, outputDir));
+    }
   } else {
     // Not a git repo — walk, skipping excluded dirs as we go.
     rels = [];
@@ -403,7 +422,7 @@ function buildZip(root, rels, overrides = new Map()) {
 export async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    log('Usage: npx mnfst-publish [--staging|--production] [--no-render] [--promote]');
+    log('Usage: npx mnfst-publish [--staging|--production] [--source spa|render] [--output-dir <dir>] [--no-render] [--promote]');
     log('Publishes the current Manifest project to managed hosting and prints the live URL.');
     return;
   }
@@ -484,8 +503,11 @@ export async function main() {
     fail('the upload URL returned by the server was malformed.');
   }
 
-  const rels = collectFiles(root);
+  const rels = collectFiles(root, opts.outputDir);
   if (!rels.length) fail('nothing to publish (no files found).');
+  if (opts.outputDir && !existsSync(join(root, opts.outputDir))) {
+    fail(`the output folder "${opts.outputDir}" doesn't exist — run the project's build first, then publish again.`);
+  }
   const zip = buildZip(root, rels, stampManifests(root, rels));
   log(`Uploading ${rels.length} files (${(zip.length / 1048576).toFixed(1)} MB)…`);
 
