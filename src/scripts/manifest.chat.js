@@ -106,11 +106,24 @@
             for (const k of Object.keys(incoming)) if (k !== 'body' && k !== '_seq') target[k] = incoming[k];
         }
 
+        // own echo beating the ack: claim the pending row by meta.clientId
+        function claimPending(incoming) {
+            const cid = incoming.meta && incoming.meta.clientId;
+            if (cid == null || !state.me || !incoming.author || incoming.author.id !== state.me.id) return null;
+            return _msgs.find(m => m._optimistic && m._clientId === cid) || null;
+        }
+
         function upsert(raw) {
             const incoming = normalize(raw, ++seq);
             const prev = incoming.id != null ? _byId.get(incoming.id) : null;
+            const pending = prev ? null : claimPending(incoming);
             if (prev) {
                 merge(prev, incoming);
+            } else if (pending) {
+                _byId.delete(pending.id);
+                merge(pending, incoming);
+                pending._optimistic = false;
+                if (pending.id != null) _byId.set(pending.id, pending);
             } else {
                 _msgs.push(incoming);
                 if (incoming.id != null) _byId.set(incoming.id, incoming);
@@ -176,11 +189,11 @@
         async function send(draft) {
             const tmp = 'tmp_' + (++seq);
             const body = draft && draft.body ? draft.body : { text: draft && draft.text != null ? draft.text : '' };
-            const local = normalize({ id: tmp, conversationId, author: state.me, body, replyTo: draft && draft.replyTo, status: 'pending', ts: null, _optimistic: true }, ++seq);
+            const local = normalize({ id: tmp, conversationId, author: state.me, body, replyTo: draft && draft.replyTo, status: 'pending', ts: null, _optimistic: true, _clientId: tmp }, ++seq);
             _msgs.push(local); _byId.set(tmp, local); commit();
             if (!adapter.send) { local.status = 'failed'; local.statusReason = 'unsupported'; commit(); return; }
             try {
-                const ack = await adapter.send(conversationId, Object.assign({}, draft, { body }));
+                const ack = await adapter.send(conversationId, Object.assign({}, draft, { body, clientId: tmp }));
                 _byId.delete(tmp);
                 // A bus that echoes our own send can beat the ack; that echo lands
                 // while this row is still tmp-keyed, so it appended as its own entry.

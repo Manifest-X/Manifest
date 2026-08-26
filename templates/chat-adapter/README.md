@@ -162,6 +162,7 @@ When the author calls `handle.send(draft)`, the plugin:
 Two things your side must honor:
 
 - **Body/media reconcile via the server echo, not the ack.** The ack carries only ids. Echo the sender's own message back over `subscribe` (`onMessage` upserts by id) so a locally-shown attachment swaps to its canonical URL. A bus that doesn't echo the sender strands local state.
+- **`draft.clientId` folds an early echo into the pending bubble.** Every send mints a `clientId` and passes it on the draft. If your echo can beat the ack, stamp it back as `meta.clientId` on the echoed message — the plugin merges it into the pending row instead of rendering a second bubble until the ack lands. `ack.clientId` is reserved for the same round-trip. Echoes without `meta.clientId` still dedup at ack time by id.
 - **`ack.conversationId` re-homes.** If a reply into a closed conversation spawns a new one server-side, return the new id in the ack. In an aggregate handle the new conversation joins the stream natively; a single-conversation handle does **not** auto-retarget — it exposes `handle.lastRehome = { from, to }` and the app must re-open on `to` before the next send. If closed-thread replies are common in your product, route them through an aggregate handle.
 
 ---
