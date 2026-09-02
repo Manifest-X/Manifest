@@ -381,6 +381,7 @@
 	// entry means the fetch finished; a complete document has run every parser tag.
 	function scriptSettled(el) {
 		if (el.hasAttribute('data-mnfst-loaded')) return true;
+		if (el.hasAttribute('data-mnfst-loading')) return false;   // ours, still fetching or executing: only its load event counts
 		if (document.readyState === 'complete') return true;
 		if (!el.async && !el.defer && loaderScript && (loaderScript.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) return true;
 		try { if (el.src && performance.getEntriesByName(el.src).length) return true; } catch (_) { /* no resource timing */ }
@@ -406,8 +407,9 @@
 			const script = document.createElement('script');
 			script.src = url;
 			script.async = false; // Ensure scripts execute in order
-			script.onload = () => { script.setAttribute('data-mnfst-loaded', ''); resolve(); };
-			script.onerror = () => { script.remove(); reject(new Error(`Failed to load ${url}`)); };
+			script.setAttribute('data-mnfst-loading', '');
+			script.onload = () => { script.removeAttribute('data-mnfst-loading'); script.setAttribute('data-mnfst-loaded', ''); resolve(); };
+			script.onerror = () => { script.removeAttribute('data-mnfst-loading'); script.remove(); reject(new Error(`Failed to load ${url}`)); };
 			document.head.appendChild(script);
 		});
 	}

@@ -284,8 +284,15 @@ export type ManifestShare = (opts?: { title?: string; text?: string; url?: strin
 
 /** `$push` from the device plugin — push/notification permissions and token. */
 export interface ManifestPush {
-    request(): Promise<string>;
+    /** Ask for permission, on your schedule (never prompted on load). */
+    request(): Promise<'granted' | 'denied' | 'prompt' | 'unsupported' | string>;
+    /** Register with the platform push service (no-op on the web). */
+    register(): Promise<unknown>;
+    onToken(handler: (token: string) => void): void;
+    onReceive(handler: (notification: unknown) => void): void;
+    onTap(handler: (notification: unknown) => void): void;
     readonly permission: string;
+    readonly token: string | null;
     [extra: string]: unknown;
 }
 
@@ -301,7 +308,8 @@ export interface ManifestSecure {
 
 /** `$links` from the device plugin — deep/universal link handling. */
 export interface ManifestLinks {
-    on(handler: (url: string) => void): void;
+    /** Take over an inbound link: link.url is the full URL, link.path the route it maps to. */
+    on(handler: (link: { url: string; path: string }) => void): void;
     open(url: string): void;
     readonly last: string | null;
 }
@@ -314,8 +322,10 @@ export interface ManifestApp {
 
 /** `$haptics` from the device plugin — haptic feedback with web vibration fallback. */
 export interface ManifestHaptics {
-    impact(style?: string): Promise<unknown>;
-    notification(type?: string): Promise<unknown>;
+    impact(style?: 'LIGHT' | 'MEDIUM' | 'HEAVY' | string): Promise<unknown>;
+    notification(type?: 'SUCCESS' | 'WARNING' | 'ERROR' | string): Promise<unknown>;
+    selection(): Promise<unknown>;
+    vibrate(ms?: number): Promise<unknown> | unknown;
     [extra: string]: unknown;
 }
 

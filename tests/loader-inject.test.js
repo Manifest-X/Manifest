@@ -71,3 +71,21 @@ describe('loader: pre-existing plugin tag', () => {
         expect(tag.hasAttribute('data-mnfst-loaded')).toBe(true)
     })
 })
+
+describe('loader: concurrent loads of one plugin', () => {
+    it('a second load of a plugin the loader is still fetching waits for its execution', async () => {
+        boot({ existingTag: false })
+        await settle(20)
+        const order = []
+        const tag = document.querySelector(`script[src="${PLUGIN}"]`)
+        tag.removeAttribute('data-mnfst-loaded')
+        tag.setAttribute('data-mnfst-loading', '')          // as if the fetch were still in flight
+        const p = window.Manifest.loadPlugin('toasts', VERSION).then(() => order.push('resolved'))
+        await settle(5)
+        expect(order).toEqual([])                              // document is complete, but ours is not settled yet
+        tag.removeAttribute('data-mnfst-loading'); tag.setAttribute('data-mnfst-loaded', '')
+        tag.dispatchEvent(new window.Event('load'))
+        await p
+        expect(order).toEqual(['resolved'])
+    })
+})
