@@ -652,6 +652,19 @@ Coordinator runs code tracks with worktree agents; docs run in a separate
 session (see §11.4). Order of value:
 
 ### 11.1 P5 — stale-first `$x` + request dedupe + reload keeps identity
+
+**Status: SHIPPED to master (merge f3021c9, 2026-09-02)** — 19 tests
+(`tests/data-stale-first.test.js`), suite 281/281. Reload of a landed source
+keeps rows live and lands by `$id` (harness: 1,771 → 119 mutations, row and
+array identity kept, one request). Dedupe key `source:locale` (locale `""`
+normalised to `en`), `$query` keyed by its query list; every entry path goes
+through the one map. `$stale` = true until the first network-fresh landing
+this page-load; `$fresh` = one promise per source per page-load (never
+rejects). Deviations: memory-cache hits do not background-revalidate (there
+is no storage cache — a memory hit is already fresh; explicit reloads do);
+`$query` does not flip `$loading`; API-URL sources still swallow a failed
+reload into their default value (pre-existing, follow-up). P6 deviation 3 is
+closed.
 - **Reload keeps identity:** a cache-miss reload of an already-landed source
   must NOT write `null` + `loading:true` first. Keep the rows live, set
   `$loading` only, land the fresh rows through `landRows(replace)` (merge by
@@ -669,6 +682,8 @@ session (see §11.4). Order of value:
   scenario before/after (identity preserved, one request per source).
 
 ### 11.2 `x-text` equality guard (P7)
+
+**Status: SHIPPED (1db351e)** as the `bindings` default plugin.
 Alpine's `x-text` assigns `textContent` on every effect run even when the
 string is unchanged (Playcom: ~1,150 mutations/s from a 1s ticker over 53
 rows; settle-based metrics unusable). Re-register the `text` directive on
@@ -680,6 +695,12 @@ test project. Test: an unchanged re-evaluation produces zero MutationObserver
 records. Coordinator does this one (small, Alpine-internal).
 
 ### 11.3 Probe amendment, cdn-warm retry, route-level deferral
+
+**Probe + cdn-warm: SHIPPED (merge ec5e9ce).** `--settle-target` per
+scenario (detail pane / menu / row container), `--pause-background` default
+on, `--settle-body` for parity runs, `settle:` reported per line; first-open
+mutations 1,850 → 482 (defaults) and 4,476 → 142 (`source=x`) with prewarm
+noise gone. cdn-warm retries per URL with 5s→60s backoff, 5-minute cap.
 - `scripts/perf/probe.mjs`: settle on the gesture target's subtree
   (`--settle-target <selector>` defaulting to the pane/menu the scenario
   opens), pause background writes during a gesture window, keep body-wide as
@@ -707,3 +728,26 @@ Principle: **defaults live where the feature is used, mechanics live once.**
   priority, kill switch, `manifest:defer-render`, `ManifestDefer.stats()`),
   diagnostics, the probe, "when it's slow" checklist. Feeds the
   `manifest-performance` connector skill and llms.txt.
+
+### 10.9 RC.3 failed Playcom's gate → RC.4 (2026-09-02)
+
+Playcom (A/B branch 53e4712e, RC.3 pinned, priority="1" on both real
+countries menus): boot 6,967–8,047ms blocked vs RC.2 4,589 (+45–75%), idle 3s
+272–1,425ms blocked (pass = 0), cold switch #1 5,369ms. Cause: on a never-idle
+page every idle callback fired by TIMEOUT, so "one render per forced fire"
+became a 500–700ms task every 500ms. **RC.4 (77f7eb6):** idle callbacks carry
+no timeout and render only in reported idle time — a never-idle page gets no
+background prewarm (its stashed containers cost nothing); gesture promotion
+runs at +50/+150/+400ms and a new gesture restarts it. Validated on the
+candidate tree (idle window quiet; warm/pending move only in genuine idle).
+Lesson, as law: never give `requestIdleCallback` a timeout for optional work.
+
+Open, not reproducible here: Playcom's ~950ms countries open with the thread
+idle after toggle:open (both trees, defer on/off). A full
+show/hide/attribute/removal trace on their A/B copy (guest session, real
+pointer click) shows one closed→open transition at 232ms and no hide — the
+plain 243-row picker's cold render. An in-page tracing snippet was handed to
+them for their signed-in operator session; if a hidePopover/removal appears
+between toggle:open and the late open, its stack names the culprit; if their
+5ms poll itself gaps ~900ms, the wait is work under-reported by the longtask
+observer.
