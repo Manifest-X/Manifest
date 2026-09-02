@@ -283,3 +283,14 @@ Iterate primitives + `$device` on the **src test site** (fastest working surface
 existing `/virtual`, `/combobox` routes). Prove the actual **Capacitor wrap on the
 starter template** — representative of the MCP author flow and already
 `display: standalone`.
+
+## Rename (2026-09-02): `native` → `device`
+
+The umbrella plugin is `device` (b9e86e6): `manifest.device.js`, manifest.json
+`"device": {}`, `data-plugins="device"`; loader usage-sniffs its eight magics
+like other invoked plugins. `native` stays accepted as an alias (manifest key,
+plugin name, and a `manifest.native.js` copy in lib) for one release. Rationale:
+the common thread is device access with a web fallback; "native" described only
+the Capacitor adapter. `$device` remains in the utilities core. Docs: the
+"Native Capabilities" publishing article becomes `core-plugins/device.md`;
+"App Store Readiness" is folded into Native Apps as "Passing review".
