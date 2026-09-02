@@ -1010,15 +1010,16 @@ function buildRootAssetPath(routerBasePath, filename) {
   return '/' + path.replace(/\/{2,}/g, '/');
 }
 
-/** Inject stylesheet link with root-absolute href (avoids ../ resolving under locale segments like /en/page/). */
-function postProcessInjectStylesheetLink(outputDir, filename, routerBasePath) {
+/** Inject stylesheet link with root-absolute href (avoids ../ resolving under locale segments like /en/page/).
+ * `attrs` (e.g. `data-mnfst-utilities`) lets the runtime utilities plugin find and skip classes this sheet covers. */
+function postProcessInjectStylesheetLink(outputDir, filename, routerBasePath, attrs = '') {
   const cssPath = join(outputDir, filename);
   if (!existsSync(cssPath)) return;
   const stat = statSync(cssPath);
   if (stat.size === 0) return;
 
   const href = buildRootAssetPath(routerBasePath, filename);
-  const tag = `<link rel="stylesheet" href="${href}">`;
+  const tag = `<link rel="stylesheet" href="${href}"${attrs ? ` ${attrs}` : ''}>`;
   const files = walkHtmlFiles(outputDir);
   for (const file of files) {
     let html = readFileSync(file, 'utf8');
@@ -4850,7 +4851,7 @@ async function runPrerender(config) {
       } else {
         writeFileSync(join(outputResolved, 'prerender.utilities.css'), `${utilMerged}\n`, 'utf8');
         process.stdout.write('prerender: wrote prerender.utilities.css (Manifest custom utilities)\n');
-        postProcessInjectStylesheetLink(outputResolved, 'prerender.utilities.css', routerBasePath || '');
+        postProcessInjectStylesheetLink(outputResolved, 'prerender.utilities.css', routerBasePath || '', 'data-mnfst-utilities');
       }
     }
   }

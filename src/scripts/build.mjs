@@ -44,9 +44,20 @@ const CONFIG = {
         'manifest.utilities.cache.js',
         'manifest.utilities.helpers.js',
         'manifest.utilities.compile.js',
+        'manifest.utilities.static.js',
         'manifest.utilities.observation.js',
         'manifest.utilities.device.js',
         'manifest.utilities.init.js'
+    ],
+
+    // DOM-free subset combined into manifest.utilities.node.mjs (Node/Workers,
+    // no document): generation logic only, no DOM/localStorage subscripts.
+    utilitiesNodeSubscripts: [
+        'manifest.utilities.generators.js',
+        'manifest.utilities.variants.js',
+        'manifest.utilities.main.js',
+        'manifest.utilities.helpers.js',
+        'manifest.utilities.compile.js'
     ],
 
     // Auth subscripts order
@@ -249,6 +260,7 @@ function buildSubscripts() {
 
     // Build utilities
     combineSubscripts(CONFIG.utilitiesSubscripts, 'manifest.utilities.js', 'utilities');
+    buildUtilitiesNodeModule();
 
     // Build auth
     combineSubscripts(CONFIG.authSubscripts, 'manifest.appwrite.auth.js', 'auth');
@@ -625,6 +637,39 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
     console.log('');
 }
 
+// Combine the DOM-free utilities subscripts with the Node/Workers wrapper
+// (scripts/utilities/manifest.utilities.node.mjs) into a single, dependency-free
+// ES module. Same generator source as the browser bundle — never fork the logic.
+function buildUtilitiesNodeModule() {
+    console.log('Building utilities node module...\n');
+
+    const componentDir = path.join('scripts', 'utilities');
+    const wrapperPath = path.join(componentDir, 'manifest.utilities.node.mjs');
+    if (!fs.existsSync(wrapperPath)) {
+        console.warn('  ⚠ Warning: manifest.utilities.node.mjs wrapper not found, skipping\n');
+        return;
+    }
+
+    const core = [];
+    for (const file of CONFIG.utilitiesNodeSubscripts) {
+        const filePath = path.join(componentDir, file);
+        if (fs.existsSync(filePath)) {
+            core.push(fs.readFileSync(filePath, 'utf8'));
+            console.log(`  ✓ Added ${file}`);
+        } else {
+            console.warn(`  ⚠ Warning: ${file} not found`);
+        }
+    }
+
+    const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+    const header = '/* manifest.utilities.node.mjs — built from scripts/utilities/ (DOM-free) */\n\n';
+    const combined = `${header}${core.join('\n\n')}\n\n${wrapper}`;
+
+    const outputPath = path.join('scripts', 'manifest.utilities.node.mjs');
+    fs.writeFileSync(outputPath, combined);
+    console.log('  ✓ Created manifest.utilities.node.mjs\n');
+}
+
 // Copy files to lib directory for clean jsdelivr URLs
 function copyFilesToDist() {
     console.log('Copying files to lib directory...\n');
@@ -681,6 +726,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
         { source: 'scripts/manifest.url.parameters.js', dest: '../lib/manifest.url.parameters.js' },
         { source: 'scripts/manifest.utilities.js', dest: '../lib/manifest.utilities.js' },
+        { source: 'scripts/manifest.utilities.node.mjs', dest: '../lib/manifest.utilities.node.mjs' },
         { source: 'scripts/manifest.virtual.js', dest: '../lib/manifest.virtual.js' },
 
         // Tailwind bundle — loader requests `${base}/manifest.tailwind.min.js`

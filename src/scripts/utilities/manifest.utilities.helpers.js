@@ -276,7 +276,7 @@ TailwindCompiler.prototype.getUsedClasses = function () {
         }
 
         const result = {
-            classes: Array.from(allClasses),
+            classes: this.filterStaticallyCoveredClasses(Array.from(allClasses)),
             variableSuffixes: Array.from(usedVariableSuffixes)
         };
 

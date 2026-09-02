@@ -71,7 +71,11 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
 
             if (cacheToUse && cacheToUse.css) {
                 const applyCacheStart = performance.now();
-                this.styleElement.textContent = cacheToUse.css;
+                // The cached CSS may predate the static utilities sheet (or come
+                // from a visitor without one) — strip anything it already covers
+                // so we never re-emit those rules.
+                const cachedCss = this.stripCoveredRulesFromCss(cacheToUse.css);
+                this.styleElement.textContent = cachedCss;
                 this.ensureUtilityStylesLast();
                 this.scheduleEnsureUtilityStylesLast();
                 this.lastThemeHash = cacheToUse.themeHash;
@@ -79,7 +83,7 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
                 // Also apply cache to critical style element
                 // Extract utilities from @layer utilities block and apply directly (no @layer)
                 if (this.criticalStyleElement && !this.criticalStyleElement.textContent) {
-                    let criticalCss = cacheToUse.css;
+                    let criticalCss = cachedCss;
                     // Remove @layer utilities wrapper if present
                     criticalCss = criticalCss.replace(/@layer\s+utilities\s*\{/g, '').replace(/\}\s*$/, '').trim();
                     if (criticalCss) {

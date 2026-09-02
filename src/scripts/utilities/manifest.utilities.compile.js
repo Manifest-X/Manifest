@@ -776,9 +776,10 @@ TailwindCompiler.prototype.compile = async function () {
                     this.currentThemeVars.set(name, value);
                 }
 
-                // Generate utilities for all static classes
+                // Generate utilities for all static classes (minus anything the
+                // static utilities sheet already covers).
                 const staticUsedData = {
-                    classes: Array.from(this.staticClassCache),
+                    classes: this.filterStaticallyCoveredClasses(Array.from(this.staticClassCache)),
                     variableSuffixes: []
                 };
                 // Process static classes for variable suffixes

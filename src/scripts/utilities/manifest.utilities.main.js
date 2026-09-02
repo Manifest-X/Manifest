@@ -41,6 +41,7 @@ class TailwindCompiler {
             this.compileTimeout = null;
             this.cache = new Map();
             this.hasInitialized = true;
+            this.staticUtilitiesCoveredClasses = null;
             // manifest.code.js (and others) may still register ignore rules; mirror full constructor defaults.
             this.ignoredClassPatterns = [
                 /^hljs/, /^language-/, /^copy$/, /^copied$/, /^lines$/, /^selected$/
@@ -124,6 +125,11 @@ class TailwindCompiler {
 
         // Cache for parsed class names (must be before addCriticalBlockingStylesSync)
         this.classCache = new Map();
+
+        // Read any publish/render-provided static utilities sheet before the
+        // first compile — its classes are skipped rather than regenerated.
+        this.staticUtilitiesCoveredClasses = null;
+        this.detectStaticUtilitiesSheet();
 
         // Add critical styles IMMEDIATELY - don't wait for anything
         this.addCriticalBlockingStylesSync();

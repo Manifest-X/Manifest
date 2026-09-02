@@ -1,0 +1,97 @@
+// Node/Workers wrapper — combined at build time (see build.mjs
+// buildUtilitiesNodeModule) with the DOM-free subset of the browser plugin's
+// subscripts (generators, variants, main, helpers, compile) so this exports
+// the exact same generation logic the browser JIT runs, with no document.
+
+/** A bare TailwindCompiler instance carrying only what the pure generation
+ * methods (generateUtilitiesFromVars, generateCustomUtilities, parseClassName,
+ * ...) read from `this` — mirrors the constructor's generator/variant setup
+ * (manifest.utilities.main.js) without any of its DOM work, which this never
+ * runs: `new TailwindCompiler()` is never called here. */
+function createNodeCompiler() {
+    const instance = Object.create(TailwindCompiler.prototype);
+    instance.options = { rootSelector: ':root', themeSelector: '@theme' };
+    instance.regexPatterns = {
+        root: new RegExp(`${instance.options.rootSelector}\\s*{([^}]*)}`, 'g'),
+        theme: new RegExp(`${instance.options.themeSelector}\\s*{([^}]*)}`, 'g'),
+        variable: /--([\w-]+):\s*([^;]+);/g,
+        tailwindPrefix: /^(color|font|text|font-weight|tracking|leading|breakpoint|container|spacing|radius|shadow|inset-shadow|drop-shadow|blur|perspective|aspect|ease|animate|border-width|border-style|outline|outline-width|outline-style|ring|ring-offset|divide|accent|caret|decoration|placeholder|selection|scrollbar)-/
+    };
+    instance.utilityGenerators = createUtilityGenerators();
+    instance.variants = createVariants();
+    instance.variantGroups = createVariantGroups();
+    instance.classCache = new Map();
+    instance.customUtilities = new Map();
+    return instance;
+}
+
+/**
+ * Compile the utility CSS the browser plugin would produce for exactly
+ * `classes` — variants, theme-variable-driven utilities (generateUtilitiesFromVars)
+ * and custom utilities (generateCustomUtilities) discovered in `themeCss`/`baseCss`.
+ * Deterministic for a given (classes, themeCss, baseCss) triple.
+ *
+ * @param {{classes?: string[], themeCss?: string, baseCss?: string}} options
+ * @returns {Promise<string>}
+ */
+export async function compileUtilities({ classes = [], themeCss = '', baseCss = '' } = {}) {
+    const compiler = createNodeCompiler();
+    const cssText = [baseCss, themeCss].filter(Boolean).join('\n');
+
+    const discovered = compiler.extractCustomUtilities(cssText);
+    for (const [name, value] of discovered) compiler.customUtilities.set(name, value);
+
+    const usedData = { classes: Array.from(new Set(classes)), variableSuffixes: [] };
+
+    const varUtilities = compiler.generateUtilitiesFromVars(cssText, usedData);
+    const customUtilities = compiler.generateCustomUtilities(usedData);
+
+    let allUtilities = [varUtilities, customUtilities].filter(Boolean).join('\n\n');
+    allUtilities = compiler.sortUtilities(allUtilities);
+
+    return allUtilities ? `@layer utilities {\n${allUtilities}\n}` : '';
+}
+
+// `class:token=` (per-class conditional binding) and the `:class="..."`
+// shorthand aren't matched by extractClassesFromHTML's `x-(data|bind:class|class)=`
+// regex (no `x-` prefix), so pick those up here too — cheap regex pass, not a
+// JS/expression parser, so only literal-looking quoted tokens are kept.
+const CLASS_TOKEN_BINDING_RE = /\bclass:([a-zA-Z0-9_-]+(?:\\.[a-zA-Z0-9_-]+)*)\s*=/g;
+// Backreference to the opening quote so a nested quote char (`:class="'a b'"`)
+// doesn't truncate the match early.
+const SHORTHAND_CLASS_BINDING_RE = /\B:class=(["'])((?:(?!\1)[\s\S])*)\1/g;
+
+/**
+ * Scan HTML for utility class tokens using the same extraction the browser
+ * plugin uses (extractClassesFromHTML), plus `class:`/`:class` static tokens.
+ * Skips `x-`/`$` tokens. Returns a sorted, deduplicated array.
+ *
+ * @param {string} html
+ * @returns {string[]}
+ */
+export function scanClasses(html) {
+    const compiler = createNodeCompiler();
+    const set = new Set();
+    compiler.extractClassesFromHTML(html, set);
+
+    let m;
+    CLASS_TOKEN_BINDING_RE.lastIndex = 0;
+    while ((m = CLASS_TOKEN_BINDING_RE.exec(html)) !== null) {
+        const cls = m[1].replace(/\\(.)/g, '$1');
+        if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) set.add(cls);
+    }
+
+    SHORTHAND_CLASS_BINDING_RE.lastIndex = 0;
+    while ((m = SHORTHAND_CLASS_BINDING_RE.exec(html)) !== null) {
+        const content = m[2];
+        const quoted = content.match(/['"`]([^'"`\s]+)['"`]/g);
+        if (quoted) {
+            for (const q of quoted) {
+                const cls = q.replace(/['"`]/g, '');
+                if (cls && !cls.startsWith('$') && !cls.startsWith('x-') && !cls.includes('(')) set.add(cls);
+            }
+        }
+    }
+
+    return Array.from(set).sort();
+}

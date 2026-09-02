@@ -471,6 +471,7 @@ class TailwindCompiler {
             this.compileTimeout = null;
             this.cache = new Map();
             this.hasInitialized = true;
+            this.staticUtilitiesCoveredClasses = null;
             // manifest.code.js (and others) may still register ignore rules; mirror full constructor defaults.
             this.ignoredClassPatterns = [
                 /^hljs/, /^language-/, /^copy$/, /^copied$/, /^lines$/, /^selected$/
@@ -554,6 +555,11 @@ class TailwindCompiler {
 
         // Cache for parsed class names (must be before addCriticalBlockingStylesSync)
         this.classCache = new Map();
+
+        // Read any publish/render-provided static utilities sheet before the
+        // first compile — its classes are skipped rather than regenerated.
+        this.staticUtilitiesCoveredClasses = null;
+        this.detectStaticUtilitiesSheet();
 
         // Add critical styles IMMEDIATELY - don't wait for anything
         this.addCriticalBlockingStylesSync();
@@ -1194,7 +1200,11 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
 
             if (cacheToUse && cacheToUse.css) {
                 const applyCacheStart = performance.now();
-                this.styleElement.textContent = cacheToUse.css;
+                // The cached CSS may predate the static utilities sheet (or come
+                // from a visitor without one) — strip anything it already covers
+                // so we never re-emit those rules.
+                const cachedCss = this.stripCoveredRulesFromCss(cacheToUse.css);
+                this.styleElement.textContent = cachedCss;
                 this.ensureUtilityStylesLast();
                 this.scheduleEnsureUtilityStylesLast();
                 this.lastThemeHash = cacheToUse.themeHash;
@@ -1202,7 +1212,7 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
                 // Also apply cache to critical style element
                 // Extract utilities from @layer utilities block and apply directly (no @layer)
                 if (this.criticalStyleElement && !this.criticalStyleElement.textContent) {
-                    let criticalCss = cacheToUse.css;
+                    let criticalCss = cachedCss;
                     // Remove @layer utilities wrapper if present
                     criticalCss = criticalCss.replace(/@layer\s+utilities\s*\{/g, '').replace(/\}\s*$/, '').trim();
                     if (criticalCss) {
@@ -1590,7 +1600,7 @@ TailwindCompiler.prototype.getUsedClasses = function () {
         }
 
         const result = {
-            classes: Array.from(allClasses),
+            classes: this.filterStaticallyCoveredClasses(Array.from(allClasses)),
             variableSuffixes: Array.from(usedVariableSuffixes)
         };
 
@@ -3185,9 +3195,10 @@ TailwindCompiler.prototype.compile = async function () {
                     this.currentThemeVars.set(name, value);
                 }
 
-                // Generate utilities for all static classes
+                // Generate utilities for all static classes (minus anything the
+                // static utilities sheet already covers).
                 const staticUsedData = {
-                    classes: Array.from(this.staticClassCache),
+                    classes: this.filterStaticallyCoveredClasses(Array.from(this.staticClassCache)),
                     variableSuffixes: []
                 };
                 // Process static classes for variable suffixes
@@ -3343,6 +3354,191 @@ TailwindCompiler.prototype.compile = async function () {
     }
 };
 
+
+
+// Static utilities sheet detection
+// Publish/render may ship a precompiled utilities sheet — `<link rel="stylesheet"
+// data-mnfst-utilities>` or `<style data-mnfst-utilities>`. Read the classes it
+// already covers once so compile() only generates/patches what's left.
+
+TailwindCompiler.prototype.findStaticUtilitiesElement = function () {
+    try {
+        return document.querySelector('link[rel="stylesheet"][data-mnfst-utilities], style[data-mnfst-utilities]');
+    } catch (e) {
+        return null;
+    }
+};
+
+// Top-level selector text only (skips declaration bodies, so values like
+// `margin: .5rem` can't be mistaken for a `.5` class selector).
+TailwindCompiler.prototype.extractSelectorsFromCssText = function (cssText) {
+    const selectors = [];
+    const len = cssText.length;
+    let i = 0;
+    while (i < len) {
+        if (cssText[i] === '/' && cssText[i + 1] === '*') {
+            const end = cssText.indexOf('*/', i + 2);
+            i = end === -1 ? len : end + 2;
+            continue;
+        }
+        if (cssText[i] === '@') {
+            let j = i;
+            while (j < len && cssText[j] !== '{' && cssText[j] !== ';') j++;
+            if (j >= len || cssText[j] === ';') { i = j + 1; continue; }
+            i = j + 1;
+            let depth = 1;
+            const start = i;
+            while (i < len && depth > 0) {
+                if (cssText[i] === '{') depth++;
+                else if (cssText[i] === '}') depth--;
+                i++;
+            }
+            selectors.push(...this.extractSelectorsFromCssText(cssText.slice(start, i - 1)));
+            continue;
+        }
+        const selStart = i;
+        while (i < len && cssText[i] !== '{' && cssText[i] !== '}') i++;
+        if (i >= len || cssText[i] === '}') { i++; continue; }
+        const selector = cssText.slice(selStart, i).trim();
+        i++;
+        let depth = 1;
+        while (i < len && depth > 0) {
+            if (cssText[i] === '{') depth++;
+            else if (cssText[i] === '}') depth--;
+            i++;
+        }
+        if (selector) selectors.push(selector);
+    }
+    return selectors;
+};
+
+// Selectors escape every non-alphanumeric/hyphen char (see escapeClassName),
+// so `.hover\:bg-brand` unescapes back to the `hover:bg-brand` token form
+// used everywhere else (class attributes, usedClasses, parseClassName).
+TailwindCompiler.prototype.classNamesFromCssText = function (cssText) {
+    const classSet = new Set();
+    const classRe = /\.((?:\\.|[a-zA-Z0-9_-])+)/g;
+    for (const selector of this.extractSelectorsFromCssText(cssText)) {
+        let m;
+        classRe.lastIndex = 0;
+        while ((m = classRe.exec(selector)) !== null) {
+            classSet.add(m[1].replace(/\\(.)/g, '$1'));
+        }
+    }
+    return classSet;
+};
+
+// Read the static sheet's covered classes once. Same-origin `<link>`/`<style>`
+// rules are read synchronously via CSSOM; if the sheet isn't accessible yet
+// (cross-origin, or not finished loading) this falls back to fetching the
+// `href` as text and re-populating the covered set when it resolves.
+TailwindCompiler.prototype.detectStaticUtilitiesSheet = function () {
+    this.staticUtilitiesCoveredClasses = null;
+    const el = this.findStaticUtilitiesElement();
+    if (!el) return;
+
+    if (el.tagName === 'STYLE') {
+        this.staticUtilitiesCoveredClasses = this.classNamesFromCssText(el.textContent || '');
+        return;
+    }
+
+    try {
+        const sheet = Array.from(document.styleSheets).find(s => s.ownerNode === el);
+        const rules = sheet && sheet.cssRules;
+        if (rules && rules.length > 0) {
+            const cssText = Array.from(rules).map(r => r.cssText).join('\n');
+            this.staticUtilitiesCoveredClasses = this.classNamesFromCssText(cssText);
+            return;
+        }
+    } catch (e) {
+        // Cross-origin (or not yet parsed) — fall through to fetch.
+    }
+
+    // Placeholder so callers treat "not yet known" as "nothing covered" rather
+    // than null, until the fetch below resolves and replaces it.
+    this.staticUtilitiesCoveredClasses = new Set();
+    const href = el.getAttribute('href');
+    if (!href || typeof fetch !== 'function') return;
+    fetch(href).then(r => (r.ok ? r.text() : '')).then(text => {
+        if (text) this.staticUtilitiesCoveredClasses = this.classNamesFromCssText(text);
+    }).catch(() => {});
+};
+
+// Drop classes already covered by the static sheet before generating rules
+// for them again — the JIT should only ever patch what's left uncovered.
+TailwindCompiler.prototype.filterStaticallyCoveredClasses = function (classes) {
+    const covered = this.staticUtilitiesCoveredClasses;
+    if (!covered || covered.size === 0) return classes;
+    return classes.filter(c => !covered.has(c));
+};
+
+// The localStorage cache (manifest.utilities.cache.js) stores a full compiled
+// stylesheet from a previous visit — one that may predate the static sheet, or
+// come from a visitor without one. Re-applying it verbatim would re-emit every
+// rule the static sheet already covers, so strip those rules out first.
+TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
+    const covered = this.staticUtilitiesCoveredClasses;
+    if (!covered || covered.size === 0 || !cssText) return cssText;
+
+    const strip = (text) => {
+        const out = [];
+        const len = text.length;
+        let i = 0;
+        while (i < len) {
+            if (text[i] === '/' && text[i + 1] === '*') {
+                const end = text.indexOf('*/', i + 2);
+                const stop = end === -1 ? len : end + 2;
+                out.push(text.slice(i, stop));
+                i = stop;
+                continue;
+            }
+            if (text[i] === '@') {
+                let j = i;
+                while (j < len && text[j] !== '{' && text[j] !== ';') j++;
+                if (j >= len || text[j] === ';') { out.push(text.slice(i, j + 1)); i = j + 1; continue; }
+                const atHead = text.slice(i, j + 1);
+                i = j + 1;
+                let depth = 1;
+                const start = i;
+                while (i < len && depth > 0) {
+                    if (text[i] === '{') depth++;
+                    else if (text[i] === '}') depth--;
+                    i++;
+                }
+                out.push(`${atHead}${strip(text.slice(start, i - 1))}}`);
+                continue;
+            }
+            const selStart = i;
+            while (i < len && text[i] !== '{' && text[i] !== '}') i++;
+            if (i >= len || text[i] === '}') { i++; continue; }
+            const selector = text.slice(selStart, i).trim();
+            const bodyStart = i;
+            i++;
+            let depth = 1;
+            while (i < len && depth > 0) {
+                if (text[i] === '{') depth++;
+                else if (text[i] === '}') depth--;
+                i++;
+            }
+            const fullRule = selector + text.slice(bodyStart, i);
+            // Match tokens directly against the bare selector text — it has no
+            // rule body for classNamesFromCssText's selector-then-`{` scan to key off.
+            const classes = [];
+            const classRe = /\.((?:\\.|[a-zA-Z0-9_-])+)/g;
+            let cm;
+            while ((cm = classRe.exec(selector)) !== null) {
+                classes.push(cm[1].replace(/\\(.)/g, '$1'));
+            }
+            // Only drop a rule once every class it references is covered — a
+            // mixed selector (`:where(.row, .col)`) stays if either is new.
+            const isFullyCovered = classes.length > 0 && classes.every(c => covered.has(c));
+            if (!isFullyCovered) out.push(fullRule);
+        }
+        return out.join('\n');
+    };
+
+    return strip(cssText);
+};
 
 
 // DOM observation: watch for changes and trigger recompilation
