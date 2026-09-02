@@ -76,7 +76,7 @@
     "homepage": "https://manifestx.dev",
     "repository": {
         "type": "git",
-        "url": "https://github.com/Manifest-X/Manifest.git"
+        "url": "git+https://github.com/Manifest-X/Manifest.git"
     },
     "bugs": {
         "url": "https://github.com/Manifest-X/Manifest/issues"
