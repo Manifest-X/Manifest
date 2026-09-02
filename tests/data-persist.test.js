@@ -502,6 +502,40 @@ describe('diagnostics', () => {
     })
 })
 
+describe('shared record store (primitive 3 surface)', () => {
+    it('reads/writes stamped records under the scope prefix; scope wipes cover them', async () => {
+        const { persist, records, auth, dispatch } = await load({ team: 'A' })
+        const r = persist.records
+        expect(r.enabled()).toBe(true)
+        expect(r.key('chat', 'conv1')).toBe('A|chat|conv1')
+        await r.put([{ key: r.key('chat', 'conv1'), rows: [{ id: 'm1' }] }, { key: r.key('chat', 'conv2'), rows: [] }])
+        const stored = records().find(x => x.key === 'A|chat|conv1')
+        expect(stored).toMatchObject({ scope: 'A', frameworkVersion: VERSION, locale: 'en', rows: [{ id: 'm1' }] })
+        expect(typeof stored.savedAt).toBe('number')
+        const [hit, miss] = await r.get(['A|chat|conv1', 'A|chat|nope'])
+        expect(hit.rows).toEqual([{ id: 'm1' }])
+        expect(miss).toBeUndefined()
+        expect(r.valid(hit)).toBe(true)
+        expect(r.valid({ ...hit, savedAt: Date.now() - 2 * DAY }, DAY)).toBe(false)
+        expect(await r.keys('A|chat|')).toEqual(['A|chat|conv1', 'A|chat|conv2'])
+        await r.delete(['A|chat|conv2'])
+        expect(await r.keys('A|chat|')).toEqual(['A|chat|conv1'])
+        auth().currentTeam = { $id: 'B' }
+        dispatch('manifest:auth:teams-loaded')
+        await settle(40)
+        expect(records().map(x => x.key)).toEqual([])
+        expect(r.key('chat', 'conv1')).toBe('B|chat|conv1')
+    })
+
+    it('enable() turns the store on when no $x source opted in', async () => {
+        const { persist } = await load({ manifest: { data: { chats: { url: 'https://api.test/chats' } } } })
+        expect(persist.records.enabled()).toBe(false)
+        expect(persist.records.enable()).toBe(true)
+        await persist.records.put([{ key: persist.records.key('chat', 'c'), rows: [] }])
+        expect(await persist.records.keys('|chat|')).toEqual(['|chat|c'])
+    })
+})
+
 describe('API-URL sources (P5 follow-up)', () => {
     it('a failed reload keeps live rows and sets $error — never the default value', async () => {
         const manifest = defaultManifest()

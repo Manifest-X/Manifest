@@ -129,6 +129,18 @@
         return true;
     }
 
+    // Late enable (runtime registration, other primitives on the same store)
+    function ensureEnabled() {
+        if (state.enabled || state.disabled) return state.enabled;
+        if (typeof indexedDB === 'undefined' || !indexedDB) return false;
+        state.enabled = true;
+        if (!state.dbName) state.dbName = `manifest:${(typeof location !== 'undefined' && location.origin) || 'null'}`;
+        if (!state.frameworkVersion) state.frameworkVersion = buildVersion;
+        state.scope = evaluateScope();
+        watchScope();
+        return true;
+    }
+
     // Runtime registration (harness/tests): same shape as manifest.json
     function register(source, config) {
         const cfg = normalizeConfig(config === undefined ? true : config);
@@ -136,12 +148,7 @@
         state.sources.set(source, cfg);
         state.hydrated.delete(source);
         state.fetchKicked.delete(source);
-        if (!state.enabled && typeof indexedDB !== 'undefined' && indexedDB) {
-            state.enabled = true;
-            if (!state.dbName) state.dbName = `manifest:${(typeof location !== 'undefined' && location.origin) || 'null'}`;
-            if (!state.frameworkVersion) state.frameworkVersion = buildVersion;
-            watchScope();
-        }
+        ensureEnabled();
         return true;
     }
 
@@ -573,6 +580,31 @@
         if (sources.length) await flush(sources).catch(() => { /* disabled */ });
     }
 
+    // Shared record store for other primitives (chat windows, §12.2 "primitive 3"):
+    // same database/object store, scope prefix, stamping and validity rules.
+    // Keys are `${scope}|…`, so scope wipes and logout cover these records too.
+    function stampRecord(record) {
+        return {
+            scope: state.scope, savedAt: Date.now(), frameworkVersion: state.frameworkVersion,
+            deployment: state.deployment, locale: liveLocale(), ...record
+        };
+    }
+    const records = {
+        enable: ensureEnabled,
+        enabled: () => state.enabled && !state.disabled,
+        scope: () => state.scope,
+        key: (...parts) => [state.scope, ...parts].join('|'),
+        get: (keys) => readRecords(keys), // one transaction; array aligned with keys (undefined = miss)
+        put: (list) => withStore('readwrite', (store) => { for (const record of list) store.put(stampRecord(record)); }),
+        delete: (keys) => deleteKeys(keys),
+        keys: (prefix) => withStore('readonly', async (store) =>
+            (await promisify(store.getAllKeys())).filter(key => typeof key === 'string' && key.startsWith(prefix))),
+        clear: () => withStore('readwrite', (store) => { store.clear(); }),
+        valid: (record, ttlMs) => validRecord(record, { ttl: Number.isFinite(ttlMs) ? ttlMs : DEFAULT_TTL_MS }).ok,
+        stamp: stampRecord,
+        ttl: parseTtl
+    };
+
     window.ManifestDataPersist = {
         BOOT_HYDRATE_MAX_WAIT_MS,
         WRITE_DEBOUNCE_MS,
@@ -590,6 +622,7 @@
         wipe,
         persistFilter,
         persistence,
+        records,
         state
     };
 
