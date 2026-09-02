@@ -84,6 +84,25 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         }
     });
 
+    // $stale / $fresh: semantics in manifest.data.proxies.magic.state.js
+    Object.defineProperty(array, '$stale', {
+        enumerable: false,
+        configurable: true,
+        get: function () {
+            const store = Alpine.store('data');
+            const state = store?.[`_${dataSourceName}_state`];
+            return !state || state.stale !== false;
+        }
+    });
+
+    Object.defineProperty(array, '$fresh', {
+        enumerable: false,
+        configurable: true,
+        get: function () {
+            return window.ManifestDataStore?.sourceFreshness?.(dataSourceName)?.promise || Promise.resolve();
+        }
+    });
+
     // Attach $search method for client-side text filtering
     Object.defineProperty(array, '$search', {
         enumerable: false,
@@ -755,7 +774,10 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return undefined;
                 }
 
-                // Handle state properties ($loading, $error, $ready)
+                // Handle state properties ($loading, $error, $ready, $stale, $fresh)
+                if (key === '$stale' || key === '$fresh') {
+                    return window.ManifestDataProxiesMagic?.getStateProperty?.(key, dataSourceName);
+                }
                 if (key === '$loading' || key === '$error' || key === '$ready') {
                     const store = Alpine.store('data');
                     // Safely access dataSourceName - if it's not defined, use null
@@ -942,7 +964,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         return true;
                     }
                     // Check custom methods we've added
-                    if (key === '$route' || key === '$loading' || key === '$error' || key === '$ready') {
+                    if (key === '$route' || key === '$loading' || key === '$error' || key === '$ready' || key === '$stale' || key === '$fresh') {
                         return true;
                     }
                     // For other string keys, check if they exist on the array
