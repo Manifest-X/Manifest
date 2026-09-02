@@ -645,3 +645,65 @@ Give this block to whichever Playcom session picks up the A/B after RC.3
    deferral (CSS containment on the nav/panel scrollers is the lever);
    prewarm now targets on-screen, reachable containers nearest the last
    gesture and pauses at a rolling cap of 48 warm containers.
+
+## 11. Phase 2 plan (opened 2026-09-02 after RC.3 `0.5.198-next.3`)
+
+Coordinator runs code tracks with worktree agents; docs run in a separate
+session (see §11.4). Order of value:
+
+### 11.1 P5 — stale-first `$x` + request dedupe + reload keeps identity
+- **Reload keeps identity:** a cache-miss reload of an already-landed source
+  must NOT write `null` + `loading:true` first. Keep the rows live, set
+  `$loading` only, land the fresh rows through `landRows(replace)` (merge by
+  `$id`, so row objects survive). Closes P6 deviation 3.
+- **Request dedupe:** identical in-flight loads for the same
+  source+query share one promise (the `loadingPromises` map exists — make
+  it authoritative for every entry path: initial load, `$query`, reload,
+  affected-table reloads).
+- **Stale-first read:** `$x.<source>` renders cached rows immediately when a
+  memory or storage cache exists and revalidates in the background;
+  `$x.<source>.$fresh` is a promise (resolves when the first fresh landing of
+  this page-load is applied) and `$x.<source>.$stale` a boolean for
+  single-reveal UIs. No new manifest.json config.
+- Tests: extend `tests/data-landing.test.js`; harness `?source=x` reload
+  scenario before/after (identity preserved, one request per source).
+
+### 11.2 `x-text` equality guard (P7)
+Alpine's `x-text` assigns `textContent` on every effect run even when the
+string is unchanged (Playcom: ~1,150 mutations/s from a 1s ticker over 53
+rows; settle-based metrics unusable). Re-register the `text` directive on
+`alpine:init` with an equality check before the write (same semantics
+otherwise). Ships in `manifest.computed.js`? No — a directive override does
+not belong in a magic plugin: new tiny default plugin `manifest.text.js`
+(guard only), registered in `AVAILABLE_PLUGINS`, `copyFilesToDist`, the src
+test project. Test: an unchanged re-evaluation produces zero MutationObserver
+records. Coordinator does this one (small, Alpine-internal).
+
+### 11.3 Probe amendment, cdn-warm retry, route-level deferral
+- `scripts/perf/probe.mjs`: settle on the gesture target's subtree
+  (`--settle-target <selector>` defaulting to the pane/menu the scenario
+  opens), pause background writes during a gesture window, keep body-wide as
+  an opt-in for parity runs. Sonnet.
+- `scripts/cdn-warm.mjs`: retry each URL until the upstream serves the
+  version (backoff, ≤5 min) instead of one immediate pass — three RCs, three
+  transient 502s. Sonnet.
+- **Route-level deferral** (from 1b deviation 1; hard evidence: 209 of 446
+  deferred containers on Playcom sat under hidden routes): the router hides
+  inactive `[x-route]` subtrees with `hidden`; deferring them means an
+  inactive page holds zero bindings. Needs the router's cooperation (render
+  on route activation, prerender parity, `$refs`/anchors across routes) and
+  its own soak. Fable, after P5.
+
+### 11.4 Docs (separate session)
+Principle: **defaults live where the feature is used, mechanics live once.**
+- Existing articles get one plain-language section each: Dropdowns/menus
+  ("Closed menus cost nothing" — automatic; `x-defer.priority` for hot menus;
+  `.off`), Tabs and Dialogs (one line each), Data ("How data updates" —
+  per-source, rows keep identity, local edits show instantly, `$fresh`),
+  Lists/x-virtual ("Big lists inside menus").
+- New article **Computed values** (`$computed`) beside state/getters.
+- New **Performance** guide in the developers/advanced family: mental model
+  (closed containers, landings, computed), `x-defer` reference (modifiers,
+  priority, kill switch, `manifest:defer-render`, `ManifestDefer.stats()`),
+  diagnostics, the probe, "when it's slow" checklist. Feeds the
+  `manifest-performance` connector skill and llms.txt.
