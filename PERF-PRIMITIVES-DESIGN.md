@@ -1189,3 +1189,19 @@ by observing the list during the switch); zero additional server calls.
   side: publish-time concatenation into one classic file (expected ~8s → <1s).
   One CDN sample of an aborted `manifest.components.min.js` fetch (8.2s,
   status 0) is attributed to that queue; re-check after their concat.
+
+**§12.2 status: SHIPPED to master (merge 3e46256, 2026-09-02)** — 32 tests
+(330→332 with the merge), `core/manifest.data.persist.js`, in-memory IDB
+double for tests, `scripts/perf/persist.mjs`. Harness: warm first row 407ms
+from disk (`$stale` true) vs 1,316ms cold; one request per source cold and
+warm; logout → 0 keys; scope switch: list emptied at 46ms, 0/41 samples show
+a foreign row. Deviations, accepted: records carry `locale`; framework
+version stamped at build (`MANIFEST_BUILD_VERSION`), mismatches deleted;
+scope tracked reactively as well as on auth events (team switches fire no
+event); boot hydration awaited inside init with a 100ms cap; writes on any
+network landing (not only fresh); `maxRows` without a recency field keeps
+insertion order; API-URL failed FIRST load lands the default with `$error`
++ `$stale` (failed RELOADS keep rows); `$wipe` is IDB-only (memory cleared
+on scope change); `window.ManifestData` created for the hooks. Store API
+for primitive 3: `ManifestDataPersist.records` (`enable/enabled/scope/key/
+get/put/delete/keys/clear/valid/ttl/stamp`) + `manifest:persist:scope`.
