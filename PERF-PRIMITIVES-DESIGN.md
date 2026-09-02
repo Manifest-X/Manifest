@@ -1421,7 +1421,10 @@ in.
   with no record (pre earned-slot) are pruned on adoption (read keyed by id,
   not position — a promote can reorder the live array mid-read). Also
   `SLICE_MAX` 8 → 2 for prewarm: one big menu render is already a long task.
-  Open: a second `manifest.json?t=` request on their page (components registry
+  The `?t=` request was Playcom's own helper; the remaining +28ms fetch was the
+  localization plugin (`getAvailableLocales` never awaited `__manifestPromise`) →
+  fixed b3ed07e; 1 config fetch per boot verified with CDP initiator stacks.
+  → RC.4 (with the `device` rename): rows 1–2 PASS on next.4; release tree.  Open: a second `manifest.json?t=` request on their page (components registry
   fallback; initiator requested). → RC.4 (with the `device` rename).
 
 ## 15. Next: publish-time utility CSS (proposed 2026-09-02, post-0.5.199)
