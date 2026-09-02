@@ -1358,8 +1358,9 @@ hydrates from it synchronously before the adapter load starts; a first open
 still races (never awaits). (2) Ephemeral ids (`copilot-_new:0-<ts>`, 0
 messages) took index slots at open(): a slot is now earned on the first
 non-empty write; an evicted conversation re-enters on its next message
-(activity is recency); `$chat.open(id, { persist: false })` opts a handle out
-entirely. Tests 26 (was 22).
+(activity is recency); `$chat.open(id, { persistWindow: false })` opts a handle out
+entirely (namespaced: the open() bag is the adapter's contract, Playcom's
+adapter already read `opts.persist`). Tests 26 (was 22).
 
 Deviations: `meta.externalId` is now a general secondary identity in the
 store's `upsert` (applies to realtime too); after a scope change handles go
