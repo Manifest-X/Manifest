@@ -1279,3 +1279,43 @@ insertion order; API-URL failed FIRST load lands the default with `$error`
 on scope change); `window.ManifestData` created for the hooks. Store API
 for primitive 3: `ManifestDataPersist.records` (`enable/enabled/scope/key/
 get/put/delete/keys/clear/valid/ttl/stamp`) + `manifest:persist:scope`.
+
+### 12.4 Primitive 3 — persisted chat windows: SHIPPED to master (merge dd25319, 2026-09-02)
+
+22 tests in `tests/chat-persist.test.js`; suite 455/455 after merge. New
+`src/scripts/chat/manifest.chat.persist.js` (`window.ManifestChatPersist`),
+store/main edits, `data.persist.js` `state.external` (a prior
+`records.enable()` survives the data plugin's later `configure()`).
+
+Config: `"chat": { "persist": true | { "messages": 50, "conversations": 30,
+"ttl": "7d", "strip": [...] } }` (also under `ai`). Off by default; needs the
+data plugin. Records on the same DB/object store as `$x`: conversation
+`${scope}|chat|${id}` → `{ kind:'chat', rows:[last N non-optimistic
+messages], … }`; index `${scope}|chat` → `{ kind:'chat-index', recent:[ids]
+}` most-recently-opened first, capped at `conversations`, overflow records
+deleted immediately. Strip = always-on secrets + configured names/globs/dotted
+paths + every `_*` key + functions. 500ms debounce per conversation, all due
+conversations + index in one `records.put` transaction.
+
+Open/hydrate/reconcile: `$chat.open(id)` starts hydrate and the adapter load
+together (never awaits hydration); record-first → rows flagged `_hydrated`,
+`$chat.stale` true, status stays `loading`; adapter lands → reconcile (absent
+by id or `meta.externalId` dropped, fresh rows upsert onto existing rows
+keeping identity, optimistic sends while stale survive); late hydration
+discarded; failed load keeps the window (stale, `status='error'`). Scope
+change / logout / session-cleared → generation bump, pending writes
+cancelled, every handle `reset()` to empty+idle. `$chat.persistence()` →
+`{ enabled, conversations:[{ id, messages, savedAt, stale }] }`.
+
+Numbers (`scripts/perf/chat-persist.mjs`, netMs 400): warm reload first row
+**366ms stale** (cold 1109ms); in-page warm open first row **16ms** (cold
+414ms); eviction 31 → 30 records, evicted exactly the least-recently-opened;
+scope switch 0 foreign samples, window empty at 10ms.
+
+Deviations: `meta.externalId` is now a general secondary identity in the
+store's `upsert` (applies to realtime too); after a scope change handles go
+idle rather than re-opening (re-opening old ids under a new scope could
+render another workspace's messages) — the app re-opens as it navigates;
+aggregate handles not persisted (`$chat.merge` reports `stale` from members);
+`ManifestDataPersist.configure()` returns `true` only when a `$x` source opted
+in.
