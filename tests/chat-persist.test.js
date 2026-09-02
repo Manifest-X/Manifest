@@ -262,6 +262,19 @@ describe('open → hydrate → reconcile', () => {
         expect(h.messages[0].status).toBe('read')
     })
 
+    it('externalId is scoped by channel: the same platform id on two channels stays two messages', async () => {
+        const { open, net } = await load({ persist: true })
+        net.rows = () => [msg('m1', 1, { meta: { externalId: '1001', channel: 'tg-bot-a' } })]
+        const h = open('c1')
+        await settle()
+        net.handlers.c1.onMessage(msg('m2', 2, { meta: { externalId: '1001', channel: 'tg-bot-b' } }))
+        expect(ids(h.messages)).toEqual(['m1', 'm2'])
+        net.handlers.c1.onMessage(msg('m1-canonical', 1, { meta: { externalId: '1001', channel: 'tg-bot-a' }, status: 'read' }))
+        expect(ids(h.messages)).toEqual(['m1-canonical', 'm2'])
+        net.handlers.c1.onMessage(msg('m1-late', 3, { meta: { externalId: '1001' } }))   // channel-less never matches a channel row
+        expect(ids(h.messages)).toEqual(['m1-canonical', 'm2', 'm1-late'])
+    })
+
     it('a send while stale survives the reconcile', async () => {
         idb.seed(DB(), record('', 'c1', [msg('m1', 1)]))
         const { open, net } = await load({ persist: true })

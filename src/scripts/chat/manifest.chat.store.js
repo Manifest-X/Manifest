@@ -116,7 +116,16 @@
             return _msgs.find(m => m._optimistic && m._clientId === cid) || null;
         }
 
-        const extOf = (m) => (m && m.meta && m.meta.externalId != null ? m.meta.externalId : null);
+        // externalId is a platform id, unique only within a channel — scope it by meta.channel when present
+        const extOf = (m) => {
+            if (!m || !m.meta || m.meta.externalId == null) return null;
+            return m.meta.channel != null ? `${m.meta.channel}\u0000${m.meta.externalId}` : String(m.meta.externalId);
+        };
+        // a channel-scoped lookup falls back to a channel-less row with the same externalId
+        const extLookup = (m) => {
+            const e = extOf(m); if (e == null) return null;
+            return _byExt.get(e) || (m.meta.channel != null ? _byExt.get(String(m.meta.externalId)) : null) || null;
+        };
         function indexExt(m) { const e = extOf(m); if (e != null) _byExt.set(e, m); }
         function unindexExt(m) { const e = extOf(m); if (e != null && _byExt.get(e) === m) _byExt.delete(e); }
 
@@ -124,7 +133,7 @@
         function upsert(raw) {
             const incoming = normalize(raw, ++seq);
             let prev = incoming.id != null ? _byId.get(incoming.id) : null;
-            if (!prev) { const e = extOf(incoming); if (e != null) prev = _byExt.get(e) || null; }
+            if (!prev) prev = extLookup(incoming);
             const pending = prev ? null : claimPending(incoming);
             if (prev) {
                 if (incoming.id != null && prev.id !== incoming.id) _byId.delete(prev.id);
@@ -203,7 +212,7 @@
 
         function reconcile(res) {
             const ids = new Set(), exts = new Set();
-            for (const m of (res && res.messages) || []) { if (m.id != null) ids.add(m.id); const e = extOf(m); if (e != null) exts.add(e); }
+            for (const m of (res && res.messages) || []) { if (m.id != null) ids.add(m.id); const e = extOf(m); if (e != null) { exts.add(e); if (m.meta.channel != null) exts.add(String(m.meta.externalId)); } }
             for (let i = _msgs.length - 1; i >= 0; i--) {
                 const m = _msgs[i];
                 if (!m._hydrated || ids.has(m.id) || (extOf(m) != null && exts.has(extOf(m)))) continue;
