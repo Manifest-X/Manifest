@@ -156,12 +156,61 @@
                             "minChangeThreshold": { "type": "number" },
                             "idleThreshold": { "type": "number" },
                             "enableVisualRendering": { "type": "boolean" },
-                            "includeVelocity": { "type": "boolean" }
+                            "includeVelocity": { "type": "boolean" },
+                            "persist": {
+                                "description": "Persist this source's rows in IndexedDB and hydrate them before the network on the next visit (stale until the first fresh landing). `true` = boot tier with defaults.",
+                                "oneOf": [
+                                    { "type": "boolean" },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "tier": {
+                                                "type": "string",
+                                                "enum": ["boot", "lazy"],
+                                                "default": "boot",
+                                                "description": "boot: hydrate during data-plugin init, before the first paint; lazy: hydrate on the first $x.<source> read."
+                                            },
+                                            "maxRows": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "default": 1000,
+                                                "description": "Rows kept at write time (the most recent by `recent`)."
+                                            },
+                                            "recent": {
+                                                "type": "string",
+                                                "description": "Field that orders recency for `maxRows` (default $updatedAt if present, else insertion order)."
+                                            },
+                                            "ttl": {
+                                                "oneOf": [{ "type": "string" }, { "type": "number" }],
+                                                "default": "7d",
+                                                "description": "Snapshot lifetime: a duration string (`7d`, `12h`, `30m`) or milliseconds. Expired entries are ignored and deleted."
+                                            },
+                                            "strip": {
+                                                "type": "array",
+                                                "items": { "type": "string" },
+                                                "description": "Field names or glob patterns removed from every row before it is written. `*secret*`, `*token*`, `*password*` and `credentials*` are always stripped."
+                                            }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                ]
+                            }
                         },
                         "additionalProperties": true
                     }
                 ]
             }
+        },
+        "persistence": {
+            "type": "object",
+            "description": "Persisted $x settings (sources opt in with `persist`).",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "description": "Expression evaluated with the magics available (e.g. \"$auth.currentTeam?.$id\"); re-evaluated on every manifest:auth:* event. Snapshots are keyed by its value; a change wipes the previous scope and rehydrates. Omit for a single-tenant scope."
+                }
+            },
+            "additionalProperties": false
         },
         "appwrite": {
             "type": "object",

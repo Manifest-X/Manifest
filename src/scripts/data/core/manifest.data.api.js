@@ -39,9 +39,10 @@ async function loadFromAPI(dataSource) {
 
         return data;
     } catch (error) {
-        console.error(`[Manifest Data] Failed to load API dataSource:`, error);
-        // Return empty array/object to prevent breaking the UI
-        return Array.isArray(dataSource.defaultValue) ? dataSource.defaultValue : (dataSource.defaultValue || []);
+        // Callers decide: a first load may land `defaultValue`, a reload keeps its live rows
+        const err = error instanceof Error ? error : new Error(String(error));
+        err.defaultValue = dataSource.defaultValue !== undefined ? dataSource.defaultValue : [];
+        throw err;
     }
 }
 

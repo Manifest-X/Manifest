@@ -212,6 +212,11 @@ function registerXMagicMethod(loadDataSource) {
                         };
                     }
 
+                    // $x.$wipe() / $wipe(source) / $wipe({ all: true }) — persisted snapshots (§12.2)
+                    if (prop === '$wipe') {
+                        return (arg) => window.ManifestDataPersist?.wipe?.(arg) ?? Promise.resolve(false);
+                    }
+
                     // $x.all — lazy cross-source array, versioned by _v.all
                     if (prop === 'all') {
                         return window.ManifestDataStore?.getAll?.() ?? [];
@@ -232,6 +237,16 @@ function registerXMagicMethod(loadDataSource) {
                     }
                     const nestedCache = window.ManifestDataProxiesCore.nestedDataSourceProxyCache;
                     const hasData = rawValueEarly !== undefined && rawValueEarly !== null;
+
+                    // Persisted source (§12.2): hydrated rows are stale until the network
+                    // lands, so the first read still fetches (hydration races it)
+                    const persist = window.ManifestDataPersist;
+                    if (hasData && persist?.needsFetch?.(prop)) {
+                        const locale = (typeof document !== 'undefined' && document.documentElement?.lang)
+                            || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';
+                        Promise.resolve(loadDataSource(prop, locale))
+                            .then(result => persist.onFetchSettled?.(prop, result), () => persist.onFetchSettled?.(prop, null));
+                    }
                     {
                         if (nestedCache.has(prop) && hasData) {
                             const cachedProxy = nestedCache.get(prop);
@@ -263,6 +278,7 @@ function registerXMagicMethod(loadDataSource) {
                     // this source lands), return loading proxy. Reading only the
                     // version avoids re-entry/overflow.
                     if (!hasData) {
+                        persist?.onRead?.(prop); // lazy-tier hydration on first read
                         if (!pendingLoads.has(prop)) {
                             const locale = typeof document !== 'undefined' && document.documentElement
                                 ? document.documentElement.lang

@@ -28,6 +28,9 @@ let allDirty = true;
 // Per-source freshness: `$fresh` resolves on the first network-fresh landing of this page-load
 const freshness = new Map(); // source -> { promise, resolve, done }
 
+// Per-source generation: bumped by resetSource so an in-flight load of the old scope never lands
+const sourceGen = new Map();
+
 // Deep seal so Alpine won't proxy (double-proxying causes recursion)
 function deepSeal(obj) {
     if (obj === null || typeof obj !== 'object') {
@@ -141,6 +144,38 @@ function sourceFreshness(dataSourceName) {
 function markFresh(dataSourceName) {
     const f = sourceFreshness(dataSourceName);
     if (!f.done) { f.done = true; f.resolve(); }
+}
+
+function sourceGeneration(dataSourceName) {
+    return sourceGen.get(dataSourceName) || 0;
+}
+
+// Drop a source from memory (rows, caches, in-flight keys, freshness): the
+// next read hydrates/fetches for the new scope; older loads are discarded
+function resetSource(dataSourceName) {
+    sourceGen.set(dataSourceName, sourceGeneration(dataSourceName) + 1);
+    const prefix = `${dataSourceName}:`;
+    for (const key of [...dataSourceCache.keys()]) if (key.startsWith(prefix)) dataSourceCache.delete(key);
+    for (const key of [...loadingPromises.keys()]) if (key.startsWith(prefix)) loadingPromises.delete(key);
+    freshness.delete(dataSourceName);
+    pendingLocal.delete(dataSourceName);
+    for (let i = pendingLandings.length - 1; i >= 0; i--) {
+        if (pendingLandings[i].source !== dataSourceName) continue;
+        pendingLandings.splice(i, 1);
+        landingResolvers.splice(i, 1)[0]?.();
+    }
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return;
+    ensureStoreShape(store);
+    store[dataSourceName] = null;
+    rawDataStore.delete(dataSourceName);
+    store[`_${dataSourceName}_state`] = { loading: false, error: null, ready: false, stale: true, errorTime: null };
+    const proxies = window.ManifestDataProxies;
+    proxies?.clearAccessCache?.(dataSourceName);
+    proxies?.clearArrayProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearRouteProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearNestedProxyCacheForDataSource?.(dataSourceName);
+    touchSources(store, [dataSourceName]);
 }
 
 // State-only write (loading/error) — rows stay live, no version bump
@@ -336,17 +371,19 @@ function flushLandings() {
 
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     const touched = new Set();
+    const landed = new Set(); // network-origin landings (persistence snapshots these)
     let settled = false;
     if (store) {
         for (const op of ops) {
             try {
                 if (op.remove) {
-                    if (removeRows(store, op.source, op.remove)) touched.add(op.source);
+                    if (removeRows(store, op.source, op.remove)) { touched.add(op.source); landed.add(op.source); }
                     continue;
                 }
                 const state = writeSource(op.source, op.rows, op.options);
                 if (!state) continue;
                 touched.add(op.source);
+                if (!op.options.persistHydration && op.rows !== null && op.rows !== undefined) landed.add(op.source);
                 // Only load completions (explicit loading state) feed render-ready; realtime upserts never do
                 if (op.options.loading !== undefined && !state.loading) settled = true;
             } catch (error) {
@@ -367,6 +404,7 @@ function flushLandings() {
         if (touched.size) touchSources(store, touched);
     }
     resolvers.forEach(resolve => resolve());
+    if (landed.size) window.ManifestDataPersist?.onLanded?.(landed);
     if (settled) checkAndDispatchRenderReady();
 }
 
@@ -1181,6 +1219,9 @@ window.ManifestDataStore = {
     setSourceState,
     runDeduped,
     sourceFreshness,
+    // Persistence (§12.2)
+    sourceGeneration,
+    resetSource,
     touchSource,
     bumpAllVersions,
     mergeRowFields,
