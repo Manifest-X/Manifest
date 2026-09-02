@@ -591,7 +591,7 @@ no new regressions → `npm run release` (0.5.198).
 
 ### 10.7 RC.2 soak findings on Playcom's real tree → RC.3 (2026-09-02)
 
-Driven directly (headless Chrome, their candidate tree pinned to RC.2):
+Driven directly (headless Chrome 148 via puppeteer, macOS M5 Pro): Playcom-Platform candidate tree at commit **undefined** (undefined; the "platform-cand" scratch copy, loader + data-version pinned to 0.5.198-next.2, served by `mnfst-run` on :61500), guest sandbox on Acme Games, path guest → Inbox → Sven Novak → Contact → "Contact fields" kebab → "Set countries" (context-options-contact.html:96 → its menu ~:111). Numbers below are from that tree; re-check the commit before assuming a later tree matches.
 - **"Empty scope at click" was a measurement artifact**: `Object.keys(Alpine.$data(el))`
   is always `[]` (the merge proxy has no property-descriptor trap); the
   scope was initialised. The 1s wait they saw was not reproducible on an
