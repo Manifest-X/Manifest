@@ -293,6 +293,32 @@ twin (`src/test-prerender`).
 
 ## 5. P6 — `$x` landing model
 
+**Status: SHIPPED to master (merge 3fd8c12, 2026-09-01)** — subscripts
+`core/manifest.data.store.js`, `shared/manifest.data.{main,mutations,
+proxies.appwrite,proxies.magic.core}.js`; `tests/data-landing.test.js` (27
+tests, real subscripts via vm on real Alpine); harness `?source=x` mode +
+`scripts/perf/landing.mjs`. Internal API: `landRows(source, rows, {mode})` /
+`landRemove` / `flushLandings` for the network path (one flush per frame,
+awaitable); `updateStore` + the mutation functions stay synchronous local
+writes; `_v[source]` per-source versions (`_dataVersion` kept only for
+status/datepicker/charts readers); `$x.all` is real and lazy. **Zero
+whole-store replacements remain in the data layer.** Playcom-shaped numbers
+(before → after): cold switch 9,134 → 486 mutations; warm switch 5,055 →
+448; single-row local write 4,910 → 44 (0ms blocked); 9 page landings
+85,244 → 5,717 mutations; realtime upserts 57,571 → 583 mutations, 1,341 →
+0ms blocked. Deviations, accepted:
+1. Optimistic create ack (temp → real `$id`) replaces that row object in
+   place (`$files` is bound to `$id`); array identity kept.
+2. `$id`-less rows (CSV/YAML/JSON) are not merged positionally on replace —
+   fresh objects, as before.
+3. A cache-miss RELOAD of an already-landed source still writes `null` +
+   `loading:true` first, dropping row identity — P5 stale-first territory.
+   Playcom's per-switch row landing must arrive via realtime/`$update`, not
+   a reload, to benefit (flagged to them).
+4. The post-settle render-ready hammer (`bumpAllVersions`) now arms only on
+   landings carrying an explicit load state; realtime landings never arm it
+   (on HEAD every landing armed it, doubling its cost).
+
 Three changes to `updateStore` and friends, all internal, no API change:
 
 1. **Per-source versioning.** Replace the single `_dataVersion` subscription
@@ -384,7 +410,7 @@ may justify the plugin.
 | 0 | Harness + baseline | Sonnet 5 (review by coordinator) | new files only |
 | 1a | `$computed` — DONE c06467c | Fable | coordinator session |
 | 1b | `x-defer` + automatic deferral + prerender parity — DONE bf5b2aa | Fable | worktree agent |
-| 1c | P6 landing model | Fable | worktree agent (manifest.data.js is 11.6k lines — narrow diff) |
+| 1c | P6 landing model — DONE 3fd8c12 | Fable | worktree agent |
 | 2 | P4 docs/warning, P5 stale-first + `$fresh` + request dedupe | Sonnet 5 | any |
 | 3 | P3 engine spike, go/no-go | Fable | worktree |
 
@@ -482,3 +508,19 @@ also covers local writes: a one-field write on one row re-runs only that
 row's/source's consumers; never the store. Perf-Base pinned: Playcom-Platform
 tag `perf-base-sep2` (9bc0c058, staging `?v=c5dcfa9f36dd`); scenario = rows
 5/6 prefetched-vs-cold, row 20 cold, row 21 cold, reopen row 20.
+
+### 10.2 Post-Phase-1 (master 3fd8c12, all three primitives, `/perf?source=x&upsertEveryMs=100000`)
+
+| Scenario | mutations | blockedMs | note |
+|---|---|---|---|
+| first-open (cold switch) | 5,948 | 119 | includes x-defer prewarm slices in the body-wide settle window (§9); the bare gesture measured 486 on the P6 branch |
+| warm-switch | **448** | **0** | was 5,055 |
+| menu-open | 0 | 0 | inputLatencyMs 124 this run vs ~90 on the 1b branch — re-check variance/prewarm timing before the A/B |
+| local-write (one field, one row) | **44** | **0** | was 4,910 / ~80ms |
+
+For the Playcom A/B: **blocked time is the fair metric** for gesture windows
+measured within ~15s of `manifest:ready` — mutation counts will include
+prewarm slices until they drain (≤1 container/s). Pin the RC with
+`data-version="<x.y.z-next.n>"` on the loader script; the RC is a
+prerelease under the `next` dist-tag (`npm run release:next`), so `latest`
+stays clear for the real release.

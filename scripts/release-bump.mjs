@@ -37,7 +37,22 @@ if (!m) {
   console.error(`release-bump: can't parse a semver from "${base}" for ${pkg.name}`);
   process.exit(1);
 }
-const next = `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
+let next = `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
+// --pre <tag>: prerelease off the next patch (0.5.198-next.0), so `latest` stays clear for the real release
+const preIdx = process.argv.indexOf('--pre');
+const pre = preIdx !== -1 ? process.argv[preIdx + 1] : null;
+if (pre) {
+  let taken = [];
+  try {
+    const out = execSync(`npm view ${pkg.name} versions --json`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const parsed = JSON.parse(out);
+    taken = Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    /* unpublished or offline — first prerelease */
+  }
+  const prefix = `${next}-${pre}.`;
+  next = `${prefix}${taken.filter(v => typeof v === 'string' && v.startsWith(prefix)).length}`;
+}
 
 const versionRe = /("version"\s*:\s*")[^"]*(")/;
 if (!versionRe.test(raw)) {
