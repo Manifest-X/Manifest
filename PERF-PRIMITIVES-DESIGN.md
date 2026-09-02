@@ -1423,3 +1423,17 @@ in.
   `SLICE_MAX` 8 → 2 for prewarm: one big menu render is already a long task.
   Open: a second `manifest.json?t=` request on their page (components registry
   fallback; initiator requested). → RC.4 (with the `device` rename).
+
+## 15. Next: publish-time utility CSS (proposed 2026-09-02, post-0.5.199)
+
+Playcom (Acme Demo, visible): the utilities JIT patches the runtime stylesheet
+85 times over the first 19s (10 style inserts, 3 after the list renders;
+`utilitiesReady` 4.2s) — Andrew sees "items reposition after they've loaded".
+Shape: the render step already runs the page headless; after prerender, capture
+the utilities plugin's generated stylesheet and emit it as static CSS in the
+deployed tree (hosting/publish for SPA sites via the same headless pass), and
+teach the runtime compiler to treat rules already present as covered so the JIT
+only patches classes that appear later (user content, late components).
+Acceptance: zero style inserts before first paint on a prerendered page; JIT
+patches only for classes absent from the static sheet; `utilitiesReady`
+before first paint. Owner/priority: Andrew.
