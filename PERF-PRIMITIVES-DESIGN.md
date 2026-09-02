@@ -1312,6 +1312,12 @@ Numbers (`scripts/perf/chat-persist.mjs`, netMs 400): warm reload first row
 414ms); eviction 31 → 30 records, evicted exactly the least-recently-opened;
 scope switch 0 foreign samples, window empty at 10ms.
 
+Playcom review (718015f): `meta.externalId` is a platform id unique only within
+a channel, so the secondary identity is `(meta.channel, externalId)` when
+`channel` is present; a channel-scoped lookup still upgrades a channel-less
+row with the same externalId; a channel-less incoming never matches a channel
+row.
+
 Deviations: `meta.externalId` is now a general secondary identity in the
 store's `upsert` (applies to realtime too); after a scope change handles go
 idle rather than re-opening (re-opening old ids under a new scope could
