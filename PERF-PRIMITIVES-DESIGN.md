@@ -1456,3 +1456,13 @@ via `mnfst/lib/manifest.utilities.node.mjs` (computed import; no-op until `mnfst
 injects `<link data-mnfst-utilities>` before the first stylesheet (idempotent;
 skipped when render already emitted a sheet), lists it in precache. Deploy after
 0.5.199 + `pnpm add mnfst@^0.5.199`.
+
+**§15 post-release findings (2026-09-02, after 0.5.199):** the node compiler
+emits only theme-variable-driven and custom utilities (static `.flex`/`.row`
+live in `manifest.min.css`), and 0.5.199's theme-variable regex dropped the
+last declaration of a block with no trailing `;` (so a minimal theme produced
+nothing). Fixed on master (merge 9430dc4; node shims; node-environment tests)
+→ patch release 0.5.200 required. Hosting must feed the CDN-linked
+`manifest.min.css` (cross-origin) as `themeCss` at publish or output is empty
+(Manifest-MCP `agent/utilities-theme`, in progress). Manifest-MCP main imports
+the compiler statically (7240e54; a Worker cannot resolve modules at runtime).
