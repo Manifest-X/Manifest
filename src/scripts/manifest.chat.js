@@ -451,10 +451,15 @@
         function commitParticipants() { state.participants = [..._participants.values()]; rev().n++; }
         function commitTyping() { state.typing = [..._typing.values()]; rev().n++; }
 
-        // server echo reconciles body/media/status onto the local copy
+        // server echo reconciles body/media/status onto the local copy; meta merges so a
+        // re-delivery from another source (no translation, no channel) never drops fields
         function merge(target, incoming) {
             Object.assign(target.body, incoming.body);
-            for (const k of Object.keys(incoming)) if (k !== 'body' && k !== '_seq') target[k] = incoming[k];
+            for (const k of Object.keys(incoming)) {
+                if (k === 'body' || k === '_seq') continue;
+                if (k === 'meta' && target.meta && incoming.meta && typeof incoming.meta === 'object') { Object.assign(target.meta, incoming.meta); continue; }
+                target[k] = incoming[k];
+            }
         }
 
         // own echo beating the ack: claim the pending row by meta.clientId

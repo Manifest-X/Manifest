@@ -317,6 +317,18 @@ describe('open → hydrate → reconcile', () => {
         expect(ids(h.messages)).toEqual(['m1-canonical', 'm2', 'm1-late'])
     })
 
+    it('a re-delivery of the same message merges meta instead of replacing it (translation fields survive an untranslated echo)', async () => {
+        const { open, net } = await load({ persist: true })
+        net.rows = () => [msg('m1', 1, { meta: { externalId: 'w1', channel: 'wa', tx: { lang: 'cs', text: 'Ahoj' } } })]
+        const h = open('c1')
+        await settle()
+        const before = h.messages[0].meta
+        net.handlers.c1.onMessage(msg('m1', 1, { meta: { externalId: 'w1', channel: 'wa' }, status: 'read' }))
+        expect(h.messages[0].status).toBe('read')
+        expect(h.messages[0].meta.tx).toEqual({ lang: 'cs', text: 'Ahoj' })
+        expect(h.messages[0].meta).toBe(before)   // same meta object across commits
+    })
+
     it('a send while stale survives the reconcile', async () => {
         idb.seed(DB(), record('', 'c1', [msg('m1', 1)]))
         const { open, net } = await load({ persist: true })
