@@ -37,4 +37,17 @@ describe('render pass', () => {
         expect(menu.outerHTML).not.toContain('<template')
         expect(menu.querySelector('li').textContent).toBe('row')
     })
+
+    it('keeps inactive routes eager even with the route flag on, so the snapshot carries the page', () => {
+        window.ManifestDeferConfig = { routes: true }
+        const host = document.createElement('div')
+        host.innerHTML = `<div x-data><div x-route="/away" hidden id="r"><p x-init="counts.r = 1" x-text="'page'"></p></div></div>`
+        document.body.appendChild(host)
+        Alpine.initTree(host)
+        const route = host.querySelector('#r')
+        expect(route.__mnfstDefer).toBeFalsy()
+        expect(window.counts.r).toBe(1)
+        expect(route.outerHTML).not.toContain('<template')
+        expect(route.querySelector('p').textContent).toBe('page')
+    })
 })

@@ -208,6 +208,21 @@ describe('flag on', () => {
         expect(host.querySelector('#nf').hasAttribute('hidden')).toBe(false)
     })
 
+    it('never defers on a prerendered static page: hydration keeps the served route eager', () => {
+        const meta = document.createElement('meta')
+        meta.setAttribute('name', 'manifest:prerendered')
+        meta.setAttribute('content', '1')
+        document.head.appendChild(meta)
+        try {
+            // Static output carries only the served route; its condition may not match the dev URL the test runs under
+            mount(`<div x-data><div x-route="/served" id="served"><p x-init="counts.served = 1"></p></div></div>`)
+            expect(document.getElementById('served').__mnfstDefer).toBeFalsy()
+            expect(window.counts.served).toBe(1)
+        } finally {
+            meta.remove()
+        }
+    })
+
     it('x-defer.off keeps a route eager', () => {
         mount(`<div x-data><div x-route="/eager" hidden x-defer.off id="eager"><p x-init="counts.eager = 1"></p></div></div>`)
         expect(document.getElementById('eager').__mnfstDefer).toBeFalsy()
