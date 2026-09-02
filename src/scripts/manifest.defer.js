@@ -20,10 +20,10 @@ let idleHandle = null;
 // Urgent = mounted after boot, within a gesture window (a pane the user just opened), capped per gesture
 const URGENT_WINDOW_MS = 1500;
 const URGENT_CAP = 8;
-const PREWARM_CAP = 48;          // non-urgent renders per page — beyond this, containers render on open
+const PREWARM_CAP = (window.ManifestDeferConfig && window.ManifestDeferConfig.prewarmCap) || 48; // warm-but-unopened containers kept live
 const IDLE_BUDGET_MS = 4;
 const SLICE_MAX = 8;
-let prewarmed = 0;
+const warm = new Set();          // prewarmed, never opened by the user
 let lastGestureAt = -Infinity;
 let urgentWindowAt = -Infinity;
 let urgentInWindow = 0;
@@ -115,10 +115,11 @@ function register(el, rule, opts) {
     return rec;
 }
 
-function render(rec) {
-    if (rec.rendered) return;
+function render(rec, viaPrewarm) {
+    if (rec.rendered) { if (!viaPrewarm) warm.delete(rec); return; }
     rec.rendered = true;
     pending.delete(rec);
+    if (viaPrewarm) warm.add(rec); else warm.delete(rec);
     const { el, tpl } = rec;
     const content = rec.discard ? tpl.content.cloneNode(true) : tpl.content;
     Alpine.mutateDom(() => {
@@ -138,6 +139,35 @@ function teardown(rec) {
         while (el.firstChild) el.firstChild.remove();
         el.appendChild(tpl);
     });
+}
+
+// Evict a warm, still-closed, never-opened container back to its stash (least reachable first)
+function restash(rec) {
+    if (!rec.rendered) return;
+    rec.rendered = false;
+    rec.near = undefined;
+    const { el, tpl } = rec;
+    Alpine.mutateDom(() => {
+        Array.from(el.children).forEach((child) => Alpine.destroyTree(child));
+        while (el.firstChild) tpl.content.appendChild(el.firstChild);
+        el.appendChild(tpl);
+    });
+    warm.delete(rec);
+    pending.add(rec);
+}
+
+function evict() {
+    while (warm.size > PREWARM_CAP) {
+        let victim = null, score = -1;
+        for (const rec of warm) {
+            if (!rec.el.isConnected) { warm.delete(rec); continue; }
+            if (rec.rule === 'popover' && isPopoverOpen(rec.el)) continue;
+            const sc = (reachable(rec.el) ? 0 : 2) + (nearViewport(rec.el) ? 0 : 1);
+            if (sc > score) { victim = rec; score = sc; }
+        }
+        if (!victim) return;
+        restash(victim);
+    }
 }
 
 // ---- Open signals ----
@@ -201,7 +231,7 @@ function next() {
     let best = null, bestRank = 0;
     for (const rec of pending) {
         if (!rec.el.isConnected) { pending.delete(rec); continue; }
-        if (!reachable(rec.el) || (!rec.urgent && prewarmed >= PREWARM_CAP)) continue;
+        if (!reachable(rec.el)) continue;
         const r = rank(rec);
         if (!best
             || r < bestRank
@@ -226,10 +256,10 @@ function schedule() {
             const rec = next();
             if (!rec) break;
             for (const other of pending) other.near = undefined;
-            render(rec);
-            if (!rec.urgent) prewarmed++;
+            render(rec, true);
             n++;
         } while (deadline && !deadline.didTimeout && deadline.timeRemaining() > IDLE_BUDGET_MS && n < SLICE_MAX);
+        evict();
         schedule();
     }, head.urgent ? 100 : 500);
 }
@@ -279,7 +309,8 @@ window.ManifestDefer = {
     enabled: !killed,
     defer,
     render: (el) => { if (el && el.__mnfstDefer) render(el.__mnfstDefer); },
-    isPending: (el) => !!(el && el.__mnfstDefer && !el.__mnfstDefer.rendered)
+    isPending: (el) => !!(el && el.__mnfstDefer && !el.__mnfstDefer.rendered),
+    stats: () => ({ pending: pending.size, warm: warm.size, cap: PREWARM_CAP, ready, bootDrained })
 };
 if (window.Manifest && typeof window.Manifest === 'object') window.Manifest.defer = defer;
 

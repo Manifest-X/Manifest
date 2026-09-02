@@ -264,6 +264,23 @@ describe('prewarm', () => {
         expect(window.ManifestDefer.isPending(document.getElementById('away'))).toBe(true)
     })
 
+    it('keeps at most the cap warm, re-stashing the least reachable unopened container', () => {
+        while (idleQueue.length) runIdle()
+        const cap = window.ManifestDefer.stats().cap
+        const warmBefore = window.ManifestDefer.stats().warm
+        const host = mount(`<div x-data>` + Array.from({ length: cap + 3 }, (_, i) => `<menu popover id="w` + i + `"><li x-init="counts.w = (counts.w || 0) + 1"></li></menu>`).join('') + `</div>`)
+        let guard = 0
+        while (idleQueue.length && guard++ < 200) runIdle(true)
+        const st = window.ManifestDefer.stats()
+        expect(st.warm).toBeLessThanOrEqual(cap)
+        expect(window.counts.w).toBeGreaterThanOrEqual(cap - warmBefore)
+        const stashed = Array.from(host.querySelectorAll('menu')).filter((m) => stash(m))
+        expect(stashed.length).toBeGreaterThan(0)
+        // an evicted container still opens on demand from its restored stash
+        openPopover(stashed[0])
+        expect(stashed[0].querySelector('li')).toBeTruthy()
+    })
+
     it('caps urgent containers per gesture', () => {
         while (idleQueue.length) runIdle()
         document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
