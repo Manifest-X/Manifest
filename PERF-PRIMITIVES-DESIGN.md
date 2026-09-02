@@ -581,3 +581,10 @@ RC.0 + the urgent-prewarm fix (6d5540c): containers registered after
 timeout. Playcom re-measures only countries-first-open and cold switch #1.
 Promotion gate: countries first open ≤250ms ceiling (≤100ms target), no new
 regressions → `npm run release` (lands as 0.5.198).
+
+### 10.6 RC.2 — `mnfst@0.5.198-next.2` (2026-09-02)
+
+RC.1 + the three-way urgency gate (30e7ff1). Verified on registry and both
+CDNs after a propagation grace. Promotion gate unchanged: quiet-machine boot
+and idle window match RC.0 (idle = 0ms blocked), countries first-open ≤250ms,
+no new regressions → `npm run release` (0.5.198).
