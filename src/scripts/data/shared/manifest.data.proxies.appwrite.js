@@ -392,16 +392,22 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries || [],
                         scope
                     );
-                    const result = await window.ManifestDataAppwrite.loadTableRows(
-                        appwriteConfig.databaseId,
-                        tableId,
-                        appwriteQueries
-                    );
-                    // Network landing: query result replaces the source (coalesced, identity-preserving)
-                    if (result !== undefined && window.ManifestDataStore?.landRows) {
-                        await window.ManifestDataStore.landRows(dataSourceName, result, { mode: 'replace' });
-                    }
-                    return result;
+                    // Dedupe key: source + serialized queries (never across different queries)
+                    const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
+                    const { runDeduped, landRows } = window.ManifestDataStore || {};
+                    const run = async () => {
+                        const result = await window.ManifestDataAppwrite.loadTableRows(
+                            appwriteConfig.databaseId,
+                            tableId,
+                            appwriteQueries
+                        );
+                        // Network landing: query result replaces the source (coalesced, identity-preserving)
+                        if (result !== undefined && landRows) {
+                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true });
+                        }
+                        return result;
+                    };
+                    return runDeduped ? await runDeduped(key, run) : await run();
                 }
             }
 

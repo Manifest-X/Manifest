@@ -450,37 +450,56 @@ async function checkFileMatchesScope(file, scope) {
     });
 }
 
-// Load dataSource data
-async function loadDataSource(dataSourceName, locale = 'en') {
-    const cacheKey = `${dataSourceName}:${locale}`;
-    const { dataSourceCache, loadingPromises, isInitializing, updateStore, landRows } = window.ManifestDataStore;
+// Rows already in the store (array or object) — a reload keeps them live
+function hasLiveRows(dataSourceName) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const raw = store ? (window.ManifestDataStore?.rawOf?.(store) || store) : null;
+    const current = raw ? raw[dataSourceName] : undefined;
+    return current !== null && current !== undefined;
+}
 
-    // Memory cache. Serving cached data is fine, but writing an old locale to the
-    // live store would clobber a concurrent locale switch — so guard the store
-    // write via the `_locale` stamp (unstamped/non-localized data writes freely).
-    if (dataSourceCache.has(cacheKey)) {
+function liveLocale() {
+    return (typeof document !== 'undefined' && document.documentElement?.lang)
+        || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current)
+        || 'en';
+}
+
+// Load dataSource data. options.reload: bypass the memory cache and refetch;
+// existing rows stay live ($loading only), fresh rows merge by $id.
+async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
+    locale = locale || 'en';
+    const cacheKey = `${dataSourceName}:${locale}`;
+    const { dataSourceCache, loadingPromises, isInitializing, updateStore, landRows, setSourceState, runDeduped } = window.ManifestDataStore;
+
+    // Memory cache (this page-load's fetches). Serving cached data is fine, but
+    // writing an old locale to the live store would clobber a concurrent locale
+    // switch — so guard the store write via the `_locale` stamp.
+    if (!options.reload && dataSourceCache.has(cacheKey)) {
         const cachedData = dataSourceCache.get(cacheKey);
-        const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
+        const live = (window.Alpine && Alpine.store('locale')?.current)
             || document.documentElement.lang || locale;
-        const staleLocaleHit = locale !== liveLocale && !!(cachedData && cachedData._locale);
+        const staleLocaleHit = locale !== live && !!(cachedData && cachedData._locale);
         if (!isInitializing && !staleLocaleHit) {
             // Landing (coalesced): resolves once the cached rows are visible
-            await landRows(dataSourceName, cachedData, { mode: 'replace', loading: false, error: null, ready: true });
+            await landRows(dataSourceName, cachedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true });
         }
         return cachedData;
     }
 
-    // If already loading, return existing promise
+    // In flight for this source+locale: share it (every entry path lands here)
     if (loadingPromises.has(cacheKey)) {
         return loadingPromises.get(cacheKey);
     }
 
-    // Set loading state
+    // Loading state: rows already landed stay live; first-ever load clears
+    const keepRows = hasLiveRows(dataSourceName);
     if (!isInitializing) {
-        updateStore(dataSourceName, null, { loading: true, error: null, ready: false });
+        if (keepRows) setSourceState(dataSourceName, { loading: true, error: null });
+        else updateStore(dataSourceName, null, { loading: true, error: null, ready: false });
     }
 
-    const loadPromise = (async () => {
+    return runDeduped(cacheKey, async () => {
+        let landed = false;
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             if (!manifest) {
@@ -742,23 +761,29 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 || document.documentElement.lang || locale;
             const staleLocale = localeSensitive && liveLocale !== locale;
 
-            // Network landing (coalesced per frame); resolves once visible
+            // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
-                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true });
+                landed = true;
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true });
             }
 
             // Return unsealed version for our proxy system
             return enhancedData;
         } catch (error) {
-            // Set error state with timestamp to prevent rapid retries
+            // Error state (timestamped to prevent rapid retries); live rows stay
             if (!isInitializing) {
+                landed = true;
                 const errorMessage = error?.message || error?.toString() || `Failed to load dataSource "${dataSourceName}"`;
-                updateStore(dataSourceName, null, {
-                    loading: false,
-                    error: errorMessage,
-                    ready: false,
-                    errorTime: Date.now() // Track when error occurred
-                });
+                if (hasLiveRows(dataSourceName)) {
+                    setSourceState(dataSourceName, { loading: false, error: errorMessage, errorTime: Date.now() });
+                } else {
+                    updateStore(dataSourceName, null, {
+                        loading: false,
+                        error: errorMessage,
+                        ready: false,
+                        errorTime: Date.now() // Track when error occurred
+                    });
+                }
             }
 
             // Only log non-auth errors to reduce noise (401 is expected until user authenticates)
@@ -772,12 +797,15 @@ async function loadDataSource(dataSourceName, locale = 'en') {
             }
             return null;
         } finally {
-            loadingPromises.delete(cacheKey);
+            // Early exits (no source, stale locale) must not strand a live source in $loading
+            if (!landed && keepRows && !isInitializing) setSourceState(dataSourceName, { loading: false });
         }
-    })();
+    });
+}
 
-    loadingPromises.set(cacheKey, loadPromise);
-    return loadPromise;
+// Reload: refetch past the memory cache; rows stay live and merge by $id
+function reloadDataSource(dataSourceName, locale) {
+    return loadDataSource(dataSourceName, locale || liveLocale(), { reload: true });
 }
 
 // Listen for URL changes to trigger reactivity
@@ -902,7 +930,8 @@ async function initializeDataSourcesPlugin() {
     // Export loadDataSource for use by team change listener
     window.ManifestDataMain = {
         loadDataSource,
-        _loadDataSource: loadDataSource, // Export for internal use
+        reloadDataSource,
+        _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
         filterFilesByScope // Export for use by getFilesForEntry
     };
 
@@ -915,18 +944,16 @@ async function initializeDataSourcesPlugin() {
         const locale = document.documentElement.lang ||
             (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';
 
-        const { dataSourceCache, loadingPromises } = window.ManifestDataStore;
+        const { dataSourceCache } = window.ManifestDataStore;
         const isAppwriteCollection = window.ManifestDataConfig.isAppwriteCollection;
 
         for (const [name, source] of Object.entries(manifest.data)) {
             if (isAppwriteCollection(source)) continue;
             if (source && typeof source === 'object' && source.url) continue;
 
-            const cacheKey = `${name}:${locale}`;
-            dataSourceCache.delete(cacheKey);
-            loadingPromises.delete(cacheKey);
-
-            try { await loadDataSource(name, locale); } catch { /* skip failed sources */ }
+            dataSourceCache.delete(`${name}:${locale}`);
+            // Reload keeps rows live and merges (identity survives an edit-save)
+            try { await loadDataSource(name, locale, { reload: true }); } catch { /* skip failed sources */ }
         }
     });
 
@@ -964,7 +991,7 @@ async function initializeDataSourcesPlugin() {
                                 const data = await loadDataSource(name, locale);
                                 if (data != null) {
                                     // Boot landing: every pre-loaded source lands in ONE flush
-                                    await landRows(name, data, { mode: 'replace', loading: false, error: null, ready: true, allowDuringInit: true });
+                                    await landRows(name, data, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, allowDuringInit: true });
                                 }
                             } catch (err) {
                                 console.warn(`[Manifest Data] Failed to pre-load ${name}:`, err);
@@ -982,7 +1009,7 @@ async function initializeDataSourcesPlugin() {
                 // allowDuringInit: setIsInitializing(true) is active, so without this
                 // flag updateStore short-circuits and $x.manifest stays unpopulated.
                 window.ManifestDataStore.dataSourceCache.set(`manifest:${locale}`, publicManifest);
-                updateStore('manifest', publicManifest, { loading: false, error: null, ready: true, allowDuringInit: true });
+                updateStore('manifest', publicManifest, { loading: false, error: null, ready: true, fresh: true, allowDuringInit: true });
             }
             Alpine.store('data')._ready = true;
         } catch (error) {

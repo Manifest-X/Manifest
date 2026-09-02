@@ -25,6 +25,9 @@ const pendingLocal = new Map(); // source -> Map<$id, { patch, removed }>
 let allCache = null;
 let allDirty = true;
 
+// Per-source freshness: `$fresh` resolves on the first network-fresh landing of this page-load
+const freshness = new Map(); // source -> { promise, resolve, done }
+
 // Deep seal so Alpine won't proxy (double-proxying causes recursion)
 function deepSeal(obj) {
     if (obj === null || typeof obj !== 'object') {
@@ -118,10 +121,48 @@ function mergeRowFields(target, fields, dataSourceName) {
 }
 
 function attachMethods(array, dataSourceName) {
-    const loadDataSource = window.ManifestDataMain?.loadDataSource;
-    if (Array.isArray(array) && loadDataSource && window.ManifestDataProxies?.attachArrayMethods) {
-        window.ManifestDataProxies.attachArrayMethods(array, dataSourceName, loadDataSource);
+    const main = window.ManifestDataMain;
+    const reload = main?.reloadDataSource || main?.loadDataSource;
+    if (Array.isArray(array) && reload && window.ManifestDataProxies?.attachArrayMethods) {
+        window.ManifestDataProxies.attachArrayMethods(array, dataSourceName, reload);
     }
+}
+
+function sourceFreshness(dataSourceName) {
+    let f = freshness.get(dataSourceName);
+    if (!f) {
+        f = { done: false, resolve: null, promise: null };
+        f.promise = new Promise(resolve => { f.resolve = resolve; });
+        freshness.set(dataSourceName, f);
+    }
+    return f;
+}
+
+function markFresh(dataSourceName) {
+    const f = sourceFreshness(dataSourceName);
+    if (!f.done) { f.done = true; f.resolve(); }
+}
+
+// State-only write (loading/error) — rows stay live, no version bump
+function setSourceState(dataSourceName, patch) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return null;
+    const key = `_${dataSourceName}_state`;
+    const current = store[key] || { loading: false, error: null, ready: false, stale: true };
+    const next = { ...current, ...patch };
+    if (patch.error !== undefined) next.errorTime = patch.error ? (patch.errorTime || Date.now()) : null;
+    store[key] = next;
+    return next;
+}
+
+// Authoritative in-flight map: one promise per key, cleared on settle
+function runDeduped(key, factory) {
+    if (loadingPromises.has(key)) return loadingPromises.get(key);
+    const promise = Promise.resolve().then(factory).finally(() => {
+        if (loadingPromises.get(key) === promise) loadingPromises.delete(key);
+    });
+    loadingPromises.set(key, promise);
+    return promise;
 }
 
 // Reactive source array, created on demand; raw map tracks the same identity
@@ -212,14 +253,18 @@ function writeSource(dataSourceName, data, options = {}) {
         rawDataStore.set(dataSourceName, data);
     }
 
-    const currentState = store[`_${dataSourceName}_state`] || { loading: false, error: null, ready: false };
+    const currentState = store[`_${dataSourceName}_state`] || { loading: false, error: null, ready: false, stale: true };
+    // `fresh`: network-origin rows → clears `stale` for the rest of the page-load
+    const fresh = options.fresh === true && data !== null && data !== undefined;
     const newState = {
         loading: options.loading !== undefined ? options.loading : currentState.loading,
         error: options.error !== undefined ? options.error : currentState.error,
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
-        errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null)
+        errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null),
+        stale: fresh ? false : currentState.stale !== false
     };
     store[`_${dataSourceName}_state`] = newState;
+    if (fresh) markFresh(dataSourceName);
     store._initialized = true;
     store._ready = true;
 
@@ -1132,6 +1177,10 @@ window.ManifestDataStore = {
     landRemove,
     flushLandings,
     noteLocalWrite,
+    // Stale-first + dedupe (§11.1)
+    setSourceState,
+    runDeduped,
+    sourceFreshness,
     touchSource,
     bumpAllVersions,
     mergeRowFields,

@@ -167,10 +167,14 @@ function registerXMagicMethod(loadDataSource) {
             window._manifestXAccessed = true;
         }
         const pendingLoads = new Map();
+        const preDataProxies = new Map();
         const store = Alpine.store('data');
 
-        // Store loadDataSource in closure for Appwrite methods
-        const reloadDataSource = loadDataSource;
+        // Reload variant for Appwrite methods: bypasses the memory cache, keeps rows live
+        const reloadDataSource = (name, locale) => {
+            const reload = window.ManifestDataMain?.reloadDataSource;
+            return reload ? reload(name, locale) : loadDataSource(name, locale, { reload: true });
+        };
 
         const ACTIVE_PROPS = Symbol('activeProps');
 
@@ -202,7 +206,8 @@ function registerXMagicMethod(loadDataSource) {
                             const stamped = Array.isArray(data)
                                 ? data.map(d => (d && typeof d === 'object' && !('contentType' in d)) ? { contentType: name, ...d } : d)
                                 : data;
-                            window.ManifestDataStore?.updateStore?.(name, stamped, { loading: false, error: null, ready: true, allowDuringInit: true });
+                            // App-supplied rows are authoritative → fresh
+                            window.ManifestDataStore?.updateStore?.(name, stamped, { loading: false, error: null, ready: true, fresh: true, allowDuringInit: true });
                             return true;
                         };
                     }
@@ -270,7 +275,21 @@ function registerXMagicMethod(loadDataSource) {
                         track();
                         const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                         if (createLoadingProxy) {
-                            return createLoadingProxy(prop);
+                            // Cached per source so re-evaluations see one identity; state props
+                            // ($loading/$error/$ready/$stale/$fresh) answer before any rows exist
+                            if (!preDataProxies.has(prop)) {
+                                const loading = createLoadingProxy(prop);
+                                const stateProps = window.ManifestDataProxiesMagic?.STATE_PROPS || [];
+                                preDataProxies.set(prop, new Proxy(loading, {
+                                    get(target, key) {
+                                        if (stateProps.includes(key)) {
+                                            return window.ManifestDataProxiesMagic.getStateProperty(key, prop);
+                                        }
+                                        return target[key];
+                                    }
+                                }));
+                            }
+                            return preDataProxies.get(prop);
                         }
                         return window.ManifestDataProxiesCore?.getChainingFallback?.() ?? '';
                     }
@@ -378,7 +397,7 @@ function registerXMagicMethod(loadDataSource) {
                                         const arrayForMethods = valueIsArray ? value : (rawIsArray ? rawValue : arrayToProxy);
 
                                         if (attachArrayMethods) {
-                                            const arrayWithMethods = attachArrayMethods(arrayForMethods, prop, loadDataSource);
+                                            const arrayWithMethods = attachArrayMethods(arrayForMethods, prop, reloadDataSource);
                                             // has() trap so Alpine sees $search/$query/etc. before accessing
                                             return new Proxy(arrayWithMethods, {
                                                 get(target, key) {
@@ -396,7 +415,7 @@ function registerXMagicMethod(loadDataSource) {
                                                                     const manifest = window.ManifestComponentsRegistry?.manifest || null;
                                                                     const dataSource = manifest?.data?.[prop] || manifest?.appwrite?.[prop];
                                                                     if (dataSource && window.ManifestDataConfig?.isAppwriteCollection?.(dataSource)) {
-                                                                        const methodsHandler = createAppwriteMethodsHandler(prop, loadDataSource);
+                                                                        const methodsHandler = createAppwriteMethodsHandler(prop, reloadDataSource);
                                                                         return methodsHandler.bind(null, key);
                                                                     }
                                                                 } catch { /* fall through */ }
@@ -414,7 +433,8 @@ function registerXMagicMethod(loadDataSource) {
                                                 has(target, key) {
                                                     // Report that base plugin methods exist
                                                     if (key === '$search' || key === '$query' || key === '$route' ||
-                                                        key === '$loading' || key === '$error' || key === '$ready') {
+                                                        key === '$loading' || key === '$error' || key === '$ready' ||
+                                                        key === '$stale' || key === '$fresh') {
                                                         return key in target;
                                                     }
                                                     // Report that array methods exist

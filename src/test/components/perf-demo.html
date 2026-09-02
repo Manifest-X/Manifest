@@ -9,6 +9,22 @@
   // Probe hook (scripts/perf/probe.mjs --pause-background): set upserts:true
   // to pause background realtime writes during a measured gesture window.
   if (!window.__perfPause) window.__perfPause = { upserts: false };
+
+  // Fake network for the `feed` manifest source (https://perf.invalid/feed):
+  // a reload through loadDataSource hits this, so the P5 reload path is real
+  if (!window.__perfFeedFetches) {
+    window.__perfFeedFetches = 0;
+    const realFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : (input?.href || input?.url);
+      if (url && url.startsWith('https://perf.invalid/feed')) {
+        window.__perfFeedFetches++;
+        const rows = window.__perfFeedResponse ? window.__perfFeedResponse() : [];
+        return new Promise(resolve => setTimeout(() => resolve(new Response(JSON.stringify(rows), { headers: { 'content-type': 'application/json' } })), 30));
+      }
+      return realFetch(input, init);
+    };
+  }
 </script>
 
 <style>
@@ -30,9 +46,11 @@
 </style>
 
 <div class="pdemo col gap-8" x-data="{
-    // ---- params (URL query string overrides; ?menus=&rows=&emoji=&getters=&pages=&pageSize=&cadenceMs=&upsertEveryMs=&source=x) ----
+    // ---- params (URL query string overrides; ?menus=&rows=&emoji=&getters=&pages=&pageSize=&cadenceMs=&upsertEveryMs=&source=x&reload=p5|legacy) ----
     menus: 4, rowsPerMenu: 243, emojiPerGrid: 169, gettersPerRow: 40,
     pages: 10, pageSize: 100, cadenceMs: 80, upsertEveryMs: 200,
+    // ?reload=legacy reproduces the pre-P5 cache-miss reload (null + loading:true, then land)
+    reloadShape: 'p5', reloadSeq: 0, reloadDone: false, reloadIdentity: '', reloadArray: '', reloadRequests: 0,
 
     names: ['Sirius','Vega','Polaris','Rigel','Arcturus','Lyra','Orion','Mira','Atlas','Nova','Rhea','Cassio'],
 
@@ -56,6 +74,8 @@
       this.cadenceMs = num('cadenceMs', this.cadenceMs);
       this.upsertEveryMs = num('upsertEveryMs', this.upsertEveryMs);
       this.sourceX = qs.get('source') === 'x';
+      this.reloadShape = qs.get('reload') === 'legacy' ? 'legacy' : 'p5';
+      window.__perfFeedResponse = () => this.feedResponse();
       this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
       this.emojiListA = this.buildEmoji(this.emojiPerGrid, 0);
       this.emojiListB = this.buildEmoji(this.emojiPerGrid, 7);
@@ -155,6 +175,35 @@
       this.activeConvId = row.$id;
       // the switch lands one row (read-marker) through the same path a realtime echo takes
       this.upsertRow(row.$id, { openedAt: Date.now(), opens: (row.opens || 0) + 1 });
+    },
+
+    // ---- cache-miss reload of the $x feed source through loadDataSource (P5) ----
+    // Server response: every row again, one field changed (a real refetch shape)
+    feedResponse() {
+      const seq = this.reloadSeq;
+      return this.feedAccum.map(r => ({ ...r, lastMessage: 'Reloaded ' + seq + ' — ' + r.lastMessage }));
+    },
+    async reloadFeed() {
+      const ds = window.ManifestDataStore, main = window.ManifestDataMain;
+      if (!ds || !main) return;
+      this.reloadSeq++;
+      this.reloadDone = false;
+      const before = ds.getRawData('feed'), row0 = before?.[0];
+      const fetches = window.__perfFeedFetches;
+      let loads;
+      if (this.reloadShape === 'legacy') {
+        ds.dataSourceCache.delete('feed:en');
+        ds.updateStore('feed', null, { loading: true, error: null, ready: false, allowDuringInit: true });
+        loads = [1, 2, 3].map(() => main.loadDataSource('feed', 'en'));
+      } else {
+        loads = [1, 2, 3].map(() => main.loadDataSource('feed', 'en', { reload: true }));
+      }
+      await Promise.all(loads);
+      const after = ds.getRawData('feed');
+      this.reloadIdentity = after?.[0] === row0 ? 'kept' : 'dropped';
+      this.reloadArray = after === before ? 'kept' : 'swapped';
+      this.reloadRequests = window.__perfFeedFetches - fetches;
+      this.reloadDone = true;
     },
 
     makeRow(id) {
@@ -316,6 +365,8 @@
       <div class="row-wrap gap-2">
         <button id="perf-local-write" class="ghost sm" @click="localWrite()">Local write (one field, one row)</button>
         <small class="note">Local writes: <span x-text="localWrites"></span></small>
+        <button id="perf-reload" class="ghost sm" @click="reloadFeed()">Reload feed (cache-miss, ×3 concurrent)</button>
+        <small class="note">Reloads: <span x-text="reloadSeq"></span> · shape <span x-text="reloadShape"></span> · identity <span x-text="reloadIdentity || '—'"></span> · requests <span x-text="reloadRequests"></span></small>
       </div>
       <div class="row-wrap gap-4" style="align-items: flex-start">
         <div class="conv-list" style="flex: 1 1 20rem">
@@ -394,7 +445,9 @@
   <!-- Boot status for the probe: ready once every page has landed -->
   <div id="perf-status" hidden
        :data-landed-pages="landedPages" :data-pages="pages" :data-feed-length="feedRows.length" :data-source="sourceX ? 'x' : 'local'"
-       :data-ready="landedPages >= pages ? 'true' : 'false'" :data-upserts="upserts"></div>
+       :data-ready="landedPages >= pages ? 'true' : 'false'" :data-upserts="upserts"
+       :data-reload-shape="reloadShape" :data-reload-seq="reloadSeq" :data-reload-done="reloadDone ? 'true' : 'false'"
+       :data-reload-identity="reloadIdentity" :data-reload-array="reloadArray" :data-reload-requests="reloadRequests"></div>
 
   <footer class="row-wrap gap-3 note">
     <span>Landed <span x-text="landedPages"></span>/<span x-text="pages"></span> pages<span x-show="sourceX"> via $x.feed</span></span>
