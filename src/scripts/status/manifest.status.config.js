@@ -60,13 +60,14 @@
     // cache a normalized copy that omits keys they don't consume.
     async function ensureStatusManifest() {
         const cached = window.ManifestComponentsRegistry?.manifest || window.__manifestLoaded;
-        if (cached && cached.status) return cached;
+        if (cached) return cached;   // a loaded manifest without `status` means no status config, not a stale copy
+        if (window.__manifestPromise) { const shared = await window.__manifestPromise.catch(() => null); if (shared) return shared; }
         try {
             const url = document.querySelector('link[rel="manifest"]')?.getAttribute('href') || '/manifest.json';
-            const res = await fetch(url);
-            return await res.json();
+            window.__manifestPromise = fetch(url).then(r => r.json());
+            return await window.__manifestPromise;
         } catch (_) {
-            return cached || null;
+            return null;
         }
     }
 

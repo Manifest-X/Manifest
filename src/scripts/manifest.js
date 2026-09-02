@@ -710,6 +710,7 @@
 		const devServer = !!window.__mnfstRun;
 		const devOrigin = isDevHost(loc.hostname);
 		let manifest = window.__manifestLoaded || null;
+		if (!manifest && window.__manifestPromise) manifest = await window.__manifestPromise.catch(() => null);
 		if (!manifest) {
 			const url = document.querySelector('link[rel="manifest"]')?.getAttribute('href') || '/manifest.json';
 			manifest = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
@@ -829,13 +830,26 @@
 			walk(obj);
 		};
 
+		// One manifest.json request per boot: published on window the moment it starts so
+		// plugins that init before __manifestLoaded is set (data, auth, components) await it
+		// instead of fetching their own. Resolves interpolated, or null.
+		const shareManifestFetch = () => {
+			if (window.__manifestLoaded) return Promise.resolve(window.__manifestLoaded);
+			if (!window.__manifestPromise) {
+				window.__manifestPromise = fetch(manifestUrl).then(r => r.ok ? r.json() : null)
+					.then(m => { if (m && !m.__interpolated) { interpolateManifestEnv(m); Object.defineProperty(m, '__interpolated', { value: true, enumerable: false }); } return m; })
+					.catch(() => null);
+			}
+			return window.__manifestPromise;
+		};
+
 		const loadPlugins = async () => {
 			let manifest = null;
 			let pluginsToLoad = config.plugins;
 			let manifestPromise = null;
 
 			if (config.deriveFromManifest) {
-				manifest = await fetch(manifestUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+				manifest = await shareManifestFetch();
 				const corePlugins = getDefaultPluginsFromManifest(manifest);
 				const appwritePlugins = detectAppwritePlugins(manifest);
 				const paymentsPlugins = detectPaymentsPlugins(manifest);
@@ -846,7 +860,7 @@
 				pluginsToLoad = resolveDependencies([...ALWAYS_ON, ...pluginsToLoad.filter(p => !ALWAYS_ON.includes(p))]);
 				const needsManifest = config.plugins.some(p => MANIFEST_DEPENDENT_PLUGINS.includes(p));
 				if (needsManifest) {
-					manifestPromise = fetch(manifestUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+					manifestPromise = shareManifestFetch();
 				}
 				// Inside a Capacitor container, ensure the native umbrella loads even on
 				// the explicit data-plugins path (matches the derive-path auto-inject).
@@ -868,9 +882,7 @@
 				manifest = await manifestPromise;
 			}
 			if (manifest && typeof window !== 'undefined') {
-				// Resolve ${VAR} before any plugin reads the cached manifest —
-				// appwrite-auth etc. read window.__manifestLoaded directly.
-				interpolateManifestEnv(manifest);
+				// Already interpolated by shareManifestFetch; appwrite-auth etc. read window.__manifestLoaded directly.
 				window.__manifestLoaded = manifest;
 				if (window.ManifestComponentsRegistry) {
 					window.ManifestComponentsRegistry.manifest = manifest;

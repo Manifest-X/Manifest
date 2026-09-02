@@ -2,7 +2,7 @@
 
 (function () {
 
-const MANIFEST_BUILD_VERSION = '0.5.199-next.1';
+const MANIFEST_BUILD_VERSION = '0.5.199-next.2';
 
 /* Manifest Data Sources - Configuration */
 
@@ -21,12 +21,15 @@ async function ensureManifest() {
         return window.__manifestLoaded;
     }
 
+    // One request per boot, shared with the loader and the other plugins (window.__manifestPromise)
+    if (window.__manifestPromise) {
+        const shared = await window.__manifestPromise.catch(() => null);
+        if (looksComplete(shared)) return shared;
+    }
     try {
         const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
-        const response = await fetch(manifestUrl);
-        const manifest = await response.json();
-        interpolateManifest(manifest);
-        return manifest;
+        window.__manifestPromise = fetch(manifestUrl).then(r => r.json()).then(m => { interpolateManifest(m); return m; });
+        return await window.__manifestPromise;
     } catch (error) {
         console.error('[Manifest Data] Failed to load manifest:', error);
         return null;

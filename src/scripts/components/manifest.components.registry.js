@@ -57,6 +57,7 @@ window.ManifestComponentsRegistry = {
         // manifest on window yet).  This must be async — a synchronous XHR on
         // the main thread is deprecated and was flagged by PageSpeed.
         let manifest = window.__manifestLoaded || this.manifest;
+        if (!manifest && window.__manifestPromise) manifest = await window.__manifestPromise.catch(() => null);
         if (!manifest) {
             try {
                 const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
@@ -68,6 +69,7 @@ window.ManifestComponentsRegistry = {
                     manifest = await res.json();
                     // No-loader path: resolve ${VAR} placeholders the dynamic loader would have.
                     window.ManifestDataConfig?.interpolateManifest?.(manifest);
+                    window.__manifestPromise = Promise.resolve(manifest);   // share with plugins that init after us
                 } else {
                     console.warn('[Manifest] Failed to load manifest.json (HTTP', res.status + ')');
                 }

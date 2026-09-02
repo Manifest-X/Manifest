@@ -21,10 +21,11 @@ function resolvedOrNull(value, fieldName) {
 async function ensureManifest() {
     if (window.ManifestComponentsRegistry?.manifest) return window.ManifestComponentsRegistry.manifest;
     if (window.__manifestLoaded) return window.__manifestLoaded;
+    if (window.__manifestPromise) { const shared = await window.__manifestPromise.catch(() => null); if (shared) return shared; }
     try {
         const url = document.querySelector('link[rel="manifest"]')?.getAttribute('href') || '/manifest.json';
-        const res = await fetch(url);
-        return await res.json();
+        window.__manifestPromise = fetch(url).then(r => r.json());
+        return await window.__manifestPromise;
     } catch (_) {
         return null;
     }
