@@ -16,7 +16,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Idle callbacks are captured so prewarm can be stepped one slice at a time.
 const idleQueue = []
-window.requestIdleCallback = (fn) => { idleQueue.push(fn); return idleQueue.length }
+const idleOpts = []
+window.requestIdleCallback = (fn, opts) => { idleQueue.push(fn); idleOpts.push(opts); return idleQueue.length }
 const runIdle = () => { const fn = idleQueue.shift(); if (fn) fn({ didTimeout: false, timeRemaining: () => 50 }) }
 
 // Emulate the loader so the standalone `load` fallback never fires prewarm.
@@ -47,7 +48,7 @@ function mount(html) {
 const stash = (el) => el.querySelector(':scope > template[data-mnfst-defer]')
 
 beforeAll(() => { Alpine.start() })
-beforeEach(() => { window.counts = {}; idleQueue.length = 0 })
+beforeEach(() => { window.counts = {}; idleQueue.length = 0; idleOpts.length = 0 })
 
 describe('automatic detection', () => {
     it('defers every closed container type and leaves open ones alone', () => {
@@ -209,13 +210,25 @@ describe('prewarm', () => {
         expect(window.counts.order).toBeUndefined()
         window.dispatchEvent(new CustomEvent('manifest:ready'))
         expect(idleQueue.length).toBe(1)
+        // A container that appears after ready (a pane just mounted) is urgent: it renders first
+        mount(`<div x-data><menu popover x-defer.priority="9" id="late"><li x-init="counts.order = (counts.order || []).concat('late')"></li></menu></div>`)
         // One container per slice; containers left closed by earlier tests drain too
         let slices = 0
         while (idleQueue.length && slices++ < 50) runIdle()
-        expect(window.counts.order).toEqual(['p0a', 'p0b', 'p1', 'p2'])
+        expect(window.counts.order).toEqual(['late', 'p0a', 'p0b', 'p1', 'p2'])
         expect(slices).toBeGreaterThan(4)
         expect(idleQueue.length).toBe(0)
         expect(window.ManifestDefer.isPending(host.querySelector('#lazy'))).toBe(true)
+    })
+
+    it('schedules a container mounted after ready on a short idle timeout', () => {
+        while (idleQueue.length) runIdle()
+        idleOpts.length = 0
+        mount(`<div x-data><menu popover id="fresh"><li x-init="counts.fresh = 1"></li></menu></div>`)
+        expect(idleQueue.length).toBe(1)
+        expect(idleOpts[0]).toEqual({ timeout: 100 })
+        runIdle()
+        expect(window.counts.fresh).toBe(1)
     })
 })
 
