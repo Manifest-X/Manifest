@@ -952,3 +952,54 @@ version from its immutable store under a 60s TTL — a release is live on the
 default path within a minute, independent of any third-party alias cache.
 Ranges keep the old proxy path. Note for Playcom-style deploys: an explicit
 `mnfst@x.y.z` pin remains the reproducible choice for content-hashed gates.
+
+## 12. Persistence brief (Playcom, 2026-09-02) — PENDING Andrew's scoping, nothing built
+
+Three primitives for instant boot: (1) app-shell service worker — Manifest
+ships none today; opt-in, generated at publish, keyed by the deployment hash,
+activate on next navigation; (2) persisted `$x` — extends P5: per-source
+IndexedDB snapshot written on landing (debounced), hydrated BEFORE the network
+with `fresh: false`, reconciled by the identity-preserving upsert; per-source
+opt-in (`persist: true | { ttl, maxRows }`), store keyed by project + source +
+scope key, `$x.$wipe()`, row-level field filter, caps + quota tolerance;
+(3) persisted `$chat` windows on the same store. Measured: a normal reload is
+already shell-cache-hot (153/198 resources from HTTP cache, ~15 KB, load
+344ms); the ~10s was the hard-refresh path → order = 2, then 1, then 3.
+Acceptance: warm first useful paint from disk <500ms; shell requests 0 (SW);
+boot blocked time unchanged (~3s) or better; logout empties the scope; no
+cross-workspace row ever renders; zero new server calls.
+
+### 12.1 Playcom's primitive-2 input (field NAMES only, no values)
+Scope key = `workspaceId` for every source; wipe on logout, workspace switch,
+and any `manifest:auth:*` session-cleared.
+- **Tier 1 (hydrate before first paint):** `chats` 500 most recent by
+  lastMessageAt, strip `lastInboundPreview`; `contacts` 2,000, strip `name,
+  email, phone, country, countries, ip, personalId, contactSourceId,
+  customFields` (wire row already null there; their grant-gated PII sidecar is
+  memory-only and must never persist); `contactChannelIdentities` 2,000, strip
+  `handle, platformUserId`; `channels, userAliases, spaces, tags, tagGroups,
+  statuses, priorities, caseTypes, selectOptions, customFieldDefs,
+  recordTypes` all rows, no strip; `teams, teamMemberships, memberProfiles`
+  all, strip `memberProfiles.email`; `workspaceSettings` 1 row, strip names
+  matching `credentials*` / `*Secret*`.
+- **Tier 2 (hydrate on first use):** `threadNotes` 500 strip `text`; `cases`
+  500 strip `description`; `chatReplies, emailTemplates, quickActions,
+  procedures, savedViews, savedFilters, dashboardViews, aiAgents, tools,
+  knowledgeBases, knowledgeResources` all, no strip.
+- **Never persist:** audit, bans/banRules/banReasons, consentCommsState,
+  copilotSessions, csatFeedback, aiAnalysisResults, promotions/promotionRules,
+  proactiveEngagements, modelCredentials, agentConnectors, emailDomains,
+  emailAddresses, billing.
+- Static bundled catalogues: unscoped, persist optional (already HTTP-cached).
+- **Primitive 3:** key `workspaceId + chat DO id`; last 50 messages for the 30
+  most recently opened chats; no strip (bodies are PII by nature — scope, wipe
+  and caps carry it); dedupe by message id + `meta.externalId`.
+- Realtime-subscribed tables (reconcile source of truth after hydration):
+  chats, contacts, channels, chatReplies, contactChannelIdentities, aiAgents.
+
+Design implications to settle in the RFC before building: a "hydrate tier"
+(before-first-paint vs first-use) per source; the strip filter as a manifest
+option (names/patterns) with a runtime hook for computed cases; wipe wired to
+the auth plugin's events by default; caps enforced at write time with LRU by
+recency field; hydration must never delay a cold boot (IDB miss → network as
+today).
