@@ -1003,3 +1003,81 @@ option (names/patterns) with a runtime hook for computed cases; wipe wired to
 the auth plugin's events by default; caps enforced at write time with LRU by
 recency field; hydration must never delay a cold boot (IDB miss → network as
 today).
+
+## 13. App-shell service worker — turnkey, fail-open, zero infrastructure (accepted 2026-09-02)
+
+**Principle:** automatically used when it can help, silently ignored when it
+cannot, never in the way. No configuration; one kill switch. If anything about
+it breaks or goes away, projects load exactly as they do today.
+
+### 13.1 Why it is not "infrastructure"
+A service worker is client code, served like a plugin. The only hard
+constraint is the browser's: the registered script must live on the
+project's own origin. So the design is a two-line same-origin **stub**
+(`/sw.js`) that `importScripts()` the real worker from the CDN at the same
+pinned version the loader uses. All logic ships and versions with the
+framework; nothing runs on our servers; CDN bandwidth goes DOWN (cached
+assets). Cost model for an open-source framework at millions of end users:
+build ≈ one plugin plus one hosting tweak plus docs; upkeep ≈ browser drift
+fixes; infrastructure ≈ 0. Provided as-is.
+
+### 13.2 Turnkey inference (no config)
+The loader registers the worker only when ALL hold:
+1. not a dev/local origin (`localhost`, `127.0.0.1`, `*.local`, `mnfst-run`
+   in play) — dev never fights a cache;
+2. `https:` (or the browser otherwise allows SW);
+3. the kill switch is off (`manifest.json` `"sw": false`, or `data-sw="off"`
+   on the loader script; also honoured by an already-installed worker, which
+   unregisters itself);
+4. a same-origin `/sw.js` stub answers with JavaScript (HEAD/GET probe, cached
+   per session). No stub → nothing happens, no error, no console noise.
+Where the stub comes from, in order of how turnkey it is: **Manifest managed
+hosting serves it implicitly** for every hosted site (the host Worker
+answers `/sw.js` with the stub pinned to the site's framework version —
+signed-up users get it without knowing it exists); `mnfst-publish`/render
+emit it for self-hosted output; the starter template ships it; anyone can
+add the two lines by hand.
+
+### 13.3 Caching rules (what keeps "publish and it's live" true)
+- Documents (`/`, `*.html`, route navigations) and `manifest.json`: **network
+  first**, cache fallback only when offline. A publish is visible on the next
+  navigation, always.
+- Content-addressed assets (`?v=<deployment hash>`, `mnfst@x.y.z/…`,
+  Alpine/Iconify pinned URLs): **cache first, immutable**; the stamp is the
+  invalidation.
+- Everything else same-origin (unstamped images, fonts, data files):
+  stale-while-revalidate with an LRU cap.
+- Cross-origin API/data (Appwrite, workers, analytics): never intercepted.
+- Optional precise precache: publish/render can emit `/precache.json`
+  (the deployment's file list + hash); when present the worker warms it in
+  the background after activation, giving instant offline for hosted apps.
+- Update: new worker installs in the background, activates on the next
+  navigation; never swaps a live tab's assets underneath it. Old caches are
+  keyed by framework version + deployment hash and pruned on activate.
+
+### 13.4 Fail-open guarantees
+Registration failure → no worker (site loads normally). `importScripts`
+failure (CDN unreachable, bad version) → install fails → browser keeps the
+previous worker or none. Any fetch-handler exception → `fetch(request)`
+pass-through. Activation self-check: if the framework module did not load,
+`self.registration.unregister()`. Kill switch honoured on every navigation.
+Local dev: `mnfst-run` serves `/sw.js` as an unregistering no-op so a stale
+worker from a previous deploy can never hold a dev session hostage.
+
+### 13.5 What it unlocks beyond warm boot
+Web push (`$push` web fallback needs a worker), offline-capable PWAs (iOS
+requires a worker for offline), navigation preload / app-shell instant paint,
+and the bytecode cache for scripts served from CacheStorage. Designed once
+for all four; the worker exposes a small message API so push and offline
+land as extensions, not rewrites.
+
+### 13.6 Build plan
+`src/scripts/manifest.sw.js` (worker logic, standalone script — no Alpine,
+no DOM) + loader registration/inference/kill switch + `mnfst-run` no-op stub +
+tests (a fake `ServiceWorkerGlobalScope` harness for the caching rules;
+puppeteer for registration and warm-boot request counts on the src project
+served over a local https or via `--host` flag if needed) → then Manifest-MCP
+host Worker `/sw.js` stub + publish `precache.json`. Acceptance (Playcom
+rig): warm hard refresh shell requests 0, first useful paint from shell
+cache, boot blocked time unchanged; cold boot unchanged; kill switch
+verified end to end (worker gone on next navigation).
