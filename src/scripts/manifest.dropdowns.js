@@ -103,7 +103,9 @@ function initializeDropdownPlugin() {
                     if (el.closest('[popover]')) menu.setAttribute('data-popover-nested', '');
                     if (!modifiers.includes('context')) el.setAttribute('popovertarget', uniqueDropdownId);
 
-                    // Initialize Alpine on the cloned menu
+                    // Closed before init so the defer plugin can stash its content
+                    menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
+                    window.ManifestDefer?.defer(menu);
                     Alpine.initTree(menu);
                 } else {
                     // Original behavior for static dropdowns
@@ -134,7 +136,8 @@ function initializeDropdownPlugin() {
                                             if (el.closest('[popover]')) menu.setAttribute('data-popover-nested', '');
                                             if (!modifiers.includes('context')) el.setAttribute('popovertarget', dropdownId);
 
-                                            // Initialize Alpine on the menu
+                                            menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
+                                            window.ManifestDefer?.defer(menu);
                                             Alpine.initTree(menu);
 
                                             // Set up the dropdown after menu is ready
@@ -204,9 +207,16 @@ function initializeDropdownPlugin() {
                         el.setAttribute('aria-controls', menu.id);
                         el.setAttribute('aria-expanded', menu.matches(':popover-open') ? 'true' : 'false');
                         if (!menu.hasAttribute('role')) menu.setAttribute('role', 'menu');
-                        menu.querySelectorAll('li').forEach((li) => {
+                        // Deferred menus get their items later — role them off the gesture,
+                        // never in the toggle task (243 role writes on a visible list ≈ 70ms)
+                        const roleItems = () => menu.querySelectorAll('li').forEach((li) => {
                             if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
                         });
+                        roleItems();
+                        if (!menu.__mnfstRoleOnRender) {
+                            menu.__mnfstRoleOnRender = true;
+                            menu.addEventListener('manifest:defer-render', roleItems);
+                        }
                         // Keep aria-expanded in sync across every trigger of this menu.
                         if (!menu.__mnfstAriaToggleBound) {
                             menu.__mnfstAriaToggleBound = true;
@@ -469,15 +479,20 @@ function initializeDropdownPlugin() {
                         };
 
                         // Set up listeners on existing menu items
+                        const wiredItems = new WeakSet();
                         const setupMenuItemListeners = () => {
                             const menuItems = menu.querySelectorAll('li, button, a, [role="menuitem"]');
                             menuItems.forEach(item => {
+                                if (wiredItems.has(item)) return;
+                                wiredItems.add(item);
                                 item.addEventListener('mouseenter', cancelCloseTimer);
                             });
                         };
 
-                        // Setup listeners after a brief delay to ensure menu is rendered
+                        // Setup listeners after a brief delay to ensure menu is rendered;
+                        // again when a deferred menu renders its items
                         setTimeout(setupMenuItemListeners, 10);
+                        menu.addEventListener('manifest:defer-render', setupMenuItemListeners);
                     }
                 } // End of setupDropdown function
             });

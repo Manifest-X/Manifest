@@ -412,7 +412,7 @@ export interface ManifestTextEdit {
 export type ManifestDirective =
     | 'x-route' | 'x-anchors'
     | 'x-icon' | 'x-svg' | 'x-markdown' | 'x-code' | 'x-code-group'
-    | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize'
+    | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize' | 'x-defer'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
     | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files'
     | 'x-edit' | 'x-text-edit';
@@ -490,6 +490,8 @@ declare global {
             loadPlugin(name: string, version?: string): Promise<unknown>;
             loadTailwind(version?: string): Promise<unknown>;
             getPluginUrl(name: string, version?: string): string;
+            /** Defer a closed container built at runtime (call before Alpine.initTree). */
+            defer?(el: Element): unknown;
         };
         Alpine?: unknown;
         __manifestLoaded?: unknown;

@@ -7,12 +7,13 @@
   "manifest.code.js": "sha384-aoQ4E26vrhNe/+tL7K0h90c8/0ies7e8oIR6Ay92he2X3dnWZ+OPcn2Dna8fmc+c",
   "manifest.color.js": "sha384-6Rv3LxyTcZNjrhtayQfqRdCx0uSZ4BiEbgEI98I62eTvp8Aw7LBIoNJ0Je1oktwL",
   "manifest.colorpicker.js": "sha384-1+ZV5Hhjf7WnGP7b71Cqa5h3BKW8UgGT5V14i8Q+aF5zH8Xxwowt/ibSUVsiIHSm",
-  "manifest.combobox.js": "sha384-rCSqpwzVLwr6alHPmAgW5sEVJylfK3XReyG475O1N9dkyMy/XA8hBCYILc+4qblU",
+  "manifest.combobox.js": "sha384-SN3XHumoebxcduFQqx5zt65/Cd10y8nuf9Gkco6UnsZ42sadRd+gvVLfWPdkkuPH",
   "manifest.components.js": "sha384-HEyeJtV20k7po8WH0LEj800MlsqgDH0vE5GTAl62SgdEhn1aJ7VfryQcA6yIi18U",
   "manifest.computed.js": "sha384-LDxER8pyYyYwUxIYIyiJA02s+49g8CzpSlOj28On0DFIUgetT3UmvE/9xOsTwT66",
   "manifest.data.js": "sha384-R9ksZFTOKVo+S7rs5yBos+05AXyGuP6qYuHX7aZg6bjQLDjVtqdmIqI7udg5sk+6",
-  "manifest.datepicker.js": "sha384-O1slNn/v2SM4ZAMnoZCQ00z4Fa+cA2zQu+V3X/i2phGjjkagTQ3utE7AjEqOmIDu",
-  "manifest.dropdowns.js": "sha384-Nw1mBEtVQIcZRjCk1LSgIpQSIYZ6rUWckqaiQgKNeZJDX/pNyPxBqXmc01C3uKXX",
+  "manifest.datepicker.js": "sha384-8vTJYkLqqvgXgm1w1becuaRR/jUEpiLBjBJ6RsRbUr+ZkypvspD6EsssuDrX4SQq",
+  "manifest.defer.js": "sha384-pUFSB9Ksb7ht5KnXWvQ0K5roeAdmeDTMRF1R0BdLt2eaihQVZSa1mWfY6B6huGNK",
+  "manifest.dropdowns.js": "sha384-4HuHkBt4i8sTPUDLB9rNLli2/lWLY1tjtCLzey37gRwueG+FRLCnVH1q7ljiVvJR",
   "manifest.edit.js": "sha384-ZvgV3ax7yHtSC23zdvRYJPzBsBpGFBLuBJMgfQ1IDumv97Cn2bpHOePxyQikfl5L",
   "manifest.export.js": "sha384-HCy3n6ifrcAGIyzTRgZ5JIRvSX9q9/8ykMKRSbt1QTnhXz6PgYlV0AE2N2Yi2re+",
   "manifest.icons.js": "sha384-kKOINpX70YzNO3FvkV6umrmO3f0KIu0DNbwB+ej55a7y/lhU7v/myQtXL0bwCTbt",
@@ -33,5 +34,5 @@
   "manifest.url.parameters.js": "sha384-J2aSVBOPsoqsbafHndrWLHEDpKb4AKJAoQnVmKA4gZh5P/8HHjFWHO/lkusmG84l",
   "manifest.utilities.js": "sha384-YcGKTEviTv9FLkw890CTociA7Rjp6xuhLyfpn3Gk4mT0fexDFqpW7VSuohcpGfsw",
   "manifest.virtual.js": "sha384-OPHiW1zQxunoL+yJrCxFU3AzTfTlZQfUf6X3XSRrSyNDPlr3BvsYe6vZa0DlOjoY",
-  "manifest.js": "sha384-GGDoiHun+4gZW4GAiNQeeCuOC+rq2qhiQogZjh6X7R7b4jP6hruzAdxgOxcfBmVt"
+  "manifest.js": "sha384-IaRa1ZZNj8C/mcB9e6qNiTqK7oriQr0Vmt4Q7FcGWOqfUgPxojYixbs+g8XR9lNz"
 }
