@@ -904,6 +904,39 @@ timeout-free scheduler, the route flag, `bindings` in the loader defaults and
 table at RC.2/RC.0 boot and idle levels, countries open ≤250ms by toggle
 events, no regressions → `npm run release` (0.5.198).
 
+### 11.6 Operator memoization — `$search` / `$query` / `$route` cached per source version (2026-09-02)
+
+**Status: SHIPPED to master (merge a539754, 2026-09-02)** — 15 tests in
+`tests/data-operators-memo.test.js`; only source change is
+`data/shared/proxies/creation/manifest.data.proxies.array.js`.
+
+Andrew's question ("if computing is always useful for filters and searches, is it
+not worth baking into `$x`?") — answer: yes for the operators the framework owns.
+User derivations stay on `x-computed` / `$computed`.
+
+- Cache: `WeakMap<rawArray, { v, map }>`, namespace `Alpine.raw(array)` (proxy and
+  raw share one entry; chained results get their own). Key
+  `${_v[source]}|${op}|${stableStringify(args)}`; insertion-ordered `Map` as an
+  8-entry LRU; a version change replaces the whole map.
+- `stableStringify`: sorted keys, arrays, primitives, bigint, Date; returns
+  `undefined` (→ uncached call) for functions, symbols, class instances, Map/Set,
+  depth > 8. `$query` with `orderRandom` never memoized. Arrays with no
+  `_v[source]` (not a `$x` source) uncached. Appwrite `$query` untouched.
+- Subscription: callers subscribe to `_v[source]` only (the same dependency
+  `magic.core` `track()` registers); the compute runs in a released throwaway
+  effect, so consumers no longer subscribe to every row field the filter read.
+- Probe (`?source=x&search=1`, 51 per-row `$search` bindings over 1,000 rows):
+  first-open blocked 59 → 0 ms, warm-switch 54 → 0 ms, mutations identical.
+  Suite 433/433 after merge.
+
+**Deviation (law):** an in-place row write that bypasses the mutation API
+(`row.name = 'x'` on a `$x` row) does not bump `_v`, so `$search`/`$query`
+consumers do not re-run until the next landing/version bump. Every framework
+path (landings, `updateEntryInStore`, `$register`, team/locale) bumps `_v`, so
+this matches the P6 contract; document as "use the mutation API for writes you
+want operators to see".
+
+
 ### 10.11 RC.4 passes Playcom's gate (2026-09-02) → promote to 0.5.198
 
 B = perf-base-sep2 + 0.5.198-next.4 (A/B branch 50ed38f0), route deferral
@@ -1081,6 +1114,47 @@ host Worker `/sw.js` stub + publish `precache.json`. Acceptance (Playcom
 rig): warm hard refresh shell requests 0, first useful paint from shell
 cache, boot blocked time unchanged; cold boot unchanged; kill switch
 verified end to end (worker gone on next navigation).
+
+### 13.7 Status — SHIPPED to master (merge d9f429f, 2026-09-02)
+
+`src/scripts/manifest.sw.js` (worker module, version-stamped into
+`lib/manifest.sw.js`), loader inference + `Manifest.swStub(version)` +
+`Manifest.sw = { registered, version, kill() }`, `data-sw` attr,
+`manifest.json` `sw: false` kill switch, `mnfst-run` no-op `/sw.js` +
+`window.__mnfstRun` dev marker. Tests: 58 worker (fake scope) + 28 loader
+(happy-dom) + 23 real-Chrome e2e (`npm run test:e2e:sw`). Suite 418/418 at merge.
+
+Stub served by hosting (exact text, `text/javascript`, `no-cache`):
+```
+try { importScripts('https://cdn.manifestx.dev/npm/mnfst@<ver>/lib/manifest.sw.min.js'); } catch (e) { importScripts('https://cdn.jsdelivr.net/npm/mnfst@<ver>/lib/manifest.sw.min.js'); }
+if (!self.__mnfstSw) self.addEventListener('activate', function () { self.registration.unregister(); });
+```
+Registration `/sw.js?v=<data-version|latest>&d=<deployment>`, scope `/`, no
+`skipWaiting`/`claim` (first visit never controlled; warm from the second
+navigation). Caches `mnfst-sw:<ver>:<deployment|->:{assets,swr,pages}` +
+`mnfst-sw:meta`; pruned on activate. Message API `{type:'manifest:sw',
+action:'ping'|'version'|'kill'}`.
+
+Matcher deviations from §13.3: tag/range-pinned CDN URLs (`mnfst@latest`,
+`d3-array@3`) are SWR not immutable (a `latest` loader would otherwise freeze
+until the next publish); `t=<digits>` busters dropped from cache keys
+(utilities refetches every stylesheet with `?t=` per compile); cross-origin
+refetched `mode:cors, credentials:omit`, opaque never cached; `precache.json`
+skipped entirely on deployment mismatch.
+
+Numbers (real Chrome, src project, `data-sw="on"`): stamped assets warm load
+70 server hits with **shell 0** (only `index.html`, `manifest.json`, unstamped
+data SWR revalidations), 179/185 responses from the worker; with
+`precache.json` the second load is already warm (72 hits, shell 1).
+**Hard reload bypasses the worker in Chrome by design** — §13.6's "hard
+refresh shell 0" is unreachable; the win is normal reloads and navigations.
+
+Hosting/publish follow-up (Manifest-MCP, in progress): implicit `/sw.js` stub
+pinned to the exact version the site's `index.html` loads (dist-tags resolved
+at publish); `precache.json` `{deployment, files[]}` emitted at publish;
+`?v=` assets immutable, HTML/`manifest.json` `no-cache`; `manifest.sw.min.js`
+on the cdn Worker's minify route.
+
 
 ## 14. Surface restructure (2026-09-02) — behaviours vs plugins
 
