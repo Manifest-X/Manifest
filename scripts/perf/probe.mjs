@@ -16,7 +16,9 @@ const DEFAULT_SELECTORS = {
   menuPopover: '#perf-menu-0',
   localWrite: '#perf-local-write', // optional: one-field local write on one row (P6); skipped when absent
   detailPane: '[data-perf-detail-target]', // settle target: first-open/warm-switch
-  rowContainer: '.conv-list' // settle target: local-write (the row's list container)
+  rowContainer: '.conv-list', // settle target: local-write (the row's list container)
+  routeLink: '#perf-open-route', // optional: link to an inactive route (?routes=N); route-activate skipped when absent
+  routePane: '[data-perf-page="1"]' // settle target: route-activate (the pane the link reveals)
 };
 
 // ---- CLI args ----
@@ -48,7 +50,8 @@ function settleFor(scenario, selectors, args) {
     'first-open': selectors.detailPane,
     'warm-switch': selectors.detailPane,
     'menu-open': selectors.menuPopover,
-    'local-write': selectors.rowContainer
+    'local-write': selectors.rowContainer,
+    'route-activate': selectors.routePane
   };
   const selector = args.settleTarget || defaults[scenario];
   return selector ? { mode: 'target', selector } : { mode: 'body', selector: null };
@@ -156,6 +159,31 @@ function installProbeSource() {
       };
       el.addEventListener('toggle', onToggle);
     };
+    // Route pane loses 'hidden' -> reveal timestamp (route-activate scenario).
+    state.armReveal = function (selector) {
+      state.revealAt = null;
+      const el = document.querySelector(selector);
+      if (!el) return;
+      const mo = new MutationObserver(() => {
+        if (el.hasAttribute('hidden')) return;
+        state.revealAt = performance.now();
+        state.revealRows = el.querySelectorAll('li').length;
+        mo.disconnect();
+      });
+      mo.observe(el, { attributes: true, attributeFilter: ['hidden'] });
+    };
+    // Boot snapshot: long tasks since navigation, plus x-defer's own counters.
+    state.bootSnapshot = function () {
+      const d = window.ManifestDefer && window.ManifestDefer.stats ? window.ManifestDefer.stats() : null;
+      return {
+        readyMs: performance.now(),
+        blockedMs: state.longtasks.reduce((a, t) => a + t.dur, 0),
+        longestTaskMs: state.longtasks.reduce((a, t) => Math.max(a, t.dur), 0),
+        pagesInit: window.__perfPagesInit || 0,
+        hiddenRoutes: document.querySelectorAll('[x-route][hidden]').length,
+        defer: d ? { pending: d.pending, warm: d.warm, routesEnabled: !!(d.routes && d.routes.enabled), routesStashed: d.routes ? d.routes.stashed : 0, routesRendered: d.routes ? d.routes.rendered : 0 } : null
+      };
+    };
     // 500ms of MutationObserver quiescence on document.body = settle (§2).
     state.waitSettle = function (quietMs, hardTimeoutMs) {
       quietMs = quietMs || 500; hardTimeoutMs = hardTimeoutMs || 15000;
@@ -261,6 +289,35 @@ async function sampleLocalWrite(page, selectors, settle, pauseBackground) {
   return { scenario: 'local-write', ...win, inputLatencyMs: null, settle: settleMode };
 }
 
+// Boot: fresh navigation, long tasks until the page reports ready, plus x-defer counters.
+async function sampleBoot(page, url) {
+  await gotoAndBoot(page, url);
+  const snap = await page.evaluate(() => window.__perfProbe.bootSnapshot());
+  return { scenario: 'boot', ...snap };
+}
+
+// Route-activate: fresh navigation, click a link to an inactive route, settle on the revealed pane.
+async function sampleRouteActivate(page, url, selectors, settle, pauseBackground) {
+  await gotoAndBoot(page, url);
+  await page.evaluate((m, s) => window.__perfProbe.reset(m, s), settle.mode, settle.selector);
+  if (pauseBackground) await setPause(page, true);
+  await page.evaluate((sel) => window.__perfProbe.armGesture(sel), selectors.routeLink);
+  await page.evaluate((sel) => window.__perfProbe.armReveal(sel), selectors.routePane);
+  await page.click(selectors.routeLink);
+  const settleEnd = await page.evaluate(() => window.__perfProbe.waitSettle());
+  if (pauseBackground) await setPause(page, false);
+  const win = await collectWindow(page, settleEnd);
+  const extra = await page.evaluate(() => {
+    const s = window.__perfProbe;
+    return {
+      revealMs: (s.revealAt != null && s.gestureStart != null) ? (s.revealAt - s.gestureStart) : null,
+      revealRows: s.revealRows == null ? null : s.revealRows,
+      settle: s.settleMode
+    };
+  });
+  return { scenario: 'route-activate', ...win, inputLatencyMs: null, ...extra };
+}
+
 function reportBudget(scenario, medians, budget) {
   if (!budget || !budget[scenario]) return true;
   let ok = true;
@@ -317,6 +374,19 @@ async function main() {
     const page = await browser.newPage();
     await page.evaluateOnNewDocument(installProbeSource());
 
+    // ---- boot: fresh navigation per sample, long tasks until ready ----
+    const bootSamples = [];
+    for (let i = 0; i < args.samples; i++) bootSamples.push(await sampleBoot(page, url));
+
+    // ---- route-activate: fresh navigation, reveal an inactive route (only when the page links one) ----
+    const routeActivateSettle = settleFor('route-activate', selectors, args);
+    const routeActivateSamples = [];
+    if (selectors.routeLink && await page.$(selectors.routeLink)) {
+      for (let i = 0; i < args.samples; i++) {
+        routeActivateSamples.push(await sampleRouteActivate(page, url, selectors, routeActivateSettle, args.pauseBackground));
+      }
+    }
+
     // ---- first-open: fresh navigation per sample (never opened this session) ----
     const firstOpenSettle = settleFor('first-open', selectors, args);
     const firstOpenSamples = [];
@@ -350,20 +420,21 @@ async function main() {
     }
 
     for (const [scenario, samples] of [
+      ['boot', bootSamples],
+      ['route-activate', routeActivateSamples],
       ['first-open', firstOpenSamples],
       ['warm-switch', warmSwitchSamples],
       ['menu-open', menuOpenSamples],
       ['local-write', localWriteSamples]
     ]) {
       if (!samples.length) continue;
-      const medians = {
-        scenario,
-        blockedMs: median(samples.map((s) => s.blockedMs)),
-        longestTaskMs: median(samples.map((s) => s.longestTaskMs)),
-        mutations: median(samples.map((s) => s.mutations)),
-        inputLatencyMs: median(samples.map((s) => s.inputLatencyMs)),
-        settle: samples[0].settle
-      };
+      // Median of every numeric field; non-numeric fields (settle label, defer counters) from the last sample
+      const medians = { scenario };
+      for (const key of Object.keys(samples[samples.length - 1])) {
+        if (key === 'scenario') continue;
+        const values = samples.map((s) => s[key]);
+        medians[key] = values.every((v) => v == null || typeof v === 'number') ? median(values) : samples[samples.length - 1][key];
+      }
       allResults.push(medians);
       console.log(JSON.stringify(medians));
       if (!reportBudget(scenario, medians, args.budget)) exitCode = 1;
