@@ -533,3 +533,43 @@ cdn.manifestx.dev both serve it (the pull-through treats the prerelease as an
 exact immutable version). Playcom pins `data-version="0.5.198-next.0"` and
 re-runs the `perf-base-sep2` scenario. Gate for promoting to a real release:
 their table + no functional regressions from the soak.
+
+### 10.4 Playcom A/B — local serve, A = perf-base-sep2 @ 0.5.197 (hand gates in), B = RC (gates reverted)
+
+Same copies, staging Appwrite, QA Manager / Acme Demo (53 rows), sequential.
+Their nav's 1s age ticker never lets the DOM go quiet (`x-text` rewrites
+unchanged strings — ~1,150 mutations/s in A), so gesture windows are fixed 8s
+and blocked time is the metric.
+
+| Scenario | A blocked / mutations | B blocked / mutations |
+|---|---|---|
+| Boot (22s, long tasks) | 12,493ms / 52 tasks, longest 599 | **4,805ms (−62%)** / 32, longest 260 |
+| GET /v1/account at boot | 12+ | **2** |
+| Idle 3s | 0 / 3,576 | 0 / **959** |
+| Cold switch #1 | 6,394 / 56,024 | 3,145 / 8,311 (18 rows-list fetches — see below) |
+| Cold switch #2 | 2,494 / 19,927 | **1,196** / 3,169 |
+| Warm re-open | 1,976 / 17,346 | **836** / 3,286 |
+| Prefetched thread | 2,964 / 19,140 | 1,677 / 3,360 |
+| Single-row write (4.5s) | 2,211 / 15,425, flag @1,631ms | 1,123 / 2,476, flag @995ms (one ~1s task remains — theirs to profile) |
+
+Functional: zero regressions, no `x-defer.off` needed, optimistic writes
+visible same tick. Net: blocked time roughly halved everywhere, mutations
+−80%, boot −62%. Not the harness-level collapse — residuals:
+
+1. **Countries menu FIRST open 959ms vs 454ms with their hand `x-if` gate**
+   (243 rows; container had just mounted on a tab click, prewarm hadn't
+   reached it). Above the 250ms ceiling → **RC.1 fix: containers registered
+   after `manifest:ready` are prewarmed URGENTLY (front of queue, ≤100ms
+   idle timeout)**; and the real answer for a 243-row picker is `x-virtual`
+   inside the popover (P4 posture — a plain 243-row x-for costs ~450ms even
+   hand-gated).
+2. **18 rows-list fetches on the first switch (A: 2).** Expected consequence
+   of deferral: `$x` reads inside closed containers (tab panels, menus) used
+   to fire their source loads at boot; now they fire on first render. Boot
+   fetches 21 → 25 and later switches 2 in both. Document as a behavior
+   change; prewarm normally absorbs it before the first gesture.
+3. **`x-text` churn (P7 candidate):** Alpine's `x-text` writes `textContent`
+   on every effect run even when unchanged → ~1,150 mutations/s from a 1s
+   ticker over 53 rows. A Manifest equality guard on text writes is tiny and
+   universal; app-side mitigation now is to tick at the rendered
+   granularity (minute) or compare before writing.
