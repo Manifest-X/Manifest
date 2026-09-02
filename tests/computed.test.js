@@ -95,6 +95,23 @@ describe('$computed', () => {
         expect(el.querySelector('i').textContent).toBe('1')
     })
 
+    it('x-computed writes to the nearest scope, so sibling components never clobber each other', async () => {
+        const host = mount(`<div x-data="{ outer: true }"><section x-data="{ items: [1, 2] }" x-computed:hits="items.length"><i x-text="hits"></i></section><section x-data="{ items: [1, 2, 3] }" x-computed:hits="items.length"><i x-text="hits"></i></section><b x-text="typeof hits"></b></div>`)
+        const [a, b] = host.querySelectorAll('section')
+        expect(a.querySelector('i').textContent).toBe('2')
+        expect(b.querySelector('i').textContent).toBe('3')
+        expect(host.querySelector('b').textContent).toBe('undefined')
+        expect(Object.keys(Alpine.raw(Alpine.closestDataStack(a)[0]))).toContain('hits')
+        expect(Object.keys(Alpine.raw(Alpine.closestDataStack(host)[0]))).not.toContain('hits')
+    })
+
+    it('x-init on the same element can read the computed value', async () => {
+        window.counts = {}
+        const el = mount(`<div x-data="{ items: [1, 2, 3] }" x-computed:count="items.length" x-init="counts.seen = count"></div>`)
+        expect(window.counts.seen).toBe(3)
+        expect(el).toBeTruthy()
+    })
+
     it('$computed accepts an arrow that receives the scope', async () => {
         const name = `arrow${n++}`
         Alpine.data(name, () => ({ items: [1, 2, 3], big: window.$computed((s) => s.items.filter((i) => i > 1)) }))
