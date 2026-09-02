@@ -549,6 +549,8 @@
 		const pluginBase = script.getAttribute('data-plugin-base');
 		// Override: custom CDN fallback chain (comma-separated origins).
 		const cdn = script.getAttribute('data-cdn');
+		// App-shell service worker switch: 'off' = never, 'on' = force + debug log.
+		const sw = script.getAttribute('data-sw');
 
 		// `data-plugins="a,b"` replaces the default set; a `+` prefix is additive
 		// (`data-plugins="+chat"` = defaults plus chat) — needed for plugins with
@@ -592,6 +594,7 @@
 			alpine,
 			pluginBase,
 			cdn,
+			sw,
 		};
 	}
 
@@ -629,10 +632,119 @@
 		getPluginUrl: getPluginUrl
 	};
 
+	// ---- App-shell service worker (PERF-PRIMITIVES-DESIGN §13) ----
+	// Same-origin `/sw.js` stub — two lines, identical wherever it is emitted
+	// (managed hosting, mnfst-publish, the starter template, by hand):
+	//   try { importScripts('https://cdn.manifestx.dev/npm/mnfst@<v>/lib/manifest.sw.min.js'); } catch (e) { importScripts('https://cdn.jsdelivr.net/npm/mnfst@<v>/lib/manifest.sw.min.js'); }
+	//   if (!self.__mnfstSw) self.addEventListener('activate', function () { self.registration.unregister(); });
+	// Line 1 pins the worker module to the framework version (CDN fallback; a
+	// second failure fails install, so the previous worker survives). Line 2
+	// unregisters a worker whose module never loaded.
+	const SW_STUB_PATH = '/sw.js';
+	function swStub(version = DEFAULT_VERSION) {
+		const v = String(version || DEFAULT_VERSION).replace(/[^\w.+-]/g, '');
+		const file = `mnfst@${v}/lib/manifest.sw.min.js`;
+		return `try { importScripts('https://cdn.manifestx.dev/npm/${file}'); } catch (e) { importScripts('https://cdn.jsdelivr.net/npm/${file}'); }\n` +
+			`if (!self.__mnfstSw) self.addEventListener('activate', function () { self.registration.unregister(); });\n`;
+	}
+
+	const swState = { registered: false, version: null, kill: () => swKill(null) };
+	window.Manifest.swStub = swStub;
+	window.Manifest.sw = swState;
+
+	function isDevHost(host) {
+		const h = String(host || '').toLowerCase();
+		return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h === '0.0.0.0' ||
+			h.endsWith('.localhost') || h.endsWith('.local');
+	}
+
+	// Kill switch: tell the worker to clear its caches, unregister, and sweep
+	// any cache left behind. Never throws.
+	async function swKill(registration) {
+		swState.registered = false;
+		try {
+			const reg = registration || await navigator.serviceWorker.getRegistration(SW_STUB_PATH);
+			if (reg) {
+				const worker = reg.active || reg.waiting || reg.installing;
+				try { if (worker) worker.postMessage({ type: 'manifest:sw', action: 'kill' }); } catch (_) { /* gone */ }
+				await reg.unregister();
+			}
+		} catch (_) { /* nothing to kill */ }
+		try {
+			if (window.caches) {
+				const names = await caches.keys();
+				await Promise.all(names.filter(n => n.startsWith('mnfst-sw:')).map(n => caches.delete(n)));
+			}
+		} catch (_) { /* no cache access */ }
+	}
+
+	// Turnkey inference (§13.2): runs once the page has settled, never during
+	// boot. Every exit is silent unless data-sw="on" (debug + force on localhost).
+	async function swInfer(cfg) {
+		const mode = cfg.sw;
+		const debug = mode === 'on';
+		const log = debug ? (...a) => console.info('[Manifest SW]', ...a) : () => { };
+		if (!navigator.serviceWorker) return log('skip: unsupported');
+		const loc = window.location;
+		const devServer = !!window.__mnfstRun;
+		const devOrigin = isDevHost(loc.hostname);
+		let manifest = window.__manifestLoaded || null;
+		if (!manifest) {
+			const url = document.querySelector('link[rel="manifest"]')?.getAttribute('href') || '/manifest.json';
+			manifest = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+		}
+		const off = mode === 'off' || (manifest && manifest.sw === false);
+		const existing = await navigator.serviceWorker.getRegistration(SW_STUB_PATH).catch(() => null);
+		if (off || devServer || (devOrigin && !debug)) {
+			log('skip:', off ? 'kill switch' : devServer ? 'mnfst-run' : 'dev origin', existing ? '(unregistering)' : '');
+			if (existing) await swKill(existing);
+			return;
+		}
+		if (loc.protocol !== 'https:' && !(debug && window.isSecureContext)) return log('skip: not https');
+		// Stub probe: no stub → nothing happens, no console noise.
+		let probe = null;
+		try { probe = sessionStorage.getItem('manifest:sw-probe'); } catch (_) { /* no storage */ }
+		if (probe !== 'ok') {
+			const res = await fetch(SW_STUB_PATH, { cache: 'no-store' }).catch(() => null);
+			const type = (res && res.headers.get('content-type')) || '';
+			if (!res || !res.ok || !/javascript|ecmascript/i.test(type)) return log('skip: no stub', res && res.status, type);
+			try { sessionStorage.setItem('manifest:sw-probe', 'ok'); } catch (_) { /* no storage */ }
+		}
+		const deployment = (manifest && typeof manifest.deployment === 'string') ? manifest.deployment : '';
+		const url = `${SW_STUB_PATH}?v=${encodeURIComponent(cfg.version)}&d=${encodeURIComponent(deployment)}`;
+		const reg = await navigator.serviceWorker.register(url, { scope: '/' });
+		swState.registered = true;
+		swState.version = cfg.version;
+		log('registered', url, reg.active ? 'active' : reg.installing ? 'installing' : 'waiting');
+	}
+
+	function armServiceWorker(cfg) {
+		if (!cfg || window.__manifestSwArmed) return;
+		const token = window.__manifestSwArmed = {};
+		let ran = false;
+		const run = () => {
+			if (ran || window.__manifestSwArmed !== token) return;
+			ran = true;
+			try { swInfer(cfg).catch(() => { }); } catch (_) { /* never throws */ }
+		};
+		// After manifest:ready when this loader boots the page; a loader that
+		// loads nothing (self-hosted scripts) settles on window load instead.
+		const settle = () => {
+			if (window.__manifestReady) return run();
+			window.addEventListener('manifest:ready', run, { once: true });
+			if (!window.__manifestLoaderStarted) {
+				if (document.readyState === 'complete') setTimeout(run, 0);
+				else window.addEventListener('load', run, { once: true });
+			}
+		};
+		setTimeout(settle, 0); // after this script finishes, so __manifestLoaderStarted is settled
+	}
+
 	// Parse config and load plugins
 	const config = parseDataAttributes();
 	if (config && config.pluginBase) setPluginBase(config.pluginBase);
 	if (config && config.cdn) setCdnHosts(config.cdn);
+	armServiceWorker(config);
 
 	if (config && config.plugins.length > 0) {
 		if (window.__manifestLoaderStarted) {
