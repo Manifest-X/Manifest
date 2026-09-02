@@ -49,6 +49,7 @@
         "@rollup/plugin-node-resolve": "^15.3.0",
         "@rollup/plugin-terser": "^0.4.4",
         "@tailwindcss/cli": "^4.2.4",
+        "alpinejs": "3.17.1",
         "cssnano": "^7.1.1",
         "glob": "^11.0.2",
         "happy-dom": "^20.11.6",
