@@ -210,25 +210,46 @@ describe('prewarm', () => {
         expect(window.counts.order).toBeUndefined()
         window.dispatchEvent(new CustomEvent('manifest:ready'))
         expect(idleQueue.length).toBe(1)
-        // A container that appears after ready (a pane just mounted) is urgent: it renders first
+        // Still booting (queue not drained yet): a late container is NOT urgent — it queues by priority
         mount(`<div x-data><menu popover x-defer.priority="9" id="late"><li x-init="counts.order = (counts.order || []).concat('late')"></li></menu></div>`)
         // One container per slice; containers left closed by earlier tests drain too
         let slices = 0
         while (idleQueue.length && slices++ < 50) runIdle()
-        expect(window.counts.order).toEqual(['late', 'p0a', 'p0b', 'p1', 'p2'])
+        expect(window.counts.order).toEqual(['p0a', 'p0b', 'p1', 'p2', 'late'])
         expect(slices).toBeGreaterThan(4)
         expect(idleQueue.length).toBe(0)
         expect(window.ManifestDefer.isPending(host.querySelector('#lazy'))).toBe(true)
     })
 
-    it('schedules a container mounted after ready on a short idle timeout', () => {
+    it('after boot, a container mounted with no gesture stays on the normal idle timeout', () => {
         while (idleQueue.length) runIdle()
         idleOpts.length = 0
+        mount(`<div x-data><menu popover id="quiet"><li x-init="counts.quiet = 1"></li></menu></div>`)
+        expect(idleQueue.length).toBe(1)
+        expect(idleOpts[0]).toEqual({ timeout: 1000 })
+        runIdle()
+        expect(window.counts.quiet).toBe(1)
+    })
+
+    it('after boot, a container mounted inside a gesture window is urgent (short timeout, front of queue)', () => {
+        while (idleQueue.length) runIdle()
+        idleOpts.length = 0
+        document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
         mount(`<div x-data><menu popover id="fresh"><li x-init="counts.fresh = 1"></li></menu></div>`)
         expect(idleQueue.length).toBe(1)
         expect(idleOpts[0]).toEqual({ timeout: 100 })
         runIdle()
         expect(window.counts.fresh).toBe(1)
+    })
+
+    it('caps urgent containers per gesture', () => {
+        while (idleQueue.length) runIdle()
+        document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        const menus = Array.from({ length: 10 }, (_, i) => `<menu popover id="cap${i}"><li x-init="counts.cap = (counts.cap || 0) + 1"></li></menu>`).join('')
+        const host = mount(`<div x-data>` + menus + `</div>`)
+        const recs = Array.from(host.querySelectorAll('menu')).map((m) => m.__mnfstDefer)
+        expect(recs.filter((r) => r.urgent).length).toBe(8)
+        expect(recs.filter((r) => !r.urgent).length).toBe(2)
     })
 })
 
