@@ -4,7 +4,7 @@
 /*
 /*  Registers $chat. Renders nothing — the author drives their UI off the handle.
 /*    open(conversationId, { adapter, around?, aggregate? }) · merge(handles, { order })
-/*    adapter(name, factory) · flatten(tree)
+/*    adapter(name, factory) · flatten(tree) · stale · persistence()
 */
 
 (function () {
@@ -24,6 +24,8 @@
             adapter(name, factory) { if (factory === undefined) return Adapters.resolve(name); Adapters.register(name, factory); },
             flatten(tree) { return Store.flattenTree(tree); },
             get version() { return Store.version; },   // shared revision — trackable even before any handle resolves
+            get stale() { const P = window.ManifestChatPersist; return !!(P && P.anyStale()); },   // any open window still a persisted snapshot
+            persistence() { const P = window.ManifestChatPersist; return P ? P.persistence() : { enabled: false, conversations: [] }; },
             get sim() { return Adapters.sim; }      // demo/sim hooks; harmless in prod (no callers)
         };
     }
@@ -41,6 +43,7 @@
     function ensureInitialized() {
         if (!window.ManifestChatStore || !window.ManifestChatAdapters) return;
         registerMagic();
+        if (window.ManifestChatPersist) window.ManifestChatPersist.bootstrap();
     }
 
     window.ensureManifestChatInitialized = ensureInitialized;

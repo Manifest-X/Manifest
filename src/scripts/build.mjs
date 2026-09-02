@@ -130,6 +130,7 @@ const CONFIG = {
 
     // Chat subscripts order ($chat — conversation projection over an adapter; no UI)
     chatSubscripts: [
+        'manifest.chat.persist.js',
         'manifest.chat.store.js',
         'manifest.chat.adapters.js',
         'manifest.chat.adapters.llm.js',
