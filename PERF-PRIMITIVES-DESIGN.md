@@ -1449,4 +1449,10 @@ classes in `compile()` and the localStorage replay; render's
 `prerender.utilities.css` link carries the attribute. Proof (src docs homepage,
 real Chrome, 5s): cold 2 style writes → 0 with a static sheet. Tests +15
 (505/505). Not DOM-free: sync.js critical pre-paint path (lower impact).
-Hosting half (publish scan + emit + link injection) in progress in Manifest-MCP.
+**Hosting half SHIPPED (Manifest-MCP main 3543e6d, 2026-09-02; 260/260; not deployed):**
+publish scans html/md (shares the precache R2 reads), collects theme CSS, compiles
+via `mnfst/lib/manifest.utilities.node.mjs` (computed import; no-op until `mnfst`
+≥0.5.199 is a dependency), writes `/manifest.utilities.css?v=<deployment>`,
+injects `<link data-mnfst-utilities>` before the first stylesheet (idempotent;
+skipped when render already emitted a sheet), lists it in precache. Deploy after
+0.5.199 + `pnpm add mnfst@^0.5.199`.
