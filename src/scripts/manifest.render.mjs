@@ -3392,6 +3392,9 @@ async function runPrerender(config) {
       // initializeDataSourcesPlugin picks locale from document.documentElement.lang first; a mismatch
       // (e.g. headless default vs /en/...) leaves $x.* empty while x-route sections still render.
       await page.evaluateOnNewDocument((locale) => {
+        // Render pass: the defer plugin keeps closed containers eager so the
+        // snapshot carries their markup (hydration stashes it again).
+        window.__manifestRender = true;
         const apply = () => {
           try {
             if (locale && typeof locale === 'string') document.documentElement.lang = locale;

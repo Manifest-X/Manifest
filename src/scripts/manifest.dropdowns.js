@@ -103,7 +103,9 @@ function initializeDropdownPlugin() {
                     if (el.closest('[popover]')) menu.setAttribute('data-popover-nested', '');
                     if (!modifiers.includes('context')) el.setAttribute('popovertarget', uniqueDropdownId);
 
-                    // Initialize Alpine on the cloned menu
+                    // Closed before init so the defer plugin can stash its content
+                    menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
+                    window.ManifestDefer?.defer(menu);
                     Alpine.initTree(menu);
                 } else {
                     // Original behavior for static dropdowns
@@ -134,7 +136,8 @@ function initializeDropdownPlugin() {
                                             if (el.closest('[popover]')) menu.setAttribute('data-popover-nested', '');
                                             if (!modifiers.includes('context')) el.setAttribute('popovertarget', dropdownId);
 
-                                            // Initialize Alpine on the menu
+                                            menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
+                                            window.ManifestDefer?.defer(menu);
                                             Alpine.initTree(menu);
 
                                             // Set up the dropdown after menu is ready
@@ -204,6 +207,7 @@ function initializeDropdownPlugin() {
                         el.setAttribute('aria-controls', menu.id);
                         el.setAttribute('aria-expanded', menu.matches(':popover-open') ? 'true' : 'false');
                         if (!menu.hasAttribute('role')) menu.setAttribute('role', 'menu');
+                        // Deferred menus have no items until first open — repeated on toggle
                         menu.querySelectorAll('li').forEach((li) => {
                             if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
                         });
@@ -429,6 +433,9 @@ function initializeDropdownPlugin() {
                                 if (!li.hasAttribute('tabindex')) {
                                     li.setAttribute('tabindex', '-1');
                                 }
+                                if (menu.getAttribute('role') === 'menu' && !li.hasAttribute('role')) {
+                                    li.setAttribute('role', 'menuitem');
+                                }
                             });
                             // When the menu has no natively focusable control, make the
                             // first item the keyboard entry point.
@@ -472,12 +479,16 @@ function initializeDropdownPlugin() {
                         const setupMenuItemListeners = () => {
                             const menuItems = menu.querySelectorAll('li, button, a, [role="menuitem"]');
                             menuItems.forEach(item => {
+                                if (item.__mnfstHoverWired) return;
+                                item.__mnfstHoverWired = true;
                                 item.addEventListener('mouseenter', cancelCloseTimer);
                             });
                         };
 
-                        // Setup listeners after a brief delay to ensure menu is rendered
+                        // Setup listeners after a brief delay to ensure menu is rendered;
+                        // again on open for items a deferred menu renders late
                         setTimeout(setupMenuItemListeners, 10);
+                        menu.addEventListener('toggle', (e) => { if (e.newState === 'open') setupMenuItemListeners(); });
                     }
                 } // End of setupDropdown function
             });
