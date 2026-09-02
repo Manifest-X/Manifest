@@ -573,3 +573,11 @@ visible same tick. Net: blocked time roughly halved everywhere, mutations
    ticker over 53 rows. A Manifest equality guard on text writes is tiny and
    universal; app-side mitigation now is to tick at the rendered
    granularity (minute) or compare before writing.
+
+### 10.5 RC.1 — `mnfst@0.5.198-next.1` (2026-09-02)
+
+RC.0 + the urgent-prewarm fix (6d5540c): containers registered after
+`manifest:ready` go to the front of the prewarm queue with a 100ms idle
+timeout. Playcom re-measures only countries-first-open and cold switch #1.
+Promotion gate: countries first open ≤250ms ceiling (≤100ms target), no new
+regressions → `npm run release` (lands as 0.5.198).
