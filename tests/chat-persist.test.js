@@ -187,11 +187,11 @@ describe('snapshot (write path)', () => {
         expect(keys()).toEqual(['|chat', '|chat|c1'])
     })
 
-    it('open(id, { persist: false }) neither hydrates nor writes', async () => {
+    it('open(id, { persistWindow: false }) neither hydrates nor writes', async () => {
         idb.seed(DB(), record('', 'c1', [msg('m1', 1)]))
         const { chat, cp, keys, net } = await load({ persist: true })
         const release = net.gateOpen()
-        const h = chat.open('c1', { adapter: net.adapter, persist: false })
+        const h = chat.open('c1', { adapter: net.adapter, persistWindow: false })
         await settle()
         expect(h.messages.length).toBe(0)
         expect(h.stale).toBe(false)
