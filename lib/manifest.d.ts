@@ -412,7 +412,7 @@ export interface ManifestTextEdit {
 export type ManifestDirective =
     | 'x-route' | 'x-anchors'
     | 'x-icon' | 'x-svg' | 'x-markdown' | 'x-code' | 'x-code-group'
-    | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize' | 'x-defer'
+    | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize' | 'x-computed' | 'x-defer'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
     | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files'
     | 'x-edit' | 'x-text-edit';

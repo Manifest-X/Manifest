@@ -81,6 +81,30 @@ describe('$computed', () => {
         expect(el.querySelector('span').textContent).toBe('bb')
     })
 
+    it('x-computed:name defines a cached value on the nearest scope from a plain expression', async () => {
+        const el = mount(`<div x-data="{ q: 'b', items: ['a', 'b', 'bb'], calls: 0 }" x-computed:hits="(calls++, items.filter(i => i.includes(q)))"><span x-text="hits.join()"></span><i x-text="hits.length"></i><b x-text="calls"></b></div>`)
+        expect(el.querySelector('span').textContent).toBe('b,bb')
+        const data = Alpine.$data(el)
+        const before = data.hits
+        data.q = 'bb'
+        await Alpine.nextTick()
+        expect(el.querySelector('span').textContent).toBe('bb')
+        expect(data.hits).not.toBe(before)
+        data.items.push('x')
+        await Alpine.nextTick()
+        expect(el.querySelector('i').textContent).toBe('1')
+    })
+
+    it('$computed accepts an arrow that receives the scope', async () => {
+        const name = `arrow${n++}`
+        Alpine.data(name, () => ({ items: [1, 2, 3], big: window.$computed((s) => s.items.filter((i) => i > 1)) }))
+        const el = mount(`<div x-data="${name}"><span x-text="big.join()"></span></div>`)
+        expect(el.querySelector('span').textContent).toBe('2,3')
+        Alpine.$data(el).items.push(9)
+        await Alpine.nextTick()
+        expect(el.querySelector('span').textContent).toBe('2,3,9')
+    })
+
     it('a throwing computed keeps its last value', async () => {
         const name = `boom${n++}`
         Alpine.data(name, () => ({

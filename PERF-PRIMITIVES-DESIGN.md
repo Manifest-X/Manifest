@@ -1081,3 +1081,24 @@ host Worker `/sw.js` stub + publish `precache.json`. Acceptance (Playcom
 rig): warm hard refresh shell requests 0, first useful paint from shell
 cache, boot blocked time unchanged; cold boot unchanged; kill switch
 verified end to end (worker gone on next navigation).
+
+## 14. Surface restructure (2026-09-02) — behaviours vs plugins
+
+Andrew's rule: plugins are feature-level capabilities an author invokes
+(directive or magic, visible output); the core is just the loader. Applied:
+- **`defer` and `bindings` are ALWAYS-ON behaviours**, not plugins: the
+  loader includes them unconditionally on both the derive and the explicit
+  `data-plugins` paths; they are not in the plugin list and cannot be omitted;
+  the only knobs are the kill switches (`data-defer="off"`). Docs describe the
+  behaviours, never the files.
+- **`computed` stays a plugin** (auto-included like every plugin; works alone
+  or with anything — it is not `$x`-specific). Primary form is the directive
+  `x-computed:name="expression"` (a named cached value from a plain
+  expression on the nearest scope — no function, no `this`, no return);
+  `$computed(s => …)` for JS factories (the scope is `this` AND the first
+  argument; the `function () { this }` form still works).
+- `x-virtual` unchanged. The "performance plugins" category disappears from
+  the docs: what remains user-facing is `x-computed` and `x-virtual`.
+Verified on a page with an explicit `data-plugins="toasts,computed"` list:
+only five scripts load (loader, defer, bindings, toasts, computed); a closed
+menu is deferred then prewarmed; `x-computed:hits` renders and recomputes.

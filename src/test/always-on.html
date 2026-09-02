@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- Scratch page: an EXPLICIT data-plugins list must still get the always-on behaviours
+     (defer, bindings) and x-computed must work as a plain attribute. -->
+
+<head>
+    <meta charset="UTF-8">
+    <title>always-on + x-computed</title>
+    <link rel="manifest" href="/manifest.json">
+    <script src="/scripts/manifest.js" data-plugin-base="/scripts/" data-plugins="toasts,computed"></script>
+</head>
+
+<body>
+    <div x-data="{ q: 'b', items: ['a', 'b', 'bb'] }" x-computed:hits="items.filter(i => i.includes(q))" class="col gap-4 p-6">
+        <input x-model="q" aria-label="filter">
+        <p id="hits" x-text="hits.join()">loading…</p>
+        <button popovertarget="m">open</button>
+        <menu popover id="m"><li x-init="window.__menuInit = (window.__menuInit || 0) + 1">A</li></menu>
+    </div>
+</body>
+
+</html>
