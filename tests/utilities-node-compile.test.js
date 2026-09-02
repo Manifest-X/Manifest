@@ -1,12 +1,12 @@
 /**
- * @vitest-environment happy-dom
+ * @vitest-environment node
  *
  * DOM-free utilities compiler (src/scripts/utilities/manifest.utilities.node.mjs,
- * built to lib/manifest.utilities.node.mjs). compileUtilities/scanClasses must be
- * exactly the browser plugin's generation logic with no document — this asserts
- * parity against the real browser plugin (the actual built lib/manifest.utilities.js,
- * loaded live in happy-dom) for a representative class set, then covers scanClasses
- * and the CLI's determinism independently.
+ * built to lib/manifest.utilities.node.mjs). Runs under the plain node
+ * environment (no jsdom/happy-dom) so a stray `document`/`window` read in the
+ * generation path fails loudly instead of being masked by a DOM polyfill.
+ * Browser-vs-node parity lives in utilities-node-compile.browser.test.js,
+ * which needs happy-dom to load the live browser bundle.
  */
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -20,36 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const THEME_CSS = ':root { --color-brand: #ff0000; --spacing-4: 1rem; --spacing-8: 2rem; }'
 const CLASSES = ['text-brand', 'hover:bg-brand', 'p-4', 'md:flex', 'w-[37px]']
 
-// window.tailwind short-circuits isTailwindAvailable() so waitForTailwind()
-// resolves immediately instead of polling for 5s.
-window.tailwind = {}
-window.ManifestComponentsRegistry = { manifest: {} }
-await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(
-    readFileSync(join(__dirname, '../lib/manifest.utilities.js'), 'utf8')
-))
-// The real, live compiler instance the browser bundle constructs on load —
-// generateUtilitiesFromVars/generateCustomUtilities/sortUtilities/parseClassName
-// are the exact production methods, called the same way compileUtilities() does.
-const liveCompiler = window.ManifestUtilities
-
-async function browserCompile(classes, themeCss) {
-    const discovered = liveCompiler.extractCustomUtilities(themeCss)
-    for (const [name, value] of discovered) liveCompiler.customUtilities.set(name, value)
-    const usedData = { classes: Array.from(new Set(classes)), variableSuffixes: [] }
-    const varUtilities = liveCompiler.generateUtilitiesFromVars(themeCss, usedData)
-    const customUtilities = liveCompiler.generateCustomUtilities(usedData)
-    let all = [varUtilities, customUtilities].filter(Boolean).join('\n\n')
-    all = liveCompiler.sortUtilities(all)
-    return all ? `@layer utilities {\n${all}\n}` : ''
-}
-
-describe('compileUtilities parity with the browser plugin', () => {
-    it('matches for a representative class set (variants, arbitrary value, theme-var utility)', async () => {
-        const nodeCss = await compileUtilities({ classes: CLASSES, themeCss: THEME_CSS })
-        const browserCss = await browserCompile(CLASSES, THEME_CSS)
-        expect(nodeCss).toBe(browserCss)
-    })
-
+describe('compileUtilities', () => {
     it('includes theme-variable utilities and their variants', async () => {
         const css = await compileUtilities({ classes: CLASSES, themeCss: THEME_CSS })
         expect(css).toContain('.text-brand { color: var(--color-brand) }')
@@ -72,7 +43,11 @@ describe('compileUtilities parity with the browser plugin', () => {
     })
 
     it('returns empty string for no matching classes', async () => {
+        // flex/block aren't theme-variable-driven (no generator emits a bare
+        // `display` utility) — Manifest ships its own static .row/.col
+        // equivalents in CSS instead, so these never get compiled here.
         expect(await compileUtilities({ classes: ['flex', 'block'], themeCss: THEME_CSS })).toBe('')
+        expect(await compileUtilities({ classes: ['flex'] })).toBe('')
         expect(await compileUtilities({})).toBe('')
     })
 
@@ -80,6 +55,14 @@ describe('compileUtilities parity with the browser plugin', () => {
         const baseCss = ':where(.row, .col) { display: flex; }'
         const css = await compileUtilities({ classes: ['hover:row'], baseCss })
         expect(css).toContain('row')
+    })
+
+    it('generates a theme-var utility even when the last declaration has no trailing semicolon', async () => {
+        // Regression: extractThemeVariables used to require a `;` terminator,
+        // so the last declaration in a block (valid CSS without one) was
+        // silently dropped — e.g. `:root{--spacing-4:1rem}` produced nothing.
+        const css = await compileUtilities({ classes: ['p-4'], themeCss: ':root{--spacing-4:1rem}' })
+        expect(css).toContain('.p-4 { padding: var(--spacing-4) }')
     })
 })
 

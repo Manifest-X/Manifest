@@ -376,8 +376,11 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 TailwindCompiler.prototype.extractThemeVariables = function (cssText) {
     const variables = new Map();
 
-    // Extract ALL CSS custom properties from ANY declaration block
-    const varRegex = /--([\w-]+):\s*([^;]+);/g;
+    // Extract ALL CSS custom properties from ANY declaration block. Terminator
+    // is a lookahead (`;` or `}`) rather than a consumed `;` so the last
+    // declaration in a block still matches when the author omits the
+    // trailing semicolon (valid CSS, e.g. `:root{--x:1rem}`).
+    const varRegex = /--([\w-]+):\s*([^;}]+)(?=[;}])/g;
 
     let varMatch;
     while ((varMatch = varRegex.exec(cssText)) !== null) {

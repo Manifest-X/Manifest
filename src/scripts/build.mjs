@@ -640,6 +640,31 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
 // Combine the DOM-free utilities subscripts with the Node/Workers wrapper
 // (scripts/utilities/manifest.utilities.node.mjs) into a single, dependency-free
 // ES module. Same generator source as the browser bundle — never fork the logic.
+// Installed only when absent — never overwrites a real DOM (browser/happy-dom).
+// Insurance so the generation subscripts (shared verbatim with the browser
+// build) stay callable in a bare Node/Workers runtime even if a future
+// change adds a DOM read the compile path doesn't already avoid.
+const DOM_SHIMS = `if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
+if (typeof globalThis.document === 'undefined') {
+    const inertElement = () => ({ style: {}, textContent: '', classList: { add(){}, remove(){}, contains: () => false }, setAttribute(){}, appendChild(){}, insertBefore(){} });
+    globalThis.document = {
+        documentElement: { outerHTML: '' },
+        head: { firstChild: null, lastElementChild: null, innerHTML: '', appendChild(){}, insertBefore(){} },
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        getElementById: () => null,
+        getElementsByTagName: () => [],
+        createElement: inertElement,
+        addEventListener(){},
+        styleSheets: []
+    };
+}
+if (typeof globalThis.getComputedStyle === 'undefined') globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
+if (typeof globalThis.localStorage === 'undefined') globalThis.localStorage = { getItem: () => null, setItem(){}, removeItem(){} };
+if (typeof globalThis.performance === 'undefined') globalThis.performance = { now: () => Date.now() };
+if (typeof globalThis.requestAnimationFrame === 'undefined') globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+`;
+
 function buildUtilitiesNodeModule() {
     console.log('Building utilities node module...\n');
 
@@ -663,7 +688,7 @@ function buildUtilitiesNodeModule() {
 
     const wrapper = fs.readFileSync(wrapperPath, 'utf8');
     const header = '/* manifest.utilities.node.mjs — built from scripts/utilities/ (DOM-free) */\n\n';
-    const combined = `${header}${core.join('\n\n')}\n\n${wrapper}`;
+    const combined = `${header}${DOM_SHIMS}\n${core.join('\n\n')}\n\n${wrapper}`;
 
     const outputPath = path.join('scripts', 'manifest.utilities.node.mjs');
     fs.writeFileSync(outputPath, combined);
