@@ -588,3 +588,35 @@ RC.1 + the three-way urgency gate (30e7ff1). Verified on registry and both
 CDNs after a propagation grace. Promotion gate unchanged: quiet-machine boot
 and idle window match RC.0 (idle = 0ms blocked), countries first-open ≤250ms,
 no new regressions → `npm run release` (0.5.198).
+
+### 10.7 RC.2 soak findings on Playcom's real tree → RC.3 (2026-09-02)
+
+Driven directly (headless Chrome, their candidate tree pinned to RC.2):
+- **"Empty scope at click" was a measurement artifact**: `Object.keys(Alpine.$data(el))`
+  is always `[]` (the merge proxy has no property-descriptor trap); the
+  scope was initialised. The 1s wait they saw was not reproducible on an
+  idle machine: countries open = 44ms x-defer render + ~110ms browser
+  show/layout + ~140ms of their `vReady` tick and x-virtual paint.
+- **Prewarm did not work on a real app.** 446 deferred containers, 361 still
+  pending after 12s: `requestIdleCallback` fired twice in 3s, both by
+  timeout, 0ms idle — the page is never idle (~17fps, recurring 54ms tasks),
+  so prewarm rendered one container per second, in document order, 209 of
+  them under hidden routes and only 22 near the viewport.
+- **RC.3 prewarm** (815a9ed, f007173, + gesture promotion): skip containers
+  under `[x-route][hidden]`; rank by proximity of the container's invoker or
+  nearest boxed ancestor to the viewport; batch only in genuine idle time
+  (4ms budget, ≤8/slice), one render per forced fire at 500ms; a ROLLING
+  cap of 48 warm-but-unopened containers (least reachable re-stashed via
+  destroyTree → template; `ManifestDeferConfig.prewarmCap`); prewarm pauses
+  at the cap and resumes when a warm container opens/evicts; on a pointer
+  gesture (+150ms) the on-screen pending containers nearest the click are
+  promoted to urgent (cap 8, authored `x-defer.priority` wins);
+  `ManifestDefer.stats()` for diagnostics.
+- Residual: a pane with more than eight candidate menus cannot be fully
+  warmed within a human reaction time on a never-idle page; those open cold
+  (Playcom's x-virtual countries: 161ms open / 320ms rows here). Authors pin
+  hot menus with `x-defer.priority="1"`. Also: their popover open pays
+  ~110ms of page-wide layout regardless of deferral — CSS containment on
+  the heavy panels is their lever.
+- x-virtual first paint moved off the ResizeObserver tick (was firing
+  "ResizeObserver loop" error events).

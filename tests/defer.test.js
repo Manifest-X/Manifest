@@ -17,8 +17,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Idle callbacks are captured so prewarm can be stepped one slice at a time.
 const idleQueue = []
 const idleOpts = []
-window.requestIdleCallback = (fn, opts) => { idleQueue.push(fn); idleOpts.push(opts); return idleQueue.length }
-const runIdle = (idle = false) => { const fn = idleQueue.shift(); if (fn) fn(idle ? { didTimeout: false, timeRemaining: () => 50 } : { didTimeout: true, timeRemaining: () => 0 }) }
+let idleId = 0
+window.requestIdleCallback = (fn, opts) => { const id = ++idleId; idleQueue.push({ id, fn }); idleOpts.push(opts); return id }
+window.cancelIdleCallback = (id) => { const i = idleQueue.findIndex((x) => x.id === id); if (i >= 0) idleQueue.splice(i, 1) }
+const runIdle = (idle = false) => { const job = idleQueue.shift(); if (job) job.fn(idle ? { didTimeout: false, timeRemaining: () => 50 } : { didTimeout: true, timeRemaining: () => 0 }) }
+const drain = (idle = false) => { let n = 0; while (idleQueue.length) { if (n++ > 1000) throw new Error('drain: idle queue never empties (' + JSON.stringify(window.ManifestDefer.stats()) + ')'); runIdle(idle) } }
 
 // Emulate the loader so the standalone `load` fallback never fires prewarm.
 window.__manifestLoaderStarted = true
@@ -48,7 +51,7 @@ function mount(html) {
 const stash = (el) => el.querySelector(':scope > template[data-mnfst-defer]')
 
 beforeAll(() => { Alpine.start() })
-beforeEach(() => { window.counts = {}; idleQueue.length = 0; idleOpts.length = 0 })
+beforeEach(() => { window.counts = {}; idleOpts.length = 0 })
 
 describe('automatic detection', () => {
     it('defers every closed container type and leaves open ones alone', () => {
@@ -222,7 +225,7 @@ describe('prewarm', () => {
     })
 
     it('after boot, a container mounted with no gesture stays on the normal idle timeout', () => {
-        while (idleQueue.length) runIdle()
+        drain()
         idleOpts.length = 0
         mount(`<div x-data><menu popover id="quiet"><li x-init="counts.quiet = 1"></li></menu></div>`)
         expect(idleQueue.length).toBe(1)
@@ -232,7 +235,7 @@ describe('prewarm', () => {
     })
 
     it('after boot, a container mounted inside a gesture window is urgent (short timeout, front of queue)', () => {
-        while (idleQueue.length) runIdle()
+        drain()
         idleOpts.length = 0
         document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
         mount(`<div x-data><menu popover id="fresh"><li x-init="counts.fresh = 1"></li></menu></div>`)
@@ -243,7 +246,7 @@ describe('prewarm', () => {
     })
 
     it('batches several containers in one genuinely idle slice, one per forced slice', () => {
-        while (idleQueue.length) runIdle()
+        drain()
         const host = mount(`<div x-data>` + [1, 2, 3].map((i) => `<menu popover id="b` + i + `"><li x-init="counts.batch = (counts.batch || 0) + 1"></li></menu>`).join('') + `</div>`)
         runIdle(true)
         expect(window.counts.batch).toBe(3)
@@ -256,21 +259,20 @@ describe('prewarm', () => {
     })
 
     it('never prewarms containers under a hidden route', () => {
-        while (idleQueue.length) runIdle()
+        drain()
         mount(`<div x-data><div x-route="/away" hidden><menu popover id="away"><li x-init="counts.away = 1"></li></menu></div><menu popover id="here"><li x-init="counts.here = 1"></li></menu></div>`)
-        while (idleQueue.length) runIdle()
+        drain()
         expect(window.counts.here).toBe(1)
         expect(window.counts.away).toBeUndefined()
         expect(window.ManifestDefer.isPending(document.getElementById('away'))).toBe(true)
     })
 
     it('keeps at most the cap warm, re-stashing the least reachable unopened container', () => {
-        while (idleQueue.length) runIdle()
+        drain()
         const cap = window.ManifestDefer.stats().cap
         const warmBefore = window.ManifestDefer.stats().warm
         const host = mount(`<div x-data>` + Array.from({ length: cap + 3 }, (_, i) => `<menu popover id="w` + i + `"><li x-init="counts.w = (counts.w || 0) + 1"></li></menu>`).join('') + `</div>`)
-        let guard = 0
-        while (idleQueue.length && guard++ < 200) runIdle(true)
+        drain(true)
         const st = window.ManifestDefer.stats()
         expect(st.warm).toBeLessThanOrEqual(cap)
         expect(window.counts.w).toBeGreaterThanOrEqual(cap - warmBefore)
@@ -281,8 +283,26 @@ describe('prewarm', () => {
         expect(stashed[0].querySelector('li')).toBeTruthy()
     })
 
+    it('a gesture that reveals a pane promotes its pending containers to urgent', async () => {
+        drain()
+        // Registered with no gesture (not urgent); parent reports as visible only after the "tab click"
+        await new Promise((r) => setTimeout(r, 600))
+        const host = mount(`<div x-data><div id="pane"><menu popover id="revealed"><li x-init="counts.revealed = 1"></li></menu></div></div>`)
+        const menu = host.querySelector('#revealed')
+        expect(menu.__mnfstDefer.urgent).toBe(false)
+        drain()
+        expect(window.counts.revealed).toBeUndefined() // paused at the cap, not near anything: stays pending
+        host.querySelector('#pane').getBoundingClientRect = () => ({ top: 10, bottom: 200, left: 10, right: 300, width: 290, height: 190 })
+        document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
+        await new Promise((r) => setTimeout(r, 200))
+        expect(menu.__mnfstDefer.urgent).toBe(true)
+        expect(idleOpts[idleOpts.length - 1]).toEqual({ timeout: 100 })
+        runIdle()
+        expect(window.counts.revealed).toBe(1)
+    })
+
     it('caps urgent containers per gesture', () => {
-        while (idleQueue.length) runIdle()
+        drain()
         document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
         const menus = Array.from({ length: 10 }, (_, i) => `<menu popover id="cap${i}"><li x-init="counts.cap = (counts.cap || 0) + 1"></li></menu>`).join('')
         const host = mount(`<div x-data>` + menus + `</div>`)
