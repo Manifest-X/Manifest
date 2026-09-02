@@ -79,6 +79,10 @@
 
         const _msgs = [];                 // plain source of truth
         const _byId = new Map();          // id -> plain msg
+        const _byExt = new Map();         // meta.externalId -> plain msg (secondary identity)
+        const P = () => window.ManifestChatPersist;
+        let landed = false;               // first adapter load applied (later hydration is discarded)
+        let detach = null;
         const _participants = new Map();  // id -> participant
         const _typing = new Map();        // id -> participant
         let cursorOlder = null, cursorNewer = null, lastSeen = null, unsub = null;
@@ -86,13 +90,16 @@
         const state = A.reactive({
             messages: [], participants: [], me: null, typing: [],
             status: 'idle', live: false, atStart: false, atEnd: false,
-            lastRehome: null, error: null
+            lastRehome: null, error: null, stale: false
         });
 
         function ordered() { return _msgs.slice().sort(byKey); }
         // Fresh per-message snapshots each commit so a keyed x-for re-renders
         // in-place mutations (streaming appends, status) that identity wouldn't trip.
-        function commit() { state.messages = ordered().map(m => Object.assign({}, m, { body: Object.assign({}, m.body) })); rev().n++; }
+        function commit() {
+            state.messages = ordered().map(m => Object.assign({}, m, { body: Object.assign({}, m.body) })); rev().n++;
+            if (detach) P().touch(conversationId);
+        }
         function commitParticipants() { state.participants = [..._participants.values()]; rev().n++; }
         function commitTyping() { state.typing = [..._typing.values()]; rev().n++; }
 
@@ -109,20 +116,31 @@
             return _msgs.find(m => m._optimistic && m._clientId === cid) || null;
         }
 
+        const extOf = (m) => (m && m.meta && m.meta.externalId != null ? m.meta.externalId : null);
+        function indexExt(m) { const e = extOf(m); if (e != null) _byExt.set(e, m); }
+        function unindexExt(m) { const e = extOf(m); if (e != null && _byExt.get(e) === m) _byExt.delete(e); }
+
+        // identity: id first, then meta.externalId (a matching externalId re-keys the row)
         function upsert(raw) {
             const incoming = normalize(raw, ++seq);
-            const prev = incoming.id != null ? _byId.get(incoming.id) : null;
+            let prev = incoming.id != null ? _byId.get(incoming.id) : null;
+            if (!prev) { const e = extOf(incoming); if (e != null) prev = _byExt.get(e) || null; }
             const pending = prev ? null : claimPending(incoming);
             if (prev) {
+                if (incoming.id != null && prev.id !== incoming.id) _byId.delete(prev.id);
                 merge(prev, incoming);
+                if (prev.id != null) _byId.set(prev.id, prev);
+                indexExt(prev);
             } else if (pending) {
                 _byId.delete(pending.id);
                 merge(pending, incoming);
                 pending._optimistic = false;
                 if (pending.id != null) _byId.set(pending.id, pending);
+                indexExt(pending);
             } else {
                 _msgs.push(incoming);
                 if (incoming.id != null) _byId.set(incoming.id, incoming);
+                indexExt(incoming);
                 seenAuthor(incoming.author);
             }
             lastSeen = incoming.id || lastSeen;
@@ -167,12 +185,62 @@
             try { ingestLoad(await adapter.load(conversationId, { after: since })); } catch (_) { }
         }
 
+        // ---- persisted window (ManifestChatPersist) -------------------------
+        // Hydration races the adapter load and lands only if first; the fresh
+        // set then reconciles by id / meta.externalId and clears `stale`.
+        function hydrateWindow(list) {
+            if (landed || !list.length) return;
+            for (const raw of list) {
+                const m = normalize(raw, ++seq);
+                if (m.id == null || _byId.has(m.id) || m._optimistic) continue;
+                m._hydrated = true;
+                _msgs.push(m); _byId.set(m.id, m); indexExt(m);
+                seenAuthor(m.author);
+            }
+            state.stale = true;
+            commit();
+        }
+
+        function reconcile(res) {
+            const ids = new Set(), exts = new Set();
+            for (const m of (res && res.messages) || []) { if (m.id != null) ids.add(m.id); const e = extOf(m); if (e != null) exts.add(e); }
+            for (let i = _msgs.length - 1; i >= 0; i--) {
+                const m = _msgs[i];
+                if (!m._hydrated || ids.has(m.id) || (extOf(m) != null && exts.has(extOf(m)))) continue;
+                _msgs.splice(i, 1); _byId.delete(m.id); unindexExt(m);
+            }
+            ingestLoad(res);
+            for (const m of _msgs) delete m._hydrated;
+            state.stale = false;
+            commit();
+        }
+
+        function snapshot() { return state.stale ? null : _msgs.filter(m => !m._optimistic && m.id != null).sort(byKey); }
+
+        // Scope change / logout: drop the window, go idle (the app re-opens for the new scope)
+        function reset() {
+            try { unsub && unsub(); } catch (_) { }
+            unsub = null; landed = false;
+            _msgs.length = 0; _byId.clear(); _byExt.clear(); _participants.clear(); _typing.clear();
+            cursorOlder = null; cursorNewer = null; lastSeen = null;
+            state.stale = false; state.live = false; state.status = 'idle'; state.error = null; state.atStart = false; state.atEnd = false;
+            commit(); commitParticipants(); commitTyping();
+        }
+
+        if (P() && !isAggregate) detach = P().attach(conversationId, { snapshot, reset, stale: () => state.stale, count: () => _msgs.length });
+
         async function open() {
             state.status = 'loading';
+            if (detach) {
+                P().hydrate(conversationId).then(h => { if (h) hydrateWindow(h.messages); }).catch(() => { });
+                P().opened(conversationId);
+            }
             try {
                 state.me = adapter.identity ? adapter.identity() : null;
                 if (state.me) seenAuthor(state.me);
-                ingestLoad(await adapter.load(conversationId, opts.around ? { around: opts.around } : undefined));
+                const res = await adapter.load(conversationId, opts.around ? { around: opts.around } : undefined);
+                landed = true;
+                if (state.stale) reconcile(res); else ingestLoad(res);
                 if (adapter.subscribe) { unsub = adapter.subscribe(conversationId, handlers); state.live = true; }
                 state.status = 'ready';
                 // Settled tick: the seed load resolves amid the consumer's own
@@ -197,8 +265,10 @@
                 if (echo && echo !== local) {
                     merge(local, echo);
                     const at = _msgs.indexOf(echo); if (at > -1) _msgs.splice(at, 1);
+                    unindexExt(echo);
                 }
                 local.id = ack.id; local._optimistic = false;
+                indexExt(local);
                 if (ack.ts != null) local.ts = ack.ts;
                 if (local.status === 'pending') local.status = 'sent';
                 if (ack.conversationId && ack.conversationId !== local.conversationId) {
@@ -227,6 +297,7 @@
             get typing() { void rev().n; return state.typing; },
             get version() { return rev().n; },      // guaranteed-trackable scalar; bumps on every commit
             get status() { return state.status; },
+            get stale() { return state.stale; },   // window is a persisted snapshot; the adapter has not landed yet
             get live() { return state.live; },
             get atStart() { return state.atStart; },
             get atEnd() { return state.atEnd; },
@@ -258,7 +329,7 @@
             loadReplies: (parentId) => adapter.loadReplies && adapter.loadReplies(conversationId, parentId),
             loadReactions: (id) => adapter.loadReactions && adapter.loadReactions(conversationId, id),
             clearRehome: () => { state.lastRehome = null; },
-            close() { try { unsub && unsub(); } catch (_) { } }
+            close() { try { unsub && unsub(); } catch (_) { } if (detach) { detach(); detach = null; } }
         };
         open();
         return handle;
@@ -279,6 +350,7 @@
             get participants() { const seen = new Map(); for (const h of handles) for (const p of h.participants) seen.set(p.id, p); return [...seen.values()]; },
             get version() { return rev().n; },
             get status() { return handles.some(h => h.status === 'loading') ? 'loading' : (handles.every(h => h.status === 'ready') ? 'ready' : 'idle'); },
+            get stale() { return handles.some(h => h.stale); },
             get live() { return handles.some(h => h.live); },
             can: { send: handles.some(h => h.can.send) },
             send: (draft, target) => { const h = handles.find(x => x.conversationId === target) || handles[0]; return h.send(draft); },

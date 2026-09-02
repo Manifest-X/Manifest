@@ -33,6 +33,7 @@
     "components": [
         "/test/components/virtual-demo.html",
         "/test/components/perf-demo.html",
+        "/test/components/chat-persist-demo.html",
         "/test/components/combobox-demo.html",
         "/test/components/dropdown-demo.html"
     ],

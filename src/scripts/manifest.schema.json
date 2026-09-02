@@ -341,14 +341,56 @@
             "description": "Chat plugin config. Presence (object or bare true) auto-loads the chat plugin ($chat). Custom-adapter projects can use true with no config.",
             "oneOf": [
                 { "type": "boolean" },
-                { "type": "object", "additionalProperties": true }
+                {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                        "persist": {
+                            "description": "Persisted conversation windows on the shared IndexedDB store: the last `messages` of the `conversations` most recently opened conversations, hydrated (stale) before the adapter load. Off by default; true = defaults.",
+                            "oneOf": [
+                                { "type": "boolean" },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "messages": { "type": "integer", "minimum": 1, "default": 50 },
+                                        "conversations": { "type": "integer", "minimum": 1, "default": 30 },
+                                        "ttl": { "type": ["string", "number"], "default": "7d", "description": "Duration string (ms|s|m|h|d|w) or milliseconds." },
+                                        "strip": { "type": "array", "items": { "type": "string" }, "description": "Message field names, globs or dotted paths removed before writing, on top of the always-on secret patterns." }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
             ]
         },
         "chat": {
             "description": "Alias of ai — presence auto-loads the chat plugin ($chat).",
             "oneOf": [
                 { "type": "boolean" },
-                { "type": "object", "additionalProperties": true }
+                {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                        "persist": {
+                            "description": "Persisted conversation windows on the shared IndexedDB store: the last `messages` of the `conversations` most recently opened conversations, hydrated (stale) before the adapter load. Off by default; true = defaults.",
+                            "oneOf": [
+                                { "type": "boolean" },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "messages": { "type": "integer", "minimum": 1, "default": 50 },
+                                        "conversations": { "type": "integer", "minimum": 1, "default": 30 },
+                                        "ttl": { "type": ["string", "number"], "default": "7d", "description": "Duration string (ms|s|m|h|d|w) or milliseconds." },
+                                        "strip": { "type": "array", "items": { "type": "string" }, "description": "Message field names, globs or dotted paths removed before writing, on top of the always-on secret patterns." }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
             ]
         },
         "render": {
