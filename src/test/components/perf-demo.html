@@ -53,7 +53,11 @@
       this.cadenceMs = num('cadenceMs', this.cadenceMs);
       this.upsertEveryMs = num('upsertEveryMs', this.upsertEveryMs);
       this.sourceX = qs.get('source') === 'x';
-      if (this.sourceX) window.ManifestDataStore?.updateStore?.('feed', [], { loading: false, error: null, ready: true, allowDuringInit: true });
+      if (this.sourceX) {
+        window.ManifestDataStore?.updateStore?.('feed', [], { loading: false, error: null, ready: true, allowDuringInit: true });
+        this.contextKeys = Array.from({ length: 40 }, (_, i) => i);
+        this.landMessages();
+      }
 
       this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
       this.emojiListA = this.buildEmoji(this.emojiPerGrid, 0);
@@ -103,6 +107,43 @@
     },
 
     get feedRows() { return this.sourceX ? this.$x.feed : this.feed; },
+
+    // ---- Playcom chat shell (?source=x): 50 nav rows × 15 $x bindings, 40-binding
+    // context panel, thread pane over a second $x source; a switch lands one row ----
+    contextKeys: [],
+    landMessages() {
+      const pool = window.PERF_WORD_POOL || ['lorem']; // component script may not have run yet at init()
+      const msgs = [];
+      for (let c = 0; c < 50; c++) for (let i = 0; i < 5; i++) msgs.push({
+        $id: 'm' + c + '-' + i, chatId: 'r' + c,
+        author: i % 2 ? 'Them' : 'You',
+        text: 'Reply ' + i + ' in chat ' + c + ' — ' + pool[(c * 5 + i) % pool.length]
+      });
+      const ds = window.ManifestDataStore;
+      if (ds?.landRows) ds.landRows('messages', msgs, { mode: 'replace', allowDuringInit: true });
+      else ds?.updateStore?.('messages', msgs, { loading: false, error: null, ready: true, allowDuringInit: true });
+    },
+    get chatList() { return this.feedRows.slice(0, 50); },
+    get activeChat() { return this.activeConvId == null ? null : this.feedRows.find(r => r.$id === this.activeConvId) || null; },
+    get threadMessages() { return this.$x.messages.filter(m => m.chatId === this.activeConvId); },
+    contextValue(k) {
+      const c = this.activeChat; if (!c) return '';
+      const f = ['name', 'status', 'value', 'unread', 'lastMessage', 'emoji', 'ts', 'id', 'openedAt', 'opens'];
+      return f[k % f.length] + ':' + String(c[f[k % f.length]]).slice(0, 12);
+    },
+    fmtTs(ts) { return new Date(ts).toISOString().slice(11, 19); },
+    // one-field LOCAL write on one nav row (Playcom's country-toggle shape): the sync mutation path
+    localWrites: 0,
+    localWrite() {
+      const row = this.chatList[3]; if (!row) return;
+      window.ManifestDataMutations?.updateEntryInStore?.('feed', row.$id, { status: row.status === 'active' ? 'idle' : 'active' });
+      this.localWrites++;
+    },
+    openChat(row) {
+      this.activeConvId = row.$id;
+      // the switch lands one row (read-marker) through the same path a realtime echo takes
+      this.upsertRow(row.$id, { openedAt: Date.now(), opens: (row.opens || 0) + 1 });
+    },
 
     makeRow(id) {
       return {
@@ -254,14 +295,62 @@
     </div>
   </section>
 
+  <!-- Playcom chat shell (?source=x): nav list, context panel, thread pane — all over $x -->
+  <template x-if="sourceX">
+    <section class="col gap-2">
+      <strong class="small">Chat shell <span class="note">— 50 nav rows × 15 bindings, 40-binding context panel, thread over $x.messages; a switch lands one row</span></strong>
+      <div class="row-wrap gap-2">
+        <button id="perf-local-write" class="ghost sm" @click="localWrite()">Local write (one field, one row)</button>
+        <small class="note">Local writes: <span x-text="localWrites"></span></small>
+      </div>
+      <div class="row-wrap gap-4" style="align-items: flex-start">
+        <div class="conv-list" style="flex: 1 1 20rem">
+          <template x-for="(row, i) in chatList" :key="row.$id">
+            <div class="conv-row" :class="activeConvId === row.$id ? 'active' : ''"
+                 :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
+                 :title="row.name" :data-status="row.status" :data-unread="row.unread" :data-value="row.value" :data-opens="row.opens || 0"
+                 @click="openChat(row)">
+              <span x-text="row.emoji"></span>
+              <div class="col" style="min-width: 0">
+                <strong x-text="row.name"></strong>
+                <small class="note" x-text="row.lastMessage" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; max-width: 16rem"></small>
+                <small class="note"><span x-text="row.status"></span> · <span x-text="row.value"></span> · <span x-text="fmtTs(row.ts)"></span> · <span x-text="row.unread ? 'unread' : 'read'"></span> · <span x-text="row.id"></span> · <span x-text="row.name.length"></span></small>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div class="detail-pane" style="flex: 2 1 30rem">
+          <template x-if="activeChat">
+            <div class="col gap-2">
+              <div id="perf-context" class="row-wrap gap-2 note">
+                <template x-for="k in contextKeys" :key="k"><span x-text="contextValue(k)"></span></template>
+              </div>
+              <hr>
+              <div class="col">
+                <template x-for="m in threadMessages" :key="m.$id">
+                  <div class="thread-msg">
+                    <strong x-text="m.author"></strong>
+                    <span x-text="m.text"></span>
+                    <small class="note" x-text="wordCount(m.text) + 'w'"></small>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+          <p class="note" x-show="!activeChat">Click a chat to open it.</p>
+        </div>
+      </div>
+    </section>
+  </template>
+
   <!-- Conversation list + detail pane: first-open mounts a thread, warm switch only toggles x-show -->
-  <section class="col gap-2">
+  <section class="col gap-2" x-show="!sourceX">
     <strong class="small">Conversations <span class="note">— derived from the same paged feed</span></strong>
     <div class="row-wrap gap-4" style="align-items: flex-start">
       <div class="conv-list" style="flex: 1 1 20rem">
         <template x-for="(row, i) in conversations" :key="row.id">
           <div class="conv-row" :class="activeConvId === row.id ? 'active' : ''"
-               :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
+               :id="!sourceX && i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="!sourceX && i === 1 ? '' : null"
                @click="openConversation(row)">
             <span x-text="row.emoji"></span>
             <div class="col" style="min-width: 0">

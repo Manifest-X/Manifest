@@ -13,7 +13,8 @@ const DEFAULT_SELECTORS = {
   openRow: '#perf-open-row',
   altRow: '[data-perf-alt-row]',
   openMenu: '#perf-open-menu',
-  menuPopover: '#perf-menu-0'
+  menuPopover: '#perf-menu-0',
+  localWrite: '#perf-local-write' // optional: one-field local write on one row (P6); skipped when absent
 };
 
 // ---- CLI args ----
@@ -194,6 +195,15 @@ async function sampleMenuOpen(page, selectors) {
   return { scenario: 'menu-open', ...win, inputLatencyMs };
 }
 
+async function sampleLocalWrite(page, selectors) {
+  await page.evaluate(() => window.__perfProbe.reset());
+  await page.evaluate((sel) => window.__perfProbe.armGesture(sel), selectors.localWrite);
+  await page.click(selectors.localWrite);
+  const settleEnd = await page.evaluate(() => window.__perfProbe.waitSettle());
+  const win = await collectWindow(page, settleEnd);
+  return { scenario: 'local-write', ...win, inputLatencyMs: null };
+}
+
 function reportBudget(scenario, medians, budget) {
   if (!budget || !budget[scenario]) return true;
   let ok = true;
@@ -270,11 +280,21 @@ async function main() {
       menuOpenSamples.push(await sampleMenuOpen(page, selectors));
     }
 
+    // ---- local-write: same session, one-field write on one row (only when the page exposes it) ----
+    const localWriteSamples = [];
+    if (selectors.localWrite && await page.$(selectors.localWrite)) {
+      for (let i = 0; i < args.samples; i++) {
+        localWriteSamples.push(await sampleLocalWrite(page, selectors));
+      }
+    }
+
     for (const [scenario, samples] of [
       ['first-open', firstOpenSamples],
       ['warm-switch', warmSwitchSamples],
-      ['menu-open', menuOpenSamples]
+      ['menu-open', menuOpenSamples],
+      ['local-write', localWriteSamples]
     ]) {
+      if (!samples.length) continue;
       const medians = {
         scenario,
         blockedMs: median(samples.map((s) => s.blockedMs)),
