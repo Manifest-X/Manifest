@@ -2,6 +2,8 @@
 
 (function () {
 
+const MANIFEST_BUILD_VERSION = '0.5.195';
+
 /* Manifest Data Sources - Appwrite Integration */
 
 // Cache for Appwrite client (initialized once)

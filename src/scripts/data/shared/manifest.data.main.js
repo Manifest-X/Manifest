@@ -469,7 +469,7 @@ function liveLocale() {
 async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     locale = locale || 'en';
     const cacheKey = `${dataSourceName}:${locale}`;
-    const { dataSourceCache, loadingPromises, isInitializing, updateStore, landRows, setSourceState, runDeduped } = window.ManifestDataStore;
+    const { dataSourceCache, loadingPromises, isInitializing, updateStore, landRows, setSourceState, runDeduped, sourceGeneration } = window.ManifestDataStore;
 
     // Memory cache (this page-load's fetches). Serving cached data is fine, but
     // writing an old locale to the live store would clobber a concurrent locale
@@ -497,6 +497,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         if (keepRows) setSourceState(dataSourceName, { loading: true, error: null });
         else updateStore(dataSourceName, null, { loading: true, error: null, ready: false });
     }
+
+    // Scope reset (persistence) during this load → its result is discarded
+    const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
+    const superseded = () => sourceGeneration && sourceGeneration(dataSourceName) !== generation;
 
     return runDeduped(cacheKey, async () => {
         let landed = false;
@@ -748,6 +752,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 enhancedData = [];
             }
 
+            if (superseded()) { landed = true; return null; }
+
             // Cache is always safe — the key carries this load's locale.
             dataSourceCache.set(cacheKey, enhancedData);
 
@@ -770,12 +776,16 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             // Return unsealed version for our proxy system
             return enhancedData;
         } catch (error) {
+            if (superseded()) { landed = true; return null; }
             // Error state (timestamped to prevent rapid retries); live rows stay
             if (!isInitializing) {
                 landed = true;
                 const errorMessage = error?.message || error?.toString() || `Failed to load dataSource "${dataSourceName}"`;
                 if (hasLiveRows(dataSourceName)) {
                     setSourceState(dataSourceName, { loading: false, error: errorMessage, errorTime: Date.now() });
+                } else if (error?.defaultValue !== undefined) {
+                    // API-URL first load failed: its defaultValue stands in (not fresh), never over live rows
+                    await landRows(dataSourceName, error.defaultValue, { mode: 'replace', loading: false, error: errorMessage, ready: true, fresh: false });
                 } else {
                     updateStore(dataSourceName, null, {
                         loading: false,
@@ -798,7 +808,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             return null;
         } finally {
             // Early exits (no source, stale locale) must not strand a live source in $loading
-            if (!landed && keepRows && !isInitializing) setSourceState(dataSourceName, { loading: false });
+            if (!landed && keepRows && !isInitializing && !superseded()) setSourceState(dataSourceName, { loading: false });
         }
     });
 }
@@ -974,6 +984,13 @@ async function initializeDataSourcesPlugin() {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             const locale = (typeof document !== 'undefined' && document.documentElement?.lang) || (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';
             const isAppwriteCollection = window.ManifestDataConfig.isAppwriteCollection;
+
+            // Persisted $x (§12.2): boot-tier snapshots land before any network load
+            // of those sources; capped so an IndexedDB miss never delays a cold boot
+            const persist = window.ManifestDataPersist;
+            if (persist && manifest && persist.configure(manifest)) {
+                await persist.hydrateBoot({ maxWaitMs: persist.BOOT_HYDRATE_MAX_WAIT_MS });
+            }
 
             if (manifest?.data) {
                 const preloadNames = [];

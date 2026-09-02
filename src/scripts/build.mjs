@@ -8,6 +8,9 @@ import { glob } from 'glob';
 import cssnano from 'cssnano';
 import postcss from 'postcss';
 
+// Package version (stamped into the data bundle)
+const BUILD_VERSION = JSON.parse(fs.readFileSync(path.join('..', 'package.json'), 'utf8')).version;
+
 // Configuration
 const CONFIG = {
     // Component subscripts order
@@ -72,6 +75,7 @@ const CONFIG = {
     dataCoreSubscripts: [
         'core/manifest.data.config.js',
         'core/manifest.data.store.js',
+        'core/manifest.data.persist.js', // Persisted $x: IndexedDB snapshots (§12.2)
         'core/manifest.data.loaders.js',
         'core/manifest.data.api.js',  // Basic read-only API support (for localization compatibility)
         'shared/manifest.data.mutations.js',         // Unified mutation system (optimistic updates)
@@ -609,7 +613,9 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
         // Wrap the combined bundle in an IIFE so subscript top-level declarations
         // stay out of window scope. Cross-plugin surface is explicit window.*
         // exports only; subscript sources stay bare for direct/vm loading.
-        const wrapped = `/* ${outputFile} — built from scripts/${systemName}/ */\n\n(function () {\n\n${combinedContent.join('\n\n')}\n\n})();\n`;
+        // Data bundle carries the package version (persisted $x invalidates on major/minor change)
+        const stamp = systemName === 'data' ? `const MANIFEST_BUILD_VERSION = '${BUILD_VERSION}';\n\n` : '';
+        const wrapped = `/* ${outputFile} — built from scripts/${systemName}/ */\n\n(function () {\n\n${stamp}${combinedContent.join('\n\n')}\n\n})();\n`;
         fs.writeFileSync(outputPath, wrapped);
         console.log(`  ✓ Created ${outputFile}`);
     } else {
