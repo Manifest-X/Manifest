@@ -1393,3 +1393,12 @@ in.
   every variant. Open: "rows from disk at 6.4s when the worker is not
   controlling" — hidden-pane run, unverified.
 - Tests: 33 persistence (+1), 3 roles-cache (new). Suite 466/466.
+- **One manifest.json request per boot (cace566):** Playcom's cold reload
+  fetched it 4× (loader, data plugin, auth plugin, components registry with a
+  `?t=` buster; a 4th at ~5s from the status plugin refetching whenever the
+  loaded manifest had no `status` block), three in parallel on the critical
+  path (~0.5s). The loader now publishes its in-flight fetch as
+  `window.__manifestPromise` the moment it starts; data, auth, components,
+  payments, status and `swInfer` await it (interpolated) instead of fetching;
+  without a loader the first plugin to fetch shares it. Tests:
+  `tests/manifest-shared-fetch.test.js` (2). Suite 468/468.
