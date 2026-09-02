@@ -31,6 +31,7 @@
         pending: new Map(),    // conversationId | INDEX -> due time
         timer: null,
         saved: new Map(),      // conversationId -> { messages, savedAt }
+        windows: new Map(),    // conversationId -> { messages, savedAt } last known window (disk read or written snapshot) for synchronous re-opens
         generation: 0,
         watching: false,
         resetQueued: false
@@ -128,6 +129,7 @@
         state.indexPromise = null;
         state.indexDirty = false;
         state.saved.clear();
+        state.windows.clear();
         for (const h of state.handles.values()) { try { h.reset(); } catch (_) { } }
         cancel();
     }
@@ -154,23 +156,34 @@
         return state.indexPromise;
     }
 
-    // Recency bump; beyond the cap the oldest conversations' records are deleted
+    // Move to the front of the index; beyond the cap the oldest conversations' records are deleted
+    function promote(recent, conversationId) {
+        const i = recent.indexOf(conversationId);
+        if (i === 0) return;
+        if (i > -1) recent.splice(i, 1);
+        recent.unshift(conversationId);
+        const evicted = recent.splice(state.config.conversations);
+        const r = records();
+        for (const id of evicted) { state.pending.delete(id); state.saved.delete(id); state.windows.delete(id); }
+        if (evicted.length) r.delete(evicted.map(id => r.key('chat', id))).catch(noop);
+        state.indexDirty = true;
+        state.pending.set(INDEX, Date.now() + WRITE_DEBOUNCE_MS);
+        schedule();
+    }
+
+    // Recency bump for a conversation already in the index; a new one earns its slot on its first non-empty write
     function opened(conversationId) {
         if (conversationId == null) return;
         const gen = state.generation;
         ensureIndex().then(recent => {
             if (gen !== state.generation || !enabled()) return;
-            const i = recent.indexOf(conversationId);
-            if (i > -1) recent.splice(i, 1);
-            recent.unshift(conversationId);
-            const evicted = recent.splice(state.config.conversations);
-            const r = records();
-            for (const id of evicted) { state.pending.delete(id); state.saved.delete(id); }
-            if (evicted.length) r.delete(evicted.map(id => r.key('chat', id))).catch(noop);
-            state.indexDirty = true;
-            state.pending.set(INDEX, Date.now() + WRITE_DEBOUNCE_MS);
-            schedule();
+            if (recent.includes(conversationId)) promote(recent, conversationId);
         }).catch(noop);
+    }
+
+    // Last known window for a conversation this generation (synchronous; re-opens and handle swaps)
+    function peek(conversationId) {
+        return (enabled() && conversationId != null && state.windows.get(conversationId)) || null;
     }
 
     // ---- hydrate (read path) ----------------------------------------------------
@@ -204,7 +217,9 @@
             return null;
         }
         state.saved.set(conversationId, { messages: rec.rows.length, savedAt: rec.savedAt });
-        return { messages: rec.rows, savedAt: rec.savedAt };
+        const window_ = { messages: rec.rows, savedAt: rec.savedAt };
+        if (!state.windows.has(conversationId)) state.windows.set(conversationId, window_);
+        return window_;
     }
 
     // ---- snapshot (write path) --------------------------------------------------
@@ -263,14 +278,21 @@
         const gen = state.generation;
         const r = records();
         const savedAt = Date.now();
-        const list = [];
+        const candidates = new Map();
         for (const id of due) {
             if (id === INDEX) continue;
             const h = state.handles.get(id);
-            if (!h || !recent.includes(id)) continue;
+            if (!h) continue;
             let rows = null;
             try { const msgs = h.snapshot(); rows = msgs && msgs.length ? snapshotOf(msgs) : null; } catch (_) { rows = null; }
             if (!rows) continue;
+            if (!recent.includes(id)) promote(recent, id);   // first non-empty write earns the slot
+            candidates.set(id, rows);
+        }
+        const list = [];
+        for (const [id, rows] of candidates) {
+            if (!recent.includes(id)) continue;   // evicted by a later candidate in this same flush
+            state.windows.set(id, { messages: rows, savedAt });
             list.push({ key: r.key('chat', id), kind: 'chat', conversation: id, rows, savedAt });
         }
         if (state.indexDirty) { list.push({ key: r.key('chat'), kind: 'chat-index', recent: recent.slice(), savedAt }); state.indexDirty = false; }
@@ -313,7 +335,7 @@
 
     window.ManifestChatPersist = {
         WRITE_DEBOUNCE_MS,
-        configure, bootstrap, enabled, hydrate, opened, touch, attach, anyStale, persistence, flushPending, reset,
+        configure, bootstrap, enabled, hydrate, opened, peek, touch, attach, anyStale, persistence, flushPending, reset,
         config: () => state.config,
         state
     };

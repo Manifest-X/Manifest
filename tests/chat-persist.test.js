@@ -167,13 +167,37 @@ describe('snapshot (write path)', () => {
         expect(rows[3]._clientId).toBeUndefined()
     })
 
-    it('an empty window writes nothing', async () => {
+    it('an empty window writes nothing and takes no index slot', async () => {
         const { open, cp, records, net } = await load({ persist: true })
         net.rows = () => []
         open('c1')
         await settle()
         await cp.flushPending()
-        expect(records().map(r => r.key)).toEqual(['|chat'])
+        expect(records().map(r => r.key)).toEqual([])
+        expect(cp.persistence().conversations.find(c => c.id === 'c1').savedAt).toBe(null)
+    })
+
+    it('an ephemeral conversation (no messages ever) never displaces a saved one', async () => {
+        const { open, cp, keys, net } = await load({ persist: { conversations: 1 } })
+        open('c1'); await settle()
+        await cp.flushPending()
+        net.rows = () => []
+        open('copilot-_new:0-1'); await settle()
+        await cp.flushPending()
+        expect(keys()).toEqual(['|chat', '|chat|c1'])
+    })
+
+    it('open(id, { persist: false }) neither hydrates nor writes', async () => {
+        idb.seed(DB(), record('', 'c1', [msg('m1', 1)]))
+        const { chat, cp, keys, net } = await load({ persist: true })
+        const release = net.gateOpen()
+        const h = chat.open('c1', { adapter: net.adapter, persist: false })
+        await settle()
+        expect(h.messages.length).toBe(0)
+        expect(h.stale).toBe(false)
+        release(); await settle()
+        await cp.flushPending()
+        expect(keys()).toEqual(['|chat|c1'])   // the seeded record is untouched; no index, no new write
     })
 })
 
@@ -194,7 +218,7 @@ describe('index', () => {
         expect(records().find(r => r.key === '|chat').recent).toEqual(['c2', 'c3'])
     })
 
-    it('an evicted conversation that is still open is not re-written by later changes', async () => {
+    it('an evicted conversation that is still open re-enters the index on its next message (activity is recency)', async () => {
         const { open, cp, keys, net } = await load({ persist: { conversations: 1 } })
         open('c1'); await settle()
         open('c2'); await settle()
@@ -202,7 +226,25 @@ describe('index', () => {
         expect(keys()).toEqual(['|chat', '|chat|c2'])
         net.handlers.c1.onMessage(msg('late', 9))
         await cp.flushPending()
-        expect(keys()).toEqual(['|chat', '|chat|c2'])
+        expect(keys()).toEqual(['|chat', '|chat|c1'])
+    })
+
+    it('a second handle for the same conversation hydrates synchronously from the window already in memory (handle swap)', async () => {
+        idb.seed(DB(), record('', 'c1', [msg('m1', 1), msg('m2', 2)]))
+        const { chat, net } = await load({ persist: true })
+        const release = net.gateOpen()
+        const a = chat.open('c1', { adapter: net.adapter })
+        await settle()
+        expect(ids(a.messages)).toEqual(['m1', 'm2'])
+        // Instant adapter: without the in-memory window this handle would lose the race to IndexedDB
+        const instant = { ...net.adapter, async load() { return { messages: [msg('m2', 2), msg('m3', 3)], participants: [], atStart: true, atEnd: true } } }
+        const b = chat.open('c1', { adapter: instant })
+        expect(ids(b.messages)).toEqual(['m1', 'm2'])
+        expect(b.stale).toBe(true)
+        await settle()
+        expect(ids(b.messages)).toEqual(['m2', 'm3'])
+        expect(b.stale).toBe(false)
+        release()
     })
 })
 

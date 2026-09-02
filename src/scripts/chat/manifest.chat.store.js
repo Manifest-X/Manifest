@@ -236,12 +236,14 @@
             commit(); commitParticipants(); commitTyping();
         }
 
-        if (P() && !isAggregate) detach = P().attach(conversationId, { snapshot, reset, stale: () => state.stale, count: () => _msgs.length });
+        if (P() && !isAggregate && opts.persist !== false) detach = P().attach(conversationId, { snapshot, reset, stale: () => state.stale, count: () => _msgs.length });
 
         async function open() {
             state.status = 'loading';
             if (detach) {
-                P().hydrate(conversationId).then(h => { if (h) hydrateWindow(h.messages); }).catch(() => { });
+                const known = P().peek(conversationId);   // re-open or handle swap: window already in memory, no read to lose the race
+                if (known) hydrateWindow(known.messages);
+                else P().hydrate(conversationId).then(h => { if (h) hydrateWindow(h.messages); }).catch(() => { });
                 P().opened(conversationId);
             }
             try {
