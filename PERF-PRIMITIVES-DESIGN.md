@@ -886,3 +886,14 @@ View Transitions capturing a pane mid-render (the render is synchronous
 inside the transition callback, so it should not). Default-on can follow
 one clean soak plus the guide section from §11.4; the kill switch and
 `x-defer.off` per route stay as the escape hatches.
+
+### 10.10 RC.4 — `mnfst@0.5.198-next.4` (2026-09-02)
+
+RC.3 + idle-only prewarm (77f7eb6), P5 (f3021c9), the `bindings` x-text guard
+(1db351e), probe/cdn-warm tooling (ec5e9ce), and the route-level deferral
+spike behind `data-defer-routes` (bc82fa7, OFF by default — not part of the
+A/B). Verified on the registry and both CDNs; payloads checked for the
+timeout-free scheduler, the route flag, `bindings` in the loader defaults and
+`$stale` in the data plugin. Promotion gate unchanged: Playcom's event-only
+table at RC.2/RC.0 boot and idle levels, countries open ≤250ms by toggle
+events, no regressions → `npm run release` (0.5.198).
