@@ -1,5 +1,25 @@
 /* manifest.utilities.node.mjs — built from scripts/utilities/ (DOM-free) */
 
+if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
+if (typeof globalThis.document === 'undefined') {
+    const inertElement = () => ({ style: {}, textContent: '', classList: { add(){}, remove(){}, contains: () => false }, setAttribute(){}, appendChild(){}, insertBefore(){} });
+    globalThis.document = {
+        documentElement: { outerHTML: '' },
+        head: { firstChild: null, lastElementChild: null, innerHTML: '', appendChild(){}, insertBefore(){} },
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        getElementById: () => null,
+        getElementsByTagName: () => [],
+        createElement: inertElement,
+        addEventListener(){},
+        styleSheets: []
+    };
+}
+if (typeof globalThis.getComputedStyle === 'undefined') globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
+if (typeof globalThis.localStorage === 'undefined') globalThis.localStorage = { getItem: () => null, setItem(){}, removeItem(){} };
+if (typeof globalThis.performance === 'undefined') globalThis.performance = { now: () => Date.now() };
+if (typeof globalThis.requestAnimationFrame === 'undefined') globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+
 // Utility generators
 // Functions that generate CSS utilities from CSS variable suffixes
 
@@ -1114,8 +1134,11 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 TailwindCompiler.prototype.extractThemeVariables = function (cssText) {
     const variables = new Map();
 
-    // Extract ALL CSS custom properties from ANY declaration block
-    const varRegex = /--([\w-]+):\s*([^;]+);/g;
+    // Extract ALL CSS custom properties from ANY declaration block. Terminator
+    // is a lookahead (`;` or `}`) rather than a consumed `;` so the last
+    // declaration in a block still matches when the author omits the
+    // trailing semicolon (valid CSS, e.g. `:root{--x:1rem}`).
+    const varRegex = /--([\w-]+):\s*([^;}]+)(?=[;}])/g;
 
     let varMatch;
     while ((varMatch = varRegex.exec(cssText)) !== null) {
