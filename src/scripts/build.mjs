@@ -671,6 +671,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.chat.js', dest: '../lib/manifest.chat.js' },
         { source: 'scripts/manifest.native.js', dest: '../lib/manifest.native.js' },
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
+        { source: 'scripts/manifest.sw.js', dest: '../lib/manifest.sw.js' },  // Service worker module (version-stamped below)
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
         { source: 'scripts/manifest.text.edit.js', dest: '../lib/manifest.text.edit.js' },
         { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },
@@ -720,9 +721,18 @@ function copyFilesToDist() {
     // prepended (single source: styles/snippets/manifest.popover.css; the
     // bundle carries it via the reset).
     let copiedCount = 0;
+    const pkgVersion = JSON.parse(fs.readFileSync('../package.json', 'utf8')).version;
     for (const file of filesToCopy) {
         if (fs.existsSync(file.source)) {
             const baseName = path.basename(file.source);
+            // The worker keys its caches by its own version; stamp it at build.
+            if (baseName === 'manifest.sw.js') {
+                const src = fs.readFileSync(file.source, 'utf8');
+                fs.writeFileSync(file.dest, src.replace("const BUILD_VERSION = '0.0.0-dev';", `const BUILD_VERSION = '${pkgVersion}';`));
+                console.log(`  ✓ Copied ${file.source} → ${file.dest} (stamped ${pkgVersion})`);
+                copiedCount++;
+                continue;
+            }
             const snippets = CONFIG.stylesheets.snippetDependent[baseName] || [];
             if (snippets.length) {
                 const src = fs.readFileSync(file.source, 'utf8');

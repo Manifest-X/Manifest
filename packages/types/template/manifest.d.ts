@@ -492,6 +492,10 @@ declare global {
             getPluginUrl(name: string, version?: string): string;
             /** Defer a closed container built at runtime (call before Alpine.initTree). */
             defer?(el: Element): unknown;
+            /** App-shell service worker diagnostics; kill() unregisters and clears its caches. */
+            sw?: { registered: boolean; version: string | null; kill(): Promise<void> };
+            /** The two-line same-origin /sw.js stub pinned to a framework version. */
+            swStub?(version?: string): string;
         };
         Alpine?: unknown;
         __manifestLoaded?: unknown;

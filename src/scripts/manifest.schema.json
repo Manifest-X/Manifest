@@ -83,6 +83,10 @@
             "type": "string",
             "description": "Publish-injected content hash of the component files (set by mnfst-publish; not hand-authored). Appended as ?v= to component HTML fetches."
         },
+        "sw": {
+            "type": "boolean",
+            "description": "App-shell service worker kill switch. `false` stops the loader registering /sw.js and unregisters an installed worker on the next load. Omit (default) to let the loader infer: https origin, not local dev, /sw.js stub present."
+        },
         "preloadedComponents": {
             "type": "array",
             "description": "Components loaded eagerly on initial page load (header, logo, etc.).",

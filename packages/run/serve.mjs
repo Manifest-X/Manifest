@@ -101,6 +101,7 @@ const MIME = {
 //   server the tab is gone.
 const LIVE_RELOAD_SCRIPT = `<script>
 (function () {
+  window.__mnfstRun = true; // dev marker: the framework loader skips its service worker here
   var tabId = (window.crypto && crypto.randomUUID)
     ? crypto.randomUUID()
     : (Math.random().toString(36).slice(2) + Date.now().toString(36));
@@ -897,6 +898,20 @@ function writeComponentInstance(file, key, overrides, removals) {
   return { region: key, status: 'written', file: basename(file), applied: Object.keys(overrides || {}), removed: removals || [] };
 }
 
+// No-op service worker served at /sw.js when the project has none: a stale
+// production worker (cached shell from a previous deploy) can never hold a
+// dev session. It replaces that worker at the next update check, clears the
+// framework's caches and unregisters itself.
+const NOOP_SW = `// mnfst-run: no-op service worker (unregisters itself, clears Manifest caches)
+self.addEventListener('install', function () { self.skipWaiting(); });
+self.addEventListener('activate', function (e) {
+  e.waitUntil((async function () {
+    try { var keys = await caches.keys(); await Promise.all(keys.filter(function (k) { return k.indexOf('mnfst-sw:') === 0; }).map(function (k) { return caches.delete(k); })); } catch (_) {}
+    try { await self.registration.unregister(); } catch (_) {}
+  })());
+});
+`;
+
 // Resolve a request path against `root` and refuse anything that escapes.
 // `path.join` does NOT prevent `..` traversal — `join('/a/b', '/../../etc/passwd')`
 // returns `/etc/passwd`. Use `path.resolve` + an explicit prefix check.
@@ -1189,6 +1204,12 @@ const server = createServer((req, res) => {
 
   const exact = safeResolve(urlPath);
   if (exact && isFile(exact)) return serveFile(res, exact);
+
+  if (urlPath === '/sw.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(NOOP_SW);
+    return;
+  }
 
   const indexPath = safeResolve(urlPath.replace(/\/$/, '') + '/index.html');
   if (indexPath && isFile(indexPath)) return serveFile(res, indexPath);
