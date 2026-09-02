@@ -1149,11 +1149,22 @@ data SWR revalidations), 179/185 responses from the worker; with
 **Hard reload bypasses the worker in Chrome by design** — §13.6's "hard
 refresh shell 0" is unreachable; the win is normal reloads and navigations.
 
-Hosting/publish follow-up (Manifest-MCP, in progress): implicit `/sw.js` stub
-pinned to the exact version the site's `index.html` loads (dist-tags resolved
-at publish); `precache.json` `{deployment, files[]}` emitted at publish;
-`?v=` assets immutable, HTML/`manifest.json` `no-cache`; `manifest.sw.min.js`
-on the cdn Worker's minify route.
+Hosting/publish: SHIPPED to Manifest-MCP main (7a7ab49, 2026-09-02; 223/223,
+not yet deployed). `GET|HEAD /sw.js` (query ignored) → the exact stub, `text/javascript`,
+`no-cache`, unless the deployment ships its own `sw.js`; version stored per
+deployment (`site_deployments.mnfst_version`, migration `0015`; pin precedence
+exact `src` > exact `data-version` > `data-version` tag > `src` tag; dist-tags
+resolved via the npm registry at publish); pre-existing rows backfilled lazily
+from the stored `index.html` on first `/sw.js`; no pin → `''` → permanent 404;
+promote copies the version. `precache.json` built server-side at upload for
+connector and CLI paths (index, manifest, CDN scripts, css/js, components
+`?v=`, fonts, page HTML, data ≤1 MB; cap 500; always overwrites a site-shipped
+one). HTML / `manifest.json` / `precache.json` `no-cache` to the client (edge
+keeps its 60s TTL); `?v=` immutable already. cdn Worker needs no change
+(`manifest.sw.min.js` → jsDelivr auto-minify → `.js` fallback, JS type forced).
+**Deploy order: `corepack pnpm run db:migrate:remote` → `deploy` → `deploy:host`**
+(un-migrated DB + new MCP Worker breaks publish/promote); after 0.5.199 warm
+`cdn.manifestx.dev/npm/mnfst@0.5.199/lib/manifest.sw.min.js` once.
 
 
 ## 14. Surface restructure (2026-09-02) — behaviours vs plugins
