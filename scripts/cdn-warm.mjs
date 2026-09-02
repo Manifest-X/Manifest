@@ -5,9 +5,10 @@
  * one that ever depends on an upstream (npm → unpkg/jsDelivr), so warming at
  * release time removes that dependency from user traffic entirely.
  *
- * Upstreams can lag a fresh npm publish by a few minutes, so this polls a
- * gate file until the version propagates, then sweeps the rest. Best-effort:
- * failures warn but never fail the release (the publish already happened).
+ * Upstreams can lag a fresh npm publish by minutes and 502 with no-store
+ * until the version exists on either — so each file retries with backoff
+ * until it 200s, rather than one immediate pass. Best-effort: failures warn
+ * but never fail the release (the publish already happened).
  *
  *   Usage: node scripts/cdn-warm.mjs   (after `npm publish`, from repo root)
  */
@@ -21,7 +22,7 @@ const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 const base = `${CDN_BASE}/mnfst@${version}/lib`;
 
 // --detach: re-spawn in the background and return the terminal immediately.
-// Propagation polling can take minutes and the publish is already done —
+// Propagation + retries can take minutes and the publish is already done —
 // nothing here needs to block the release command.
 if (process.argv.includes('--detach')) {
     const log = join(tmpdir(), `mnfst-cdn-warm-${version}.log`);
@@ -38,50 +39,45 @@ for (const f of files) {
     if (f.endsWith('.js') && !f.endsWith('.min.js')) targets.add(f.replace(/\.js$/, '.min.js'));
 }
 
-const hit = async (f) => {
-    try {
-        const r = await fetch(`${base}/${f}`);
-        return r.ok;
-    } catch {
-        return false;
-    }
-};
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Gate on the loader until the new version is visible upstream (~6 min max).
-console.log(`cdn-warm: warming ${CDN_BASE} for mnfst@${version} (${targets.size} files)`);
-let propagated = false;
-for (let i = 0; i < 24; i++) {
-    if (await hit('manifest.js')) { propagated = true; break; }
-    if (i === 0) console.log('cdn-warm: waiting for npm → CDN propagation…');
-    await sleep(15000);
-}
-if (!propagated) {
-    console.warn(`cdn-warm: ⚠ mnfst@${version} not reachable via ${CDN_BASE} after 6min — warm skipped (users will pull-through on first request).`);
-    process.exit(0);
-}
+// Retry each URL with backoff until the upstream serves the version (a 502
+// no-store means neither unpkg nor jsDelivr has it yet) — capped per file
+// rather than gating once up front, since three RCs in a row hit transient
+// 502s on individual files after the loader itself had already propagated.
+const BACKOFF_MS = [5000, 10000, 20000, 40000, 60000];
+const MAX_RETRY_MS = 5 * 60 * 1000;
+let loggedWaiting = false;
 
-// Sweep everything with modest concurrency; one retry pass for stragglers.
-async function sweep(list) {
-    const failed = [];
-    const queue = [...list];
-    await Promise.all(Array.from({ length: 6 }, async () => {
-        while (queue.length) {
-            const f = queue.pop();
-            if (!(await hit(f))) failed.push(f);
+async function hit(f) {
+    const start = Date.now();
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const r = await fetch(`${base}/${f}`);
+            if (r.ok) return true;
+        } catch {
+            // network error — treat like a non-ok response and retry
         }
-    }));
-    return failed;
+        const elapsed = Date.now() - start;
+        if (elapsed >= MAX_RETRY_MS) return false;
+        if (!loggedWaiting) { loggedWaiting = true; console.log('cdn-warm: waiting for npm → CDN propagation…'); }
+        const wait = Math.min(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)], MAX_RETRY_MS - elapsed);
+        await sleep(wait);
+    }
 }
 
-let failed = await sweep(targets);
-if (failed.length) {
-    await sleep(20000);
-    failed = await sweep(failed);
-}
-if (failed.length) {
-    console.warn(`cdn-warm: ⚠ ${failed.length} file(s) failed to warm:\n  ${failed.join('\n  ')}`);
-} else {
-    console.log(`cdn-warm: ✓ all ${targets.size} files cached for mnfst@${version}`);
-}
+console.log(`cdn-warm: warming ${CDN_BASE} for mnfst@${version} (${targets.size} files)`);
+const startedAt = Date.now();
+const queue = [...targets];
+const failed = [];
+await Promise.all(Array.from({ length: 6 }, async () => {
+    while (queue.length) {
+        const f = queue.pop();
+        if (!(await hit(f))) failed.push(f);
+    }
+}));
+const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+
+if (failed.length) console.warn(`cdn-warm: ⚠ ${failed.length} file(s) failed to warm:\n  ${failed.join('\n  ')}`);
+console.log(`cdn-warm: ${failed.length ? '⚠' : '✓'} warmed ${targets.size - failed.length}, failed ${failed.length}, elapsed ${elapsedS}s`);
 process.exit(0);
