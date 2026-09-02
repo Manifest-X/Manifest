@@ -411,3 +411,27 @@ Notes:
   `menu-open` blockedMs ≈5394 / inputLatencyMs ≈82ms — same order of
   magnitude, not a fixed constant. Treat these as a baseline range, not an
   exact regression threshold, until Phase 1 numbers are in.
+
+### 10.1 Playcom staging baseline (2026-09-01, signed-in operator, ~50 chats, §2 definitions)
+
+The numbers Phase 1 is judged against (per-switch is the lever for how the
+app FEELS — Andrew eyeballed staging and called the app-side hand fixes
+"barely registered"; this explains why):
+
+| Scenario | wall | longtask | mutations |
+|---|---|---|---|
+| Boot | — | 10.9s blocked (52 long tasks, longest 573ms) | — |
+| Cold first open, 5-message thread | 3.7s | 2.7s | 12,085 |
+| Switch to another cold thread | 3.4s | 2.4s | 14,288 |
+| **Warm re-open (transcript in memory, zero network)** | immediate reveal | **2.6s** | **12,252** (never reached quiescence in 25s) |
+| Thread warmed by idle prefetcher | 99ms | 125ms | 164 |
+
+Reading: rendering 5 messages costs ~164 mutations; everything above that is
+the per-switch global re-render (§1.2: whole-store replacement + global
+`_dataVersion` + `all` rebuild). Idle DOM with no gesture = 0 mutations, so
+it is landing-driven, not a ticker. **P6 acceptance:** warm-switch mutations
+approach the thread's own render cost (hundreds, not ~12k); a landing for one
+source never re-runs consumers of another. Repro shape for `/perf` `$x`
+mode: ~50 nav rows × ~15 `$x` bindings, a ~40-binding context panel, one
+thread pane; switch chats and count. Playcom keeps tonight's tree pinned as
+Perf-Base for the RC A/B.
