@@ -1409,3 +1409,17 @@ in.
   payments, status and `swInfer` await it (interpolated) instead of fetching;
   without a loader the first plugin to fetch shares it. Tests:
   `tests/manifest-shared-fetch.test.js` (2). Suite 468/468.
+- **RC.3 gate (Playcom, visible pane, loop fixed):** warm reload domInteractive
+  432/231ms, inbox rows from disk 731/535ms, shell 178/171 from the worker + 0
+  network, framework-frame prefs 1, API calls per reload 118 → 26/33, last API
+  response 9–11s → 1.6/1.3s, idle 1 flush/s (their clock), the 250/s loop gone.
+  Two rows failed → fixed in 2cfd09b: (a) the boot scope transition still
+  dispatched `manifest:persist:scope`, and the chat plugin reset every window
+  (their composed handle never showed its disk window) — the event now carries
+  `boot: true`; chat keeps handles, hydrates the still-loading ones under the
+  real scope (`hydrate` hook on attach) and writes them there; (b) index ids
+  with no record (pre earned-slot) are pruned on adoption (read keyed by id,
+  not position — a promote can reorder the live array mid-read). Also
+  `SLICE_MAX` 8 → 2 for prewarm: one big menu render is already a long task.
+  Open: a second `manifest.json?t=` request on their page (components registry
+  fallback; initiator requested). → RC.4 (with the `device` rename).
