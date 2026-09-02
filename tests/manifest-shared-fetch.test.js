@@ -15,6 +15,7 @@ const read = (f) => readFileSync(path.join(__dirname, '../src/scripts', f), 'utf
 const LOADER = read('manifest.js')
 const DATA_CONFIG = read('data/core/manifest.data.config.js')
 const AUTH_CONFIG = read('auth/manifest.appwrite.auth.config.js')
+const LOCALIZATION = read('manifest.localization.js')
 const tick = () => new Promise(r => setTimeout(r, 0))
 const settle = async (n = 10) => { for (let i = 0; i < n; i++) await tick() }
 const MANIFEST = { name: 'x', data: { a: '/a.json' }, appwrite: { auth: {} } }
@@ -67,5 +68,20 @@ describe('shared manifest fetch', () => {
         expect(b).toBe(a)
         expect(c).toBe(a)
         expect(manifestFetches).toBe(1)
+    })
+
+    it('localization awaits window.__manifestPromise instead of fetching its own copy', async () => {
+        // Alpine already present (as it is once alpine:init has fired) so the
+        // plugin initializes synchronously and calls getAvailableLocales().
+        window.Alpine = {
+            _stores: {},
+            store(name, val) { if (val !== undefined) this._stores[name] = val; return this._stores[name] },
+            magic() { }
+        }
+        window.__manifestPromise = Promise.resolve(MANIFEST)
+        new Function(LOCALIZATION)()
+        await settle(20)
+        expect(manifestFetches).toBe(0)
+        expect(Alpine.store('locale').available).toEqual(['en'])
     })
 })
