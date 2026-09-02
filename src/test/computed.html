@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- Scratch page: $computed through the loader's derive path (no data-plugins),
+     so the plugin must load by default and exist before Alpine.data factories run. -->
+
+<head>
+    <meta charset="UTF-8">
+    <title>$computed loader test</title>
+    <link rel="manifest" href="/manifest.json">
+    <script src="/scripts/manifest.js" data-plugin-base="/scripts/"></script>
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('inbox', () => ({
+                chats: [{ id: 'a', open: true }, { id: 'b', open: false }, { id: 'c', open: true }],
+                calls: 0,
+                open: $computed(function () { this.calls++; return this.chats.filter(c => c.open) }),
+            }));
+        });
+    </script>
+</head>
+
+<body>
+    <div x-data="inbox" id="factory">
+        <p id="open" x-text="open.map(c => c.id).join()">loading…</p>
+        <p id="count" x-text="open.length"></p>
+        <p id="calls" x-text="calls"></p>
+    </div>
+    <div x-data="{ q: 'b', items: ['a', 'b', 'bb'], hits: $computed(function () { return this.items.filter(i => i.includes(this.q)) }) }" id="inline">
+        <p id="hits" x-text="hits.join()">loading…</p>
+    </div>
+</body>
+
+</html>

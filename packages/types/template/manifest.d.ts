@@ -430,6 +430,11 @@ declare global {
     const $modify: ManifestModify;
     /** Run a callback safely, returning undefined on error. */
     const $try: ManifestTry;
+    /**
+     * Cached derivation for `x-data` / `Alpine.data` scopes: `rows: $computed(function () { return this.items.filter(…) })`.
+     * Recomputed once per flush when a tracked dependency changes; reads as a plain property with a stable identity in between.
+     */
+    const $computed: <T>(fn: (this: any) => T) => T;
     /** Appwrite auth plugin (present when the plugin is loaded). */
     const $auth: ManifestAuth;
     /** Localization plugin. */
