@@ -27,12 +27,15 @@
 </style>
 
 <div class="pdemo col gap-8" x-data="{
-    // ---- params (URL query string overrides; ?menus=&rows=&emoji=&getters=&pages=&pageSize=&cadenceMs=&upsertEveryMs=) ----
+    // ---- params (URL query string overrides; ?menus=&rows=&emoji=&getters=&pages=&pageSize=&cadenceMs=&upsertEveryMs=&source=x) ----
     menus: 4, rowsPerMenu: 243, emojiPerGrid: 169, gettersPerRow: 40,
     pages: 10, pageSize: 100, cadenceMs: 80, upsertEveryMs: 200,
 
     names: ['Sirius','Vega','Polaris','Rigel','Arcturus','Lyra','Orion','Mira','Atlas','Nova','Rhea','Cassio'],
 
+    // ?source=x: pages land in the $x 'feed' source through the data plugin's
+    // landing path instead of component state (measures P6, not Alpine)
+    sourceX: false, feedAccum: [],
     feed: [], landedPages: 0, upserts: 0,
     activeConvId: null, openedConvIds: [], threadCache: {},
     emojiListA: [], emojiListB: [], gettersRangeArr: [], menuIdx: [],
@@ -49,11 +52,18 @@
       this.pageSize = num('pageSize', this.pageSize);
       this.cadenceMs = num('cadenceMs', this.cadenceMs);
       this.upsertEveryMs = num('upsertEveryMs', this.upsertEveryMs);
-
+      this.sourceX = qs.get('source') === 'x';
       this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
       this.emojiListA = this.buildEmoji(this.emojiPerGrid, 0);
       this.emojiListB = this.buildEmoji(this.emojiPerGrid, 7);
       this.gettersRangeArr = Array.from({ length: this.gettersPerRow }, (_, i) => i);
+
+      if (this.sourceX) {
+        window.ManifestDataStore?.updateStore?.('feed', [], { loading: false, error: null, ready: true, allowDuringInit: true });
+        this.contextKeys = Array.from({ length: 40 }, (_, i) => i);
+        this.landMessages();
+        this.landContacts();
+      }
 
       this.startLanding();
       this.startUpserts();
@@ -81,22 +91,80 @@
     startLanding() {
       this.landTimer = setInterval(() => {
         if (this.landedPages >= this.pages) { clearInterval(this.landTimer); return; }
-        const base = this.feed.length;
+        const base = this.sourceX ? this.feedAccum.length : this.feed.length;
         const rows = Array.from({ length: this.pageSize }, (_, i) => this.makeRow(base + i));
-        this.feed.push(...rows);
+        if (this.sourceX) this.landPage(rows); else this.feed.push(...rows);
         this.landedPages++;
       }, this.cadenceMs);
     },
 
+    // $x landing: coalesced append when the store exposes landRows, else the
+    // pre-P6 shape (whole-source replace via updateStore)
+    landPage(rows) {
+      this.feedAccum.push(...rows);
+      const ds = window.ManifestDataStore;
+      if (ds?.landRows) ds.landRows('feed', rows, { mode: 'append', allowDuringInit: true });
+      else ds?.updateStore?.('feed', this.feedAccum.slice(), { loading: false, error: null, ready: true, allowDuringInit: true });
+    },
+
+    get feedRows() { return this.sourceX ? this.$x.feed : this.feed; },
+
+    // ---- Playcom chat shell (?source=x): 50 nav rows × 15 $x bindings, 40-binding
+    // context panel, thread pane over a second $x source; a switch lands one row ----
+    contextKeys: [],
+    landMessages() {
+      const pool = window.PERF_WORD_POOL || ['lorem']; // component script may not have run yet at init()
+      const msgs = [];
+      for (let c = 0; c < 50; c++) for (let i = 0; i < 5; i++) msgs.push({
+        $id: 'm' + c + '-' + i, chatId: 'r' + c,
+        author: i % 2 ? 'Them' : 'You',
+        text: 'Reply ' + i + ' in chat ' + c + ' — ' + pool[(c * 5 + i) % pool.length]
+      });
+      const ds = window.ManifestDataStore;
+      if (ds?.landRows) ds.landRows('messages', msgs, { mode: 'replace', allowDuringInit: true });
+      else ds?.updateStore?.('messages', msgs, { loading: false, error: null, ready: true, allowDuringInit: true });
+    },
+    // getter grid reads its own $x source (Playcom: contacts ≠ chats), so a feed landing must not touch it
+    landContacts() {
+      const rows = Array.from({ length: 100 }, (_, i) => ({ ...this.makeRow(i), $id: 'c' + i }));
+      const ds = window.ManifestDataStore;
+      if (ds?.landRows) ds.landRows('contacts', rows, { mode: 'replace', allowDuringInit: true });
+      else ds?.updateStore?.('contacts', rows, { loading: false, error: null, ready: true, allowDuringInit: true });
+    },
+    get gridSource() { return this.sourceX ? this.$x.contacts : this.feed; },
+    get chatList() { return this.feedRows.slice(0, 50); },
+    get activeChat() { return this.activeConvId == null ? null : this.feedRows.find(r => r.$id === this.activeConvId) || null; },
+    get threadMessages() { return this.$x.messages.filter(m => m.chatId === this.activeConvId); },
+    contextValue(k) {
+      const c = this.activeChat; if (!c) return '';
+      const f = ['name', 'status', 'value', 'unread', 'lastMessage', 'emoji', 'ts', 'id', 'openedAt', 'opens'];
+      return f[k % f.length] + ':' + String(c[f[k % f.length]]).slice(0, 12);
+    },
+    fmtTs(ts) { return new Date(ts).toISOString().slice(11, 19); },
+    // one-field LOCAL write on one nav row (Playcom's country-toggle shape): the sync mutation path
+    localWrites: 0,
+    localWrite() {
+      const row = this.chatList[3]; if (!row) return;
+      window.ManifestDataMutations?.updateEntryInStore?.('feed', row.$id, { status: row.status === 'active' ? 'idle' : 'active' });
+      this.localWrites++;
+    },
+    openChat(row) {
+      this.activeConvId = row.$id;
+      // the switch lands one row (read-marker) through the same path a realtime echo takes
+      this.upsertRow(row.$id, { openedAt: Date.now(), opens: (row.opens || 0) + 1 });
+    },
+
     makeRow(id) {
+      const pool = window.PERF_WORD_POOL || ['lorem']; // component script may not have run yet at init()
       return {
+        $id: 'r' + id,
         id,
         name: this.names[id % this.names.length] + ' ' + id,
         emoji: this.emojiListA[id % this.emojiListA.length] || '🙂',
         status: ['active', 'idle', 'away', 'busy'][id % 4],
         value: (id * 37) % 1000,
         unread: id % 3 === 0,
-        lastMessage: 'Preview ' + id + ' — ' + PERF_WORD_POOL[id % PERF_WORD_POOL.length],
+        lastMessage: 'Preview ' + id + ' — ' + pool[id % pool.length],
         ts: Date.now() - id * 1000
       };
     },
@@ -104,26 +172,36 @@
     // ---- realtime upserts: in-place Object.assign on random existing rows, identity preserved ----
     startUpserts() {
       this.upsertTimer = setInterval(() => {
-        if (!this.feed.length) return;
-        const row = this.feed[Math.floor(Math.random() * this.feed.length)];
-        Object.assign(row, {
+        const feed = this.feedRows;
+        if (!feed.length) return;
+        const row = feed[Math.floor(Math.random() * feed.length)];
+        const patch = {
           lastMessage: 'Updated ' + (Date.now() % 100000) + ' — ' + PERF_WORD_POOL[this.upserts % PERF_WORD_POOL.length],
           unread: !row.unread,
           value: (row.value + 7) % 1000
-        });
+        };
+        if (this.sourceX) this.upsertRow(row.$id, patch); else Object.assign(row, patch);
         this.upserts++;
       }, this.upsertEveryMs);
     },
 
+    // $x realtime-shaped upsert: coalesced landing when available, else the
+    // pre-P6 realtime path (updateEntryInStore → whole-array rebuild)
+    upsertRow(id, patch) {
+      const ds = window.ManifestDataStore;
+      if (ds?.landRows) ds.landRows('feed', [{ $id: id, ...patch }], { mode: 'append', allowDuringInit: true });
+      else window.ManifestDataMutations?.updateEntryInStore?.('feed', id, patch);
+    },
+
     // ---- derived views (plain getters — no $computed yet; that's the Phase 1 fix) ----
-    get gridRows() { return this.feed.slice(0, 100); },
-    get conversations() { return this.feed.slice(-60).slice().reverse(); },
+    get gridRows() { return this.gridSource.slice(0, 100); },
+    get conversations() { return this.feedRows.slice(-60).slice().reverse(); },
 
     // Genuinely expensive per-cell getter: builds + filters an inline array,
-    // and reads feed.length so every landing invalidates every cell — this is
-    // the $x 'whole-store' re-run hammer from §1.2, reproduced without $computed.
+    // and reads the grid source's length so every landing to it invalidates
+    // every cell — the §1.2 re-run hammer, reproduced without $computed.
     getterValue(row, k) {
-      const seed = (row.id + k + this.feed.length) % 7 + 2;
+      const seed = (row.id + k + this.gridSource.length) % 7 + 2;
       const letter = String.fromCharCode(97 + (k % 26));
       return PERF_WORD_POOL.filter(w => w.length % seed === 0 && w.includes(letter)).length;
     },
@@ -204,7 +282,7 @@
 
   <!-- 100-row grid, gettersPerRow getters per row -->
   <section class="col gap-2">
-    <strong class="small">Getter grid <span class="note">— 100 rows × <span x-text="gettersPerRow"></span> getters, each an inline filter over the shared word pool</span></strong>
+    <strong class="small">Getter grid <span class="note">— 100 rows × <span x-text="gettersPerRow"></span> getters, each an inline filter over the shared word pool<span x-show="sourceX">; rows from $x.contacts</span></span></strong>
     <div class="getter-scroll">
       <table class="getter-table">
         <thead>
@@ -227,14 +305,62 @@
     </div>
   </section>
 
+  <!-- Playcom chat shell (?source=x): nav list, context panel, thread pane — all over $x -->
+  <template x-if="sourceX">
+    <section class="col gap-2">
+      <strong class="small">Chat shell <span class="note">— 50 nav rows × 15 bindings, 40-binding context panel, thread over $x.messages; a switch lands one row</span></strong>
+      <div class="row-wrap gap-2">
+        <button id="perf-local-write" class="ghost sm" @click="localWrite()">Local write (one field, one row)</button>
+        <small class="note">Local writes: <span x-text="localWrites"></span></small>
+      </div>
+      <div class="row-wrap gap-4" style="align-items: flex-start">
+        <div class="conv-list" style="flex: 1 1 20rem">
+          <template x-for="(row, i) in chatList" :key="row.$id">
+            <div class="conv-row" :class="activeConvId === row.$id ? 'active' : ''"
+                 :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
+                 :title="row.name" :data-status="row.status" :data-unread="row.unread" :data-value="row.value" :data-opens="row.opens || 0"
+                 @click="openChat(row)">
+              <span x-text="row.emoji"></span>
+              <div class="col" style="min-width: 0">
+                <strong x-text="row.name"></strong>
+                <small class="note" x-text="row.lastMessage" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; max-width: 16rem"></small>
+                <small class="note"><span x-text="row.status"></span> · <span x-text="row.value"></span> · <span x-text="fmtTs(row.ts)"></span> · <span x-text="row.unread ? 'unread' : 'read'"></span> · <span x-text="row.id"></span> · <span x-text="row.name.length"></span></small>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div class="detail-pane" style="flex: 2 1 30rem">
+          <template x-if="activeChat">
+            <div class="col gap-2">
+              <div id="perf-context" class="row-wrap gap-2 note">
+                <template x-for="k in contextKeys" :key="k"><span x-text="contextValue(k)"></span></template>
+              </div>
+              <hr>
+              <div class="col">
+                <template x-for="m in threadMessages" :key="m.$id">
+                  <div class="thread-msg">
+                    <strong x-text="m.author"></strong>
+                    <span x-text="m.text"></span>
+                    <small class="note" x-text="wordCount(m.text) + 'w'"></small>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+          <p class="note" x-show="!activeChat">Click a chat to open it.</p>
+        </div>
+      </div>
+    </section>
+  </template>
+
   <!-- Conversation list + detail pane: first-open mounts a thread, warm switch only toggles x-show -->
-  <section class="col gap-2">
+  <section class="col gap-2" x-show="!sourceX">
     <strong class="small">Conversations <span class="note">— derived from the same paged feed</span></strong>
     <div class="row-wrap gap-4" style="align-items: flex-start">
       <div class="conv-list" style="flex: 1 1 20rem">
         <template x-for="(row, i) in conversations" :key="row.id">
           <div class="conv-row" :class="activeConvId === row.id ? 'active' : ''"
-               :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
+               :id="!sourceX && i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="!sourceX && i === 1 ? '' : null"
                @click="openConversation(row)">
             <span x-text="row.emoji"></span>
             <div class="col" style="min-width: 0">
@@ -263,12 +389,12 @@
 
   <!-- Boot status for the probe: ready once every page has landed -->
   <div id="perf-status" hidden
-       :data-landed-pages="landedPages" :data-pages="pages" :data-feed-length="feed.length"
+       :data-landed-pages="landedPages" :data-pages="pages" :data-feed-length="feedRows.length" :data-source="sourceX ? 'x' : 'local'"
        :data-ready="landedPages >= pages ? 'true' : 'false'" :data-upserts="upserts"></div>
 
   <footer class="row-wrap gap-3 note">
-    <span>Landed <span x-text="landedPages"></span>/<span x-text="pages"></span> pages</span>
-    <span>Feed: <span x-text="feed.length"></span> rows</span>
+    <span>Landed <span x-text="landedPages"></span>/<span x-text="pages"></span> pages<span x-show="sourceX"> via $x.feed</span></span>
+    <span>Feed: <span x-text="feedRows.length"></span> rows</span>
     <span>Upserts: <span x-text="upserts"></span></span>
   </footer>
 

@@ -11,78 +11,40 @@ function generateMutationId() {
     return `mutation_${Date.now()}_${++mutationIdCounter}`;
 }
 
+// Local writes are synchronous (read-your-writes) and identity-preserving;
+// network landings go through ManifestDataStore.landRows instead.
+function clearSourceCaches(dataSourceName) {
+    const proxies = window.ManifestDataProxies;
+    proxies?.clearAccessCache?.(dataSourceName);
+    proxies?.clearArrayProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearRouteProxyCacheForDataSource?.(dataSourceName);
+}
+
+function findRawIndex(dataSourceName, entryId) {
+    const store = Alpine.store('data');
+    const raw = window.ManifestDataStore?.rawOf?.(store) || store;
+    const arr = raw?.[dataSourceName];
+    if (!Array.isArray(arr)) return { store, arr: null, index: -1 };
+    return { store, arr, index: arr.findIndex(entry => entry && entry.$id === entryId) };
+}
+
 // Update a single entry in the store (scoped update)
 function updateEntryInStore(dataSourceName, entryId, updates, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
 
-    const store = Alpine.store('data');
-    if (!store || !store[dataSourceName] || !Array.isArray(store[dataSourceName])) {
+    const { store, arr, index } = findRawIndex(dataSourceName, entryId);
+    if (!store || !arr || index === -1) {
         return false;
     }
 
-    const currentArray = store[dataSourceName];
-    const index = currentArray.findIndex(entry => entry.$id === entryId);
-
-    if (index === -1) {
-        return false;
-    }
-
-    // CRITICAL DEBUG: Log all updates to projects, especially fileIds changes
-    if (dataSourceName === 'projects') {
-        const existingEntry = currentArray[index];
-        const existingFileIds = existingEntry?.fileIds || [];
-        const newFileIds = updates?.fileIds || (updates === existingEntry ? existingFileIds : undefined);
-
-        // Get stack trace to see who's calling this
-        const stack = new Error().stack;
-        const caller = stack?.split('\n')[2]?.trim() || 'unknown';
-
-    }
-
-    // Create new array with updated entry
-    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-    const newArray = currentArray.map((entry, i) => {
-        if (i === index) {
-            // Merge updates into entry, creating new object reference
-            const updatedEntry = createReactiveReferences
-                ? createReactiveReferences({ ...entry, ...updates }, dataSourceName)
-                : { ...entry, ...updates };
-            return updatedEntry;
-        }
-        return entry;
-    });
-
-    // Create reactive references for entire array
-    const reactiveArray = createReactiveReferences
-        ? createReactiveReferences(newArray, dataSourceName)
-        : newArray;
-
-    // Update store
-    Alpine.store('data', {
-        ...store,
-        [dataSourceName]: reactiveArray
-    });
-
-    // Attach methods to new array reference
-    if (window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-        }
-    }
-
-    // Clear caches
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-    }
+    // Local write: merge onto the tracked row, sync
+    const ds = window.ManifestDataStore;
+    ds.mergeRowFields(store[dataSourceName][index], updates, dataSourceName);
+    ds.noteLocalWrite(dataSourceName, entryId, { patch: updates });
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
     window.dispatchEvent(new CustomEvent('manifest:data-mutated', {
@@ -103,53 +65,17 @@ function addEntryToStore(dataSourceName, entry, options = {}) {
         return false;
     }
 
-    const store = Alpine.store('data');
-    if (!store) {
+    const ds = window.ManifestDataStore;
+    const target = ds?.ensureSourceArray?.(dataSourceName);
+    if (!target) {
         return false;
     }
 
-    // Get current array or initialize
-    const currentArray = store[dataSourceName] || [];
-    if (!Array.isArray(currentArray)) {
-        return false;
-    }
-
-    // Create reactive references for new entry
-    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-    const newEntry = createReactiveReferences
-        ? createReactiveReferences(entry, dataSourceName)
-        : entry;
-
-    // Create new array with new entry
-    const newArray = [...currentArray, newEntry];
-    const reactiveArray = createReactiveReferences
-        ? createReactiveReferences(newArray, dataSourceName)
-        : newArray;
-
-    // Update store
-    Alpine.store('data', {
-        ...store,
-        [dataSourceName]: reactiveArray
-    });
-
-    // Attach methods to new array reference
-    if (window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-        }
-    }
-
-    // Clear caches
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-    }
+    // Local write: push onto the tracked array, sync
+    target.push(ds.createReactiveReferences(entry, dataSourceName));
+    ds.noteLocalWrite(dataSourceName, entry?.$id, { patch: entry });
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
     window.dispatchEvent(new CustomEvent('manifest:data-mutated', {
@@ -170,49 +96,20 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
         return false;
     }
 
-    const store = Alpine.store('data');
-    if (!store || !store[dataSourceName] || !Array.isArray(store[dataSourceName])) {
-        return false;
-    }
-
-    const currentArray = store[dataSourceName];
-    const index = currentArray.findIndex(entry => entry.$id === entryId);
-
-    if (index === -1) {
+    const { store, arr, index } = findRawIndex(dataSourceName, entryId);
+    if (!store || !arr || index === -1) {
         return false;
     }
 
     // Store original entry for rollback
-    const originalEntry = currentArray[index];
+    const originalEntry = arr[index];
 
-    // Create new array without entry
-    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-    const newArray = currentArray.filter((entry, i) => i !== index);
-    const reactiveArray = createReactiveReferences
-        ? createReactiveReferences(newArray, dataSourceName)
-        : newArray;
-
-    // Update store
-    Alpine.store('data', {
-        ...store,
-        [dataSourceName]: reactiveArray
-    });
-
-    // Attach methods to new array reference
-    if (window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-        }
-    }
-
-    // Clear caches
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
+    // Local write: splice the tracked array, sync
+    const ds = window.ManifestDataStore;
+    store[dataSourceName].splice(index, 1);
+    ds.noteLocalWrite(dataSourceName, entryId, { removed: true });
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
     window.dispatchEvent(new CustomEvent('manifest:data-mutated', {
@@ -304,10 +201,11 @@ async function executeMutation(mutationConfig) {
             addEntryToStore(dataSourceName, optimisticData, options);
             originalData = null; // Nothing to rollback for create
         } else if (type === 'update') {
-            // Store original entry for rollback
+            // Snapshot for rollback (the row itself is mutated in place)
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                originalData = store[dataSourceName].find(e => e.$id === entryId);
+                const found = store[dataSourceName].find(e => e.$id === entryId);
+                originalData = found ? { ...found } : null;
             }
 
             // Set updating state
@@ -321,10 +219,11 @@ async function executeMutation(mutationConfig) {
                 updateEntryInStore(dataSourceName, entryId, data, options);
             }
         } else if (type === 'delete') {
-            // Store original entry for rollback
+            // Snapshot for rollback
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                originalData = store[dataSourceName].find(e => e.$id === entryId);
+                const found = store[dataSourceName].find(e => e.$id === entryId);
+                originalData = found ? { ...found } : null;
             }
 
             // Set deleting state
@@ -354,47 +253,14 @@ async function executeMutation(mutationConfig) {
         // Step 4: Background sync - update with server response
         if (result && result.$id) {
             if (type === 'create') {
-                // Replace temporary entry with real one from server
-                const store = Alpine.store('data');
-                if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                    const index = store[dataSourceName].findIndex(e => e.$id === optimisticData.$id);
+                // Ack: swap the temp row for the server row in place (new $id → new $files binding)
+                const { store, arr, index } = findRawIndex(dataSourceName, optimisticData.$id);
+                if (store && arr) {
                     if (index !== -1) {
-                        // Remove temporary entry and add real one
-                        const currentArray = store[dataSourceName];
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const newArray = currentArray.map((entry, i) => {
-                            if (i === index) {
-                                // Replace with server response
-                                return createReactiveReferences
-                                    ? createReactiveReferences(result, dataSourceName)
-                                    : result;
-                            }
-                            return entry;
-                        });
-                        const reactiveArray = createReactiveReferences
-                            ? createReactiveReferences(newArray, dataSourceName)
-                            : newArray;
-                        Alpine.store('data', {
-                            ...store,
-                            [dataSourceName]: reactiveArray
-                        });
-                        // Attach methods
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?.loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-                            }
-                        }
-                        // Clear caches
-                        if (window.ManifestDataProxies?.clearAccessCache) {
-                            window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                        }
-                        if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                            window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-                        }
-                        if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-                            window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-                        }
+                        const ds = window.ManifestDataStore;
+                        store[dataSourceName].splice(index, 1, ds.createReactiveReferences(result, dataSourceName));
+                        ds.touchSource(dataSourceName);
+                        clearSourceCaches(dataSourceName);
                     } else {
                         // Temporary entry not found, just add the real one
                         addEntryToStore(dataSourceName, result, options);

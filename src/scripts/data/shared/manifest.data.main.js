@@ -119,38 +119,15 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         return;
     }
 
-    // Use scoped updates via mutation system
-    const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
-    const updateEntryInStore = window.ManifestDataMutations?.updateEntryInStore;
-    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+    // Network landings: coalesced per frame (landRows upserts by $id), never the sync mutation path
+    const { landRows, landRemove } = window.ManifestDataStore;
 
     if (eventType === 'create') {
-        // New file created - check if it matches scope before adding
         const file = payload?.$id ? payload : (payload?.file || payload);
         if (file && file.$id) {
-            // Check if file matches current scope
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                // Check if already exists
-                const exists = currentFiles.some(f => f.$id === file.$id);
-                if (!exists && addEntryToStore) {
-                    // Use scoped update: add only this file
-                    addEntryToStore(dataSourceName, file);
-                } else if (!exists) {
-                    // Fallback: update entire array
-                    const updatedFiles = [...currentFiles, file];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveFiles = createReactiveReferences
-                        ? createReactiveReferences(updatedFiles, dataSourceName)
-                        : updatedFiles;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                        }
-                    }
-                }
+                landRows(dataSourceName, [file], { mode: 'append' });
 
                 // Emit custom event for new file creation so UI can refresh project files
                 window.dispatchEvent(new CustomEvent('manifest:file-created', {
@@ -161,97 +138,20 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
             console.warn('[Manifest Data] Invalid file payload in create event:', payload);
         }
     } else if (eventType === 'update') {
-        // File updated - update in array if it exists
         const file = payload?.$id ? payload : (payload?.file || payload);
         if (file && file.$id) {
-            const existingFile = currentFiles.find(f => f.$id === file.$id);
-            if (existingFile) {
-                // Check if file still matches scope after update
-                const fileMatchesScope = await checkFileMatchesScope(file, scope);
-                if (fileMatchesScope) {
-                    // Use scoped update: update only this file
-                    if (updateEntryInStore) {
-                        updateEntryInStore(dataSourceName, file.$id, file);
-                    } else {
-                        // Fallback: update entire array
-                        const updatedFiles = currentFiles.map(f => f.$id === file.$id ? file : f);
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const reactiveFiles = createReactiveReferences
-                            ? createReactiveReferences(updatedFiles)
-                            : updatedFiles;
-                        Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                            }
-                        }
-                    }
-                } else {
-                    // File no longer matches scope, remove it
-                    if (removeEntryFromStore) {
-                        removeEntryFromStore(dataSourceName, file.$id);
-                    } else {
-                        // Fallback: update entire array
-                        const updatedFiles = currentFiles.filter(f => f.$id !== file.$id);
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const reactiveFiles = createReactiveReferences
-                            ? createReactiveReferences(updatedFiles)
-                            : updatedFiles;
-                        Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                            }
-                        }
-                    }
-                }
+            const fileMatchesScope = await checkFileMatchesScope(file, scope);
+            if (fileMatchesScope) {
+                landRows(dataSourceName, [file], { mode: 'append' });
             } else {
-                // File not in list, but might match scope now - add it
-                const fileMatchesScope = await checkFileMatchesScope(file, scope);
-                if (fileMatchesScope && addEntryToStore) {
-                    addEntryToStore(dataSourceName, file);
-                } else if (fileMatchesScope) {
-                    // Fallback: update entire array
-                    const updatedFiles = [...currentFiles, file];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveFiles = createReactiveReferences
-                        ? createReactiveReferences(updatedFiles, dataSourceName)
-                        : updatedFiles;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                        }
-                    }
-                }
+                // File no longer matches scope, remove it
+                landRemove(dataSourceName, [file.$id]);
             }
         }
     } else if (eventType === 'delete') {
-        // File deleted - remove from array
         const fileId = payload?.$id || payload?.file?.$id || payload?.fileId || payload;
         if (fileId) {
-            const actualFileId = fileId.$id || fileId;
-            if (removeEntryFromStore) {
-                // Use scoped update: remove only this file
-                removeEntryFromStore(dataSourceName, actualFileId);
-            } else {
-                // Fallback: update entire array
-                const updatedFiles = currentFiles.filter(f => f.$id !== actualFileId);
-                const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                const reactiveFiles = createReactiveReferences
-                    ? createReactiveReferences(updatedFiles)
-                    : updatedFiles;
-                Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                if (window.ManifestDataProxies?.attachArrayMethods) {
-                    const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                    if (loadDataSource) {
-                        window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                    }
-                }
-            }
+            landRemove(dataSourceName, [fileId.$id || fileId]);
         }
     }
 }
@@ -323,201 +223,105 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         return;
     }
 
-    let updatedRows = [...currentRows];
-
-    // Use scoped updates via mutation system
-    const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
-    const updateEntryInStore = window.ManifestDataMutations?.updateEntryInStore;
-    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+    // Network landings: coalesced per frame (landRows upserts by $id), never the sync mutation path
+    const { landRows, landRemove } = window.ManifestDataStore;
 
     if (eventType === 'create') {
-        // New row created - check if it matches scope before adding
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
-            // Check if row matches current scope
             const rowMatchesScope = await checkRowMatchesScope(row, scope);
             if (rowMatchesScope) {
-                // Check if already exists
-                const exists = currentRows.some(r => r.$id === row.$id);
-                if (!exists && addEntryToStore) {
-                    // Use scoped update: add only this entry
-                    addEntryToStore(dataSourceName, row);
-                } else if (!exists) {
-                    // Fallback: update entire array
-                    const updatedRows = [...currentRows, row];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveRows = createReactiveReferences
-                        ? createReactiveReferences(updatedRows, dataSourceName)
-                        : updatedRows;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                        }
-                    }
-                }
+                landRows(dataSourceName, [row], { mode: 'append' });
             }
         } else {
             console.warn('[Manifest Data] Invalid row payload in create event:', payload);
         }
     } else if (eventType === 'update') {
-        // Row updated - update in array if it exists
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
             const existingRow = currentRows.find(r => r.$id === row.$id);
-            if (existingRow) {
-                // Check if row still matches scope after update
-                const rowMatchesScope = await checkRowMatchesScope(row, scope);
-                if (rowMatchesScope) {
-                    // Most sources update unconditionally; projects-with-fileIds get
-                    // special handling to protect optimistic uploads (see below).
-                    const existingFileIds = existingRow?.fileIds || [];
-                    const incomingFileIds = row?.fileIds || [];
-                    const hasFileIds = existingFileIds.length > 0 || incomingFileIds.length > 0;
-                    const isProjectWithFiles = hasFileIds && dataSourceName === 'projects';
+            const rowMatchesScope = await checkRowMatchesScope(row, scope);
+            if (!rowMatchesScope) {
+                // Row no longer matches scope, remove it
+                if (existingRow) landRemove(dataSourceName, [row.$id]);
+                return;
+            }
+            if (!existingRow) {
+                // Row not in list, but matches scope now - add it
+                landRows(dataSourceName, [row], { mode: 'append' });
+                return;
+            }
 
-                    let shouldUpdate = true;
+            // Most sources update unconditionally; projects-with-fileIds get
+            // special handling to protect optimistic uploads (see below).
+            const existingFileIds = existingRow?.fileIds || [];
+            const incomingFileIds = row?.fileIds || [];
+            const hasFileIds = existingFileIds.length > 0 || incomingFileIds.length > 0;
+            const isProjectWithFiles = hasFileIds && dataSourceName === 'projects';
 
-                    if (isProjectWithFiles) {
-                        const existingUpdatedAt = existingRow?.$updatedAt || existingRow?.$sequence;
-                        const newUpdatedAt = row?.$updatedAt || row?.$sequence;
-                        const shouldUpdateByTimestamp = !newUpdatedAt || !existingUpdatedAt || newUpdatedAt !== existingUpdatedAt;
+            let shouldUpdate = true;
 
-                        if (!shouldUpdateByTimestamp) {
-                            shouldUpdate = false; // identical timestamps → no-op
-                        } else {
-                            const existingFileIdsSet = new Set(existingFileIds);
-                            const incomingFileIdsSet = new Set(incomingFileIds);
+            if (isProjectWithFiles) {
+                const existingUpdatedAt = existingRow?.$updatedAt || existingRow?.$sequence;
+                const newUpdatedAt = row?.$updatedAt || row?.$sequence;
+                const shouldUpdateByTimestamp = !newUpdatedAt || !existingUpdatedAt || newUpdatedAt !== existingUpdatedAt;
 
-                            const isSuperset = incomingFileIds.every(id => existingFileIdsSet.has(id)) &&
-                                incomingFileIds.length > existingFileIds.length;
-
-                            const isMissingFiles = existingFileIds.some(id => !incomingFileIdsSet.has(id));
-
-                            const timestampDiff = newUpdatedAt > existingUpdatedAt ?
-                                (new Date(newUpdatedAt) - new Date(existingUpdatedAt)) :
-                                (new Date(existingUpdatedAt) - new Date(newUpdatedAt));
-                            const isDefinitelyNewer = timestampDiff > 1000; // ms
-
-                            // Incoming missing files + not clearly newer = stale event
-                            // racing an optimistic update; ignore it to protect the upload.
-                            if (isMissingFiles && !isDefinitelyNewer) {
-                                console.warn('[Manifest Data] Ignoring stale realtime update (protecting optimistic update):', {
-                                    projectId: row.$id,
-                                    existingFileIds: existingFileIds,
-                                    incomingFileIds: incomingFileIds,
-                                    existingFileIdsCount: existingFileIds.length,
-                                    incomingFileIdsCount: incomingFileIds.length,
-                                    existingUpdatedAt,
-                                    newUpdatedAt,
-                                    timestampDiff,
-                                    isMissingFiles,
-                                    isDefinitelyNewer,
-                                    reason: 'Incoming data missing files that exist in store - likely stale realtime event'
-                                });
-                                shouldUpdate = false;
-                            }
-                        }
-                    }
-
-                    // Apply the update if shouldUpdate is true
-                    if (shouldUpdate) {
-                        // Check if fileIds changed (for projects with linked files)
-                        const fileIdsChanged = isProjectWithFiles &&
-                            JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
-
-                        // Use scoped update: update only this entry
-                        if (updateEntryInStore) {
-                            updateEntryInStore(dataSourceName, row.$id, row);
-                        } else {
-                            // Fallback: update entire array
-                            const updatedRows = currentRows.map(r => r.$id === row.$id ? row : r);
-                            const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                            const reactiveRows = createReactiveReferences
-                                ? createReactiveReferences(updatedRows, dataSourceName)
-                                : updatedRows;
-                            Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                            if (window.ManifestDataProxies?.attachArrayMethods) {
-                                const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                                if (loadDataSource) {
-                                    window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                                }
-                            }
-                        }
-
-                        // Emit custom event for project file updates so UI can refresh
-                        if (fileIdsChanged && dataSourceName === 'projects') {
-                            window.dispatchEvent(new CustomEvent('manifest:project-files-updated', {
-                                detail: { projectId: row.$id, fileIds: row.fileIds }
-                            }));
-                        }
-                    }
+                if (!shouldUpdateByTimestamp) {
+                    shouldUpdate = false; // identical timestamps → no-op
                 } else {
-                    // Row no longer matches scope, remove it
-                    if (removeEntryFromStore) {
-                        removeEntryFromStore(dataSourceName, row.$id);
-                    } else {
-                        // Fallback: update entire array
-                        const updatedRows = currentRows.filter(r => r.$id !== row.$id);
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const reactiveRows = createReactiveReferences
-                            ? createReactiveReferences(updatedRows, dataSourceName)
-                            : updatedRows;
-                        Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                            }
-                        }
+                    const existingFileIdsSet = new Set(existingFileIds);
+                    const incomingFileIdsSet = new Set(incomingFileIds);
+
+                    const isSuperset = incomingFileIds.every(id => existingFileIdsSet.has(id)) &&
+                        incomingFileIds.length > existingFileIds.length;
+
+                    const isMissingFiles = existingFileIds.some(id => !incomingFileIdsSet.has(id));
+
+                    const timestampDiff = newUpdatedAt > existingUpdatedAt ?
+                        (new Date(newUpdatedAt) - new Date(existingUpdatedAt)) :
+                        (new Date(existingUpdatedAt) - new Date(newUpdatedAt));
+                    const isDefinitelyNewer = timestampDiff > 1000; // ms
+
+                    // Incoming missing files + not clearly newer = stale event
+                    // racing an optimistic update; ignore it to protect the upload.
+                    if (isMissingFiles && !isDefinitelyNewer) {
+                        console.warn('[Manifest Data] Ignoring stale realtime update (protecting optimistic update):', {
+                            projectId: row.$id,
+                            existingFileIds: existingFileIds,
+                            incomingFileIds: incomingFileIds,
+                            existingFileIdsCount: existingFileIds.length,
+                            incomingFileIdsCount: incomingFileIds.length,
+                            existingUpdatedAt,
+                            newUpdatedAt,
+                            timestampDiff,
+                            isMissingFiles,
+                            isDefinitelyNewer,
+                            reason: 'Incoming data missing files that exist in store - likely stale realtime event'
+                        });
+                        shouldUpdate = false;
                     }
                 }
-            } else {
-                // Row not in list, but might match scope now - add it
-                const rowMatchesScope = await checkRowMatchesScope(row, scope);
-                if (rowMatchesScope && addEntryToStore) {
-                    addEntryToStore(dataSourceName, row);
-                } else if (rowMatchesScope) {
-                    // Fallback: update entire array
-                    const updatedRows = [...currentRows, row];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveRows = createReactiveReferences
-                        ? createReactiveReferences(updatedRows, dataSourceName)
-                        : updatedRows;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                        }
-                    }
+            }
+
+            if (shouldUpdate) {
+                // Check if fileIds changed (for projects with linked files)
+                const fileIdsChanged = isProjectWithFiles &&
+                    JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
+
+                landRows(dataSourceName, [row], { mode: 'append' });
+
+                // Emit custom event for project file updates so UI can refresh
+                if (fileIdsChanged && dataSourceName === 'projects') {
+                    window.dispatchEvent(new CustomEvent('manifest:project-files-updated', {
+                        detail: { projectId: row.$id, fileIds: row.fileIds }
+                    }));
                 }
             }
         }
     } else if (eventType === 'delete') {
-        // Row deleted - remove from array
         const rowId = payload?.$id || payload?.row?.$id || payload?.rowId || payload;
         if (rowId) {
-            const actualRowId = rowId.$id || rowId;
-            if (removeEntryFromStore) {
-                // Use scoped update: remove only this entry
-                removeEntryFromStore(dataSourceName, actualRowId);
-            } else {
-                // Fallback: update entire array
-                const updatedRows = currentRows.filter(r => r.$id !== actualRowId);
-                const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                const reactiveRows = createReactiveReferences
-                    ? createReactiveReferences(updatedRows, dataSourceName)
-                    : updatedRows;
-                Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                if (window.ManifestDataProxies?.attachArrayMethods) {
-                    const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                    if (loadDataSource) {
-                        window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                    }
-                }
-            }
+            landRemove(dataSourceName, [rowId.$id || rowId]);
         }
     }
 
@@ -649,7 +453,7 @@ async function checkFileMatchesScope(file, scope) {
 // Load dataSource data
 async function loadDataSource(dataSourceName, locale = 'en') {
     const cacheKey = `${dataSourceName}:${locale}`;
-    const { dataSourceCache, loadingPromises, isInitializing, updateStore } = window.ManifestDataStore;
+    const { dataSourceCache, loadingPromises, isInitializing, updateStore, landRows } = window.ManifestDataStore;
 
     // Memory cache. Serving cached data is fine, but writing an old locale to the
     // live store would clobber a concurrent locale switch — so guard the store
@@ -660,7 +464,8 @@ async function loadDataSource(dataSourceName, locale = 'en') {
             || document.documentElement.lang || locale;
         const staleLocaleHit = locale !== liveLocale && !!(cachedData && cachedData._locale);
         if (!isInitializing && !staleLocaleHit) {
-            updateStore(dataSourceName, cachedData, { loading: false, error: null, ready: true });
+            // Landing (coalesced): resolves once the cached rows are visible
+            await landRows(dataSourceName, cachedData, { mode: 'replace', loading: false, error: null, ready: true });
         }
         return cachedData;
     }
@@ -937,10 +742,9 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 || document.documentElement.lang || locale;
             const staleLocale = localeSensitive && liveLocale !== locale;
 
-            // Update store only if not initializing
-            // Note: updateStore will seal the data to prevent Alpine from proxying it
+            // Network landing (coalesced per frame); resolves once visible
             if (!isInitializing && !staleLocale) {
-                updateStore(dataSourceName, enhancedData, { loading: false, error: null, ready: true });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true });
             }
 
             // Return unsealed version for our proxy system
@@ -1060,7 +864,7 @@ function setupUrlChangeListeners() {
 // Initialize plugin when either DOM is ready or Alpine is ready
 async function initializeDataSourcesPlugin() {
 
-    const { initializeStore, setupLocaleChangeListener, setupTeamChangeListener, setIsInitializing, setInitializationComplete, updateStore } = window.ManifestDataStore;
+    const { initializeStore, setupLocaleChangeListener, setupTeamChangeListener, setIsInitializing, setInitializationComplete, updateStore, landRows } = window.ManifestDataStore;
 
     // Initialize empty data sources store
     initializeStore();
@@ -1131,16 +935,11 @@ async function initializeDataSourcesPlugin() {
     setIsInitializing(true);
 
     try {
-        // Initialize store - preserve existing store properties like _currentUrl
-        const existingStore = Alpine.store('data') || {};
-        Alpine.store('data', {
-            ...existingStore,
-            all: [],
-            _initialized: true,
-            _ready: false,
-            // Ensure _currentUrl is preserved or initialized
-            _currentUrl: existingStore._currentUrl || window.location.pathname
-        });
+        // Mark the store initialized in place (never replace the store object)
+        const dataStore = Alpine.store('data');
+        dataStore._initialized = true;
+        dataStore._ready = false;
+        if (!dataStore._currentUrl) dataStore._currentUrl = window.location.pathname;
 
         // Pre-load local file-backed sources so $x.* renders real data first pass;
         // Appwrite, API-URL, and "manifest" sources stay on-demand.
@@ -1163,8 +962,9 @@ async function initializeDataSourcesPlugin() {
                         preloadNames.map(async (name) => {
                             try {
                                 const data = await loadDataSource(name, locale);
-                                if (data != null && window.ManifestDataStore?.updateStore) {
-                                    window.ManifestDataStore.updateStore(name, data, { loading: false, error: null, ready: true, allowDuringInit: true });
+                                if (data != null) {
+                                    // Boot landing: every pre-loaded source lands in ONE flush
+                                    await landRows(name, data, { mode: 'replace', loading: false, error: null, ready: true, allowDuringInit: true });
                                 }
                             } catch (err) {
                                 console.warn(`[Manifest Data] Failed to pre-load ${name}:`, err);
@@ -1183,36 +983,17 @@ async function initializeDataSourcesPlugin() {
                 // flag updateStore short-circuits and $x.manifest stays unpopulated.
                 window.ManifestDataStore.dataSourceCache.set(`manifest:${locale}`, publicManifest);
                 updateStore('manifest', publicManifest, { loading: false, error: null, ready: true, allowDuringInit: true });
-
-                const store = Alpine.store('data');
-                Alpine.store('data', {
-                    ...store,
-                    _ready: true
-                });
-            } else {
-                // No manifest data source, mark as ready anyway
-                const store = Alpine.store('data');
-                Alpine.store('data', {
-                    ...store,
-                    _ready: true
-                });
             }
+            Alpine.store('data')._ready = true;
         } catch (error) {
             // If manifest pre-load fails, mark as ready anyway - it will load on-demand
             console.warn('[Manifest Data] Failed to pre-load manifest:', error);
-            const store = Alpine.store('data');
-            Alpine.store('data', {
-                ...store,
-                _ready: true
-            });
+            Alpine.store('data')._ready = true;
         }
 
         // Force Alpine to re-run effects that read $x.content (they may have run before pre-load and got loading proxy)
         const flushThenDispatch = () => {
-            if (typeof Alpine !== 'undefined') {
-                const s = Alpine.store('data');
-                Alpine.store('data', { ...s, _dataVersion: (s._dataVersion || 0) + 1 });
-            }
+            window.ManifestDataStore?.bumpAllVersions?.();
             if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent('manifest:data-ready'));
             }

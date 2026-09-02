@@ -207,6 +207,15 @@ function registerXMagicMethod(loadDataSource) {
                         };
                     }
 
+                    // $x.all — lazy cross-source array, versioned by _v.all
+                    if (prop === 'all') {
+                        return window.ManifestDataStore?.getAll?.() ?? [];
+                    }
+
+                    // Per-source subscription: read _v[prop] only (never the whole
+                    // store or _dataVersion) so landings elsewhere don't re-run us
+                    const track = () => { const v = Alpine.store('data')?._v; if (v) void v[prop]; };
+
                     // Resolve+cache from raw data BEFORE reading Alpine.store('data'):
                     // the store read registers a reactive dep that can re-run this
                     // effect and re-enter get() → stack overflow. Caching first makes
@@ -222,9 +231,7 @@ function registerXMagicMethod(loadDataSource) {
                         if (nestedCache.has(prop) && hasData) {
                             const cachedProxy = nestedCache.get(prop);
                             if (cachedProxy) {
-                                // Subscribe to store so locale change (updateStore) triggers re-run; we only read _dataVersion, still return cached proxy.
-                                const store = Alpine.store('data');
-                                void (store && store._dataVersion);
+                                track(); // locale change / reload re-runs us; still the cached proxy
                                 return cachedProxy;
                             }
                         }
@@ -237,7 +244,7 @@ function registerXMagicMethod(loadDataSource) {
                                     const nestedProxy = createNestedObjectProxy(rawValueEarly, prop, reloadDataSource, []);
                                     if (nestedProxy) {
                                         nestedCache.set(prop, nestedProxy);
-                                        void (Alpine.store('data') && Alpine.store('data')._dataVersion); // reactivity only
+                                        track();
                                         return nestedProxy;
                                     }
                                 } catch (e) {
@@ -247,9 +254,9 @@ function registerXMagicMethod(loadDataSource) {
                         }
                     }
 
-                    // No raw data yet: start load, subscribe (read _dataVersion so
-                    // Alpine tracks the dep and re-runs on updateStore), return loading
-                    // proxy. Reading only the version avoids re-entry/overflow.
+                    // No raw data yet: start load, subscribe to _v[prop] (re-runs when
+                    // this source lands), return loading proxy. Reading only the
+                    // version avoids re-entry/overflow.
                     if (!hasData) {
                         if (!pendingLoads.has(prop)) {
                             const locale = typeof document !== 'undefined' && document.documentElement
@@ -260,8 +267,7 @@ function registerXMagicMethod(loadDataSource) {
                                 setTimeout(() => pendingLoads.delete(prop), 1000);
                             });
                         }
-                        const store = Alpine.store('data');
-                        void (store && store._dataVersion);
+                        track();
                         const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                         if (createLoadingProxy) {
                             return createLoadingProxy(prop);
@@ -271,7 +277,7 @@ function registerXMagicMethod(loadDataSource) {
 
                     // Get current store for paths that need it (arrays, or object with raw data for cache/consistency)
                     const currentStoreForCache = Alpine.store('data');
-                    void (currentStoreForCache && currentStoreForCache._dataVersion);
+                    track();
 
                     // No activeProps circular check here: a legit store-read re-entry
                     // would be misread as circular and return a loading proxy, breaking
