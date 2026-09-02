@@ -435,3 +435,12 @@ source never re-runs consumers of another. Repro shape for `/perf` `$x`
 mode: ~50 nav rows × ~15 `$x` bindings, a ~40-binding context panel, one
 thread pane; switch chats and count. Playcom keeps tonight's tree pinned as
 Perf-Base for the RC A/B.
+
+Addendum (same session): a single-field LOCAL write on one contact row
+(country toggle, cache patched in place) still costs ~1.6s longtask on a
+50-row page — the same floor reached through the local write path
+(`updateEntryInStore` → whole-store replacement). P6 acceptance therefore
+also covers local writes: a one-field write on one row re-runs only that
+row's/source's consumers; never the store. Perf-Base pinned: Playcom-Platform
+tag `perf-base-sep2` (9bc0c058, staging `?v=c5dcfa9f36dd`); scenario = rows
+5/6 prefetched-vs-cold, row 20 cold, row 21 cold, reopen row 20.
