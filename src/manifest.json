@@ -73,6 +73,7 @@
         "blogPosts": "/test/data/blog-posts.csv",
         "json": "/test/data/test.json",
         "chartSales": "/test/data/chart-sales.json",
+        "feed": { "url": "https://perf.invalid/feed" },
         "dpUi": {
             "locales": "/test/data/dp-ui.csv"
         },

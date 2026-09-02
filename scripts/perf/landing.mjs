@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // P6 landing harness (PERF-PRIMITIVES-DESIGN.md §5): mutation volume and
 // blocked time while N pages land into a `$x` source, then while realtime-
-// shaped upserts hit it. Drives /perf?source=x (see perf-demo.html) and prints
-// one JSON line per scenario. Companion to probe.mjs; same §2 metrics.
+// shaped upserts hit it, then across a cache-miss reload of that source
+// (P5, §11.1: identity kept, one request for N concurrent loads). Drives
+// /perf?source=x (see perf-demo.html) and prints one JSON line per scenario.
+// Companion to probe.mjs; same §2 metrics. `--params '...&reload=legacy'`
+// measures the pre-P5 reload shape for a before/after.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve as resolvePath } from 'node:path';
@@ -54,8 +57,19 @@ function ensureDevServer() {
 // taken when #perf-status reports the first page, every page, and ready.
 function installProbeSource() {
   return `(() => {
-    const s = { mutations: 0, longtasks: [], marks: {} };
+    const s = { mutations: 0, lastMutationTime: 0, longtasks: [], marks: {} };
     window.__landingProbe = s;
+    // quietMs of MutationObserver quiescence = settle (§2); resolves the window end
+    s.waitSettle = (quietMs, hardTimeoutMs) => new Promise((resolve) => {
+      const startedAt = performance.now();
+      const check = () => {
+        const now = performance.now();
+        if (s.lastMutationTime && now - s.lastMutationTime >= quietMs) return resolve(s.lastMutationTime);
+        if (now - startedAt >= hardTimeoutMs) return resolve(s.lastMutationTime || now);
+        setTimeout(check, 30);
+      };
+      setTimeout(check, 30);
+    });
     try {
       new PerformanceObserver((list) => {
         for (const e of list.getEntries()) s.longtasks.push({ start: e.startTime, dur: e.duration });
@@ -65,7 +79,7 @@ function installProbeSource() {
     s.snap = snap;
     const attach = () => {
       if (!document.body) { setTimeout(attach, 0); return; }
-      new MutationObserver((records) => { s.mutations += records.length; })
+      new MutationObserver((records) => { s.mutations += records.length; s.lastMutationTime = performance.now(); })
         .observe(document.body, { childList: true, subtree: true, attributes: true });
       const watchStatus = () => {
         const el = document.getElementById('perf-status');
@@ -105,10 +119,39 @@ async function sample(page, url, upsertWindowMs) {
   const { firstPage, ready } = raw.marks;
   const landing = blockedBetween(raw.longtasks, firstPage.t, ready.t);
   const upserts = blockedBetween(raw.longtasks, ready.t, raw.end.t);
-  return {
+  const out = {
     source: raw.source,
     landing: { mutations: ready.mutations - firstPage.mutations, ...landing, wallMs: ready.t - firstPage.t },
     upserts: { mutations: raw.end.mutations - ready.mutations, ...upserts, count: raw.upserts }
+  };
+  if (await page.$('#perf-reload')) out.reload = await sampleReload(page);
+  return out;
+}
+
+// Cache-miss reload of the `feed` source (3 concurrent loadDataSource calls):
+// window = click → settle; identity/requests read back from #perf-status
+async function sampleReload(page) {
+  const seq = await page.evaluate(() => Number(document.getElementById('perf-status')?.getAttribute('data-reload-seq') || 0));
+  const start = await page.evaluate(() => window.__landingProbe.snap());
+  await page.click('#perf-reload');
+  await page.waitForFunction((prev) => {
+    const el = document.getElementById('perf-status');
+    return Number(el?.getAttribute('data-reload-seq')) > prev && el?.getAttribute('data-reload-done') === 'true';
+  }, { timeout: 30000 }, seq);
+  const settleEnd = await page.evaluate(() => window.__landingProbe.waitSettle(500, 10000));
+  const raw = await page.evaluate(() => {
+    const s = window.__landingProbe;
+    const el = document.getElementById('perf-status');
+    return {
+      end: s.snap(), longtasks: s.longtasks,
+      shape: el?.getAttribute('data-reload-shape'), identity: el?.getAttribute('data-reload-identity'),
+      array: el?.getAttribute('data-reload-array'), requests: Number(el?.getAttribute('data-reload-requests') || 0)
+    };
+  });
+  const win = blockedBetween(raw.longtasks, start.t, settleEnd);
+  return {
+    shape: raw.shape, identity: raw.identity, array: raw.array, requests: raw.requests,
+    mutations: raw.end.mutations - start.mutations, ...win, wallMs: settleEnd - start.t
   };
 }
 
@@ -133,11 +176,16 @@ async function main() {
     await page.evaluateOnNewDocument(installProbeSource());
     const samples = [];
     for (let i = 0; i < args.samples; i++) samples.push(await sample(page, url, args.upsertWindowMs));
-    for (const scenario of ['landing', 'upserts']) {
+    for (const scenario of ['landing', 'upserts', 'reload']) {
+      if (!samples.every((s) => s[scenario])) continue;
       const pick = (k) => median(samples.map((s) => s[scenario][k]));
       const out = { scenario: `x-${scenario}`, mutations: pick('mutations'), blockedMs: pick('blockedMs'), longestTaskMs: pick('longestTaskMs') };
       if (scenario === 'landing') out.wallMs = pick('wallMs');
-      else out.upserts = pick('count');
+      else if (scenario === 'upserts') out.upserts = pick('count');
+      else {
+        const last = samples[samples.length - 1].reload;
+        Object.assign(out, { shape: last.shape, identity: last.identity, array: last.array, requests: pick('requests'), wallMs: pick('wallMs') });
+      }
       console.log(JSON.stringify(out));
     }
   } finally {
