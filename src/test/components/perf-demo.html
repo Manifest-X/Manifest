@@ -1,0 +1,275 @@
+<!-- Perf harness: synthetic data-heavy app shape (PERF-PRIMITIVES-DESIGN.md §7) -->
+<script>
+  // Shared non-reactive word pool for the getter grid — kept outside x-data
+  // so it isn't wrapped by Alpine's reactivity proxy.
+  if (!window.PERF_WORD_POOL) {
+    const syll = ['ka', 'ri', 'mo', 'ta', 'lu', 'se', 'ba', 'ni', 'vo', 'du', 'fe', 'zo', 'pa', 'wi', 'xu', 'ye', 'qo', 'ju', 'he', 'ce'];
+    window.PERF_WORD_POOL = Array.from({ length: 300 }, (_, i) => syll[i % syll.length] + syll[(i * 7 + 3) % syll.length] + i);
+  }
+</script>
+
+<style>
+  .pdemo { max-width: 76rem; margin-inline: auto; padding: 1.5rem; }
+  .pdemo .note { font-size: .78rem; color: var(--color-content-subtle); }
+  .pdemo .menu-row { display: flex; align-items: center; gap: .5rem; padding: .3rem .5rem; white-space: nowrap; }
+  .pdemo .emoji-grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: .2rem; max-height: 12rem; overflow: auto; }
+  .pdemo .emoji-tile { display: grid; place-items: center; aspect-ratio: 1; border-radius: 6px; cursor: pointer; border: none; background: none; }
+  .pdemo .emoji-tile:hover { background: var(--color-surface-2); }
+  .pdemo .conv-list { max-height: 22rem; overflow: auto; border: 1px solid var(--color-line); border-radius: var(--radius); }
+  .pdemo .conv-row { display: flex; gap: .6rem; align-items: center; padding: .5rem .6rem; border-bottom: 1px solid var(--color-line); cursor: pointer; }
+  .pdemo .conv-row.active { background: var(--color-surface-2); }
+  .pdemo .conv-row strong { font-size: .85rem; }
+  .pdemo .detail-pane { border: 1px solid var(--color-line); border-radius: var(--radius); padding: 1rem; max-height: 26rem; overflow: auto; }
+  .pdemo .thread-msg { display: flex; gap: .5rem; padding: .2rem 0; font-size: .8rem; }
+  .pdemo .getter-scroll { max-height: 20rem; overflow: auto; border: 1px solid var(--color-line); border-radius: var(--radius); }
+  .pdemo .getter-table { font-size: .68rem; border-collapse: collapse; width: max-content; }
+  .pdemo .getter-table td, .pdemo .getter-table th { padding: .15rem .4rem; border-bottom: 1px solid var(--color-line); white-space: nowrap; }
+</style>
+
+<div class="pdemo col gap-8" x-data="{
+    // ---- params (URL query string overrides; ?menus=&rows=&emoji=&getters=&pages=&pageSize=&cadenceMs=&upsertEveryMs=) ----
+    menus: 4, rowsPerMenu: 243, emojiPerGrid: 169, gettersPerRow: 40,
+    pages: 10, pageSize: 100, cadenceMs: 80, upsertEveryMs: 200,
+
+    names: ['Sirius','Vega','Polaris','Rigel','Arcturus','Lyra','Orion','Mira','Atlas','Nova','Rhea','Cassio'],
+
+    feed: [], landedPages: 0, upserts: 0,
+    activeConvId: null, openedConvIds: [], threadCache: {},
+    emojiListA: [], emojiListB: [], gettersRangeArr: [], menuIdx: [],
+    _menuCache: {}, landTimer: null, upsertTimer: null,
+
+    init() {
+      const qs = new URLSearchParams(location.search);
+      const num = (k, d) => { const n = parseInt(qs.get(k), 10); return Number.isFinite(n) && n > 0 ? n : d; };
+      this.menus = num('menus', this.menus);
+      this.rowsPerMenu = num('rows', this.rowsPerMenu);
+      this.emojiPerGrid = num('emoji', this.emojiPerGrid);
+      this.gettersPerRow = num('getters', this.gettersPerRow);
+      this.pages = num('pages', this.pages);
+      this.pageSize = num('pageSize', this.pageSize);
+      this.cadenceMs = num('cadenceMs', this.cadenceMs);
+      this.upsertEveryMs = num('upsertEveryMs', this.upsertEveryMs);
+
+      this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
+      this.emojiListA = this.buildEmoji(this.emojiPerGrid, 0);
+      this.emojiListB = this.buildEmoji(this.emojiPerGrid, 7);
+      this.gettersRangeArr = Array.from({ length: this.gettersPerRow }, (_, i) => i);
+
+      this.startLanding();
+      this.startUpserts();
+    },
+
+    buildEmoji(n, offset) {
+      const base = ['😀','😂','😍','🤔','😎','🥳','😴','🤯','🙌','🔥','💡','🚀','🎯','✅','⭐','❤️','👍','🎉','🌈','☕','🐝','🍉','🎧','🧩'];
+      return Array.from({ length: n }, (_, i) => base[(i + offset) % base.length]);
+    },
+
+    // ---- heavy closed popover menus (no x-defer yet — the Phase 1 target) ----
+    menuRows(m) {
+      if (this._menuCache[m]) return this._menuCache[m];
+      const rows = Array.from({ length: this.rowsPerMenu }, (_, i) => ({
+        id: m + '-' + i,
+        emoji: this.emojiListA[i % this.emojiListA.length] || '🙂',
+        name: 'Item ' + (i + 1) + ' · Menu ' + (m + 1),
+        checked: i % 7 === 0
+      }));
+      this._menuCache[m] = rows;
+      return rows;
+    },
+
+    // ---- fake paged data source: APPEND shape, lands pageSize rows every cadenceMs ----
+    startLanding() {
+      this.landTimer = setInterval(() => {
+        if (this.landedPages >= this.pages) { clearInterval(this.landTimer); return; }
+        const base = this.feed.length;
+        const rows = Array.from({ length: this.pageSize }, (_, i) => this.makeRow(base + i));
+        this.feed.push(...rows);
+        this.landedPages++;
+      }, this.cadenceMs);
+    },
+
+    makeRow(id) {
+      return {
+        id,
+        name: this.names[id % this.names.length] + ' ' + id,
+        emoji: this.emojiListA[id % this.emojiListA.length] || '🙂',
+        status: ['active', 'idle', 'away', 'busy'][id % 4],
+        value: (id * 37) % 1000,
+        unread: id % 3 === 0,
+        lastMessage: 'Preview ' + id + ' — ' + PERF_WORD_POOL[id % PERF_WORD_POOL.length],
+        ts: Date.now() - id * 1000
+      };
+    },
+
+    // ---- realtime upserts: in-place Object.assign on random existing rows, identity preserved ----
+    startUpserts() {
+      this.upsertTimer = setInterval(() => {
+        if (!this.feed.length) return;
+        const row = this.feed[Math.floor(Math.random() * this.feed.length)];
+        Object.assign(row, {
+          lastMessage: 'Updated ' + (Date.now() % 100000) + ' — ' + PERF_WORD_POOL[this.upserts % PERF_WORD_POOL.length],
+          unread: !row.unread,
+          value: (row.value + 7) % 1000
+        });
+        this.upserts++;
+      }, this.upsertEveryMs);
+    },
+
+    // ---- derived views (plain getters — no $computed yet; that's the Phase 1 fix) ----
+    get gridRows() { return this.feed.slice(0, 100); },
+    get conversations() { return this.feed.slice(-60).slice().reverse(); },
+
+    // Genuinely expensive per-cell getter: builds + filters an inline array,
+    // and reads feed.length so every landing invalidates every cell — this is
+    // the $x 'whole-store' re-run hammer from §1.2, reproduced without $computed.
+    getterValue(row, k) {
+      const seed = (row.id + k + this.feed.length) % 7 + 2;
+      const letter = String.fromCharCode(97 + (k % 26));
+      return PERF_WORD_POOL.filter(w => w.length % seed === 0 && w.includes(letter)).length;
+    },
+
+    // ---- conversation detail pane: first open builds + mounts, warm switch only toggles x-show ----
+    buildThread(row) {
+      return Array.from({ length: 120 }, (_, i) => ({
+        id: row.id + '-m' + i,
+        author: i % 2 ? row.name : 'You',
+        text: 'Reply ' + i + ' to ' + row.name + ' — ' + PERF_WORD_POOL[(row.id + i) % PERF_WORD_POOL.length]
+      }));
+    },
+    wordCount(t) { return t.split(' ').length; },
+    openConversation(row) {
+      this.activeConvId = row.id;
+      if (!this.threadCache[row.id]) this.threadCache[row.id] = this.buildThread(row);
+      if (!this.openedConvIds.includes(row.id)) this.openedConvIds.push(row.id);
+    }
+  }">
+
+
+  <header class="col gap-1">
+    <h1 class="h3">Perf harness</h1>
+    <p class="note">Synthetic Playcom-shaped app: heavy closed popovers, a command menu with big grids, a getter-heavy table, and a paged/realtime feed. Params via query string — see PERF-PRIMITIVES-DESIGN.md §7.</p>
+  </header>
+
+  <!-- Command menu: 5 tabs, 2 heavy emoji grids -->
+  <section class="col gap-2">
+    <strong class="small">Command menu</strong>
+    <div>
+      <button x-dropdown="perf-command-menu"><span>Open command menu</span><span x-icon="lucide:chevron-down" class="trailing"></span></button>
+      <menu popover id="perf-command-menu" class="p-2" style="min-width: 26rem">
+        <div class="row-wrap gap-1">
+          <button x-tab="perf-cmd-emoji" class="ghost sm">Emoji</button>
+          <button x-tab="perf-cmd-gifs" class="ghost sm">GIFs</button>
+          <button x-tab="perf-cmd-files" class="ghost sm">Files</button>
+          <button x-tab="perf-cmd-apps" class="ghost sm">Apps</button>
+          <button x-tab="perf-cmd-recent" class="ghost sm">Recent</button>
+        </div>
+        <hr>
+        <div id="perf-cmd-emoji" x-tabpanel="perf-cmd" class="emoji-grid">
+          <template x-for="(e, i) in emojiListA" :key="i">
+            <button class="emoji-tile" x-text="e"></button>
+          </template>
+        </div>
+        <div id="perf-cmd-gifs" x-tabpanel="perf-cmd" class="emoji-grid">
+          <template x-for="(e, i) in emojiListB" :key="i">
+            <button class="emoji-tile" x-text="e"></button>
+          </template>
+        </div>
+        <div id="perf-cmd-files" x-tabpanel="perf-cmd"><small class="note">Files placeholder</small></div>
+        <div id="perf-cmd-apps" x-tabpanel="perf-cmd"><small class="note">Apps placeholder</small></div>
+        <div id="perf-cmd-recent" x-tabpanel="perf-cmd"><small class="note">Recent placeholder</small></div>
+      </menu>
+    </div>
+  </section>
+
+  <!-- Heavy popover menus: menus × rowsPerMenu rows (emoji + name + checkbox), all closed -->
+  <section class="col gap-2">
+    <strong class="small">Closed popover menus <span class="note">— <span x-text="menus"></span> × <span x-text="rowsPerMenu"></span> rows, mounted eagerly (pre-x-defer baseline)</span></strong>
+    <div class="row-wrap gap-2">
+      <template x-for="m in menuIdx" :key="m">
+        <div>
+          <button :id="m === 0 ? 'perf-open-menu' : null" x-dropdown="`perf-menu-${m}`" class="ghost sm" x-text="'Menu ' + (m + 1)"></button>
+          <menu popover :id="'perf-menu-' + m" class="w-64" style="max-height: 20rem; overflow: auto">
+            <template x-for="row in menuRows(m)" :key="row.id">
+              <li class="menu-row">
+                <span x-text="row.emoji"></span>
+                <span class="flex-1" x-text="row.name"></span>
+                <input type="checkbox" :checked="row.checked" @click.stop>
+              </li>
+            </template>
+          </menu>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- 100-row grid, gettersPerRow getters per row -->
+  <section class="col gap-2">
+    <strong class="small">Getter grid <span class="note">— 100 rows × <span x-text="gettersPerRow"></span> getters, each an inline filter over the shared word pool</span></strong>
+    <div class="getter-scroll">
+      <table class="getter-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Name</th><th>Status</th>
+            <template x-for="k in gettersRangeArr" :key="k"><th x-text="'g' + k"></th></template>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="row in gridRows" :key="row.id">
+            <tr>
+              <td x-text="row.id"></td>
+              <td x-text="row.name"></td>
+              <td x-text="row.status"></td>
+              <template x-for="k in gettersRangeArr" :key="k"><td x-text="getterValue(row, k)"></td></template>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Conversation list + detail pane: first-open mounts a thread, warm switch only toggles x-show -->
+  <section class="col gap-2">
+    <strong class="small">Conversations <span class="note">— derived from the same paged feed</span></strong>
+    <div class="row-wrap gap-4" style="align-items: flex-start">
+      <div class="conv-list" style="flex: 1 1 20rem">
+        <template x-for="(row, i) in conversations" :key="row.id">
+          <div class="conv-row" :class="activeConvId === row.id ? 'active' : ''"
+               :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
+               @click="openConversation(row)">
+            <span x-text="row.emoji"></span>
+            <div class="col" style="min-width: 0">
+              <strong x-text="row.name"></strong>
+              <small class="note" x-text="row.lastMessage" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; max-width: 20rem"></small>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div style="flex: 2 1 30rem">
+        <template x-for="id in openedConvIds" :key="id">
+          <div class="detail-pane" x-show="activeConvId === id">
+            <template x-for="m in threadCache[id]" :key="m.id">
+              <div class="thread-msg">
+                <strong x-text="m.author"></strong>
+                <span x-text="m.text"></span>
+                <small class="note" x-text="wordCount(m.text) + 'w'"></small>
+              </div>
+            </template>
+          </div>
+        </template>
+        <p class="note" x-show="!openedConvIds.length">Click a conversation to open its detail pane.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Boot status for the probe: ready once every page has landed -->
+  <div id="perf-status" hidden
+       :data-landed-pages="landedPages" :data-pages="pages" :data-feed-length="feed.length"
+       :data-ready="landedPages >= pages ? 'true' : 'false'" :data-upserts="upserts"></div>
+
+  <footer class="row-wrap gap-3 note">
+    <span>Landed <span x-text="landedPages"></span>/<span x-text="pages"></span> pages</span>
+    <span>Feed: <span x-text="feed.length"></span> rows</span>
+    <span>Upserts: <span x-text="upserts"></span></span>
+  </footer>
+
+</div>
