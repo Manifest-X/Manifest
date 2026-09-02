@@ -47,6 +47,7 @@
 
 <div class="pdemo col gap-8" x-data="{
     // ---- params (URL query string overrides; ?menus=&rows=&emoji=&getters=&pages=&pageSize=&cadenceMs=&upsertEveryMs=&source=x&reload=p5|legacy) ----
+    // ?routes=N (N inactive inline pages) and ?deferRoutes=1 (route deferral flag) are handled in index.html
     menus: 4, rowsPerMenu: 243, emojiPerGrid: 169, gettersPerRow: 40,
     pages: 10, pageSize: 100, cadenceMs: 80, upsertEveryMs: 200,
     // ?reload=legacy reproduces the pre-P5 cache-miss reload (null + loading:true, then land)

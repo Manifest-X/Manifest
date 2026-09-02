@@ -12,7 +12,17 @@ const OWNS_CHILDREN = new Set([
 // Kill switch: data-defer="off" on the loader script; prerender snapshots keep eager markup
 const killed = !!document.querySelector('script[data-defer="off"]') || window.__manifestRender === true;
 
+// Route deferral (spike, opt-in): data-defer-routes on the loader script or ManifestDeferConfig.routes
+let routesScriptFlag = null;
+function routesOn() {
+    const cfg = window.ManifestDeferConfig;
+    if (cfg && cfg.routes !== undefined) return cfg.routes === true;
+    if (routesScriptFlag === null) routesScriptFlag = !!document.querySelector('script[data-defer-routes]');
+    return routesScriptFlag;
+}
+
 const pending = new Set();
+const routes = new Set();        // deferred route panes: render on activation only, never prewarmed
 let ready = false;
 let bootDrained = false;
 let idleHandle = null;
@@ -73,12 +83,21 @@ function firstPanel(el) {
     return scope.querySelector(`[x-tabpanel="${set}"]`);
 }
 
+// A route pane is closed when the router says it does not match the URL (or it is already hidden)
+function routeInactive(el) {
+    if (el.hasAttribute('hidden')) return true;
+    const vis = window.ManifestRoutingVisibility;
+    return !!(vis && typeof vis.isRouteActive === 'function' && !vis.isRouteActive(el));
+}
+
 // Closed-container rule, or the visibility rule for explicit x-defer
 function ruleFor(el, explicit) {
+    const isRoute = el.hasAttribute('x-route');
+    if (isRoute && routesOn() && routeInactive(el)) return 'route';
     if (el.hasAttribute('popover')) return isPopoverOpen(el) ? null : 'popover';
     const tag = el.tagName;
     if (tag === 'DIALOG' || tag === 'DETAILS') return el.hasAttribute('open') ? null : 'toggle';
-    if (el.hasAttribute('hidden') && !el.hasAttribute('x-route')) return 'hidden';
+    if (el.hasAttribute('hidden') && !isRoute) return 'hidden';
     if (el.hasAttribute('x-tabpanel') && window.ensureTabsPluginInitialized) return firstPanel(el) === el ? null : 'panel';
     return explicit ? 'visible' : null;
 }
@@ -115,7 +134,8 @@ function register(el, rule, opts) {
         cleanup: []
     };
     wire(rec);
-    if (!rec.lazy) { pending.add(rec); schedule(); }
+    if (rule === 'route') routes.add(rec);
+    else if (!rec.lazy) { pending.add(rec); schedule(); }
     return rec;
 }
 
@@ -205,6 +225,15 @@ function wire(rec) {
             if (el.hasAttribute('hidden')) { arm(); return; }
             render(rec);
             if (rec.discard) arm();
+        });
+        arm();
+        if (rec.discard) observe(['hidden'], () => { if (el.hasAttribute('hidden')) teardown(rec); });
+    } else if (rule === 'route') {
+        // Router fires manifest:route-activate before it unhides the pane; hidden removal is the fallback
+        listen('manifest:route-activate', () => render(rec));
+        const arm = () => Alpine.onAttributeRemoved(el, 'hidden', () => {
+            if (!el.hasAttribute('hidden')) render(rec);
+            if (!rec.rendered || rec.discard) arm();
         });
         arm();
         if (rec.discard) observe(['hidden'], () => { if (el.hasAttribute('hidden')) teardown(rec); });
@@ -373,7 +402,11 @@ window.ManifestDefer = {
     defer,
     render: (el) => { if (el && el.__mnfstDefer) render(el.__mnfstDefer); },
     isPending: (el) => !!(el && el.__mnfstDefer && !el.__mnfstDefer.rendered),
-    stats: () => ({ pending: pending.size, warm: warm.size, cap: PREWARM_CAP, ready, bootDrained, armed: idleHandle !== null, head: (() => { const h = next(); return h ? (h.el.id || h.el.tagName) : null; })() })
+    stats: () => ({
+        pending: pending.size, warm: warm.size, cap: PREWARM_CAP, ready, bootDrained, armed: idleHandle !== null,
+        head: (() => { const h = next(); return h ? (h.el.id || h.el.tagName) : null; })(),
+        routes: { enabled: routesOn(), stashed: Array.from(routes).filter((r) => !r.rendered).length, rendered: Array.from(routes).filter((r) => r.rendered).length }
+    })
 };
 if (window.Manifest && typeof window.Manifest === 'object') window.Manifest.defer = defer;
 

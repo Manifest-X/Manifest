@@ -74,6 +74,10 @@
   <script src="/scripts/manifest.charts.js"></script>
   <script src="/scripts/manifest.color.js"></script>
   <script src="/scripts/manifest.components.js"></script>
+  <!-- Perf harness: ?deferRoutes=1 turns on the route-level deferral spike flag -->
+  <script>
+    if (/[?&]deferRoutes=1(&|$)/.test(location.search)) window.ManifestDeferConfig = Object.assign(window.ManifestDeferConfig || {}, { routes: true });
+  </script>
   <script src="/scripts/manifest.defer.js"></script>
   <script src="/scripts/manifest.dropdowns.js"></script>
   <script src="/scripts/manifest.combobox.js"></script>
@@ -960,6 +964,29 @@
 
   <!-- Perf harness (Phase 0) -->
   <x-perf-demo x-route="perf"></x-perf-demo>
+
+  <!-- Perf harness: ?routes=N adds N inactive inline pages (route-level deferral spike) -->
+  <script>
+    (function () {
+      var n = parseInt(new URLSearchParams(location.search).get('routes'), 10);
+      if (!(n > 0)) return;
+      var links = '', pages = '';
+      for (var i = 1; i <= n; i++) {
+        links += '<a' + (i === 1 ? ' id="perf-open-route"' : '') + ' href="/perf/page-' + i + '">Page ' + i + '</a> ';
+        var menus = '';
+        for (var m = 1; m <= 3; m++) {
+          menus += '<button popovertarget="perf-page-' + i + '-menu-' + m + '" class="ghost sm">Menu ' + m + '</button>'
+            + '<menu popover id="perf-page-' + i + '-menu-' + m + '"><template x-for="k in 40"><li class="menu-row" x-text="\'Item \' + k"></li></template></menu>';
+        }
+        pages += '<section class="col gap-4 p-6" x-route="=perf/page-' + i + '" hidden x-data="{ page: ' + i + ' }" data-perf-page="' + i + '">'
+          + '<h2 class="h4" x-init="window.__perfPagesInit = (window.__perfPagesInit || 0) + 1" x-text="\'Page \' + page"></h2>'
+          + '<div class="row-wrap gap-2">' + menus + '</div>'
+          + '<ul class="col"><template x-for="k in 100"><li x-text="\'Row \' + k + \' · page \' + page"></li></template></ul>'
+          + '<a href="/perf">Back to /perf</a></section>';
+      }
+      document.currentScript.insertAdjacentHTML('afterend', '<nav class="row-wrap gap-2 p-6" x-route="perf"><a href="/perf">/perf</a> ' + links + '</nav>' + pages);
+    })();
+  </script>
 
   <!-- Combobox test harness -->
   <x-combobox-demo x-route="combobox"></x-combobox-demo>

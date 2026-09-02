@@ -41,4 +41,14 @@ describe('global kill switch', () => {
         menu.innerHTML = '<li></li>'
         expect(window.ManifestDefer.defer(menu)).toBeNull()
     })
+
+    it('also disables route deferral when its flag is on', () => {
+        window.ManifestDeferConfig = { routes: true }
+        const host = document.createElement('div')
+        host.innerHTML = `<div x-data><div x-route="/away" hidden id="r"><p x-init="counts.r = 1"></p></div></div>`
+        document.body.appendChild(host)
+        Alpine.initTree(host)
+        expect(host.querySelector('#r').__mnfstDefer).toBeFalsy()
+        expect(window.counts.r).toBe(1)
+    })
 })

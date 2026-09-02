@@ -762,3 +762,127 @@ them for their signed-in operator session; if a hidePopover/removal appears
 between toggle:open and the late open, its stack names the culprit; if their
 5ms poll itself gaps ~900ms, the wait is work under-reported by the longtask
 observer.
+
+### 11.5 Route-level deferral (spike, flag) — 2026-09-02
+
+**Status: BUILT on a worktree branch, OPT-IN, default OFF.** Flag:
+`data-defer-routes` on the loader `<script>` or
+`window.ManifestDeferConfig.routes = true` (the test project maps
+`?deferRoutes=1` to the latter). `data-defer="off"` still kills everything.
+Flag off, the tree behaves exactly as today (suite 296/296; §4 deviation 1
+stays in force).
+
+**Design as built.**
+- *Closedness comes from the router, not the attribute.* The interceptor
+  asks `ManifestRoutingVisibility.isRouteActive(el)` (new; the router's own
+  per-element match against the current logical path, `!*` included) and
+  also accepts a present `hidden`. This matters because Alpine walks routes
+  before the router hides them in two real cases: projects that link
+  scripts directly (Alpine's CDN build starts on a microtask before DCL) and
+  component roots, which the components plugin `initTree`s before it fires
+  `manifest:components-processed`. The active route at load is never
+  stashed; on prerendered MPA output `isRouteActive` is always true (that
+  page only carries its own route), so hydration never stashes anything
+  either — the `__manifestRender` kill already keeps the snapshot eager.
+- *Activation hook.* The router now dispatches `manifest:route-activate` on a
+  pane **before** it removes `hidden` / clears `display:none`; the defer
+  plugin renders on that event, so the pane's first paint is complete (test
+  asserts `hidden` is still present when `manifest:defer-render` fires; the
+  probe's reveal observer sees all 100 rows at unhide). Fallback for any
+  other unhide path: `Alpine.onAttributeRemoved(el, 'hidden')`. Chosen over
+  attribute observation alone because Alpine's mutation flush is a microtask
+  after the router has already made the pane visible and the router's own
+  scroll/anchor work (setTimeout 50 / rAF + MutationObserver, 800ms fallback)
+  would otherwise race an empty pane.
+- *Keep-alive* by default (navigating back re-shows the same nodes, no
+  re-init); `x-defer.discard` tears down when the router hides the pane;
+  `x-defer.off` keeps a route eager. Route panes are held in their own set:
+  never in `pending`, never prewarmed, never gesture-promoted — a route
+  renders only on activation (the idle scheduler's timing is untouched).
+  Nested closed containers register when the route renders, inside the
+  gesture window, so they are urgent like any pane the user just opened.
+- *Nested routes.* The router's visibility pass is now a worklist: a render
+  can reveal nested `[x-route]` elements and they get the same pass in the
+  same tick (matching child eager, siblings stashed + hidden). `x-route="!*"`
+  also counts routes stashed inside a deferred pane
+  (`[x-route] > template[data-mnfst-defer]`) as defined, so the 404 pane
+  does not flash for a path that is only defined inside an inactive parent.
+- `ManifestDefer.stats().routes` = `{ enabled, stashed, rendered }`.
+
+**Behaviour change with the flag on (document plainly in the guide):**
+1. An inactive page's descendants do not initialise at boot: `x-init`,
+   `x-data` init(), `$x.<source>` reads, `$computed`, `x-for` inside it all
+   run when the page is first shown. The route element's OWN directives
+   (`x-data`, `:class`, `x-cloak`) still run at boot. Apps that relied on a
+   hidden page's `x-init` to warm a source at boot must read it from
+   somewhere eager (the shell, `manifest.json`, or `x-defer.off` on that
+   route).
+2. `$refs` / `document.getElementById` / `x-dropdown="id"` targets that live
+   inside another page resolve only after that page has been activated once.
+3. Component-based routes (`<x-page x-route="…">`) are unaffected: the
+   components plugin already loads them per route and REVERTS them on leave
+   (no keep-alive) — this spike only changes inline `[x-route]` subtrees.
+4. `data-order` / `$edit` and anything that walks a page's DOM at boot sees a
+   `<template data-mnfst-defer>` instead of the page until activation.
+
+**Numbers** (headless Chrome via `scripts/perf/probe.mjs`, new `boot` and
+`route-activate` scenarios, medians of 3, this repo's `/perf?routes=20` = 20
+inactive inline pages × (3 closed 40-row menus + a 100-row list) on top of
+the standard harness):
+
+| `/perf?routes=20` | flag off | flag on |
+|---|---|---|
+| boot blocked (long tasks to ready) | 2,000ms | 1,366ms (−32%) |
+| longest boot task | 374ms | 170ms |
+| ready at | 2,423ms | 2,032ms |
+| pages initialised at boot | 20 | 0 |
+| x-defer pending / routes stashed | 72 / 0 | 3 / 27 |
+| route-activate: reveal after click | 9ms | 10ms |
+| route-activate: rows visible at unhide | 100 | 100 |
+| route-activate: blocked / mutations | 0 / 4 | 0 / 213 |
+| menu-open input latency | 83ms | 81ms |
+
+The 27 stashed = 20 harness pages + 7 of the test project's own inline
+routes. The other boot work (feed landing, getter grid) is unchanged, which
+is why the floor is ~1.3s here. Activation cost is the page's own cold
+render (213 mutations, under the long-task threshold for this page size);
+the page is visible with its content in the same frame as before.
+
+`/perf?source=x` (no harness pages — only the test project's own 7 inline
+routes are inactive; pre-spike master = `git archive 147b70b` served from a
+scratch folder, same probe, same machine, runs back to back):
+
+| `/perf?source=x` | master (147b70b) | branch, flag off | branch, flag on |
+|---|---|---|---|
+| boot blocked | 2,946ms | 3,170ms | 887ms |
+| longest boot task | 1,975ms | 1,991ms | 226ms |
+| ready at | 3,763ms | 3,776ms | 1,503ms |
+| x-defer pending / routes stashed | 13 / 0 | 11 / 0 | 2 / 7 |
+| first-open / warm-switch mutations | 110 / 69 | 110 / 69 | 110 / 69 |
+| menu-open input latency | 82ms | 81ms | 82ms |
+| local-write mutations | 2 | 2 | 2 |
+
+Flag off is at parity with master (ready within 13ms, same longest task;
+the blocked delta is run noise on a 2s task). Flag on removes the ~2s boot
+task, which in this project is the inactive editor (`x-route="/"`), chat and
+text-edit demo pages initialising for a `/perf` visit — the exact shape
+Playcom's platform page has.
+
+**Recommendation: do not make it default yet — soak it on Playcom first.**
+The win is real (209 of Playcom's 446 deferred containers, and every other
+binding on those pages, sit under inactive routes) and the mechanism is the
+same one closed menus already use, but the behaviour change is semantic,
+not just timing: a hidden page's `x-init`/`$x` reads move from boot to first
+show, and cross-page id/ref lookups move to after activation. Soak plan:
+Playcom's A/B branch with `data-defer-routes` on the loader, their operator
+walks every top-level route once (each first activation must paint complete
+— reveal ≤ one frame, no blank pane, no `[Manifest]` console errors), then
+the boot / idle-3s / cold-switch table from §10.8 with `stats().routes`
+captured at boot. Risks to watch there: pages whose boot-time `x-init`
+seeded shared state read elsewhere; `x-anchors` scopes on a deferred page
+(refresh runs after the render via its MutationObserver, but the 800ms
+fallback caps it); `$edit`/head processing that walks inactive pages; and
+View Transitions capturing a pane mid-render (the render is synchronous
+inside the transition callback, so it should not). Default-on can follow
+one clean soak plus the guide section from §11.4; the kill switch and
+`x-defer.off` per route stay as the escape hatches.
