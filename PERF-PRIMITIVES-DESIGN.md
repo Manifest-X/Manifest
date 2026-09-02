@@ -920,3 +920,12 @@ via `npm run release` → 0.5.198; Playcom staging then takes `latest`.**
 Post-release: docs session from the brief; route-deferral soak on their A/B
 branch when they choose; the `$id`-less-rows and API-URL-reload follow-ups
 stay open.
+
+Candidate row (staging tip ea56b364 + next.4, x-virtual pickers, priority="1",
+load 6–8 — a floor, not a best case): boot **27 tasks / 3,048ms / longest
+178ms** (lowest of the whole effort); idle 3s 0ms / 276 mutations; cold
+switch #1 4,643ms (load-inflated) / 4,438 mutations; countries (16 windowed
+rows of 243, cold both times): toggle:open 147ms at +362ms after mount
+(288ms longtask = the pane's own mount overlapping) and **46ms** at +1,196ms
+with **0ms longtask**; search and tick work. The ≤250ms criterion is met on
+the tree that ships, with no warm container needed. Green from Playcom.
