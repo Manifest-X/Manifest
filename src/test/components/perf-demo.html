@@ -47,6 +47,9 @@
     // ?source=x: pages land in the $x 'feed' source through the data plugin's
     // landing path instead of component state (measures P6, not Alpine)
     sourceX: false, feedAccum: [],
+    // ?search=1 (&q=term): nav rows come from $x.feed.$search(q, 'name') and every
+    // row binding re-reads it (operator memo — one filter per version, not per binding)
+    navSearch: false, navQuery: 'i',
     feed: [], landedPages: 0, upserts: 0,
     activeConvId: null, openedConvIds: [], threadCache: {},
     emojiListA: [], emojiListB: [], gettersRangeArr: [], menuIdx: [],
@@ -67,6 +70,8 @@
       this.sourceX = qs.get('source') === 'x';
       this.persistMode = this.sourceX && qs.get('persist') === '1';
       this.netMs = num('netMs', this.netMs);
+      this.navSearch = this.sourceX && qs.get('search') === '1';
+      if (qs.get('q')) this.navQuery = qs.get('q');
       this.reloadShape = qs.get('reload') === 'legacy' ? 'legacy' : 'p5';
       window.__perfFeedResponse = (ws) => this.feedResponse(ws);
       this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
@@ -190,7 +195,9 @@
       else ds?.updateStore?.('contacts', rows, { loading: false, error: null, ready: true, allowDuringInit: true });
     },
     get gridSource() { return this.sourceX ? this.$x.contacts : this.feed; },
-    get chatList() { return this.feedRows.slice(0, 50); },
+    get navRows() { return this.navSearch ? this.$x.feed.$search(this.navQuery, 'name') : this.feedRows; },
+    get chatList() { return this.navRows.slice(0, 50); },
+    navRank(row) { return this.navSearch ? this.navRows.indexOf(row) : -1; },
     get activeChat() { return this.activeConvId == null ? null : this.feedRows.find(r => r.$id === this.activeConvId) || null; },
     get threadMessages() { return this.$x.messages.filter(m => m.chatId === this.activeConvId); },
     contextValue(k) {
@@ -403,7 +410,7 @@
   <!-- Playcom chat shell (?source=x): nav list, context panel, thread pane — all over $x -->
   <template x-if="sourceX">
     <section class="col gap-2">
-      <strong class="small">Chat shell <span class="note">— 50 nav rows × 15 bindings, 40-binding context panel, thread over $x.messages; a switch lands one row</span></strong>
+      <strong class="small">Chat shell <span class="note">— 50 nav rows × 15 bindings, 40-binding context panel, thread over $x.messages; a switch lands one row<span x-show="navSearch">; nav via $x.feed.$search('<span x-text="navQuery"></span>', 'name') per row</span></span></strong>
       <div class="row-wrap gap-2">
         <button id="perf-local-write" class="ghost sm" @click="localWrite()">Local write (one field, one row)</button>
         <small class="note">Local writes: <span x-text="localWrites"></span></small>
@@ -415,7 +422,7 @@
           <template x-for="(row, i) in chatList" :key="row.$id">
             <div class="conv-row" :class="activeConvId === row.$id ? 'active' : ''"
                  :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
-                 :title="row.name" :data-status="row.status" :data-unread="row.unread" :data-value="row.value" :data-opens="row.opens || 0" :data-ws="row.workspace || null"
+                 :title="row.name" :data-status="row.status" :data-unread="row.unread" :data-value="row.value" :data-opens="row.opens || 0" :data-ws="row.workspace || null" :data-rank="navRank(row)"
                  @click="openChat(row)">
               <span x-text="row.emoji"></span>
               <div class="col" style="min-width: 0">

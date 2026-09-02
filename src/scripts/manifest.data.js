@@ -3899,6 +3899,84 @@ function clearArrayProxyCacheForDataSource(dataSourceName) {
 // Track which arrays have methods attached to avoid re-attaching
 const arraysWithMethodsAttached = new WeakSet();
 
+// Operator memo: $search/$query/$route results cached per array, keyed by
+// the source version + op + args; a landing or local write bumps _v[source]
+// and invalidates. Uncached when the source has no version or args cannot
+// be stringified deterministically.
+const OP_CACHE_MAX = 8;
+const opCaches = new WeakMap(); // raw array -> { v, map (LRU) }
+
+function stableStringify(value, depth = 0) {
+    if (value === null) return 'null';
+    const t = typeof value;
+    if (t === 'string') return JSON.stringify(value);
+    if (t === 'number' || t === 'boolean' || t === 'undefined') return String(value);
+    if (t === 'bigint') return `${value}n`;
+    if (t !== 'object' || depth > 8) return undefined;
+    const tag = Object.prototype.toString.call(value);
+    if (tag === '[object Date]') return `D${value.getTime()}`;
+    if (Array.isArray(value)) {
+        const parts = [];
+        for (const item of value) {
+            const s = stableStringify(item, depth + 1);
+            if (s === undefined) return undefined;
+            parts.push(s);
+        }
+        return `[${parts.join(',')}]`;
+    }
+    // Plain objects only (any realm): class instances, Map/Set etc. fall through
+    const proto = Object.getPrototypeOf(value);
+    if (tag !== '[object Object]' || (proto !== null && Object.getPrototypeOf(proto) !== null)) return undefined;
+    const parts = [];
+    for (const key of Object.keys(value).sort()) {
+        const s = stableStringify(value[key], depth + 1);
+        if (s === undefined) return undefined;
+        parts.push(`${JSON.stringify(key)}:${s}`);
+    }
+    return `{${parts.join(',')}}`;
+}
+
+// Reactive read of _v[source]: subscribes the caller exactly like the raw $x read
+function sourceVersion(dataSourceName) {
+    if (!dataSourceName || typeof Alpine === 'undefined') return undefined;
+    const v = Alpine.store('data')?._v;
+    return v ? v[dataSourceName] : undefined;
+}
+
+// Run without tracking deps on the caller's effect (throwaway inner effect)
+function untracked(fn) {
+    if (typeof Alpine === 'undefined' || !Alpine.effect) return fn();
+    let out;
+    const e = Alpine.effect(() => { out = fn(); });
+    Alpine.release(e);
+    return out;
+}
+
+function memoOp(array, dataSourceName, op, args, compute) {
+    const version = sourceVersion(dataSourceName);
+    if (version === undefined) return compute();
+    const argsKey = stableStringify(args);
+    if (argsKey === undefined) return compute();
+    const raw = Alpine.raw ? Alpine.raw(array) : array;
+    let entry = opCaches.get(raw);
+    if (!entry || entry.v !== version) {
+        entry = { v: version, map: new Map() };
+        opCaches.set(raw, entry);
+    }
+    const key = `${version}|${op}|${argsKey}`;
+    const map = entry.map;
+    if (map.has(key)) {
+        const hit = map.get(key);
+        map.delete(key);
+        map.set(key, hit);
+        return hit;
+    }
+    const result = untracked(compute);
+    map.set(key, result);
+    if (map.size > OP_CACHE_MAX) map.delete(map.keys().next().value);
+    return result;
+}
+
 // Attach methods directly to the array (no proxy wrapper) so Alpine tracks it directly
 function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     // Skip if already has methods attached
@@ -3987,58 +4065,62 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 return array;
             }
 
-            const term = searchTerm.toLowerCase().trim();
-
-            // Weighted mode: $search(term, { title: 3, body: 1 }) — ranks by the
-            // best-matching field's weight per whitespace-separated term (prefix
-            // match gets a small boost); every term must match somewhere.
-            const first = attributes[0];
-            if (attributes.length === 1 && first && typeof first === 'object' && !Array.isArray(first)) {
-                const fields = Object.keys(first);
-                const terms = term.split(/\s+/).filter(Boolean);
-                const scored = [];
-                for (const item of array) {
-                    if (!item || typeof item !== 'object') continue;
-                    let total = 0, ok = true;
-                    for (const t of terms) {
-                        let best = 0;
-                        for (const f of fields) {
-                            const v = item[f];
-                            if (v == null) continue;
-                            const s = String(v).toLowerCase();
-                            if (!s.includes(t)) continue;
-                            let w = Number(first[f]) || 0;
-                            if (s.startsWith(t)) w *= 1.2;
-                            if (w > best) best = w;
-                        }
-                        if (!best) { ok = false; break; }
-                        total += best;
-                    }
-                    if (ok) scored.push([total, item]);
-                }
-                scored.sort((a, b) => b[0] - a[0]);
-                const ranked = scored.map(e => e[1]);
-                attachArrayMethods(ranked, dataSourceName, reloadDataSource);
-                return ranked;
-            }
-
-            const attrs = attributes.length > 0 ? attributes : Object.keys(array[0] || {});
-
-            const filtered = array.filter(item => {
-                if (!item || typeof item !== 'object') return false;
-                return attrs.some(attr => {
-                    const value = item[attr];
-                    if (value == null) return false;
-                    return String(value).toLowerCase().includes(term);
-                });
-            });
-
-            // Re-attach so chaining works (.$search().$query())
-            attachArrayMethods(filtered, dataSourceName, reloadDataSource);
-
-            return filtered;
+            return memoOp(array, dataSourceName, 'search', [searchTerm, ...attributes], () => runSearch(searchTerm, attributes));
         }
     });
+
+    function runSearch(searchTerm, attributes) {
+        const term = searchTerm.toLowerCase().trim();
+
+        // Weighted mode: $search(term, { title: 3, body: 1 }) — ranks by the
+        // best-matching field's weight per whitespace-separated term (prefix
+        // match gets a small boost); every term must match somewhere.
+        const first = attributes[0];
+        if (attributes.length === 1 && first && typeof first === 'object' && !Array.isArray(first)) {
+            const fields = Object.keys(first);
+            const terms = term.split(/\s+/).filter(Boolean);
+            const scored = [];
+            for (const item of array) {
+                if (!item || typeof item !== 'object') continue;
+                let total = 0, ok = true;
+                for (const t of terms) {
+                    let best = 0;
+                    for (const f of fields) {
+                        const v = item[f];
+                        if (v == null) continue;
+                        const s = String(v).toLowerCase();
+                        if (!s.includes(t)) continue;
+                        let w = Number(first[f]) || 0;
+                        if (s.startsWith(t)) w *= 1.2;
+                        if (w > best) best = w;
+                    }
+                    if (!best) { ok = false; break; }
+                    total += best;
+                }
+                if (ok) scored.push([total, item]);
+            }
+            scored.sort((a, b) => b[0] - a[0]);
+            const ranked = scored.map(e => e[1]);
+            attachArrayMethods(ranked, dataSourceName, reloadDataSource);
+            return ranked;
+        }
+
+        const attrs = attributes.length > 0 ? attributes : Object.keys(array[0] || {});
+
+        const filtered = array.filter(item => {
+            if (!item || typeof item !== 'object') return false;
+            return attrs.some(attr => {
+                const value = item[attr];
+                if (value == null) return false;
+                return String(value).toLowerCase().includes(term);
+            });
+        });
+
+        // Re-attach so chaining works (.$search().$query())
+        attachArrayMethods(filtered, dataSourceName, reloadDataSource);
+
+        return filtered;
+    }
 
     // Attach $route method
     Object.defineProperty(array, '$route', {
@@ -4046,66 +4128,70 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         configurable: true,
         writable: false,
         value: function (pathKey) {
-            const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
-            if (!createRouteProxy) {
-                return new Proxy({}, {
-                    get() { return undefined; }
-                });
-            }
-            if (array && typeof array === 'object') {
-                // Prefer raw data — the real array, not the Alpine proxy
-                const getRawData = window.ManifestDataStore?.getRawData;
-                let dataToUse = array;
+            return memoOp(array, dataSourceName, 'route', [pathKey], () => runRoute(pathKey));
+        }
+    });
 
-                if (dataSourceName && getRawData) {
-                    const rawData = getRawData(dataSourceName);
-                    if (rawData && (Array.isArray(rawData) || (rawData.length !== undefined && rawData.length >= 0))) {
-                        dataToUse = rawData;
-                    }
-                }
-
-                // If we still don't have raw data, try to convert the proxy to a real array
-                if (!Array.isArray(dataToUse) && dataToUse && typeof dataToUse === 'object' && 'length' in dataToUse) {
-                    try {
-                        // Try Array.from first (works for most iterables including Alpine proxies)
-                        dataToUse = Array.from(dataToUse);
-                    } catch (e) {
-                        // Fallback: manual conversion
-                        try {
-                            const arr = [];
-                            for (let i = 0; i < dataToUse.length; i++) {
-                                arr[i] = dataToUse[i];
-                            }
-                            dataToUse = arr;
-                        } catch (e2) {
-                            // Last resort: try getting from store
-                            const store = Alpine.store('data');
-                            if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                                dataToUse = Array.from(store[dataSourceName]);
-                            }
-                        }
-                    }
-                }
-
-                // Ensure we have a real array before passing to createRouteProxy
-                if (!Array.isArray(dataToUse) && dataToUse && typeof dataToUse === 'object' && 'length' in dataToUse) {
-                    // Final attempt: convert to array
-                    dataToUse = Array.from(dataToUse);
-                }
-
-                // Use the array directly - it should be the actual array, not a proxy
-                // since attachArrayMethods is called on the array from the store
-                return createRouteProxy(
-                    dataToUse,
-                    pathKey,
-                    dataSourceName || undefined  // Always pass dataSourceName for proper raw data lookup
-                );
-            }
+    function runRoute(pathKey) {
+        const createRouteProxy = window.ManifestDataProxies?.createRouteProxy;
+        if (!createRouteProxy) {
             return new Proxy({}, {
                 get() { return undefined; }
             });
         }
-    });
+        if (array && typeof array === 'object') {
+            // Prefer raw data — the real array, not the Alpine proxy
+            const getRawData = window.ManifestDataStore?.getRawData;
+            let dataToUse = array;
+
+            if (dataSourceName && getRawData) {
+                const rawData = getRawData(dataSourceName);
+                if (rawData && (Array.isArray(rawData) || (rawData.length !== undefined && rawData.length >= 0))) {
+                    dataToUse = rawData;
+                }
+            }
+
+            // If we still don't have raw data, try to convert the proxy to a real array
+            if (!Array.isArray(dataToUse) && dataToUse && typeof dataToUse === 'object' && 'length' in dataToUse) {
+                try {
+                    // Try Array.from first (works for most iterables including Alpine proxies)
+                    dataToUse = Array.from(dataToUse);
+                } catch (e) {
+                    // Fallback: manual conversion
+                    try {
+                        const arr = [];
+                        for (let i = 0; i < dataToUse.length; i++) {
+                            arr[i] = dataToUse[i];
+                        }
+                        dataToUse = arr;
+                    } catch (e2) {
+                        // Last resort: try getting from store
+                        const store = Alpine.store('data');
+                        if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
+                            dataToUse = Array.from(store[dataSourceName]);
+                        }
+                    }
+                }
+            }
+
+            // Ensure we have a real array before passing to createRouteProxy
+            if (!Array.isArray(dataToUse) && dataToUse && typeof dataToUse === 'object' && 'length' in dataToUse) {
+                // Final attempt: convert to array
+                dataToUse = Array.from(dataToUse);
+            }
+
+            // Use the array directly - it should be the actual array, not a proxy
+            // since attachArrayMethods is called on the array from the store
+            return createRouteProxy(
+                dataToUse,
+                pathKey,
+                dataSourceName || undefined  // Always pass dataSourceName for proper raw data lookup
+            );
+        }
+        return new Proxy({}, {
+            get() { return undefined; }
+        });
+    }
 
     // Attach $files method (for tables)
     if (dataSourceName) {
@@ -4161,106 +4247,111 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 if (!Array.isArray(queries) || queries.length === 0) {
                     return array;
                 }
-
-                let result = [...array];
-
-                // Process each query in order
-                for (const query of queries) {
-                    if (!Array.isArray(query) || query.length === 0) continue;
-
-                    const [method, ...args] = query;
-
-                    // Filtering methods
-                    if (method === 'equal' && args.length >= 2) {
-                        const [attr, value] = args;
-                        result = result.filter(item => item && item[attr] === value);
-                    } else if (method === 'notEqual' && args.length >= 2) {
-                        const [attr, value] = args;
-                        result = result.filter(item => item && item[attr] !== value);
-                    } else if (method === 'greaterThan' && args.length >= 2) {
-                        const [attr, value] = args;
-                        result = result.filter(item => item && item[attr] != null && item[attr] > value);
-                    } else if (method === 'greaterThanOrEqual' && args.length >= 2) {
-                        const [attr, value] = args;
-                        result = result.filter(item => item && item[attr] != null && item[attr] >= value);
-                    } else if (method === 'lessThan' && args.length >= 2) {
-                        const [attr, value] = args;
-                        result = result.filter(item => item && item[attr] != null && item[attr] < value);
-                    } else if (method === 'lessThanOrEqual' && args.length >= 2) {
-                        const [attr, value] = args;
-                        result = result.filter(item => item && item[attr] != null && item[attr] <= value);
-                    } else if (method === 'contains' && args.length >= 2) {
-                        const [attr, value] = args;
-                        const searchValue = String(value).toLowerCase();
-                        result = result.filter(item => item && item[attr] != null && String(item[attr]).toLowerCase().includes(searchValue));
-                    } else if (method === 'startsWith' && args.length >= 2) {
-                        const [attr, value] = args;
-                        const searchValue = String(value).toLowerCase();
-                        result = result.filter(item => item && item[attr] != null && String(item[attr]).toLowerCase().startsWith(searchValue));
-                    } else if (method === 'endsWith' && args.length >= 2) {
-                        const [attr, value] = args;
-                        const searchValue = String(value).toLowerCase();
-                        result = result.filter(item => item && item[attr] != null && String(item[attr]).toLowerCase().endsWith(searchValue));
-                    } else if (method === 'isNull' && args.length >= 1) {
-                        const [attr] = args;
-                        result = result.filter(item => item && (item[attr] == null || item[attr] === ''));
-                    } else if (method === 'isNotNull' && args.length >= 1) {
-                        const [attr] = args;
-                        result = result.filter(item => item && item[attr] != null && item[attr] !== '');
-                    } else if (method === 'between' && args.length >= 3) {
-                        const [attr, min, max] = args;
-                        result = result.filter(item => item && item[attr] != null && item[attr] >= min && item[attr] <= max);
-                    }
-                    // Sorting methods
-                    else if (method === 'orderAsc' && args.length >= 1) {
-                        const [attr] = args;
-                        result.sort((a, b) => {
-                            const aVal = a && a[attr];
-                            const bVal = b && b[attr];
-                            if (aVal == null && bVal == null) return 0;
-                            if (aVal == null) return 1;
-                            if (bVal == null) return -1;
-                            if (typeof aVal === 'string' && typeof bVal === 'string') {
-                                return aVal.localeCompare(bVal);
-                            }
-                            return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-                        });
-                    } else if (method === 'orderDesc' && args.length >= 1) {
-                        const [attr] = args;
-                        result.sort((a, b) => {
-                            const aVal = a && a[attr];
-                            const bVal = b && b[attr];
-                            if (aVal == null && bVal == null) return 0;
-                            if (aVal == null) return 1;
-                            if (bVal == null) return -1;
-                            if (typeof aVal === 'string' && typeof bVal === 'string') {
-                                return bVal.localeCompare(aVal);
-                            }
-                            return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
-                        });
-                    } else if (method === 'orderRandom') {
-                        // Fisher-Yates shuffle
-                        for (let i = result.length - 1; i > 0; i--) {
-                            const j = Math.floor(Math.random() * (i + 1));
-                            [result[i], result[j]] = [result[j], result[i]];
-                        }
-                    }
-                    // Pagination methods
-                    else if (method === 'limit' && args.length >= 1) {
-                        const [limit] = args;
-                        result = result.slice(0, parseInt(limit, 10));
-                    } else if (method === 'offset' && args.length >= 1) {
-                        const [offset] = args;
-                        result = result.slice(parseInt(offset, 10));
-                    }
-                }
-
-                // Re-attach so chaining works (.$query().$search())
-                attachArrayMethods(result, dataSourceName, reloadDataSource);
-
-                return result;
+                // orderRandom reshuffles per call — never memoized
+                if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) return runQuery(queries);
+                return memoOp(array, dataSourceName, 'query', [queries], () => runQuery(queries));
             }
         });
+    }
+
+    function runQuery(queries) {
+        let result = [...array];
+
+        // Process each query in order
+        for (const query of queries) {
+            if (!Array.isArray(query) || query.length === 0) continue;
+
+            const [method, ...args] = query;
+
+            // Filtering methods
+            if (method === 'equal' && args.length >= 2) {
+                const [attr, value] = args;
+                result = result.filter(item => item && item[attr] === value);
+            } else if (method === 'notEqual' && args.length >= 2) {
+                const [attr, value] = args;
+                result = result.filter(item => item && item[attr] !== value);
+            } else if (method === 'greaterThan' && args.length >= 2) {
+                const [attr, value] = args;
+                result = result.filter(item => item && item[attr] != null && item[attr] > value);
+            } else if (method === 'greaterThanOrEqual' && args.length >= 2) {
+                const [attr, value] = args;
+                result = result.filter(item => item && item[attr] != null && item[attr] >= value);
+            } else if (method === 'lessThan' && args.length >= 2) {
+                const [attr, value] = args;
+                result = result.filter(item => item && item[attr] != null && item[attr] < value);
+            } else if (method === 'lessThanOrEqual' && args.length >= 2) {
+                const [attr, value] = args;
+                result = result.filter(item => item && item[attr] != null && item[attr] <= value);
+            } else if (method === 'contains' && args.length >= 2) {
+                const [attr, value] = args;
+                const searchValue = String(value).toLowerCase();
+                result = result.filter(item => item && item[attr] != null && String(item[attr]).toLowerCase().includes(searchValue));
+            } else if (method === 'startsWith' && args.length >= 2) {
+                const [attr, value] = args;
+                const searchValue = String(value).toLowerCase();
+                result = result.filter(item => item && item[attr] != null && String(item[attr]).toLowerCase().startsWith(searchValue));
+            } else if (method === 'endsWith' && args.length >= 2) {
+                const [attr, value] = args;
+                const searchValue = String(value).toLowerCase();
+                result = result.filter(item => item && item[attr] != null && String(item[attr]).toLowerCase().endsWith(searchValue));
+            } else if (method === 'isNull' && args.length >= 1) {
+                const [attr] = args;
+                result = result.filter(item => item && (item[attr] == null || item[attr] === ''));
+            } else if (method === 'isNotNull' && args.length >= 1) {
+                const [attr] = args;
+                result = result.filter(item => item && item[attr] != null && item[attr] !== '');
+            } else if (method === 'between' && args.length >= 3) {
+                const [attr, min, max] = args;
+                result = result.filter(item => item && item[attr] != null && item[attr] >= min && item[attr] <= max);
+            }
+            // Sorting methods
+            else if (method === 'orderAsc' && args.length >= 1) {
+                const [attr] = args;
+                result.sort((a, b) => {
+                    const aVal = a && a[attr];
+                    const bVal = b && b[attr];
+                    if (aVal == null && bVal == null) return 0;
+                    if (aVal == null) return 1;
+                    if (bVal == null) return -1;
+                    if (typeof aVal === 'string' && typeof bVal === 'string') {
+                        return aVal.localeCompare(bVal);
+                    }
+                    return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+                });
+            } else if (method === 'orderDesc' && args.length >= 1) {
+                const [attr] = args;
+                result.sort((a, b) => {
+                    const aVal = a && a[attr];
+                    const bVal = b && b[attr];
+                    if (aVal == null && bVal == null) return 0;
+                    if (aVal == null) return 1;
+                    if (bVal == null) return -1;
+                    if (typeof aVal === 'string' && typeof bVal === 'string') {
+                        return bVal.localeCompare(aVal);
+                    }
+                    return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+                });
+            } else if (method === 'orderRandom') {
+                // Fisher-Yates shuffle
+                for (let i = result.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [result[i], result[j]] = [result[j], result[i]];
+                }
+            }
+            // Pagination methods
+            else if (method === 'limit' && args.length >= 1) {
+                const [limit] = args;
+                result = result.slice(0, parseInt(limit, 10));
+            } else if (method === 'offset' && args.length >= 1) {
+                const [offset] = args;
+                result = result.slice(parseInt(offset, 10));
+            }
+        }
+
+        // Re-attach so chaining works (.$query().$search())
+        attachArrayMethods(result, dataSourceName, reloadDataSource);
+
+        return result;
     }
 
     // Attach Appwrite methods ($create, $update, $delete, etc.)
