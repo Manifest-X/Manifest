@@ -29,7 +29,8 @@
         scopeFn: null,
         scope: '',
         generation: 0,
-        timers: new Map(),     // source -> debounce timer
+        pending: new Map(),    // source -> time its debounced write is due
+        writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
         fetchKicked: new Set(),
         watching: false,
@@ -54,8 +55,7 @@
         if (state.disabled) return;
         state.disabled = true;
         state.disabledReason = error?.name || error?.message || String(error);
-        for (const timer of state.timers.values()) clearTimeout(timer);
-        state.timers.clear();
+        cancelWrites();
         warnOnce('disabled', `persistence disabled for this session (${state.disabledReason})`);
     }
 
@@ -218,8 +218,7 @@
         const prev = state.scope;
         state.scope = next;
         state.generation++;
-        for (const timer of state.timers.values()) clearTimeout(timer);
-        state.timers.clear();
+        cancelWrites();
         state.hydrated.clear();
         state.fetchKicked.clear();
         const ds = dataStore();
@@ -298,10 +297,7 @@
 
     async function deleteScope(scope) {
         const prefix = `${scope}|`;
-        for (const [source, timer] of state.timers) {
-            clearTimeout(timer);
-            state.timers.delete(source);
-        }
+        cancelWrites();
         return withStore('readwrite', async (store) => {
             const keys = await promisify(store.getAllKeys());
             for (const key of keys) if (typeof key === 'string' && key.startsWith(prefix)) store.delete(key);
@@ -366,49 +362,79 @@
         return null;
     }
 
-    function flush(source) {
-        state.timers.delete(source);
+    function snapshotRecord(source) {
         const cfg = state.sources.get(source);
         const ds = dataStore();
-        if (!cfg || !ds || !state.enabled || state.disabled) return Promise.resolve();
+        if (!cfg || !ds) return null;
         const raw = ds.getRawData(source);
-        if (raw === null || raw === undefined) return Promise.resolve();
-        let rows;
+        if (raw === null || raw === undefined) return null;
         try {
             const snapshot = snapshotOf(source, raw, cfg);
-            if (snapshot === null) return Promise.resolve();
-            rows = JSON.parse(JSON.stringify(snapshot));
+            if (snapshot === null) return null;
+            return {
+                key: keyOf(state.scope, source),
+                scope: state.scope,
+                source,
+                rows: JSON.parse(JSON.stringify(snapshot)),
+                savedAt: Date.now(),
+                frameworkVersion: state.frameworkVersion,
+                deployment: state.deployment,
+                locale: liveLocale()
+            };
         } catch (error) {
             warnOnce(`snapshot:${source}`, `persistence skipped "${source}" (rows are not serialisable)`, error);
-            return Promise.resolve();
+            return null;
         }
+    }
+
+    // Every source whose debounce has elapsed is written in ONE transaction
+    function flush(sources) {
+        for (const source of sources) state.pending.delete(source);
+        if (!state.enabled || state.disabled) return Promise.resolve();
+        const records = sources.map(snapshotRecord).filter(Boolean);
+        if (!records.length) return Promise.resolve();
         const generation = state.generation;
-        const record = {
-            key: keyOf(state.scope, source),
-            scope: state.scope,
-            source,
-            rows,
-            savedAt: Date.now(),
-            frameworkVersion: state.frameworkVersion,
-            deployment: state.deployment,
-            locale: liveLocale()
-        };
-        return putRecord(record).then(() => {
-            if (generation !== state.generation) return;
-            cfg.rows = Array.isArray(rows) ? rows.length : 1;
-            cfg.savedAt = record.savedAt;
+        return withStore('readwrite', (store) => { for (const record of records) store.put(record); }).then(() => {
+            if (generation !== state.generation || state.disabled) return;
+            for (const record of records) {
+                const cfg = state.sources.get(record.source);
+                if (!cfg) continue;
+                cfg.rows = Array.isArray(record.rows) ? record.rows.length : 1;
+                cfg.savedAt = record.savedAt;
+            }
         });
     }
 
-    // Landing hook (store flush): debounced snapshot per source
+    function flushDue() {
+        state.writeTimer = null;
+        const now = Date.now();
+        const due = [];
+        for (const [source, at] of state.pending) if (at - now <= 5) due.push(source);
+        const run = due.length ? flush(due) : Promise.resolve();
+        scheduleWrites();
+        return run.catch(() => { /* disabled */ });
+    }
+
+    function scheduleWrites() {
+        if (state.writeTimer !== null || !state.pending.size) return;
+        let next = Infinity;
+        for (const at of state.pending.values()) if (at < next) next = at;
+        state.writeTimer = setTimeout(flushDue, Math.max(0, next - Date.now()));
+    }
+
+    function cancelWrites(source) {
+        if (source !== undefined) { state.pending.delete(source); return; }
+        state.pending.clear();
+        if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
+    }
+
+    // Landing hook (store flush): each landing restarts that source's 500ms debounce
     function onLanded(sources) {
         if (!state.enabled || state.disabled) return;
-        for (const source of sources) {
-            if (!state.sources.has(source)) continue;
-            const prev = state.timers.get(source);
-            if (prev) clearTimeout(prev);
-            state.timers.set(source, setTimeout(() => { flush(source).catch(() => { /* disabled */ }); }, WRITE_DEBOUNCE_MS));
-        }
+        const at = Date.now() + WRITE_DEBOUNCE_MS;
+        for (const source of sources) if (state.sources.has(source)) state.pending.set(source, at);
+        if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
+        scheduleWrites();
     }
 
     // ---- hydration (read path) ----
@@ -501,15 +527,13 @@
     async function wipe(arg) {
         if (!state.enabled || state.disabled) return false;
         if (arg && typeof arg === 'object' && arg.all) {
-            for (const timer of state.timers.values()) clearTimeout(timer);
-            state.timers.clear();
+            cancelWrites();
             for (const cfg of state.sources.values()) { cfg.rows = null; cfg.savedAt = null; }
             await withStore('readwrite', (store) => { store.clear(); });
             return !state.disabled;
         }
         if (typeof arg === 'string' && arg) {
-            const timer = state.timers.get(arg);
-            if (timer) { clearTimeout(timer); state.timers.delete(arg); }
+            cancelWrites(arg);
             const cfg = state.sources.get(arg);
             if (cfg) { cfg.rows = null; cfg.savedAt = null; }
             await deleteKeys([keyOf(state.scope, arg)]);
@@ -542,13 +566,11 @@
         return out;
     }
 
-    // Tests/harness: pending writes settle, store closes
+    // Tests/harness: write everything pending now
     async function flushPending() {
-        const sources = [...state.timers.keys()];
-        for (const source of sources) {
-            clearTimeout(state.timers.get(source));
-            await flush(source).catch(() => { /* disabled */ });
-        }
+        const sources = [...state.pending.keys()];
+        if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
+        if (sources.length) await flush(sources).catch(() => { /* disabled */ });
     }
 
     window.ManifestDataPersist = {

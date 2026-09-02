@@ -64,7 +64,7 @@ async function load(opts = {}) {
     window.Alpine = Alpine
     // Silence the previous page-load's instance (shared happy-dom window)
     const prev = window.ManifestDataPersist
-    if (prev) { prev.state.enabled = false; prev.state.scopeExpr = null; for (const t of prev.state.timers.values()) clearTimeout(t) }
+    if (prev) { prev.state.enabled = false; prev.state.scopeExpr = null; prev.state.pending.clear(); clearTimeout(prev.state.writeTimer) }
     Alpine.store('auth', { currentTeam: opts.team ? { $id: opts.team } : null })
     const manifest = opts.manifest || defaultManifest()
     const net = {
@@ -237,13 +237,16 @@ describe('lazy tier', () => {
 })
 
 describe('write path', () => {
-    it('writes are debounced 500ms after the last landing of that source', async () => {
+    it('writes are debounced 500ms after the last landing of that source; due sources share one transaction', async () => {
         const { main, records } = await load()
         await main.loadDataSource('chats')
         await settle(300)
         expect(records()).toEqual([])
-        await settle(350)
-        expect(records().map(r => r.key)).toEqual(['|chats'])
+        await main.loadDataSource('settings')
+        await settle(250)
+        expect(records().map(r => r.key)).toEqual(['|chats']) // only its own landings restart a source's debounce
+        await settle(300)
+        expect(records().map(r => r.key).sort()).toEqual(['|chats', '|settings'])
     })
 
     it('strips configured names, globs and the built-in secret patterns', async () => {
@@ -311,9 +314,9 @@ describe('write path', () => {
         await persist.flushPending()
         window.ManifestDataMutations.updateEntryInStore('chats', 'c0', { name: 'local' })
         await settle(20)
-        expect(persist.state.timers.size).toBe(0)
+        expect(persist.state.pending.size).toBe(0)
         await store.landRows('chats', [{ $id: 'c9', name: 'rt' }], { mode: 'append' })
-        expect(persist.state.timers.size).toBe(1)
+        expect(persist.state.pending.size).toBe(1)
         await persist.flushPending()
         const rec = records().find(r => r.source === 'chats')
         expect(ids(rec.rows)).toEqual(['c0', 'c1', 'c9'])
@@ -446,7 +449,7 @@ describe('$wipe', () => {
     it('a pending debounced write does not resurrect a wiped source', async () => {
         const { $x, main, persist, records } = await seeded()
         await main.loadDataSource('chats')
-        expect(persist.state.timers.has('chats')).toBe(true)
+        expect(persist.state.pending.has('chats')).toBe(true)
         await $x().$wipe('chats')
         await settle(600)
         expect(records().map(r => r.key).sort()).toEqual(['A|settings', 'B|chats'])
