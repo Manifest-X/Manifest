@@ -240,6 +240,12 @@ describe('kill switch', () => {
         expect(existing.unregister).toHaveBeenCalledTimes(1)
     })
 
+    it('kill switch without a registration still sweeps leftover caches', async () => {
+        loadLoader({ 'data-sw': 'off' })
+        await settle()
+        expect(cachesMock.delete).toHaveBeenCalledWith('mnfst-sw:1:a:assets')
+    })
+
     it('a stale production worker on a dev origin is removed', async () => {
         existing = fakeRegistration()
         loadLoader({}, { url: 'http://localhost:5001/' })

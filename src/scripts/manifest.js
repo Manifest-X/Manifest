@@ -697,7 +697,7 @@
 		const existing = await navigator.serviceWorker.getRegistration(SW_STUB_PATH).catch(() => null);
 		if (off || devServer || (devOrigin && !debug)) {
 			log('skip:', off ? 'kill switch' : devServer ? 'mnfst-run' : 'dev origin', existing ? '(unregistering)' : '');
-			if (existing) await swKill(existing);
+			await swKill(existing); // also sweeps caches a killed worker's in-flight fetches left behind
 			return;
 		}
 		if (loc.protocol !== 'https:' && !(debug && window.isSecureContext)) return log('skip: not https');

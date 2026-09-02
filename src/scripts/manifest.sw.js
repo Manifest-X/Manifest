@@ -31,6 +31,7 @@ const EXACT_PIN = /@\d+\.\d+\.\d+[^/]*(\/|$)/;
 const ANY_PIN = /@[^/]+(\/|$)/;
 
 let metaPromise = null;
+let killed = false; // after a kill message: no interception, no cache writes
 
 function queryParam(name) {
 	try { return new URL(self.location.href).searchParams.get(name) || ''; } catch (_) { return ''; }
@@ -79,8 +80,15 @@ function getMeta() {
 }
 
 async function openClass(cls) {
+	if (killed) throw new Error('killed');
 	const meta = await getMeta();
 	return caches.open(keyOf(meta) + cls);
+}
+
+// Cache key: `t=<timestamp>` busters (utilities compile, dev reload) are
+// dropped so one asset is one entry, whichever second it was requested in.
+function cacheKey(request) {
+	return request.url.replace(/([?&])t=\d+(?=&|$)/, '$1').replace(/[?&]$/, '').replace(/\?&/, '?');
 }
 
 // URL → strategy: 'document' | 'manifest' | 'immutable' | 'swr' | null (pass-through).
@@ -88,7 +96,7 @@ function classify(request) {
 	if (request.method !== 'GET') return null;
 	if (request.headers.has('range')) return null;
 	if ((request.headers.get('accept') || '').indexOf('text/event-stream') !== -1) return null;
-	const url = new URL(request.url);
+	const url = new URL(cacheKey(request));
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
 	const sameOrigin = url.origin === self.location.origin;
 	const path = url.pathname;
@@ -131,20 +139,22 @@ async function trimSwr(cache) {
 
 async function fromCacheFirst(request) {
 	const cache = await openClass('assets');
-	const hit = await cache.match(request);
+	const key = cacheKey(request);
+	const hit = await cache.match(key);
 	if (hit) return hit;
 	const response = await cacheFetch(request);
-	if (cacheable(response)) await cache.put(request, response.clone());
+	if (cacheable(response)) await cache.put(key, response.clone());
 	return response;
 }
 
 async function fromSwr(request, event) {
 	const cache = await openClass('swr');
-	const hit = await cache.match(request);
+	const key = cacheKey(request);
+	const hit = await cache.match(key);
 	const refresh = (async () => {
 		const response = await cacheFetch(request);
 		if (cacheable(response)) {
-			await cache.put(request, response.clone());
+			await cache.put(key, response.clone());
 			await trimSwr(cache);
 		}
 		return response;
@@ -158,12 +168,13 @@ async function fromSwr(request, event) {
 
 async function fromNetworkFirst(request, isDocument) {
 	const cache = await openClass('pages');
+	const key = cacheKey(request);
 	try {
 		const response = await fetch(request);
-		if (cacheable(response)) await cache.put(request, response.clone());
+		if (cacheable(response)) await cache.put(key, response.clone());
 		return response;
 	} catch (err) {
-		const hit = await cache.match(request, { ignoreSearch: isDocument });
+		const hit = await cache.match(key, { ignoreSearch: isDocument });
 		if (hit) return hit;
 		if (isDocument && request.mode === 'navigate') {
 			const shell = (await cache.match('/index.html')) || (await cache.match('/'));
@@ -217,9 +228,10 @@ async function warmPrecache(meta) {
 			if (!strategy) return;
 			const cls = strategy === 'immutable' ? 'assets' : strategy === 'swr' ? 'swr' : 'pages';
 			const cache = await openClass(cls);
-			if (await cache.match(request)) return;
+			const key = cacheKey(request);
+			if (await cache.match(key)) return;
 			const response = await cacheFetch(request);
-			if (cacheable(response)) await cache.put(request, response);
+			if (cacheable(response)) await cache.put(key, response);
 		} catch (_) { /* best effort */ }
 	};
 	let i = 0;
@@ -255,6 +267,7 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+	if (killed) return;
 	let strategy = null;
 	try { strategy = classify(event.request); } catch (_) { return; }
 	if (!strategy) return;
@@ -281,6 +294,7 @@ self.addEventListener('message', (event) => {
 			return;
 		}
 		if (data.action === 'kill') {
+			killed = true;
 			event.waitUntil((async () => {
 				await clearAll().catch(() => { });
 				await self.registration.unregister().catch(() => { });

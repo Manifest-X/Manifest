@@ -251,6 +251,23 @@ describe('content-addressed assets: cache first, immutable', () => {
         expect(cacheNames(s)).toContain('mnfst-sw:1.2.3:dep1:assets')
     })
 
+    it('timestamp busters (t=) share one entry — the utilities compile refetch and dev reload', async () => {
+        const s = makeScope()
+        await s.fetchEvent('/styles/a.css?v=dep1&t=1700000000')
+        await s.fetchEvent('/styles/a.css?v=dep1&t=1700000001')
+        await s.fetchEvent('/styles/a.css?v=dep1?t=1700000002') // legacy malformed append
+        await s.fetchEvent('/styles/a.css?v=dep1')
+        expect(fetchesTo(s, '/styles/a.css')).toBe(1)
+        const assets = await s.caches.open('mnfst-sw:1.2.3:dep1:assets')
+        expect(assets.urls()).toEqual([`${ORIGIN}/styles/a.css?v=dep1`])
+        await s.fetchEvent('/styles/b.css?t=1700000000')
+        const b = await s.fetchEvent('/styles/b.css?t=1700000009')
+        expect(b.waits.length).toBe(1)
+        await b.settle()
+        const swr = await s.caches.open('mnfst-sw:1.2.3:dep1:swr')
+        expect(swr.urls()).toEqual([`${ORIGIN}/styles/b.css`])
+    })
+
     it('a new stamp is a new entry (the stamp is the invalidation)', async () => {
         const s = makeScope()
         const a = await s.fetchEvent('/x.js?v=1')
@@ -463,6 +480,10 @@ describe('message API', () => {
         expect(cacheNames(s)).toEqual(['someone-else'])
         expect(s.self.registration.unregister).toHaveBeenCalledTimes(1)
         expect(source.postMessage).toHaveBeenCalledWith({ type: 'manifest:sw', action: 'killed' })
+        // a killed worker neither intercepts nor writes again
+        const r = await s.fetchEvent('/c.css')
+        expect(r.response).toBeNull()
+        expect(cacheNames(s)).toEqual(['someone-else'])
     })
 
     it('replies over a MessageChannel port when one is supplied', async () => {
