@@ -10,21 +10,6 @@
   // to pause background realtime writes during a measured gesture window.
   if (!window.__perfPause) window.__perfPause = { upserts: false };
 
-  // Fake network for the `feed` manifest source (https://perf.invalid/feed):
-  // a reload through loadDataSource hits this, so the P5 reload path is real
-  if (!window.__perfFeedFetches) {
-    window.__perfFeedFetches = 0;
-    const realFetch = window.fetch.bind(window);
-    window.fetch = (input, init) => {
-      const url = typeof input === 'string' ? input : (input?.href || input?.url);
-      if (url && url.startsWith('https://perf.invalid/feed')) {
-        window.__perfFeedFetches++;
-        const rows = window.__perfFeedResponse ? window.__perfFeedResponse() : [];
-        return new Promise(resolve => setTimeout(() => resolve(new Response(JSON.stringify(rows), { headers: { 'content-type': 'application/json' } })), 30));
-      }
-      return realFetch(input, init);
-    };
-  }
 </script>
 
 <style>
@@ -52,6 +37,10 @@
     pages: 10, pageSize: 100, cadenceMs: 80, upsertEveryMs: 200,
     // ?reload=legacy reproduces the pre-P5 cache-miss reload (null + loading:true, then land)
     reloadShape: 'p5', reloadSeq: 0, reloadDone: false, reloadIdentity: '', reloadArray: '', reloadRequests: 0,
+    // ?persist=1 (with source=x): feed + contacts persist to IndexedDB under a fake
+    // workspace scope (window.__perfWorkspace, ?ws=A); the feed loads through the
+    // real loadDataSource path against the fake network (?netMs=400)
+    persistMode: false, netMs: 400,
 
     names: ['Sirius','Vega','Polaris','Rigel','Arcturus','Lyra','Orion','Mira','Atlas','Nova','Rhea','Cassio'],
 
@@ -64,6 +53,7 @@
     _menuCache: {}, landTimer: null, upsertTimer: null,
 
     init() {
+      this.installFakeFetch(); // before any $x.feed read (the component script may not have run yet)
       const qs = new URLSearchParams(location.search);
       const num = (k, d) => { const n = parseInt(qs.get(k), 10); return Number.isFinite(n) && n > 0 ? n : d; };
       this.menus = num('menus', this.menus);
@@ -75,12 +65,16 @@
       this.cadenceMs = num('cadenceMs', this.cadenceMs);
       this.upsertEveryMs = num('upsertEveryMs', this.upsertEveryMs);
       this.sourceX = qs.get('source') === 'x';
+      this.persistMode = this.sourceX && qs.get('persist') === '1';
+      this.netMs = num('netMs', this.netMs);
       this.reloadShape = qs.get('reload') === 'legacy' ? 'legacy' : 'p5';
-      window.__perfFeedResponse = () => this.feedResponse();
+      window.__perfFeedResponse = (ws) => this.feedResponse(ws);
       this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
       this.emojiListA = this.buildEmoji(this.emojiPerGrid, 0);
       this.emojiListB = this.buildEmoji(this.emojiPerGrid, 7);
       this.gettersRangeArr = Array.from({ length: this.gettersPerRow }, (_, i) => i);
+
+      if (this.persistMode) this.setupPersist(qs);
 
       if (this.sourceX) {
         window.ManifestDataStore?.updateStore?.('feed', [], { loading: false, error: null, ready: true, allowDuringInit: true });
@@ -89,9 +83,49 @@
         this.landContacts();
       }
 
-      this.startLanding();
+      if (!this.persistMode) this.startLanding();
       this.startUpserts();
     },
+
+    // Fake network for the `feed` manifest source (https://perf.invalid/feed): a
+    // reload through loadDataSource hits this, so the P5 reload path is real.
+    // ?persist=1: the response is keyed by the workspace at REQUEST time (like a
+    // server keyed by the request's auth) and delayed by ?netMs (default 400)
+    installFakeFetch() {
+      if (window.__perfFeedFetches !== undefined) return;
+      window.__perfFeedFetches = 0;
+      const realFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : (input?.href || input?.url);
+        if (url && url.startsWith('https://perf.invalid/feed')) {
+          window.__perfFeedFetches++;
+          const ws = window.__perfWorkspace;
+          const delay = window.__perfNetMs || 30;
+          return new Promise(resolve => setTimeout(() => {
+            const rows = window.__perfFeedResponse ? window.__perfFeedResponse(ws) : [];
+            resolve(new Response(JSON.stringify(rows), { headers: { 'content-type': 'application/json' } }));
+          }, delay));
+        }
+        return realFetch(input, init);
+      };
+    },
+
+    // ---- ?persist=1: register persistence at runtime (the test manifest stays unpersisted) ----
+    setupPersist(qs) {
+      const persist = window.ManifestDataPersist;
+      if (!persist) return;
+      window.__perfWorkspace = qs.get('ws') || 'A';
+      window.__perfNetMs = this.netMs;
+      persist.register('feed', { tier: 'boot', maxRows: 1000, recent: 'ts' });
+      persist.register('contacts', true);
+      persist.setScope('window.__perfWorkspace'); // scope change → boot hydration for that scope
+      persist.hydrateBoot();
+      // contacts have no network source here: re-land them for the new scope (the feed refetches itself)
+      window.addEventListener('manifest:persist:scope', () => this.landContacts());
+      this.landedPages = this.pages; // the feed comes from the (fake) network, not the pager
+    },
+    get feedStale() { return this.persistMode ? this.$x.feed.$stale : false; },
+    get feedWs() { const r = this.persistMode ? this.$x.feed[0] : null; return r ? r.workspace : ''; },
 
     buildEmoji(n, offset) {
       const base = ['😀','😂','😍','🤔','😎','🥳','😴','🤯','🙌','🔥','💡','🚀','🎯','✅','⭐','❤️','👍','🎉','🌈','☕','🐝','🍉','🎧','🧩'];
@@ -152,7 +186,7 @@
     landContacts() {
       const rows = Array.from({ length: 100 }, (_, i) => ({ ...this.makeRow(i), $id: 'c' + i }));
       const ds = window.ManifestDataStore;
-      if (ds?.landRows) ds.landRows('contacts', rows, { mode: 'replace', allowDuringInit: true });
+      if (ds?.landRows) ds.landRows('contacts', rows, { mode: 'replace', allowDuringInit: true, fresh: this.persistMode });
       else ds?.updateStore?.('contacts', rows, { loading: false, error: null, ready: true, allowDuringInit: true });
     },
     get gridSource() { return this.sourceX ? this.$x.contacts : this.feed; },
@@ -179,9 +213,16 @@
     },
 
     // ---- cache-miss reload of the $x feed source through loadDataSource (P5) ----
-    // Server response: every row again, one field changed (a real refetch shape)
-    feedResponse() {
+    // Server response: every row again, one field changed (a real refetch shape).
+    // Persist mode: the full feed for the requested workspace (ids carry the workspace)
+    feedResponse(ws) {
       const seq = this.reloadSeq;
+      if (this.persistMode) {
+        return Array.from({ length: this.pages * this.pageSize }, (_, i) => {
+          const row = this.makeRow(i);
+          return { ...row, $id: ws + '-' + row.$id, name: row.name + ' @' + ws, workspace: ws, lastMessage: 'Fetched ' + seq + ' — ' + row.lastMessage };
+        });
+      }
       return this.feedAccum.map(r => ({ ...r, lastMessage: 'Reloaded ' + seq + ' — ' + r.lastMessage }));
     },
     async reloadFeed() {
@@ -374,7 +415,7 @@
           <template x-for="(row, i) in chatList" :key="row.$id">
             <div class="conv-row" :class="activeConvId === row.$id ? 'active' : ''"
                  :id="i === 0 ? 'perf-open-row' : null" :data-perf-alt-row="i === 1 ? '' : null"
-                 :title="row.name" :data-status="row.status" :data-unread="row.unread" :data-value="row.value" :data-opens="row.opens || 0"
+                 :title="row.name" :data-status="row.status" :data-unread="row.unread" :data-value="row.value" :data-opens="row.opens || 0" :data-ws="row.workspace || null"
                  @click="openChat(row)">
               <span x-text="row.emoji"></span>
               <div class="col" style="min-width: 0">
@@ -446,7 +487,8 @@
   <!-- Boot status for the probe: ready once every page has landed -->
   <div id="perf-status" hidden
        :data-landed-pages="landedPages" :data-pages="pages" :data-feed-length="feedRows.length" :data-source="sourceX ? 'x' : 'local'"
-       :data-ready="landedPages >= pages ? 'true' : 'false'" :data-upserts="upserts"
+       :data-ready="(persistMode ? !feedStale : landedPages >= pages) ? 'true' : 'false'" :data-upserts="upserts"
+       :data-persist="persistMode ? '1' : null" :data-feed-stale="persistMode ? String(feedStale) : null" :data-feed-ws="feedWs"
        :data-reload-shape="reloadShape" :data-reload-seq="reloadSeq" :data-reload-done="reloadDone ? 'true' : 'false'"
        :data-reload-identity="reloadIdentity" :data-reload-array="reloadArray" :data-reload-requests="reloadRequests"></div>
 
