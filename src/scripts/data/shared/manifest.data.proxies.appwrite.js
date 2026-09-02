@@ -6,15 +6,12 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         if (store) {
             const stateKey = `_${dataSourceName}_state`;
             const currentState = store[stateKey] || { loading: false, error: null, ready: false };
-            const updatedStore = {
-                ...store,
-                [stateKey]: {
-                    ...currentState,
-                    error: error?.message || error || 'Operation failed',
-                    errorTime: Date.now()
-                }
+            // State-only write, in place (never replace the store object)
+            store[stateKey] = {
+                ...currentState,
+                error: error?.message || error || 'Operation failed',
+                errorTime: Date.now()
             };
-            Alpine.store('data', updatedStore);
         }
         console.error(`[Manifest Data] ${dataSourceName} operation failed:`, error);
     };
@@ -25,15 +22,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             const stateKey = `_${dataSourceName}_state`;
             const currentState = store[stateKey];
             if (currentState?.error) {
-                const updatedStore = {
-                    ...store,
-                    [stateKey]: {
-                        ...currentState,
-                        error: null,
-                        errorTime: null
-                    }
-                };
-                Alpine.store('data', updatedStore);
+                store[stateKey] = { ...currentState, error: null, errorTime: null };
             }
         }
     };
@@ -408,29 +397,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         tableId,
                         appwriteQueries
                     );
-                    // Update store with query results
-                    const store = Alpine.store('data');
-                    if (store) {
-                        // Create a new array reference to ensure Alpine detects the change
-                        const newArray = Array.isArray(result) ? [...result] : result;
-
-                        // Use Alpine.store() to replace the entire store, which triggers reactivity
-                        const currentStore = Alpine.store('data');
-                        const updatedStore = {
-                            ...currentStore,
-                            [dataSourceName]: newArray
-                        };
-                        Alpine.store('data', updatedStore);
-
-                        // Attach methods to the new array reference
-                        if (Array.isArray(newArray) && window.ManifestDataProxies?.attachArrayMethods) {
-                            window.ManifestDataProxies.attachArrayMethods(newArray, dataSourceName, reloadDataSource);
-                        }
-
-                        // Clear proxy cache to force fresh read
-                        if (window.ManifestDataProxies?.clearAccessCache) {
-                            window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                        }
+                    // Network landing: query result replaces the source (coalesced, identity-preserving)
+                    if (result !== undefined && window.ManifestDataStore?.landRows) {
+                        await window.ManifestDataStore.landRows(dataSourceName, result, { mode: 'replace' });
                     }
                     return result;
                 }
@@ -739,33 +708,13 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // We already have the real file from the API response, so no
                     // background reload; scope filtering (if any) is handled by realtime.
                     if (!addEntryToStore) {
-                        // Fallback to old behavior
+                        // Fallback: reload lands through loadDataSource (coalesced landing)
                         if (window.ManifestDataStore?.dataSourceCache) {
                             const cacheKey = `${dataSourceName}:en`;
                             window.ManifestDataStore.dataSourceCache.delete(cacheKey);
                         }
                         clearAccessCache(dataSourceName);
-                        const reloadedData = await reloadDataSource(dataSourceName);
-                        if (reloadedData && Array.isArray(reloadedData) && typeof Alpine !== 'undefined' && Alpine.store) {
-                            const store = Alpine.store('data');
-                            const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                            const newArray = createReactiveReferences
-                                ? createReactiveReferences(reloadedData, dataSourceName)
-                                : reloadedData.map(entry => ({ ...entry }));
-                            Alpine.store('data', {
-                                ...store,
-                                [dataSourceName]: newArray
-                            });
-                            if (window.ManifestDataProxies?.attachArrayMethods) {
-                                window.ManifestDataProxies.attachArrayMethods(newArray, dataSourceName, reloadDataSource);
-                            }
-                            if (window.ManifestDataProxies?.clearAccessCache) {
-                                window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                            }
-                            if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                                window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-                            }
-                        }
+                        await reloadDataSource(dataSourceName);
                     }
 
                     return result;
@@ -1149,53 +1098,19 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Do delete and reload in parallel
                     const [result, reloadedData] = await Promise.all([deletePromise, reloadPromise]);
 
-                    // Update store
-                    const store = Alpine.store('data');
-                    if (store && reloadedData) {
-                        const newArray = Array.isArray(reloadedData) ? [...reloadedData] : reloadedData;
-                        const currentStore = Alpine.store('data');
-                        const updatedStore = {
-                            ...currentStore,
-                            [dataSourceName]: newArray
-                        };
-                        Alpine.store('data', updatedStore);
-                        // Attach methods to the new array reference
-                        if (Array.isArray(newArray) && window.ManifestDataProxies?.attachArrayMethods) {
-                            window.ManifestDataProxies.attachArrayMethods(newArray, dataSourceName, reloadDataSource);
-                        }
-                        if (window.ManifestDataProxies?.clearAccessCache) {
-                            window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                        }
-                        if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                            window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-                        }
+                    // Network landing: reloaded bucket listing replaces the source (coalesced)
+                    if (reloadedData && window.ManifestDataStore?.landRows) {
+                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace' });
                     }
 
-                    // Reload affected table data sources to ensure Alpine reactivity
-                    // This ensures project fileIds arrays and counters update in the UI
+                    // Reload affected table data sources so fileIds arrays and counters
+                    // update in the UI (loadDataSource lands the rows itself)
                     const reloadDataSourceFunc = window.ManifestDataMain?._loadDataSource;
                     if (reloadDataSourceFunc && Object.keys(affectedEntries).length > 0) {
                         const reloadPromises = [];
                         for (const tableName of Object.keys(affectedEntries)) {
                             reloadPromises.push(
-                                reloadDataSourceFunc(tableName).then(reloadedData => {
-                                    // Ensure we create new object references so Alpine detects nested property changes
-                                    if (reloadedData && Array.isArray(reloadedData) && typeof Alpine !== 'undefined' && Alpine.store) {
-                                        const store = Alpine.store('data');
-                                        const newArray = reloadedData.map(entry => ({ ...entry }));
-                                        Alpine.store('data', {
-                                            ...store,
-                                            [tableName]: newArray
-                                        });
-                                        // Clear cache for reactivity
-                                        if (window.ManifestDataProxies?.clearAccessCache) {
-                                            window.ManifestDataProxies.clearAccessCache(tableName);
-                                        }
-                                        if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                                            window.ManifestDataProxies.clearArrayProxyCacheForDataSource(tableName);
-                                        }
-                                    }
-                                }).catch(err => {
+                                reloadDataSourceFunc(tableName).catch(err => {
                                     console.warn(`[Manifest Data] Failed to reload ${tableName} after file delete:`, err);
                                 })
                             );

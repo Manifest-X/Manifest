@@ -265,6 +265,20 @@ let initializationComplete = false;
 let _renderReadyTimer = null;
 const RENDER_READY_QUIET_MS = 150; // quiet time before firing render-ready
 
+// Landing queue: network writes coalesce into one store write per frame
+const pendingLandings = [];
+let landingResolvers = [];
+let landingFrame = null;
+let landingTimer = null;
+const LANDING_FALLBACK_MS = 50;
+
+// Local writes made while a flush is pending win over it (local-last)
+const pendingLocal = new Map(); // source -> Map<$id, { patch, removed }>
+
+// Lazy cross-source `all`
+let allCache = null;
+let allDirty = true;
+
 // Deep seal so Alpine won't proxy (double-proxying causes recursion)
 function deepSeal(obj) {
     if (obj === null || typeof obj !== 'object') {
@@ -295,99 +309,301 @@ function deepSeal(obj) {
     return obj;
 }
 
-// Update store with new data
-function updateStore(dataSourceName, data, options = {}) {
-    if (isInitializing && !options.allowDuringInit) return;
+const rawOf = (obj) => (typeof Alpine !== 'undefined' && Alpine.raw && obj ? Alpine.raw(obj) : obj);
 
-    // Store raw data in our non-reactive Map for backup access
-    rawDataStore.set(dataSourceName, data);
+const rowKey = (row) => (row && typeof row === 'object' && (typeof row.$id === 'string' || typeof row.$id === 'number'))
+    ? row.$id
+    : null;
 
-    // Store data in Alpine's reactive store (like backup did)
-    // Alpine will handle reactivity, and our proxies will work on top
+function ensureStoreShape(store) {
+    if (!store._v) store._v = {};
+}
+
+// Version bump: per-source (`$x` reads subscribe here), `all`, and the legacy
+// global counter kept for external readers (status/datepicker/charts)
+function touchSources(store, sources) {
+    ensureStoreShape(store);
+    const v = store._v;
+    for (const source of sources) v[source] = (v[source] || 0) + 1;
+    v.all = (v.all || 0) + 1;
+    allDirty = true;
+    store._dataVersion = (store._dataVersion || 0) + 1;
+}
+
+function touchSource(dataSourceName) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (store) touchSources(store, [dataSourceName]);
+}
+
+// Post-settle hammer: re-run every `$x` reader (Alpine scheduler swallow)
+function bumpAllVersions() {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return;
+    ensureStoreShape(store);
+    const raw = rawOf(store);
+    const sources = new Set(Object.keys(raw._v || {}));
+    for (const key of Object.keys(raw)) {
+        if (!key.startsWith('_') && key !== 'all' && typeof raw[key] !== 'function') sources.add(key);
+    }
+    sources.delete('all');
+    touchSources(store, sources);
+}
+
+function sameScalarOrList(a, b) {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i];
+        if (x !== b[i] || (x !== null && typeof x === 'object')) return false;
+    }
+    return true;
+}
+
+// Merge fields onto an existing tracked row (property-grain); `$files` stays bound
+function mergeRowFields(target, fields, dataSourceName) {
+    if (!target || !fields || typeof fields !== 'object') return;
+    const raw = rawOf(target);
+    for (const key of Object.keys(fields)) {
+        if (key === '$files') continue;
+        const value = fields[key];
+        if (sameScalarOrList(raw[key], value)) continue;
+        target[key] = createReactiveReferences(value, dataSourceName);
+    }
+}
+
+function attachMethods(array, dataSourceName) {
+    const loadDataSource = window.ManifestDataMain?.loadDataSource;
+    if (Array.isArray(array) && loadDataSource && window.ManifestDataProxies?.attachArrayMethods) {
+        window.ManifestDataProxies.attachArrayMethods(array, dataSourceName, loadDataSource);
+    }
+}
+
+// Reactive source array, created on demand; raw map tracks the same identity
+function ensureSourceArray(dataSourceName) {
     const store = Alpine.store('data');
+    if (!store) return null;
+    const current = rawOf(store)[dataSourceName];
+    if (Array.isArray(current)) return store[dataSourceName];
+    if (current !== null && current !== undefined) return null;
+    store[dataSourceName] = [];
+    const created = rawOf(store)[dataSourceName];
+    rawDataStore.set(dataSourceName, created);
+    attachMethods(created, dataSourceName);
+    return store[dataSourceName];
+}
 
-    // Filter out null/undefined items and items matching this data source
-    const all = (store.all || []).filter(item =>
-        item !== null &&
-        item !== undefined &&
-        item.contentType !== dataSourceName
-    );
-
-    // Only add data to 'all' array if it's not null/undefined
-    if (data !== null && data !== undefined) {
-        if (Array.isArray(data)) {
-            all.push(...data);
-        } else {
-            all.push(data);
+// Identity-preserving upsert by $id: existing rows are merged in place, new
+// rows created; append keeps the array, replace swaps it only when membership
+// or order changed
+function upsertRows(store, dataSourceName, rows, mode) {
+    const raw = rawOf(store);
+    const curRaw = Array.isArray(raw[dataSourceName]) ? raw[dataSourceName] : null;
+    if (!curRaw) {
+        store[dataSourceName] = rows.map(row => createReactiveReferences(row, dataSourceName));
+        return;
+    }
+    const cur = store[dataSourceName];
+    const index = new Map();
+    curRaw.forEach((row, i) => { const id = rowKey(row); if (id !== null) index.set(id, i); });
+    const fresh = new Map();
+    const next = [];
+    const appended = [];
+    for (const row of rows) {
+        const id = rowKey(row);
+        const i = id !== null ? index.get(id) : undefined;
+        if (i !== undefined) {
+            mergeRowFields(cur[i], row, dataSourceName);
+            if (mode === 'replace') next.push(curRaw[i]);
+            continue;
         }
+        if (id !== null && fresh.has(id)) {
+            mergeRowFields(fresh.get(id), row, dataSourceName);
+            continue;
+        }
+        const created = createReactiveReferences(row, dataSourceName);
+        if (id !== null) fresh.set(id, created);
+        (mode === 'replace' ? next : appended).push(created);
+    }
+    if (mode === 'replace') {
+        if (next.length !== curRaw.length || next.some((row, i) => row !== curRaw[i])) store[dataSourceName] = next;
+    } else if (appended.length) {
+        cur.push(...appended);
+    }
+}
+
+function removeRows(store, dataSourceName, ids) {
+    const curRaw = rawOf(store)[dataSourceName];
+    if (!Array.isArray(curRaw) || !ids?.length) return false;
+    const set = new Set(ids);
+    const cur = store[dataSourceName];
+    let removed = false;
+    for (let i = curRaw.length - 1; i >= 0; i--) {
+        const id = rowKey(curRaw[i]);
+        if (id !== null && set.has(id)) { cur.splice(i, 1); removed = true; }
+    }
+    return removed;
+}
+
+// Synchronous write of data + state for one source (no version bump); returns the new state
+function writeSource(dataSourceName, data, options = {}) {
+    const store = Alpine.store('data');
+    if (!store) return null;
+    ensureStoreShape(store);
+    const mode = options.mode === 'append' ? 'append' : 'replace';
+
+    if (data === null || data === undefined) {
+        if (mode === 'replace') {
+            store[dataSourceName] = data;
+            rawDataStore.set(dataSourceName, data);
+        }
+    } else if (Array.isArray(data)) {
+        upsertRows(store, dataSourceName, data, mode);
+        const arr = rawOf(store)[dataSourceName];
+        rawDataStore.set(dataSourceName, arr);
+        attachMethods(arr, dataSourceName);
+    } else {
+        store[dataSourceName] = data;
+        rawDataStore.set(dataSourceName, data);
     }
 
-    // Get current state for this data source (or defaults)
-    const currentState = store[`_${dataSourceName}_state`] || {
-        loading: false,
-        error: null,
-        ready: false
-    };
-
-    // Update state based on options
+    const currentState = store[`_${dataSourceName}_state`] || { loading: false, error: null, ready: false };
     const newState = {
         loading: options.loading !== undefined ? options.loading : currentState.loading,
         error: options.error !== undefined ? options.error : currentState.error,
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null)
     };
+    store[`_${dataSourceName}_state`] = newState;
+    store._initialized = true;
+    store._ready = true;
 
-    // Use Alpine's reactive store update to trigger reactivity
-    // Create a new object reference to ensure Alpine detects the change
-    // Also create new references for nested arrays (like fileIds) so Alpine can track nested property changes
-    const reactiveData = Array.isArray(data)
-        ? (createReactiveReferences ? createReactiveReferences(data, dataSourceName) : data)
-        : data;
+    const proxies = window.ManifestDataProxies;
+    proxies?.clearAccessCache?.(dataSourceName);
+    proxies?.clearArrayProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearRouteProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearNestedProxyCacheForDataSource?.(dataSourceName);
+    return newState;
+}
 
-    // Bump version so any effect that read the store re-runs (fixes bindings stuck on loading fallback)
-    const dataVersion = (store._dataVersion || 0) + 1;
-    const updatedStore = {
-        ...store,
-        [dataSourceName]: reactiveData, // Store actual data in Alpine store (like backup)
-        [`_${dataSourceName}_state`]: newState, // Store state for this data source
-        all,
-        _initialized: true,
-        _ready: true, // Mark as ready when first data source is loaded
-        _dataVersion: dataVersion
-    };
+// Synchronous replace: local writes ($register, init preload, state-only updates)
+function updateStore(dataSourceName, data, options = {}) {
+    if (isInitializing && !options.allowDuringInit) return;
+    const state = writeSource(dataSourceName, data, { ...options, mode: 'replace' });
+    if (!state) return;
+    touchSource(dataSourceName);
+    if (!state.loading) checkAndDispatchRenderReady();
+}
 
-    Alpine.store('data', updatedStore);
+// Network landing (page load, paged append, realtime batch): buffered, applied
+// with every other landing of the same frame in ONE flush. Resolves once visible.
+function landRows(dataSourceName, rows, options = {}) {
+    return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
+}
 
-    // When a source finishes loading (success or error), check if everything is settled.
-    // This is the primary trigger for manifest:render-ready.
-    if (!newState.loading) {
-        checkAndDispatchRenderReady();
+function landRemove(dataSourceName, ids, options = {}) {
+    return queueLanding({ source: dataSourceName, remove: Array.isArray(ids) ? ids : [ids], options });
+}
+
+function queueLanding(op) {
+    return new Promise(resolve => {
+        pendingLandings.push(op);
+        landingResolvers.push(resolve);
+        scheduleLandingFlush();
+    });
+}
+
+function scheduleLandingFlush() {
+    if (landingFrame !== null || landingTimer !== null) return;
+    const hidden = typeof document !== 'undefined' && document.hidden;
+    if (!hidden && typeof requestAnimationFrame === 'function') {
+        landingFrame = requestAnimationFrame(flushLandings);
+        landingTimer = setTimeout(flushLandings, LANDING_FALLBACK_MS);
+    } else {
+        landingTimer = setTimeout(flushLandings, 0);
     }
+}
 
-    // Re-attach methods on the new array reference
-    if (Array.isArray(reactiveData) && window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveData, dataSourceName, loadDataSource);
+// Local write while a flush is pending: replayed on top of that flush
+function noteLocalWrite(dataSourceName, id, note) {
+    if (!pendingLandings.length || id === null || id === undefined) return;
+    let byId = pendingLocal.get(dataSourceName);
+    if (!byId) pendingLocal.set(dataSourceName, byId = new Map());
+    if (note.removed) { byId.set(id, { removed: true }); return; }
+    const prev = byId.get(id);
+    const base = prev && !prev.removed ? prev.patch : {};
+    byId.set(id, { removed: false, patch: { ...base, ...note.patch } });
+}
+
+function flushLandings() {
+    if (landingFrame !== null) { cancelAnimationFrame(landingFrame); landingFrame = null; }
+    if (landingTimer !== null) { clearTimeout(landingTimer); landingTimer = null; }
+    const ops = pendingLandings.splice(0);
+    const resolvers = landingResolvers.splice(0);
+    const local = new Map(pendingLocal);
+    pendingLocal.clear();
+    if (!ops.length) return;
+
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const touched = new Set();
+    let settled = false;
+    if (store) {
+        for (const op of ops) {
+            try {
+                if (op.remove) {
+                    if (removeRows(store, op.source, op.remove)) touched.add(op.source);
+                    continue;
+                }
+                const state = writeSource(op.source, op.rows, op.options);
+                if (!state) continue;
+                touched.add(op.source);
+                if (!state.loading) settled = true;
+            } catch (error) {
+                console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
+            }
         }
+        for (const [source, byId] of local) {
+            for (const [id, note] of byId) {
+                if (note.removed) {
+                    if (removeRows(store, source, [id])) touched.add(source);
+                    continue;
+                }
+                const curRaw = rawOf(store)[source];
+                const i = Array.isArray(curRaw) ? curRaw.findIndex(row => rowKey(row) === id) : -1;
+                if (i !== -1) { mergeRowFields(store[source][i], note.patch, source); touched.add(source); }
+            }
+        }
+        if (touched.size) touchSources(store, touched);
     }
+    resolvers.forEach(resolve => resolve());
+    if (settled) checkAndDispatchRenderReady();
+}
 
-    // Clear proxy cache for this data source to force re-reading from store
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
+// Cross-source `all`: built on first read after a change, versioned by _v.all
+function getAll() {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return [];
+    ensureStoreShape(store);
+    void store._v.all;
+    if (allDirty || !allCache) {
+        const raw = rawOf(store);
+        const wrap = Alpine.reactive ? (item => Alpine.reactive(item)) : (item => item);
+        const out = [];
+        for (const key of Object.keys(raw)) {
+            if (key.startsWith('_') || key === 'all') continue;
+            const value = raw[key];
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    if (item !== null && item !== undefined) out.push(typeof item === 'object' ? wrap(item) : item);
+                }
+            } else if (value && typeof value === 'object') {
+                out.push(wrap(value));
+            }
+        }
+        allCache = out;
+        allDirty = false;
+        attachMethods(out, 'all');
     }
-    // Clear array proxy cache to ensure Alpine gets fresh proxy
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
-    // Clear route proxy cache to ensure fresh route proxies
-    if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-    }
-    // Clear nested proxy cache so next $x.dataSourceName access builds from new store data
-    if (window.ManifestDataProxies?.clearNestedProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearNestedProxyCacheForDataSource(dataSourceName);
-    }
+    return allCache;
 }
 
 // Get raw data from our non-reactive store
@@ -649,10 +865,10 @@ function createReactiveReferences(data, dataSourceName = null) {
 // Initialize store
 function initializeStore() {
     const initialStore = {
-        all: [], // Global content array for cross-dataSource access
         _initialized: false,
         _ready: false, // Flag to indicate when data is ready for Alpine evaluation
-        _dataVersion: 0, // Bumped in updateStore so bindings re-run when data loads
+        _v: {}, // Per-source versions: `$x.<source>` reads subscribe to _v[source]; _v.all for `$x.all`
+        _dataVersion: 0, // Legacy global counter, bumped once per flush for external readers
         _currentUrl: window.location.pathname,
         // Operation-specific loading states (for UI reactivity)
         // Format: { dataSourceName: { entryId: true } }
@@ -675,6 +891,10 @@ function initializeStore() {
             return isUploadingFile(dataSourceName, entryId, fileId);
         }
     };
+    // Lazy cross-source array (non-enumerable so store spreads/key scans skip it)
+    Object.defineProperty(initialStore, 'all', { enumerable: false, configurable: true, get: getAll });
+    allCache = null;
+    allDirty = true;
     Alpine.store('data', initialStore);
 }
 
@@ -754,11 +974,10 @@ function setupTeamChangeListener() {
                 // Remove team-scoped data from store
                 const store = Alpine.store('data');
                 if (store) {
-                    const newStore = { ...store };
                     teamScopedDataSources.forEach(dataSourceName => {
-                        delete newStore[dataSourceName];
+                        delete store[dataSourceName];
                     });
-                    Alpine.store('data', newStore);
+                    touchSources(store, teamScopedDataSources);
                 }
 
                 // Clear proxy cache for these data sources
@@ -781,16 +1000,6 @@ function setupTeamChangeListener() {
                         }
                     })).then(() => {
                     });
-                } else {
-                    // Fallback: Delete from store to force reload on next access
-                    const store = Alpine.store('data');
-                    if (store) {
-                        const newStore = { ...store };
-                        teamScopedDataSources.forEach(dataSourceName => {
-                            delete newStore[dataSourceName];
-                        });
-                        Alpine.store('data', newStore);
-                    }
                 }
             }
         } catch (error) {
@@ -863,10 +1072,7 @@ function checkAndDispatchRenderReady() {
             // never re-run. One post-settle bump on a fresh task re-runs
             // anything dropped.
             setTimeout(() => {
-                try {
-                    const s = Alpine.store('data');
-                    if (s) Alpine.store('data', { ...s, _dataVersion: (s._dataVersion || 0) + 1 });
-                } catch (_) { /* no-op */ }
+                try { bumpAllVersions(); } catch (_) { /* no-op */ }
             }, 50);
         } catch {
             // Silently fail — the render script has its own timeout fallback
@@ -881,12 +1087,7 @@ function setupLocaleChangeListener() {
 
         // Set loading state to prevent flicker
         const store = Alpine.store('data');
-        if (store) {
-            Alpine.store('data', {
-                ...store,
-                _localeChanging: true
-            });
-        }
+        if (store) store._localeChanging = true;
 
         try {
             // Get manifest to identify localized data sources
@@ -979,23 +1180,13 @@ function setupLocaleChangeListener() {
 
             // Remove localized data from store so bindings see missing data and re-run
             const store = Alpine.store('data');
-            if (store && store.all) {
-                const filteredAll = store.all.filter(item =>
-                    !localizedDataSources.includes(item.contentType)
-                );
-
-                const newStore = { ...store, all: filteredAll };
+            if (store) {
                 localizedDataSources.forEach(dataSourceName => {
-                    delete newStore[dataSourceName];
-                    delete newStore[`_${dataSourceName}_state`];
+                    delete store[dataSourceName];
+                    delete store[`_${dataSourceName}_state`];
                 });
-
-                const dataVersion = (store._dataVersion || 0) + 1;
-                Alpine.store('data', {
-                    ...newStore,
-                    _localeChanging: false,
-                    _dataVersion: dataVersion
-                });
+                store._localeChanging = false;
+                touchSources(store, localizedDataSources);
             }
 
             // Proactively reload localized sources with the new locale so the UI updates.
@@ -1016,11 +1207,17 @@ function setupLocaleChangeListener() {
             // Fallback to full reload if something goes wrong
             dataSourceCache.clear();
             loadingPromises.clear();
-            Alpine.store('data', {
-                all: [],
-                _initialized: true,
-                _localeChanging: false
-            });
+            rawDataStore.clear();
+            const store = Alpine.store('data');
+            if (store) {
+                const raw = rawOf(store);
+                for (const key of Object.keys(raw)) {
+                    if (!key.startsWith('_') && typeof raw[key] !== 'function') delete store[key];
+                }
+                store._initialized = true;
+                store._localeChanging = false;
+                bumpAllVersions();
+            }
         }
     });
 }
@@ -1043,12 +1240,6 @@ function setCreatingEntry(dataSourceName, entryId) {
         ...store._creatingEntry[dataSourceName],
         [entryId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _creatingEntry: { ...store._creatingEntry }
-    });
 }
 
 function clearCreatingEntry(dataSourceName, entryId) {
@@ -1058,12 +1249,6 @@ function clearCreatingEntry(dataSourceName, entryId) {
     // Create new object without this entryId
     const { [entryId]: removed, ...rest } = store._creatingEntry[dataSourceName];
     store._creatingEntry[dataSourceName] = rest;
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _creatingEntry: { ...store._creatingEntry }
-    });
 }
 
 function setUpdatingEntry(dataSourceName, entryId) {
@@ -1082,12 +1267,6 @@ function setUpdatingEntry(dataSourceName, entryId) {
         ...store._updatingEntry[dataSourceName],
         [entryId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _updatingEntry: { ...store._updatingEntry }
-    });
 }
 
 function clearUpdatingEntry(dataSourceName, entryId) {
@@ -1097,12 +1276,6 @@ function clearUpdatingEntry(dataSourceName, entryId) {
     // Create new object without this entryId
     const { [entryId]: removed, ...rest } = store._updatingEntry[dataSourceName];
     store._updatingEntry[dataSourceName] = rest;
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _updatingEntry: { ...store._updatingEntry }
-    });
 }
 
 function setDeletingEntry(dataSourceName, entryId) {
@@ -1121,12 +1294,6 @@ function setDeletingEntry(dataSourceName, entryId) {
         ...store._deletingEntry[dataSourceName],
         [entryId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _deletingEntry: { ...store._deletingEntry }
-    });
 }
 
 function clearDeletingEntry(dataSourceName, entryId) {
@@ -1136,12 +1303,6 @@ function clearDeletingEntry(dataSourceName, entryId) {
     // Create new object without this entryId
     const { [entryId]: removed, ...rest } = store._deletingEntry[dataSourceName];
     store._deletingEntry[dataSourceName] = rest;
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _deletingEntry: { ...store._deletingEntry }
-    });
 }
 
 function setUploadingFile(dataSourceName, entryId, fileId) {
@@ -1163,12 +1324,6 @@ function setUploadingFile(dataSourceName, entryId, fileId) {
         ...store._uploadingFile[dataSourceName][entryId],
         [fileId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _uploadingFile: { ...store._uploadingFile }
-    });
 }
 
 function clearUploadingFile(dataSourceName, entryId, fileId) {
@@ -1184,12 +1339,6 @@ function clearUploadingFile(dataSourceName, entryId, fileId) {
         const { [entryId]: removedEntry, ...restEntries } = store._uploadingFile[dataSourceName];
         store._uploadingFile[dataSourceName] = restEntries;
     }
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _uploadingFile: { ...store._uploadingFile }
-    });
 }
 
 // Helper methods to check operation-specific loading states
@@ -1231,6 +1380,17 @@ window.ManifestDataStore = {
     setIsInitializing: (value) => { isInitializing = value; },
     setInitializationComplete: (value) => { initializationComplete = value; },
     updateStore,
+    // Landing model (PERF-PRIMITIVES-DESIGN.md §5)
+    landRows,
+    landRemove,
+    flushLandings,
+    noteLocalWrite,
+    touchSource,
+    bumpAllVersions,
+    mergeRowFields,
+    ensureSourceArray,
+    rawOf,
+    getAll,
     getRawData,
     createReactiveReferences,
     initializeStore,
@@ -1864,78 +2024,40 @@ function generateMutationId() {
     return `mutation_${Date.now()}_${++mutationIdCounter}`;
 }
 
+// Local writes are synchronous (read-your-writes) and identity-preserving;
+// network landings go through ManifestDataStore.landRows instead.
+function clearSourceCaches(dataSourceName) {
+    const proxies = window.ManifestDataProxies;
+    proxies?.clearAccessCache?.(dataSourceName);
+    proxies?.clearArrayProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearRouteProxyCacheForDataSource?.(dataSourceName);
+}
+
+function findRawIndex(dataSourceName, entryId) {
+    const store = Alpine.store('data');
+    const raw = window.ManifestDataStore?.rawOf?.(store) || store;
+    const arr = raw?.[dataSourceName];
+    if (!Array.isArray(arr)) return { store, arr: null, index: -1 };
+    return { store, arr, index: arr.findIndex(entry => entry && entry.$id === entryId) };
+}
+
 // Update a single entry in the store (scoped update)
 function updateEntryInStore(dataSourceName, entryId, updates, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
 
-    const store = Alpine.store('data');
-    if (!store || !store[dataSourceName] || !Array.isArray(store[dataSourceName])) {
+    const { store, arr, index } = findRawIndex(dataSourceName, entryId);
+    if (!store || !arr || index === -1) {
         return false;
     }
 
-    const currentArray = store[dataSourceName];
-    const index = currentArray.findIndex(entry => entry.$id === entryId);
-
-    if (index === -1) {
-        return false;
-    }
-
-    // CRITICAL DEBUG: Log all updates to projects, especially fileIds changes
-    if (dataSourceName === 'projects') {
-        const existingEntry = currentArray[index];
-        const existingFileIds = existingEntry?.fileIds || [];
-        const newFileIds = updates?.fileIds || (updates === existingEntry ? existingFileIds : undefined);
-
-        // Get stack trace to see who's calling this
-        const stack = new Error().stack;
-        const caller = stack?.split('\n')[2]?.trim() || 'unknown';
-
-    }
-
-    // Create new array with updated entry
-    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-    const newArray = currentArray.map((entry, i) => {
-        if (i === index) {
-            // Merge updates into entry, creating new object reference
-            const updatedEntry = createReactiveReferences
-                ? createReactiveReferences({ ...entry, ...updates }, dataSourceName)
-                : { ...entry, ...updates };
-            return updatedEntry;
-        }
-        return entry;
-    });
-
-    // Create reactive references for entire array
-    const reactiveArray = createReactiveReferences
-        ? createReactiveReferences(newArray, dataSourceName)
-        : newArray;
-
-    // Update store
-    Alpine.store('data', {
-        ...store,
-        [dataSourceName]: reactiveArray
-    });
-
-    // Attach methods to new array reference
-    if (window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-        }
-    }
-
-    // Clear caches
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-    }
+    // Local write: merge onto the tracked row, sync
+    const ds = window.ManifestDataStore;
+    ds.mergeRowFields(store[dataSourceName][index], updates, dataSourceName);
+    ds.noteLocalWrite(dataSourceName, entryId, { patch: updates });
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
     window.dispatchEvent(new CustomEvent('manifest:data-mutated', {
@@ -1956,53 +2078,17 @@ function addEntryToStore(dataSourceName, entry, options = {}) {
         return false;
     }
 
-    const store = Alpine.store('data');
-    if (!store) {
+    const ds = window.ManifestDataStore;
+    const target = ds?.ensureSourceArray?.(dataSourceName);
+    if (!target) {
         return false;
     }
 
-    // Get current array or initialize
-    const currentArray = store[dataSourceName] || [];
-    if (!Array.isArray(currentArray)) {
-        return false;
-    }
-
-    // Create reactive references for new entry
-    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-    const newEntry = createReactiveReferences
-        ? createReactiveReferences(entry, dataSourceName)
-        : entry;
-
-    // Create new array with new entry
-    const newArray = [...currentArray, newEntry];
-    const reactiveArray = createReactiveReferences
-        ? createReactiveReferences(newArray, dataSourceName)
-        : newArray;
-
-    // Update store
-    Alpine.store('data', {
-        ...store,
-        [dataSourceName]: reactiveArray
-    });
-
-    // Attach methods to new array reference
-    if (window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-        }
-    }
-
-    // Clear caches
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-    }
+    // Local write: push onto the tracked array, sync
+    target.push(ds.createReactiveReferences(entry, dataSourceName));
+    ds.noteLocalWrite(dataSourceName, entry?.$id, { patch: entry });
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
     window.dispatchEvent(new CustomEvent('manifest:data-mutated', {
@@ -2023,49 +2109,20 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
         return false;
     }
 
-    const store = Alpine.store('data');
-    if (!store || !store[dataSourceName] || !Array.isArray(store[dataSourceName])) {
-        return false;
-    }
-
-    const currentArray = store[dataSourceName];
-    const index = currentArray.findIndex(entry => entry.$id === entryId);
-
-    if (index === -1) {
+    const { store, arr, index } = findRawIndex(dataSourceName, entryId);
+    if (!store || !arr || index === -1) {
         return false;
     }
 
     // Store original entry for rollback
-    const originalEntry = currentArray[index];
+    const originalEntry = arr[index];
 
-    // Create new array without entry
-    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-    const newArray = currentArray.filter((entry, i) => i !== index);
-    const reactiveArray = createReactiveReferences
-        ? createReactiveReferences(newArray, dataSourceName)
-        : newArray;
-
-    // Update store
-    Alpine.store('data', {
-        ...store,
-        [dataSourceName]: reactiveArray
-    });
-
-    // Attach methods to new array reference
-    if (window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-        }
-    }
-
-    // Clear caches
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-    }
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
+    // Local write: splice the tracked array, sync
+    const ds = window.ManifestDataStore;
+    store[dataSourceName].splice(index, 1);
+    ds.noteLocalWrite(dataSourceName, entryId, { removed: true });
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
     window.dispatchEvent(new CustomEvent('manifest:data-mutated', {
@@ -2157,10 +2214,11 @@ async function executeMutation(mutationConfig) {
             addEntryToStore(dataSourceName, optimisticData, options);
             originalData = null; // Nothing to rollback for create
         } else if (type === 'update') {
-            // Store original entry for rollback
+            // Snapshot for rollback (the row itself is mutated in place)
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                originalData = store[dataSourceName].find(e => e.$id === entryId);
+                const found = store[dataSourceName].find(e => e.$id === entryId);
+                originalData = found ? { ...found } : null;
             }
 
             // Set updating state
@@ -2174,10 +2232,11 @@ async function executeMutation(mutationConfig) {
                 updateEntryInStore(dataSourceName, entryId, data, options);
             }
         } else if (type === 'delete') {
-            // Store original entry for rollback
+            // Snapshot for rollback
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                originalData = store[dataSourceName].find(e => e.$id === entryId);
+                const found = store[dataSourceName].find(e => e.$id === entryId);
+                originalData = found ? { ...found } : null;
             }
 
             // Set deleting state
@@ -2207,47 +2266,14 @@ async function executeMutation(mutationConfig) {
         // Step 4: Background sync - update with server response
         if (result && result.$id) {
             if (type === 'create') {
-                // Replace temporary entry with real one from server
-                const store = Alpine.store('data');
-                if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                    const index = store[dataSourceName].findIndex(e => e.$id === optimisticData.$id);
+                // Ack: swap the temp row for the server row in place (new $id → new $files binding)
+                const { store, arr, index } = findRawIndex(dataSourceName, optimisticData.$id);
+                if (store && arr) {
                     if (index !== -1) {
-                        // Remove temporary entry and add real one
-                        const currentArray = store[dataSourceName];
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const newArray = currentArray.map((entry, i) => {
-                            if (i === index) {
-                                // Replace with server response
-                                return createReactiveReferences
-                                    ? createReactiveReferences(result, dataSourceName)
-                                    : result;
-                            }
-                            return entry;
-                        });
-                        const reactiveArray = createReactiveReferences
-                            ? createReactiveReferences(newArray, dataSourceName)
-                            : newArray;
-                        Alpine.store('data', {
-                            ...store,
-                            [dataSourceName]: reactiveArray
-                        });
-                        // Attach methods
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?.loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveArray, dataSourceName, loadDataSource);
-                            }
-                        }
-                        // Clear caches
-                        if (window.ManifestDataProxies?.clearAccessCache) {
-                            window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                        }
-                        if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                            window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-                        }
-                        if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-                            window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-                        }
+                        const ds = window.ManifestDataStore;
+                        store[dataSourceName].splice(index, 1, ds.createReactiveReferences(result, dataSourceName));
+                        ds.touchSource(dataSourceName);
+                        clearSourceCaches(dataSourceName);
                     } else {
                         // Temporary entry not found, just add the real one
                         addEntryToStore(dataSourceName, result, options);
@@ -6534,15 +6560,12 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         if (store) {
             const stateKey = `_${dataSourceName}_state`;
             const currentState = store[stateKey] || { loading: false, error: null, ready: false };
-            const updatedStore = {
-                ...store,
-                [stateKey]: {
-                    ...currentState,
-                    error: error?.message || error || 'Operation failed',
-                    errorTime: Date.now()
-                }
+            // State-only write, in place (never replace the store object)
+            store[stateKey] = {
+                ...currentState,
+                error: error?.message || error || 'Operation failed',
+                errorTime: Date.now()
             };
-            Alpine.store('data', updatedStore);
         }
         console.error(`[Manifest Data] ${dataSourceName} operation failed:`, error);
     };
@@ -6553,15 +6576,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             const stateKey = `_${dataSourceName}_state`;
             const currentState = store[stateKey];
             if (currentState?.error) {
-                const updatedStore = {
-                    ...store,
-                    [stateKey]: {
-                        ...currentState,
-                        error: null,
-                        errorTime: null
-                    }
-                };
-                Alpine.store('data', updatedStore);
+                store[stateKey] = { ...currentState, error: null, errorTime: null };
             }
         }
     };
@@ -6936,29 +6951,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         tableId,
                         appwriteQueries
                     );
-                    // Update store with query results
-                    const store = Alpine.store('data');
-                    if (store) {
-                        // Create a new array reference to ensure Alpine detects the change
-                        const newArray = Array.isArray(result) ? [...result] : result;
-
-                        // Use Alpine.store() to replace the entire store, which triggers reactivity
-                        const currentStore = Alpine.store('data');
-                        const updatedStore = {
-                            ...currentStore,
-                            [dataSourceName]: newArray
-                        };
-                        Alpine.store('data', updatedStore);
-
-                        // Attach methods to the new array reference
-                        if (Array.isArray(newArray) && window.ManifestDataProxies?.attachArrayMethods) {
-                            window.ManifestDataProxies.attachArrayMethods(newArray, dataSourceName, reloadDataSource);
-                        }
-
-                        // Clear proxy cache to force fresh read
-                        if (window.ManifestDataProxies?.clearAccessCache) {
-                            window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                        }
+                    // Network landing: query result replaces the source (coalesced, identity-preserving)
+                    if (result !== undefined && window.ManifestDataStore?.landRows) {
+                        await window.ManifestDataStore.landRows(dataSourceName, result, { mode: 'replace' });
                     }
                     return result;
                 }
@@ -7267,33 +7262,13 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // We already have the real file from the API response, so no
                     // background reload; scope filtering (if any) is handled by realtime.
                     if (!addEntryToStore) {
-                        // Fallback to old behavior
+                        // Fallback: reload lands through loadDataSource (coalesced landing)
                         if (window.ManifestDataStore?.dataSourceCache) {
                             const cacheKey = `${dataSourceName}:en`;
                             window.ManifestDataStore.dataSourceCache.delete(cacheKey);
                         }
                         clearAccessCache(dataSourceName);
-                        const reloadedData = await reloadDataSource(dataSourceName);
-                        if (reloadedData && Array.isArray(reloadedData) && typeof Alpine !== 'undefined' && Alpine.store) {
-                            const store = Alpine.store('data');
-                            const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                            const newArray = createReactiveReferences
-                                ? createReactiveReferences(reloadedData, dataSourceName)
-                                : reloadedData.map(entry => ({ ...entry }));
-                            Alpine.store('data', {
-                                ...store,
-                                [dataSourceName]: newArray
-                            });
-                            if (window.ManifestDataProxies?.attachArrayMethods) {
-                                window.ManifestDataProxies.attachArrayMethods(newArray, dataSourceName, reloadDataSource);
-                            }
-                            if (window.ManifestDataProxies?.clearAccessCache) {
-                                window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                            }
-                            if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                                window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-                            }
-                        }
+                        await reloadDataSource(dataSourceName);
                     }
 
                     return result;
@@ -7677,53 +7652,19 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Do delete and reload in parallel
                     const [result, reloadedData] = await Promise.all([deletePromise, reloadPromise]);
 
-                    // Update store
-                    const store = Alpine.store('data');
-                    if (store && reloadedData) {
-                        const newArray = Array.isArray(reloadedData) ? [...reloadedData] : reloadedData;
-                        const currentStore = Alpine.store('data');
-                        const updatedStore = {
-                            ...currentStore,
-                            [dataSourceName]: newArray
-                        };
-                        Alpine.store('data', updatedStore);
-                        // Attach methods to the new array reference
-                        if (Array.isArray(newArray) && window.ManifestDataProxies?.attachArrayMethods) {
-                            window.ManifestDataProxies.attachArrayMethods(newArray, dataSourceName, reloadDataSource);
-                        }
-                        if (window.ManifestDataProxies?.clearAccessCache) {
-                            window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                        }
-                        if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                            window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-                        }
+                    // Network landing: reloaded bucket listing replaces the source (coalesced)
+                    if (reloadedData && window.ManifestDataStore?.landRows) {
+                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace' });
                     }
 
-                    // Reload affected table data sources to ensure Alpine reactivity
-                    // This ensures project fileIds arrays and counters update in the UI
+                    // Reload affected table data sources so fileIds arrays and counters
+                    // update in the UI (loadDataSource lands the rows itself)
                     const reloadDataSourceFunc = window.ManifestDataMain?._loadDataSource;
                     if (reloadDataSourceFunc && Object.keys(affectedEntries).length > 0) {
                         const reloadPromises = [];
                         for (const tableName of Object.keys(affectedEntries)) {
                             reloadPromises.push(
-                                reloadDataSourceFunc(tableName).then(reloadedData => {
-                                    // Ensure we create new object references so Alpine detects nested property changes
-                                    if (reloadedData && Array.isArray(reloadedData) && typeof Alpine !== 'undefined' && Alpine.store) {
-                                        const store = Alpine.store('data');
-                                        const newArray = reloadedData.map(entry => ({ ...entry }));
-                                        Alpine.store('data', {
-                                            ...store,
-                                            [tableName]: newArray
-                                        });
-                                        // Clear cache for reactivity
-                                        if (window.ManifestDataProxies?.clearAccessCache) {
-                                            window.ManifestDataProxies.clearAccessCache(tableName);
-                                        }
-                                        if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-                                            window.ManifestDataProxies.clearArrayProxyCacheForDataSource(tableName);
-                                        }
-                                    }
-                                }).catch(err => {
+                                reloadDataSourceFunc(tableName).catch(err => {
                                     console.warn(`[Manifest Data] Failed to reload ${tableName} after file delete:`, err);
                                 })
                             );
@@ -8348,6 +8289,15 @@ function registerXMagicMethod(loadDataSource) {
                         };
                     }
 
+                    // $x.all — lazy cross-source array, versioned by _v.all
+                    if (prop === 'all') {
+                        return window.ManifestDataStore?.getAll?.() ?? [];
+                    }
+
+                    // Per-source subscription: read _v[prop] only (never the whole
+                    // store or _dataVersion) so landings elsewhere don't re-run us
+                    const track = () => { const v = Alpine.store('data')?._v; if (v) void v[prop]; };
+
                     // Resolve+cache from raw data BEFORE reading Alpine.store('data'):
                     // the store read registers a reactive dep that can re-run this
                     // effect and re-enter get() → stack overflow. Caching first makes
@@ -8363,9 +8313,7 @@ function registerXMagicMethod(loadDataSource) {
                         if (nestedCache.has(prop) && hasData) {
                             const cachedProxy = nestedCache.get(prop);
                             if (cachedProxy) {
-                                // Subscribe to store so locale change (updateStore) triggers re-run; we only read _dataVersion, still return cached proxy.
-                                const store = Alpine.store('data');
-                                void (store && store._dataVersion);
+                                track(); // locale change / reload re-runs us; still the cached proxy
                                 return cachedProxy;
                             }
                         }
@@ -8378,7 +8326,7 @@ function registerXMagicMethod(loadDataSource) {
                                     const nestedProxy = createNestedObjectProxy(rawValueEarly, prop, reloadDataSource, []);
                                     if (nestedProxy) {
                                         nestedCache.set(prop, nestedProxy);
-                                        void (Alpine.store('data') && Alpine.store('data')._dataVersion); // reactivity only
+                                        track();
                                         return nestedProxy;
                                     }
                                 } catch (e) {
@@ -8388,9 +8336,9 @@ function registerXMagicMethod(loadDataSource) {
                         }
                     }
 
-                    // No raw data yet: start load, subscribe (read _dataVersion so
-                    // Alpine tracks the dep and re-runs on updateStore), return loading
-                    // proxy. Reading only the version avoids re-entry/overflow.
+                    // No raw data yet: start load, subscribe to _v[prop] (re-runs when
+                    // this source lands), return loading proxy. Reading only the
+                    // version avoids re-entry/overflow.
                     if (!hasData) {
                         if (!pendingLoads.has(prop)) {
                             const locale = typeof document !== 'undefined' && document.documentElement
@@ -8401,8 +8349,7 @@ function registerXMagicMethod(loadDataSource) {
                                 setTimeout(() => pendingLoads.delete(prop), 1000);
                             });
                         }
-                        const store = Alpine.store('data');
-                        void (store && store._dataVersion);
+                        track();
                         const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                         if (createLoadingProxy) {
                             return createLoadingProxy(prop);
@@ -8412,7 +8359,7 @@ function registerXMagicMethod(loadDataSource) {
 
                     // Get current store for paths that need it (arrays, or object with raw data for cache/consistency)
                     const currentStoreForCache = Alpine.store('data');
-                    void (currentStoreForCache && currentStoreForCache._dataVersion);
+                    track();
 
                     // No activeProps circular check here: a legit store-read re-entry
                     // would be misread as circular and return a loading proxy, breaking
@@ -10472,38 +10419,15 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         return;
     }
 
-    // Use scoped updates via mutation system
-    const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
-    const updateEntryInStore = window.ManifestDataMutations?.updateEntryInStore;
-    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+    // Network landings: coalesced per frame (landRows upserts by $id), never the sync mutation path
+    const { landRows, landRemove } = window.ManifestDataStore;
 
     if (eventType === 'create') {
-        // New file created - check if it matches scope before adding
         const file = payload?.$id ? payload : (payload?.file || payload);
         if (file && file.$id) {
-            // Check if file matches current scope
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                // Check if already exists
-                const exists = currentFiles.some(f => f.$id === file.$id);
-                if (!exists && addEntryToStore) {
-                    // Use scoped update: add only this file
-                    addEntryToStore(dataSourceName, file);
-                } else if (!exists) {
-                    // Fallback: update entire array
-                    const updatedFiles = [...currentFiles, file];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveFiles = createReactiveReferences
-                        ? createReactiveReferences(updatedFiles, dataSourceName)
-                        : updatedFiles;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                        }
-                    }
-                }
+                landRows(dataSourceName, [file], { mode: 'append' });
 
                 // Emit custom event for new file creation so UI can refresh project files
                 window.dispatchEvent(new CustomEvent('manifest:file-created', {
@@ -10514,97 +10438,20 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
             console.warn('[Manifest Data] Invalid file payload in create event:', payload);
         }
     } else if (eventType === 'update') {
-        // File updated - update in array if it exists
         const file = payload?.$id ? payload : (payload?.file || payload);
         if (file && file.$id) {
-            const existingFile = currentFiles.find(f => f.$id === file.$id);
-            if (existingFile) {
-                // Check if file still matches scope after update
-                const fileMatchesScope = await checkFileMatchesScope(file, scope);
-                if (fileMatchesScope) {
-                    // Use scoped update: update only this file
-                    if (updateEntryInStore) {
-                        updateEntryInStore(dataSourceName, file.$id, file);
-                    } else {
-                        // Fallback: update entire array
-                        const updatedFiles = currentFiles.map(f => f.$id === file.$id ? file : f);
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const reactiveFiles = createReactiveReferences
-                            ? createReactiveReferences(updatedFiles)
-                            : updatedFiles;
-                        Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                            }
-                        }
-                    }
-                } else {
-                    // File no longer matches scope, remove it
-                    if (removeEntryFromStore) {
-                        removeEntryFromStore(dataSourceName, file.$id);
-                    } else {
-                        // Fallback: update entire array
-                        const updatedFiles = currentFiles.filter(f => f.$id !== file.$id);
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const reactiveFiles = createReactiveReferences
-                            ? createReactiveReferences(updatedFiles)
-                            : updatedFiles;
-                        Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                            }
-                        }
-                    }
-                }
+            const fileMatchesScope = await checkFileMatchesScope(file, scope);
+            if (fileMatchesScope) {
+                landRows(dataSourceName, [file], { mode: 'append' });
             } else {
-                // File not in list, but might match scope now - add it
-                const fileMatchesScope = await checkFileMatchesScope(file, scope);
-                if (fileMatchesScope && addEntryToStore) {
-                    addEntryToStore(dataSourceName, file);
-                } else if (fileMatchesScope) {
-                    // Fallback: update entire array
-                    const updatedFiles = [...currentFiles, file];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveFiles = createReactiveReferences
-                        ? createReactiveReferences(updatedFiles, dataSourceName)
-                        : updatedFiles;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                        }
-                    }
-                }
+                // File no longer matches scope, remove it
+                landRemove(dataSourceName, [file.$id]);
             }
         }
     } else if (eventType === 'delete') {
-        // File deleted - remove from array
         const fileId = payload?.$id || payload?.file?.$id || payload?.fileId || payload;
         if (fileId) {
-            const actualFileId = fileId.$id || fileId;
-            if (removeEntryFromStore) {
-                // Use scoped update: remove only this file
-                removeEntryFromStore(dataSourceName, actualFileId);
-            } else {
-                // Fallback: update entire array
-                const updatedFiles = currentFiles.filter(f => f.$id !== actualFileId);
-                const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                const reactiveFiles = createReactiveReferences
-                    ? createReactiveReferences(updatedFiles)
-                    : updatedFiles;
-                Alpine.store('data', { ...store, [dataSourceName]: reactiveFiles });
-                if (window.ManifestDataProxies?.attachArrayMethods) {
-                    const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                    if (loadDataSource) {
-                        window.ManifestDataProxies.attachArrayMethods(reactiveFiles, dataSourceName, loadDataSource);
-                    }
-                }
-            }
+            landRemove(dataSourceName, [fileId.$id || fileId]);
         }
     }
 }
@@ -10676,201 +10523,105 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         return;
     }
 
-    let updatedRows = [...currentRows];
-
-    // Use scoped updates via mutation system
-    const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
-    const updateEntryInStore = window.ManifestDataMutations?.updateEntryInStore;
-    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+    // Network landings: coalesced per frame (landRows upserts by $id), never the sync mutation path
+    const { landRows, landRemove } = window.ManifestDataStore;
 
     if (eventType === 'create') {
-        // New row created - check if it matches scope before adding
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
-            // Check if row matches current scope
             const rowMatchesScope = await checkRowMatchesScope(row, scope);
             if (rowMatchesScope) {
-                // Check if already exists
-                const exists = currentRows.some(r => r.$id === row.$id);
-                if (!exists && addEntryToStore) {
-                    // Use scoped update: add only this entry
-                    addEntryToStore(dataSourceName, row);
-                } else if (!exists) {
-                    // Fallback: update entire array
-                    const updatedRows = [...currentRows, row];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveRows = createReactiveReferences
-                        ? createReactiveReferences(updatedRows, dataSourceName)
-                        : updatedRows;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                        }
-                    }
-                }
+                landRows(dataSourceName, [row], { mode: 'append' });
             }
         } else {
             console.warn('[Manifest Data] Invalid row payload in create event:', payload);
         }
     } else if (eventType === 'update') {
-        // Row updated - update in array if it exists
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
             const existingRow = currentRows.find(r => r.$id === row.$id);
-            if (existingRow) {
-                // Check if row still matches scope after update
-                const rowMatchesScope = await checkRowMatchesScope(row, scope);
-                if (rowMatchesScope) {
-                    // Most sources update unconditionally; projects-with-fileIds get
-                    // special handling to protect optimistic uploads (see below).
-                    const existingFileIds = existingRow?.fileIds || [];
-                    const incomingFileIds = row?.fileIds || [];
-                    const hasFileIds = existingFileIds.length > 0 || incomingFileIds.length > 0;
-                    const isProjectWithFiles = hasFileIds && dataSourceName === 'projects';
+            const rowMatchesScope = await checkRowMatchesScope(row, scope);
+            if (!rowMatchesScope) {
+                // Row no longer matches scope, remove it
+                if (existingRow) landRemove(dataSourceName, [row.$id]);
+                return;
+            }
+            if (!existingRow) {
+                // Row not in list, but matches scope now - add it
+                landRows(dataSourceName, [row], { mode: 'append' });
+                return;
+            }
 
-                    let shouldUpdate = true;
+            // Most sources update unconditionally; projects-with-fileIds get
+            // special handling to protect optimistic uploads (see below).
+            const existingFileIds = existingRow?.fileIds || [];
+            const incomingFileIds = row?.fileIds || [];
+            const hasFileIds = existingFileIds.length > 0 || incomingFileIds.length > 0;
+            const isProjectWithFiles = hasFileIds && dataSourceName === 'projects';
 
-                    if (isProjectWithFiles) {
-                        const existingUpdatedAt = existingRow?.$updatedAt || existingRow?.$sequence;
-                        const newUpdatedAt = row?.$updatedAt || row?.$sequence;
-                        const shouldUpdateByTimestamp = !newUpdatedAt || !existingUpdatedAt || newUpdatedAt !== existingUpdatedAt;
+            let shouldUpdate = true;
 
-                        if (!shouldUpdateByTimestamp) {
-                            shouldUpdate = false; // identical timestamps → no-op
-                        } else {
-                            const existingFileIdsSet = new Set(existingFileIds);
-                            const incomingFileIdsSet = new Set(incomingFileIds);
+            if (isProjectWithFiles) {
+                const existingUpdatedAt = existingRow?.$updatedAt || existingRow?.$sequence;
+                const newUpdatedAt = row?.$updatedAt || row?.$sequence;
+                const shouldUpdateByTimestamp = !newUpdatedAt || !existingUpdatedAt || newUpdatedAt !== existingUpdatedAt;
 
-                            const isSuperset = incomingFileIds.every(id => existingFileIdsSet.has(id)) &&
-                                incomingFileIds.length > existingFileIds.length;
-
-                            const isMissingFiles = existingFileIds.some(id => !incomingFileIdsSet.has(id));
-
-                            const timestampDiff = newUpdatedAt > existingUpdatedAt ?
-                                (new Date(newUpdatedAt) - new Date(existingUpdatedAt)) :
-                                (new Date(existingUpdatedAt) - new Date(newUpdatedAt));
-                            const isDefinitelyNewer = timestampDiff > 1000; // ms
-
-                            // Incoming missing files + not clearly newer = stale event
-                            // racing an optimistic update; ignore it to protect the upload.
-                            if (isMissingFiles && !isDefinitelyNewer) {
-                                console.warn('[Manifest Data] Ignoring stale realtime update (protecting optimistic update):', {
-                                    projectId: row.$id,
-                                    existingFileIds: existingFileIds,
-                                    incomingFileIds: incomingFileIds,
-                                    existingFileIdsCount: existingFileIds.length,
-                                    incomingFileIdsCount: incomingFileIds.length,
-                                    existingUpdatedAt,
-                                    newUpdatedAt,
-                                    timestampDiff,
-                                    isMissingFiles,
-                                    isDefinitelyNewer,
-                                    reason: 'Incoming data missing files that exist in store - likely stale realtime event'
-                                });
-                                shouldUpdate = false;
-                            }
-                        }
-                    }
-
-                    // Apply the update if shouldUpdate is true
-                    if (shouldUpdate) {
-                        // Check if fileIds changed (for projects with linked files)
-                        const fileIdsChanged = isProjectWithFiles &&
-                            JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
-
-                        // Use scoped update: update only this entry
-                        if (updateEntryInStore) {
-                            updateEntryInStore(dataSourceName, row.$id, row);
-                        } else {
-                            // Fallback: update entire array
-                            const updatedRows = currentRows.map(r => r.$id === row.$id ? row : r);
-                            const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                            const reactiveRows = createReactiveReferences
-                                ? createReactiveReferences(updatedRows, dataSourceName)
-                                : updatedRows;
-                            Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                            if (window.ManifestDataProxies?.attachArrayMethods) {
-                                const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                                if (loadDataSource) {
-                                    window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                                }
-                            }
-                        }
-
-                        // Emit custom event for project file updates so UI can refresh
-                        if (fileIdsChanged && dataSourceName === 'projects') {
-                            window.dispatchEvent(new CustomEvent('manifest:project-files-updated', {
-                                detail: { projectId: row.$id, fileIds: row.fileIds }
-                            }));
-                        }
-                    }
+                if (!shouldUpdateByTimestamp) {
+                    shouldUpdate = false; // identical timestamps → no-op
                 } else {
-                    // Row no longer matches scope, remove it
-                    if (removeEntryFromStore) {
-                        removeEntryFromStore(dataSourceName, row.$id);
-                    } else {
-                        // Fallback: update entire array
-                        const updatedRows = currentRows.filter(r => r.$id !== row.$id);
-                        const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                        const reactiveRows = createReactiveReferences
-                            ? createReactiveReferences(updatedRows, dataSourceName)
-                            : updatedRows;
-                        Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                        if (window.ManifestDataProxies?.attachArrayMethods) {
-                            const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                            if (loadDataSource) {
-                                window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                            }
-                        }
+                    const existingFileIdsSet = new Set(existingFileIds);
+                    const incomingFileIdsSet = new Set(incomingFileIds);
+
+                    const isSuperset = incomingFileIds.every(id => existingFileIdsSet.has(id)) &&
+                        incomingFileIds.length > existingFileIds.length;
+
+                    const isMissingFiles = existingFileIds.some(id => !incomingFileIdsSet.has(id));
+
+                    const timestampDiff = newUpdatedAt > existingUpdatedAt ?
+                        (new Date(newUpdatedAt) - new Date(existingUpdatedAt)) :
+                        (new Date(existingUpdatedAt) - new Date(newUpdatedAt));
+                    const isDefinitelyNewer = timestampDiff > 1000; // ms
+
+                    // Incoming missing files + not clearly newer = stale event
+                    // racing an optimistic update; ignore it to protect the upload.
+                    if (isMissingFiles && !isDefinitelyNewer) {
+                        console.warn('[Manifest Data] Ignoring stale realtime update (protecting optimistic update):', {
+                            projectId: row.$id,
+                            existingFileIds: existingFileIds,
+                            incomingFileIds: incomingFileIds,
+                            existingFileIdsCount: existingFileIds.length,
+                            incomingFileIdsCount: incomingFileIds.length,
+                            existingUpdatedAt,
+                            newUpdatedAt,
+                            timestampDiff,
+                            isMissingFiles,
+                            isDefinitelyNewer,
+                            reason: 'Incoming data missing files that exist in store - likely stale realtime event'
+                        });
+                        shouldUpdate = false;
                     }
                 }
-            } else {
-                // Row not in list, but might match scope now - add it
-                const rowMatchesScope = await checkRowMatchesScope(row, scope);
-                if (rowMatchesScope && addEntryToStore) {
-                    addEntryToStore(dataSourceName, row);
-                } else if (rowMatchesScope) {
-                    // Fallback: update entire array
-                    const updatedRows = [...currentRows, row];
-                    const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                    const reactiveRows = createReactiveReferences
-                        ? createReactiveReferences(updatedRows, dataSourceName)
-                        : updatedRows;
-                    Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                    if (window.ManifestDataProxies?.attachArrayMethods) {
-                        const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                        if (loadDataSource) {
-                            window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                        }
-                    }
+            }
+
+            if (shouldUpdate) {
+                // Check if fileIds changed (for projects with linked files)
+                const fileIdsChanged = isProjectWithFiles &&
+                    JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
+
+                landRows(dataSourceName, [row], { mode: 'append' });
+
+                // Emit custom event for project file updates so UI can refresh
+                if (fileIdsChanged && dataSourceName === 'projects') {
+                    window.dispatchEvent(new CustomEvent('manifest:project-files-updated', {
+                        detail: { projectId: row.$id, fileIds: row.fileIds }
+                    }));
                 }
             }
         }
     } else if (eventType === 'delete') {
-        // Row deleted - remove from array
         const rowId = payload?.$id || payload?.row?.$id || payload?.rowId || payload;
         if (rowId) {
-            const actualRowId = rowId.$id || rowId;
-            if (removeEntryFromStore) {
-                // Use scoped update: remove only this entry
-                removeEntryFromStore(dataSourceName, actualRowId);
-            } else {
-                // Fallback: update entire array
-                const updatedRows = currentRows.filter(r => r.$id !== actualRowId);
-                const createReactiveReferences = window.ManifestDataStore?.createReactiveReferences;
-                const reactiveRows = createReactiveReferences
-                    ? createReactiveReferences(updatedRows, dataSourceName)
-                    : updatedRows;
-                Alpine.store('data', { ...store, [dataSourceName]: reactiveRows });
-                if (window.ManifestDataProxies?.attachArrayMethods) {
-                    const loadDataSource = window.ManifestDataMain?._loadDataSource;
-                    if (loadDataSource) {
-                        window.ManifestDataProxies.attachArrayMethods(reactiveRows, dataSourceName, loadDataSource);
-                    }
-                }
-            }
+            landRemove(dataSourceName, [rowId.$id || rowId]);
         }
     }
 
@@ -11002,7 +10753,7 @@ async function checkFileMatchesScope(file, scope) {
 // Load dataSource data
 async function loadDataSource(dataSourceName, locale = 'en') {
     const cacheKey = `${dataSourceName}:${locale}`;
-    const { dataSourceCache, loadingPromises, isInitializing, updateStore } = window.ManifestDataStore;
+    const { dataSourceCache, loadingPromises, isInitializing, updateStore, landRows } = window.ManifestDataStore;
 
     // Memory cache. Serving cached data is fine, but writing an old locale to the
     // live store would clobber a concurrent locale switch — so guard the store
@@ -11013,7 +10764,8 @@ async function loadDataSource(dataSourceName, locale = 'en') {
             || document.documentElement.lang || locale;
         const staleLocaleHit = locale !== liveLocale && !!(cachedData && cachedData._locale);
         if (!isInitializing && !staleLocaleHit) {
-            updateStore(dataSourceName, cachedData, { loading: false, error: null, ready: true });
+            // Landing (coalesced): resolves once the cached rows are visible
+            await landRows(dataSourceName, cachedData, { mode: 'replace', loading: false, error: null, ready: true });
         }
         return cachedData;
     }
@@ -11290,10 +11042,9 @@ async function loadDataSource(dataSourceName, locale = 'en') {
                 || document.documentElement.lang || locale;
             const staleLocale = localeSensitive && liveLocale !== locale;
 
-            // Update store only if not initializing
-            // Note: updateStore will seal the data to prevent Alpine from proxying it
+            // Network landing (coalesced per frame); resolves once visible
             if (!isInitializing && !staleLocale) {
-                updateStore(dataSourceName, enhancedData, { loading: false, error: null, ready: true });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true });
             }
 
             // Return unsealed version for our proxy system
@@ -11413,7 +11164,7 @@ function setupUrlChangeListeners() {
 // Initialize plugin when either DOM is ready or Alpine is ready
 async function initializeDataSourcesPlugin() {
 
-    const { initializeStore, setupLocaleChangeListener, setupTeamChangeListener, setIsInitializing, setInitializationComplete, updateStore } = window.ManifestDataStore;
+    const { initializeStore, setupLocaleChangeListener, setupTeamChangeListener, setIsInitializing, setInitializationComplete, updateStore, landRows } = window.ManifestDataStore;
 
     // Initialize empty data sources store
     initializeStore();
@@ -11484,16 +11235,11 @@ async function initializeDataSourcesPlugin() {
     setIsInitializing(true);
 
     try {
-        // Initialize store - preserve existing store properties like _currentUrl
-        const existingStore = Alpine.store('data') || {};
-        Alpine.store('data', {
-            ...existingStore,
-            all: [],
-            _initialized: true,
-            _ready: false,
-            // Ensure _currentUrl is preserved or initialized
-            _currentUrl: existingStore._currentUrl || window.location.pathname
-        });
+        // Mark the store initialized in place (never replace the store object)
+        const dataStore = Alpine.store('data');
+        dataStore._initialized = true;
+        dataStore._ready = false;
+        if (!dataStore._currentUrl) dataStore._currentUrl = window.location.pathname;
 
         // Pre-load local file-backed sources so $x.* renders real data first pass;
         // Appwrite, API-URL, and "manifest" sources stay on-demand.
@@ -11516,8 +11262,9 @@ async function initializeDataSourcesPlugin() {
                         preloadNames.map(async (name) => {
                             try {
                                 const data = await loadDataSource(name, locale);
-                                if (data != null && window.ManifestDataStore?.updateStore) {
-                                    window.ManifestDataStore.updateStore(name, data, { loading: false, error: null, ready: true, allowDuringInit: true });
+                                if (data != null) {
+                                    // Boot landing: every pre-loaded source lands in ONE flush
+                                    await landRows(name, data, { mode: 'replace', loading: false, error: null, ready: true, allowDuringInit: true });
                                 }
                             } catch (err) {
                                 console.warn(`[Manifest Data] Failed to pre-load ${name}:`, err);
@@ -11536,36 +11283,17 @@ async function initializeDataSourcesPlugin() {
                 // flag updateStore short-circuits and $x.manifest stays unpopulated.
                 window.ManifestDataStore.dataSourceCache.set(`manifest:${locale}`, publicManifest);
                 updateStore('manifest', publicManifest, { loading: false, error: null, ready: true, allowDuringInit: true });
-
-                const store = Alpine.store('data');
-                Alpine.store('data', {
-                    ...store,
-                    _ready: true
-                });
-            } else {
-                // No manifest data source, mark as ready anyway
-                const store = Alpine.store('data');
-                Alpine.store('data', {
-                    ...store,
-                    _ready: true
-                });
             }
+            Alpine.store('data')._ready = true;
         } catch (error) {
             // If manifest pre-load fails, mark as ready anyway - it will load on-demand
             console.warn('[Manifest Data] Failed to pre-load manifest:', error);
-            const store = Alpine.store('data');
-            Alpine.store('data', {
-                ...store,
-                _ready: true
-            });
+            Alpine.store('data')._ready = true;
         }
 
         // Force Alpine to re-run effects that read $x.content (they may have run before pre-load and got loading proxy)
         const flushThenDispatch = () => {
-            if (typeof Alpine !== 'undefined') {
-                const s = Alpine.store('data');
-                Alpine.store('data', { ...s, _dataVersion: (s._dataVersion || 0) + 1 });
-            }
+            window.ManifestDataStore?.bumpAllVersions?.();
             if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent('manifest:data-ready'));
             }

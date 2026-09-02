@@ -11,6 +11,20 @@ let initializationComplete = false;
 let _renderReadyTimer = null;
 const RENDER_READY_QUIET_MS = 150; // quiet time before firing render-ready
 
+// Landing queue: network writes coalesce into one store write per frame
+const pendingLandings = [];
+let landingResolvers = [];
+let landingFrame = null;
+let landingTimer = null;
+const LANDING_FALLBACK_MS = 50;
+
+// Local writes made while a flush is pending win over it (local-last)
+const pendingLocal = new Map(); // source -> Map<$id, { patch, removed }>
+
+// Lazy cross-source `all`
+let allCache = null;
+let allDirty = true;
+
 // Deep seal so Alpine won't proxy (double-proxying causes recursion)
 function deepSeal(obj) {
     if (obj === null || typeof obj !== 'object') {
@@ -41,99 +55,301 @@ function deepSeal(obj) {
     return obj;
 }
 
-// Update store with new data
-function updateStore(dataSourceName, data, options = {}) {
-    if (isInitializing && !options.allowDuringInit) return;
+const rawOf = (obj) => (typeof Alpine !== 'undefined' && Alpine.raw && obj ? Alpine.raw(obj) : obj);
 
-    // Store raw data in our non-reactive Map for backup access
-    rawDataStore.set(dataSourceName, data);
+const rowKey = (row) => (row && typeof row === 'object' && (typeof row.$id === 'string' || typeof row.$id === 'number'))
+    ? row.$id
+    : null;
 
-    // Store data in Alpine's reactive store (like backup did)
-    // Alpine will handle reactivity, and our proxies will work on top
+function ensureStoreShape(store) {
+    if (!store._v) store._v = {};
+}
+
+// Version bump: per-source (`$x` reads subscribe here), `all`, and the legacy
+// global counter kept for external readers (status/datepicker/charts)
+function touchSources(store, sources) {
+    ensureStoreShape(store);
+    const v = store._v;
+    for (const source of sources) v[source] = (v[source] || 0) + 1;
+    v.all = (v.all || 0) + 1;
+    allDirty = true;
+    store._dataVersion = (store._dataVersion || 0) + 1;
+}
+
+function touchSource(dataSourceName) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (store) touchSources(store, [dataSourceName]);
+}
+
+// Post-settle hammer: re-run every `$x` reader (Alpine scheduler swallow)
+function bumpAllVersions() {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return;
+    ensureStoreShape(store);
+    const raw = rawOf(store);
+    const sources = new Set(Object.keys(raw._v || {}));
+    for (const key of Object.keys(raw)) {
+        if (!key.startsWith('_') && key !== 'all' && typeof raw[key] !== 'function') sources.add(key);
+    }
+    sources.delete('all');
+    touchSources(store, sources);
+}
+
+function sameScalarOrList(a, b) {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i];
+        if (x !== b[i] || (x !== null && typeof x === 'object')) return false;
+    }
+    return true;
+}
+
+// Merge fields onto an existing tracked row (property-grain); `$files` stays bound
+function mergeRowFields(target, fields, dataSourceName) {
+    if (!target || !fields || typeof fields !== 'object') return;
+    const raw = rawOf(target);
+    for (const key of Object.keys(fields)) {
+        if (key === '$files') continue;
+        const value = fields[key];
+        if (sameScalarOrList(raw[key], value)) continue;
+        target[key] = createReactiveReferences(value, dataSourceName);
+    }
+}
+
+function attachMethods(array, dataSourceName) {
+    const loadDataSource = window.ManifestDataMain?.loadDataSource;
+    if (Array.isArray(array) && loadDataSource && window.ManifestDataProxies?.attachArrayMethods) {
+        window.ManifestDataProxies.attachArrayMethods(array, dataSourceName, loadDataSource);
+    }
+}
+
+// Reactive source array, created on demand; raw map tracks the same identity
+function ensureSourceArray(dataSourceName) {
     const store = Alpine.store('data');
+    if (!store) return null;
+    const current = rawOf(store)[dataSourceName];
+    if (Array.isArray(current)) return store[dataSourceName];
+    if (current !== null && current !== undefined) return null;
+    store[dataSourceName] = [];
+    const created = rawOf(store)[dataSourceName];
+    rawDataStore.set(dataSourceName, created);
+    attachMethods(created, dataSourceName);
+    return store[dataSourceName];
+}
 
-    // Filter out null/undefined items and items matching this data source
-    const all = (store.all || []).filter(item =>
-        item !== null &&
-        item !== undefined &&
-        item.contentType !== dataSourceName
-    );
-
-    // Only add data to 'all' array if it's not null/undefined
-    if (data !== null && data !== undefined) {
-        if (Array.isArray(data)) {
-            all.push(...data);
-        } else {
-            all.push(data);
+// Identity-preserving upsert by $id: existing rows are merged in place, new
+// rows created; append keeps the array, replace swaps it only when membership
+// or order changed
+function upsertRows(store, dataSourceName, rows, mode) {
+    const raw = rawOf(store);
+    const curRaw = Array.isArray(raw[dataSourceName]) ? raw[dataSourceName] : null;
+    if (!curRaw) {
+        store[dataSourceName] = rows.map(row => createReactiveReferences(row, dataSourceName));
+        return;
+    }
+    const cur = store[dataSourceName];
+    const index = new Map();
+    curRaw.forEach((row, i) => { const id = rowKey(row); if (id !== null) index.set(id, i); });
+    const fresh = new Map();
+    const next = [];
+    const appended = [];
+    for (const row of rows) {
+        const id = rowKey(row);
+        const i = id !== null ? index.get(id) : undefined;
+        if (i !== undefined) {
+            mergeRowFields(cur[i], row, dataSourceName);
+            if (mode === 'replace') next.push(curRaw[i]);
+            continue;
         }
+        if (id !== null && fresh.has(id)) {
+            mergeRowFields(fresh.get(id), row, dataSourceName);
+            continue;
+        }
+        const created = createReactiveReferences(row, dataSourceName);
+        if (id !== null) fresh.set(id, created);
+        (mode === 'replace' ? next : appended).push(created);
+    }
+    if (mode === 'replace') {
+        if (next.length !== curRaw.length || next.some((row, i) => row !== curRaw[i])) store[dataSourceName] = next;
+    } else if (appended.length) {
+        cur.push(...appended);
+    }
+}
+
+function removeRows(store, dataSourceName, ids) {
+    const curRaw = rawOf(store)[dataSourceName];
+    if (!Array.isArray(curRaw) || !ids?.length) return false;
+    const set = new Set(ids);
+    const cur = store[dataSourceName];
+    let removed = false;
+    for (let i = curRaw.length - 1; i >= 0; i--) {
+        const id = rowKey(curRaw[i]);
+        if (id !== null && set.has(id)) { cur.splice(i, 1); removed = true; }
+    }
+    return removed;
+}
+
+// Synchronous write of data + state for one source (no version bump); returns the new state
+function writeSource(dataSourceName, data, options = {}) {
+    const store = Alpine.store('data');
+    if (!store) return null;
+    ensureStoreShape(store);
+    const mode = options.mode === 'append' ? 'append' : 'replace';
+
+    if (data === null || data === undefined) {
+        if (mode === 'replace') {
+            store[dataSourceName] = data;
+            rawDataStore.set(dataSourceName, data);
+        }
+    } else if (Array.isArray(data)) {
+        upsertRows(store, dataSourceName, data, mode);
+        const arr = rawOf(store)[dataSourceName];
+        rawDataStore.set(dataSourceName, arr);
+        attachMethods(arr, dataSourceName);
+    } else {
+        store[dataSourceName] = data;
+        rawDataStore.set(dataSourceName, data);
     }
 
-    // Get current state for this data source (or defaults)
-    const currentState = store[`_${dataSourceName}_state`] || {
-        loading: false,
-        error: null,
-        ready: false
-    };
-
-    // Update state based on options
+    const currentState = store[`_${dataSourceName}_state`] || { loading: false, error: null, ready: false };
     const newState = {
         loading: options.loading !== undefined ? options.loading : currentState.loading,
         error: options.error !== undefined ? options.error : currentState.error,
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null)
     };
+    store[`_${dataSourceName}_state`] = newState;
+    store._initialized = true;
+    store._ready = true;
 
-    // Use Alpine's reactive store update to trigger reactivity
-    // Create a new object reference to ensure Alpine detects the change
-    // Also create new references for nested arrays (like fileIds) so Alpine can track nested property changes
-    const reactiveData = Array.isArray(data)
-        ? (createReactiveReferences ? createReactiveReferences(data, dataSourceName) : data)
-        : data;
+    const proxies = window.ManifestDataProxies;
+    proxies?.clearAccessCache?.(dataSourceName);
+    proxies?.clearArrayProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearRouteProxyCacheForDataSource?.(dataSourceName);
+    proxies?.clearNestedProxyCacheForDataSource?.(dataSourceName);
+    return newState;
+}
 
-    // Bump version so any effect that read the store re-runs (fixes bindings stuck on loading fallback)
-    const dataVersion = (store._dataVersion || 0) + 1;
-    const updatedStore = {
-        ...store,
-        [dataSourceName]: reactiveData, // Store actual data in Alpine store (like backup)
-        [`_${dataSourceName}_state`]: newState, // Store state for this data source
-        all,
-        _initialized: true,
-        _ready: true, // Mark as ready when first data source is loaded
-        _dataVersion: dataVersion
-    };
+// Synchronous replace: local writes ($register, init preload, state-only updates)
+function updateStore(dataSourceName, data, options = {}) {
+    if (isInitializing && !options.allowDuringInit) return;
+    const state = writeSource(dataSourceName, data, { ...options, mode: 'replace' });
+    if (!state) return;
+    touchSource(dataSourceName);
+    if (!state.loading) checkAndDispatchRenderReady();
+}
 
-    Alpine.store('data', updatedStore);
+// Network landing (page load, paged append, realtime batch): buffered, applied
+// with every other landing of the same frame in ONE flush. Resolves once visible.
+function landRows(dataSourceName, rows, options = {}) {
+    return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
+}
 
-    // When a source finishes loading (success or error), check if everything is settled.
-    // This is the primary trigger for manifest:render-ready.
-    if (!newState.loading) {
-        checkAndDispatchRenderReady();
+function landRemove(dataSourceName, ids, options = {}) {
+    return queueLanding({ source: dataSourceName, remove: Array.isArray(ids) ? ids : [ids], options });
+}
+
+function queueLanding(op) {
+    return new Promise(resolve => {
+        pendingLandings.push(op);
+        landingResolvers.push(resolve);
+        scheduleLandingFlush();
+    });
+}
+
+function scheduleLandingFlush() {
+    if (landingFrame !== null || landingTimer !== null) return;
+    const hidden = typeof document !== 'undefined' && document.hidden;
+    if (!hidden && typeof requestAnimationFrame === 'function') {
+        landingFrame = requestAnimationFrame(flushLandings);
+        landingTimer = setTimeout(flushLandings, LANDING_FALLBACK_MS);
+    } else {
+        landingTimer = setTimeout(flushLandings, 0);
     }
+}
 
-    // Re-attach methods on the new array reference
-    if (Array.isArray(reactiveData) && window.ManifestDataProxies?.attachArrayMethods) {
-        const loadDataSource = window.ManifestDataMain?.loadDataSource;
-        if (loadDataSource) {
-            window.ManifestDataProxies.attachArrayMethods(reactiveData, dataSourceName, loadDataSource);
+// Local write while a flush is pending: replayed on top of that flush
+function noteLocalWrite(dataSourceName, id, note) {
+    if (!pendingLandings.length || id === null || id === undefined) return;
+    let byId = pendingLocal.get(dataSourceName);
+    if (!byId) pendingLocal.set(dataSourceName, byId = new Map());
+    if (note.removed) { byId.set(id, { removed: true }); return; }
+    const prev = byId.get(id);
+    const base = prev && !prev.removed ? prev.patch : {};
+    byId.set(id, { removed: false, patch: { ...base, ...note.patch } });
+}
+
+function flushLandings() {
+    if (landingFrame !== null) { cancelAnimationFrame(landingFrame); landingFrame = null; }
+    if (landingTimer !== null) { clearTimeout(landingTimer); landingTimer = null; }
+    const ops = pendingLandings.splice(0);
+    const resolvers = landingResolvers.splice(0);
+    const local = new Map(pendingLocal);
+    pendingLocal.clear();
+    if (!ops.length) return;
+
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const touched = new Set();
+    let settled = false;
+    if (store) {
+        for (const op of ops) {
+            try {
+                if (op.remove) {
+                    if (removeRows(store, op.source, op.remove)) touched.add(op.source);
+                    continue;
+                }
+                const state = writeSource(op.source, op.rows, op.options);
+                if (!state) continue;
+                touched.add(op.source);
+                if (!state.loading) settled = true;
+            } catch (error) {
+                console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
+            }
         }
+        for (const [source, byId] of local) {
+            for (const [id, note] of byId) {
+                if (note.removed) {
+                    if (removeRows(store, source, [id])) touched.add(source);
+                    continue;
+                }
+                const curRaw = rawOf(store)[source];
+                const i = Array.isArray(curRaw) ? curRaw.findIndex(row => rowKey(row) === id) : -1;
+                if (i !== -1) { mergeRowFields(store[source][i], note.patch, source); touched.add(source); }
+            }
+        }
+        if (touched.size) touchSources(store, touched);
     }
+    resolvers.forEach(resolve => resolve());
+    if (settled) checkAndDispatchRenderReady();
+}
 
-    // Clear proxy cache for this data source to force re-reading from store
-    if (window.ManifestDataProxies?.clearAccessCache) {
-        window.ManifestDataProxies.clearAccessCache(dataSourceName);
+// Cross-source `all`: built on first read after a change, versioned by _v.all
+function getAll() {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return [];
+    ensureStoreShape(store);
+    void store._v.all;
+    if (allDirty || !allCache) {
+        const raw = rawOf(store);
+        const wrap = Alpine.reactive ? (item => Alpine.reactive(item)) : (item => item);
+        const out = [];
+        for (const key of Object.keys(raw)) {
+            if (key.startsWith('_') || key === 'all') continue;
+            const value = raw[key];
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    if (item !== null && item !== undefined) out.push(typeof item === 'object' ? wrap(item) : item);
+                }
+            } else if (value && typeof value === 'object') {
+                out.push(wrap(value));
+            }
+        }
+        allCache = out;
+        allDirty = false;
+        attachMethods(out, 'all');
     }
-    // Clear array proxy cache to ensure Alpine gets fresh proxy
-    if (window.ManifestDataProxies?.clearArrayProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearArrayProxyCacheForDataSource(dataSourceName);
-    }
-    // Clear route proxy cache to ensure fresh route proxies
-    if (window.ManifestDataProxies?.clearRouteProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearRouteProxyCacheForDataSource(dataSourceName);
-    }
-    // Clear nested proxy cache so next $x.dataSourceName access builds from new store data
-    if (window.ManifestDataProxies?.clearNestedProxyCacheForDataSource) {
-        window.ManifestDataProxies.clearNestedProxyCacheForDataSource(dataSourceName);
-    }
+    return allCache;
 }
 
 // Get raw data from our non-reactive store
@@ -395,10 +611,10 @@ function createReactiveReferences(data, dataSourceName = null) {
 // Initialize store
 function initializeStore() {
     const initialStore = {
-        all: [], // Global content array for cross-dataSource access
         _initialized: false,
         _ready: false, // Flag to indicate when data is ready for Alpine evaluation
-        _dataVersion: 0, // Bumped in updateStore so bindings re-run when data loads
+        _v: {}, // Per-source versions: `$x.<source>` reads subscribe to _v[source]; _v.all for `$x.all`
+        _dataVersion: 0, // Legacy global counter, bumped once per flush for external readers
         _currentUrl: window.location.pathname,
         // Operation-specific loading states (for UI reactivity)
         // Format: { dataSourceName: { entryId: true } }
@@ -421,6 +637,10 @@ function initializeStore() {
             return isUploadingFile(dataSourceName, entryId, fileId);
         }
     };
+    // Lazy cross-source array (non-enumerable so store spreads/key scans skip it)
+    Object.defineProperty(initialStore, 'all', { enumerable: false, configurable: true, get: getAll });
+    allCache = null;
+    allDirty = true;
     Alpine.store('data', initialStore);
 }
 
@@ -500,11 +720,10 @@ function setupTeamChangeListener() {
                 // Remove team-scoped data from store
                 const store = Alpine.store('data');
                 if (store) {
-                    const newStore = { ...store };
                     teamScopedDataSources.forEach(dataSourceName => {
-                        delete newStore[dataSourceName];
+                        delete store[dataSourceName];
                     });
-                    Alpine.store('data', newStore);
+                    touchSources(store, teamScopedDataSources);
                 }
 
                 // Clear proxy cache for these data sources
@@ -527,16 +746,6 @@ function setupTeamChangeListener() {
                         }
                     })).then(() => {
                     });
-                } else {
-                    // Fallback: Delete from store to force reload on next access
-                    const store = Alpine.store('data');
-                    if (store) {
-                        const newStore = { ...store };
-                        teamScopedDataSources.forEach(dataSourceName => {
-                            delete newStore[dataSourceName];
-                        });
-                        Alpine.store('data', newStore);
-                    }
                 }
             }
         } catch (error) {
@@ -609,10 +818,7 @@ function checkAndDispatchRenderReady() {
             // never re-run. One post-settle bump on a fresh task re-runs
             // anything dropped.
             setTimeout(() => {
-                try {
-                    const s = Alpine.store('data');
-                    if (s) Alpine.store('data', { ...s, _dataVersion: (s._dataVersion || 0) + 1 });
-                } catch (_) { /* no-op */ }
+                try { bumpAllVersions(); } catch (_) { /* no-op */ }
             }, 50);
         } catch {
             // Silently fail — the render script has its own timeout fallback
@@ -627,12 +833,7 @@ function setupLocaleChangeListener() {
 
         // Set loading state to prevent flicker
         const store = Alpine.store('data');
-        if (store) {
-            Alpine.store('data', {
-                ...store,
-                _localeChanging: true
-            });
-        }
+        if (store) store._localeChanging = true;
 
         try {
             // Get manifest to identify localized data sources
@@ -725,23 +926,13 @@ function setupLocaleChangeListener() {
 
             // Remove localized data from store so bindings see missing data and re-run
             const store = Alpine.store('data');
-            if (store && store.all) {
-                const filteredAll = store.all.filter(item =>
-                    !localizedDataSources.includes(item.contentType)
-                );
-
-                const newStore = { ...store, all: filteredAll };
+            if (store) {
                 localizedDataSources.forEach(dataSourceName => {
-                    delete newStore[dataSourceName];
-                    delete newStore[`_${dataSourceName}_state`];
+                    delete store[dataSourceName];
+                    delete store[`_${dataSourceName}_state`];
                 });
-
-                const dataVersion = (store._dataVersion || 0) + 1;
-                Alpine.store('data', {
-                    ...newStore,
-                    _localeChanging: false,
-                    _dataVersion: dataVersion
-                });
+                store._localeChanging = false;
+                touchSources(store, localizedDataSources);
             }
 
             // Proactively reload localized sources with the new locale so the UI updates.
@@ -762,11 +953,17 @@ function setupLocaleChangeListener() {
             // Fallback to full reload if something goes wrong
             dataSourceCache.clear();
             loadingPromises.clear();
-            Alpine.store('data', {
-                all: [],
-                _initialized: true,
-                _localeChanging: false
-            });
+            rawDataStore.clear();
+            const store = Alpine.store('data');
+            if (store) {
+                const raw = rawOf(store);
+                for (const key of Object.keys(raw)) {
+                    if (!key.startsWith('_') && typeof raw[key] !== 'function') delete store[key];
+                }
+                store._initialized = true;
+                store._localeChanging = false;
+                bumpAllVersions();
+            }
         }
     });
 }
@@ -789,12 +986,6 @@ function setCreatingEntry(dataSourceName, entryId) {
         ...store._creatingEntry[dataSourceName],
         [entryId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _creatingEntry: { ...store._creatingEntry }
-    });
 }
 
 function clearCreatingEntry(dataSourceName, entryId) {
@@ -804,12 +995,6 @@ function clearCreatingEntry(dataSourceName, entryId) {
     // Create new object without this entryId
     const { [entryId]: removed, ...rest } = store._creatingEntry[dataSourceName];
     store._creatingEntry[dataSourceName] = rest;
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _creatingEntry: { ...store._creatingEntry }
-    });
 }
 
 function setUpdatingEntry(dataSourceName, entryId) {
@@ -828,12 +1013,6 @@ function setUpdatingEntry(dataSourceName, entryId) {
         ...store._updatingEntry[dataSourceName],
         [entryId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _updatingEntry: { ...store._updatingEntry }
-    });
 }
 
 function clearUpdatingEntry(dataSourceName, entryId) {
@@ -843,12 +1022,6 @@ function clearUpdatingEntry(dataSourceName, entryId) {
     // Create new object without this entryId
     const { [entryId]: removed, ...rest } = store._updatingEntry[dataSourceName];
     store._updatingEntry[dataSourceName] = rest;
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _updatingEntry: { ...store._updatingEntry }
-    });
 }
 
 function setDeletingEntry(dataSourceName, entryId) {
@@ -867,12 +1040,6 @@ function setDeletingEntry(dataSourceName, entryId) {
         ...store._deletingEntry[dataSourceName],
         [entryId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _deletingEntry: { ...store._deletingEntry }
-    });
 }
 
 function clearDeletingEntry(dataSourceName, entryId) {
@@ -882,12 +1049,6 @@ function clearDeletingEntry(dataSourceName, entryId) {
     // Create new object without this entryId
     const { [entryId]: removed, ...rest } = store._deletingEntry[dataSourceName];
     store._deletingEntry[dataSourceName] = rest;
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _deletingEntry: { ...store._deletingEntry }
-    });
 }
 
 function setUploadingFile(dataSourceName, entryId, fileId) {
@@ -909,12 +1070,6 @@ function setUploadingFile(dataSourceName, entryId, fileId) {
         ...store._uploadingFile[dataSourceName][entryId],
         [fileId]: true
     };
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _uploadingFile: { ...store._uploadingFile }
-    });
 }
 
 function clearUploadingFile(dataSourceName, entryId, fileId) {
@@ -930,12 +1085,6 @@ function clearUploadingFile(dataSourceName, entryId, fileId) {
         const { [entryId]: removedEntry, ...restEntries } = store._uploadingFile[dataSourceName];
         store._uploadingFile[dataSourceName] = restEntries;
     }
-
-    // Update store to trigger reactivity
-    Alpine.store('data', {
-        ...store,
-        _uploadingFile: { ...store._uploadingFile }
-    });
 }
 
 // Helper methods to check operation-specific loading states
@@ -977,6 +1126,17 @@ window.ManifestDataStore = {
     setIsInitializing: (value) => { isInitializing = value; },
     setInitializationComplete: (value) => { initializationComplete = value; },
     updateStore,
+    // Landing model (PERF-PRIMITIVES-DESIGN.md §5)
+    landRows,
+    landRemove,
+    flushLandings,
+    noteLocalWrite,
+    touchSource,
+    bumpAllVersions,
+    mergeRowFields,
+    ensureSourceArray,
+    rawOf,
+    getAll,
     getRawData,
     createReactiveReferences,
     initializeStore,
