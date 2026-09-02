@@ -100,6 +100,17 @@ describe('per-source versioning', () => {
         expect(runs).toBe(2)
     })
 
+    it('only load completions arm the post-settle hammer; realtime-shaped landings do not', async () => {
+        const { store, data } = load()
+        await store.landRows('feed', rows('r', 2), { mode: 'replace', loading: false, error: null, ready: true })
+        await new Promise(r => setTimeout(r, 260)) // render-ready (150ms) + hammer (50ms)
+        const afterLoad = data()._v.feed
+        expect(afterLoad).toBe(2) // landing + hammer
+        await store.landRows('feed', [{ $id: 'r0', opens: 1 }], { mode: 'append' })
+        await new Promise(r => setTimeout(r, 260))
+        expect(data()._v.feed).toBe(afterLoad + 1) // landing only, no hammer
+    })
+
     it('bumpAllVersions re-runs every `$x` reader (stuck-binding hammer, narrowed)', async () => {
         const { store, $x, effect } = load()
         await store.landRows('a', rows('a', 1))

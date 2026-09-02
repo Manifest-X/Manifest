@@ -53,16 +53,17 @@
       this.cadenceMs = num('cadenceMs', this.cadenceMs);
       this.upsertEveryMs = num('upsertEveryMs', this.upsertEveryMs);
       this.sourceX = qs.get('source') === 'x';
-      if (this.sourceX) {
-        window.ManifestDataStore?.updateStore?.('feed', [], { loading: false, error: null, ready: true, allowDuringInit: true });
-        this.contextKeys = Array.from({ length: 40 }, (_, i) => i);
-        this.landMessages();
-      }
-
       this.menuIdx = Array.from({ length: this.menus }, (_, i) => i);
       this.emojiListA = this.buildEmoji(this.emojiPerGrid, 0);
       this.emojiListB = this.buildEmoji(this.emojiPerGrid, 7);
       this.gettersRangeArr = Array.from({ length: this.gettersPerRow }, (_, i) => i);
+
+      if (this.sourceX) {
+        window.ManifestDataStore?.updateStore?.('feed', [], { loading: false, error: null, ready: true, allowDuringInit: true });
+        this.contextKeys = Array.from({ length: 40 }, (_, i) => i);
+        this.landMessages();
+        this.landContacts();
+      }
 
       this.startLanding();
       this.startUpserts();
@@ -123,6 +124,14 @@
       if (ds?.landRows) ds.landRows('messages', msgs, { mode: 'replace', allowDuringInit: true });
       else ds?.updateStore?.('messages', msgs, { loading: false, error: null, ready: true, allowDuringInit: true });
     },
+    // getter grid reads its own $x source (Playcom: contacts ≠ chats), so a feed landing must not touch it
+    landContacts() {
+      const rows = Array.from({ length: 100 }, (_, i) => ({ ...this.makeRow(i), $id: 'c' + i }));
+      const ds = window.ManifestDataStore;
+      if (ds?.landRows) ds.landRows('contacts', rows, { mode: 'replace', allowDuringInit: true });
+      else ds?.updateStore?.('contacts', rows, { loading: false, error: null, ready: true, allowDuringInit: true });
+    },
+    get gridSource() { return this.sourceX ? this.$x.contacts : this.feed; },
     get chatList() { return this.feedRows.slice(0, 50); },
     get activeChat() { return this.activeConvId == null ? null : this.feedRows.find(r => r.$id === this.activeConvId) || null; },
     get threadMessages() { return this.$x.messages.filter(m => m.chatId === this.activeConvId); },
@@ -146,6 +155,7 @@
     },
 
     makeRow(id) {
+      const pool = window.PERF_WORD_POOL || ['lorem']; // component script may not have run yet at init()
       return {
         $id: 'r' + id,
         id,
@@ -154,7 +164,7 @@
         status: ['active', 'idle', 'away', 'busy'][id % 4],
         value: (id * 37) % 1000,
         unread: id % 3 === 0,
-        lastMessage: 'Preview ' + id + ' — ' + PERF_WORD_POOL[id % PERF_WORD_POOL.length],
+        lastMessage: 'Preview ' + id + ' — ' + pool[id % pool.length],
         ts: Date.now() - id * 1000
       };
     },
@@ -184,14 +194,14 @@
     },
 
     // ---- derived views (plain getters — no $computed yet; that's the Phase 1 fix) ----
-    get gridRows() { return this.feedRows.slice(0, 100); },
+    get gridRows() { return this.gridSource.slice(0, 100); },
     get conversations() { return this.feedRows.slice(-60).slice().reverse(); },
 
     // Genuinely expensive per-cell getter: builds + filters an inline array,
-    // and reads feed.length so every landing invalidates every cell — this is
-    // the $x 'whole-store' re-run hammer from §1.2, reproduced without $computed.
+    // and reads the grid source's length so every landing to it invalidates
+    // every cell — the §1.2 re-run hammer, reproduced without $computed.
     getterValue(row, k) {
-      const seed = (row.id + k + this.feedRows.length) % 7 + 2;
+      const seed = (row.id + k + this.gridSource.length) % 7 + 2;
       const letter = String.fromCharCode(97 + (k % 26));
       return PERF_WORD_POOL.filter(w => w.length % seed === 0 && w.includes(letter)).length;
     },
@@ -272,7 +282,7 @@
 
   <!-- 100-row grid, gettersPerRow getters per row -->
   <section class="col gap-2">
-    <strong class="small">Getter grid <span class="note">— 100 rows × <span x-text="gettersPerRow"></span> getters, each an inline filter over the shared word pool</span></strong>
+    <strong class="small">Getter grid <span class="note">— 100 rows × <span x-text="gettersPerRow"></span> getters, each an inline filter over the shared word pool<span x-show="sourceX">; rows from $x.contacts</span></span></strong>
     <div class="getter-scroll">
       <table class="getter-table">
         <thead>

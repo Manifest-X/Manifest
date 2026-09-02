@@ -302,7 +302,8 @@ function flushLandings() {
                 const state = writeSource(op.source, op.rows, op.options);
                 if (!state) continue;
                 touched.add(op.source);
-                if (!state.loading) settled = true;
+                // Only load completions (explicit loading state) feed render-ready; realtime upserts never do
+                if (op.options.loading !== undefined && !state.loading) settled = true;
             } catch (error) {
                 console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
             }
