@@ -408,9 +408,14 @@
             },
             "additionalProperties": true
         },
+        "device": {
+            "type": "object",
+            "description": "Opts the app into the device plugin: $share, $secure, $links, $push, $app, $haptics, $biometric and $camera, each with a web fallback and Capacitor as the native adapter. Auto-loaded inside a Capacitor container and whenever a page uses one of those magics; an empty object loads it on every build.",
+            "additionalProperties": true
+        },
         "native": {
             "type": "object",
-            "description": "Opts the app into the native umbrella plugin — $-magics for biometric, push, haptics, share, secure storage, deep links, camera, and app lifecycle, plus $device enrichment. Auto-loaded inside a Capacitor container; declaring this block also loads it on the web build (every capability degrades gracefully off-device, with Capacitor as one adapter). An empty object is enough to opt in.",
+            "description": "Deprecated alias of `device` (renamed in 0.5.199); still accepted.",
             "additionalProperties": true
         }
     },

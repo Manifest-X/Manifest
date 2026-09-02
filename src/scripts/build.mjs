@@ -182,7 +182,7 @@ const CONFIG = {
         'scripts/payments/**',
         'scripts/edit/**',
         'scripts/chat/**',
-        'scripts/native/**',
+        'scripts/device/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
@@ -272,7 +272,7 @@ function buildSubscripts() {
     combineSubscripts(CONFIG.editSubscripts, 'manifest.edit.js', 'edit');
 
     // Build native umbrella
-    combineSubscripts(CONFIG.nativeSubscripts, 'manifest.native.js', 'native');
+    combineSubscripts(CONFIG.nativeSubscripts, 'manifest.device.js', 'device');
 
     console.log('✓ Subscripts built successfully!\n');
 }
@@ -670,7 +670,8 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
         { source: 'scripts/manifest.status.js', dest: '../lib/manifest.status.js' },
         { source: 'scripts/manifest.chat.js', dest: '../lib/manifest.chat.js' },
-        { source: 'scripts/manifest.native.js', dest: '../lib/manifest.native.js' },
+        { source: 'scripts/manifest.device.js', dest: '../lib/manifest.device.js' },
+        { source: 'scripts/manifest.device.js', dest: '../lib/manifest.native.js' },   // alias kept for one release
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.sw.js', dest: '../lib/manifest.sw.js' },  // Service worker module (version-stamped below)
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },

@@ -3,7 +3,7 @@
 Wrap a Manifest app as a store-grade native iOS app with [Capacitor](https://capacitorjs.com).
 Unlike a thin PWABuilder WebKit wrapper, Capacitor gives you a real native project
 with a plugin bridge — which is what makes iOS Guideline 4.2 achievable and what the
-Manifest **native umbrella** plugin (`$share`, `$secure`, `$links`, `$push`, `$app`,
+Manifest **device** plugin (`$share`, `$secure`, `$links`, `$push`, `$app`,
 `$haptics`, `$biometric`, `$camera`) talks to.
 
 This is a scaffold, not an automated tool — run the steps on a Mac with Xcode.
@@ -14,17 +14,17 @@ This is a scaffold, not an automated tool — run the steps on a Mac with Xcode.
 - Node 18+
 - An **Apple Developer** account ($99/yr) for signing, TestFlight, and the App Store
 
-## 1. Opt the app into native capabilities
+## 1. Opt the app into device capabilities
 
-Add a `native` block to your `manifest.json` (an empty object is enough):
+Add a `device` block to your `manifest.json` (an empty object is enough):
 
 ```json
 {
-  "native": {}
+  "device": {}
 }
 ```
 
-That loads `manifest.native.js` on the web build too (all capabilities degrade
+That loads `manifest.device.js` on the web build too (all capabilities degrade
 gracefully off-device). Inside the Capacitor container it auto-loads regardless.
 
 ## 2. Build the web assets (the offline shell)

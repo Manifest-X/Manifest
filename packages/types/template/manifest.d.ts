@@ -268,7 +268,7 @@ export type ManifestExport = (opts?: {
     [extra: string]: unknown;
 }) => Promise<unknown>;
 
-/** `$device` from the utilities plugin (enriched by the native plugin when present). */
+/** `$device` from the utilities plugin (enriched by the device plugin when present). */
 export interface ManifestDevice {
     readonly os: string;
     readonly touch: boolean;
@@ -278,18 +278,18 @@ export interface ManifestDevice {
     readonly platform: string;
 }
 
-/** `$share` from the native plugin — native sheet, web share, or clipboard fallback. */
+/** `$share` from the device plugin — native sheet, web share, or clipboard fallback. */
 export type ManifestShare = (opts?: { title?: string; text?: string; url?: string }) =>
     Promise<{ shared: boolean; method: string; cancelled?: boolean }>;
 
-/** `$push` from the native plugin — push/notification permissions and token. */
+/** `$push` from the device plugin — push/notification permissions and token. */
 export interface ManifestPush {
     request(): Promise<string>;
     readonly permission: string;
     [extra: string]: unknown;
 }
 
-/** `$secure` from the native plugin — secure key-value storage (native keychain or fallback). */
+/** `$secure` from the device plugin — secure key-value storage (native keychain or fallback). */
 export interface ManifestSecure {
     get(key: string): Promise<string | null>;
     set(key: string, value: string): Promise<void>;
@@ -299,33 +299,33 @@ export interface ManifestSecure {
     use(adapter: unknown): void;
 }
 
-/** `$links` from the native plugin — deep/universal link handling. */
+/** `$links` from the device plugin — deep/universal link handling. */
 export interface ManifestLinks {
     on(handler: (url: string) => void): void;
     open(url: string): void;
     readonly last: string | null;
 }
 
-/** `$app` from the native plugin — foreground/background state. */
+/** `$app` from the device plugin — foreground/background state. */
 export interface ManifestApp {
     readonly active: boolean;
     onChange(handler: (active: boolean) => void): void;
 }
 
-/** `$haptics` from the native plugin — haptic feedback with web vibration fallback. */
+/** `$haptics` from the device plugin — haptic feedback with web vibration fallback. */
 export interface ManifestHaptics {
     impact(style?: string): Promise<unknown>;
     notification(type?: string): Promise<unknown>;
     [extra: string]: unknown;
 }
 
-/** `$biometric` from the native plugin. */
+/** `$biometric` from the device plugin. */
 export interface ManifestBiometric {
     available(): Promise<boolean>;
     verify(opts?: Record<string, unknown>): Promise<unknown>;
 }
 
-/** `$camera` from the native plugin. */
+/** `$camera` from the device plugin. */
 export interface ManifestCamera {
     photo(opts?: Record<string, unknown>): Promise<unknown>;
     pick(opts?: Record<string, unknown>): Promise<unknown>;
@@ -465,23 +465,23 @@ declare global {
     const $edit: ManifestEdit;
     /** Text editor (text-edit plugin). */
     const $text: ManifestTextEdit;
-    /** Device/platform info (utilities; enriched by the native plugin). */
+    /** Device/platform info (utilities; enriched by the device plugin). */
     const $device: ManifestDevice;
-    /** Native share (native plugin). */
+    /** Native share (device plugin). */
     const $share: ManifestShare;
-    /** Push permissions (native plugin). */
+    /** Push permissions (device plugin). */
     const $push: ManifestPush;
-    /** Secure storage (native plugin). */
+    /** Secure storage (device plugin). */
     const $secure: ManifestSecure;
-    /** Deep links (native plugin). */
+    /** Deep links (device plugin). */
     const $links: ManifestLinks;
-    /** App foreground state (native plugin). */
+    /** App foreground state (device plugin). */
     const $app: ManifestApp;
-    /** Haptics (native plugin). */
+    /** Haptics (device plugin). */
     const $haptics: ManifestHaptics;
-    /** Biometric auth (native plugin). */
+    /** Biometric auth (device plugin). */
     const $biometric: ManifestBiometric;
-    /** Camera (native plugin). */
+    /** Camera (device plugin). */
     const $camera: ManifestCamera;
 
     /** Window-level Manifest namespace exposed by the loader. */
