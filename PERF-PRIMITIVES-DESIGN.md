@@ -318,6 +318,12 @@ whole-store replacements remain in the data layer.** Playcom-shaped numbers
 4. The post-settle render-ready hammer (`bumpAllVersions`) now arms only on
    landings carrying an explicit load state; realtime landings never arm it
    (on HEAD every landing armed it, doubling its cost).
+5. **Behaviour change (found by Playcom in production use):** local-only
+   fields an app sets on a row (e.g. an optimistic placeholder's
+   `_pending: true`) SURVIVE landings — the server row merges into the same
+   object and never sends the field, so it is not cleared. Apps that relied on
+   wholesale replacement wiping local flags must clear them explicitly on
+   success. Documented in the data articles ("How data updates").
 
 Three changes to `updateStore` and friends, all internal, no API change:
 
