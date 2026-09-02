@@ -1394,6 +1394,12 @@ in.
   every variant. Open: "rows from disk at 6.4s when the worker is not
   controlling" — hidden-pane run, unverified.
 - Tests: 33 persistence (+1), 3 roles-cache (new). Suite 466/466.
+- **Chat upsert merges `meta` (was replace):** a re-delivery of a message from
+  a second source (echo without `tx`, or without `channel`) replaced `meta`
+  wholesale, so translation fields could flap as sources alternated (Playcom:
+  one translated bubble flickering at random). Every `commit()` still creates
+  fresh top-level and `body` objects by design; `meta` identity is now stable
+  across commits and merges.
 - **One manifest.json request per boot (cace566):** Playcom's cold reload
   fetched it 4× (loader, data plugin, auth plugin, components registry with a
   `?t=` buster; a 4th at ~5s from the status plugin refetching whenever the
