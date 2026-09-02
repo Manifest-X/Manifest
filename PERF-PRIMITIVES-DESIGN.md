@@ -87,6 +87,16 @@ pass). Runtime metrics CI lives on OUR side first (§7).
 
 ## 3. P1 — `$computed`
 
+**Status: SHIPPED to master (c06467c, 2026-09-01)** — `src/scripts/manifest.computed.js`,
+`tests/computed.test.js` (6 tests on real Alpine 3.17.1), loads by default,
+`$computed` magic + `window.$computed`, typed in `manifest.d.ts`. Verified in
+the browser on both the explicit-script path and the loader derive path
+(`src/test/computed.html`). Implementation note: eager-computed — the backing
+effect recomputes on dependency change and writes the property, so readers
+subscribe to the property itself; the effect is created during interceptor
+init (before child directives), which keeps it ahead of its readers in
+Alpine's flush order and clear of the swallow bug for init-time dependencies.
+
 ### API
 ```js
 Alpine.data('inbox', () => ({
@@ -342,7 +352,7 @@ may justify the plugin.
 | Phase | Work | Model | Isolation |
 |---|---|---|---|
 | 0 | Harness + baseline | Sonnet 5 (review by coordinator) | new files only |
-| 1a | `$computed` | Fable | coordinator session |
+| 1a | `$computed` — DONE c06467c | Fable | coordinator session |
 | 1b | `x-defer` + defer-by-default + prerender parity | Fable | worktree agent |
 | 1c | P6 landing model | Fable | worktree agent (manifest.data.js is 11.6k lines — narrow diff) |
 | 2 | P4 docs/warning, P5 stale-first + `$fresh` + request dedupe | Sonnet 5 | any |
