@@ -620,3 +620,28 @@ Driven directly (headless Chrome, their candidate tree pinned to RC.2):
   the heavy panels is their lever.
 - x-virtual first paint moved off the ResizeObserver tick (was firing
   "ResizeObserver loop" error events).
+
+### 10.8 Handoff checklist for the next Playcom session (their perf lane ended 2026-09-02)
+
+Give this block to whichever Playcom session picks up the A/B after RC.3
+(`mnfst@0.5.198-next.3`) is published:
+
+1. Pin BOTH loader src and `data-version` to `0.5.198-next.3` on the A/B
+   branch (`claude/perf-ab`), same rig and scenario as `perf-base-sep2`.
+2. Add `x-defer.priority="1"` (modifier in the attribute NAME, number as the
+   value — first authored `x-defer` in the tree) to EVERY twin of the countries
+   menu: `components/context/context-options-contact.html` (~:111, the one
+   the framework-side measurements used, reached via the "Contact fields"
+   kebab → "Set countries" at :96), `components/context/
+   context-contact-identity.html` (~:123 trigger), and the country list in
+   `components/context/context-record-fields.html` (~:885). State in the
+   table which path the operator clicked.
+3. Re-run: boot; idle 3s (pass = 0ms blocked, mutations at RC.0 level);
+   cold switch #1; countries first-open at 150ms and 1,000ms after the pane
+   mounts; capture `window.ManifestDefer.stats()` at the countries click.
+4. Known facts so they are not re-derived: `Object.keys(Alpine.$data(el))`
+   is always `[]` (instrument artifact, scope is fine); ~110ms of every
+   popover open on the Platform page is page-wide layout independent of
+   deferral (CSS containment on the nav/panel scrollers is the lever);
+   prewarm now targets on-screen, reachable containers nearest the last
+   gesture and pauses at a rolling cap of 48 warm containers.
