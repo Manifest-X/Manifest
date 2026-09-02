@@ -227,6 +227,7 @@
 		'dropdowns',
 		'combobox',
 		'computed',
+		'bindings',
 		'tabs',
 		'text-edit',
 		'slides',

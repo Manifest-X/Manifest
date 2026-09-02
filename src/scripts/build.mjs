@@ -644,6 +644,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.code.js', dest: '../lib/manifest.code.js' },
         { source: 'scripts/manifest.combobox.js', dest: '../lib/manifest.combobox.js' },
         { source: 'scripts/manifest.computed.js', dest: '../lib/manifest.computed.js' },
+        { source: 'scripts/manifest.bindings.js', dest: '../lib/manifest.bindings.js' },
         { source: 'scripts/manifest.components.js', dest: '../lib/manifest.components.js' },
         { source: 'scripts/manifest.colorpicker.js', dest: '../lib/manifest.colorpicker.js' },
         { source: 'scripts/manifest.datepicker.js', dest: '../lib/manifest.datepicker.js' },

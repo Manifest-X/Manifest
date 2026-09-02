@@ -674,8 +674,8 @@ string is unchanged (Playcom: ~1,150 mutations/s from a 1s ticker over 53
 rows; settle-based metrics unusable). Re-register the `text` directive on
 `alpine:init` with an equality check before the write (same semantics
 otherwise). Ships in `manifest.computed.js`? No — a directive override does
-not belong in a magic plugin: new tiny default plugin `manifest.text.js`
-(guard only), registered in `AVAILABLE_PLUGINS`, `copyFilesToDist`, the src
+not belong in a magic plugin: new tiny default plugin `manifest.bindings.js`
+(guard only; named `bindings`, not `text`, to avoid colliding with the text-edit plugin's `$text` magic), registered in `AVAILABLE_PLUGINS`, `copyFilesToDist`, the src
 test project. Test: an unchanged re-evaluation produces zero MutationObserver
 records. Coordinator does this one (small, Alpine-internal).
 
