@@ -3261,6 +3261,12 @@ async function runPrerender(config) {
   // --concurrency or manifest.prerender.concurrency.
   const concurrency = config.concurrency;
   const maxRetries = config.retries ?? 2;
+  // Hard ceiling on a single page's processPath() call. A page can wedge
+  // forever inside an unresolved page.evaluate() (e.g. headless Chrome dies
+  // mid-call, or app code awaits a promise that never settles) — without this
+  // the whole render hangs with no error. Configurable via
+  // manifest.prerender.pageTimeout; 0 disables.
+  const pageTimeoutMs = Math.max(0, pre.pageTimeout ?? 60000);
   // Recycle the browser every N processed pages to bound resource growth.
   // Configurable via manifest.prerender.browserRecycleEvery.
   const browserRecycleEvery = Math.max(0, pre.browserRecycleEvery ?? 40);
@@ -4705,6 +4711,17 @@ async function runPrerender(config) {
       }
     };
 
+    /** Resolve/reject with `promise`, or reject with a timeout Error after `ms` — whichever comes first. The loser keeps running in the background but is abandoned by the caller. */
+    function withPageTimeout(promise, ms) {
+      if (!(ms > 0)) return promise;
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`page render exceeded ${ms}ms — abandoned`)), ms);
+        if (typeof timer.unref === 'function') timer.unref();
+      });
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+    }
+
     async function worker() {
       while (true) {
         // Pause if a recycle is underway.
@@ -4725,15 +4742,19 @@ async function runPrerender(config) {
           const failureCountBefore = failedPaths.length;
           activeWorkers++;
           try {
-            await processPath(pathSeg, i, {
-              onRawHtml: (seg, html) => {
-                if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
-              },
-            });
+            await withPageTimeout(
+              processPath(pathSeg, i, {
+                onRawHtml: (seg, html) => {
+                  if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
+                },
+              }),
+              pageTimeoutMs
+            );
           } catch (err) {
             // Unexpected exception escaped processPath (e.g. browser died
-            // mid-call).  Record as a failure so the retry logic can handle
-            // it gracefully instead of tearing down the whole worker.
+            // mid-call), or the hard per-page timeout fired above.  Record as
+            // a failure so the retry logic can handle it gracefully instead
+            // of tearing down the whole worker.
             failedPaths.push({
               path: pathSeg === '' ? '/' : '/' + pathSeg,
               message: err && err.message ? err.message : String(err),
@@ -4741,6 +4762,11 @@ async function runPrerender(config) {
             if (failedPaths.length <= 10) {
               process.stderr.write(`prerender: worker exception on ${pathSeg || '/'}: ${failedPaths[failedPaths.length - 1].message}\n`);
             }
+            // A timed-out page is presumed to have wedged the browser (e.g. a
+            // hung page.evaluate on a dead Chrome process) — force the next
+            // path onto a freshly recycled browser rather than reusing one
+            // that may never respond again.
+            pagesSinceRecycle = Math.max(pagesSinceRecycle + 1, browserRecycleEvery);
           } finally {
             activeWorkers--;
             if (activeWorkers === 0 && recycleGate.waitForZero) {
