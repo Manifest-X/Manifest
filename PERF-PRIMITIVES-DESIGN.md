@@ -149,6 +149,36 @@ Alpine.data('inbox', () => ({
 
 ## 4. P2 — deferred subtrees: automatic for closed containers, `x-defer` for the rest
 
+**Status: SHIPPED to master (merge bf5b2aa, 2026-09-01)** —
+`src/scripts/manifest.defer.js` (268 lines), 17 tests across three files
+(happy-dom on real Alpine; popover API stubbed via dispatched
+`beforetoggle`/`toggle`), verified in real Chrome on `/perf`, `/dropdowns`,
+`/combobox` (26 checks) and on a prerendered route. Probe: menu-open input
+latency at parity (~90ms, ≤100ms target met); boot blocked −280…−450ms on
+the demo with 15/31 candidate containers deferred. Implementation
+deviations, all accepted:
+1. `[hidden]` EXCLUDES `[x-route]` — the router hides inactive routes with
+   `hidden` at DCL, so every inactive route would have been deferred. That is
+   a route-level decision and potentially a LARGE win (whole inactive pages
+   hold no bindings); tracked as a Phase 2 candidate, not done here.
+2. Containers carrying a child-owning directive (`x-html`, `x-text`,
+   `x-virtual`, `x-colorpicker`, `x-date`, `x-text-edit`, `x-chart`, …) are
+   never deferred — they render their own children.
+3. Empty containers are not registered (tooltip singletons, datepicker
+   shells).
+4. Without the loader there is no `manifest:ready`; prewarm then starts on
+   window `load`. Loader projects are unchanged.
+5. `requestIdleCallback` carries `timeout: 1000` so a never-idle page still
+   drains ≤1 container/s.
+6. Combobox and datepicker generated menus opt OUT (`x-defer.off`) —
+   imperative content; deferring them broke filter-while-closed/calendar refs.
+7. Render pass sets `window.__manifestRender = true` so prerendered output
+   keeps eager markup; the interceptor adopts a serialized stash template on
+   hydration.
+Plugin hook for docs: `manifest:defer-render` fires on the container after
+its children initialize (dropdowns use it to apply `role=menuitem` off the
+gesture — that alone was ~70ms on a 243-row menu).
+
 ### The rule (v2, 2026-09-01 — supersedes "defer-by-default in menu primitives")
 
 Deferral keys on **closedness, not data**. We never need to know where a
@@ -353,7 +383,7 @@ may justify the plugin.
 |---|---|---|---|
 | 0 | Harness + baseline | Sonnet 5 (review by coordinator) | new files only |
 | 1a | `$computed` — DONE c06467c | Fable | coordinator session |
-| 1b | `x-defer` + defer-by-default + prerender parity | Fable | worktree agent |
+| 1b | `x-defer` + automatic deferral + prerender parity — DONE bf5b2aa | Fable | worktree agent |
 | 1c | P6 landing model | Fable | worktree agent (manifest.data.js is 11.6k lines — narrow diff) |
 | 2 | P4 docs/warning, P5 stale-first + `$fresh` + request dedupe | Sonnet 5 | any |
 | 3 | P3 engine spike, go/no-go | Fable | worktree |
@@ -369,6 +399,14 @@ articles, llms.txt regeneration, `manifest-performance` connector skill
 (agents apply computed/defer/virtual by default) — Phase 2.
 
 ## 9. Open items
+
+- **Probe (§2 amendment, now urgent):** body-wide settle absorbs x-defer's
+  prewarm slices (~55ms each, a 243-row x-for render), inflating
+  `first-open` mutations to ~7k and its blocked time in quiet mode. Move
+  settle to the gesture target's subtree and pause background writes during
+  a gesture window — Phase 2, before the RC A/B numbers are compared.
+- **Route-level deferral** of inactive `[x-route]` subtrees (see §4
+  deviation 1) — Phase 2 candidate with its own soak; the router owns it.
 
 - Playcom: Chrome performance profile of Perf-Base first-open (item 3) —
   for attribution verification, not blocking.
