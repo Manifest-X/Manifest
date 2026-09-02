@@ -1368,3 +1368,28 @@ render another workspace's messages) — the app re-opens as it navigates;
 aggregate handles not persisted (`$chat.merge` reports `stale` from members);
 `ManifestDataPersist.configure()` returns `true` only when a `$x` source opted
 in.
+
+### 12.5 Gate findings on next.0/next.1 → fixes in 4a9e1aa (2026-09-02)
+
+- **Boot double read (law):** with a scope expression configured and the auth
+  plugin still booting, an empty scope is *pending*: no keys, no wipes, no
+  resets. When identity/teams resolve, rows loaded meanwhile stay and are
+  written under the real scope; only sources that have not landed hydrate from
+  disk. A real A→B switch still resets. Settles on `manifest:auth:teams-loaded`,
+  on `initialized` when unauthenticated or teams are off, on logout /
+  session-cleared, or after 10s. Before: "" → team id at boot was treated as a
+  switch → every persisted source reset + reloaded (18 redundant Appwrite reads
+  per reload on Playcom) and the "" scope wiped.
+- **Team prefs storm:** `getUserGeneratedRoles` (team prefs) is cached per team
+  for 15s and shared by concurrent permission checks (null cached too);
+  dropped on any `manifest:auth:*` event or a prefs write (8 call sites). Was
+  one `teams.getPrefs` per check: 14 per boot from framework frames.
+- **Playcom's numbers (next.1, hidden pane, event-based rows):** persisted
+  reload domInteractive 278ms, inbox rows from disk 765ms, shell 69/69 from
+  the worker; SW-off run: blocked time identical (4.9s vs 4.5–5.4s) → the
+  blocked tail is their data plane + render (118 API calls, 106 Appwrite; two
+  app lanes running), not worker scheduling. Their "defer never arms" report
+  was a hidden-pane artifact (retracted); headless matrix on next.1 arms in
+  every variant. Open: "rows from disk at 6.4s when the worker is not
+  controlling" — hidden-pane run, unverified.
+- Tests: 33 persistence (+1), 3 roles-cache (new). Suite 466/466.
