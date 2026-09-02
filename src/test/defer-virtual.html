@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- Scratch page: x-defer × x-virtual inside <menu popover>. Loader derive path.
+     Four menus: A defer+virtual, B x-defer.off+virtual, C defer+virtual with rows gated
+     on open (Playcom's pattern), D plain list control. window.T collects timings. -->
+
+<head>
+    <meta charset="UTF-8">
+    <title>x-defer × x-virtual</title>
+    <link rel="manifest" href="/manifest.json">
+    <script src="/scripts/manifest.js" data-plugin-base="/scripts/"></script>
+    <script>
+        window.T = {};
+        window.E = [];
+        window.addEventListener('error', (e) => E.push(String(e.message)));
+        function tag(id) {
+            const m = document.getElementById(id);
+            const rec = T[id] = {};
+            ['beforetoggle', 'toggle'].forEach((t) => m.addEventListener(t, (e) => { rec[t + ':' + e.newState] = performance.now(); }, { capture: true }));
+            new MutationObserver(() => { if (!rec.firstLi && m.querySelector('li')) rec.firstLi = performance.now(); }).observe(m, { childList: true, subtree: true });
+        }
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('rows', () => ({
+                open: false,
+                all: Array.from({ length: 243 }, (_, i) => ({ id: i, name: 'Country ' + i })),
+                get gated() { return this.open ? this.all : [] },
+            }));
+        });
+        window.addEventListener('load', () => ['a', 'b', 'c', 'd', 'e'].forEach(tag));
+    </script>
+    <style>.scroll { height: 16rem; overflow: auto; }</style>
+</head>
+
+<body>
+    <div x-data="rows" class="col gap-4 p-6">
+        <button id="open-a" popovertarget="a">A defer + virtual</button>
+        <menu popover id="a">
+            <div x-virtual class="scroll"><ul><template x-for="row in all" :key="row.id"><li x-text="row.name"></li></template></ul></div>
+        </menu>
+
+        <button id="open-b" popovertarget="b">B x-defer.off + virtual</button>
+        <menu popover id="b" x-defer.off>
+            <div x-virtual class="scroll"><ul><template x-for="row in all" :key="row.id"><li x-text="row.name"></li></template></ul></div>
+        </menu>
+
+        <button id="open-c" popovertarget="c" @click="open = true">C defer + virtual, rows gated on open</button>
+        <menu popover id="c" @toggle="open = $event.newState === 'open'">
+            <div x-virtual class="scroll"><ul><template x-for="row in gated" :key="row.id"><li x-text="row.name"></li></template></ul></div>
+        </menu>
+
+        <button id="open-e" popovertarget="e">E x-defer.lazy + virtual (never prewarmed → cold beforetoggle render)</button>
+        <menu popover id="e" x-defer.lazy>
+            <div x-virtual class="scroll"><ul><template x-for="row in all" :key="row.id"><li x-text="row.name"></li></template></ul></div>
+        </menu>
+
+        <button id="open-d" popovertarget="d">D plain list (control)</button>
+        <menu popover id="d">
+            <div class="scroll"><ul><template x-for="row in all" :key="row.id"><li x-text="row.name"></li></template></ul></div>
+        </menu>
+    </div>
+</body>
+
+</html>

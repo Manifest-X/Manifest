@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const idleQueue = []
 const idleOpts = []
 window.requestIdleCallback = (fn, opts) => { idleQueue.push(fn); idleOpts.push(opts); return idleQueue.length }
-const runIdle = () => { const fn = idleQueue.shift(); if (fn) fn({ didTimeout: false, timeRemaining: () => 50 }) }
+const runIdle = (idle = false) => { const fn = idleQueue.shift(); if (fn) fn(idle ? { didTimeout: false, timeRemaining: () => 50 } : { didTimeout: true, timeRemaining: () => 0 }) }
 
 // Emulate the loader so the standalone `load` fallback never fires prewarm.
 window.__manifestLoaderStarted = true
@@ -226,7 +226,7 @@ describe('prewarm', () => {
         idleOpts.length = 0
         mount(`<div x-data><menu popover id="quiet"><li x-init="counts.quiet = 1"></li></menu></div>`)
         expect(idleQueue.length).toBe(1)
-        expect(idleOpts[0]).toEqual({ timeout: 1000 })
+        expect(idleOpts[0]).toEqual({ timeout: 500 })
         runIdle()
         expect(window.counts.quiet).toBe(1)
     })
@@ -240,6 +240,28 @@ describe('prewarm', () => {
         expect(idleOpts[0]).toEqual({ timeout: 100 })
         runIdle()
         expect(window.counts.fresh).toBe(1)
+    })
+
+    it('batches several containers in one genuinely idle slice, one per forced slice', () => {
+        while (idleQueue.length) runIdle()
+        const host = mount(`<div x-data>` + [1, 2, 3].map((i) => `<menu popover id="b` + i + `"><li x-init="counts.batch = (counts.batch || 0) + 1"></li></menu>`).join('') + `</div>`)
+        runIdle(true)
+        expect(window.counts.batch).toBe(3)
+        mount(`<div x-data>` + [1, 2].map((i) => `<menu popover id="f` + i + `"><li x-init="counts.forced = (counts.forced || 0) + 1"></li></menu>`).join('') + `</div>`)
+        runIdle()
+        expect(window.counts.forced).toBe(1)
+        runIdle()
+        expect(window.counts.forced).toBe(2)
+        expect(host).toBeTruthy()
+    })
+
+    it('never prewarms containers under a hidden route', () => {
+        while (idleQueue.length) runIdle()
+        mount(`<div x-data><div x-route="/away" hidden><menu popover id="away"><li x-init="counts.away = 1"></li></menu></div><menu popover id="here"><li x-init="counts.here = 1"></li></menu></div>`)
+        while (idleQueue.length) runIdle()
+        expect(window.counts.here).toBe(1)
+        expect(window.counts.away).toBeUndefined()
+        expect(window.ManifestDefer.isPending(document.getElementById('away'))).toBe(true)
     })
 
     it('caps urgent containers per gesture', () => {
