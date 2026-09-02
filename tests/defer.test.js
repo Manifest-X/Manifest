@@ -251,6 +251,8 @@ describe('prewarm', () => {
         drain()
         const host = mount(`<div x-data>` + [1, 2, 3].map((i) => `<menu popover id="b` + i + `"><li x-init="counts.batch = (counts.batch || 0) + 1"></li></menu>`).join('') + `</div>`)
         runIdle('batch')
+        expect(window.counts.batch).toBe(2)   // SLICE_MAX: two per idle slice
+        runIdle('batch-rest')
         expect(window.counts.batch).toBe(3)
         mount(`<div x-data>` + [1, 2].map((i) => `<menu popover id="f` + i + `"><li x-init="counts.forced = (counts.forced || 0) + 1"></li></menu>`).join('') + `</div>`)
         runIdle('forced')

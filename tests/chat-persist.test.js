@@ -71,7 +71,7 @@ async function load(opts = {}) {
     }
     for (const name of ['ManifestChatStore', 'ManifestChatAdapters', 'ensureManifestChatInitialized', 'ManifestData']) delete window[name]
     Alpine.store('auth', { currentTeam: opts.team ? { $id: opts.team } : null })
-    const manifest = {
+    const manifest = opts.manifest || {
         data: {},
         persistence: opts.scope === false ? undefined : { scope: '$auth.currentTeam?.$id' },
         chat: opts.persist === undefined ? { appwriteTableId: 'x' } : { persist: opts.persist },
@@ -327,6 +327,35 @@ describe('open → hydrate → reconcile', () => {
         expect(h.messages[0].status).toBe('read')
         expect(h.messages[0].meta.tx).toEqual({ lang: 'cs', text: 'Ahoj' })
         expect(h.messages[0].meta).toBe(before)   // same meta object across commits
+    })
+
+    it('boot: a pending scope resolving keeps the open window and hydrates it under the real scope', async () => {
+        idb.seed(DB(), record('A', 'c1', [msg('m1', 1), msg('m2', 2)]))
+        const { chat, net, auth, dispatch, cp } = await load({ persist: true, team: null, manifest: { data: {}, persistence: { scope: '$auth.currentTeam?.$id' }, appwrite: { auth: { teams: {} } }, chat: { persist: true } } })
+        const release = net.gateOpen()
+        const h = chat.open('c1', { adapter: net.adapter })
+        await settle()
+        expect(h.messages.length).toBe(0)   // scope unknown: nothing read under it
+        auth().currentTeam = { $id: 'A' }
+        dispatch('manifest:auth:teams-loaded')
+        await settle()
+        expect(h.status).toBe('loading')    // not reset to idle
+        expect(ids(h.messages)).toEqual(['m1', 'm2'])
+        expect(h.stale).toBe(true)
+        release(); await settle()
+        expect(h.stale).toBe(false)
+        await cp.flushPending()
+    })
+
+    it('index ids without a record are pruned on adoption', async () => {
+        idb.seed(DB(), record('', 'c1', [msg('m1', 1)]))
+        idb.seed(DB(), { key: '|chat', kind: 'chat-index', scope: '', recent: ['ghost', 'c1', 'copilot-_new:0-1'], savedAt: Date.now(), frameworkVersion: VERSION })
+        const { open, cp, records } = await load({ persist: true })
+        open('c1'); await settle()
+        await settle(60)   // prune read resolves
+        await cp.flushPending()
+        expect(records().find(r => r.key === '|chat').recent).toEqual(['c1'])
+        expect(cp.persistence().conversations.map(c => c.id)).toEqual(['c1'])
     })
 
     it('a send while stale survives the reconcile', async () => {

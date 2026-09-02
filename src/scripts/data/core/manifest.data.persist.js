@@ -114,6 +114,7 @@
     // Reads `persist` per source and top-level `persistence`; true when anything opted in
     function configure(manifest) {
         state.configured = true;
+        state.manifest = manifest || null;
         state.sources.clear();
         for (const [name, source] of Object.entries(manifest?.data || {})) {
             if (!source || typeof source !== 'object') continue;
@@ -143,6 +144,7 @@
         if (state.enabled || state.disabled) return state.enabled;
         if (typeof indexedDB === 'undefined' || !indexedDB) return false;
         state.enabled = true;
+        watchAuthSettle(state.manifest);
         if (!state.dbName) state.dbName = `manifest:${(typeof location !== 'undefined' && location.origin) || 'null'}`;
         if (!state.frameworkVersion) state.frameworkVersion = buildVersion;
         state.scope = evaluateScope();
@@ -285,7 +287,7 @@
             if (wasPending) onLanded([...state.sources.keys()]);   // rows that landed while pending get written under the real scope
         }
         if (typeof window !== 'undefined') {
-            try { window.dispatchEvent(new CustomEvent('manifest:persist:scope', { detail: { scope: next, previous: prev } })); } catch { /* no-op */ }
+            try { window.dispatchEvent(new CustomEvent('manifest:persist:scope', { detail: { scope: next, previous: prev, boot: wasPending } })); } catch { /* no-op */ }
         }
     }
 

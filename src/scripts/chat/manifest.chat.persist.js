@@ -117,8 +117,18 @@
             state.resetQueued = true;
             queueMicrotask(() => { state.resetQueued = false; reset(); });
         };
-        window.addEventListener('manifest:persist:scope', queue);
+        // pending → resolved at boot is not a switch: keep every window, hydrate the ones still loading, write under the real scope
+        window.addEventListener('manifest:persist:scope', (e) => { if (e.detail && e.detail.boot) adoptScope(); else queue(); });
         for (const type of WIPE_EVENTS) window.addEventListener(type, queue);
+    }
+
+    function adoptScope() {
+        state.recent = null; state.indexPromise = null; state.indexDirty = false;
+        state.saved.clear(); state.windows.clear();
+        for (const [id, h] of state.handles) {
+            hydrate(id).then(w => { if (w && h.hydrate) h.hydrate(w.messages); }).catch(noop);
+            touch(id);
+        }
     }
 
     // Drop every in-memory window and the index; the store's scope prefix already
@@ -139,7 +149,24 @@
         const r = records();
         const ok = rec && typeof rec === 'object' && rec.scope === (r ? r.scope() : '') && Array.isArray(rec.recent);
         state.recent = ok ? rec.recent.filter(id => typeof id === 'string' || typeof id === 'number') : [];
+        pruneIndex();
         return state.recent;
+    }
+
+    // Drop index ids that have no record (entries from before slots were earned on first write)
+    function pruneIndex() {
+        const r = records(); const ids = state.recent;
+        if (!r || !ids || !ids.length) return;
+        const gen = state.generation;
+        const asked = ids.slice();   // the live array may be reordered by a promote while the read is in flight
+        r.get(asked.map(id => r.key('chat', id))).then(got => {
+            if (gen !== state.generation || state.recent !== ids || !got) return;
+            const found = new Set(asked.filter((id, i) => !!got[i]));
+            const keep = ids.filter(id => found.has(id) || (state.handles.get(id) && state.handles.get(id).count() > 0));
+            if (keep.length === ids.length) return;
+            ids.length = 0; ids.push(...keep);
+            state.indexDirty = true; state.pending.set(INDEX, Date.now() + WRITE_DEBOUNCE_MS); schedule();
+        }).catch(noop);
     }
 
     function ensureIndex() {

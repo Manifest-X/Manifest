@@ -241,7 +241,7 @@
             commit(); commitParticipants(); commitTyping();
         }
 
-        if (P() && !isAggregate && opts.persistWindow !== false) detach = P().attach(conversationId, { snapshot, reset, stale: () => state.stale, count: () => _msgs.length });
+        if (P() && !isAggregate && opts.persistWindow !== false) detach = P().attach(conversationId, { snapshot, reset, hydrate: hydrateWindow, stale: () => state.stale, count: () => _msgs.length });
 
         async function open() {
             state.status = 'loading';
