@@ -9,6 +9,8 @@
 (function () {
 	'use strict';
 
+	const loaderScript = document.currentScript;
+
 	/*
 	 * Hydration contract runtime: prerendered MPA pages carry a `#__manifest_hydrate__`
 	 * diff of source-authored attributes (and data-hydrate innerHTML). Applied once
@@ -374,21 +376,37 @@
 	}
 
 	// Inject one script URL and wait for it to load and execute
+	// Has an existing script tag already executed? Loader-injected tags are marked on load;
+	// a parser-inserted classic tag ahead of the loader ran before it; a resource-timing
+	// entry means the fetch finished; a complete document has run every parser tag.
+	function scriptSettled(el) {
+		if (el.hasAttribute('data-mnfst-loaded')) return true;
+		if (document.readyState === 'complete') return true;
+		if (!el.async && !el.defer && loaderScript && (loaderScript.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) return true;
+		try { if (el.src && performance.getEntriesByName(el.src).length) return true; } catch (_) { /* no resource timing */ }
+		return false;
+	}
+
 	function injectScript(url) {
 		return new Promise((resolve, reject) => {
-			// Skip if script with same src already in DOM (e.g. prerendered HTML or second loader run)
+			// Same src already in the DOM (author tag, prerendered HTML, second loader run)
 			const existing = document.querySelector(`script[src="${url}"]`);
 			if (existing) {
-				if (existing.complete) return resolve();
-				existing.addEventListener('load', () => resolve());
-				existing.addEventListener('error', () => reject(new Error(`Failed to load ${url}`)));
+				if (scriptSettled(existing)) return resolve();
+				let done = false;
+				const finish = () => { if (!done) { done = true; resolve(); } };
+				existing.addEventListener('load', finish);
+				existing.addEventListener('error', () => { if (!done) { done = true; reject(new Error(`Failed to load ${url}`)); } });
+				// A tag that already fired never fires again — never let boot hang on it
+				const poll = setInterval(() => { if (scriptSettled(existing)) { clearInterval(poll); finish(); } }, 50);
+				setTimeout(() => { clearInterval(poll); finish(); }, 4000);
 				return;
 			}
 
 			const script = document.createElement('script');
 			script.src = url;
 			script.async = false; // Ensure scripts execute in order
-			script.onload = () => resolve();
+			script.onload = () => { script.setAttribute('data-mnfst-loaded', ''); resolve(); };
 			script.onerror = () => { script.remove(); reject(new Error(`Failed to load ${url}`)); };
 			document.head.appendChild(script);
 		});
