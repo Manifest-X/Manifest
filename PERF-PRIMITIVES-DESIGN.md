@@ -1348,6 +1348,19 @@ a channel, so the secondary identity is `(meta.channel, externalId)` when
 row with the same externalId; a channel-less incoming never matches a channel
 row.
 
+Playcom gate findings on next.0 (2026-09-02): (1) their pane opens a first
+handle then swaps to a composed-adapter handle for the same id; hydration was
+per handle and asynchronous, so the second handle's instant load beat the
+IndexedDB read every time and the disk window never rendered. Fix: the last
+known window per conversation (disk read or written snapshot) is kept in
+memory for the generation (`ManifestChatPersist.peek`) and any re-open
+hydrates from it synchronously before the adapter load starts; a first open
+still races (never awaits). (2) Ephemeral ids (`copilot-_new:0-<ts>`, 0
+messages) took index slots at open(): a slot is now earned on the first
+non-empty write; an evicted conversation re-enters on its next message
+(activity is recency); `$chat.open(id, { persist: false })` opts a handle out
+entirely. Tests 26 (was 22).
+
 Deviations: `meta.externalId` is now a general secondary identity in the
 store's `upsert` (applies to realtime too); after a scope change handles go
 idle rather than re-opening (re-opening old ids under a new scope could
