@@ -1440,3 +1440,13 @@ only patches classes that appear later (user content, late components).
 Acceptance: zero style inserts before first paint on a prerendered page; JIT
 patches only for classes absent from the static sheet; `utilitiesReady`
 before first paint. Owner/priority: Andrew.
+
+**Framework half SHIPPED (merge 5b862e5, 2026-09-02):** `lib/manifest.utilities.node.mjs`
+exports `compileUtilities({ classes, themeCss, baseCss })` and `scanClasses(html)`
+(same generator prototypes, no fork); CLI `scripts/utilities-static.mjs <dir>`;
+runtime reads a `<link|style data-mnfst-utilities>` once and skips covered
+classes in `compile()` and the localStorage replay; render's
+`prerender.utilities.css` link carries the attribute. Proof (src docs homepage,
+real Chrome, 5s): cold 2 style writes → 0 with a static sheet. Tests +15
+(505/505). Not DOM-free: sync.js critical pre-paint path (lower impact).
+Hosting half (publish scan + emit + link injection) in progress in Manifest-MCP.
