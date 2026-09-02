@@ -742,8 +742,19 @@ runs at +50/+150/+400ms and a new gesture restarts it. Validated on the
 candidate tree (idle window quiet; warm/pending move only in genuine idle).
 Lesson, as law: never give `requestIdleCallback` a timeout for optional work.
 
-Open, not reproducible here: Playcom's ~950ms countries open with the thread
-idle after toggle:open (both trees, defer on/off). A full
+RESOLVED (Playcom, same day): the ~950ms countries open was an instrument
+artifact — Chrome aligns timers in a HIDDEN document to 1s wake-ups once a
+timer chain nests past depth 5, and their driven browser pane is not
+displayed; the 5ms poll, their `vReady` setTimeout(0), and the post-mount
+waits were all quantised to the next second. Timer-free re-measure (toggle
+events + PerformanceObserver): cold open of the plain 243-row picker ≈ 90ms
+of work. Standing from their RC.3 report: everything PerformanceObserver /
+MutationObserver / stats()-based (boot +45–75%, idle-window blocked time,
+cap disarm) — RC.4 remains the fix. Law for all measurements: in a hidden
+document use events and observers only, never timers or rAF; and keep the
+pane displayed or use headless Chrome.
+
+Original note kept for the record: not reproducible here (both trees, defer on/off). A full
 show/hide/attribute/removal trace on their A/B copy (guest session, real
 pointer click) shows one closed→open transition at 232ms and no hide — the
 plain 243-row picker's cold render. An in-page tracing snippet was handed to
