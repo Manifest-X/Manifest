@@ -986,6 +986,25 @@ default path within a minute, independent of any third-party alias cache.
 Ranges keep the old proxy path. Note for Playcom-style deploys: an explicit
 `mnfst@x.y.z` pin remains the reproducible choice for content-hashed gates.
 
+### 10.13 RC `0.5.199-next.0` blocker — loader hang on a pre-existing plugin tag (2026-09-02)
+
+Playcom's staging (and local) never booted on the RC: all plugin scripts loaded,
+`__manifestLoaded` never set, no Alpine, blank page, zero errors. Root cause is a
+latent loader bug, byte-identical in 0.5.198: `injectScript` found an existing
+`<script src=…>` for the plugin and tested `existing.complete` (an image
+property; always undefined on scripts), then listened for `load` on a tag that
+had already fired → the plugin promise never settled → `Promise.all` never
+resolved. Trigger: pinning the loader (`data-version`) to the same exact
+version as an author's explicit plugin tag makes the loader's first candidate
+URL match that tag (with `@latest` on the loader the URLs differed, so 0.5.198
+never hit it). Fix (master, `fix(loader): never hang…`): an existing tag resolves
+at once when it has already run — loader-injected tags are marked
+`data-mnfst-loaded` on load; a parser-inserted classic tag ahead of the loader
+has executed; a resource-timing entry exists; or the document is complete —
+plus a 50ms poll and a 4s bounded fallback so boot can never block on it.
+Tests: `tests/loader-inject.test.js` (3; fails on the old loader) + real-Chrome
+proof (old: Alpine undefined, blank; new: boots, one tag). → RC.1 required.
+
 ## 12. Persistence brief (Playcom, 2026-09-02) — PENDING Andrew's scoping, nothing built
 
 Three primitives for instant boot: (1) app-shell service worker — Manifest
