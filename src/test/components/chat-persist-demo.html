@@ -1,0 +1,116 @@
+<!-- Chat persistence harness (PERF-PRIMITIVES-DESIGN.md §12.2 primitive 3):
+     /chat-persist?persist=1&netMs=400&conv=c1&ws=A — a slow fake adapter (60
+     messages, netMs latency, request-time workspace stamp) behind $chat with
+     persisted windows registered at runtime. Driven by scripts/perf/chat-persist.mjs -->
+
+<style>
+  .cpdemo { max-width: 60rem; margin-inline: auto; }
+  .cpdemo .note { font-size: .78rem; color: var(--color-content-subtle); }
+  .cpdemo .log { max-height: 24rem; overflow: auto; border: 1px solid var(--color-line); border-radius: var(--radius); padding: .5rem; }
+  .cpdemo .msg-row { display: flex; gap: .5rem; padding: .15rem 0; font-size: .8rem; }
+  .cpdemo .msg-row .who { font-weight: 600; min-width: 4rem; }
+  .cpdemo pre { font-size: .7rem; max-height: 12rem; overflow: auto; }
+</style>
+
+<div class="cpdemo col gap-4 p-6" x-data="{
+    persistMode: false, netMs: 400, ws: 'A', convId: 'c1', h: null, diag: '',
+
+    init() {
+      const qs = new URLSearchParams(location.search);
+      this.persistMode = qs.get('persist') === '1';
+      this.netMs = parseInt(qs.get('netMs'), 10) || 400;
+      this.ws = qs.get('ws') || 'A';
+      this.convId = qs.get('conv') || 'c1';
+      window.__perfWorkspace = this.ws;
+      window.__chatLoads = 0;
+      this.registerAdapter();
+      window.__chatOpen = (id) => this.open(id);
+      window.__chatSwitch = (ws) => this.switchWs(ws);
+      if (this.persistMode) this.setupPersist(() => this.open(this.convId));
+      else this.open(this.convId);
+    },
+
+    // 60 messages per conversation; the workspace is stamped at REQUEST time
+    registerAdapter() {
+      const netMs = () => this.netMs;
+      window.ManifestChatAdapters.register('slow', () => ({
+        identity: () => ({ id: 'me', kind: 'human', displayName: 'You' }),
+        async load(cid) {
+          window.__chatLoads++;
+          const ws = window.__perfWorkspace;
+          await new Promise(r => setTimeout(r, netMs()));
+          const base = Date.now() - 60 * 60000;
+          const messages = Array.from({ length: 60 }, (_, i) => ({
+            id: cid + '-m' + i, conversationId: cid,
+            author: i % 3 === 0 ? { id: 'me', displayName: 'You' } : { id: 'ana', displayName: 'Ana' },
+            body: { text: ws + ' · ' + cid + ' · #' + i }, ts: base + i * 60000, status: 'delivered',
+            meta: { ws, externalId: 'ext-' + cid + '-' + i }
+          }));
+          return { messages, participants: [], atStart: true, atEnd: true };
+        },
+        subscribe: () => () => {}
+      }));
+    },
+
+    // Runtime opt-in after the data plugin's own persist configure (so the scope expression sticks)
+    setupPersist(then) {
+      const dp = window.ManifestDataPersist, cp = window.ManifestChatPersist;
+      if (!dp || !cp) { then(); return; }
+      const go = () => {
+        dp.setScope('window.__perfWorkspace');
+        cp.configure({ messages: 50, conversations: 30 }).then(then);
+      };
+      const wait = () => (dp.state.configured ? go() : setTimeout(wait, 10));
+      wait();
+    },
+
+    open(id) {
+      if (this.h) this.h.close();
+      this.convId = id;
+      this.h = this.$chat.open(id, { adapter: 'slow' });
+      return this.h;
+    },
+
+    switchWs(ws) {
+      this.ws = ws;
+      window.__perfWorkspace = ws;
+      window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'));
+    },
+
+    refreshDiag() { this.diag = JSON.stringify(this.$chat.persistence(), null, 1); }
+  }">
+
+  <div class="col gap-1">
+    <strong>$chat persisted windows — harness</strong>
+    <span class="note">?persist=1 registers chat.persist at runtime under a fake workspace scope (window.__perfWorkspace). netMs delays every adapter load.</span>
+  </div>
+
+  <div id="chat-persist-status" class="row-wrap gap-3 note"
+       :data-persist="persistMode ? '1' : null" :data-ws="ws" :data-conv="convId"
+       :data-status="h ? h.status : ''" :data-stale="String(h ? h.stale : false)" :data-count="h ? h.messages.length : 0">
+    <span>ws <b x-text="ws"></b></span>
+    <span>conv <b x-text="convId"></b></span>
+    <span>status <b x-text="h ? h.status : '—'"></b></span>
+    <span>stale <b x-text="h ? h.stale : '—'"></b></span>
+    <span>messages <b x-text="h ? h.messages.length : 0"></b></span>
+    <span>adapter loads <b x-text="$chat.version && window.__chatLoads"></b></span>
+  </div>
+
+  <div class="row-wrap gap-2">
+    <button class="outlined small" @click="open('c' + (parseInt(convId.slice(1), 10) + 1))">open next conversation</button>
+    <button class="outlined small" @click="open(convId)">re-open</button>
+    <button class="outlined small" @click="switchWs(ws === 'A' ? 'B' : 'A')">switch workspace</button>
+    <button class="ghost small" @click="refreshDiag()">$chat.persistence()</button>
+  </div>
+
+  <div class="log" data-test="chat-persist-log">
+    <template x-for="m in (h ? h.messages : [])" :key="m.id">
+      <div class="msg-row" :data-ws="m.meta && m.meta.ws" :data-id="m.id">
+        <span class="who" x-text="m.author && m.author.displayName"></span>
+        <span x-text="m.body.text"></span>
+      </div>
+    </template>
+  </div>
+
+  <pre x-show="diag" x-text="diag"></pre>
+</div>
