@@ -106,6 +106,7 @@ function render(rec) {
         el.appendChild(content);
     });
     Array.from(el.children).forEach((child) => Alpine.initTree(child));
+    el.dispatchEvent(new CustomEvent('manifest:defer-render'));
 }
 
 function teardown(rec) {

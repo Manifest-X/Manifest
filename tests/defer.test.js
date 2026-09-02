@@ -96,11 +96,14 @@ describe('open signals', () => {
     it('renders a popover synchronously on beforeToggle open, then child directives run', () => {
         const host = mount(`<div x-data><menu popover id="m"><li x-init="counts.m = (counts.m || 0) + 1" x-text="'row'"></li></menu></div>`)
         const menu = host.querySelector('#m')
+        let renderedRows = -1
+        menu.addEventListener('manifest:defer-render', () => { renderedRows = menu.querySelectorAll('li').length })
         expect(window.counts.m).toBeUndefined()
         openPopover(menu)
         expect(window.counts.m).toBe(1)
         expect(stash(menu)).toBeNull()
         expect(menu.querySelector('li').textContent).toBe('row')
+        expect(renderedRows).toBe(1)
     })
 
     it('renders a dialog when it gains the open attribute', async () => {

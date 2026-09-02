@@ -207,10 +207,16 @@ function initializeDropdownPlugin() {
                         el.setAttribute('aria-controls', menu.id);
                         el.setAttribute('aria-expanded', menu.matches(':popover-open') ? 'true' : 'false');
                         if (!menu.hasAttribute('role')) menu.setAttribute('role', 'menu');
-                        // Deferred menus have no items until first open — repeated on toggle
-                        menu.querySelectorAll('li').forEach((li) => {
+                        // Deferred menus get their items later — role them off the gesture,
+                        // never in the toggle task (243 role writes on a visible list ≈ 70ms)
+                        const roleItems = () => menu.querySelectorAll('li').forEach((li) => {
                             if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
                         });
+                        roleItems();
+                        if (!menu.__mnfstRoleOnRender) {
+                            menu.__mnfstRoleOnRender = true;
+                            menu.addEventListener('manifest:defer-render', roleItems);
+                        }
                         // Keep aria-expanded in sync across every trigger of this menu.
                         if (!menu.__mnfstAriaToggleBound) {
                             menu.__mnfstAriaToggleBound = true;
@@ -433,9 +439,6 @@ function initializeDropdownPlugin() {
                                 if (!li.hasAttribute('tabindex')) {
                                     li.setAttribute('tabindex', '-1');
                                 }
-                                if (menu.getAttribute('role') === 'menu' && !li.hasAttribute('role')) {
-                                    li.setAttribute('role', 'menuitem');
-                                }
                             });
                             // When the menu has no natively focusable control, make the
                             // first item the keyboard entry point.
@@ -476,19 +479,20 @@ function initializeDropdownPlugin() {
                         };
 
                         // Set up listeners on existing menu items
+                        const wiredItems = new WeakSet();
                         const setupMenuItemListeners = () => {
                             const menuItems = menu.querySelectorAll('li, button, a, [role="menuitem"]');
                             menuItems.forEach(item => {
-                                if (item.__mnfstHoverWired) return;
-                                item.__mnfstHoverWired = true;
+                                if (wiredItems.has(item)) return;
+                                wiredItems.add(item);
                                 item.addEventListener('mouseenter', cancelCloseTimer);
                             });
                         };
 
                         // Setup listeners after a brief delay to ensure menu is rendered;
-                        // again on open for items a deferred menu renders late
+                        // again when a deferred menu renders its items
                         setTimeout(setupMenuItemListeners, 10);
-                        menu.addEventListener('toggle', (e) => { if (e.newState === 'open') setupMenuItemListeners(); });
+                        menu.addEventListener('manifest:defer-render', setupMenuItemListeners);
                     }
                 } // End of setupDropdown function
             });
