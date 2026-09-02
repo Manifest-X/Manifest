@@ -14,12 +14,14 @@ const DEFAULT_SELECTORS = {
   altRow: '[data-perf-alt-row]',
   openMenu: '#perf-open-menu',
   menuPopover: '#perf-menu-0',
-  localWrite: '#perf-local-write' // optional: one-field local write on one row (P6); skipped when absent
+  localWrite: '#perf-local-write', // optional: one-field local write on one row (P6); skipped when absent
+  detailPane: '[data-perf-detail-target]', // settle target: first-open/warm-switch
+  rowContainer: '.conv-list' // settle target: local-write (the row's list container)
 };
 
 // ---- CLI args ----
 function parseArgs(argv) {
-  const out = { samples: 3 };
+  const out = { samples: 3, pauseBackground: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--url') out.url = argv[++i];
@@ -28,8 +30,34 @@ function parseArgs(argv) {
     else if (a === '--budget') out.budget = JSON.parse(argv[++i]);
     else if (a === '--samples') out.samples = parseInt(argv[++i], 10) || 3;
     else if (a === '--headed') out.headed = true;
+    else if (a === '--settle-target') out.settleTarget = argv[++i];
+    else if (a === '--settle-body') out.settleBody = true;
+    else if (a === '--pause-background') out.pauseBackground = true;
+    else if (a === '--no-pause-background') out.pauseBackground = false;
   }
   return out;
+}
+
+// §2 amendment (§9): which subtree each scenario settles on, and what to
+// label it as in the output. --settle-body opts back into the old
+// body-wide quiescence for parity runs; --settle-target overrides the
+// per-scenario default for every scenario.
+function settleFor(scenario, selectors, args) {
+  if (args.settleBody) return { mode: 'body', selector: null };
+  const defaults = {
+    'first-open': selectors.detailPane,
+    'warm-switch': selectors.detailPane,
+    'menu-open': selectors.menuPopover,
+    'local-write': selectors.rowContainer
+  };
+  const selector = args.settleTarget || defaults[scenario];
+  return selector ? { mode: 'target', selector } : { mode: 'body', selector: null };
+}
+
+// Toggle the demo's background-upsert pause hook (window.__perfPause), when
+// the page exposes it. No-op on pages that don't (e.g. non-perf-demo apps).
+async function setPause(page, on) {
+  await page.evaluate((v) => { if (window.__perfPause) window.__perfPause.upserts = v; }, on);
 }
 
 function median(nums) {
@@ -76,6 +104,26 @@ function installProbeSource() {
       });
       lto.observe({ type: 'longtask', buffered: true });
     } catch (e) { /* longtask not supported */ }
+    state.settleMode = 'body';
+    // (Re)point the quiescence observer at a subtree instead of
+    // document.body (§2 amendment / §9): body-wide quiescence never
+    // arrives under continuous background writes and absorbs x-defer
+    // prewarm slices. Falls back to body if the selector isn't mounted.
+    state.observeTarget = function (mode, selector) {
+      if (state.mo) state.mo.disconnect();
+      let node = document.body;
+      let resolvedMode = 'body';
+      if (mode === 'target' && selector) {
+        const found = document.querySelector(selector);
+        if (found) { node = found; resolvedMode = 'target:' + selector; }
+      }
+      state.settleMode = resolvedMode;
+      state.mo = new MutationObserver((records) => {
+        state.mutations += records.length;
+        state.lastMutationTime = performance.now();
+      });
+      state.mo.observe(node, { childList: true, subtree: true, attributes: true });
+    };
     const attachBodyObserver = () => {
       if (!document.documentElement) { setTimeout(attachBodyObserver, 0); return; }
       if (!document.body) {
@@ -85,16 +133,13 @@ function installProbeSource() {
         bootObs.observe(document.documentElement, { childList: true });
         return;
       }
-      state.mo = new MutationObserver((records) => {
-        state.mutations += records.length;
-        state.lastMutationTime = performance.now();
-      });
-      state.mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+      state.observeTarget('body', null);
     };
     attachBodyObserver();
-    state.reset = function () {
+    state.reset = function (settleMode, settleSelector) {
       state.longtasks = []; state.mutations = 0; state.lastMutationTime = 0;
       state.gestureStart = null; state.toggleFirstPaint = null;
+      if (settleMode) state.observeTarget(settleMode, settleSelector);
     };
     // Capture-phase pointerdown = gesture start (§2). Fires once, then detaches.
     state.armGesture = function (selector) {
@@ -150,41 +195,50 @@ async function collectWindow(page, settleEnd) {
   return { blockedMs, longestTaskMs, mutations: raw.mutations };
 }
 
-async function sampleFirstOpen(page, url, selectors) {
+async function sampleFirstOpen(page, url, selectors, settle, pauseBackground) {
   await gotoAndBoot(page, url);
-  await page.evaluate(() => window.__perfProbe.reset());
+  await page.evaluate((m, s) => window.__perfProbe.reset(m, s), settle.mode, settle.selector);
+  if (pauseBackground) await setPause(page, true);
   await page.evaluate((sel) => window.__perfProbe.armGesture(sel), selectors.openRow);
   await page.click(selectors.openRow);
   const settleEnd = await page.evaluate(() => window.__perfProbe.waitSettle());
+  if (pauseBackground) await setPause(page, false);
   const win = await collectWindow(page, settleEnd);
-  return { scenario: 'first-open', ...win, inputLatencyMs: null };
+  const settleMode = await page.evaluate(() => window.__perfProbe.settleMode);
+  return { scenario: 'first-open', ...win, inputLatencyMs: null, settle: settleMode };
 }
 
-async function sampleWarmSwitch(page, selectors) {
+async function sampleWarmSwitch(page, selectors, settle, pauseBackground) {
   // Assumes openRow is already warm and altRow is currently active.
-  await page.evaluate(() => window.__perfProbe.reset());
+  await page.evaluate((m, s) => window.__perfProbe.reset(m, s), settle.mode, settle.selector);
+  if (pauseBackground) await setPause(page, true);
   await page.evaluate((sel) => window.__perfProbe.armGesture(sel), selectors.openRow);
   await page.click(selectors.openRow);
   const settleEnd = await page.evaluate(() => window.__perfProbe.waitSettle());
+  if (pauseBackground) await setPause(page, false);
   const win = await collectWindow(page, settleEnd);
+  const settleMode = await page.evaluate(() => window.__perfProbe.settleMode);
   // switch away so the next sample is a real switch back, not a no-op click
   await page.click(selectors.altRow);
   await page.evaluate(() => window.__perfProbe.waitSettle());
-  return { scenario: 'warm-switch', ...win, inputLatencyMs: null };
+  return { scenario: 'warm-switch', ...win, inputLatencyMs: null, settle: settleMode };
 }
 
-async function sampleMenuOpen(page, selectors) {
+async function sampleMenuOpen(page, selectors, settle, pauseBackground) {
   const isOpen = await page.evaluate((sel) => !!document.querySelector(sel)?.matches(':popover-open'), selectors.menuPopover);
   if (isOpen) {
     await page.click(selectors.openMenu);
     await page.evaluate(() => window.__perfProbe.waitSettle());
   }
-  await page.evaluate(() => window.__perfProbe.reset());
+  await page.evaluate((m, s) => window.__perfProbe.reset(m, s), settle.mode, settle.selector);
+  if (pauseBackground) await setPause(page, true);
   await page.evaluate((sel) => window.__perfProbe.armGesture(sel), selectors.openMenu);
   await page.evaluate((sel) => window.__perfProbe.armToggleLatency(sel), selectors.menuPopover);
   await page.click(selectors.openMenu);
   const settleEnd = await page.evaluate(() => window.__perfProbe.waitSettle());
+  if (pauseBackground) await setPause(page, false);
   const win = await collectWindow(page, settleEnd);
+  const settleMode = await page.evaluate(() => window.__perfProbe.settleMode);
   const inputLatencyMs = await page.evaluate(() => {
     const s = window.__perfProbe;
     return (s.toggleFirstPaint != null && s.gestureStart != null) ? (s.toggleFirstPaint - s.gestureStart) : null;
@@ -192,16 +246,19 @@ async function sampleMenuOpen(page, selectors) {
   // leave it closed for the next sample
   await page.click(selectors.openMenu);
   await page.evaluate(() => window.__perfProbe.waitSettle());
-  return { scenario: 'menu-open', ...win, inputLatencyMs };
+  return { scenario: 'menu-open', ...win, inputLatencyMs, settle: settleMode };
 }
 
-async function sampleLocalWrite(page, selectors) {
-  await page.evaluate(() => window.__perfProbe.reset());
+async function sampleLocalWrite(page, selectors, settle, pauseBackground) {
+  await page.evaluate((m, s) => window.__perfProbe.reset(m, s), settle.mode, settle.selector);
+  if (pauseBackground) await setPause(page, true);
   await page.evaluate((sel) => window.__perfProbe.armGesture(sel), selectors.localWrite);
   await page.click(selectors.localWrite);
   const settleEnd = await page.evaluate(() => window.__perfProbe.waitSettle());
+  if (pauseBackground) await setPause(page, false);
   const win = await collectWindow(page, settleEnd);
-  return { scenario: 'local-write', ...win, inputLatencyMs: null };
+  const settleMode = await page.evaluate(() => window.__perfProbe.settleMode);
+  return { scenario: 'local-write', ...win, inputLatencyMs: null, settle: settleMode };
 }
 
 function reportBudget(scenario, medians, budget) {
@@ -261,30 +318,34 @@ async function main() {
     await page.evaluateOnNewDocument(installProbeSource());
 
     // ---- first-open: fresh navigation per sample (never opened this session) ----
+    const firstOpenSettle = settleFor('first-open', selectors, args);
     const firstOpenSamples = [];
     for (let i = 0; i < args.samples; i++) {
-      firstOpenSamples.push(await sampleFirstOpen(page, url, selectors));
+      firstOpenSamples.push(await sampleFirstOpen(page, url, selectors, firstOpenSettle, args.pauseBackground));
     }
 
     // ---- warm-switch: same session, alternate open-row / alt-row ----
+    const warmSwitchSettle = settleFor('warm-switch', selectors, args);
     await page.click(selectors.altRow); // ensure alt-row is active before the loop switches back
     await page.evaluate(() => window.__perfProbe.waitSettle());
     const warmSwitchSamples = [];
     for (let i = 0; i < args.samples; i++) {
-      warmSwitchSamples.push(await sampleWarmSwitch(page, selectors));
+      warmSwitchSamples.push(await sampleWarmSwitch(page, selectors, warmSwitchSettle, args.pauseBackground));
     }
 
     // ---- menu-open: same session, toggle closed -> open each time ----
+    const menuOpenSettle = settleFor('menu-open', selectors, args);
     const menuOpenSamples = [];
     for (let i = 0; i < args.samples; i++) {
-      menuOpenSamples.push(await sampleMenuOpen(page, selectors));
+      menuOpenSamples.push(await sampleMenuOpen(page, selectors, menuOpenSettle, args.pauseBackground));
     }
 
     // ---- local-write: same session, one-field write on one row (only when the page exposes it) ----
+    const localWriteSettle = settleFor('local-write', selectors, args);
     const localWriteSamples = [];
     if (selectors.localWrite && await page.$(selectors.localWrite)) {
       for (let i = 0; i < args.samples; i++) {
-        localWriteSamples.push(await sampleLocalWrite(page, selectors));
+        localWriteSamples.push(await sampleLocalWrite(page, selectors, localWriteSettle, args.pauseBackground));
       }
     }
 
@@ -300,7 +361,8 @@ async function main() {
         blockedMs: median(samples.map((s) => s.blockedMs)),
         longestTaskMs: median(samples.map((s) => s.longestTaskMs)),
         mutations: median(samples.map((s) => s.mutations)),
-        inputLatencyMs: median(samples.map((s) => s.inputLatencyMs))
+        inputLatencyMs: median(samples.map((s) => s.inputLatencyMs)),
+        settle: samples[0].settle
       };
       allResults.push(medians);
       console.log(JSON.stringify(medians));
