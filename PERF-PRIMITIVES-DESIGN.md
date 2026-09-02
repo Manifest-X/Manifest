@@ -929,3 +929,20 @@ rows of 243, cold both times): toggle:open 147ms at +362ms after mount
 (288ms longtask = the pane's own mount overlapping) and **46ms** at +1,196ms
 with **0ms longtask**; search and tick work. The ≤250ms criterion is met on
 the tree that ships, with no warm container needed. Green from Playcom.
+
+### 10.12 Released — `mnfst@0.5.198` on `latest` (2026-09-02)
+
+Promoted with `npm run release` after Playcom's RC.4 pass. Verified: npm
+`latest=0.5.198`; exact-version files on both CDNs; `@latest` payload checked.
+
+**Incident at release:** jsDelivr caches the `@latest` alias for up to 12
+hours (`s-maxage=43200`) and our pull-through Worker proxied aliases from it,
+so for ~4 minutes after publish the default loader path served the 0.5.197
+loader and plugins. Immediate fix: purged jsDelivr's alias for all 144
+shipped files. Structural fix, deployed (manifest-cdn `becd5fa3`): the Worker
+resolves dist-tags (`latest`, `next`, bare package) from
+`registry.npmjs.org/<pkg>/<tag>` with a 60s edge cache and serves the exact
+version from its immutable store under a 60s TTL — a release is live on the
+default path within a minute, independent of any third-party alias cache.
+Ranges keep the old proxy path. Note for Playcom-style deploys: an explicit
+`mnfst@x.y.z` pin remains the reproducible choice for content-hashed gates.
