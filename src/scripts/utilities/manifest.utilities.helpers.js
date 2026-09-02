@@ -337,7 +337,7 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                     if (needsFetch) {
                         // Add timestamp for development cache busting, but keep it minimal
                         const timestamp = Math.floor(now / 1000); // Only changes every second
-                        const url = `${source}?t=${timestamp}`;
+                        const url = `${source}${source.includes('?') ? '&' : '?'}t=${timestamp}`;
 
                         const response = await fetch(url);
 
