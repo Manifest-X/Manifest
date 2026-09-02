@@ -76,10 +76,34 @@
     }
 
     /* ---- Activation: per-area, always-on by default (.gated needs $edit.on()) ---- */
-    let estore;
+    let estore, booted = false, armQueued = false;
     const isActive = (a) => !!a && (!a._edit.gated || (estore && estore.active));
     const anyActive = () => areas().some(isActive);
-    function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); }
+    function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); booted = true; }
+
+    /* ---- Late regions: arm when Alpine initialises them, release when it destroys them ---- */
+    // Arming ran once at boot, so anything rendered later — x-if, a route change, a lazy
+    // component, x-markdown output — stayed inert. Every one of those paths goes through
+    // Alpine.initTree, so the x-edit directive itself is the hook; no observer needed.
+    // Deferred one microtask so the tree Alpine is walking is complete before baselines
+    // are captured, and batched so a burst of regions costs one pass.
+    function armLater() {
+        if (!booted || armQueued) return;   // the boot pass still owns start-up ordering
+        armQueued = true;
+        queueMicrotask(() => { armQueued = false; armAll(); });
+    }
+    // Runs from Alpine's directive cleanup (x-if/x-for teardown, or its own mutation
+    // observer), so a removed region drops its observers and its registry slot.
+    function releaseEdit(el) {
+        Object.keys(themeScopes).forEach(k => { if (themeScopes[k] === el) delete themeScopes[k]; });
+        cssvarControls.delete(el);
+        if (!editEls.has(el)) return;
+        if (el._armed) { disarmArea(el); el._armed = false; }
+        [el, ...el.querySelectorAll('*')].forEach(n => { if (n._sortObserver) { n._sortObserver.disconnect(); n._sortObserver = null; } });
+        editEls.delete(el); delete el._edit;
+        el.removeAttribute('data-edit-area');
+        refresh();
+    }
     // Build B-side source patches from the edit set (storage-agnostic; overlay
     // already auto-persists to localStorage on commit).
     function buildPatches() {

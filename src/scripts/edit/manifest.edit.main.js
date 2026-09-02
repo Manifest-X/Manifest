@@ -10,7 +10,11 @@
     function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch {} if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
-        Alpine.directive('edit', (el, { modifiers, expression }) => registerEdit(el, modifiers, expression));
+        Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
+            registerEdit(el, modifiers, expression);
+            armLater();                        // a region rendered after boot arms itself
+            cleanup(() => releaseEdit(el));    // ...and lets go when Alpine tears it down
+        });
         Alpine.store('edit', {
             active: false, canUndo: false, canRedo: false,
             onPublish: null,                                 // author sets a fn(patches, {log,cursor}) → route to cloud/custom

@@ -93,7 +93,7 @@
         if (theme) themeScopes[k] = el;
         if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
         if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
-        if ((expression || '').trim() && [...editEls].some(e => e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
+        if ((expression || '').trim() && [...editEls].some(e => e !== el && e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);   // re-init of the same element is not a duplicate
         el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, authoring: modifiers.includes('authoring') };
         el.setAttribute('data-edit-area', '');
         editEls.add(el);
@@ -1231,10 +1231,34 @@
     }
 
     /* ---- Activation: per-area, always-on by default (.gated needs $edit.on()) ---- */
-    let estore;
+    let estore, booted = false, armQueued = false;
     const isActive = (a) => !!a && (!a._edit.gated || (estore && estore.active));
     const anyActive = () => areas().some(isActive);
-    function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); }
+    function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); booted = true; }
+
+    /* ---- Late regions: arm when Alpine initialises them, release when it destroys them ---- */
+    // Arming ran once at boot, so anything rendered later — x-if, a route change, a lazy
+    // component, x-markdown output — stayed inert. Every one of those paths goes through
+    // Alpine.initTree, so the x-edit directive itself is the hook; no observer needed.
+    // Deferred one microtask so the tree Alpine is walking is complete before baselines
+    // are captured, and batched so a burst of regions costs one pass.
+    function armLater() {
+        if (!booted || armQueued) return;   // the boot pass still owns start-up ordering
+        armQueued = true;
+        queueMicrotask(() => { armQueued = false; armAll(); });
+    }
+    // Runs from Alpine's directive cleanup (x-if/x-for teardown, or its own mutation
+    // observer), so a removed region drops its observers and its registry slot.
+    function releaseEdit(el) {
+        Object.keys(themeScopes).forEach(k => { if (themeScopes[k] === el) delete themeScopes[k]; });
+        cssvarControls.delete(el);
+        if (!editEls.has(el)) return;
+        if (el._armed) { disarmArea(el); el._armed = false; }
+        [el, ...el.querySelectorAll('*')].forEach(n => { if (n._sortObserver) { n._sortObserver.disconnect(); n._sortObserver = null; } });
+        editEls.delete(el); delete el._edit;
+        el.removeAttribute('data-edit-area');
+        refresh();
+    }
     // Build B-side source patches from the edit set (storage-agnostic; overlay
     // already auto-persists to localStorage on commit).
     function buildPatches() {
@@ -1337,7 +1361,11 @@
     function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch {} if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
-        Alpine.directive('edit', (el, { modifiers, expression }) => registerEdit(el, modifiers, expression));
+        Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
+            registerEdit(el, modifiers, expression);
+            armLater();                        // a region rendered after boot arms itself
+            cleanup(() => releaseEdit(el));    // ...and lets go when Alpine tears it down
+        });
         Alpine.store('edit', {
             active: false, canUndo: false, canRedo: false,
             onPublish: null,                                 // author sets a fn(patches, {log,cursor}) → route to cloud/custom
