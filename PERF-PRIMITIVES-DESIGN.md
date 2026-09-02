@@ -897,3 +897,26 @@ timeout-free scheduler, the route flag, `bindings` in the loader defaults and
 `$stale` in the data plugin. Promotion gate unchanged: Playcom's event-only
 table at RC.2/RC.0 boot and idle levels, countries open ≤250ms by toggle
 events, no regressions → `npm run release` (0.5.198).
+
+### 10.11 RC.4 passes Playcom's gate (2026-09-02) → promote to 0.5.198
+
+B = perf-base-sep2 + 0.5.198-next.4 (A/B branch 50ed38f0), route deferral
+OFF, priority="1" on both real countries menus, pane DISPLAYED, events +
+observers only, load 4.4–5.0 (worst of any row).
+
+| Row | RC.4 | Reference |
+|---|---|---|
+| Boot (+22s) | 34 tasks / **3,336ms** / longest 147ms; /v1/account 2 | RC.2 quiet 32 / 4,589 / 274; RC.3 7.0–8.0s |
+| Idle 3s (+25s) | **0ms** blocked / 414 mutations / 0 fetches | RC.0 0 / 959 (x-text guard) |
+| Cold switch #1 (8s) | 3,960ms / **4,994** mutations / 14 fetches | RC.2 3,961 / 10,952 / 18 |
+| Countries, +500ms after mount | rows on screen 201ms; toggle:open 327ms (395ms longtask — cold render of the plain 243-row list while the pane finishes mounting) | ceiling 250 |
+| Countries, +1,336ms after mount | rows 83ms; toggle:open 83ms | — |
+
+stats(): warm capped at 48, armed at both clicks, bootDrained. No functional
+regressions in what was driven (switches, contact panel, kebab, picker search
+and tick). The single miss is the plain list's cold render, which the
+candidate tree's x-virtual picker addresses (P4 posture). **Verdict: promote
+via `npm run release` → 0.5.198; Playcom staging then takes `latest`.**
+Post-release: docs session from the brief; route-deferral soak on their A/B
+branch when they choose; the `$id`-less-rows and API-URL-reload follow-ups
+stay open.
