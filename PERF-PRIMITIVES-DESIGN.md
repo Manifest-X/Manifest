@@ -524,3 +524,12 @@ prewarm slices until they drain (≤1 container/s). Pin the RC with
 `data-version="<x.y.z-next.n>"` on the loader script; the RC is a
 prerelease under the `next` dist-tag (`npm run release:next`), so `latest`
 stays clear for the real release.
+
+### 10.3 RC published — `mnfst@0.5.198-next.0` (dist-tag `next`, 2026-09-02)
+
+Contains P1 + P2 + P6 + the account pre-flight dedupe on top of 0.5.197.
+Verified: npm dist-tags `latest=0.5.197`, `next=0.5.198-next.0`; jsDelivr and
+cdn.manifestx.dev both serve it (the pull-through treats the prerelease as an
+exact immutable version). Playcom pins `data-version="0.5.198-next.0"` and
+re-runs the `perf-base-sep2` scenario. Gate for promoting to a real release:
+their table + no functional regressions from the soak.
