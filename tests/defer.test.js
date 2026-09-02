@@ -20,8 +20,10 @@ const idleOpts = []
 let idleId = 0
 window.requestIdleCallback = (fn, opts) => { const id = ++idleId; idleQueue.push({ id, fn }); idleOpts.push(opts); return id }
 window.cancelIdleCallback = (id) => { const i = idleQueue.findIndex((x) => x.id === id); if (i >= 0) idleQueue.splice(i, 1) }
-const runIdle = (idle = false) => { const job = idleQueue.shift(); if (job) job.fn(idle ? { didTimeout: false, timeRemaining: () => 50 } : { didTimeout: true, timeRemaining: () => 0 }) }
-const drain = (idle = false) => { let n = 0; while (idleQueue.length) { if (n++ > 1000) throw new Error('drain: idle queue never empties (' + JSON.stringify(window.ManifestDefer.stats()) + ')'); runIdle(idle) } }
+// Deadlines: one = a short idle slice (one container), batch = a long one, forced = a timed-out fire (renders nothing)
+const DEADLINES = { one: { didTimeout: false, timeRemaining: () => 1 }, batch: { didTimeout: false, timeRemaining: () => 50 }, forced: { didTimeout: true, timeRemaining: () => 0 } }
+const runIdle = (mode = 'one') => { const job = idleQueue.shift(); if (job) job.fn(DEADLINES[mode === true ? 'batch' : mode === false ? 'one' : mode]) }
+const drain = (mode = 'one') => { let n = 0; while (idleQueue.length) { if (n++ > 1000) throw new Error('drain: idle queue never empties (' + JSON.stringify(window.ManifestDefer.stats()) + ')'); runIdle(mode) } }
 
 // Emulate the loader so the standalone `load` fallback never fires prewarm.
 window.__manifestLoaderStarted = true
@@ -229,7 +231,7 @@ describe('prewarm', () => {
         idleOpts.length = 0
         mount(`<div x-data><menu popover id="quiet"><li x-init="counts.quiet = 1"></li></menu></div>`)
         expect(idleQueue.length).toBe(1)
-        expect(idleOpts[0]).toEqual({ timeout: 500 })
+        expect(idleOpts[0]).toBeUndefined() // no timeout: genuine idle only
         runIdle()
         expect(window.counts.quiet).toBe(1)
     })
@@ -240,21 +242,21 @@ describe('prewarm', () => {
         document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
         mount(`<div x-data><menu popover id="fresh"><li x-init="counts.fresh = 1"></li></menu></div>`)
         expect(idleQueue.length).toBe(1)
-        expect(idleOpts[0]).toEqual({ timeout: 100 })
+        expect(idleOpts[0]).toBeUndefined()
         runIdle()
         expect(window.counts.fresh).toBe(1)
     })
 
-    it('batches several containers in one genuinely idle slice, one per forced slice', () => {
+    it('batches in a long idle slice, one per short slice, nothing on a timed-out fire', () => {
         drain()
         const host = mount(`<div x-data>` + [1, 2, 3].map((i) => `<menu popover id="b` + i + `"><li x-init="counts.batch = (counts.batch || 0) + 1"></li></menu>`).join('') + `</div>`)
-        runIdle(true)
+        runIdle('batch')
         expect(window.counts.batch).toBe(3)
         mount(`<div x-data>` + [1, 2].map((i) => `<menu popover id="f` + i + `"><li x-init="counts.forced = (counts.forced || 0) + 1"></li></menu>`).join('') + `</div>`)
-        runIdle()
+        runIdle('forced')
+        expect(window.counts.forced).toBeUndefined()
+        runIdle('one')
         expect(window.counts.forced).toBe(1)
-        runIdle()
-        expect(window.counts.forced).toBe(2)
         expect(host).toBeTruthy()
     })
 
@@ -272,7 +274,7 @@ describe('prewarm', () => {
         const cap = window.ManifestDefer.stats().cap
         const warmBefore = window.ManifestDefer.stats().warm
         const host = mount(`<div x-data>` + Array.from({ length: cap + 3 }, (_, i) => `<menu popover id="w` + i + `"><li x-init="counts.w = (counts.w || 0) + 1"></li></menu>`).join('') + `</div>`)
-        drain(true)
+        drain('batch')
         const st = window.ManifestDefer.stats()
         expect(st.warm).toBeLessThanOrEqual(cap)
         expect(window.counts.w).toBeGreaterThanOrEqual(cap - warmBefore)
@@ -296,7 +298,6 @@ describe('prewarm', () => {
         document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
         await new Promise((r) => setTimeout(r, 200))
         expect(menu.__mnfstDefer.urgent).toBe(true)
-        expect(idleOpts[idleOpts.length - 1]).toEqual({ timeout: 100 })
         runIdle()
         expect(window.counts.revealed).toBe(1)
     })

@@ -218,11 +218,12 @@ function wire(rec) {
 
 // ---- Idle prewarm (after manifest:ready; urgent first, then priority asc, then document order) ----
 
-const idle = (fn, timeout) => {
+// Genuine idle only: no timeout, so a never-idle page never prewarms (its stashed containers cost nothing)
+const idle = (fn) => {
     idleIsTimer = !window.requestIdleCallback;
     return idleIsTimer
-        ? setTimeout(() => fn({ didTimeout: true, timeRemaining: () => 0 }), 50)
-        : window.requestIdleCallback(fn, { timeout });
+        ? setTimeout(() => fn({ didTimeout: false, timeRemaining: () => IDLE_BUDGET_MS + 1 }), 200)
+        : window.requestIdleCallback(fn);
 };
 function cancelIdle() {
     if (idleHandle === null) return;
@@ -232,7 +233,6 @@ function cancelIdle() {
 
 // A gesture that revealed a pane (tab switch, panel open) makes its containers urgent
 function promoteNearViewport() {
-    promoteTimer = null;
     if (!ready || !bootDrained) return;
     // The on-screen containers nearest the gesture point (a revealed pane sits under the click)
     const candidates = [];
@@ -255,9 +255,11 @@ function promoteNearViewport() {
 function onGesture(e) {
     lastGestureAt = now();
     if (e && typeof e.clientX === 'number' && (e.clientX || e.clientY)) { gestureX = e.clientX; gestureY = e.clientY; }
-    if (promoteTimer !== null || now() - lastPromoteAt < 500) return;
+    if (now() - lastPromoteAt < 300) return;
+    clearTimeout(promoteTimer);
     lastPromoteAt = now();
-    promoteTimer = setTimeout(promoteNearViewport, 150);
+    // Three passes: a revealed pane lays out and mounts its menus over the next few hundred ms
+    promoteTimer = setTimeout(() => { promoteNearViewport(); promoteTimer = setTimeout(() => { promoteNearViewport(); promoteTimer = setTimeout(promoteNearViewport, 400); }, 150); }, 50);
 }
 
 // Only containers the user can reach: not under a hidden route; visible parents first
@@ -309,19 +311,20 @@ function schedule() {
     if (!head.urgent && warm.size >= PREWARM_CAP) return;       // paused at the cap; resumes when a warm one opens or evicts
     idleHandle = idle((deadline) => {
         idleHandle = null;
-        // Forced fire (never-idle page): one container. Genuine idle: batch within the budget.
+        // Render while the browser reports idle time; the first container of a slice always gets its turn
         let n = 0;
-        do {
+        while (n < SLICE_MAX && (n === 0 || (deadline && deadline.timeRemaining() > IDLE_BUDGET_MS))) {
+            if (deadline && deadline.didTimeout) break;
             const rec = next();
             if (!rec) break;
             if (!rec.urgent && warm.size >= PREWARM_CAP) break;   // cap = max warm; only urgent renders may exceed it
             for (const other of pending) other.near = undefined;
             render(rec, true);
             n++;
-        } while (deadline && !deadline.didTimeout && deadline.timeRemaining() > IDLE_BUDGET_MS && n < SLICE_MAX);
+        }
         evict();
         schedule();
-    }, head.urgent ? 100 : 500);
+    });
 }
 
 function markReady() {
