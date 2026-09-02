@@ -1102,3 +1102,75 @@ Andrew's rule: plugins are feature-level capabilities an author invokes
 Verified on a page with an explicit `data-plugins="toasts,computed"` list:
 only five scripts load (loader, defer, bindings, toasts, computed); a closed
 menu is deferred then prewarmed; `x-computed:hits` renders and recomputes.
+
+### 12.2 Persisted `$x` — contract (accepted 2026-09-02; ships with the perf release)
+
+Extends P5. Off by default; nothing changes for a project that does not opt in.
+
+**manifest.json, per source** (inside the source's data config):
+```json
+"chats": { "url": "...", "persist": true }
+"contacts": { "url": "...", "persist": { "tier": "boot", "maxRows": 2000, "recent": "lastMessageAt", "ttl": "7d", "strip": ["name", "email", "phone", "customFields", "credentials*"] } }
+```
+- `persist: true` = `{ tier: "boot" }` with defaults: `maxRows` 1000, `ttl` 7d,
+  `recent` = `$updatedAt` if present else insertion order, `strip` = [].
+- `tier`: `"boot"` hydrates before the first paint (during data-plugin init,
+  before the first network load of that source); `"lazy"` hydrates on the
+  first `$x.<source>` read. Both land with `fresh: false` → `$stale` is true
+  until the first network landing reconciles (replace by `$id`: rows absent
+  from the fresh landing are removed — reconcile replaces, never adds).
+- `strip`: field names or glob patterns removed from every row before it is
+  written; built-in always-on patterns `*secret*`, `*token*`, `*password*`,
+  `credentials*` (case-insensitive). Runtime hook for computed cases:
+  `ManifestData.persistFilter(source, (row) => row | null)` (return null to
+  skip the row).
+- `maxRows` enforced at write time, keeping the most recent by `recent`.
+- Object sources persist whole (after strip). `$id`-less array sources persist
+  but reconcile by replacement.
+
+**Scope** (top-level `manifest.json`):
+```json
+"persistence": { "scope": "$auth.currentTeam?.$id" }
+```
+An expression evaluated with the magics available; re-evaluated on every
+`manifest:auth:*` event. Store keys are `${scope}|${source}`. When the scope
+value changes: the previous scope's entries are wiped, memory rows for
+persisted sources are cleared, and hydration reruns for the new scope — no
+row from a previous scope is ever rendered. No `scope` configured → a single
+scope `""` (single-tenant), still wiped on logout / session-cleared.
+
+**Wipe API:** `$x.$wipe()` (current scope, all persisted sources),
+`$x.$wipe(source)`, `$x.$wipe({ all: true })` (every scope). Automatic on
+`manifest:auth:logout` and `manifest:auth:session-cleared`.
+
+**Store:** IndexedDB database `manifest:${origin}` (plus the project id from
+manifest.json when present), one object store `sources`, records
+`{ key, scope, source, rows, savedAt, frameworkVersion, deployment }`.
+Writes are debounced (500ms after the last landing of that source), never on
+local optimistic writes alone (the next landing carries them). Quota or
+IndexedDB errors disable persistence for the session silently — never a
+thrown error, never a blocked load. Expired (`ttl`) entries are ignored and
+deleted. A `frameworkVersion` major/minor mismatch is ignored (not migrated).
+
+**Cold boot never waits:** hydration races the network; a hydration that
+arrives after a fresh landing is discarded. Request dedupe (P5) guarantees
+one network request per source regardless.
+
+**Diagnostics:** `ManifestData.persistence()` → `{ enabled, scope, sources:
+[{ source, tier, rows, savedAt, stale }] }`.
+
+**P5 follow-ups folded in:** API-URL sources must honour the reload contract
+(failed reload keeps rows, sets `$error`, never lands the default value over
+live rows); `$id`-less rows on reload documented as replacement.
+
+**Primitive 3 (chat windows) contract, built after this on the same store:**
+`chat` config `persist: { messages: 50, conversations: 30 }`; key
+`${scope}|chat|${conversationId}`; hydrate on `$chat.open()` before the
+adapter load, reconcile by message id and `meta.externalId`; same scope,
+wipe, ttl and strip rules.
+
+**Acceptance (Playcom rig):** warm reload first useful paint of the inbox
+list from disk < 500ms; boot blocked time unchanged (~3s) or better; cold
+boot unchanged; logout → the scope's IndexedDB entries empty (assert);
+workspace switch → no previous-workspace row rendered at any point (assert
+by observing the list during the switch); zero additional server calls.
