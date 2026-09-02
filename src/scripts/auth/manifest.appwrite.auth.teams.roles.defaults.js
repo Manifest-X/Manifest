@@ -135,6 +135,7 @@ function initializeTeamsRolesDefaults() {
                         roles: updatedRoles,
                         deletedTemplateRoles: deletedRoles // Update deleted list in team preferences
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -238,6 +239,7 @@ function initializeTeamsRolesDefaults() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
+                        invalidateRolesCache(teamId);
                         await this._appwrite.teams.updatePrefs({
                             teamId: teamId,
                             prefs: updatedPrefs

@@ -356,6 +356,31 @@ describe('validity', () => {
 })
 
 describe('scope', () => {
+    it('boot with an unresolved scope: rows loaded meanwhile are kept, nothing is wiped or reloaded when the scope resolves', async () => {
+        idb.seed(DB(), record('A', 'settings', { theme: 'from-disk' }))
+        const { data, net, auth, dispatch, records, persist, main } = await load({ team: null, manifest: { ...defaultManifest(), appwrite: { auth: { teams: {} } } } })
+        expect(persist.persistence().scope).toBe('')
+        // The app reads sources before auth resolves (its own ordering); one network load each
+        await main.loadDataSource('chats')
+        expect(ids(data().chats)).toEqual(['c0', 'c1'])
+        expect(net.byName.chats).toBe(1)
+        await persist.flushPending()
+        expect(records().filter(r => r.scope === '').length).toBe(0)   // nothing keyed under an unknown scope
+
+        auth().currentTeam = { $id: 'A' }
+        dispatch('manifest:auth:teams-loaded')
+        expect(persist.persistence().scope).toBe('A')
+        expect(ids(data().chats)).toEqual(['c0', 'c1'])   // not reset: boot, not a switch
+        await settle(30)
+        expect(net.byName.chats).toBe(1)                  // and not reloaded
+        // A source that has not landed yet hydrates from A's record; a landed one is left alone
+        for (let i = 0; i < 30 && !data().settings; i++) await settle(5)
+        expect(data().settings.theme).toBe('from-disk')
+        await persist.flushPending()
+        expect(records().map(r => r.key).sort()).toEqual(['A|chats', 'A|settings'])
+        expect(records().find(r => r.key === 'A|chats').rows.map(r => r.$id)).toEqual(['c0', 'c1'])
+    })
+
     it('is the expression value, "" while null/undefined, keyed into the record', async () => {
         const { persist, main, records } = await load({ team: 'A' })
         expect(persist.persistence().scope).toBe('A')

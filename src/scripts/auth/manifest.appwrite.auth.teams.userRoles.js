@@ -67,6 +67,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -185,6 +186,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -286,6 +288,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -451,6 +454,8 @@ function initializeTeamsUserRoles() {
                                     deletedTemplateRoles: deletedRoles
                                 };
 
+                                invalidateRolesCache(teamId);
+
                                 await this._appwrite.teams.updatePrefs({
                                     teamId: teamId,
                                     prefs: updatedPrefs
@@ -486,6 +491,7 @@ function initializeTeamsUserRoles() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
+                        invalidateRolesCache(teamId);
                         await this._appwrite.teams.updatePrefs({
                             teamId: teamId,
                             prefs: updatedPrefs

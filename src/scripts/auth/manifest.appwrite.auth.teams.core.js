@@ -903,6 +903,7 @@ function initializeTeamsCore() {
                 this.error = null;
 
                 try {
+                    invalidateRolesCache(teamId);
                     const result = await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: prefs
