@@ -1174,3 +1174,18 @@ list from disk < 500ms; boot blocked time unchanged (~3s) or better; cold
 boot unchanged; logout → the scope's IndexedDB entries empty (assert);
 workspace switch → no previous-workspace row rendered at any point (assert
 by observing the list during the switch); zero additional server calls.
+
+### 12.3 Playcom's contract inputs (2026-09-02)
+- `persistence.scope = "$auth.currentTeam?.$id"` (workspace = Appwrite Team;
+  changes on viewTeam() and login, both fire `manifest:auth:*` — covered by
+  the re-evaluate rule).
+- Tiers/strip exactly as §12.1 (Tier 1 → `boot`, Tier 2 → `lazy`);
+  `recent: "lastMessageAt"` for chats, `$createdAt` elsewhere; no
+  `persistFilter` needed unless a computed field appears.
+- `chat.persist { messages: 50, conversations: 30 }` agreed.
+- Their normal-reload finding (theirs): `index.html` loads 93 classic scripts
+  through a `document.write` loop — 134 serialized, parser-blocking requests
+  from 281ms to 10.4s with 0 long tasks; domInteractive 8.9s. Fix on their
+  side: publish-time concatenation into one classic file (expected ~8s → <1s).
+  One CDN sample of an aborted `manifest.components.min.js` fetch (8.2s,
+  status 0) is attributed to that queue; re-check after their concat.
