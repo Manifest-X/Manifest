@@ -79,6 +79,45 @@ describe('compileUtilities', () => {
     })
 })
 
+describe('compileUtilities with an injected tailwind engine', () => {
+    // Simulates a bundler-built runtime (e.g. a Cloudflare Worker) that has
+    // no `fs`/`require` at runtime: it statically imports `tailwindcss` and
+    // inlines theme.css/utilities.css as strings at build time, then passes
+    // them in via the `tailwind` option instead of letting compileUtilities
+    // load them itself. Reading the CSS via `require.resolve` here just
+    // stands in for that bundler step — compileUtilities itself never
+    // touches fs on this path.
+    async function loadInjectedTailwind() {
+        const tailwindEngine = await import('tailwindcss')
+        const require = (await import('module')).createRequire(import.meta.url)
+        const themeCss = readFileSync(require.resolve('tailwindcss/theme.css'), 'utf8')
+        const utilitiesCss = readFileSync(require.resolve('tailwindcss/utilities.css'), 'utf8')
+        return { engine: tailwindEngine, themeCss, utilitiesCss }
+    }
+
+    it('bakes a Tailwind utility (gap-2) from injected engine + CSS strings', async () => {
+        const tailwind = await loadInjectedTailwind()
+        const css = await compileUtilities({ classes: ['gap-2', 'items-center'], tailwind })
+        expect(css).toContain('.gap-2')
+        expect(css).toContain('.items-center')
+    })
+
+    it('matches the default fs-loaded engine output for the same classes', async () => {
+        const tailwind = await loadInjectedTailwind()
+        const classes = ['gap-2', 'rounded-full', 'items-center', 'md:flex']
+        const [viaInjection, viaFs] = await Promise.all([
+            compileUtilities({ classes, tailwind }),
+            compileUtilities({ classes })
+        ])
+        expect(viaInjection).toBe(viaFs)
+    })
+
+    it('fails open to Manifest-only output when the injected engine is missing/incomplete', async () => {
+        const css = await compileUtilities({ classes: ['gap-2'], tailwind: {} })
+        expect(css).toBe('')
+    })
+})
+
 describe('scanClasses', () => {
     it('finds tokens in class attributes and skips x-/$ tokens', () => {
         const html = '<div class="p-4 text-brand x-data $magic"></div>'
