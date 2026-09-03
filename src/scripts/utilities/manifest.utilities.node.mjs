@@ -5,8 +5,10 @@
 //
 // compileUtilities() also runs the real `tailwindcss` engine (see the
 // "Tailwind engine pass" section below) — a real, lazily-imported dependency
-// used only there, via Node's fs/require; every other export in this file
-// stays dependency-free and DOM-free as before.
+// used only there, via Node's fs/require by default, or via the `tailwind`
+// option for runtimes (e.g. Workers) that bundle the engine/CSS themselves
+// instead; every other export in this file stays dependency-free and
+// DOM-free as before.
 
 /** A bare TailwindCompiler instance carrying only what the pure generation
  * methods (generateUtilitiesFromVars, generateCustomUtilities, parseClassName,
@@ -85,12 +87,27 @@ let _tailwindEnginePromise = null;
  * fs/require aren't available in this runtime (e.g. a bare Workers isolate),
  * so callers degrade to Manifest-only utilities rather than throwing.
  *
+ * `injected`, when given, skips the fs/require path entirely: a caller that
+ * already has the engine and CSS in hand (a bundler-built Workers isolate,
+ * which has no `fs`/`require` — see the `tailwind` param on compileUtilities)
+ * supplies `{ engine, themeCss, utilitiesCss }`, where `engine` is the
+ * imported `tailwindcss` module namespace (its `compile` export is used).
+ * Not cached on `_tailwindEnginePromise`: cheap (no I/O, just wrapping
+ * already-resident values) and the caller owns the instance's lifetime.
+ *
  * Deliberately skips tailwindcss/preflight.css: the browser engine's own
  * default `@import "tailwindcss"` — see `jo`/`Io` in lib/manifest.tailwind.js
  * — wires up only theme.css and utilities.css and leaves preflight empty, so
  * matching it means never importing preflight here either (Manifest ships
  * its own reset; the runtime never asks Tailwind for one). */
-function loadTailwindEngine() {
+function loadTailwindEngine(injected) {
+    if (injected) {
+        const { engine, themeCss, utilitiesCss } = injected;
+        if (!engine || typeof engine.compile !== 'function' || !themeCss || !utilitiesCss) {
+            return Promise.resolve(null);
+        }
+        return Promise.resolve({ compile: engine.compile, base: '/', themeCss, utilitiesCss });
+    }
     if (_tailwindEnginePromise) return _tailwindEnginePromise;
     _tailwindEnginePromise = (async () => {
         try {
@@ -120,6 +137,8 @@ function loadTailwindEngine() {
  * — e.g. Manifest's own `.row`/`.col` — since they're always defined; only
  * emit the theme chunk alongside actual utility output).
  *
+ * `injected` is passed straight through to loadTailwindEngine — see there.
+ *
  * A fresh compiler is built per call (~a few ms — see loadTailwindEngine for
  * the cached, reusable part): tailwindcss's compiler.build() is an
  * incremental/watch-mode API that accumulates every candidate it has ever
@@ -127,9 +146,9 @@ function loadTailwindEngine() {
  * would leak earlier calls' classes into later output — the same reason the
  * browser engine tracks its own "already seen" set (see the header comment)
  * before calling build(). */
-async function compileTailwindPass(classes) {
+async function compileTailwindPass(classes, injected) {
     if (!classes.length) return '';
-    const engine = await loadTailwindEngine();
+    const engine = await loadTailwindEngine(injected);
     if (!engine) return '';
     try {
         const { compile, base, themeCss, utilitiesCss } = engine;
@@ -175,10 +194,20 @@ async function compileTailwindPass(classes) {
  * `hover:col-wrap`. Without it those variants are silently skipped here —
  * scripts/utilities-static.mjs loads it automatically for this reason.
  *
- * @param {{classes?: string[], themeCss?: string, baseCss?: string}} options
+ * `tailwind`, when given, is passed to the Tailwind engine pass instead of
+ * its default lazy `fs`/`require` load — `{ engine, themeCss, utilitiesCss }`
+ * where `engine` is the imported `tailwindcss` module namespace and the two
+ * CSS strings are the contents of `tailwindcss/theme.css` and
+ * `tailwindcss/utilities.css`. For runtimes that can statically import
+ * `tailwindcss` and inline its CSS at bundle time but have no `fs`/`require`
+ * to read them from node_modules at runtime (e.g. a Cloudflare Workers
+ * isolate) — see loadTailwindEngine. Omit it (the default) to keep using the
+ * Node/CLI fs-based load.
+ *
+ * @param {{classes?: string[], themeCss?: string, baseCss?: string, tailwind?: {engine: object, themeCss: string, utilitiesCss: string}}} options
  * @returns {Promise<string>}
  */
-export async function compileUtilities({ classes = [], themeCss = '', baseCss = '' } = {}) {
+export async function compileUtilities({ classes = [], themeCss = '', baseCss = '', tailwind = null } = {}) {
     const compiler = createNodeCompiler();
     const cssText = [baseCss, themeCss].filter(Boolean).join('\n');
     const uniqueClasses = Array.from(new Set(classes));
@@ -195,7 +224,7 @@ export async function compileUtilities({ classes = [], themeCss = '', baseCss = 
     allUtilities = compiler.sortUtilities(allUtilities);
 
     const manifestLayer = allUtilities ? `@layer utilities {\n${allUtilities}\n}` : '';
-    const tailwindLayer = await compileTailwindPass(uniqueClasses);
+    const tailwindLayer = await compileTailwindPass(uniqueClasses, tailwind);
 
     return [manifestLayer, tailwindLayer].filter(Boolean).join('\n\n');
 }
