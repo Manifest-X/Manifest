@@ -87,7 +87,11 @@ function extractLayerBody(css, layerName) {
     return css.slice(bodyStart, i - 1).trim()
 }
 
-const norm = (css) => css.replace(/\s+/g, ' ').trim()
+// compileUtilities() prefixes a node/CLI-only `@layer` order preamble (bake
+// output can load ahead of manifest.min.css; the live JIT never has that
+// race) — strip it before comparing against the browser's raw output.
+const stripPreamble = (css) => css.replace(/^@layer base, components, utilities;\s*/, '')
+const norm = (css) => stripPreamble(css).replace(/\s+/g, ' ').trim()
 
 describe('compileUtilities parity with the browser Manifest plugin', () => {
     it('matches for a representative class set (variants, arbitrary value, theme-var utility)', async () => {

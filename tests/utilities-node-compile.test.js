@@ -138,6 +138,66 @@ describe('scanClasses', () => {
         const html = `<div :class="{ 'foo-class': active, 'other-class': !active }"></div>`
         expect(scanClasses(html)).toEqual(expect.arrayContaining(['foo-class', 'other-class']))
     })
+
+    it('does not leak a stray "{" from a :class object literal', () => {
+        // Regression: `class=` is a substring of `:class=`, so the base
+        // attribute regex used to match it too and truncate at the literal's
+        // first internal quote, adding a bogus '{' token.
+        const html = `<div :class="{ 'group-hover:opacity-100': active, 'other-class': !active }"></div>`
+        expect(scanClasses(html)).not.toContain('{')
+    })
+
+    it('keeps variant and arbitrary-value tokens a real app uses', () => {
+        // group-hover(/named), group-focus-within, focus-visible, negative
+        // spacing, arbitrary selectors ([&_svg]), !important, nested
+        // pseudo-classes, and arbitrary shadow values with slashes/parens —
+        // whitespace-only splitting must keep every one of these intact.
+        const classes = [
+            'group-hover:opacity-100',
+            'group-hover/av:opacity-100',
+            'group-focus-within:opacity-100',
+            'focus-visible:opacity-100',
+            '-space-x-2',
+            '[&_svg]:size-4',
+            '[&_button]:!text-xs',
+            '[&_p:last-child]:mb-0',
+            '[&>*]:min-h-0',
+            'hover:[&_.pill]:shadow-[inset_0_0_0_2rem_rgb(0_0_0/0.10)]',
+            'dark:hover:[&_.pill]:shadow-[inset_0_0_0_2rem_rgb(255_255_255/0.10)]',
+        ]
+        const html = `<div class="${classes.join(' ')}"></div>`
+        const scanned = scanClasses(html)
+        for (const cls of classes) expect(scanned).toContain(cls)
+    })
+
+    it('compileUtilities emits a rule for every one of those tokens via the real Tailwind engine', async () => {
+        const classes = [
+            'group-hover:opacity-100',
+            'group-hover/av:opacity-100',
+            'group-focus-within:opacity-100',
+            'focus-visible:opacity-100',
+            '-space-x-2',
+            '[&_svg]:size-4',
+            '[&_button]:!text-xs',
+            '[&_p:last-child]:mb-0',
+            '[&>*]:min-h-0',
+        ]
+        const css = await compileUtilities({ classes })
+        const escape = (cls) => '.' + cls.replace(/([!"#$%&'()*+,./:;<=>?@[\]^`{|}~])/g, '\\$1')
+        for (const cls of classes) expect(css).toContain(escape(cls))
+    })
+})
+
+describe('compileUtilities — @layer order preamble', () => {
+    it('prefixes "@layer base, components, utilities;" as the first line of non-empty output', async () => {
+        const css = await compileUtilities({ classes: ['flex'] })
+        expect(css.split('\n')[0]).toBe('@layer base, components, utilities;')
+    })
+
+    it('is absent for empty output', async () => {
+        expect(await compileUtilities({})).toBe('')
+        expect(await compileUtilities({ classes: ['not-a-real-class-xyz'] })).toBe('')
+    })
 })
 
 describe('scripts/utilities-static.mjs CLI', () => {
@@ -180,6 +240,23 @@ describe('scripts/utilities-static.mjs CLI', () => {
 
             expect(css).toContain('md\\:row')
             expect(css).toContain('hover\\:row-wrap')
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('writes the "@layer" order preamble as the first line of the static sheet', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'mnfst-utilities-static-'))
+        try {
+            writeFileSync(join(dir, 'index.html'), '<div class="p-4"></div>')
+            writeFileSync(join(dir, 'theme.css'), THEME_CSS)
+            const cliPath = join(__dirname, '../scripts/utilities-static.mjs')
+            const outPath = join(dir, 'out.css')
+
+            execFileSync(process.execPath, [cliPath, dir, '--theme', join(dir, 'theme.css'), '--out', outPath])
+            const css = readFileSync(outPath, 'utf8')
+
+            expect(css.split('\n')[0]).toBe('@layer base, components, utilities;')
         } finally {
             rmSync(dir, { recursive: true, force: true })
         }
