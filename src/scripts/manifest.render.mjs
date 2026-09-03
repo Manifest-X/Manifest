@@ -189,6 +189,96 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
   // intentional and benign — the DOM is still captured.
 }
 
+// --- Browser recycle gate ----------------------------------------------------
+
+/** Bound a promise: resolves true if it settles first, false on timeout. */
+function withDeadline(promise, ms) {
+  if (!(ms > 0)) return Promise.resolve(promise).then(() => true);
+  let timer;
+  const settled = Promise.resolve(promise).then(
+    () => { clearTimeout(timer); return true; },
+    (err) => { clearTimeout(timer); throw err; }
+  );
+  return Promise.race([
+    settled,
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+      if (typeof timer.unref === 'function') timer.unref();
+    }),
+  ]);
+}
+
+/**
+ * Coordinates N render workers around a shared browser that is swapped out
+ * every `every` pages.  Workers hold a slot (acquire/release) for exactly as
+ * long as they touch the browser; a recycle pauses new slots first, then
+ * drains the in-flight ones, so no worker can ever be blocked on the gate
+ * while it is still counted as active.  Every wait is bounded: a stuck page
+ * or a stuck browser swap logs and continues instead of hanging the run.
+ * Exported for unit tests.
+ */
+export function createRecycleGate({
+  every = 40,
+  recycle = async () => {},
+  drainTimeoutMs = 60000,
+  recycleTimeoutMs = 180000,
+  onLog = () => {},
+} = {}) {
+  let active = 0;
+  let pages = 0;
+  let paused = false;
+  const zeroWaiters = [];
+  const resumeWaiters = [];
+  const wake = (list) => { for (const resolve of list.splice(0)) resolve(); };
+
+  return {
+    get active() { return active; },
+    get pages() { return pages; },
+    get paused() { return paused; },
+    /** Claim a browser slot; blocks while a recycle is pending or running. */
+    async acquire() {
+      while (paused) await new Promise((resolve) => { resumeWaiters.push(resolve); });
+      active++;
+    },
+    release() {
+      active = Math.max(0, active - 1);
+      if (active === 0) wake(zeroWaiters);
+    },
+    /** Count a page against the recycle threshold. */
+    countPage() { pages++; },
+    /** Make the next maybeRecycle() fire (unstable browser after retries). */
+    requestRecycle() { if (every > 0) pages = Math.max(pages, every); },
+    /** Swap the browser if the threshold is reached.  Never throws. */
+    async maybeRecycle() {
+      if (every <= 0 || paused || pages < every) return false;
+      paused = true; // no new slots from here on — active can only fall
+      const processed = pages;
+      try {
+        if (active > 0) {
+          const drained = await withDeadline(
+            new Promise((resolve) => { zeroWaiters.push(resolve); }),
+            drainTimeoutMs
+          );
+          if (!drained) {
+            onLog(`recycle: ${active} page(s) still in flight after ${drainTimeoutMs}ms — recycling anyway`);
+          }
+        }
+        const swapped = await withDeadline(recycle(processed), recycleTimeoutMs);
+        if (!swapped) onLog(`recycle: browser swap exceeded ${recycleTimeoutMs}ms — continuing`);
+        pages = 0;
+        return swapped;
+      } catch (err) {
+        onLog(`recycle: failed (${err && err.message ? err.message : err}) — continuing`);
+        pages = 0;
+        return false;
+      } finally {
+        paused = false;
+        wake(resumeWaiters);
+      }
+    },
+  };
+}
+
 // --- Config ------------------------------------------------------------------
 
 function parseArgs() {
@@ -3264,13 +3354,49 @@ async function runPrerender(config) {
   // Recycle the browser every N processed pages to bound resource growth.
   // Configurable via manifest.prerender.browserRecycleEvery.
   const browserRecycleEvery = Math.max(0, pre.browserRecycleEvery ?? 40);
-  let pagesSinceRecycle = 0;
-  const recycleLock = { busy: false };
-  // Workers block on this promise before touching `browser`.  While a recycle
-  // is in progress it's a pending promise; once the new browser is up it
-  // resolves and workers can proceed.  This prevents "browser not ready"
-  // errors from racing retries during recycle.
-  let browserReadyPromise = Promise.resolve();
+  // Bounds on the recycle handshake and on a single page render.  A stuck
+  // page must never pin the whole run: each is capped, logged and stepped over.
+  const drainTimeoutMs = Math.max(0, pre.recycleDrainTimeout ?? 60000);
+  const recycleTimeoutMs = Math.max(0, pre.recycleTimeout ?? 180000);
+  const pageTimeoutMs = Math.max(0, pre.pageTimeout ?? Math.max(120000, (config.wait ?? 30000) * 4));
+
+  // Close the browser without hanging: SIGKILL the process if close stalls.
+  async function closeBrowser(target) {
+    if (!target) return;
+    const proc = typeof target.process === 'function' ? target.process() : null;
+    const closed = await withDeadline(Promise.resolve(target.close()).catch(() => {}), 15000);
+    if (!closed) {
+      process.stderr.write('prerender: browser close timed out — killing the process\n');
+      try { proc?.kill('SIGKILL'); } catch (_) {}
+    }
+  }
+
+  // Launch with a deadline and one retry; a hung launch would otherwise stall
+  // every worker behind the recycle gate.
+  async function launchBrowserBounded() {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let launched = null;
+      const ok = await withDeadline(
+        launchBrowser().then((b) => { launched = b; }),
+        60000
+      );
+      if (ok && launched) return launched;
+      process.stderr.write('prerender: browser launch timed out — retrying\n');
+    }
+    throw new Error('browser launch timed out');
+  }
+
+  const recycleGate = createRecycleGate({
+    every: browserRecycleEvery,
+    drainTimeoutMs,
+    recycleTimeoutMs,
+    onLog: (message) => process.stderr.write(`prerender: ${message}\n`),
+    recycle: async (processed) => {
+      process.stdout.write(`prerender: recycling browser (processed ${processed} pages)\n`);
+      await closeBrowser(browser);
+      browser = await launchBrowserBounded();
+    },
+  });
   const pathTotal = pathList.length;
   const failedPaths = [];
   const debugRows = [];
@@ -3359,7 +3485,7 @@ async function runPrerender(config) {
     debugRows.push(row);
   }
 
-  async function processPath(pathSeg, pathIndex, { onRawHtml } = {}) {
+  async function processPath(pathSeg, pathIndex, { onRawHtml, attempt } = {}) {
     const is404 = pathSeg === NOT_FOUND_PATH;
     const pathname = is404 ? `/${NOT_FOUND_PATH}` : (pathSeg ? `/${pathSeg}` : '/');
     const displayPath = pathSeg === '' ? '/' : pathname;
@@ -3375,11 +3501,8 @@ async function runPrerender(config) {
           : defaultLocale || 'en'
         : defaultLocale || 'en';
 
-    // Wait for any in-progress browser recycle to complete before touching
-    // `browser`.  This transparently handles the window between the old
-    // browser being closed and the new one being launched — workers block
-    // here instead of throwing "browser not ready".
-    await browserReadyPromise;
+    // No recycle can run while the caller holds a gate slot, so `browser` is
+    // live for the whole call.
     const page = await browser.newPage();
     // Render at a typical desktop viewport so layouts dependent on viewport
     // width (responsive flex/grid, container queries, media queries) settle
@@ -4632,6 +4755,7 @@ async function runPrerender(config) {
       // (Hydration contract was already injected into the raw HTML before
       // the Node.js post-processing pipeline ran, so it's already present.)
       html = ensureDoctype(html);
+      if (attempt?.abandoned) return; // a retry owns the output now
       mkdirSync(outDir, { recursive: true });
       writeFileSync(outFile, html, 'utf8');
       pushDebug({
@@ -4642,13 +4766,13 @@ async function runPrerender(config) {
         hasXForTemplate: html.includes('template x-for') || html.includes('template[x-for]'),
       });
     } catch (err) {
-      failedPaths.push({
-        path: displayPath,
-        message: err && err.message ? err.message : String(err)
-      });
-      if (failedPaths.length <= 10) {
-        process.stderr.write(`prerender: failed ${displayPath}: ${failedPaths[failedPaths.length - 1].message}\n`);
-      }
+      if (attempt?.abandoned) return;
+      const message = err && err.message ? err.message : String(err);
+      // The worker owns retries and reporting; a shared array can't be popped
+      // safely while other workers push to it.
+      if (attempt) { attempt.failure = { path: displayPath, message }; return; }
+      failedPaths.push({ path: displayPath, message });
+      process.stderr.write(`prerender: failed ${displayPath}: ${message}\n`);
     } finally {
       try { await page.close(); } catch (_) { /* page may be gone if browser died */ }
     }
@@ -4658,131 +4782,84 @@ async function runPrerender(config) {
   // Any failures (e.g. transient navigation timeouts) are retried up to
   // `maxRetries` times with a short backoff before being reported as fatal.
   //
-  // Browser recycling: after every `browserRecycleEvery` successful pages,
-  // all workers pause, one worker closes the browser and launches a fresh
-  // one, then all resume.  This bounds Chromium's memory + handle growth.
+  // Browser recycling: after every `browserRecycleEvery` successful pages the
+  // gate pauses new work, drains the in-flight pages, swaps the browser and
+  // resumes.  Workers hold a gate slot only while they touch the browser.
   try {
     let index = 0;
-    let activeWorkers = 0;
-    const recycleGate = { resume: null, waitForZero: null };
-
-    const waitUntilZero = () => new Promise((resolve) => {
-      if (activeWorkers === 0) return resolve();
-      recycleGate.waitForZero = resolve;
-    });
-    const waitForResume = () => new Promise((resolve) => {
-      if (!recycleLock.busy) return resolve();
-      const prev = recycleGate.resume;
-      recycleGate.resume = () => { if (prev) prev(); resolve(); };
-    });
-
-    const maybeRecycleBrowser = async () => {
-      if (browserRecycleEvery <= 0) return;
-      if (pagesSinceRecycle < browserRecycleEvery) return;
-      if (recycleLock.busy) return;
-      recycleLock.busy = true;
-      // Wait for all in-flight workers to finish their current page BEFORE
-      // we gate `browserReadyPromise`, so workers already mid-processPath
-      // don't deadlock awaiting a promise we haven't yet started.
-      await waitUntilZero();
-      // Now gate newPage() calls from any worker that enters processPath
-      // after this point.
-      let resolveReady;
-      browserReadyPromise = new Promise((r) => { resolveReady = r; });
-      try {
-        process.stdout.write(`prerender: recycling browser (processed ${pagesSinceRecycle} pages)\n`);
-        try { await browser.close(); } catch (_) {}
-        browser = await launchBrowser();
-        pagesSinceRecycle = 0;
-      } finally {
-        // Release the gate first so any waiting workers can proceed, then
-        // clear the recycle lock so the outer while loop stops pausing.
-        try { resolveReady(); } catch (_) {}
-        recycleLock.busy = false;
-        const r = recycleGate.resume;
-        recycleGate.resume = null;
-        if (r) r();
-      }
-    };
 
     async function worker() {
       while (true) {
-        // Pause if a recycle is underway.
-        if (recycleLock.busy) await waitForResume();
-        // Also wait for any pending browser readiness (e.g. another worker
-        // started a recycle while we were processing).
-        await browserReadyPromise;
-
         const i = index++;
         if (i >= puppeteerPaths.length) return;
         const pathSeg = puppeteerPaths[i];
+        const displayPath = pathSeg === '' ? '/' : (pathSeg === NOT_FOUND_PATH ? '/__prerender_404__' : '/' + pathSeg);
         let attempt = 0;
         while (true) {
-          // Re-check recycle state at the start of every retry iteration.
-          if (recycleLock.busy) await waitForResume();
-          await browserReadyPromise;
-
-          const failureCountBefore = failedPaths.length;
-          activeWorkers++;
+          // Per-attempt result: `failedPaths` is shared, so a retry must never
+          // read or pop entries another worker pushed.
+          const attemptToken = { abandoned: false, failure: null };
+          await recycleGate.acquire();
           try {
-            await processPath(pathSeg, i, {
-              onRawHtml: (seg, html) => {
-                if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
-              },
-            });
+            // Watchdog: a wedged renderer never returns, so cap the attempt.
+            const finished = await withDeadline(
+              processPath(pathSeg, i, {
+                attempt: attemptToken,
+                onRawHtml: (seg, html) => {
+                  if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
+                },
+              }),
+              pageTimeoutMs
+            );
+            if (!finished) {
+              attemptToken.abandoned = true;
+              attemptToken.failure = { path: displayPath, message: `page render exceeded ${pageTimeoutMs}ms` };
+            }
           } catch (err) {
-            // Unexpected exception escaped processPath (e.g. browser died
-            // mid-call).  Record as a failure so the retry logic can handle
-            // it gracefully instead of tearing down the whole worker.
-            failedPaths.push({
-              path: pathSeg === '' ? '/' : '/' + pathSeg,
+            // Unexpected exception escaped processPath (e.g. browser died mid-call).
+            attemptToken.failure = {
+              path: displayPath,
               message: err && err.message ? err.message : String(err),
-            });
-            if (failedPaths.length <= 10) {
-              process.stderr.write(`prerender: worker exception on ${pathSeg || '/'}: ${failedPaths[failedPaths.length - 1].message}\n`);
-            }
+            };
           } finally {
-            activeWorkers--;
-            if (activeWorkers === 0 && recycleGate.waitForZero) {
-              const z = recycleGate.waitForZero;
-              recycleGate.waitForZero = null;
-              z();
-            }
+            recycleGate.release();
           }
-          if (failedPaths.length === failureCountBefore) {
-            pagesSinceRecycle++;
+          if (!attemptToken.failure) {
+            recycleGate.countPage();
             break; // success
           }
           if (attempt >= maxRetries) {
             // Exhausted retries — likely an unstable browser (e.g. cascading
-            // "detached Frame" errors).  Force a recycle counter past the
-            // threshold so the next path triggers a fresh browser.
-            pagesSinceRecycle = Math.max(pagesSinceRecycle + 1, browserRecycleEvery);
+            // "detached Frame" errors).  Force the next path onto a fresh one.
+            failedPaths.push(attemptToken.failure);
+            if (failedPaths.length <= 10) {
+              process.stderr.write(`prerender: failed ${displayPath}: ${attemptToken.failure.message}\n`);
+            }
+            recycleGate.countPage();
+            recycleGate.requestRecycle();
             break;
           }
           // Halfway through retries with no success → preemptively recycle the
           // browser before the next attempt.  This unblocks cascading frame
           // failures where the browser process needs a fresh start.
-          if (attempt + 1 >= Math.ceil(maxRetries / 2) && pagesSinceRecycle > 0) {
-            pagesSinceRecycle = Math.max(pagesSinceRecycle, browserRecycleEvery);
-            await maybeRecycleBrowser();
+          if (attempt + 1 >= Math.ceil(maxRetries / 2) && recycleGate.pages > 0) {
+            recycleGate.requestRecycle();
+            await recycleGate.maybeRecycle();
           }
-          failedPaths.pop();
           attempt++;
-          const displayPath = pathSeg === '' ? '/' : (pathSeg === NOT_FOUND_PATH ? '/__prerender_404__' : '/' + pathSeg);
-          process.stderr.write(`prerender: retrying ${displayPath} (attempt ${attempt + 1}/${maxRetries + 1})\n`);
+          process.stderr.write(`prerender: retrying ${displayPath} (${attemptToken.failure.message}) (attempt ${attempt + 1}/${maxRetries + 1})\n`);
           await new Promise((r) => setTimeout(r, 500 * attempt));
         }
-        // Attempt recycle after each completed path (only one worker will
-        // actually perform the recycle; others will be gated by recycleLock).
-        await maybeRecycleBrowser();
+        // Attempt recycle after each completed path (only one worker performs
+        // it; the rest block in acquire()).
+        await recycleGate.maybeRecycle();
       }
     }
     await Promise.all(
       Array.from({ length: Math.min(concurrency, puppeteerPaths.length || 1) }, () => worker())
     );
   } finally {
-    try { await browser.close(); } catch (_) {}
+    await closeBrowser(browser);
   }
 
   // Phase 2: Node.js — generate locale variants via text substitution
