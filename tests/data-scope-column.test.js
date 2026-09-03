@@ -123,3 +123,26 @@ describe('$auth. variable interpolation', () => {
         expect(api.interpolateVariable('$auth.currentTeam.id')).toBeUndefined()
     })
 })
+
+describe('fail-safe: unresolved values skip the read instead of sending a broken query', () => {
+    it('an unresolved $auth. arg (no currentTeam yet) returns null, not a query with a null/undefined value', async () => {
+        const api = load(authed({ currentTeam: null }))
+        const queries = await api.buildAppwriteQueries([['equal', 'workspaceId', '$auth.currentTeam.$id']], null)
+        expect(queries).toBeNull()
+    })
+
+    it('a team scope with no currentTeam yet returns null rather than an empty-equal query', async () => {
+        const api = load(authed({ currentTeam: null }))
+        expect(await api.buildAppwriteQueries([], 'team')).toBeNull()
+    })
+
+    it('an unauthenticated user scope returns null rather than an empty-equal query', async () => {
+        const api = load(authed({ isAuthenticated: false, user: null }))
+        expect(await api.buildAppwriteQueries([], 'user')).toBeNull()
+    })
+
+    it('a resolvable scope is unaffected', async () => {
+        const api = load(authed())
+        expect(await api.buildAppwriteQueries([], 'team')).toEqual([{ method: 'equal', field: 'teamId', value: 't1' }])
+    })
+})

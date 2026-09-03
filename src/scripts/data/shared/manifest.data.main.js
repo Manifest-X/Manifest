@@ -1,5 +1,24 @@
 /* Manifest Data Sources - Main Initialization */
 
+// A scoped query that isn't ready yet (buildAppwriteQueries returned null — see
+// manifest.data.queries.js) skips the network read and waits here instead of
+// sending a broken/empty-equal query. Retries once when auth settles further;
+// dedup by key so a source pending across repeated loads doesn't stack listeners.
+const pendingAuthRetries = new Set();
+const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login'];
+function scheduleAuthRetry(dataSourceName, locale) {
+    if (typeof window === 'undefined') return;
+    const key = `${dataSourceName}:${locale}`;
+    if (pendingAuthRetries.has(key)) return;
+    pendingAuthRetries.add(key);
+    const retry = () => {
+        pendingAuthRetries.delete(key);
+        AUTH_RETRY_EVENTS.forEach(type => window.removeEventListener(type, retry));
+        loadDataSource(dataSourceName, locale, { reload: true });
+    };
+    AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
+}
+
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
 // the current team to match database team-scope behavior.
 async function filterFilesByScope(files, scope) {
@@ -579,6 +598,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
                         : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
 
+                    // Not ready (auth/scope unresolved): skip this read, stay pending, retry on an auth event
+                    if (queries === null) {
+                        scheduleAuthRetry(dataSourceName, locale);
+                        return null;
+                    }
+
                     // Log auth state for debugging
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
                     const teamIds = authStore?.teams?.map(t => t.$id || t.id) || [];
@@ -610,6 +635,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const queries = queriesConfig
                         ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, null)
                         : await window.ManifestDataQueries.buildAppwriteQueries([], null);
+
+                    // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
+                    if (queries === null) {
+                        scheduleAuthRetry(dataSourceName, locale);
+                        return null;
+                    }
 
                     let files = await window.ManifestDataAppwrite.listBucketFiles(bucketId, queries);
 

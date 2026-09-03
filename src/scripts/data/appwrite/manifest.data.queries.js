@@ -90,6 +90,12 @@ function isVariable(str) {
     return str.includes('.') || ALLOWED_VARIABLES.includes(str);
 }
 
+// Thrown by interpolateQuery/interpolateObject when a whitelisted $auth.
+// variable hasn't resolved yet (auth store not settled) — buildQueries
+// catches this and returns NOT_READY rather than sending a query with a
+// null/undefined arg (Appwrite 400s on that) to the network.
+const NOT_READY = Symbol('manifest-data-not-ready');
+
 // Interpolate variables in query array
 function interpolateQuery(query) {
     if (!Array.isArray(query) || query.length === 0) {
@@ -101,7 +107,9 @@ function interpolateQuery(query) {
         if (typeof arg === 'string' && isVariable(arg)) {
             // Check if it's in the whitelist
             if (ALLOWED_VARIABLES.includes(arg)) {
-                return interpolateVariable(arg);
+                const value = interpolateVariable(arg);
+                if (value === null || value === undefined) throw NOT_READY;
+                return value;
             } else {
                 console.warn(`[Manifest Data] Variable "${arg}" is not in whitelist. Allowed:`, ALLOWED_VARIABLES);
                 // SECURITY: Return empty string for non-whitelisted variables to prevent injection
@@ -128,7 +136,9 @@ function interpolateObject(obj) {
     for (const [key, value] of Object.entries(obj)) {
         if (typeof value === 'string' && isVariable(value)) {
             if (ALLOWED_VARIABLES.includes(value)) {
-                result[key] = interpolateVariable(value);
+                const resolved = interpolateVariable(value);
+                if (resolved === null || resolved === undefined) throw NOT_READY;
+                result[key] = resolved;
             } else {
                 console.warn(`[Manifest Data] Variable "${value}" is not in whitelist`);
                 // SECURITY: Return empty string for non-whitelisted variables to prevent injection
@@ -148,7 +158,33 @@ function interpolateObject(obj) {
 // Default scope column names, overridable per data source via `scopeColumn`
 const DEFAULT_SCOPE_COLUMNS = { team: 'teamId', user: 'userId' };
 
-// Build queries with scope injection
+// Event-driven wait for the auth store's initial hydration — resolves immediately
+// once already settled, otherwise waits for manifest:auth:initialized (capped so a
+// misconfigured/absent auth plugin can't hang a read forever).
+const AUTH_INIT_WAIT_MS = 3000;
+function waitForAuthInit(authStore) {
+    if (!authStore || (authStore._initialized && authStore.isAuthenticated !== undefined)) {
+        return Promise.resolve();
+    }
+    if (typeof window === 'undefined') return Promise.resolve();
+    return new Promise(resolve => {
+        let done = false;
+        const timer = setTimeout(finish, AUTH_INIT_WAIT_MS);
+        function finish() {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            window.removeEventListener('manifest:auth:initialized', finish);
+            resolve();
+        }
+        window.addEventListener('manifest:auth:initialized', finish);
+    });
+}
+
+// Build queries with scope injection. Returns null ("not ready") instead of a
+// query array when a $auth. arg or a required scope value hasn't resolved yet
+// — callers must skip the read (never send a null/undefined/empty-equal arg to
+// Appwrite) and retry once auth settles (manifest:auth:initialized/teams-loaded/login).
 // SECURITY: Scope queries are ALWAYS prepended to user queries to prevent bypass
 // scopeColumns: { team, user } column names to filter/write on (default teamId/userId)
 async function buildQueries(queriesConfig, scope, scopeColumns) {
@@ -157,8 +193,19 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
         return [];
     }
 
+    // Wait for auth to settle before interpolating — a $auth. reference in a raw
+    // user query (queries.default) needs this regardless of whether `scope` is set.
+    const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+    await waitForAuthInit(authStore);
+
     // Interpolate user-provided queries
-    const userQueries = queriesConfig.map(query => interpolateQuery(query));
+    let userQueries;
+    try {
+        userQueries = queriesConfig.map(query => interpolateQuery(query));
+    } catch (e) {
+        if (e === NOT_READY) return null;
+        throw e;
+    }
 
     // SECURITY: Build scope queries FIRST (they will be prepended)
     // This ensures scope restrictions cannot be bypassed by user queries
@@ -179,17 +226,6 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
     const hasUserScope = scopeArray.includes('user');
     const hasTeamScope = scopeArray.includes('team');
     const hasTeamsScope = scopeArray.includes('teams');
-
-    // Wait for auth store to be initialized (shared for all scopes)
-    const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
-    if (authStore && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
-        let attempts = 0;
-        const maxAttempts = 10; // Wait up to 500ms (10 * 50ms)
-        while (attempts < maxAttempts && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
-            await new Promise(resolve => setTimeout(resolve, 50));
-            attempts++;
-        }
-    }
 
     // Special case: ["user", "team"] or ["user", "teams"] or ["teams", "user"] or ["team", "user"] - use OR logic
     // Show projects that belong to user OR current team OR any of their teams
@@ -244,8 +280,9 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
                 scopeQueries.push(['or', orQueries]);
             }
         } else {
-            // No user or teams - return no results
-            scopeQueries.push(['equal', cols.user, '']);
+            // No user or teams resolved — not ready (or genuinely unauthenticated):
+            // skip the read rather than send an empty-equal; caller retries on an auth event.
+            return null;
         }
     } else {
         // Handle user scope (when not combined with teams)
@@ -254,10 +291,8 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
             const user = authStore?.user;
 
             if (!isAuthenticated || !user) {
-                // User is not authenticated - return no results
-                scopeQueries.push(['equal', cols.user, '']);
-                // SECURITY: Return early with scope query to prevent any data access
-                return scopeQueries;
+                // Not (yet) authenticated — skip the read; caller retries on manifest:auth:login
+                return null;
             }
 
             // Get user ID value
@@ -265,12 +300,12 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
             if (userId) {
                 scopeQueries.push(['equal', cols.user, userId]);
             } else {
-                // User is authenticated but userId not found - return no results
-                scopeQueries.push(['equal', cols.user, '']);
+                // Authenticated but userId not found — not ready
                 if (!window.__manifestDataDebugLogged) {
                     window.__manifestDataDebugLogged = true;
                     debugAuthStore();
                 }
+                return null;
             }
         }
 
@@ -285,8 +320,8 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
             if (teamId) {
                 scopeQueries.push(['equal', cols.team, teamId]);
             } else {
-                // No team ID found - return no results
-                scopeQueries.push(['equal', cols.team, '']);
+                // No current team (yet) — skip the read; caller retries on manifest:auth:teams-loaded
+                return null;
             }
         } else if (hasTeamsScope) {
             // Multi-team scope - use all teams user belongs to
@@ -307,8 +342,8 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
                     scopeQueries.push(['or', equalQueries]);
                 }
             } else {
-                // No teams found - return no results
-                scopeQueries.push(['equal', cols.team, '']);
+                // No teams (yet) — skip the read; caller retries on manifest:auth:teams-loaded
+                return null;
             }
         }
     }
@@ -387,8 +422,10 @@ function toAppwriteQuery(queryArray) {
 
 // Build Appwrite queries from configuration
 // scopeColumns: { team, user } column names (default teamId/userId) — see manifest.data.config.js getScopeColumns
+// Returns null ("not ready") straight through — see buildQueries.
 async function buildAppwriteQueries(queriesConfig, scope, scopeColumns) {
     const queries = await buildQueries(queriesConfig, scope, scopeColumns);
+    if (queries === null) return null;
     return queries
         .map(query => toAppwriteQuery(query))
         .filter(query => query !== null);

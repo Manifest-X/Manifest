@@ -394,6 +394,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         scope,
                         scopeColumns
                     );
+                    if (appwriteQueries === null) {
+                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                    }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
                     const { runDeduped, landRows } = window.ManifestDataStore || {};

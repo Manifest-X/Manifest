@@ -565,6 +565,10 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
                     : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
 
+                if (baseQueries === null) {
+                    throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
+                }
+
                 if (methodName === '$first') {
                     const limit = args[0] || 10;
                     return await window.ManifestDataPagination.getFirstPage(dataSourceName, limit, baseQueries);
@@ -911,6 +915,10 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                         const baseQueries = queriesConfig
                             ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
                             : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+
+                        if (baseQueries === null) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
+                        }
 
                         if (key === '$first') {
                             const limit = args[0] || 10;
