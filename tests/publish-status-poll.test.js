@@ -21,7 +21,7 @@ function res(status, body) {
  * instances to throw) consumed in order; the last entry repeats.
  */
 function fakeServer({ upload = [], status = [] } = {}) {
-    const calls = { upload: 0, status: 0, uploadBodies: [] }
+    const calls = { upload: 0, status: 0, uploadBodies: [], uploadHeaders: [] }
     const take = (queue, i) => queue[Math.min(i, queue.length - 1)]
     const fetchImpl = async (url, init) => {
         if (url === STATUS) {
@@ -32,6 +32,7 @@ function fakeServer({ upload = [], status = [] } = {}) {
         expect(url).toBe(UPLOAD)
         expect(init.method).toBe('POST')
         calls.uploadBodies.push(init.body)
+        calls.uploadHeaders.push(init.headers || {})
         const r = take(upload, calls.upload++)
         if (r instanceof Error) throw r
         return r
@@ -336,5 +337,30 @@ describe('against the real server payloads', () => {
         const h = harness(server)
         await expect(uploadBundle(UPLOAD, 'ZIP', h.opts)).rejects.toThrow(/expired/)
         expect(server.calls.upload).toBe(1)
+    })
+})
+
+describe('async opt-in header', () => {
+    it('asks for the backgrounded ingest on every upload attempt', async () => {
+        const server = fakeServer({
+            upload: [res(500, 'hiccup'), res(202, { status: 'ingesting' })],
+            status: [res(200, { status: 'done', ok: true, url: 'https://h.example' })],
+        })
+        const h = harness(server)
+        await uploadBundle(UPLOAD, 'ZIP', h.opts)
+        for (const hdr of server.calls.uploadHeaders) {
+            expect(hdr['x-mnfst-async']).toBe('1')
+            expect(hdr['content-type']).toBe('application/zip')
+        }
+        expect(server.calls.uploadHeaders.length).toBe(2)
+    })
+
+    it('a server that ignores the header (answering synchronously) still works', async () => {
+        // Exactly what the currently deployed Worker does with an unknown header.
+        const server = fakeServer({ upload: [res(200, { ok: true, url: 'https://sync.example', files: 2 })] })
+        const h = harness(server)
+        const out = await uploadBundle(UPLOAD, 'ZIP', h.opts)
+        expect(out.url).toBe('https://sync.example')
+        expect(server.calls.status).toBe(0)
     })
 })

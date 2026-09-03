@@ -306,11 +306,12 @@ export function collectFiles(root, outputDir) {
 
 // --- Upload + publish status ------------------------------------------------
 
-// The upload endpoint acknowledges (202 `status:"ingesting"`) as soon as the
-// bundle has landed and finishes the writes in the background — the ingest no
-// longer holds the connection, which is what used to time out on a distant
-// link. The outcome then arrives on <upload-url>/status. Older servers still
-// answer the upload synchronously with {ok:true}; both are handled below.
+// We ask the upload endpoint (via ASYNC_HEADER) to acknowledge with 202
+// `status:"ingesting"` as soon as the bundle lands and finish the writes in the
+// background, rather than holding the connection — that hold is what used to
+// time out on a distant link. The outcome then arrives on <upload-url>/status.
+// A server that predates this ignores the header and answers synchronously with
+// {ok:true}; both are handled below.
 const POLL_FIRST_MS = 1000;
 const POLL_MAX_MS = 5000;
 const POLL_TOTAL_MS = 10 * 60 * 1000;
@@ -319,6 +320,12 @@ const POLL_TOTAL_MS = 10 * 60 * 1000;
 // consistent, so a brief stale "pending" right after an upload is normal.
 const PENDING_GRACE_MS = 15_000;
 const PROGRESS_EVERY_MS = 15_000;
+
+// Tells the server we know how to poll, so it can hand back a 202 instead of
+// holding the connection. A server that doesn't know the header just ignores it
+// and answers synchronously — which is exactly the fallback handled below, so
+// CLI and server can ship in either order.
+const ASYNC_HEADER = 'x-mnfst-async';
 
 // Same origin, same one-time token. Derived from the upload URL we already
 // origin-checked — never from a URL the server hands back.
@@ -422,7 +429,7 @@ export async function uploadBundle(uploadUrl, zip, opts = {}) {
     try {
       res = await fetchImpl(uploadUrl, {
         method: 'POST',
-        headers: { 'content-type': 'application/zip' },
+        headers: { 'content-type': 'application/zip', [ASYNC_HEADER]: '1' },
         body: zip,
       });
     } catch {
