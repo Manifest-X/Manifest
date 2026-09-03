@@ -1513,3 +1513,13 @@ now bakes theme-driven, semantic and plain Tailwind utilities from the scanned
 tree and the CDN-linked theme (+17% Worker bundle, ~190 ms per publish on the
 docs tree). Playcom re-pins to 0.5.204 and reports boot style writes /
 utilities-ready / baked rule count on the next publish.
+
+**§15 regression (2026-09-03, Playcom + Andrew on the wire):** the baked sheet
+opened with `@layer utilities {` and hosting linked it BEFORE `manifest.min.css`;
+cascade layers take precedence from first declaration, so `utilities` registered
+ahead of `base`/`components` and lost to the reset (`padding: 0` beat `.p-2`)
+on every baked page. Law: a compiled utilities sheet must (1) start with
+`@layer base, components, utilities;` and (2) be linked immediately after the
+framework stylesheet, before author sheets. Hosting fixed and deployed
+(Manifest-MCP bc2bc46); the framework compiler emits the preamble from 0.5.205.
+Docs staging republished with the fix (44 KB sheet, full Tailwind bake).
