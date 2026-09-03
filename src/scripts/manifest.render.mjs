@@ -3355,7 +3355,10 @@ async function runPrerender(config) {
   // Configurable via manifest.prerender.browserRecycleEvery.
   const browserRecycleEvery = Math.max(0, pre.browserRecycleEvery ?? 40);
   // Bounds on the recycle handshake and on a single page render.  A stuck
-  // page must never pin the whole run: each is capped, logged and stepped over.
+  // page must never pin the whole run: each is capped, logged and stepped
+  // over — and a page that hits the ceiling forces a browser recycle, since
+  // a wedged page.evaluate() may have poisoned the shared browser process.
+  // pageTimeout is configurable via manifest.prerender.pageTimeout; 0 disables.
   const drainTimeoutMs = Math.max(0, pre.recycleDrainTimeout ?? 60000);
   const recycleTimeoutMs = Math.max(0, pre.recycleTimeout ?? 180000);
   const pageTimeoutMs = Math.max(0, pre.pageTimeout ?? Math.max(120000, (config.wait ?? 30000) * 4));
@@ -4814,6 +4817,11 @@ async function runPrerender(config) {
             if (!finished) {
               attemptToken.abandoned = true;
               attemptToken.failure = { path: displayPath, message: `page render exceeded ${pageTimeoutMs}ms` };
+              // A timed-out page is presumed to have wedged the browser (e.g.
+              // a hung page.evaluate on a dead Chrome process) — force a
+              // recycle once this path is done, even if a later retry
+              // "succeeds" by reusing the same possibly-poisoned browser.
+              recycleGate.requestRecycle();
             }
           } catch (err) {
             // Unexpected exception escaped processPath (e.g. browser died mid-call).

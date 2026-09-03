@@ -2,7 +2,7 @@
 
 (function () {
 
-const MANIFEST_BUILD_VERSION = '0.5.199-next.3';
+const MANIFEST_BUILD_VERSION = '0.5.195';
 
 /* Manifest Data Sources - Configuration */
 

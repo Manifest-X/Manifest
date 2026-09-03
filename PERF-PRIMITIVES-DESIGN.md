@@ -1466,3 +1466,11 @@ nothing). Fixed on master (merge 9430dc4; node shims; node-environment tests)
 `manifest.min.css` (cross-origin) as `themeCss` at publish or output is empty
 (Manifest-MCP `agent/utilities-theme`, in progress). Manifest-MCP main imports
 the compiler statically (7240e54; a Worker cannot resolve modules at runtime).
+
+**§15 first live proof (docs staging, 2026-09-02):** publish generated
+`/manifest.utilities.css` (14 KB) from the CDN-linked theme and injected
+`<link data-mnfst-utilities>`; the 0.5.199 runtime treats it as covered.
+Renderer: hard per-page timeout added (60s, `prerender.pageTimeout`) after the
+Device docs page hung a render; the page also freezes a live tab (under
+investigation). `mnfst-render` on npm is 0.5.38 — stale vs mnfst 0.5.201; run
+`release:render`.
