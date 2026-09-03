@@ -8,11 +8,14 @@
  * publish (a Cloudflare Worker, no DOM) and locally for any project that
  * wants to ship utilities.css instead of generating it at runtime.
  *
- *   Usage: node scripts/utilities-static.mjs <dir> [--theme path.css] [--out manifest.utilities.css]
+ *   Usage: node scripts/utilities-static.mjs <dir> [--theme path.css] [--base extra.css] [--out manifest.utilities.css]
  */
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve, extname } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { join, resolve, extname, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compileUtilities, scanClasses } from '../lib/manifest.utilities.node.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
     const args = { _: [] };
@@ -20,9 +23,22 @@ function parseArgs(argv) {
         const a = argv[i];
         if (a === '--theme') args.theme = argv[++i];
         else if (a === '--out') args.out = argv[++i];
+        else if (a === '--base') args.base = argv[++i];
         else args._.push(a);
     }
     return args;
+}
+
+// The browser JIT always sees the framework's own utility CSS: compile()'s
+// discoverCssFiles() picks up manifest.css from the page's own stylesheets,
+// so generateCustomUtilities() recognises Manifest's semantic utilities
+// (.row, .col, .center, …) and bakes their variants (md:row, hover:col-wrap).
+// A static bake has no page to discover from, so it must load the same file
+// itself — otherwise every variant of a semantic utility falls through
+// entirely to the runtime JIT (see PERF-PRIMITIVES-DESIGN.md §15).
+function loadFrameworkBaseCss() {
+    const path = join(__dirname, '..', 'lib', 'manifest.css');
+    return existsSync(path) ? readFileSync(path, 'utf8') : '';
 }
 
 function walkHtmlFiles(dir, out = []) {
@@ -42,7 +58,7 @@ async function main() {
     const args = parseArgs(process.argv.slice(2));
     const dir = args._[0];
     if (!dir) {
-        console.error('Usage: node scripts/utilities-static.mjs <dir> [--theme path.css] [--out manifest.utilities.css]');
+        console.error('Usage: node scripts/utilities-static.mjs <dir> [--theme path.css] [--base extra.css] [--out manifest.utilities.css]');
         process.exit(1);
     }
 
@@ -53,6 +69,8 @@ async function main() {
     }
 
     const themeCss = args.theme ? readFileSync(resolve(args.theme), 'utf8') : '';
+    const extraBaseCss = args.base ? readFileSync(resolve(args.base), 'utf8') : '';
+    const baseCss = [loadFrameworkBaseCss(), extraBaseCss].filter(Boolean).join('\n');
     const outPath = resolve(args.out || join(rootDir, 'manifest.utilities.css'));
 
     const htmlFiles = walkHtmlFiles(rootDir).sort();
@@ -64,7 +82,7 @@ async function main() {
 
     // Sort before compiling so the same class set always produces byte-identical output.
     const classes = Array.from(classSet).sort();
-    const css = await compileUtilities({ classes, themeCss });
+    const css = await compileUtilities({ classes, themeCss, baseCss });
 
     writeFileSync(outPath, css ? `${css}\n` : '');
     console.log(`utilities-static: scanned ${htmlFiles.length} file(s), ${classes.length} class token(s) → ${outPath}`);

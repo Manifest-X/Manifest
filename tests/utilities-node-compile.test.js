@@ -110,4 +110,26 @@ describe('scripts/utilities-static.mjs CLI', () => {
             rmSync(dir, { recursive: true, force: true })
         }
     })
+
+    it('bakes variants of the framework\'s own semantic utilities (.row/.col) without a --base flag', () => {
+        // Regression: the CLI used to call compileUtilities() with no baseCss,
+        // so md:row/hover:col-wrap-style usage of Manifest's own .row/.col
+        // utilities was silently skipped at bake time (the browser JIT finds
+        // manifest.css for free via discoverCssFiles(); a static bake has no
+        // page, so this script must load it itself — see utilities-static.mjs).
+        const dir = mkdtempSync(join(tmpdir(), 'mnfst-utilities-static-'))
+        try {
+            writeFileSync(join(dir, 'index.html'), '<div class="row md:row hover:row-wrap"></div>')
+            const cliPath = join(__dirname, '../scripts/utilities-static.mjs')
+            const outPath = join(dir, 'out.css')
+
+            execFileSync(process.execPath, [cliPath, dir, '--out', outPath])
+            const css = readFileSync(outPath, 'utf8')
+
+            expect(css).toContain('md\\:row')
+            expect(css).toContain('hover\\:row-wrap')
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
 })

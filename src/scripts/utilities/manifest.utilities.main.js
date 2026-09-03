@@ -128,8 +128,10 @@ class TailwindCompiler {
 
         // Read any publish/render-provided static utilities sheet before the
         // first compile — its classes are skipped rather than regenerated.
+        // Fails open (never "everything covered") until this resolves —
+        // compile()'s first run awaits it, capped at 2s (see static.js).
         this.staticUtilitiesCoveredClasses = null;
-        this.detectStaticUtilitiesSheet();
+        this.staticUtilitiesReady = this.detectStaticUtilitiesSheet();
 
         // Add critical styles IMMEDIATELY - don't wait for anything
         this.addCriticalBlockingStylesSync();
