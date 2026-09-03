@@ -1523,3 +1523,15 @@ on every baked page. Law: a compiled utilities sheet must (1) start with
 framework stylesheet, before author sheets. Hosting fixed and deployed
 (Manifest-MCP bc2bc46); the framework compiler emits the preamble from 0.5.205.
 Docs staging republished with the fix (44 KB sheet, full Tailwind bake).
+
+**0.5.205 set (merge 4051611, 2026-09-03, 558/558):** data — per-source
+`scopeColumn` (string or `{ team, user }`) on reads, write-side injection and
+realtime scope checks; `$auth.<path>` query-arg interpolation was broken (the
+`auth.` prefix was walked against the auth store itself → literal reached the
+SDK → Appwrite 400 → source landed empty-but-done) → fixed, `?.` supported;
+scoped reads fail SAFE (unresolved scope/arg → no query, source stays pending,
+retry on auth events; event-driven auth wait capped 3s). Utilities — scanner
+`:class=` false match fixed (lookbehind); the runtime skip predicate treated
+`@layer`/`@media` blocks preceded by whitespace as one giant selector and so
+covered almost nothing (why 326 of Playcom's 364 runtime rules regenerated);
+fixed; compiler output now begins with `@layer base, components, utilities;`.
