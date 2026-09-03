@@ -304,6 +304,188 @@ export function collectFiles(root, outputDir) {
   return rels.filter((r) => !isExcludedPath(r) && !publishIgnored(r));
 }
 
+// --- Upload + publish status ------------------------------------------------
+
+// We ask the upload endpoint (via ASYNC_HEADER) to acknowledge with 202
+// `status:"ingesting"` as soon as the bundle lands and finish the writes in the
+// background, rather than holding the connection — that hold is what used to
+// time out on a distant link. The outcome then arrives on <upload-url>/status.
+// A server that predates this ignores the header and answers synchronously with
+// {ok:true}; both are handled below.
+const POLL_FIRST_MS = 1000;
+const POLL_MAX_MS = 5000;
+const POLL_TOTAL_MS = 10 * 60 * 1000;
+// A status read that stays "pending" this long means the bundle never actually
+// arrived. The grace matters because the server's token record is eventually
+// consistent, so a brief stale "pending" right after an upload is normal.
+const PENDING_GRACE_MS = 15_000;
+const PROGRESS_EVERY_MS = 15_000;
+
+// Tells the server we know how to poll, so it can hand back a 202 instead of
+// holding the connection. A server that doesn't know the header just ignores it
+// and answers synchronously — which is exactly the fallback handled below, so
+// CLI and server can ship in either order.
+const ASYNC_HEADER = 'x-mnfst-async';
+
+// Same origin, same one-time token. Derived from the upload URL we already
+// origin-checked — never from a URL the server hands back.
+export function statusUrlFor(uploadUrl) {
+  return uploadUrl.replace(/\/+$/, '') + '/status';
+}
+
+/**
+ * Poll <upload-url>/status until the publish settles. Resolves `{state, body}`:
+ *   done | error   the publish finished (body is the server's payload)
+ *   unknown        server says the token is gone (expired / never existed)
+ *   unsupported    no status route at all — server predates it
+ *   pending        stayed "pending" past the grace: the bundle never landed
+ *   timeout        still running when the overall cap ran out
+ */
+export async function pollPublishStatus(statusUrl, opts = {}) {
+  const {
+    fetchImpl = fetch,
+    sleepImpl = sleep,
+    log: logFn = log,
+    now = Date.now,
+    totalMs = POLL_TOTAL_MS,
+    pendingGraceMs = Infinity,
+  } = opts;
+  const started = now();
+  let delay = POLL_FIRST_MS;
+  let lastProgress = started;
+
+  for (;;) {
+    let status = 0;
+    let json = null;
+    try {
+      const res = await fetchImpl(statusUrl, { method: 'GET', headers: { accept: 'application/json' } });
+      status = res.status;
+      const text = await res.text();
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        /* not JSON — treated as an untagged response below */
+      }
+    } catch {
+      /* blip while polling — fall through and try again */
+    }
+
+    if (status === 404) {
+      // Tagged → this server knows the route and says the token is gone.
+      // Untagged (Hono's plain-text 404) → the server has no status route.
+      return json && json.status === 'unknown' ? { state: 'unknown', body: json } : { state: 'unsupported' };
+    }
+    if (json && json.status === 'done') return { state: 'done', body: json };
+    if (json && json.status === 'error') return { state: 'error', body: json };
+    if (json && json.status === 'pending' && now() - started >= pendingGraceMs) {
+      return { state: 'pending', body: json };
+    }
+    // Anything else (ingesting, pending inside the grace, 429, 5xx, a blip) —
+    // keep waiting.
+
+    const elapsed = now() - started;
+    if (elapsed >= totalMs) return { state: 'timeout' };
+    if (elapsed - (lastProgress - started) >= PROGRESS_EVERY_MS) {
+      lastProgress = now();
+      logFn(`  still publishing… (${Math.round(elapsed / 1000)}s)`);
+    }
+    await sleepImpl(delay);
+    delay = Math.min(delay * 2, POLL_MAX_MS);
+  }
+}
+
+/** Turn a settled poll result into the success payload, or throw a plain-language error. */
+function settledPayload(res) {
+  if (res.state === 'done') return res.body;
+  if (res.state === 'error') {
+    const b = res.body || {};
+    throw new Error(`publish failed${b.error ? ` (${b.error})` : ''}: ${b.message || 'the server rejected the upload.'}`);
+  }
+  if (res.state === 'unknown') {
+    throw new Error('this publish link expired before the upload finished. Run the publish again.');
+  }
+  if (res.state === 'timeout') {
+    throw new Error(
+      'the publish is still running after 10 minutes. It may yet finish — check the deployment in Claude ' +
+        'with the Manifest connector before publishing again.',
+    );
+  }
+  throw new Error("couldn't determine whether the publish finished. Check the deployment before publishing again.");
+}
+
+/**
+ * POST the bundle and return the final success payload, whichever protocol the
+ * server speaks — synchronous {ok:true} (older servers) or 202 + status polling.
+ * Throws on a real failure.
+ */
+export async function uploadBundle(uploadUrl, zip, opts = {}) {
+  const { fetchImpl = fetch, sleepImpl = sleep, log: logFn = log, tries = 4, ...pollOpts } = opts;
+  const statusUrl = statusUrlFor(uploadUrl);
+  const poll = (extra) =>
+    pollPublishStatus(statusUrl, { fetchImpl, sleepImpl, log: logFn, ...pollOpts, ...extra });
+
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    let res = null;
+    try {
+      res = await fetchImpl(uploadUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/zip', [ASYNC_HEADER]: '1' },
+        body: zip,
+      });
+    } catch {
+      // The connection died — but the bundle may well have landed and be
+      // ingesting right now. Re-uploading blind re-sends the whole archive (and
+      // would only 409 anyway), so ask the status endpoint what happened.
+      logFn('  lost the connection during upload — checking whether it landed…');
+      const s = await poll({ pendingGraceMs: PENDING_GRACE_MS });
+      // It never arrived, or this server has no status route — either way,
+      // fall back to retrying the upload exactly as before.
+      if (s.state === 'pending' || s.state === 'unsupported') {
+        if (attempt < tries) {
+          logFn(`  couldn't reach the upload server — retrying (${attempt}/${tries - 1})…`);
+          await sleepImpl(500 * attempt);
+          continue;
+        }
+        throw new Error('could not reach the upload server.');
+      }
+      return settledPayload(s);
+    }
+
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* leave null */
+    }
+
+    // Synchronous server: the upload response IS the success payload.
+    if (res.ok && json && json.ok === true) return json;
+
+    // Async server: acknowledged, ingest running in the background.
+    if (res.status === 202 && json && json.status === 'ingesting') {
+      logFn('  upload received — finishing the publish on the server…');
+      return settledPayload(await poll({}));
+    }
+
+    // A retry met an ingest already in flight (ours, from an attempt whose
+    // connection died). Wait it out rather than re-uploading.
+    if (res.status === 409 && json && json.error === 'ingest_in_progress') {
+      logFn('  an earlier attempt is still publishing — waiting for it to finish…');
+      return settledPayload(await poll({}));
+    }
+
+    if (res.status >= 500 && attempt < tries) {
+      logFn(`  the upload server had a hiccup (HTTP ${res.status}) — retrying (${attempt}/${tries - 1})…`);
+      await sleepImpl(500 * attempt);
+      continue;
+    }
+
+    throw new Error(`upload failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+  throw new Error('could not reach the upload server.');
+}
+
 // --- Component version stamp ------------------------------------------------
 
 // Stamp each shipped manifest.json (project root, and the prerender output copy)
@@ -511,20 +693,11 @@ export async function main() {
   const zip = buildZip(root, rels, stampManifests(root, rels));
   log(`Uploading ${rels.length} files (${(zip.length / 1048576).toFixed(1)} MB)…`);
 
-  const up = await fetchRetry(
-    uploadUrl,
-    { method: 'POST', headers: { 'content-type': 'application/zip' }, body: zip },
-    { label: 'the upload server' },
-  );
-  const upText = await up.text();
-  let upJson = null;
+  let upJson;
   try {
-    upJson = JSON.parse(upText);
-  } catch {
-    /* ignore */
-  }
-  if (!up.ok || !upJson || upJson.ok !== true) {
-    fail(`upload failed (HTTP ${up.status}): ${upText.slice(0, 300)}`);
+    upJson = await uploadBundle(uploadUrl, zip);
+  } catch (e) {
+    fail(e.message);
   }
 
   log('');
