@@ -3833,8 +3833,13 @@ function injectTailwindVariants() {
 }
 injectTailwindVariants();
 
-// Initialize immediately without waiting for DOMContentLoaded
-const compiler = new TailwindCompiler();
+// One compiler per page: a second copy would own a rival #manifest-styles and
+// the two order observers would re-append their own style to <head> forever.
+// A compiler whose style element left the document is stale, so it is rebuilt.
+const existingCompiler = window.ManifestUtilities;
+const compiler = (existingCompiler && existingCompiler.styleElement && existingCompiler.styleElement.isConnected)
+    ? existingCompiler
+    : new TailwindCompiler();
 
 // Expose utilities compiler for optional integration
 window.ManifestUtilities = compiler;
@@ -3858,11 +3863,14 @@ if ('PerformanceObserver' in window) {
 }
 
 // Recompile on DOMContentLoaded for late-added elements
-document.addEventListener('DOMContentLoaded', () => {
-    if (!compiler.usesStaticPrerenderUtilities && !compiler.isCompiling) {
-        compiler.compile();
-    }
-});
+if (!compiler.__mnfstDomReadyBound) {
+    compiler.__mnfstDomReadyBound = true;
+    document.addEventListener('DOMContentLoaded', () => {
+        if (!compiler.usesStaticPrerenderUtilities && !compiler.isCompiling) {
+            compiler.compile();
+        }
+    });
+}
 
 
 
