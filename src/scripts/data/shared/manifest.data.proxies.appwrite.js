@@ -50,13 +50,14 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             const tableId = window.ManifestDataConfig.getAppwriteTableId(dataSource);
             const bucketId = window.ManifestDataConfig.getAppwriteBucketId(dataSource);
             const scope = window.ManifestDataConfig.getScope(dataSource);
+            const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
 
             // Handle table operations (TablesDB)
             if (tableId) {
                 if (method === '$create') {
                     const [data, rowId] = args;
 
-                    // Auto-inject userId and/or teamId based on scope and config
+                    // Auto-inject userId and/or teamId (or their configured scopeColumn) based on scope and config
                     const autoInject = window.ManifestDataConfig.getAutoInjectConfig(dataSource);
                     let enrichedData = { ...data };
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
@@ -69,16 +70,16 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Inject userId if user scope is active and enabled
                     if (autoInject.userId && hasUserScope && authStore?.isAuthenticated && authStore?.user) {
                         const userId = authStore?.user?.$id || authStore?.user?.id || authStore?.userId;
-                        if (userId && !enrichedData.userId) {
-                            enrichedData.userId = userId;
+                        if (userId && !enrichedData[scopeColumns.user]) {
+                            enrichedData[scopeColumns.user] = userId;
                         }
                     }
 
                     // Inject teamId if team scope is active and enabled
                     if (autoInject.teamId && hasTeamScope) {
                         const teamId = authStore?.currentTeam?.$id || authStore?.currentTeam?.id;
-                        if (teamId && !enrichedData.teamId) {
-                            enrichedData.teamId = teamId;
+                        if (teamId && !enrichedData[scopeColumns.team]) {
+                            enrichedData[scopeColumns.team] = teamId;
                         }
                     }
 
@@ -390,7 +391,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const [queries] = args;
                     const appwriteQueries = await window.ManifestDataQueries.buildAppwriteQueries(
                         queries || [],
-                        scope
+                        scope,
+                        scopeColumns
                     );
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;

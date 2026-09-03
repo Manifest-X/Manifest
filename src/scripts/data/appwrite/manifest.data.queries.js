@@ -12,12 +12,15 @@ const ALLOWED_VARIABLES = [
 ];
 
 // Get auth store value safely
+// Path is relative to the auth store itself (e.g. "currentTeam.$id", not "auth.currentTeam.$id").
+// Supports optional-chaining syntax ("currentTeam?.$id") by normalizing "?." to "." — a
+// missing intermediate value already returns null via the loop below.
 function getAuthValue(path) {
     try {
         const store = Alpine.store('auth');
         if (!store) return null;
 
-        const parts = path.split('.');
+        const parts = path.replace(/\?\./g, '.').split('.');
         let value = store;
 
         for (const part of parts) {
@@ -64,7 +67,9 @@ function interpolateVariable(value) {
 
     // Check if it's a variable reference
     if (value.startsWith('$auth.')) {
-        const path = value.substring(1); // Remove leading $
+        // Strip the '$auth.' prefix (not just '$') — Alpine.store('auth') IS the auth
+        // object, so a path starting with another 'auth' segment would never resolve.
+        const path = value.substring('$auth.'.length);
         return getAuthValue(path);
     } else if (value === '$locale.current') {
         return getLocaleValue();
@@ -140,9 +145,14 @@ function interpolateObject(obj) {
     return result;
 }
 
+// Default scope column names, overridable per data source via `scopeColumn`
+const DEFAULT_SCOPE_COLUMNS = { team: 'teamId', user: 'userId' };
+
 // Build queries with scope injection
 // SECURITY: Scope queries are ALWAYS prepended to user queries to prevent bypass
-async function buildQueries(queriesConfig, scope) {
+// scopeColumns: { team, user } column names to filter/write on (default teamId/userId)
+async function buildQueries(queriesConfig, scope, scopeColumns) {
+    const cols = { ...DEFAULT_SCOPE_COLUMNS, ...(scopeColumns || {}) };
     if (!queriesConfig || !Array.isArray(queriesConfig)) {
         return [];
     }
@@ -195,7 +205,7 @@ async function buildQueries(queriesConfig, scope) {
         if (isAuthenticated && user) {
             const userId = getAuthValue('userId') || getAuthValue('user.$id') || getAuthValue('user.id') || user.$id || user.id;
             if (userId) {
-                orQueries.push(['equal', 'userId', userId]);
+                orQueries.push(['equal', cols.user, userId]);
             } else {
             }
         } else {
@@ -224,7 +234,7 @@ async function buildQueries(queriesConfig, scope) {
         teamIds = [...new Set(teamIds)];
 
         teamIds.forEach(teamId => {
-            orQueries.push(['equal', 'teamId', teamId]);
+            orQueries.push(['equal', cols.team, teamId]);
         });
 
         if (orQueries.length > 0) {
@@ -235,7 +245,7 @@ async function buildQueries(queriesConfig, scope) {
             }
         } else {
             // No user or teams - return no results
-            scopeQueries.push(['equal', 'userId', '']);
+            scopeQueries.push(['equal', cols.user, '']);
         }
     } else {
         // Handle user scope (when not combined with teams)
@@ -245,7 +255,7 @@ async function buildQueries(queriesConfig, scope) {
 
             if (!isAuthenticated || !user) {
                 // User is not authenticated - return no results
-                scopeQueries.push(['equal', 'userId', '']);
+                scopeQueries.push(['equal', cols.user, '']);
                 // SECURITY: Return early with scope query to prevent any data access
                 return scopeQueries;
             }
@@ -253,10 +263,10 @@ async function buildQueries(queriesConfig, scope) {
             // Get user ID value
             const userId = getAuthValue('userId') || getAuthValue('user.$id') || getAuthValue('user.id') || user.$id || user.id;
             if (userId) {
-                scopeQueries.push(['equal', 'userId', userId]);
+                scopeQueries.push(['equal', cols.user, userId]);
             } else {
                 // User is authenticated but userId not found - return no results
-                scopeQueries.push(['equal', 'userId', '']);
+                scopeQueries.push(['equal', cols.user, '']);
                 if (!window.__manifestDataDebugLogged) {
                     window.__manifestDataDebugLogged = true;
                     debugAuthStore();
@@ -273,10 +283,10 @@ async function buildQueries(queriesConfig, scope) {
                 authStore?.currentTeam?.id;
 
             if (teamId) {
-                scopeQueries.push(['equal', 'teamId', teamId]);
+                scopeQueries.push(['equal', cols.team, teamId]);
             } else {
                 // No team ID found - return no results
-                scopeQueries.push(['equal', 'teamId', '']);
+                scopeQueries.push(['equal', cols.team, '']);
             }
         } else if (hasTeamsScope) {
             // Multi-team scope - use all teams user belongs to
@@ -289,16 +299,16 @@ async function buildQueries(queriesConfig, scope) {
             if (teamIds.length > 0) {
                 if (teamIds.length === 1) {
                     // Single team - use equal for efficiency
-                    scopeQueries.push(['equal', 'teamId', teamIds[0]]);
+                    scopeQueries.push(['equal', cols.team, teamIds[0]]);
                 } else {
                     // Multiple teams - use Query.or() with multiple Query.equal() calls
                     // Build: Query.or([Query.equal('teamId', id1), Query.equal('teamId', id2), ...])
-                    const equalQueries = teamIds.map(id => ['equal', 'teamId', id]);
+                    const equalQueries = teamIds.map(id => ['equal', cols.team, id]);
                     scopeQueries.push(['or', equalQueries]);
                 }
             } else {
                 // No teams found - return no results
-                scopeQueries.push(['equal', 'teamId', '']);
+                scopeQueries.push(['equal', cols.team, '']);
             }
         }
     }
@@ -376,8 +386,9 @@ function toAppwriteQuery(queryArray) {
 }
 
 // Build Appwrite queries from configuration
-async function buildAppwriteQueries(queriesConfig, scope) {
-    const queries = await buildQueries(queriesConfig, scope);
+// scopeColumns: { team, user } column names (default teamId/userId) — see manifest.data.config.js getScopeColumns
+async function buildAppwriteQueries(queriesConfig, scope, scopeColumns) {
+    const queries = await buildQueries(queriesConfig, scope, scopeColumns);
     return queries
         .map(query => toAppwriteQuery(query))
         .filter(query => query !== null);
@@ -388,8 +399,10 @@ window.ManifestDataQueries = {
     interpolateVariable,
     interpolateQuery,
     interpolateObject,
+    getAuthValue,
     buildQueries,
     buildAppwriteQueries,
     toAppwriteQuery,
-    ALLOWED_VARIABLES
+    ALLOWED_VARIABLES,
+    DEFAULT_SCOPE_COLUMNS
 };

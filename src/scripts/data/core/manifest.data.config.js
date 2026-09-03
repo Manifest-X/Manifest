@@ -218,6 +218,24 @@ function getScope(dataSource) {
     return dataSource?.scope || null;
 }
 
+// Get scope column names for a data source (for query building + write-side auto-inject).
+// dataSource.scopeColumn can be a string (applies to both team/user) or
+// { team: "workspaceId", user: "ownerId" } to name them independently.
+// Defaults to teamId/userId when unset.
+function getScopeColumns(dataSource) {
+    const raw = dataSource?.scopeColumn;
+    if (raw && typeof raw === 'object') {
+        return {
+            team: raw.team || 'teamId',
+            user: raw.user || 'userId'
+        };
+    }
+    if (typeof raw === 'string' && raw) {
+        return { team: raw, user: raw };
+    }
+    return { team: 'teamId', user: 'userId' };
+}
+
 // Get auto-injection config from data source
 // Controls whether userId/teamId are automatically injected on create
 function getAutoInjectConfig(dataSource) {
@@ -245,6 +263,7 @@ window.ManifestDataConfig = {
     getAppwriteTableId,
     getAppwriteBucketId,
     getScope,
+    getScopeColumns,
     getQueries,
     getAutoInjectConfig
 };
