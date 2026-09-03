@@ -3,10 +3,12 @@
  *
  * Walks every .html file under a directory, scans it for utility class
  * tokens the same way the browser JIT does (manifest.utilities.node.mjs
- * scanClasses), compiles the CSS those classes need (compileUtilities), and
- * writes the result to a single deterministic stylesheet. Used by hosting/
- * publish (a Cloudflare Worker, no DOM) and locally for any project that
- * wants to ship utilities.css instead of generating it at runtime.
+ * scanClasses), compiles the CSS those classes need (compileUtilities —
+ * Manifest's own theme-var/custom utilities AND, via the real `tailwindcss`
+ * compiler, plain Tailwind-style utilities like `flex`/`gap-2`/`w-[37px]`),
+ * and writes the result to a single deterministic stylesheet. Used by
+ * hosting/publish (a Cloudflare Worker, no DOM) and locally for any project
+ * that wants to ship utilities.css instead of generating it at runtime.
  *
  *   Usage: node scripts/utilities-static.mjs <dir> [--theme path.css] [--base extra.css] [--out manifest.utilities.css]
  */

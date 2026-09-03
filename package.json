@@ -20,6 +20,9 @@
         "README.md",
         "LICENSE"
     ],
+    "dependencies": {
+        "tailwindcss": "^4.2.4"
+    },
     "scripts": {
         "clean": "rimraf src/styles/manifest.css src/styles/manifest.min.css src/styles/manifest.theme.css src/styles/manifest.code.css src/styles/manifest.code.min.css lib",
         "build": "cd src && node scripts/build.mjs",
@@ -58,7 +61,6 @@
         "puppeteer": "^24.15.0",
         "rimraf": "^5.0.0",
         "rollup": "^4.24.2",
-        "tailwindcss": "^4.2.4",
         "vitest": "^4.1.2"
     },
     "keywords": [

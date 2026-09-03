@@ -85,6 +85,24 @@ describe('static utilities sheet — runtime skip', () => {
         expect(stripped).toMatch(/\.p-8\s*\{/)
     })
 
+    it('covers a class whose only baked rule came from the Tailwind engine pass (gap-2)', async () => {
+        // gap-2 has no Manifest generator/theme-var backing at all — a static
+        // sheet baked by compileUtilities() covers it purely via the Tailwind
+        // pass (see manifest.utilities.node.mjs). The runtime's coverage
+        // detection is generic (classNamesFromCssText reads any selector), so
+        // it must recognize this as covered the same as a Manifest-authored rule.
+        const headHtml = [
+            '<style data-mnfst-utilities>.gap-2{gap:calc(var(--spacing) * 2)}</style>',
+        ].join('')
+        const bodyHtml = '<div class="gap-2 p-4"></div>'
+
+        const compiler = await bootPluginWith({ headHtml, bodyHtml })
+
+        expect(compiler.staticUtilitiesCoveredClasses.has('gap-2')).toBe(true)
+        const generated = document.getElementById('manifest-styles').textContent
+        expect(generated).not.toMatch(/\.gap-2\s*\{/)
+    })
+
     it('behaves like a cold visitor when there is no static sheet', async () => {
         const headHtml = '<style id="theme-vars">:root { --spacing-4: 1rem; }</style>'
         const bodyHtml = '<div class="p-4"></div>'
