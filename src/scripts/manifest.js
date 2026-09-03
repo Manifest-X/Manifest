@@ -187,6 +187,11 @@
 	// Configuration
 	const DEFAULT_VERSION = 'latest';
 
+	// The version the page booted with (data-version). Every later load —
+	// Manifest.loadPlugin(), usage sniffing — resolves against it, so a runtime
+	// load can't pull a second copy of the framework at another version.
+	let RESOLVED_VERSION = DEFAULT_VERSION;
+
 	// CDN fallback chain (first-party first). Each origin serves the npm scheme
 	// `<origin>/<pkg>@<version>/<path>`. Override order with `data-cdn`
 	// (comma-separated origins).
@@ -298,7 +303,7 @@
 	// candidate per CDN host, tried in order.
 	let _pluginBase = null;
 	function setPluginBase(b) { _pluginBase = b || null; }
-	function getPluginUrlCandidates(pluginName, version = DEFAULT_VERSION) {
+	function getPluginUrlCandidates(pluginName, version = RESOLVED_VERSION) {
 		// Hyphenated API name → dotted file name (`appwrite-auth` → appwrite.auth).
 		const fileName = pluginName.replace(/-/g, '.');
 		if (_pluginBase) {
@@ -307,7 +312,7 @@
 		}
 		return CDN_HOSTS.map(h => `${getBaseUrl(version, h)}/${hostFile(h, `manifest.${fileName}.min.js`)}`);
 	}
-	function getPluginUrl(pluginName, version = DEFAULT_VERSION) {
+	function getPluginUrl(pluginName, version = RESOLVED_VERSION) {
 		return getPluginUrlCandidates(pluginName, version)[0];
 	}
 
@@ -417,7 +422,7 @@
 	// Load a plugin, falling through the CDN chain on error. A fallback insert
 	// lands after already-inserted scripts, so strict cross-plugin execution
 	// order is traded for availability in the (already degraded) fallback case.
-	async function addScript(pluginName, version = DEFAULT_VERSION) {
+	async function fetchPluginScript(pluginName, version) {
 		const urls = getPluginUrlCandidates(pluginName, version);
 		let lastErr = null;
 		for (const url of urls) {
@@ -429,6 +434,26 @@
 			}
 		}
 		throw lastErr || new Error(`Failed to load ${pluginName}`);
+	}
+
+	// One execution per plugin per page. injectScript dedupes by URL, which two
+	// versions of the same plugin slip past — and a second copy of a plugin that
+	// owns page-level state (utilities' style element and its order observer)
+	// fights the first. A failed load is forgotten so a retry can still run.
+	const pluginLoads = new Map();
+
+	async function addScript(pluginName, version = RESOLVED_VERSION) {
+		const prior = pluginLoads.get(pluginName);
+		if (prior) {
+			if (prior.version !== version) {
+				console.warn(`[Manifest Loader] ${pluginName} already loaded at ${prior.version} — ignoring request for ${version}`);
+			}
+			return prior.promise;
+		}
+		const promise = fetchPluginScript(pluginName, version);
+		pluginLoads.set(pluginName, { version, promise });
+		promise.catch(() => pluginLoads.delete(pluginName));
+		return promise;
 	}
 
 	// Resolve plugin dependencies (auto-inject required dependencies)
@@ -626,7 +651,7 @@
 	}
 
 	// Load custom Tailwind CDN script, falling through the CDN chain on error
-	async function loadTailwind(version = DEFAULT_VERSION) {
+	async function loadTailwind(version = RESOLVED_VERSION) {
 		const urls = CDN_HOSTS.map(h => `${getBaseUrl(version, h)}/${hostFile(h, 'manifest.tailwind.min.js')}`);
 		let lastErr = null;
 		for (const url of urls) {
@@ -642,7 +667,7 @@
 
 	// Expose API
 	window.Manifest = {
-		loadPlugin: function (pluginName, version = DEFAULT_VERSION) {
+		loadPlugin: function (pluginName, version = RESOLVED_VERSION) {
 			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, ...AUTHORING_PLUGINS, 'payments', 'chat', 'device'];
 			if (!allPlugins.includes(pluginName)) {
 				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
@@ -770,6 +795,7 @@
 
 	// Parse config and load plugins
 	const config = parseDataAttributes();
+	if (config && config.version) RESOLVED_VERSION = config.version;
 	if (config && config.pluginBase) setPluginBase(config.pluginBase);
 	if (config && config.cdn) setCdnHosts(config.cdn);
 	armServiceWorker(config);
