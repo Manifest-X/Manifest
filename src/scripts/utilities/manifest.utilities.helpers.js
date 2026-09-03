@@ -164,8 +164,12 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
 
 // Extract classes from HTML content
 TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
-    // Match class attributes: class="..." or class='...'
-    const classRegex = /class=["']([^"']+)["']/g;
+    // Literal class="..."/class='...' only — lookbehind excludes `:class=`
+    // (Alpine binding), whose "class=" substring would otherwise match and
+    // truncate at the literal's first internal quote, leaking a stray '{'.
+    // Whitespace-only split below keeps every token Tailwind would accept
+    // (variants, arbitrary values, leading '-', '!'); only x-/$ tokens drop.
+    const classRegex = /(?<![:\w])class=["']([^"']+)["']/g;
     let match;
 
     while ((match = classRegex.exec(html)) !== null) {

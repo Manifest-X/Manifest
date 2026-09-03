@@ -56,6 +56,7 @@ async function load() {
         getAppwriteTableId: ds => ds?.appwriteTableId || null,
         getAppwriteBucketId: () => null,
         getScope: () => null,
+        getScopeColumns: () => ({ team: 'teamId', user: 'userId' }),
         getQueries: () => null,
         getDefaultLocale: () => null,
         interpolateEnvVars: v => v,

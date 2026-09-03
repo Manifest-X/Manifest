@@ -18,6 +18,14 @@ TailwindCompiler.prototype.extractSelectorsFromCssText = function (cssText) {
     const len = cssText.length;
     let i = 0;
     while (i < len) {
+        // Skip inter-rule whitespace first — without this, whitespace before an
+        // `@layer`/`@media` (e.g. after a preceding `@layer base, ...;` statement
+        // or sibling rule) leaves `i` off the '@', so the block below never fires
+        // and the whole nested block is swallowed whole as one bogus selector,
+        // losing every class inside it (real Tailwind/compileUtilities output is
+        // always `@layer theme {...}` followed by `@layer utilities {...}`).
+        while (i < len && /\s/.test(cssText[i])) i++;
+        if (i >= len) break;
         if (cssText[i] === '/' && cssText[i + 1] === '*') {
             const end = cssText.indexOf('*/', i + 2);
             i = end === -1 ? len : end + 2;
@@ -157,6 +165,12 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
         const len = text.length;
         let i = 0;
         while (i < len) {
+            // Skip (but preserve) inter-rule whitespace before checking for an
+            // at-rule — see extractSelectorsFromCssText for why this matters.
+            const wsStart = i;
+            while (i < len && /\s/.test(text[i])) i++;
+            if (i > wsStart) out.push(text.slice(wsStart, i));
+            if (i >= len) break;
             if (text[i] === '/' && text[i + 1] === '*') {
                 const end = text.indexOf('*/', i + 2);
                 const stop = end === -1 ? len : end + 2;

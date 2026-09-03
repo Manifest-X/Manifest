@@ -144,6 +144,20 @@
                                     { "type": "array", "items": { "type": "string", "enum": ["user", "team"] } }
                                 ]
                             },
+                            "scopeColumn": {
+                                "description": "Column name(s) `scope` filters/writes on. Default teamId/userId. A string sets both; an object sets them independently.",
+                                "oneOf": [
+                                    { "type": "string" },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "team": { "type": "string" },
+                                            "user": { "type": "string" }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                ]
+                            },
                             "autoInjectUserId": { "type": "boolean" },
                             "autoInjectTeamId": { "type": "boolean" },
                             "queries": {

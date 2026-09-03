@@ -226,7 +226,10 @@ export async function compileUtilities({ classes = [], themeCss = '', baseCss = 
     const manifestLayer = allUtilities ? `@layer utilities {\n${allUtilities}\n}` : '';
     const tailwindLayer = await compileTailwindPass(uniqueClasses, tailwind);
 
-    return [manifestLayer, tailwindLayer].filter(Boolean).join('\n\n');
+    const body = [manifestLayer, tailwindLayer].filter(Boolean).join('\n\n');
+    if (!body) return '';
+    // Layer order preamble: wins over a later `base` reset regardless of load order.
+    return `@layer base, components, utilities;\n\n${body}`;
 }
 
 // `class:token=` (per-class conditional binding) and the `:class="..."`
