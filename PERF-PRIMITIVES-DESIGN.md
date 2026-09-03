@@ -1474,3 +1474,16 @@ Renderer: hard per-page timeout added (60s, `prerender.pageTimeout`) after the
 Device docs page hung a render; the page also freezes a live tab (under
 investigation). `mnfst-render` on npm is 0.5.38 — stale vs mnfst 0.5.201; run
 `release:render`.
+
+**§15 correction (2026-09-03):** the Manifest utilities plugin generates only
+theme-variable-driven utilities and Manifest's semantic utilities; plain
+Tailwind-style utilities come from Tailwind's own browser engine, loaded as the
+`tailwind` plugin (`lib/manifest.tailwind.js`) by `data-tailwind`. So the
+publish-time bake must run that same engine over the scanned classes (it is
+pure JS) for the sheet to equal what a page generates — in progress
+(`agent/tailwind-bake`). Shipped meanwhile (9ebb5ba): the CLI/bake now passes
+`lib/manifest.css` as `baseCss` so semantic-utility variants (`md:row`,
+`hover:col-wrap`) are baked, and the runtime's static-sheet skip fails open
+(null sheet / throw / zero rules → nothing covered; waits ≤2s for the link's
+load before the first compile). Playcom on the theme-only bake: 45 rules baked,
+392 runtime; utilities-ready 4.2s → 2.4s, boot style writes 85 → 72.
