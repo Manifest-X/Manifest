@@ -84,6 +84,9 @@ function initializeComboboxPlugin() {
     // Read options from a source element (datalist/select → option, menu → li)
     function readOptions(src) {
         if (!src) return [];
+        // Deferred source (x-for not hydrated yet) — render before reading its rows.
+        // Deeper fix: resolve labels from the $x data collection instead of DOM rows.
+        if (window.ManifestDefer?.isPending(src)) window.ManifestDefer.render(src);
         if (src.tagName === 'MENU') {
             return Array.from(src.querySelectorAll('li')).map(li => {
                 const copy = stripClone(li.cloneNode(true));
@@ -454,6 +457,8 @@ function initializeComboboxPlugin() {
 
         function openMenu() {
             if (!menu || menu.matches(':popover-open') || atCap()) return;
+            // Re-stashed since build (x-defer.discard) — re-hydrate before showing.
+            if (src && window.ManifestDefer?.isPending(src)) { options = readOptions(src); setOptions(options); }
             menu.style.minWidth = wrap.offsetWidth + 'px';
             menu.showPopover();
             el.setAttribute('aria-expanded', 'true');
