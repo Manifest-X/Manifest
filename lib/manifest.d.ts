@@ -510,6 +510,17 @@ declare global {
         Alpine?: unknown;
         __manifestLoaded?: unknown;
     }
+
+    /**
+     * Fired when the utilities runtime sees a class the baked sheet (and
+     * `manifest.json`'s `utilities.safelist`/`patterns`) doesn't cover, after
+     * publish stamped that sheet as covering every class — see
+     * manifest.utilities.static.js. `engineLoaded` is true once the lazily
+     * loaded Tailwind engine has taken over, false if that load failed.
+     */
+    interface WindowEventMap {
+        'manifest:utilities-uncovered': CustomEvent<{ classes: string[]; engineLoaded: boolean }>;
+    }
 }
 
 // ---------------------------------------------------------------------------

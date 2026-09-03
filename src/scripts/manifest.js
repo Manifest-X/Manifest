@@ -686,7 +686,11 @@
 	// Expose API
 	window.Manifest = {
 		loadPlugin: function (pluginName, version = RESOLVED_VERSION) {
-			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, ...AUTHORING_PLUGINS, 'payments', 'chat', 'device'];
+			// 'tailwind' isn't a core/Appwrite/authoring plugin — it's the Play-CDN
+			// browser engine (lib/manifest.tailwind.js) — but the utilities plugin's
+			// uncovered-class watcher lazily loads it this way (see
+			// manifest.utilities.static.js setupUncoveredClassWatcher).
+			const allPlugins = [...AVAILABLE_PLUGINS, ...APPWRITE_PLUGINS, ...AUTHORING_PLUGINS, 'payments', 'chat', 'device', 'tailwind'];
 			if (!allPlugins.includes(pluginName)) {
 				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
 				return Promise.reject(new Error(`Unknown plugin: ${pluginName}`));
