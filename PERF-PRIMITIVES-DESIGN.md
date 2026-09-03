@@ -1535,3 +1535,22 @@ retry on auth events; event-driven auth wait capped 3s). Utilities — scanner
 `@layer`/`@media` blocks preceded by whitespace as one giant selector and so
 covered almost nothing (why 326 of Playcom's 364 runtime rules regenerated);
 fixed; compiler output now begins with `@layer base, components, utilities;`.
+
+**§15 final shape (merge ee0f910, 2026-09-03, 735/735):** Andrew's ruling — a
+page whose bake is stamped complete (`data-mnfst-utilities-complete`) does not
+download Tailwind's browser engine at all; a MutationObserver watches for a
+class the sheet and `utilities.safelist` don't cover, lazily loads the engine on
+the first one, warns once and dispatches `manifest:utilities-uncovered`
+({ classes, engineLoaded }), then disconnects. A wrong stamp degrades to a late
+engine load, never an unstyled page. `manifest.json` gains
+`utilities: { safelist: [...], patterns: [...] }` — safelist is baked, patterns
+are runtime-only. Coverage is now a standing proof, not an assumption: a 49-class,
+15-family corpus (responsive, state, group/peer incl. named, dark, motion,
+structural, pseudo-element, aria/data, arbitrary value + variant, stacked,
+important, negative, fraction, size) asserts scan → bake → covered agree for
+every member, and the two real production sheets are checked in under
+`tests/fixtures/` (playcom 38 KB/538 classes, docs 44 KB/478). The corpus
+immediately found two more parser bugs (hex-escaped leading-digit classes like
+`2xl:`, and quotes inside arbitrary values truncating the class scan).
+**Law: parsers are tested against published artefacts, never hand-written
+fixtures** — three separate coverage bugs shipped past fixtures that passed.
