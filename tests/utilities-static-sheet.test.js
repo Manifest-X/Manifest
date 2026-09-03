@@ -207,3 +207,44 @@ describe('static utilities sheet — nested @layer/@media coverage (real Tailwin
         }
     })
 })
+
+describe('static utilities sheet — sibling top-level rules (the live bake shape)', () => {
+    // Regression: the CSSOM path joins each top-level rule's cssText with '\n'
+    // (and every real bake now opens with the `@layer base, …;` preamble), so
+    // every rule after the first began at a newline. The parser only took its
+    // `@` branch when the cursor landed exactly on '@', so those siblings were
+    // swallowed whole as one bogus selector: a 44 KB sheet with 557 rules
+    // yielded 3 "selectors" and 0 covered classes, and the runtime regenerated
+    // everything it had just been handed.
+    const LIVE_SHAPE = [
+        '@layer base, components, utilities;',
+        '@layer utilities {',
+        '.p-2 { padding: var(--spacing-2); }',
+        '}',
+        '@layer theme {',
+        ':root { --spacing-2: 0.5rem; }',
+        '}',
+        '@layer utilities {',
+        '.gap-2 { gap: var(--spacing-2); }',
+        '.group-hover\\:opacity-100 { &:hover { opacity: 1; } }',
+        '}',
+    ].join('\n')
+
+    it('covers classes in every sibling block, not just the first', async () => {
+        const utilities = await bootPluginWith({
+            headHtml: `<style data-mnfst-utilities>${LIVE_SHAPE}</style>`,
+            bodyHtml: '<div class="p-2 gap-2 group-hover:opacity-100 mt-7"></div>',
+        })
+        const covered = utilities.staticUtilitiesCoveredClasses
+        expect(covered.has('p-2')).toBe(true)
+        expect(covered.has('gap-2')).toBe(true)
+        expect(covered.has('group-hover:opacity-100')).toBe(true)
+        expect(covered.has('mt-7')).toBe(false)
+    })
+
+    it('parses the same shape from raw text (fetch fallback path)', () => {
+        const utilities = window.ManifestUtilities
+        const names = utilities.classNamesFromCssText(LIVE_SHAPE)
+        expect([...names].sort()).toEqual(['gap-2', 'group-hover:opacity-100', 'p-2'])
+    })
+})

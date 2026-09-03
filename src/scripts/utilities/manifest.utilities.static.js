@@ -18,6 +18,7 @@ TailwindCompiler.prototype.extractSelectorsFromCssText = function (cssText) {
     const len = cssText.length;
     let i = 0;
     while (i < len) {
+        if (cssText[i] === ' ' || cssText[i] === '\n' || cssText[i] === '\r' || cssText[i] === '\t') { i++; continue; }   // else an @-rule after a newline reads as a selector
         // Skip inter-rule whitespace first — without this, whitespace before an
         // `@layer`/`@media` (e.g. after a preceding `@layer base, ...;` statement
         // or sibling rule) leaves `i` off the '@', so the block below never fires
@@ -165,6 +166,7 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
         const len = text.length;
         let i = 0;
         while (i < len) {
+            if (text[i] === ' ' || text[i] === '\n' || text[i] === '\r' || text[i] === '\t') { out.push(text[i]); i++; continue; }
             // Skip (but preserve) inter-rule whitespace before checking for an
             // at-rule — see extractSelectorsFromCssText for why this matters.
             const wsStart = i;
