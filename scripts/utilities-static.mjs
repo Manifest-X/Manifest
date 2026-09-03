@@ -26,9 +26,27 @@ function parseArgs(argv) {
         if (a === '--theme') args.theme = argv[++i];
         else if (a === '--out') args.out = argv[++i];
         else if (a === '--base') args.base = argv[++i];
+        else if (a === '--manifest') args.manifest = argv[++i];
         else args._.push(a);
     }
     return args;
+}
+
+// manifest.json's `utilities.safelist`/`utilities.patterns` — see
+// manifest.utilities.node.mjs (compileUtilities/scanClasses) and
+// manifest.utilities.static.js (runtime coverage) for the full contract.
+// Only `safelist` (literal class names) can be baked; `patterns` (regex) is
+// runtime-only and has nothing to enumerate here.
+function loadUtilitiesSafelist(manifestPath) {
+    if (!existsSync(manifestPath)) return [];
+    try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        const list = manifest && manifest.utilities && manifest.utilities.safelist;
+        return Array.isArray(list) ? list.filter(c => typeof c === 'string' && c) : [];
+    } catch (e) {
+        console.warn(`utilities-static: could not read ${manifestPath} for a safelist — ${e.message}`);
+        return [];
+    }
 }
 
 // The browser JIT always sees the framework's own utility CSS: compile()'s
@@ -74,6 +92,8 @@ async function main() {
     const extraBaseCss = args.base ? readFileSync(resolve(args.base), 'utf8') : '';
     const baseCss = [loadFrameworkBaseCss(), extraBaseCss].filter(Boolean).join('\n');
     const outPath = resolve(args.out || join(rootDir, 'manifest.utilities.css'));
+    const manifestPath = resolve(args.manifest || join(rootDir, 'manifest.json'));
+    const safelist = loadUtilitiesSafelist(manifestPath);
 
     const htmlFiles = walkHtmlFiles(rootDir).sort();
     const classSet = new Set();
@@ -84,10 +104,11 @@ async function main() {
 
     // Sort before compiling so the same class set always produces byte-identical output.
     const classes = Array.from(classSet).sort();
-    const css = await compileUtilities({ classes, themeCss, baseCss });
+    const css = await compileUtilities({ classes, themeCss, baseCss, safelist });
 
     writeFileSync(outPath, css ? `${css}\n` : '');
-    console.log(`utilities-static: scanned ${htmlFiles.length} file(s), ${classes.length} class token(s) → ${outPath}`);
+    const safelistNote = safelist.length ? `, ${safelist.length} safelisted` : '';
+    console.log(`utilities-static: scanned ${htmlFiles.length} file(s), ${classes.length} class token(s)${safelistNote} → ${outPath}`);
 }
 
 main().catch((err) => {

@@ -431,6 +431,23 @@
             "type": "object",
             "description": "Deprecated alias of `device` (renamed in 0.5.199); still accepted.",
             "additionalProperties": true
+        },
+        "utilities": {
+            "type": "object",
+            "description": "Utilities-plugin overrides for classes a plain HTML/component scan can't find on its own — e.g. built from a runtime value (`:class=\"ok ? 'bg-green-500' : 'bg-amber-500'\"`). `safelist` classes are baked into the static utilities sheet (scanClasses/compileUtilities) and treated as covered by the runtime; `patterns` classes are trusted as covered by the runtime only (a regex can't be baked).",
+            "properties": {
+                "safelist": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exact utility class names, e.g. [\"bg-amber-500\", \"bg-green-500\"]."
+                },
+                "patterns": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Regex source strings matched against each class token, e.g. \"^bg-(red|green|blue)-[0-9]+$\"."
+                }
+            },
+            "additionalProperties": false
         }
     },
     "definitions": {

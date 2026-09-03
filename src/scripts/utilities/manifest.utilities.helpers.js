@@ -167,13 +167,17 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
     // Literal class="..."/class='...' only — lookbehind excludes `:class=`
     // (Alpine binding), whose "class=" substring would otherwise match and
     // truncate at the literal's first internal quote, leaking a stray '{'.
+    // Backreference to the opening quote (rather than stopping at either
+    // quote char) so an arbitrary Tailwind value containing the OTHER quote
+    // character — `content-['*']`, `content-['']` — survives instead of
+    // truncating the whole class list at its first `'`.
     // Whitespace-only split below keeps every token Tailwind would accept
     // (variants, arbitrary values, leading '-', '!'); only x-/$ tokens drop.
-    const classRegex = /(?<![:\w])class=["']([^"']+)["']/g;
+    const classRegex = /(?<![:\w])class=(["'])((?:(?!\1)[\s\S])*)\1/g;
     let match;
 
     while ((match = classRegex.exec(html)) !== null) {
-        const classString = match[1];
+        const classString = match[2];
         const classes = classString.split(/\s+/).filter(Boolean);
         for (const cls of classes) {
             if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) {
@@ -191,7 +195,11 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
         if (classMatches) {
             for (const classMatch of classMatches) {
                 const cls = classMatch.replace(/['"`]/g, '');
-                if (cls && !cls.startsWith('$') && !cls.includes('(')) {
+                // x-data is arbitrary JS — a plain string literal in there
+                // (e.g. `location.pathname.split('/')`) matches this quoted-
+                // token scan too, so require a letter/digit; a punctuation-only
+                // "token" like a bare '/' is skipped (seen on a live page).
+                if (cls && !cls.startsWith('$') && !cls.includes('(') && /[a-zA-Z0-9]/.test(cls)) {
                     classSet.add(cls);
                 }
             }

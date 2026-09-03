@@ -204,13 +204,22 @@ async function compileTailwindPass(classes, injected) {
  * isolate) — see loadTailwindEngine. Omit it (the default) to keep using the
  * Node/CLI fs-based load.
  *
- * @param {{classes?: string[], themeCss?: string, baseCss?: string, tailwind?: {engine: object, themeCss: string, utilitiesCss: string}}} options
+ * `safelist` adds literal class names as extra candidates alongside `classes`
+ * — manifest.json's `utilities.safelist` (see scanClasses below), for classes
+ * a project knows it needs baked even though they never turn up in a plain
+ * HTML scan (e.g. built from a runtime value: `:class="ok ? 'bg-green-500' :
+ * 'bg-amber-500'"`). `utilities.patterns` (regex source strings) has no
+ * equivalent here — a pattern can't be enumerated into concrete candidates,
+ * so it only ever excuses a class from the runtime's uncovered-class watcher
+ * (manifest.utilities.static.js), never bakes one.
+ *
+ * @param {{classes?: string[], themeCss?: string, baseCss?: string, safelist?: string[], tailwind?: {engine: object, themeCss: string, utilitiesCss: string}}} options
  * @returns {Promise<string>}
  */
-export async function compileUtilities({ classes = [], themeCss = '', baseCss = '', tailwind = null } = {}) {
+export async function compileUtilities({ classes = [], themeCss = '', baseCss = '', safelist = [], tailwind = null } = {}) {
     const compiler = createNodeCompiler();
     const cssText = [baseCss, themeCss].filter(Boolean).join('\n');
-    const uniqueClasses = Array.from(new Set(classes));
+    const uniqueClasses = Array.from(new Set([...classes, ...safelist]));
 
     const discovered = compiler.extractCustomUtilities(cssText);
     for (const [name, value] of discovered) compiler.customUtilities.set(name, value);
@@ -246,12 +255,17 @@ const SHORTHAND_CLASS_BINDING_RE = /\B:class=(["'])((?:(?!\1)[\s\S])*)\1/g;
  * plugin uses (extractClassesFromHTML), plus `class:`/`:class` static tokens.
  * Skips `x-`/`$` tokens. Returns a sorted, deduplicated array.
  *
+ * `safelist` (manifest.json's `utilities.safelist`) is folded into the result
+ * so a caller that bakes per-file (scripts/utilities-static.mjs, or a
+ * publish pipeline) doesn't need a separate union step — see compileUtilities.
+ *
  * @param {string} html
+ * @param {{safelist?: string[]}} [options]
  * @returns {string[]}
  */
-export function scanClasses(html) {
+export function scanClasses(html, { safelist = [] } = {}) {
     const compiler = createNodeCompiler();
-    const set = new Set();
+    const set = new Set(safelist.filter(c => typeof c === 'string' && c));
     compiler.extractClassesFromHTML(html, set);
 
     let m;
@@ -268,7 +282,9 @@ export function scanClasses(html) {
         if (quoted) {
             for (const q of quoted) {
                 const cls = q.replace(/['"`]/g, '');
-                if (cls && !cls.startsWith('$') && !cls.startsWith('x-') && !cls.includes('(')) set.add(cls);
+                // Reject punctuation-only "tokens" (e.g. a bare '/' from an
+                // unrelated string literal in the expression) — see helpers.js.
+                if (cls && !cls.startsWith('$') && !cls.startsWith('x-') && !cls.includes('(') && /[a-zA-Z0-9]/.test(cls)) set.add(cls);
             }
         }
     }

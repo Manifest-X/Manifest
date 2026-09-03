@@ -20,7 +20,7 @@ const CODE = readFileSync(path.join(__dirname, '../src/scripts/manifest.js'), 'u
 const settle = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)) }
 const VERSION = '0.5.199-next.0'
 
-function boot({ headExtra = '' } = {}) {
+function boot({ headExtra = '', tailwind = true } = {}) {
     window.happyDOM.setURL('https://site.example/app/')
     window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true
     document.head.innerHTML = `<link rel="manifest" href="/manifest.json">${headExtra}`
@@ -29,7 +29,7 @@ function boot({ headExtra = '' } = {}) {
     s.setAttribute('src', `https://cdn.manifestx.dev/npm/mnfst@${VERSION}/lib/manifest.js`)
     s.setAttribute('data-version', VERSION)
     s.setAttribute('data-plugins', 'toasts,data')
-    s.setAttribute('data-tailwind', '')
+    if (tailwind) s.setAttribute('data-tailwind', '')
     document.head.appendChild(s)
     new Function(CODE)()
 }
@@ -70,5 +70,32 @@ describe('loader: Tailwind engine skip on a fully-baked page', () => {
         expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(0)
         // Everything else still boots normally.
         expect(window.__manifestLoaded).toBeTruthy()
+    })
+})
+
+describe('loader: Manifest.loadPlugin("tailwind") — the uncovered-class watcher\'s lazy-load path', () => {
+    // The utilities plugin's runtime safety net (manifest.utilities.static.js
+    // setupUncoveredClassWatcher) calls this when it sees a class the "complete"
+    // bake doesn't cover. It must be a recognized plugin, not rejected as unknown.
+    it('is accepted (not "Unknown plugin") and fetches manifest.tailwind.min.js', async () => {
+        boot({ tailwind: false })
+        await settle()
+        expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(0)
+
+        const warnSpy = vi.spyOn(console, 'warn')
+        await window.Manifest.loadPlugin('tailwind')
+        await settle()
+
+        expect(warnSpy.mock.calls.some(args => String(args[0]).includes('Unknown plugin'))).toBe(false)
+        expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(1)
+    })
+
+    it('defaults to the booted version, same as any other plugin', async () => {
+        boot({ tailwind: false })
+        await settle()
+        await window.Manifest.loadPlugin('tailwind')
+        await settle()
+        const script = document.querySelector('script[src*="manifest.tailwind"]')
+        expect(script.getAttribute('src')).toContain(`mnfst@${VERSION}`)
     })
 })

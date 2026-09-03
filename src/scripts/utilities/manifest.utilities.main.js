@@ -126,12 +126,19 @@ class TailwindCompiler {
         // Cache for parsed class names (must be before addCriticalBlockingStylesSync)
         this.classCache = new Map();
 
-        // Read any publish/render-provided static utilities sheet before the
-        // first compile — its classes are skipped rather than regenerated.
-        // Fails open (never "everything covered") until this resolves —
-        // compile()'s first run awaits it, capped at 2s (see static.js).
+        // Read any publish/render-provided static utilities sheet, plus
+        // manifest.json's utilities.safelist/patterns, before the first
+        // compile — those classes are skipped rather than regenerated. Fails
+        // open (never "everything covered") until this resolves — compile()'s
+        // first run awaits it, capped at 2s (see static.js). Once settled,
+        // arm the uncovered-class watcher (a no-op unless the loader actually
+        // skipped fetching the Tailwind engine for this page).
         this.staticUtilitiesCoveredClasses = null;
-        this.staticUtilitiesReady = this.detectStaticUtilitiesSheet();
+        this.staticUtilitiesReady = Promise.all([
+            this.detectStaticUtilitiesSheet(),
+            this.loadUtilitiesSafelist()
+        ]);
+        this.staticUtilitiesReady.then(() => this.setupUncoveredClassWatcher());
 
         // Add critical styles IMMEDIATELY - don't wait for anything
         this.addCriticalBlockingStylesSync();
