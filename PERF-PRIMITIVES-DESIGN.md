@@ -1487,3 +1487,18 @@ pure JS) for the sheet to equal what a page generates — in progress
 (null sheet / throw / zero rules → nothing covered; waits ≤2s for the link's
 load before the first compile). Playcom on the theme-only bake: 45 rules baked,
 392 runtime; utilities-ready 4.2s → 2.4s, boot style writes 85 → 72.
+
+**§15 Tailwind bake SHIPPED to master (merge 167e01b, 2026-09-03):** the node
+entry runs the real `tailwindcss` v4 engine (pure JS; now a runtime dependency
+of `mnfst`) over the scanned candidates with Tailwind's `theme.css` +
+`utilities.css` and the runtime's custom variants, appended as a second
+`@layer theme/utilities` pair; a fresh compiler per call (build() accumulates
+candidates). Parity test: exact match against the bundled browser build
+`lib/manifest.tailwind.js` (v4.3.1) for 8 classes. src test project: 490
+tokens → 31 KB / 451 rules in ~190 ms. Loader skips fetching the Tailwind
+engine only for an inline `<style data-mnfst-utilities data-mnfst-utilities-complete>`
+(publish/render may stamp it after verifying coverage); a `<link>` sheet still
+loads the engine (fail open). Open: the Worker (hosting publish) cannot read
+Tailwind's CSS inputs from disk → injected-inputs option + bundled inputs in
+Manifest-MCP (in progress); then release (0.5.203) → `pnpm up mnfst` → deploy →
+Playcom re-pin. Tests 531/531.
