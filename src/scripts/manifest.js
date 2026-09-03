@@ -650,6 +650,24 @@
 		};
 	}
 
+	// A publish/render bake stamps `data-mnfst-utilities-complete` on its
+	// `<style data-mnfst-utilities>` sheet once it has verified every class
+	// scanned from the page's own HTML got a rule (Manifest's + the baked
+	// Tailwind pass — see compileUtilities in manifest.utilities.node.mjs).
+	// Only the inline `<style>` case is checked: it's synchronous, so this can
+	// run before deciding whether to fetch the Tailwind engine at all — a
+	// `<link>` sheet would need an async load first, so it's left alone
+	// (fail open: Tailwind still loads). No flag, no attribute, any read
+	// error → false, so this never skips loading the engine speculatively.
+	function staticUtilitiesFullyCovered() {
+		try {
+			const el = document.querySelector('style[data-mnfst-utilities][data-mnfst-utilities-complete]');
+			return !!el;
+		} catch (e) {
+			return false;
+		}
+	}
+
 	// Load custom Tailwind CDN script, falling through the CDN chain on error
 	async function loadTailwind(version = RESOLVED_VERSION) {
 		const urls = CDN_HOSTS.map(h => `${getBaseUrl(version, h)}/${hostFile(h, 'manifest.tailwind.min.js')}`);
@@ -906,7 +924,7 @@
 					console.warn(`[Manifest Loader] Failed to load plugin ${pluginName}:`, error);
 				});
 			});
-			if (config.tailwind) {
+			if (config.tailwind && !staticUtilitiesFullyCovered()) {
 				pluginPromises.push(loadTailwind(config.version).catch(() => { }));
 			}
 			await Promise.all(pluginPromises);

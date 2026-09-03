@@ -28,10 +28,17 @@ describe('compileUtilities', () => {
         expect(css).toContain('.p-4 { padding: var(--spacing-4) }')
     })
 
-    it('never emits a rule for an arbitrary-value or plain Tailwind token (not its system)', async () => {
+    it('also bakes plain Tailwind tokens (arbitrary value, variant) via the real Tailwind engine', async () => {
         const css = await compileUtilities({ classes: CLASSES, themeCss: THEME_CSS })
-        expect(css).not.toContain('w-\\[37px\\]')
-        expect(css).not.toContain('md\\:flex')
+        expect(css).toContain('.w-\\[37px\\]')
+        expect(css).toContain('.md\\:flex')
+    })
+
+    it('bakes every class in a representative Tailwind + theme-var set (RFC §15 example)', async () => {
+        const classes = ['gap-2', 'rounded-full', 'items-center', 'max-w-3xl', 'w-[37px]', 'md:flex', 'hover:bg-brand', 'p-4']
+        const css = await compileUtilities({ classes, themeCss: ':root{--spacing-4:1rem;--color-brand:#f00;}' })
+        const escaped = classes.map(c => '.' + c.replace(/[.:\/\[\]]/g, m => '\\' + m))
+        for (const sel of escaped) expect(css).toContain(sel)
     })
 
     it('is deterministic for the same inputs', async () => {
@@ -42,13 +49,19 @@ describe('compileUtilities', () => {
         expect(a).toBe(b)
     })
 
-    it('returns empty string for no matching classes', async () => {
-        // flex/block aren't theme-variable-driven (no generator emits a bare
-        // `display` utility) — Manifest ships its own static .row/.col
-        // equivalents in CSS instead, so these never get compiled here.
-        expect(await compileUtilities({ classes: ['flex', 'block'], themeCss: THEME_CSS })).toBe('')
-        expect(await compileUtilities({ classes: ['flex'] })).toBe('')
+    it('returns empty string for no classes at all', async () => {
         expect(await compileUtilities({})).toBe('')
+        expect(await compileUtilities({ classes: [] })).toBe('')
+    })
+
+    it('bakes flex/block via the Tailwind pass even with no Manifest theme vars', async () => {
+        // flex/block aren't theme-variable-driven (no generator emits a bare
+        // `display` utility from a var) — Manifest ships its own static
+        // .row/.col equivalents instead — but they're real Tailwind
+        // utilities, so the Tailwind engine pass covers them regardless.
+        const css = await compileUtilities({ classes: ['flex', 'block'], themeCss: THEME_CSS })
+        expect(css).toContain('.flex')
+        expect(css).toContain('.block')
     })
 
     it('pulls in custom utilities from baseCss', async () => {
