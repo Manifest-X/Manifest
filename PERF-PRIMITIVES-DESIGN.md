@@ -1502,3 +1502,14 @@ loads the engine (fail open). Open: the Worker (hosting publish) cannot read
 Tailwind's CSS inputs from disk → injected-inputs option + bundled inputs in
 Manifest-MCP (in progress); then release (0.5.203) → `pnpm up mnfst` → deploy →
 Playcom re-pin. Tests 531/531.
+
+**§15 COMPLETE (2026-09-03):** `mnfst@0.5.204` on `latest` (0.5.203 was a
+stale-checkout build) carries the injected-inputs option
+`compileUtilities({ tailwind: { engine, themeCss, utilitiesCss } })`, the
+fail-open static-sheet skip, and the loader's engine-fetch skip for pages with an
+inline complete sheet. Manifest-MCP main 05edab0 (deployed) bundles `tailwindcss`
+with inlined theme/utilities CSS and uses the published node compiler; publish
+now bakes theme-driven, semantic and plain Tailwind utilities from the scanned
+tree and the CDN-linked theme (+17% Worker bundle, ~190 ms per publish on the
+docs tree). Playcom re-pins to 0.5.204 and reports boot style writes /
+utilities-ready / baked rule count on the next publish.
