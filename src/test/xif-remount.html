@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!--
+  Regression fixture: $route()-backed x-if stranded by Alpine's scheduler swallow.
+  route B's x-if depends on both a plain store flag (productsLoaded) and the
+  $route() proxy. Navigating there forces both to be re-evaluated in the SAME
+  flush; the store-flag dependency lets x-if's job run BEFORE the route proxy's
+  own effect updates its data in that flush, and the later re-trigger gets
+  silently dropped by Alpine's queueJob dedup. See tests/e2e/xif-remount.e2e.mjs.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>x-if remount repro</title>
+  <link rel="manifest" href="/manifest.json">
+  <script src="/scripts/manifest.js" data-plugin-base="/scripts/" data-tailwind></script>
+</head>
+<body>
+  <nav>
+    <a href="/" id="link-home">Home</a>
+    <a href="/products/widget" id="link-widget">Widget</a>
+  </nav>
+
+  <section x-route="/" id="pane-home">
+    <p>Home pane (route A)</p>
+  </section>
+
+  <section x-route="/products/*" id="pane-product" x-cloak x-data="{ get productsLoaded() { return $store.data._currentUrl ? true : false } }">
+    <header data-testid="header" x-text="$x.products.$route('path').name || 'no product'"></header>
+    <template x-if="window.__ifRun(productsLoaded, $x.products.$route('path').id)" data-testid="tpl-if">
+      <div data-testid="body" x-text="$x.products.$route('path').name"></div>
+    </template>
+  </section>
+
+  <script>
+    window.__ifLog = [];
+    window.__ifRun = function (productsLoaded, id) {
+      const result = !!productsLoaded && !!id;
+      window.__ifLog.push({ t: performance.now(), productsLoaded, id, result });
+      return result;
+    };
+    window.__events = [];
+    ['manifest:ready', 'manifest:utilities-ready', 'manifest:data-ready', 'manifest:render-ready', 'manifest:route-change'].forEach((name) => {
+      window.addEventListener(name, () => window.__events.push([name, performance.now()]));
+    });
+  </script>
+</body>
+</html>
