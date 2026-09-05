@@ -7,17 +7,34 @@
  * These tests reproduce the stash the way manifest.defer.js builds it (via real Alpine
  * init over a popover <menu>, same as defer.test.js) and confirm the combobox hydrates
  * the source before reading it.
+ *
+ * The second describe block below reproduces a distinct, later regression: a
+ * `<dialog popover>`/`[popover]` ancestor can itself be mid-restash — manifest.defer's
+ * idle prewarm speculatively renders a still-closed container (scheduling its
+ * x-combobox's build() one macrotask later) and its idle-driven eviction can re-stash
+ * that same container's subtree back into a `<template>` BEFORE that build() runs.
+ * build() then appended the generated menu into a now-disconnected ancestor. The idle
+ * queue is captured (same technique as defer.test.js) so prewarm/evict can be stepped
+ * deterministically instead of racing real timers.
  */
 import { readFileSync } from 'fs'
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-window.requestIdleCallback = (fn) => setTimeout(() => fn({ didTimeout: false, timeRemaining: () => 0 }), 1000)
-window.cancelIdleCallback = (id) => clearTimeout(id)
+// Idle callbacks are captured so prewarm can be stepped one slice at a time (mirrors
+// defer.test.js). A low cap makes the prewarm/evict race reproducible with just two
+// containers instead of needing dozens.
+window.ManifestDeferConfig = { prewarmCap: 1 }
+const idleQueue = []
+let idleId = 0
+window.requestIdleCallback = (fn) => { const id = ++idleId; idleQueue.push({ id, fn }); return id }
+window.cancelIdleCallback = (id) => { const i = idleQueue.findIndex((x) => x.id === id); if (i >= 0) idleQueue.splice(i, 1) }
+const BATCH_DEADLINE = { didTimeout: false, timeRemaining: () => 50 }
+const runIdle = () => { const job = idleQueue.shift(); if (job) job.fn(BATCH_DEADLINE) }
 window.__manifestLoaderStarted = true
 window.Alpine = Alpine
 
@@ -30,6 +47,8 @@ window.ensureComboboxPluginInitialized()
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
 const settle = async (n = 3) => { for (let i = 0; i < n; i++) await tick() }
+const toggleEvent = (type, newState) => Object.assign(new Event(type, { bubbles: false }), { newState })
+const openPopover = (el) => el.dispatchEvent(toggleEvent('beforetoggle', 'open'))
 
 function mount(html) {
     const host = document.createElement('div')
@@ -126,5 +145,120 @@ describe('combobox regressions', () => {
         } finally {
             window.ManifestDefer = saved
         }
+    })
+})
+
+describe('combobox inside a deferred [popover]/dialog (client-blocking regression)', () => {
+    // Earlier tests in this file leave mounted hosts (and their defer records) sitting
+    // in the document; the eviction race below depends on tie-break/score ordering
+    // among exactly the containers each test cares about, so start each one clean.
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        idleQueue.length = 0
+    })
+
+    it('connects the generated menu once a plain closed dialog popover opens', async () => {
+        // No prewarm/eviction involved — a single closed dialog, opened for real.
+        // This already worked pre-fix; kept as a baseline so a future change can't
+        // silently break the common (non-raced) case while "fixing" the race.
+        const host = mount(`<div x-data>
+            <dialog popover id="dlg-plain">
+                <input x-combobox="opts-plain" id="inp-plain">
+                <menu popover id="opts-plain"><li data-value="a">Alpha</li></menu>
+            </dialog>
+        </div>`)
+        const dlg = host.querySelector('#dlg-plain')
+        openPopover(dlg)
+        await settle()   // build() is scheduled a macrotask after the directive fires
+        const input = host.querySelector('#inp-plain')
+        const controls = input.getAttribute('aria-controls')
+        expect(controls).toBeTruthy()
+        expect(document.getElementById(controls)).toBeTruthy()
+    })
+
+    // Force both containers past the prewarm cap in a single idle slice: fire
+    // manifest:ready with NOTHING pending yet (so bootDrained flips true immediately —
+    // promoteNearViewport refuses to run otherwise), then mount and mock each
+    // invoker's rect so the gesture-promotion (promoteNearViewport) marks BOTH urgent.
+    // Urgent renders bypass the per-slice cap check, so both render synchronously in
+    // one runIdle() call, and evict() (called at the end of that same call, still
+    // before either combobox's setTimeout(0) build has had a chance to fire) trims
+    // back down to the cap. Mirrors the real trigger: a page-browsing gesture (mouse
+    // move/click) reaching the idle scheduler while several closed dialogs are pending.
+    async function raceOneContainerPastCap(html, raceId, padId) {
+        window.dispatchEvent(new CustomEvent('manifest:ready'))
+        const host = mount(html)
+        const raceBtn = document.querySelector(`[popovertarget="${raceId}"]`)
+        const padBtn = document.querySelector(`[popovertarget="${padId}"]`)
+        const rect = { top: 10, bottom: 40, left: 10, right: 100, width: 90, height: 30 }
+        raceBtn.getBoundingClientRect = () => rect
+        padBtn.getBoundingClientRect = () => rect
+        document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 25 }))
+        await new Promise((r) => setTimeout(r, 100))   // let the (real-timer) promoteTimer fire
+        runIdle()   // renders both (urgent, bypassing the cap), then evict() trims one —
+                    // synchronous, so this all happens before either combobox's build() runs
+        return host
+    }
+
+    it('reattaches the generated menu when its owning dialog is mid-restash when build() runs (prewarm/evict race)', async () => {
+        const host = await raceOneContainerPastCap(`<div x-data>
+            <button popovertarget="dlg-race">open</button>
+            <dialog popover id="dlg-race">
+                <input x-combobox="opts-race" id="inp-race">
+                <menu popover id="opts-race"><li data-value="a">Alpha</li></menu>
+            </dialog>
+            <button popovertarget="dlg-pad">open</button>
+            <dialog popover id="dlg-pad"><p>padding</p></dialog>
+        </div>`, 'dlg-race', 'dlg-pad')
+
+        const dlg = host.querySelector('#dlg-race')
+        expect(dlg.__mnfstDefer.rendered).toBe(false)   // confirms the race actually happened
+        expect(host.querySelector('#inp-race')).toBeNull()   // stashed away, not in the live tree
+
+        await settle()   // now let the pending build() actually run
+
+        // Fixed: build() detects the owner is disconnected, reattach() and the re-entry
+        // repair keep the menu connected. Broken: aria-controls points at an id that
+        // exists nowhere connected to `document`.
+        const stashedInput = dlg.querySelector('template[data-mnfst-defer]').content.querySelector('#inp-race')
+        expect(stashedInput).toBeTruthy()
+        const controls = stashedInput.getAttribute('aria-controls')
+        expect(controls).toBeTruthy()
+        expect(document.getElementById(controls)).toBeTruthy()
+        const menu = document.getElementById(controls)
+        expect(menu.isConnected).toBe(true)
+    })
+
+    it('repairs a previously-raced combobox once its container is genuinely re-rendered', async () => {
+        // Same race as above, but then simulate the container actually being opened
+        // for real afterwards (re-render from its stash) — the field must come back
+        // to life rather than staying permanently dead (el.__mnfstCombobox guards
+        // against rebuilding, so a stale disconnected menu needs active repair).
+        const host = await raceOneContainerPastCap(`<div x-data>
+            <button popovertarget="dlg-race2">open</button>
+            <dialog popover id="dlg-race2">
+                <input x-combobox="opts-race2" id="inp-race2">
+                <menu popover id="opts-race2"><li data-value="a">Alpha</li></menu>
+            </dialog>
+            <button popovertarget="dlg-pad2">open</button>
+            <dialog popover id="dlg-pad2"><p>padding</p></dialog>
+        </div>`, 'dlg-race2', 'dlg-pad2')
+        await settle()
+
+        const dlg = host.querySelector('#dlg-race2')
+        expect(dlg.__mnfstDefer.rendered).toBe(false)
+
+        // A real open: manifest.defer's own 'popover' wiring re-renders from the stash.
+        openPopover(dlg)
+        await settle()
+
+        const input = host.querySelector('#inp-race2')
+        expect(input).toBeTruthy()
+        const controls = input.getAttribute('aria-controls')
+        expect(controls).toBeTruthy()
+        const menu = document.getElementById(controls)
+        expect(menu).toBeTruthy()
+        expect(menu.isConnected).toBe(true)
+        expect(dlg.contains(menu)).toBe(true)
     })
 })

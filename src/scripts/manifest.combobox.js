@@ -168,8 +168,27 @@ function initializeComboboxPlugin() {
         setTimeout(() => build(el, modifiers, expression || '', cleanup), 0);
     });
 
+    // Resolve the menu's owning top-layer context fresh, every time — never cache it.
+    // A [popover]/dialog ancestor can be mid-restash (manifest.defer's idle prewarm/evict
+    // cycle moving a still-closed container's subtree back into its <template> stash)
+    // at any point after build(), so the target must be re-read at each attach, not
+    // assumed stable from build time.
+    const attachTarget = (el) => el.closest('[popover]') || document.body;
+    const reattach = (el, menu) => {
+        const target = attachTarget(el);
+        if (menu.parentNode !== target) target.appendChild(menu);
+    };
+
     function build(el, modifiers, expression, cleanup) {
-        if (el.__mnfstCombobox) return;
+        if (el.__mnfstCombobox) {
+            // Already built. If manifest.defer's idle prewarm/evict cycle raced this very
+            // build (stashing the owning [popover] between directive init and the setTimeout
+            // below), the generated menu was appended into a since-detached tree — reattach
+            // it into wherever the owner lives now. Harmless no-op otherwise.
+            const m = el.__mnfstComboboxMenu;
+            if (m) reattach(el, m);
+            return;
+        }
         el.__mnfstCombobox = true;
 
         // If a mount path bypassed the strip (x-if/x-for via Alpine's internal initTree)
@@ -409,8 +428,10 @@ function initializeComboboxPlugin() {
             }
             // Nearest popover host, so an outer auto popover isn't light-dismissed
             // by listbox clicks; body otherwise (out of overflow contexts either way).
-            (el.closest('[popover]') || document.body).appendChild(menu);
+            // Re-resolved (not just attached once) at every open — see reattach().
+            reattach(el, menu);
             generatedMenu = menu;               // tracked so cleanup() can remove it on re-render
+            el.__mnfstComboboxMenu = menu;      // tracked so a re-entrant build() can reattach it
             if (src) src.style.setProperty('display', 'none', 'important');
             menu.setAttribute('popover', 'manual');
             menu.setAttribute('x-defer.off', ''); // options are built here, not by directives
@@ -459,8 +480,22 @@ function initializeComboboxPlugin() {
             if (!menu || menu.matches(':popover-open') || atCap()) return;
             // Re-stashed since build (x-defer.discard) — re-hydrate before showing.
             if (src && window.ManifestDefer?.isPending(src)) { options = readOptions(src); setOptions(options); }
+            // Lazy re-resolve: the owning [popover]/dialog may have been (re-)stashed and
+            // rendered since build(), or build() itself raced a defer restash and attached
+            // into a tree that's since gone disconnected. A real open only ever happens
+            // once the field itself is genuinely connected/visible, so this always has a
+            // valid target.
+            reattach(el, menu);
             menu.style.minWidth = wrap.offsetWidth + 'px';
-            menu.showPopover();
+            try {
+                menu.showPopover();
+            } catch (_) {
+                // Belt-and-suspenders: resolve once more and retry, then give up quietly —
+                // an uncaught error here would abort whatever handler called openMenu() and
+                // can strand the containing dialog's own dismiss handling mid-flight.
+                reattach(el, menu);
+                try { menu.showPopover(); } catch (_) { return; }
+            }
             el.setAttribute('aria-expanded', 'true');
         }
         function closeMenu() {
