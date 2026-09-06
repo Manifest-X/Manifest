@@ -173,7 +173,21 @@ function initializeComboboxPlugin() {
     // cycle moving a still-closed container's subtree back into its <template> stash)
     // at any point after build(), so the target must be re-read at each attach, not
     // assumed stable from build time.
-    const attachTarget = (el) => el.closest('[popover]') || document.body;
+    // The menu belongs in its field's top-layer context, but that ancestor can be
+    // mid-restash (defer moving a closed container's subtree back into its <template>),
+    // so re-resolve at every attach — and never attach into a detached tree, or
+    // showPopover() throws InvalidStateError and leaves the field dead.
+    let warnedDetached = false;
+    const attachTarget = (el) => {
+        const owner = el.closest('[popover]');
+        if (owner && owner.isConnected) return owner;
+        if (owner && !warnedDetached) {
+            warnedDetached = true;
+            console.warn('[Manifest Combobox] the field\'s popover ancestor was detached when its menu was attached; ' +
+                'using document.body so the field keeps working. Please report this with the field id:', el.id || el);
+        }
+        return document.body;
+    };
     const reattach = (el, menu) => {
         const target = attachTarget(el);
         if (menu.parentNode !== target) target.appendChild(menu);

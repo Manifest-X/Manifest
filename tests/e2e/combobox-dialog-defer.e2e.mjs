@@ -237,6 +237,14 @@ async function main() {
         const browser = await puppeteer.launch({ headless: 'new' })
         try {
             const page = await browser.newPage()
+            // This repo's dev server live-reloads on any change under src/ — other
+            // sessions/tooling touching files there mid-run (this repo is worked
+            // concurrently, per CLAUDE.md) can otherwise fire a page reload mid-test
+            // and destroy Puppeteer's execution context. Neutralize its EventSource
+            // before any page script runs, so our own pages never navigate underneath us.
+            await page.evaluateOnNewDocument(() => {
+                window.EventSource = function () { return { close() {}, addEventListener() {}, onmessage: null } }
+            })
             const errors = []
             page.on('pageerror', (err) => errors.push(err.message))
 

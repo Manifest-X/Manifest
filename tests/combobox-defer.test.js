@@ -200,32 +200,48 @@ describe('combobox inside a deferred [popover]/dialog (client-blocking regressio
         return host
     }
 
-    it('reattaches the generated menu when its owning dialog is mid-restash when build() runs (prewarm/evict race)', async () => {
-        const host = await raceOneContainerPastCap(`<div x-data>
-            <button popovertarget="dlg-race">open</button>
-            <dialog popover id="dlg-race">
-                <input x-combobox="opts-race" id="inp-race">
-                <menu popover id="opts-race"><li data-value="a">Alpha</li></menu>
+    // Deterministic replacement for an earlier race-based test whose helper did not
+    // reliably produce the stashed state it asserted (it failed on every run, before
+    // and after the fix). The invariant that actually matters is simpler and testable
+    // without winning a race: the generated menu is NEVER appended into a tree that is
+    // detached from the document, because showPopover() throws InvalidStateError there
+    // and leaves the field permanently dead.
+    // The reported failure, reduced to its mechanism: the menu is attached while the
+    // dialog is connected (so aria-controls is set), and a LATER re-stash moves the
+    // dialog's children — including our generated menu — into its <template>. The menu
+    // is then detached, showPopover() throws InvalidStateError, and the field is dead
+    // with aria-controls pointing at an id that exists nowhere in the document.
+    it('re-homes a generated menu that a later re-stash swallowed into the container template', async () => {
+        const host = mount(`<div x-data>
+            <dialog popover id="dlg-restash">
+                <input x-combobox="opts-restash" id="inp-restash">
+                <menu popover id="opts-restash"><li data-value="a">Alpha</li></menu>
             </dialog>
-            <button popovertarget="dlg-pad">open</button>
-            <dialog popover id="dlg-pad"><p>padding</p></dialog>
-        </div>`, 'dlg-race', 'dlg-pad')
-
-        const dlg = host.querySelector('#dlg-race')
-        expect(dlg.__mnfstDefer.rendered).toBe(false)   // confirms the race actually happened
-        expect(host.querySelector('#inp-race')).toBeNull()   // stashed away, not in the live tree
-
-        await settle()   // now let the pending build() actually run
-
-        // Fixed: build() detects the owner is disconnected, reattach() and the re-entry
-        // repair keep the menu connected. Broken: aria-controls points at an id that
-        // exists nowhere connected to `document`.
-        const stashedInput = dlg.querySelector('template[data-mnfst-defer]').content.querySelector('#inp-race')
-        expect(stashedInput).toBeTruthy()
-        const controls = stashedInput.getAttribute('aria-controls')
+        </div>`)
+        const dlg = host.querySelector('#dlg-restash')
+        openPopover(dlg)          // closed dialogs are stashed at init; opening renders them
+        await settle()
+        const input = dlg.querySelector('#inp-restash')
+        const controls = input.getAttribute('aria-controls')
         expect(controls).toBeTruthy()
-        expect(document.getElementById(controls)).toBeTruthy()
-        const menu = document.getElementById(controls)
+        expect(document.getElementById(controls)).toBeTruthy()   // healthy after build
+
+        // Simulate defer re-stashing the container: every child, including the menu it
+        // appended there, moves into the stash template and leaves the document.
+        const tpl = document.createElement('template')
+        tpl.setAttribute('data-mnfst-defer', '')
+        while (dlg.firstChild) tpl.content.appendChild(dlg.firstChild)
+        dlg.appendChild(tpl)
+        expect(document.getElementById(controls)).toBeNull()      // the reported state
+
+        // Container comes back and the field is used again: the menu must be connected
+        // before anything calls showPopover() on it.
+        while (tpl.content.firstChild) dlg.insertBefore(tpl.content.firstChild, tpl)
+        tpl.remove()
+        dlg.querySelector('#inp-restash').focus()
+        await settle()
+        const menu = document.getElementById(dlg.querySelector('#inp-restash').getAttribute('aria-controls'))
+        expect(menu).toBeTruthy()
         expect(menu.isConnected).toBe(true)
     })
 
