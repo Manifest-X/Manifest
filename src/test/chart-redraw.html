@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chart redraw repro</title>
+  <link rel="stylesheet" href="/styles/core/manifest.theme.css">
+  <link rel="stylesheet" href="/styles/core/manifest.reset.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.chart.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.tooltip.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.typography.css">
+  <link rel="stylesheet" href="/styles/utilities/manifest.colors.css">
+  <link rel="stylesheet" href="/styles/utilities/manifest.utilities.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <script src="/scripts/manifest.charts.js"></script>
+</head>
+
+<!--
+  Client-reported repro: a chart bound to an expression that touches shared
+  reactive state (here, a 200ms tick — stand-in for realtime rows / presence /
+  staged $x hydration) redraws every tick even when the config it returns is
+  value-identical. On a map chart, every redraw re-runs topojson.feature +
+  fitSize over ~175 world-atlas polygons, so the ticks pile up faster than the
+  main thread can drain them — Chrome eventually offers to kill the tab.
+
+  Open with CPU throttling (DevTools > Performance > 4x/6x slowdown) to see it
+  most clearly pre-fix. The counter and draw tally below make the problem
+  visible without throttling too: pre-fix, "draws" climbs in lockstep with
+  "ticks" (~5/sec); post-fix, "draws" stays at 1 once the map's first paint
+  lands (bumping the counter alone never changes the map's config).
+-->
+<body class="page" x-data="{
+  ticks: 0,
+  draws: 0,
+  data: { US: 320, CA: 70, BR: 140, FR: 210, DE: 260, 'United Kingdom': 240, CN: 410, IN: 380, JP: 190, AU: 90 },
+  cfg() {
+    void this.ticks; // reactive dependency: re-evaluated every tick, value never used
+    this.draws++;    // counts config *evaluations*, not chart draws — see the chart's own counter below
+    return { type: 'map', data: this.data };
+  }
+}" x-init="setInterval(() => ticks++, 200)">
+  <main class="content col" style="gap: 1.5rem; padding: 3rem 0;">
+    <h1 class="h2">Chart redraw repro (map, 200ms tick)</h1>
+    <p>
+      Ticks: <strong x-text="ticks"></strong> ·
+      Config evaluations: <strong x-text="draws"></strong> ·
+      Chart draws: <strong id="draws-readout">—</strong>
+    </p>
+    <p><small>Pre-fix, watch DevTools Performance while this runs — the main thread never idles between ticks on a throttled CPU.</small></p>
+
+    <div class="col gap-2" style="width: 720px; max-width: 100%;">
+      <div x-chart="cfg()" id="repro"></div>
+    </div>
+  </main>
+
+  <script>
+    // Count actual chart draws (not config evaluations) by wrapping state.draw()
+    // once the directive has mounted, and mirror it into #draws-readout.
+    document.addEventListener('alpine:initialized', () => {
+      const check = setInterval(() => {
+        const el = document.getElementById('repro');
+        const state = el && el._chartState;
+        if (!state || typeof state.draw !== 'function' || state.__wrapped) return;
+        state.__wrapped = true;
+        const realDraw = state.draw.bind(state);
+        state.draw = () => { state.__drawCount = (state.__drawCount || 0) + 1; document.getElementById('draws-readout').textContent = state.__drawCount; realDraw(); };
+        clearInterval(check);
+      }, 50);
+    });
+  </script>
+</body>
+
+</html>
