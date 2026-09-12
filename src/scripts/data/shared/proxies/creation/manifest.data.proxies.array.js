@@ -559,10 +559,15 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
                 }
                 const scope = window.ManifestDataConfig.getScope(dataSource);
+                const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
                 const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
                 const baseQueries = queriesConfig
-                    ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope)
-                    : await window.ManifestDataQueries.buildAppwriteQueries([], scope);
+                    ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
+                    : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+
+                if (baseQueries === null) {
+                    throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
+                }
 
                 if (methodName === '$first') {
                     const limit = args[0] || 10;
@@ -905,10 +910,15 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
 
                         // Get base queries (from manifest or scope)
                         const scope = window.ManifestDataConfig.getScope(dataSource);
+                        const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
                         const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
                         const baseQueries = queriesConfig
-                            ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope)
-                            : await window.ManifestDataQueries.buildAppwriteQueries([], scope);
+                            ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
+                            : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+
+                        if (baseQueries === null) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
+                        }
 
                         if (key === '$first') {
                             const limit = args[0] || 10;

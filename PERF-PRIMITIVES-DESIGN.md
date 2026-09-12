@@ -1456,3 +1456,101 @@ via `mnfst/lib/manifest.utilities.node.mjs` (computed import; no-op until `mnfst
 injects `<link data-mnfst-utilities>` before the first stylesheet (idempotent;
 skipped when render already emitted a sheet), lists it in precache. Deploy after
 0.5.199 + `pnpm add mnfst@^0.5.199`.
+
+**§15 post-release findings (2026-09-02, after 0.5.199):** the node compiler
+emits only theme-variable-driven and custom utilities (static `.flex`/`.row`
+live in `manifest.min.css`), and 0.5.199's theme-variable regex dropped the
+last declaration of a block with no trailing `;` (so a minimal theme produced
+nothing). Fixed on master (merge 9430dc4; node shims; node-environment tests)
+→ patch release 0.5.200 required. Hosting must feed the CDN-linked
+`manifest.min.css` (cross-origin) as `themeCss` at publish or output is empty
+(Manifest-MCP `agent/utilities-theme`, in progress). Manifest-MCP main imports
+the compiler statically (7240e54; a Worker cannot resolve modules at runtime).
+
+**§15 first live proof (docs staging, 2026-09-02):** publish generated
+`/manifest.utilities.css` (14 KB) from the CDN-linked theme and injected
+`<link data-mnfst-utilities>`; the 0.5.199 runtime treats it as covered.
+Renderer: hard per-page timeout added (60s, `prerender.pageTimeout`) after the
+Device docs page hung a render; the page also freezes a live tab (under
+investigation). `mnfst-render` on npm is 0.5.38 — stale vs mnfst 0.5.201; run
+`release:render`.
+
+**§15 correction (2026-09-03):** the Manifest utilities plugin generates only
+theme-variable-driven utilities and Manifest's semantic utilities; plain
+Tailwind-style utilities come from Tailwind's own browser engine, loaded as the
+`tailwind` plugin (`lib/manifest.tailwind.js`) by `data-tailwind`. So the
+publish-time bake must run that same engine over the scanned classes (it is
+pure JS) for the sheet to equal what a page generates — in progress
+(`agent/tailwind-bake`). Shipped meanwhile (9ebb5ba): the CLI/bake now passes
+`lib/manifest.css` as `baseCss` so semantic-utility variants (`md:row`,
+`hover:col-wrap`) are baked, and the runtime's static-sheet skip fails open
+(null sheet / throw / zero rules → nothing covered; waits ≤2s for the link's
+load before the first compile). Playcom on the theme-only bake: 45 rules baked,
+392 runtime; utilities-ready 4.2s → 2.4s, boot style writes 85 → 72.
+
+**§15 Tailwind bake SHIPPED to master (merge 167e01b, 2026-09-03):** the node
+entry runs the real `tailwindcss` v4 engine (pure JS; now a runtime dependency
+of `mnfst`) over the scanned candidates with Tailwind's `theme.css` +
+`utilities.css` and the runtime's custom variants, appended as a second
+`@layer theme/utilities` pair; a fresh compiler per call (build() accumulates
+candidates). Parity test: exact match against the bundled browser build
+`lib/manifest.tailwind.js` (v4.3.1) for 8 classes. src test project: 490
+tokens → 31 KB / 451 rules in ~190 ms. Loader skips fetching the Tailwind
+engine only for an inline `<style data-mnfst-utilities data-mnfst-utilities-complete>`
+(publish/render may stamp it after verifying coverage); a `<link>` sheet still
+loads the engine (fail open). Open: the Worker (hosting publish) cannot read
+Tailwind's CSS inputs from disk → injected-inputs option + bundled inputs in
+Manifest-MCP (in progress); then release (0.5.203) → `pnpm up mnfst` → deploy →
+Playcom re-pin. Tests 531/531.
+
+**§15 COMPLETE (2026-09-03):** `mnfst@0.5.204` on `latest` (0.5.203 was a
+stale-checkout build) carries the injected-inputs option
+`compileUtilities({ tailwind: { engine, themeCss, utilitiesCss } })`, the
+fail-open static-sheet skip, and the loader's engine-fetch skip for pages with an
+inline complete sheet. Manifest-MCP main 05edab0 (deployed) bundles `tailwindcss`
+with inlined theme/utilities CSS and uses the published node compiler; publish
+now bakes theme-driven, semantic and plain Tailwind utilities from the scanned
+tree and the CDN-linked theme (+17% Worker bundle, ~190 ms per publish on the
+docs tree). Playcom re-pins to 0.5.204 and reports boot style writes /
+utilities-ready / baked rule count on the next publish.
+
+**§15 regression (2026-09-03, Playcom + Andrew on the wire):** the baked sheet
+opened with `@layer utilities {` and hosting linked it BEFORE `manifest.min.css`;
+cascade layers take precedence from first declaration, so `utilities` registered
+ahead of `base`/`components` and lost to the reset (`padding: 0` beat `.p-2`)
+on every baked page. Law: a compiled utilities sheet must (1) start with
+`@layer base, components, utilities;` and (2) be linked immediately after the
+framework stylesheet, before author sheets. Hosting fixed and deployed
+(Manifest-MCP bc2bc46); the framework compiler emits the preamble from 0.5.205.
+Docs staging republished with the fix (44 KB sheet, full Tailwind bake).
+
+**0.5.205 set (merge 4051611, 2026-09-03, 558/558):** data — per-source
+`scopeColumn` (string or `{ team, user }`) on reads, write-side injection and
+realtime scope checks; `$auth.<path>` query-arg interpolation was broken (the
+`auth.` prefix was walked against the auth store itself → literal reached the
+SDK → Appwrite 400 → source landed empty-but-done) → fixed, `?.` supported;
+scoped reads fail SAFE (unresolved scope/arg → no query, source stays pending,
+retry on auth events; event-driven auth wait capped 3s). Utilities — scanner
+`:class=` false match fixed (lookbehind); the runtime skip predicate treated
+`@layer`/`@media` blocks preceded by whitespace as one giant selector and so
+covered almost nothing (why 326 of Playcom's 364 runtime rules regenerated);
+fixed; compiler output now begins with `@layer base, components, utilities;`.
+
+**§15 final shape (merge ee0f910, 2026-09-03, 735/735):** Andrew's ruling — a
+page whose bake is stamped complete (`data-mnfst-utilities-complete`) does not
+download Tailwind's browser engine at all; a MutationObserver watches for a
+class the sheet and `utilities.safelist` don't cover, lazily loads the engine on
+the first one, warns once and dispatches `manifest:utilities-uncovered`
+({ classes, engineLoaded }), then disconnects. A wrong stamp degrades to a late
+engine load, never an unstyled page. `manifest.json` gains
+`utilities: { safelist: [...], patterns: [...] }` — safelist is baked, patterns
+are runtime-only. Coverage is now a standing proof, not an assumption: a 49-class,
+15-family corpus (responsive, state, group/peer incl. named, dark, motion,
+structural, pseudo-element, aria/data, arbitrary value + variant, stacked,
+important, negative, fraction, size) asserts scan → bake → covered agree for
+every member, and the two real production sheets are checked in under
+`tests/fixtures/` (playcom 38 KB/538 classes, docs 44 KB/478). The corpus
+immediately found two more parser bugs (hex-escaped leading-digit classes like
+`2xl:`, and quotes inside arbitrary values truncating the class scan).
+**Law: parsers are tested against published artefacts, never hand-written
+fixtures** — three separate coverage bugs shipped past fixtures that passed.

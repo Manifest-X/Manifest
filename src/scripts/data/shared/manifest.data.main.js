@@ -1,5 +1,24 @@
 /* Manifest Data Sources - Main Initialization */
 
+// A scoped query that isn't ready yet (buildAppwriteQueries returned null — see
+// manifest.data.queries.js) skips the network read and waits here instead of
+// sending a broken/empty-equal query. Retries once when auth settles further;
+// dedup by key so a source pending across repeated loads doesn't stack listeners.
+const pendingAuthRetries = new Set();
+const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login'];
+function scheduleAuthRetry(dataSourceName, locale) {
+    if (typeof window === 'undefined') return;
+    const key = `${dataSourceName}:${locale}`;
+    if (pendingAuthRetries.has(key)) return;
+    pendingAuthRetries.add(key);
+    const retry = () => {
+        pendingAuthRetries.delete(key);
+        AUTH_RETRY_EVENTS.forEach(type => window.removeEventListener(type, retry));
+        loadDataSource(dataSourceName, locale, { reload: true });
+    };
+    AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
+}
+
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
 // the current team to match database team-scope behavior.
 async function filterFilesByScope(files, scope) {
@@ -202,7 +221,7 @@ function markEventProcessed(eventKey) {
 }
 
 // Handle real-time events for database tables
-async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, eventType, payload) {
+async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -229,7 +248,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
     if (eventType === 'create') {
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
-            const rowMatchesScope = await checkRowMatchesScope(row, scope);
+            const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (rowMatchesScope) {
                 landRows(dataSourceName, [row], { mode: 'append' });
             }
@@ -240,7 +259,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
             const existingRow = currentRows.find(r => r.$id === row.$id);
-            const rowMatchesScope = await checkRowMatchesScope(row, scope);
+            const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (!rowMatchesScope) {
                 // Row no longer matches scope, remove it
                 if (existingRow) landRemove(dataSourceName, [row.$id]);
@@ -328,11 +347,12 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
 }
 
 // Check if a database row matches the current scope
-async function checkRowMatchesScope(row, scope) {
+async function checkRowMatchesScope(row, scope, scopeColumns) {
     if (!scope || !row) {
         return true; // No scope, allow it
     }
 
+    const cols = scopeColumns || { team: 'teamId', user: 'userId' };
     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
     if (!authStore) {
         return true;
@@ -347,7 +367,7 @@ async function checkRowMatchesScope(row, scope) {
     if (hasUserScope) {
         const user = authStore.user;
         const userId = user?.$id || user?.id;
-        if (userId && row.userId === userId) {
+        if (userId && row[cols.user] === userId) {
             return true; // Matches user scope
         }
     }
@@ -355,7 +375,7 @@ async function checkRowMatchesScope(row, scope) {
     // Check team scope (singular - currentTeam)
     if (hasTeamScope) {
         const currentTeamId = authStore.currentTeam?.$id || authStore.currentTeam?.id;
-        if (currentTeamId && row.teamId === currentTeamId) {
+        if (currentTeamId && row[cols.team] === currentTeamId) {
             return true; // Matches current team scope
         }
     }
@@ -364,7 +384,7 @@ async function checkRowMatchesScope(row, scope) {
     if (hasTeamsScope) {
         const teams = authStore.teams || [];
         const teamIds = teams.map(t => t.$id || t.id).filter(id => id);
-        if (teamIds.includes(row.teamId)) {
+        if (teamIds.includes(row[cols.team])) {
             return true; // Matches one of user's teams
         }
     }
@@ -569,13 +589,20 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 const tableId = window.ManifestDataConfig.getAppwriteTableId(dataSource);
                 // bucketId already defined above
                 const scope = window.ManifestDataConfig.getScope(dataSource);
+                const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
                 const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
 
                 if (tableId) {
                     // Load from Appwrite table (TablesDB)
                     const queries = queriesConfig
-                        ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope)
-                        : await window.ManifestDataQueries.buildAppwriteQueries([], scope);
+                        ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
+                        : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+
+                    // Not ready (auth/scope unresolved): skip this read, stay pending, retry on an auth event
+                    if (queries === null) {
+                        scheduleAuthRetry(dataSourceName, locale);
+                        return null;
+                    }
 
                     // Log auth state for debugging
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
@@ -596,7 +623,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             scope,
                             async (eventType, payload) => {
                                 // Handle real-time events
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, eventType, payload);
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload);
                             }
                         );
                     }
@@ -608,6 +635,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const queries = queriesConfig
                         ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, null)
                         : await window.ManifestDataQueries.buildAppwriteQueries([], null);
+
+                    // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
+                    if (queries === null) {
+                        scheduleAuthRetry(dataSourceName, locale);
+                        return null;
+                    }
 
                     let files = await window.ManifestDataAppwrite.listBucketFiles(bucketId, queries);
 

@@ -80,6 +80,7 @@ async function load(opts = {}) {
         getAppwriteTableId: ds => ds?.appwriteTableId || null,
         getAppwriteBucketId: () => null,
         getScope: () => null,
+        getScopeColumns: () => ({ team: 'teamId', user: 'userId' }),
         getQueries: () => null,
         getDefaultLocale: () => null,
         getNestedValue: (obj, p) => p.split('.').reduce((c, k) => (c && c[k] !== undefined ? c[k] : undefined), obj),

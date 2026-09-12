@@ -760,6 +760,11 @@ TailwindCompiler.prototype.compile = async function () {
         if (!this.hasScannedStatic) {
             await this.scanStaticClasses();
 
+            // Wait for the static utilities sheet's covered-class read to
+            // settle (capped at 2s in detectStaticUtilitiesSheet) so this
+            // first compile decision isn't a guess — see static.js.
+            if (this.staticUtilitiesReady) await this.staticUtilitiesReady;
+
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
             if (themeCss) {

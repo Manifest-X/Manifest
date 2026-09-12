@@ -9,7 +9,7 @@
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const bundleSrc = readFileSync(join(__dirname, '../lib/manifest.utilities.js'), 'utf8')
@@ -85,6 +85,24 @@ describe('static utilities sheet — runtime skip', () => {
         expect(stripped).toMatch(/\.p-8\s*\{/)
     })
 
+    it('covers a class whose only baked rule came from the Tailwind engine pass (gap-2)', async () => {
+        // gap-2 has no Manifest generator/theme-var backing at all — a static
+        // sheet baked by compileUtilities() covers it purely via the Tailwind
+        // pass (see manifest.utilities.node.mjs). The runtime's coverage
+        // detection is generic (classNamesFromCssText reads any selector), so
+        // it must recognize this as covered the same as a Manifest-authored rule.
+        const headHtml = [
+            '<style data-mnfst-utilities>.gap-2{gap:calc(var(--spacing) * 2)}</style>',
+        ].join('')
+        const bodyHtml = '<div class="gap-2 p-4"></div>'
+
+        const compiler = await bootPluginWith({ headHtml, bodyHtml })
+
+        expect(compiler.staticUtilitiesCoveredClasses.has('gap-2')).toBe(true)
+        const generated = document.getElementById('manifest-styles').textContent
+        expect(generated).not.toMatch(/\.gap-2\s*\{/)
+    })
+
     it('behaves like a cold visitor when there is no static sheet', async () => {
         const headHtml = '<style id="theme-vars">:root { --spacing-4: 1rem; }</style>'
         const bodyHtml = '<div class="p-4"></div>'
@@ -94,5 +112,139 @@ describe('static utilities sheet — runtime skip', () => {
         expect(compiler.staticUtilitiesCoveredClasses).toBeNull()
         const generated = document.getElementById('manifest-styles').textContent
         expect(generated).toMatch(/\.p-4\s*\{/)
+    })
+})
+
+describe('static utilities sheet — nested @layer/@media coverage (real Tailwind bake shape)', () => {
+    // Regression: extractSelectorsFromCssText only recognized an `@` rule when
+    // `i` landed exactly on '@'. After skipping a `;`-terminated statement (or
+    // finishing a sibling rule), `i` sits on the whitespace/newline before the
+    // next '@' — so a real bake's `@layer utilities { ... @media { ... } }`
+    // was swallowed whole as one bogus selector and none of its classes (nor
+    // classes nested one level deeper inside its own @media) were ever seen as
+    // covered, regardless of unescaping. Every real compileUtilities() output
+    // has this exact shape now that it emits the `@layer base, ...;` preamble.
+    const NESTED_CSS = [
+        '@layer base, components, utilities;',
+        '@layer utilities {',
+        '.group-hover\\:opacity-100 { &:hover { opacity: 1; } }',
+        '.\\[\\&_svg\\]\\:size-4 { & svg { width: 1rem; } }',
+        '@media (min-width: 768px) {',
+        '.md\\:flex { display: flex; }',
+        '}',
+        '}',
+    ].join('\n')
+
+    it('a <style> sheet: covers classes at both the @layer and nested @media level', async () => {
+        const headHtml = [
+            '<style id="theme-vars">:root { --spacing-4: 1rem; }</style>',
+            `<style data-mnfst-utilities>${NESTED_CSS}</style>`,
+        ].join('')
+        const bodyHtml = '<div class="group-hover:opacity-100 [&_svg]:size-4 md:flex p-4"></div>'
+
+        const compiler = await bootPluginWith({ headHtml, bodyHtml })
+
+        expect(compiler.staticUtilitiesCoveredClasses.has('group-hover:opacity-100')).toBe(true)
+        expect(compiler.staticUtilitiesCoveredClasses.has('[&_svg]:size-4')).toBe(true)
+        expect(compiler.staticUtilitiesCoveredClasses.has('md:flex')).toBe(true)
+
+        // Covered classes never reach generateUtilitiesFromVars/generateCustomUtilities
+        // (filterStaticallyCoveredClasses / getUsedClasses), the uncovered one still does.
+        const generated = document.getElementById('manifest-styles').textContent
+        expect(generated).not.toMatch(/group-hover/)
+        expect(generated).not.toMatch(/svg/)
+        expect(generated).not.toMatch(/md\\:flex/)
+        expect(generated).toMatch(/\.p-4\s*\{/)
+    })
+
+    it('a <link> sheet (CSSOM cssRules): the same nested shape, walked recursively', async () => {
+        const link = document.createElement('link')
+        link.setAttribute('rel', 'stylesheet')
+        link.setAttribute('data-mnfst-utilities', '')
+        link.setAttribute('href', 'data:text/css,')
+        document.head.innerHTML = '<style id="theme-vars">:root { --spacing-4: 1rem; }</style>'
+        document.head.appendChild(link)
+        document.body.innerHTML = '<div class="group-hover:opacity-100 [&_svg]:size-4 md:flex p-4"></div>'
+        window.tailwind = {}
+        window.ManifestComponentsRegistry = { manifest: {} }
+        delete window.__manifestUtilitiesReady
+        window.__manifestUtilitiesPending = 0
+
+        // A real CSSOM read returns one top-level rule per top-level statement/block
+        // (a CSSLayerStatementRule for the preamble, a CSSLayerBlockRule for the
+        // layer body) — mirror that shape rather than one joined string.
+        vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([{
+            ownerNode: link,
+            cssRules: [
+                { cssText: '@layer base, components, utilities;' },
+                { cssText: NESTED_CSS.slice(NESTED_CSS.indexOf('@layer utilities')) },
+            ],
+        }])
+
+        const ready = new Promise((resolve) => window.addEventListener('manifest:utilities-ready', resolve, { once: true }))
+        const nonce = `\n//boot:${Math.random()}`
+        await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(bundleSrc + nonce))
+        await ready
+        const compiler = window.ManifestUtilities
+
+        expect(compiler.staticUtilitiesCoveredClasses.has('group-hover:opacity-100')).toBe(true)
+        expect(compiler.staticUtilitiesCoveredClasses.has('[&_svg]:size-4')).toBe(true)
+        expect(compiler.staticUtilitiesCoveredClasses.has('md:flex')).toBe(true)
+        vi.restoreAllMocks()
+    })
+
+    it('a preflight-shaped rule (*, ::before, ::after, ::backdrop) contributes no bogus classes', async () => {
+        const css = [
+            '*, ::before, ::after, ::backdrop { box-sizing: border-box; }',
+            NESTED_CSS,
+        ].join('\n')
+        const headHtml = `<style data-mnfst-utilities>${css}</style>`
+        const compiler = await bootPluginWith({ headHtml, bodyHtml: '<div></div>' })
+
+        expect(compiler.staticUtilitiesCoveredClasses.has('group-hover:opacity-100')).toBe(true)
+        for (const bogus of ['*', '::before', '::after', '::backdrop', '']) {
+            expect(compiler.staticUtilitiesCoveredClasses.has(bogus)).toBe(false)
+        }
+    })
+})
+
+describe('static utilities sheet — sibling top-level rules (the live bake shape)', () => {
+    // Regression: the CSSOM path joins each top-level rule's cssText with '\n'
+    // (and every real bake now opens with the `@layer base, …;` preamble), so
+    // every rule after the first began at a newline. The parser only took its
+    // `@` branch when the cursor landed exactly on '@', so those siblings were
+    // swallowed whole as one bogus selector: a 44 KB sheet with 557 rules
+    // yielded 3 "selectors" and 0 covered classes, and the runtime regenerated
+    // everything it had just been handed.
+    const LIVE_SHAPE = [
+        '@layer base, components, utilities;',
+        '@layer utilities {',
+        '.p-2 { padding: var(--spacing-2); }',
+        '}',
+        '@layer theme {',
+        ':root { --spacing-2: 0.5rem; }',
+        '}',
+        '@layer utilities {',
+        '.gap-2 { gap: var(--spacing-2); }',
+        '.group-hover\\:opacity-100 { &:hover { opacity: 1; } }',
+        '}',
+    ].join('\n')
+
+    it('covers classes in every sibling block, not just the first', async () => {
+        const utilities = await bootPluginWith({
+            headHtml: `<style data-mnfst-utilities>${LIVE_SHAPE}</style>`,
+            bodyHtml: '<div class="p-2 gap-2 group-hover:opacity-100 mt-7"></div>',
+        })
+        const covered = utilities.staticUtilitiesCoveredClasses
+        expect(covered.has('p-2')).toBe(true)
+        expect(covered.has('gap-2')).toBe(true)
+        expect(covered.has('group-hover:opacity-100')).toBe(true)
+        expect(covered.has('mt-7')).toBe(false)
+    })
+
+    it('parses the same shape from raw text (fetch fallback path)', () => {
+        const utilities = window.ManifestUtilities
+        const names = utilities.classNamesFromCssText(LIVE_SHAPE)
+        expect([...names].sort()).toEqual(['gap-2', 'group-hover:opacity-100', 'p-2'])
     })
 })

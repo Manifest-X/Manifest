@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<!--
+  Regression fixture: manifest.defer's idle prewarm/evict cycle races x-combobox's
+  own (setTimeout-deferred) build. With enough closed <dialog popover> containers to
+  exceed the prewarm cap, a container can get speculatively rendered (prewarming its
+  x-combobox directive, which schedules build() for the next tick) and then evicted
+  back into its <template> stash BEFORE that build() runs — leaving the generated
+  menu appended into a now-disconnected tree. See tests/e2e/combobox-dialog-defer.e2e.mjs.
+  prewarmCap is set low here purely to make the race reproduce reliably with a small
+  number of dialogs instead of needing dozens, matching the reported app's scale (67
+  comboboxes against the default cap of 48).
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>combobox dialog stress</title>
+  <script>window.ManifestDeferConfig = { prewarmCap: 3 };</script>
+  <link rel="manifest" href="/manifest.json">
+  <script src="/scripts/manifest.js" data-plugin-base="/scripts/" data-tailwind></script>
+</head>
+<body>
+  <div id="dialogs"></div>
+  <script>
+    const container = document.getElementById('dialogs');
+    const N = 12;
+    let html = '';
+    for (let i = 0; i < N; i++) {
+        html += `
+        <button popovertarget="dlg-${i}">Open ${i}</button>
+        <dialog popover id="dlg-${i}">
+          <input x-combobox="opts-${i}" id="input-${i}" placeholder="in dialog ${i}">
+          <menu popover id="opts-${i}">
+            <li data-value="x">Xray</li>
+            <li data-value="y">Yankee</li>
+          </menu>
+          <button popovertarget="dlg-${i}" popoveraction="hide" id="close-${i}">Close</button>
+        </dialog>`;
+    }
+    container.innerHTML = html;
+    window.__dialogCount = N;
+    window.__events = [];
+    ['manifest:ready'].forEach((name) => window.addEventListener(name, () => window.__events.push([name, performance.now()])));
+  </script>
+</body>
+</html>

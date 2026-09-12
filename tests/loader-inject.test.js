@@ -73,19 +73,45 @@ describe('loader: pre-existing plugin tag', () => {
 })
 
 describe('loader: concurrent loads of one plugin', () => {
-    it('a second load of a plugin the loader is still fetching waits for its execution', async () => {
+    it('a second load of a plugin the loader is still fetching shares the first fetch', async () => {
         boot({ existingTag: false })
         await settle(20)
-        const order = []
-        const tag = document.querySelector(`script[src="${PLUGIN}"]`)
-        tag.removeAttribute('data-mnfst-loaded')
-        tag.setAttribute('data-mnfst-loading', '')          // as if the fetch were still in flight
-        const p = window.Manifest.loadPlugin('toasts', VERSION).then(() => order.push('resolved'))
+        // tooltips is outside the boot set, so both calls race for one fetch.
+        const first = window.Manifest.loadPlugin('tooltips', VERSION)
+        const second = window.Manifest.loadPlugin('tooltips', VERSION)
+        expect(document.querySelectorAll('script[src*="manifest.tooltips.min.js"]').length).toBe(1)
+        await Promise.all([first, second])
+        expect(document.querySelectorAll('script[src*="manifest.tooltips.min.js"]').length).toBe(1)
+    })
+
+    // A plugin that owns page-level state (utilities' style element and its
+    // order observer) must never execute twice. Dedupe is by plugin name, so a
+    // load asking for another version reuses the copy already on the page
+    // instead of injecting a second script under a different URL.
+    it('a load at a different version reuses the copy already on the page', async () => {
+        boot({ existingTag: false })
+        await settle(20)
+        expect(document.querySelectorAll(`script[src="${PLUGIN}"]`).length).toBe(1)
+
+        await window.Manifest.loadPlugin('toasts', '0.5.100')
         await settle(5)
-        expect(order).toEqual([])                              // document is complete, but ours is not settled yet
-        tag.removeAttribute('data-mnfst-loading'); tag.setAttribute('data-mnfst-loaded', '')
-        tag.dispatchEvent(new window.Event('load'))
-        await p
-        expect(order).toEqual(['resolved'])
+
+        expect(document.querySelectorAll('script[src*="manifest.toasts.min.js"]').length).toBe(1)
+        expect(document.querySelector('script[src*="mnfst@0.5.100"]')).toBe(null)
+    })
+
+    // Manifest.loadPlugin() with no version must resolve against the version the
+    // page booted with — 'latest' would pull a second framework build.
+    it('an unversioned load resolves against the page version, not latest', async () => {
+        boot({ existingTag: false })
+        await settle(20)
+
+        await window.Manifest.loadPlugin('tooltips')
+        await settle(5)
+
+        const tag = document.querySelector('script[src*="manifest.tooltips.min.js"]')
+        expect(tag).toBeTruthy()
+        expect(tag.getAttribute('src')).toContain(`mnfst@${VERSION}/`)
+        expect(document.querySelector('script[src*="mnfst@latest"]')).toBe(null)
     })
 })

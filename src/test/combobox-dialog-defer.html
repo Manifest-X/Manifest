@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<!--
+  Regression fixture: x-combobox nested in a <dialog popover> is dead.
+  See tests/e2e/combobox-dialog-defer.e2e.mjs and tests/combobox-defer.test.js.
+  Three cases: (a) page-level combobox, (b) combobox inside a dialog popover
+  (deferred until opened), (c) combobox inside a dialog nested inside another
+  deferred dialog popover (an outer settings dialog opening a sub-dialog).
+  See also combobox-dialog-stress.html for the prewarm/evict race that's the
+  actual trigger in the reported app (many closed dialogs, default prewarm cap).
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>combobox + dialog defer repro</title>
+  <!-- Low prewarm cap: with enough other closed dialogs on the page (the padding
+       below), this reliably triggers the same idle prewarm/evict race that a page
+       with 60+ comboboxes hits against the default cap of 48 (see combobox-dialog-
+       stress.html) — without needing dozens of fixture dialogs here too. -->
+  <script>window.ManifestDeferConfig = { prewarmCap: 3 };</script>
+  <link rel="manifest" href="/manifest.json">
+  <script src="/scripts/manifest.js" data-plugin-base="/scripts/" data-tailwind></script>
+</head>
+<body>
+
+  <!-- (a) page-level -->
+  <section id="case-page">
+    <input x-combobox="opts-page" id="input-page" placeholder="Page-level">
+    <menu popover id="opts-page">
+      <li data-value="a">Alpha</li>
+      <li data-value="b">Beta</li>
+    </menu>
+  </section>
+
+  <!-- Padding: closed dialogs with their own comboboxes, purely to push the prewarm
+       cap over the edge so dialogs B/C below are exposed to the same eviction race. -->
+  <div id="padding"></div>
+  <script>
+    let pad = '';
+    for (let i = 0; i < 8; i++) {
+      pad += `<button popovertarget="pad-${i}">Open pad ${i}</button>
+      <dialog popover id="pad-${i}">
+        <input x-combobox="pad-opts-${i}" id="pad-input-${i}">
+        <menu popover id="pad-opts-${i}"><li data-value="x">Xray</li><li data-value="y">Yankee</li></menu>
+      </dialog>`;
+    }
+    document.getElementById('padding').innerHTML = pad;
+  </script>
+
+  <!-- (b) combobox inside a dialog popover -->
+  <button popovertarget="dialog-b">Open dialog B</button>
+  <dialog popover id="dialog-b">
+    <header>
+      <h2>Dialog B</h2>
+      <button popovertarget="dialog-b" popoveraction="hide" id="close-b">Close</button>
+    </header>
+    <main>
+      <input x-combobox="opts-b" id="input-b" placeholder="In dialog">
+      <menu popover id="opts-b">
+        <li data-value="x">Xray</li>
+        <li data-value="y">Yankee</li>
+      </menu>
+    </main>
+  </dialog>
+
+  <!-- (c) dialog nested inside another deferred popover (a settings dialog opening a
+       sub-dialog), combobox inside the inner dialog -->
+  <button popovertarget="dialog-outer">Open outer dialog</button>
+  <dialog popover id="dialog-outer">
+    <header>
+      <h2>Outer dialog</h2>
+      <button popovertarget="dialog-outer" popoveraction="hide" id="close-outer">Close</button>
+    </header>
+    <main>
+      <button popovertarget="dialog-c">Open dialog C</button>
+      <dialog popover id="dialog-c">
+        <header>
+          <h2>Dialog C</h2>
+          <button popovertarget="dialog-c" popoveraction="hide" id="close-c">Close</button>
+        </header>
+        <main>
+          <input x-combobox="opts-c" id="input-c" placeholder="Nested in dialog">
+          <menu popover id="opts-c">
+            <li data-value="p">Papa</li>
+            <li data-value="q">Quebec</li>
+          </menu>
+        </main>
+      </dialog>
+    </main>
+  </dialog>
+
+  <script>
+    window.__events = [];
+    ['manifest:ready', 'manifest:utilities-ready'].forEach((name) => {
+      window.addEventListener(name, () => window.__events.push([name, performance.now()]));
+    });
+  </script>
+</body>
+</html>
