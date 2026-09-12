@@ -5,6 +5,11 @@
     <div class="col gap-1">
         <h2>Dropdown auto-close</h2>
         <small class="subtle">Last selection: <strong x-text="picked"></strong></small>
+        <!-- Emulation truth: phone (sheet) presentation is gated on pointer, not width -->
+        <small class="subtle" x-data="{ coarse: matchMedia('(pointer: coarse)').matches }"
+               x-init="matchMedia('(pointer: coarse)').addEventListener('change', e => coarse = e.matches)">
+            Touch pointer / sheet menus: <strong x-text="coarse ? 'active' : 'inactive'"></strong><span x-show="!coarse"> — pick a touch device preset and reload</span>
+        </small>
     </div>
 
     <!-- A: per-item opt-in -->
