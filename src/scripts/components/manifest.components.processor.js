@@ -20,9 +20,11 @@ window.ManifestComponentsProcessor = {
         const registry = window.ManifestComponentsRegistry;
         const loader = window.ManifestComponentsLoader;
         if (!registry || !loader) {
+            console.debug('[Manifest Components] skipped: registry or loader unavailable', element);
             return;
         }
         if (!registry.registered.has(name)) {
+            console.debug('[Manifest Components] skipped: component not registered', element);
             return;
         }
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
@@ -30,10 +32,12 @@ window.ManifestComponentsProcessor = {
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
                 try { window.Alpine.initTree(element); } catch (e) { /* graceful */ }
             }
+            console.debug('[Manifest Components] skipped: already pre-rendered/processed', element);
             return;
         }
         const content = await loader.loadComponent(name);
         if (!content) {
+            console.debug('[Manifest Components] skipped: failed to load component', element);
             element.replaceWith(document.createComment(` Failed to load component: ${name} `));
             return;
         }
@@ -41,6 +45,7 @@ window.ManifestComponentsProcessor = {
         container.innerHTML = content.trim();
         const topLevelElements = Array.from(container.children);
         if (topLevelElements.length === 0) {
+            console.debug('[Manifest Components] skipped: empty component template', element);
             element.replaceWith(document.createComment(` Empty component: ${name} `));
             return;
         }
@@ -253,6 +258,7 @@ window.ManifestComponentsProcessor = {
         }
         const parent = element.parentElement;
         if (!parent || !document.contains(element)) {
+            console.debug('[Manifest Components] skipped: element detached before swap', element);
             return;
         }
         // Replace the placeholder element with the component content
