@@ -182,9 +182,11 @@ window.ManifestComponentsProcessor = {
         const registry = window.ManifestComponentsRegistry;
         const loader = window.ManifestComponentsLoader;
         if (!registry || !loader) {
+            console.debug('[Manifest Components] skipped: registry or loader unavailable', element);
             return;
         }
         if (!registry.registered.has(name)) {
+            console.debug('[Manifest Components] skipped: component not registered', element);
             return;
         }
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
@@ -192,10 +194,12 @@ window.ManifestComponentsProcessor = {
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
                 try { window.Alpine.initTree(element); } catch (e) { /* graceful */ }
             }
+            console.debug('[Manifest Components] skipped: already pre-rendered/processed', element);
             return;
         }
         const content = await loader.loadComponent(name);
         if (!content) {
+            console.debug('[Manifest Components] skipped: failed to load component', element);
             element.replaceWith(document.createComment(` Failed to load component: ${name} `));
             return;
         }
@@ -203,6 +207,7 @@ window.ManifestComponentsProcessor = {
         container.innerHTML = content.trim();
         const topLevelElements = Array.from(container.children);
         if (topLevelElements.length === 0) {
+            console.debug('[Manifest Components] skipped: empty component template', element);
             element.replaceWith(document.createComment(` Empty component: ${name} `));
             return;
         }
@@ -415,6 +420,7 @@ window.ManifestComponentsProcessor = {
         }
         const parent = element.parentElement;
         if (!parent || !document.contains(element)) {
+            console.debug('[Manifest Components] skipped: element detached before swap', element);
             return;
         }
         // Replace the placeholder element with the component content
@@ -494,10 +500,20 @@ window.ManifestComponentsProcessor = {
 
 // Components swapping
 (function () {
+    // Never reset — ids must stay unique for the life of the page so overlapping
+    // processAll runs can't mint a colliding id for a live instance.
     let componentInstanceCounters = {};
     const swappedInstances = new Set();
     const instanceRouteMap = new Map();
     const placeholderMap = new Map();
+
+    // Serialises processAll: a call while one is in flight coalesces into a
+    // single trailing re-run (latest path wins) instead of interleaving.
+    let activeRun = null;
+    let trailingRun = null;
+    let trailingPath = null;
+    let hasTrailing = false;
+    let trailingSettlers = null;
 
     function getComponentInstanceId(name) {
         if (!componentInstanceCounters[name]) componentInstanceCounters[name] = 1;
@@ -513,9 +529,15 @@ window.ManifestComponentsProcessor = {
     window.ManifestComponentsSwapping = {
         // Swap in source code for a placeholder
         async swapIn(placeholder) {
-            if (placeholder.hasAttribute('data-swapped')) return;
+            if (placeholder.hasAttribute('data-swapped')) {
+                console.debug('[Manifest Components] skipped swapIn: already marked data-swapped', placeholder);
+                return;
+            }
             const processor = window.ManifestComponentsProcessor;
-            if (!processor) return;
+            if (!processor) {
+                console.debug('[Manifest Components] skipped swapIn: processor unavailable', placeholder);
+                return;
+            }
             const name = placeholder.tagName.toLowerCase().replace('x-', '');
             let instanceId = placeholder.getAttribute('data-component');
             if (!instanceId) {
@@ -542,10 +564,16 @@ window.ManifestComponentsProcessor = {
         },
         // Revert to placeholder
         revert(instanceId) {
-            if (!swappedInstances.has(instanceId)) return;
+            if (!swappedInstances.has(instanceId)) {
+                console.debug('[Manifest Components] skipped revert: instance not tracked', instanceId);
+                return;
+            }
             // Remove all elements with data-component=instanceId
             const rendered = Array.from(document.querySelectorAll(`[data-component="${instanceId}"]`));
-            if (rendered.length === 0) return;
+            if (rendered.length === 0) {
+                console.debug('[Manifest Components] skipped revert: no rendered elements found', instanceId);
+                return;
+            }
             const first = rendered[0];
             const parent = first.parentNode;
             // Retrieve the original placeholder from the map
@@ -585,11 +613,14 @@ window.ManifestComponentsProcessor = {
             // Log after revert
             logSiblings(parent, `After revert for ${instanceId}`);
         },
-        // Main swapping logic
-        async processAll(normalizedPathFromEvent = null) {
-            componentInstanceCounters = {};
+        // Main swapping logic — single pass. Call via processAll(), not directly:
+        // this has no re-entrancy guard of its own.
+        async _runProcessAll(normalizedPathFromEvent) {
             const registry = window.ManifestComponentsRegistry;
-            if (!registry) return;
+            if (!registry) {
+                console.debug('[Manifest Components] skipped processAll: registry unavailable');
+                return;
+            }
             const routing = window.ManifestRouting;
 
             // Use normalized path from event if provided, otherwise compute from window.location
@@ -675,6 +706,40 @@ window.ManifestComponentsProcessor = {
                     }
                 }
             }
+        },
+        // Public entry point. Coalesces overlapping calls: while a run is active,
+        // later calls don't start their own interleaved run — they queue exactly
+        // one trailing re-run (latest path wins) and resolve when it finishes.
+        async processAll(normalizedPathFromEvent = null) {
+            if (activeRun) {
+                hasTrailing = true;
+                trailingPath = normalizedPathFromEvent;
+                if (!trailingRun) {
+                    trailingRun = new Promise((resolve, reject) => {
+                        trailingSettlers = { resolve, reject };
+                    });
+                }
+                return trailingRun;
+            }
+            activeRun = this._runProcessAll(normalizedPathFromEvent);
+            let error = null;
+            try {
+                await activeRun;
+            } catch (e) {
+                error = e;
+            } finally {
+                activeRun = null;
+            }
+            if (hasTrailing) {
+                hasTrailing = false;
+                const path = trailingPath;
+                const settlers = trailingSettlers;
+                trailingRun = null;
+                trailingSettlers = null;
+                trailingPath = null;
+                this.processAll(path).then(settlers.resolve, settlers.reject);
+            }
+            if (error) throw error;
         },
         initialize() {
             // On init, process all
