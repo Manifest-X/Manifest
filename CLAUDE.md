@@ -35,3 +35,20 @@ stranded fixes, and messy reconciliations. Keep everyone converged:
   `release:publish`, …). They derive the next version from npm
   (`scripts/release-bump.mjs`), so a stale local checkout can't collide with an
   already-published version.
+
+## Dev-server previews (one server, never stale)
+
+Andrew reviews work at **http://localhost:5055** — the app-managed server that
+serves `src/` from THIS checkout. Divergent previews are forbidden:
+
+- **This checkout's `master` must track `origin/master`.** After any worktree
+  merge lands on origin, `git pull --ff-only` here promptly — a stale checkout
+  makes 5055 lie to whoever is reviewing.
+- **Never leave commits or edits stranded here.** Work in worktrees, merge to
+  origin, pull back. Unpushed local commits on this checkout caused a released
+  npm package whose source wasn't in the repo.
+- **Ad-hoc servers from worktrees are for automated verification only**: random
+  high port, kill the process AND remove the worktree in the same session.
+  Never point Andrew at one.
+- `serve.mjs` refuses a second instance per directory — if it reports one
+  already running, use that instance rather than another port.
