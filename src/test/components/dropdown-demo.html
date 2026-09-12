@@ -108,6 +108,12 @@
                 <li @click="note('D: Stacked cut')">Cut</li>
                 <label><input type="checkbox" @change="note('D: Stacked checkbox')"><span>Stays open</span></label>
             </menu>
+
+            <div x-dropdown.context="dd-ctx-touch" class="p-4 text-center" style="border: 1px dashed var(--color-line); border-radius: var(--radius);">Long-press here (touch)</div>
+            <menu popover id="dd-ctx-touch" class="w-48">
+                <li @click="note('D: Long-press cut')">Cut</li>
+                <li @click="note('D: Long-press paste')">Paste</li>
+            </menu>
         </div>
     </section>
 
