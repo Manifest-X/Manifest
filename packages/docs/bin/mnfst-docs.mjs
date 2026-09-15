@@ -34,14 +34,35 @@ const name = argv.find((a) => !a.startsWith('-') && a !== '.') || 'docs';
 const target = here || componentsOnly ? process.cwd() : resolve(process.cwd(), name);
 
 if (componentsOnly) {
+    // Non-destructive by default: a file you have edited is never overwritten —
+    // the incoming version lands beside it as <name>.new for you to merge.
+    // --force restores the old clobbering behaviour.
+    const force = argv.includes('--force');
     const dest = join(target, 'components');
     mkdirSync(dest, { recursive: true });
-    cpSync(join(packageRoot, 'components'), dest, { recursive: true });
     const files = readdirSync(join(packageRoot, 'components'));
-    console.log(`Copied ${files.length} components into ${dest}`);
-    console.log('\nRegister them in manifest.json:');
-    console.log(`  "preloadedComponents": [${files.map((f) => `\n    "components/${f}"`).join(',')}\n  ]`);
-    console.log('\nThen mount: <x-docs x-route="docs"></x-docs>');
+    const added = [], unchanged = [], kept = [];
+    for (const f of files) {
+        const src = readFileSync(join(packageRoot, 'components', f));
+        const out = join(dest, f);
+        if (!existsSync(out)) { writeFileSync(out, src); added.push(f); continue; }
+        if (readFileSync(out).equals(src)) { unchanged.push(f); continue; }
+        if (force) { writeFileSync(out, src); added.push(f); continue; }
+        writeFileSync(out + '.new', src); kept.push(f);
+    }
+    const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+    console.log(`mnfst-docs@${version} components → ${dest}`);
+    if (added.length) console.log(`  written:   ${added.join(', ')}`);
+    if (unchanged.length) console.log(`  unchanged: ${unchanged.join(', ')}`);
+    if (kept.length) {
+        console.log(`  kept yours (new version saved beside it as .new): ${kept.join(', ')}`);
+        console.log('  Merge each .new into your copy (or re-run with --force to overwrite), then delete the .new files.');
+    }
+    if (added.length && !unchanged.length && !kept.length) {
+        console.log('\nRegister them in manifest.json:');
+        console.log(`  "preloadedComponents": [${files.map((f) => `\n    "components/${f}"`).join(',')}\n  ]`);
+        console.log('\nThen mount: <x-docs x-route="docs"></x-docs>');
+    }
     process.exit(0);
 }
 

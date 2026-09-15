@@ -96,3 +96,23 @@ switch), deliberately small and meant to be replaced.
 per group, with per-page metadata, Open Graph images, breadcrumbs, `sitemap.xml`,
 and `llms.txt` / `llms-full.txt` for AI crawlers. The search index is built in
 the browser from the same article files — no build step, nothing to keep in sync.
+
+## Updating an existing project
+
+Re-run the same command any time:
+
+```bash
+npx mnfst-docs@latest --components
+```
+
+It never overwrites a file you have edited: identical files are skipped, and
+where your copy differs the incoming version is saved beside it as
+`<name>.html.new` for you to merge (then delete the `.new`). `--force`
+restores plain overwriting.
+
+## Publishing (maintainers)
+
+The canonical source is `templates/docs` in the monorepo; the live docs site's
+`components/` must be kept identical (copy changes both ways deliberately).
+To release: `npm run prepare:source` in `packages/docs` (syncs the template
+in), bump `version`, then `npm publish` from `packages/docs`.
