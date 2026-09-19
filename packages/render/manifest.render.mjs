@@ -3455,6 +3455,7 @@ async function runPrerender(config) {
   // use a shared structure with CSV text overlay; locale-prefixed paths carry per-locale content.
 
   // Pass 1: collect all locale-neutral path segments (no locale prefix in the first segment).
+  const localeSet = new Set(locales);
   const localeNeutralPathSet = new Set();
   for (const seg of pathList) {
     if (!seg || seg === NOT_FOUND_PATH) continue;

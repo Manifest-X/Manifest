@@ -222,9 +222,9 @@ export function makePublishIgnore(rawPatterns) {
     const pathScoped = anchored || p.includes('/');
     const body = p
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, ' ')
+      .replace(/\*\*/g, '\u0000')
       .replace(/\*/g, '[^/]*')
-      .replace(/ /g, '.*')
+      .replace(/\u0000/g, '.*')
       .replace(/\?/g, '[^/]');
     rules.push({ dirOnly, pathScoped, exact: new RegExp('^' + body + '$'), prefix: new RegExp('^' + body + '/') });
   }
