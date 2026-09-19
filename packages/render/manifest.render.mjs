@@ -317,10 +317,67 @@ function loadConfig(rootDir) {
 }
 
 function normalizeLocaleRouteExclude(val) {
+  const clean = (s) => String(s).trim().replace(/^\/+|\/+$/g, '');
   if (val == null) return [];
-  if (Array.isArray(val)) return val.map((s) => String(s).trim()).filter(Boolean);
-  if (typeof val === 'string') return val.split(',').map((s) => s.trim()).filter(Boolean);
+  if (Array.isArray(val)) return val.map(clean).filter(Boolean);
+  if (typeof val === 'string') return val.split(',').map(clean).filter(Boolean);
   return [];
+}
+
+/**
+ * Shared predicate: true when route segment `seg` (no leading slash) falls
+ * under one of the excluded prefixes — prefix-matched on whole segments, so
+ * "docs" excludes "docs" itself and "docs/group/article" but not "docsite".
+ * Used by locale route expansion, link prefixing, and (mirrored in
+ * mnfst-publish) the publisher's expected-file computation.
+ */
+function isLocaleRouteExcluded(seg, localeRouteExclude) {
+  if (!seg || !localeRouteExclude || !localeRouteExclude.length) return false;
+  const clean = String(seg).replace(/^\/+|\/+$/g, '');
+  for (const prefix of localeRouteExclude) {
+    if (clean === prefix || clean.startsWith(prefix + '/')) return true;
+  }
+  return false;
+}
+
+/**
+ * Expand discovered route segments into the full path list to render:
+ * every locale-neutral route as-is, plus a `<locale>/<route>` variant for
+ * every non-default locale (and for the default locale itself, under its
+ * own slug, when there's more than one locale) — except routes under an
+ * excluded prefix (localeRouteExclude), which are never locale-prefixed.
+ * Pure/side-effect-free so it can be unit tested without Puppeteer.
+ */
+function expandLocaleRoutePaths({ routeSegments, locales, defaultLocale, localeRouteExclude }) {
+  const localeList = locales || [];
+  const localeSet = new Set(localeList.map((l) => String(l).toLowerCase()));
+  const localeNeutralSegments = routeSegments.filter((seg) => {
+    if (!seg) return true;
+    const first = seg.split('/')[0].toLowerCase();
+    return !localeSet.has(first);
+  });
+  const paths = new Set();
+  paths.add('');
+  for (const seg of routeSegments) paths.add(seg);
+  for (const locale of localeList.slice(1)) {
+    paths.add(locale);
+    for (const seg of localeNeutralSegments) {
+      if (!seg) continue;
+      if (isLocaleRouteExcluded(seg, localeRouteExclude)) continue;
+      paths.add(`${locale}/${seg}`);
+    }
+  }
+  // Default locale also under its slug (e.g. /en/, /en/page-1) so linking is
+  // symmetric with other locales; canonical points to root.  Skip this when
+  // there's only one locale — the duplicates serve no purpose and bloat the
+  // output (every page would be written twice: at root AND under /en/).
+  if (defaultLocale && localeList.length > 1) {
+    paths.add(defaultLocale);
+    for (const seg of localeNeutralSegments) {
+      if (seg !== '' && !isLocaleRouteExcluded(seg, localeRouteExclude)) paths.add(`${defaultLocale}/${seg}`);
+    }
+  }
+  return paths;
 }
 
 function resolveConfig() {
@@ -1567,7 +1624,6 @@ function buildSubstitutionPairs(defaultLocaleData, targetLocaleData) {
 function prefixLocaleInternalLinks(html, locale, locales, localeRouteExclude) {
   if (!locale || !locales || !locales.length) return html;
   const localeSet = new Set(locales);
-  const excludeSet = new Set(localeRouteExclude || []);
 
   // Match <a ... href="..." ...>  — capture the href value
   return html.replace(
@@ -1588,7 +1644,7 @@ function prefixLocaleInternalLinks(html, locale, locales, localeRouteExclude) {
       if (/\.(css|js|json|svg|png|jpg|jpeg|gif|ico|woff2?|ttf|eot|pdf|xml|txt)$/i.test(href)) return full;
 
       // Respect localeRouteExclude — these routes stay locale-neutral
-      if (excludeSet.has(firstSeg)) return full;
+      if (isLocaleRouteExcluded(withoutSlash, localeRouteExclude)) return full;
 
       // Prefix with locale
       return `${prefix}/${locale}${href}${suffix}`;
@@ -3214,35 +3270,11 @@ async function runPrerender(config) {
       if (!segSet.has(p)) { routeSegments.push(p); segSet.add(p); }
     }
   }
-  const localeSet = new Set(locales.map((l) => String(l).toLowerCase()));
-  const localeNeutralSegments = routeSegments.filter((seg) => {
-    if (!seg) return true;
-    const first = seg.split('/')[0].toLowerCase();
-    return !localeSet.has(first);
-  });
-  const paths = new Set();
-  paths.add('');
-
-  for (const seg of routeSegments) {
-    paths.add(seg);
-  }
-  for (const locale of locales.slice(1)) {
-    paths.add(locale);
-    for (const seg of localeNeutralSegments) {
-      if (!seg) continue;
-      paths.add(`${locale}/${seg}`);
-    }
-  }
-  // Default locale also under its slug (e.g. /en/, /en/page-1) so linking is
-  // symmetric with other locales; canonical points to root.  Skip this when
-  // there's only one locale — the duplicates serve no purpose and bloat the
-  // output (every page would be written twice: at root AND under /en/).
-  if (defaultLocale && locales.length > 1) {
-    paths.add(defaultLocale);
-    for (const seg of localeNeutralSegments) {
-      if (seg !== '') paths.add(`${defaultLocale}/${seg}`);
-    }
-  }
+  // Expand routeSegments into the full path list: locale-neutral routes as-is,
+  // plus a `<locale>/<route>` variant per locale (skipping localeRouteExclude
+  // prefixes). Factored into a pure function so it's unit-testable without
+  // Puppeteer — see expandLocaleRoutePaths.
+  const paths = expandLocaleRoutePaths({ routeSegments, locales, defaultLocale, localeRouteExclude: config.localeRouteExclude });
 
   const NOT_FOUND_PATH = '__prerender_404__'; // URL path that matches no route so router shows x-route="!*" (404)
   const pathList = [...paths, NOT_FOUND_PATH];
@@ -4996,4 +5028,11 @@ if (_isDirectEntry) {
 }
 
 // Exports for the CLI bin script and for unit testing.
-export { main, markPrerenderedManifestComponents };
+export {
+  main,
+  markPrerenderedManifestComponents,
+  normalizeLocaleRouteExclude,
+  isLocaleRouteExcluded,
+  expandLocaleRoutePaths,
+  prefixLocaleInternalLinks,
+};
