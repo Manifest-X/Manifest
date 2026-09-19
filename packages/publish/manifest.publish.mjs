@@ -321,8 +321,12 @@ export function collectFiles(root, outputDir) {
 // A server that predates this ignores the header and answers synchronously with
 // {ok:true}; both are handled below.
 const POLL_FIRST_MS = 1000;
-const POLL_MAX_MS = 5000;
+const POLL_MAX_MS = 2000;
 const POLL_TOTAL_MS = 10 * 60 * 1000;
+/* Ingest advances a bounded slice per status poll, so polls that observe the
+   `written` counter climbing must never give up: the overall cap applies only
+   while NO progress is being made. */
+const NO_PROGRESS_MS = 10 * 60 * 1000;
 // A status read that stays "pending" this long means the bundle never actually
 // arrived. The grace matters because the server's token record is eventually
 // consistent, so a brief stale "pending" right after an upload is normal.
@@ -361,6 +365,8 @@ export async function pollPublishStatus(statusUrl, opts = {}) {
   const started = now();
   let delay = POLL_FIRST_MS;
   let lastProgress = started;
+  let lastWritten = -1;
+  let lastAdvance = started;
 
   for (;;) {
     let status = 0;
@@ -399,7 +405,11 @@ export async function pollPublishStatus(statusUrl, opts = {}) {
     // keep waiting.
 
     const elapsed = now() - started;
-    if (elapsed >= totalMs) return { state: 'timeout' };
+    if (json && typeof json.written === 'number' && json.written > lastWritten) {
+      lastWritten = json.written;
+      lastAdvance = now();
+    }
+    if (now() - lastAdvance >= Math.min(totalMs, NO_PROGRESS_MS)) return { state: 'timeout' };
     if (elapsed - (lastProgress - started) >= PROGRESS_EVERY_MS) {
       lastProgress = now();
       logFn(`  still publishing… (${Math.round(elapsed / 1000)}s)`);

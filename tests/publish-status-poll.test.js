@@ -118,14 +118,14 @@ describe('uploadBundle — async server: ingesting → done', () => {
         expect(h.c.slept).toEqual([1000, 2000]) // 1s → 2s backoff between polls
     })
 
-    it('backs off 1s → 2s → 4s and caps at 5s', async () => {
+    it('polls steadily: 1s then a 2s cap — each poll drives a server work slice, so backoff would throttle the ingest itself', async () => {
         const server = fakeServer({
             upload: [res(202, { status: 'ingesting' })],
             status: [...Array(6).fill(res(200, { status: 'ingesting' })), res(200, { status: 'done', ok: true, url: 'u' })],
         })
         const h = harness(server)
         await uploadBundle(UPLOAD, 'ZIP', h.opts)
-        expect(h.c.slept).toEqual([1000, 2000, 4000, 5000, 5000, 5000])
+        expect(h.c.slept).toEqual([1000, 2000, 2000, 2000, 2000, 2000])
     })
 
     it('tolerates a blip and a 429 while polling', async () => {
@@ -145,7 +145,9 @@ describe('uploadBundle — async server: ingesting → done', () => {
     it('reports progress while the ingest runs', async () => {
         const server = fakeServer({
             upload: [res(202, { status: 'ingesting' })],
-            status: [...Array(8).fill(res(200, { status: 'ingesting' })), res(200, { status: 'done', ok: true, url: 'u' })],
+            // 15s of steady 1-2s polls only reaches ~7 sleeps; the progress line
+            // prints every 15s, so give the run enough ingesting polls to cross it.
+            status: [...Array(12).fill(res(200, { status: 'ingesting' })), res(200, { status: 'done', ok: true, url: 'u' })],
         })
         const h = harness(server)
         await uploadBundle(UPLOAD, 'ZIP', h.opts)
@@ -428,3 +430,17 @@ describe('async opt-in header', () => {
         expect(server.calls.status).toBe(0)
     })
 })
+
+describe('progress-aware timeout', () => {
+    it('keeps polling past the cap while written advances, times out once it stalls', async () => {
+        let t = 0; const now = () => t;
+        let written = 0; let calls = 0;
+        const fetchImpl = async () => ({ status: 200, text: async () => JSON.stringify({ status: 'ingesting', written: calls < 200 ? ++written : written }) });
+        const sleepImpl = async (ms) => { t += ms; calls++; };
+        const res = await pollPublishStatus('https://x/status', { fetchImpl, sleepImpl, log: () => {}, now, totalMs: 10_000 });
+        // 200 advancing polls at ~2s each ≈ 400s >> the 10s cap: survived on progress,
+        // then timed out only after written stopped moving for the cap window.
+        expect(res.state).toBe('timeout');
+        expect(t).toBeGreaterThan(300_000);
+    });
+});
