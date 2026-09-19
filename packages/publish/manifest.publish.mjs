@@ -301,7 +301,15 @@ export function collectFiles(root, outputDir) {
   // .manifestignore applies ON TOP of gitignore, so a versioned file can still be
   // kept out of the published bundle.
   const publishIgnored = loadPublishIgnore(root);
-  return rels.filter((r) => !isExcludedPath(r) && !publishIgnored(r));
+  return rels
+    .filter((r) => !isExcludedPath(r) && !publishIgnored(r))
+    // `git ls-files -c` reports paths from the index, not the working tree — a file
+    // committed once (e.g. an old build's <locale>/docs/** output) then deleted on
+    // disk without `git rm` still shows up here. Ship what's actually there; a
+    // stale tracked-but-missing path would otherwise crash buildZip with ENOENT
+    // (seen with mnfst-publish --no-render after a re-render dropped locale
+    // variants under an excluded route prefix).
+    .filter((r) => existsSync(join(root, r)));
 }
 
 // --- Upload + publish status ------------------------------------------------
@@ -380,6 +388,13 @@ export async function pollPublishStatus(statusUrl, opts = {}) {
     if (json && json.status === 'pending' && now() - started >= pendingGraceMs) {
       return { state: 'pending', body: json };
     }
+    // An HTTP error body that skips the {status:'error'} tag entirely (a plain
+    // {error, message} shape, same as an upload-time rejection) is still a
+    // settled failure, not a blip — UNLESS it's 429 (rate limited) or a 5xx,
+    // both of which are expected to be transient and worth retrying.
+    if (json && json.error && !json.status && status >= 400 && status !== 429 && status < 500) {
+      return { state: 'error', body: json };
+    }
     // Anything else (ingesting, pending inside the grace, 429, 5xx, a blip) —
     // keep waiting.
 
@@ -399,7 +414,8 @@ function settledPayload(res) {
   if (res.state === 'done') return res.body;
   if (res.state === 'error') {
     const b = res.body || {};
-    throw new Error(`publish failed${b.error ? ` (${b.error})` : ''}: ${b.message || 'the server rejected the upload.'}`);
+    const retrySafe = b.error === 'retry_upload' ? ' Re-running the same command is safe and cheap — nothing was double-charged or double-shipped.' : '';
+    throw new Error(`publish failed${b.error ? ` (${b.error})` : ''}: ${b.message || 'the server rejected the upload.'}${retrySafe}`);
   }
   if (res.state === 'unknown') {
     throw new Error('this publish link expired before the upload finished. Run the publish again.');

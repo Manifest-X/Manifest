@@ -340,6 +340,70 @@ describe('against the real server payloads', () => {
     })
 })
 
+// Defect B (client-reported): a poll loop that settles to a server-side error
+// must fail fast, non-zero, with the real message — not spin to the 10-minute
+// cap and report a generic "still running" (which reads as an exit-0 success
+// to a wrapping script). Repro: ingesting, ingesting, then a settled error.
+describe('uploadBundle — settles to a server-side ingest error (Defect B)', () => {
+    it('fails immediately on {status:"error"} — does not loop to the 10-minute cap', async () => {
+        const server = fakeServer({
+            upload: [res(202, { status: 'ingesting' })],
+            status: [
+                res(200, { status: 'ingesting' }),
+                res(200, { status: 'ingesting' }),
+                res(200, { status: 'error', error: 'store_failed', message: 'could not persist the bundle.' }),
+            ],
+        })
+        const h = harness(server, { totalMs: 10 * 60 * 1000 })
+        await expect(uploadBundle(UPLOAD, 'ZIP', h.opts)).rejects.toThrow(/store_failed.*could not persist/s)
+        expect(server.calls.status).toBe(3) // settled on the 3rd poll, never hit the cap
+        expect(h.c.now()).toBeLessThan(10 * 60 * 1000)
+    })
+
+    it('fails immediately on an untagged HTTP error body (no {status:"error"} tag)', async () => {
+        // Same shape as an upload-time rejection ({error, message}, no `status`
+        // field) but arriving from the STATUS endpoint mid-poll. Before the fix
+        // this fell through the "anything else — keep waiting" branch and spun
+        // to the 10-minute cap, reporting a misleading "still running" instead
+        // of the real, already-known error.
+        const server = fakeServer({
+            upload: [res(202, { status: 'ingesting' })],
+            status: [
+                res(200, { status: 'ingesting' }),
+                res(200, { status: 'ingesting' }),
+                res(400, { error: 'store_failed', message: 'could not persist the bundle.' }),
+            ],
+        })
+        const h = harness(server, { totalMs: 10 * 60 * 1000 })
+        await expect(uploadBundle(UPLOAD, 'ZIP', h.opts)).rejects.toThrow(/store_failed.*could not persist/s)
+        expect(server.calls.status).toBe(3)
+        expect(h.c.now()).toBeLessThan(10 * 60 * 1000)
+    })
+
+    it('still tolerates 429 and 5xx as blips, not settled errors, while polling', async () => {
+        const server = fakeServer({
+            upload: [res(202, { status: 'ingesting' })],
+            status: [
+                res(429, { error: 'rate_limited' }),
+                res(500, { error: 'internal' }),
+                res(200, { status: 'done', ok: true, url: 'https://ok.example' }),
+            ],
+        })
+        const h = harness(server)
+        const out = await uploadBundle(UPLOAD, 'ZIP', h.opts)
+        expect(out.url).toBe('https://ok.example')
+    })
+
+    it('flags retry_upload as safe/cheap to re-run', async () => {
+        const server = fakeServer({
+            upload: [res(202, { status: 'ingesting' })],
+            status: [res(200, { status: 'error', error: 'retry_upload', message: 'the upload was interrupted.' })],
+        })
+        const h = harness(server)
+        await expect(uploadBundle(UPLOAD, 'ZIP', h.opts)).rejects.toThrow(/safe and cheap/i)
+    })
+})
+
 describe('async opt-in header', () => {
     it('asks for the backgrounded ingest on every upload attempt', async () => {
         const server = fakeServer({
