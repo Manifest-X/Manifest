@@ -56,10 +56,10 @@ writeFileSync(join(dir, 'index.html'), `<!doctype html><html><head><meta charset
   <a href="/articles/hello">Hello</a>
 </div>
 <div x-route="articles/*">
-  <!-- A generic content-fetching directive (x-markdown's real-world shape is
-       the same: an expression resolving to a per-locale URL, fetched at
-       runtime). Avoids depending on the markdown plugin itself here. -->
-  <div id="article-body" x-init="location.pathname.indexOf('/articles/') !== -1 && fetch('/content/' + $locale.current + '/hello.md').then(r => r.text()).then(t => { $el.textContent = t })"></div>
+  <!-- The client's exact shape: x-markdown resolving a per-locale URL at
+       runtime. The fetch-hook classification must send every locale variant
+       of this route to Puppeteer instead of substitution. -->
+  <div id="article-body" x-markdown="'/content/' + $locale.current + '/hello.md'"></div>
 </div>
 <div x-route="excluded/page">
   <p id="excluded-marker" x-text="'locale:' + $locale.current"></p>

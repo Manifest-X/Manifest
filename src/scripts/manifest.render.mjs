@@ -4164,7 +4164,19 @@ async function runPrerender(config) {
       // substitution would ship this (possibly default-locale) body to every
       // locale — flag it so the caller Puppeteer-renders each locale variant instead.
       if (config.localeSubstitution && onLocaleDependentContent && currentLocale) {
-        const fetchedUrls = await page.evaluate(() => window.__mnfstFetchedUrls || []).catch(() => []);
+        const fetchedUrls = await page
+          .evaluate(() => {
+            const seen = (window.__mnfstFetchedUrls || []).slice();
+            // Deterministic complement to the fetch hook: content directives
+            // stamp their resolved source before fetching, so a fetch that
+            // races page settle is still visible here.
+            for (const el of document.querySelectorAll('[data-mnfst-md-src]')) {
+              const v = el.getAttribute('data-mnfst-md-src');
+              if (v) seen.push(v);
+            }
+            return seen;
+          })
+          .catch(() => []);
         const localeToken = currentLocale.toLowerCase();
         const localeDependent = fetchedUrls.some((u) => {
           try {
