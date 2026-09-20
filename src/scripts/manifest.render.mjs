@@ -209,6 +209,16 @@ function withDeadline(promise, ms) {
 }
 
 /**
+ * True for a Puppeteer failure message caused by a browser-recycle race
+ * (page/frame torn down mid-evaluate) rather than the page's own content —
+ * retrying with backoff wastes time on a race; the caller requeues these
+ * immediately instead. Exported for unit tests.
+ */
+export function isTransientFrameError(message) {
+  return /detached frame|Execution context (is not available|was destroyed)/i.test(String(message || ''));
+}
+
+/**
  * Coordinates N render workers around a shared browser that is swapped out
  * every `every` pages.  Workers hold a slot (acquire/release) for exactly as
  * long as they touch the browser; a recycle pauses new slots first, then
@@ -255,12 +265,20 @@ export function createRecycleGate({
       const processed = pages;
       try {
         if (active > 0) {
+          // Never swap the browser under a live page — a per-page caller
+          // timeout already bounds how long any page can hold a slot, so
+          // waiting here cannot deadlock. drainTimeoutMs is configured to
+          // exceed that per-page timeout (see recycleDrainTimeout default in
+          // resolveConfig), so hitting it means a page leaked past its own
+          // timeout without releasing — a bug, not a normal recycle path.
+          // Log it and keep waiting rather than recycle while it's live.
           const drained = await withDeadline(
             new Promise((resolve) => { zeroWaiters.push(resolve); }),
             drainTimeoutMs
           );
           if (!drained) {
-            onLog(`recycle: ${active} page(s) still in flight after ${drainTimeoutMs}ms — recycling anyway`);
+            onLog(`recycle: ${active} page(s) still in flight after ${drainTimeoutMs}ms — waiting (a leaked page never released its slot)`);
+            await new Promise((resolve) => { zeroWaiters.push(resolve); });
           }
         }
         const swapped = await withDeadline(recycle(processed), recycleTimeoutMs);
@@ -297,6 +315,10 @@ function parseArgs() {
     if (args[i] === '--retries' && args[i + 1]) { out.retries = parseInt(args[++i], 10); continue; }
     if (args[i] === '--dry-run') { out.dryRun = true; continue; }
     if (args[i] === '--debug-prerender') { out.debugPrerender = true; continue; }
+    if (args[i] === '--locale-substitution') { out.localeSubstitution = true; continue; }
+    if (args[i] === '--no-locale-substitution') { out.localeSubstitution = false; continue; }
+    if (args[i] === '--locale-substitution-exclude' && args[i + 1]) { out.localeSubstitutionExclude = args[++i]; continue; }
+    if (args[i] === '--locale-substitution-exclude-paths' && args[i + 1]) { out.localeSubstitutionExcludePaths = args[++i]; continue; }
   }
   return out;
 }
@@ -338,6 +360,29 @@ function isLocaleRouteExcluded(seg, localeRouteExclude) {
     if (clean === prefix || clean.startsWith(prefix + '/')) return true;
   }
   return false;
+}
+
+/** Single glob pattern match against a locale-stripped route. Only a trailing
+ * `/*` (prefix wildcard) or bare `*` (match-all) is supported — mirrors the
+ * x-route wildcard-prefix convention used elsewhere in this file. */
+function routeMatchesGlob(route, pattern) {
+  const p = String(pattern || '').replace(/^\/+|\/+$/g, '');
+  if (!p || p === '*') return !!p;
+  if (p.endsWith('/*')) {
+    const base = p.slice(0, -2);
+    return route === base || route.startsWith(base + '/');
+  }
+  return route === p;
+}
+
+/**
+ * True when `route` (locale-stripped, e.g. "articles/foo") matches any of
+ * `patterns` (manifest.prerender.localeSubstitutionExcludePaths) — such
+ * routes are Puppeteer-rendered for every locale instead of substituted.
+ */
+function isLocaleSubstitutionExcludedPath(route, patterns) {
+  if (!route || !patterns || !patterns.length) return false;
+  return patterns.some((p) => routeMatchesGlob(route, p));
 }
 
 /**
@@ -420,8 +465,17 @@ function resolveConfig() {
     // closed errors.  Users can override for small projects with --concurrency.
     concurrency: Math.max(1, cli.concurrency ?? pre.concurrency ?? 2),
     retries: Math.max(0, cli.retries ?? pre.retries ?? 2),
-    localeSubstitution: true,
-    localeSubstitutionExclude: [],
+    // Locale substitution on/off + exclusions — read from CLI, then manifest.json
+    // prerender.*, like their sibling config values above (was hardcoded before).
+    localeSubstitution: cli.localeSubstitution ?? pre.localeSubstitution ?? true,
+    localeSubstitutionExclude: normalizeLocaleRouteExclude(
+      cli.localeSubstitutionExclude ?? pre.localeSubstitutionExclude
+    ),
+    /** Route globs (e.g. "articles/*"), matched against the locale-stripped route —
+     *  matching routes are Puppeteer-rendered for every locale instead of substituted. */
+    localeSubstitutionExcludePaths: normalizeLocaleRouteExclude(
+      cli.localeSubstitutionExcludePaths ?? pre.localeSubstitutionExcludePaths
+    ),
     /** Explicit locale-neutral paths to render in addition to those discovered automatically.
      *  Each entry is expanded to all locale variants (e.g. "legal/privacy" → "cs/legal/privacy", ...) */
     paths: Array.isArray(pre.paths)
@@ -1490,32 +1544,65 @@ function hasOtherOgMeta(html) {
  * Load the key→value content data for every locale from every CSV that has locale columns.
  * Returns Map<locale, { key: value }>.
  */
-function loadAllLocaleContentData(manifest, rootDir, locales) {
+function loadAllLocaleContentData(manifest, rootDir, locales, defaultLocale) {
   const data = manifest?.data;
   if (!data || typeof data !== 'object') return new Map();
+  const defaultLoc = defaultLocale || locales[0];
 
   // Lazy-load js-yaml for parsing per-locale YAML files
   let jsYaml = null;
   try { jsYaml = require('js-yaml'); } catch { /* yaml not available; YAML locale files will be skipped */ }
 
-  // Deep-merge source into target (for combining multiple data sources per locale)
+  // A root-level YAML/JSON LIST (e.g. articles.<locale>.yaml) has no natural
+  // key to merge on — key each item by the first present of slug/id/key/path,
+  // falling back to its index, so same-item pairing works across locales.
+  function arrayItemKey(item, idx) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const k = item.slug ?? item.id ?? item.key ?? item.path;
+      if (k != null) return String(k);
+    }
+    return String(idx);
+  }
+  function arrayToKeyedObject(arr) {
+    const out = {};
+    arr.forEach((item, idx) => { out[arrayItemKey(item, idx)] = item; });
+    return out;
+  }
+
+  // Deep-merge source into target (for combining multiple data sources per locale).
+  // A root-level array source is keyed first (see above) then merged as an object.
   function deepMerge(target, source) {
-    if (!source || typeof source !== 'object' || Array.isArray(source)) return;
-    for (const key of Object.keys(source)) {
-      if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+    if (!source || typeof source !== 'object') return;
+    const src = Array.isArray(source) ? arrayToKeyedObject(source) : source;
+    for (const key of Object.keys(src)) {
+      if (src[key] && typeof src[key] === 'object' && !Array.isArray(src[key])) {
         target[key] = (target[key] && typeof target[key] === 'object') ? target[key] : {};
-        deepMerge(target[key], source[key]);
+        deepMerge(target[key], src[key]);
       } else {
         // Don't overwrite an existing nested object with a primitive — that creates
         // type asymmetry across locales and causes '[object Object]' in substitution pairs
         if (target[key] && typeof target[key] === 'object') continue;
-        target[key] = source[key];
+        target[key] = src[key];
       }
     }
   }
 
   const result = new Map();
   for (const locale of locales) result.set(locale, {});
+
+  // A configured per-locale source that resolves to 0 substitution pairs against
+  // the default locale is silent data loss (e.g. the array-rooted bug above, before
+  // the fix) — warn once per (source, locale) so it surfaces instead of shipping quietly.
+  const warnedZeroPairs = new Set();
+  function warnIfZeroPairs(name, locale, defaultData, localeData) {
+    if (locale === defaultLoc || !defaultData || !localeData) return;
+    const warnKey = `${name}:${locale}`;
+    if (warnedZeroPairs.has(warnKey)) return;
+    if (buildSubstitutionPairs(defaultData, localeData).length === 0) {
+      warnedZeroPairs.add(warnKey);
+      console.warn(`prerender: warning — locale source ${name} (${locale}) produced 0 substitution pairs`);
+    }
+  }
 
   // Read just the header row of a CSV to check which locale columns it contains.
   function csvLocaleColumns(csvPath) {
@@ -1526,17 +1613,20 @@ function loadAllLocaleContentData(manifest, rootDir, locales) {
     } catch { return new Set(); }
   }
 
-  for (const [, value] of Object.entries(data)) {
+  for (const [name, value] of Object.entries(data)) {
     if (typeof value === 'string') {
       // Single CSV with locale columns (all locales in one file)
       if (value.endsWith('.csv')) {
         const csvPath = join(rootDir, value.startsWith('/') ? value.slice(1) : value);
         const cols = csvLocaleColumns(csvPath);
+        const defaultData = cols.has(defaultLoc) ? parseCsvToKeyValue(csvPath, defaultLoc) : null;
         for (const locale of locales) {
           // Only include locales the CSV actually declares; falling back to the English
           // column for a missing locale silently poisons substitution pairs with English values.
           if (!cols.has(locale)) continue;
-          deepMerge(result.get(locale), parseCsvToKeyValue(csvPath, locale));
+          const localeData = parseCsvToKeyValue(csvPath, locale);
+          deepMerge(result.get(locale), localeData);
+          warnIfZeroPairs(name, locale, defaultData, localeData);
         }
       }
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -1547,13 +1637,18 @@ function loadAllLocaleContentData(manifest, rootDir, locales) {
           if (typeof ref !== 'string' || !ref.endsWith('.csv')) continue;
           const csvPath = join(rootDir, ref.startsWith('/') ? ref.slice(1) : ref);
           const cols = csvLocaleColumns(csvPath);
+          const defaultData = cols.has(defaultLoc) ? parseCsvToKeyValue(csvPath, defaultLoc) : null;
           for (const locale of locales) {
             if (!cols.has(locale)) continue;
-            deepMerge(result.get(locale), parseCsvToKeyValue(csvPath, locale));
+            const localeData = parseCsvToKeyValue(csvPath, locale);
+            deepMerge(result.get(locale), localeData);
+            warnIfZeroPairs(name, locale, defaultData, localeData);
           }
         }
       } else {
         // Per-locale files: { "en": "/data/content.en.yaml", "fr": "/data/content.fr.yaml", ... }
+        // (each file's content may be an object OR a root-level array — see deepMerge).
+        const loadedByLocale = new Map();
         for (const [localeKey, filePath] of Object.entries(value)) {
           if (!locales.includes(localeKey) || typeof filePath !== 'string') continue;
           const fullPath = join(rootDir, filePath.startsWith('/') ? filePath.slice(1) : filePath);
@@ -1570,8 +1665,13 @@ function loadAllLocaleContentData(manifest, rootDir, locales) {
             }
           } catch { /* ignore parse errors for individual locale files */ }
           if (localeData && typeof localeData === 'object') {
+            loadedByLocale.set(localeKey, Array.isArray(localeData) ? arrayToKeyedObject(localeData) : localeData);
             deepMerge(result.get(localeKey), localeData);
           }
+        }
+        const defaultData = loadedByLocale.get(defaultLoc) || null;
+        for (const [localeKey, localeData] of loadedByLocale) {
+          warnIfZeroPairs(name, localeKey, defaultData, localeData);
         }
       }
     }
@@ -3391,9 +3491,13 @@ async function runPrerender(config) {
   // over — and a page that hits the ceiling forces a browser recycle, since
   // a wedged page.evaluate() may have poisoned the shared browser process.
   // pageTimeout is configurable via manifest.prerender.pageTimeout; 0 disables.
-  const drainTimeoutMs = Math.max(0, pre.recycleDrainTimeout ?? 60000);
-  const recycleTimeoutMs = Math.max(0, pre.recycleTimeout ?? 180000);
   const pageTimeoutMs = Math.max(0, pre.pageTimeout ?? Math.max(120000, (config.wait ?? 30000) * 4));
+  // The recycle gate must never swap the browser out from under a live page,
+  // so its drain wait has to outlast the per-page timeout above (every page
+  // is guaranteed to release its slot by then). Configurable via
+  // manifest.prerender.recycleDrainTimeout, floored at pageTimeoutMs + 30s.
+  const drainTimeoutMs = Math.max(pageTimeoutMs + 30000, pre.recycleDrainTimeout ?? 60000);
+  const recycleTimeoutMs = Math.max(0, pre.recycleTimeout ?? 180000);
 
   // Close the browser without hanging: SIGKILL the process if close stalls.
   async function closeBrowser(target) {
@@ -3474,6 +3578,13 @@ async function runPrerender(config) {
       continue;
     }
     const basePathSeg = seg.slice(fp.length + 1) || '';
+    if (isLocaleSubstitutionExcludedPath(basePathSeg, config.localeSubstitutionExcludePaths)) {
+      // Route explicitly configured (prerender.localeSubstitutionExcludePaths) to
+      // always be Puppeteer-rendered per locale — e.g. it has other per-locale
+      // runtime behaviour the client wants verified directly, not substituted.
+      puppeteerPaths.push(seg);
+      continue;
+    }
     if (localeNeutralPathSet.has(basePathSeg)) {
       // Locale-neutral base exists and will be Puppeteer-rendered → safe to substitute.
       localeVariantPaths.push({ pathSeg: seg, basePathSeg, targetLocale: fp });
@@ -3483,8 +3594,46 @@ async function runPrerender(config) {
     }
   }
 
+  // variantsByBase: basePathSeg → its pending substitution-variant entries.
+  // Populated above; consumed by promoteLocaleVariants() during Phase 1 when a
+  // base page turns out to have per-locale runtime content (see below).
+  const variantsByBase = new Map();
+  for (const v of localeVariantPaths) {
+    if (!variantsByBase.has(v.basePathSeg)) variantsByBase.set(v.basePathSeg, []);
+    variantsByBase.get(v.basePathSeg).push(v);
+  }
+  // Collected during Phase 1, rendered in a follow-up Puppeteer pass after it.
+  const promotedPaths = [];
+  /**
+   * Defect: locale substitution ships default-locale bodies for paths whose
+   * content is fetched per-locale at runtime (e.g. `x-markdown` resolving
+   * `/assets/articles/<locale>/slug.md`). Substitution only rewrites text
+   * matched by configured locale data — it can't touch content injected by a
+   * runtime fetch, so the baked (default-locale) body shipped for every
+   * locale. Detection: instrument `window.fetch` before app scripts run (see
+   * evaluateOnNewDocument below) and, after the base page renders, check
+   * whether any fetched URL contains the CURRENT locale as a path segment —
+   * strong evidence the URL is locale-parameterized (a locale-neutral URL
+   * would not coincidentally embed the active locale code as its own
+   * segment). When it does, every locale variant of this base is moved from
+   * substitution to a real per-locale Puppeteer render.
+   */
+  function promoteLocaleVariants(basePathSeg) {
+    const variants = variantsByBase.get(basePathSeg);
+    if (!variants || !variants.length) return;
+    process.stdout.write(
+      `prerender: locale-dependent runtime content detected for "${basePathSeg || '/'}" — rendering ${variants.length} locale variant(s) via Puppeteer instead of substitution\n`
+    );
+    for (const v of variants) {
+      promotedPaths.push(v.pathSeg);
+      const idx = localeVariantPaths.indexOf(v);
+      if (idx !== -1) localeVariantPaths.splice(idx, 1);
+    }
+    variantsByBase.delete(basePathSeg);
+  }
+
   // Preload locale data for text substitution (all CSV sources with locale columns)
-  const allLocaleData = loadAllLocaleContentData(manifest, config.root, locales);
+  const allLocaleData = loadAllLocaleContentData(manifest, config.root, locales, defaultLocale);
   const substitutionMaps = new Map(); // locale → [[from, to], ...]
   for (const locale of locales) {
     if (locale === defaultLocale) {
@@ -3521,7 +3670,7 @@ async function runPrerender(config) {
     debugRows.push(row);
   }
 
-  async function processPath(pathSeg, pathIndex, { onRawHtml, attempt } = {}) {
+  async function processPath(pathSeg, pathIndex, { onRawHtml, attempt, onLocaleDependentContent } = {}) {
     const is404 = pathSeg === NOT_FOUND_PATH;
     const pathname = is404 ? `/${NOT_FOUND_PATH}` : (pathSeg ? `/${pathSeg}` : '/');
     const displayPath = pathSeg === '' ? '/' : pathname;
@@ -3587,6 +3736,31 @@ async function runPrerender(config) {
           apply();
         }
       }, currentLocale);
+
+      // Record fetch() URLs for CONTENT files (e.g. x-markdown resolving
+      // `/assets/articles/<locale>/slug.md`) so the caller can detect, after
+      // this page renders, whether its content was fetched from a
+      // locale-parameterized path — see promoteLocaleVariants() above.
+      // Deliberately excludes structured-data extensions (.json/.yaml/.yml/.csv)
+      // — those are the data/localization plugins' own per-locale fetches,
+      // already handled correctly by the Node-side substitution pipeline
+      // (loadAllLocaleContentData); counting them here false-positives on
+      // every page that merely has locale-keyed data configured, regardless
+      // of whether IT actually renders anything locale-dependent.
+      await page.evaluateOnNewDocument(() => {
+        window.__mnfstFetchedUrls = [];
+        const CONTENT_URL_RE = /\.(md|markdown|html?|txt)([?#]|$)/i;
+        const origFetch = window.fetch;
+        if (typeof origFetch === 'function') {
+          window.fetch = function (input, init) {
+            try {
+              const url = typeof input === 'string' ? input : (input && input.url);
+              if (url && CONTENT_URL_RE.test(String(url))) window.__mnfstFetchedUrls.push(String(url));
+            } catch { /* no-op */ }
+            return origFetch.call(this, input, init);
+          };
+        }
+      });
 
       // Deterministic source-attribute capture via MutationObserver with
       // `attributeOldValue`.  This runs before ANY page script and records the
@@ -3983,6 +4157,35 @@ async function runPrerender(config) {
           }
         });
       });
+
+      // Classification for the locale-substitution defect (see promoteLocaleVariants
+      // above): did this page fetch a URL that embeds the locale it was just
+      // rendered at? If so its content is locale-parameterized at runtime and
+      // substitution would ship this (possibly default-locale) body to every
+      // locale — flag it so the caller Puppeteer-renders each locale variant instead.
+      if (config.localeSubstitution && onLocaleDependentContent && currentLocale) {
+        const fetchedUrls = await page
+          .evaluate(() => {
+            const seen = (window.__mnfstFetchedUrls || []).slice();
+            // Deterministic complement to the fetch hook: content directives
+            // stamp their resolved source before fetching, so a fetch that
+            // races page settle is still visible here.
+            for (const el of document.querySelectorAll('[data-mnfst-md-src]')) {
+              const v = el.getAttribute('data-mnfst-md-src');
+              if (v) seen.push(v);
+            }
+            return seen;
+          })
+          .catch(() => []);
+        const localeToken = currentLocale.toLowerCase();
+        const localeDependent = fetchedUrls.some((u) => {
+          try {
+            const p = new URL(u, config.localUrl).pathname;
+            return p.split('/').filter(Boolean).some((s) => s.toLowerCase() === localeToken);
+          } catch { return false; }
+        });
+        if (localeDependent) onLocaleDependentContent(pathSeg || '');
+      }
 
       // Emit the hydration contract: walk the DOM, identify every hydrate
       // target (explicit `data-hydrate`, interactive Manifest directives,
@@ -4821,14 +5024,20 @@ async function runPrerender(config) {
   // Browser recycling: after every `browserRecycleEvery` successful pages the
   // gate pauses new work, drains the in-flight pages, swaps the browser and
   // resumes.  Workers hold a gate slot only while they touch the browser.
-  try {
+  //
+  // A failure whose message matches a transient Puppeteer/browser-recycle race
+  // (detached frame, destroyed execution context) is requeued immediately —
+  // no backoff — since waiting doesn't help a race and each attempt already
+  // gets its own fresh `pageTimeoutMs` budget.
+  async function renderPuppeteerPaths(paths) {
     let index = 0;
+    const total = paths.length;
 
     async function worker() {
       while (true) {
         const i = index++;
-        if (i >= puppeteerPaths.length) return;
-        const pathSeg = puppeteerPaths[i];
+        if (i >= paths.length) return;
+        const pathSeg = paths[i];
         const displayPath = pathSeg === '' ? '/' : (pathSeg === NOT_FOUND_PATH ? '/__prerender_404__' : '/' + pathSeg);
         let attempt = 0;
         while (true) {
@@ -4844,6 +5053,7 @@ async function runPrerender(config) {
                 onRawHtml: (seg, html) => {
                   if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
                 },
+                onLocaleDependentContent: promoteLocaleVariants,
               }),
               pageTimeoutMs
             );
@@ -4880,16 +5090,21 @@ async function runPrerender(config) {
             recycleGate.requestRecycle();
             break;
           }
+          const immediateRequeue = isTransientFrameError(attemptToken.failure.message);
           // Halfway through retries with no success → preemptively recycle the
           // browser before the next attempt.  This unblocks cascading frame
-          // failures where the browser process needs a fresh start.
-          if (attempt + 1 >= Math.ceil(maxRetries / 2) && recycleGate.pages > 0) {
+          // failures where the browser process needs a fresh start.  Skipped
+          // for a transient frame error — that's likely already a recycle
+          // race, not a signal to force another one.
+          if (!immediateRequeue && attempt + 1 >= Math.ceil(maxRetries / 2) && recycleGate.pages > 0) {
             recycleGate.requestRecycle();
             await recycleGate.maybeRecycle();
           }
           attempt++;
-          process.stderr.write(`prerender: retrying ${displayPath} (${attemptToken.failure.message}) (attempt ${attempt + 1}/${maxRetries + 1})\n`);
-          await new Promise((r) => setTimeout(r, 500 * attempt));
+          process.stderr.write(
+            `prerender: retrying ${displayPath} (${attemptToken.failure.message}) (attempt ${attempt + 1}/${maxRetries + 1})${immediateRequeue ? ' — immediate requeue' : ''}\n`
+          );
+          if (!immediateRequeue) await new Promise((r) => setTimeout(r, 500 * attempt));
         }
         // Attempt recycle after each completed path (only one worker performs
         // it; the rest block in acquire()).
@@ -4897,8 +5112,19 @@ async function runPrerender(config) {
       }
     }
     await Promise.all(
-      Array.from({ length: Math.min(concurrency, puppeteerPaths.length || 1) }, () => worker())
+      Array.from({ length: Math.min(concurrency, total || 1) }, () => worker())
     );
+  }
+
+  try {
+    await renderPuppeteerPaths(puppeteerPaths);
+    // Any base page found to have per-locale runtime content during the pass
+    // above gets its locale variants rendered here — real Puppeteer render
+    // per locale instead of the (incorrect) text substitution.
+    if (promotedPaths.length > 0) {
+      process.stdout.write(`prerender: rendering ${promotedPaths.length} promoted locale variant(s) via Puppeteer...\n`);
+      await renderPuppeteerPaths(promotedPaths);
+    }
   } finally {
     await closeBrowser(browser);
   }
@@ -5036,4 +5262,8 @@ export {
   isLocaleRouteExcluded,
   expandLocaleRoutePaths,
   prefixLocaleInternalLinks,
+  routeMatchesGlob,
+  isLocaleSubstitutionExcludedPath,
+  loadAllLocaleContentData,
+  buildSubstitutionPairs,
 };
