@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRecycleGate } from '../src/scripts/manifest.render.mjs';
+import { createRecycleGate, isTransientFrameError } from '../src/scripts/manifest.render.mjs';
 
 const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -67,33 +67,48 @@ describe('createRecycleGate', () => {
         expect(logs).toEqual([]);
     });
 
-    it('finishes even when a page never returns', async () => {
+    // Defect (client-reported): the gate used to recycle "anyway" once
+    // drainTimeoutMs elapsed, even with a page still live — racing a browser
+    // swap against an in-flight page.evaluate() ("detached frame" / "Execution
+    // context was destroyed"). Fix: the gate must WAIT for in-flight pages no
+    // matter how long drainTimeoutMs is — the caller's own per-page timeout
+    // (always configured to exceed drainTimeoutMs in production) guarantees
+    // release() eventually fires, so waiting cannot deadlock.
+    it('waits for an in-flight page past drainTimeoutMs instead of recycling under it', async () => {
         const logs = [];
         let released;
         const stuck = new Promise((resolve) => { released = resolve; });
         let recycles = 0;
+        let activeDuringRecycle = 0;
 
         const gate = createRecycleGate({
             every: 10,
-            drainTimeoutMs: 40,
+            drainTimeoutMs: 20,
             onLog: (message) => logs.push(message),
-            recycle: async () => { recycles++; },
+            recycle: async () => {
+                recycles++;
+                activeDuringRecycle = Math.max(activeDuringRecycle, gate.active);
+            },
         });
 
-        // One worker wedges on its page (hung renderer) and never releases.
+        // One worker wedges on its page well past drainTimeoutMs, then finishes
+        // on its own (simulating the outer pageTimeoutMs watchdog's guaranteed
+        // release) — never via a recycle-triggered teardown.
         const wedged = (async () => {
             await gate.acquire();
             try { await stuck; } finally { gate.release(); }
         })();
+        setTimeout(released, 80);
 
         let done = 0;
         await runWorkers({ gate, count: 2, pages: 40, onPage: async () => { done++; } });
+        await wedged;
 
         expect(done).toBe(40);
         expect(recycles).toBeGreaterThanOrEqual(1);
+        expect(activeDuringRecycle).toBe(0); // never swapped while the wedged page was live
         expect(logs.some((m) => m.includes('still in flight'))).toBe(true);
-        released();
-        await wedged;
+        expect(logs.some((m) => m.includes('recycling anyway'))).toBe(false);
     });
 
     it('keeps rendering when the browser swap fails', async () => {
@@ -138,5 +153,57 @@ describe('createRecycleGate', () => {
         for (let i = 0; i < 100; i++) off.countPage();
         expect(await off.maybeRecycle()).toBe(false);
         expect(recycles).toBe(1);
+    });
+});
+
+// Defect (client-reported): "detached frame" / "Execution context was
+// destroyed" failures — caused by the browser-recycle race above — were
+// retried with the same exponential backoff as any other failure, burning
+// time on a race instead of just trying again. Fix: the render worker's
+// retry loop (manifest.render.mjs, Phase 1) checks isTransientFrameError()
+// and skips the backoff delay for a matching message.
+describe('isTransientFrameError — immediate-requeue classification', () => {
+    it('matches the known transient Puppeteer/browser-recycle race messages', () => {
+        expect(isTransientFrameError('Attempted to use detached Frame \'ABCD\'.')).toBe(true);
+        expect(isTransientFrameError('Execution context was destroyed')).toBe(true);
+        expect(isTransientFrameError('Execution context is not available in detached frame')).toBe(true);
+        expect(isTransientFrameError('Detached Frame during navigation')).toBe(true); // case-insensitive
+    });
+    it('does not match ordinary content/navigation failures', () => {
+        expect(isTransientFrameError('net::ERR_CONNECTION_REFUSED')).toBe(false);
+        expect(isTransientFrameError('page render exceeded 120000ms')).toBe(false);
+        expect(isTransientFrameError('')).toBe(false);
+        expect(isTransientFrameError(undefined)).toBe(false);
+    });
+
+    // Harness-level proof that a retry loop built the way manifest.render.mjs's
+    // is (gate acquire/release + attempt backoff gated on the real predicate)
+    // requeues a transient-frame failure with no delay, while an ordinary
+    // failure still backs off.
+    it('drives an immediate retry (no backoff) for a transient-frame failure, but backs off otherwise', async () => {
+        const gate = createRecycleGate({ every: 0, recycle: async () => {} });
+        async function attemptWithRetry(failures) {
+            const timestamps = [];
+            let attempt = 0;
+            while (true) {
+                timestamps.push(Date.now());
+                await gate.acquire();
+                const message = failures[attempt] ?? null;
+                gate.release();
+                if (!message) { gate.countPage(); return timestamps; }
+                if (isTransientFrameError(message)) {
+                    attempt++; // immediate requeue — no backoff sleep
+                } else {
+                    attempt++;
+                    await new Promise((r) => setTimeout(r, 50 * attempt));
+                }
+            }
+        }
+
+        const transientTimestamps = await attemptWithRetry(['Execution context was destroyed', null]);
+        expect(transientTimestamps[1] - transientTimestamps[0]).toBeLessThan(20);
+
+        const ordinaryTimestamps = await attemptWithRetry(['net::ERR_CONNECTION_REFUSED', null]);
+        expect(ordinaryTimestamps[1] - ordinaryTimestamps[0]).toBeGreaterThanOrEqual(45);
     });
 });
