@@ -799,6 +799,9 @@ async function initializeMarkdownPlugin() {
             existingMarkdownElements.forEach(el => {
                 const expression = el.getAttribute('x-markdown');
 
+                // Modifiers live in the attribute name in this pre-registration path.
+                const safe = el.getAttributeNames().some(n => n.startsWith('x-markdown.') && n.split('.').includes('safe'));
+
                 // Create a temporary Alpine component context for this element
                 const tempComponent = Alpine.$data(el) || {};
 
