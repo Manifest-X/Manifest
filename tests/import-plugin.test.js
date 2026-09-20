@@ -1,8 +1,9 @@
 /**
  * @vitest-environment happy-dom
  *
- * x-import / $import: pick a local file, parse json/csv, deliver via the
- * manifest:import event and (optionally) a data-source replace.
+ * x-import / $import (shipped inside the export plugin): pick a local file,
+ * parse json/csv, deliver via the manifest:import event and (optionally) a
+ * data-source replace.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
@@ -38,7 +39,7 @@ window.ManifestDataStore = {
 }
 
 beforeAll(async () => {
-  const src = readFileSync(path.join(__dirname, '..', 'src', 'scripts', 'manifest.import.js'), 'utf8')
+  const src = readFileSync(path.join(__dirname, '..', 'src', 'scripts', 'manifest.export.js'), 'utf8')
   new Function(src)()
   Alpine.start()
 })

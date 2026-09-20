@@ -731,7 +731,6 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.dropdowns.js', dest: '../lib/manifest.dropdowns.js' },
         { source: 'scripts/manifest.edit.js', dest: '../lib/manifest.edit.js' },
         { source: 'scripts/manifest.export.js', dest: '../lib/manifest.export.js' },
-        { source: 'scripts/manifest.import.js', dest: '../lib/manifest.import.js' },
         { source: 'scripts/manifest.icons.js', dest: '../lib/manifest.icons.js' },
         { source: 'scripts/manifest.localization.js', dest: '../lib/manifest.localization.js' },
         { source: 'scripts/manifest.markdown.js', dest: '../lib/manifest.markdown.js' },
