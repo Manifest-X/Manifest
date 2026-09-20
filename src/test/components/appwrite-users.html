@@ -30,7 +30,7 @@
     <small x-show="$auth.magicLinkExpired">Magic link expired. Please try again.</small>
     <small x-show="$auth.isAuthenticated">You're signed-in using <b x-text="$auth.method || 'guest'"></b><span
             x-show="$auth.provider"> via <b x-text="$auth.provider"></b></span> as <b
-            x-text="$auth.user.email || 'a guest'"></b></small>
+            x-text="$auth.user?.email || 'a guest'"></b></small>
     <small x-show="!$auth.isAuthenticated">You're not signed-in.</small>
     <small x-show="$auth.error" x-text="$auth.error"></small>
 </div>

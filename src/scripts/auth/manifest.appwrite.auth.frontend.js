@@ -1,56 +1,5 @@
 /* Auth frontend */
 
-// Create a safe fallback proxy for undefined properties (similar to data proxies)
-let authLoadingProxy = null;
-function createAuthLoadingProxy() {
-    if (authLoadingProxy) {
-        return authLoadingProxy;
-    }
-
-    const fallback = Object.create(null);
-    fallback[Symbol.toPrimitive] = function (hint) {
-        return hint === 'number' ? 0 : '';
-    };
-    fallback.valueOf = function () { return ''; };
-    fallback.toString = function () { return ''; };
-
-    Object.defineProperty(fallback, 'length', {
-        value: 0,
-        writable: false,
-        enumerable: false,
-        configurable: false
-    });
-
-    authLoadingProxy = new Proxy(fallback, {
-        get(target, key) {
-            if (key === Symbol.iterator) {
-                return function* () { };
-            }
-            if (key === 'then' || key === 'catch' || key === 'finally' ||
-                key === Symbol.toStringTag || key === Symbol.hasInstance ||
-                key === 'constructor' || key === '__proto__' || key === 'prototype') {
-                return undefined;
-            }
-            if (key in target || key === Symbol.toPrimitive) {
-                const value = target[key];
-                if (value !== undefined) {
-                    return value;
-                }
-            }
-            // Return proxy itself for safe chaining (allows $auth.user.email even if user is undefined)
-            return authLoadingProxy;
-        },
-        has(target, key) {
-            if (typeof key === 'string') {
-                return true;
-            }
-            return key in target || key === Symbol.toPrimitive;
-        }
-    });
-
-    return authLoadingProxy;
-}
-
 // Initialize $auth magic method
 function initializeAuthMagic() {
     if (typeof Alpine === 'undefined') {
@@ -118,43 +67,10 @@ function initializeAuthMagic() {
                             return () => ({ success: false, error: 'Method not initialized' });
                         }
                     }
-                    // Null/undefined: loading proxy keeps $auth.user.email chains safe
-                    if (value === null || value === undefined) {
-                        return createAuthLoadingProxy();
-                    }
-                    // If value is an array, return it as-is (arrays are already iterable and don't need proxying)
-                    if (Array.isArray(value)) {
-                        return value;
-                    }
-                    // If value is an object, wrap it in a proxy for safe nested property access
-                    if (typeof value === 'object' && value !== null) {
-                        // Recursive helper function for nested object proxying
-                        function createNestedAuthProxy(objTarget) {
-                            return new Proxy(objTarget, {
-                                get(objTarget, key) {
-                                    // Handle special keys
-                                    if (key === Symbol.iterator || key === 'then' || key === 'catch' || key === 'finally') {
-                                        return undefined;
-                                    }
-                                    const nestedValue = objTarget[key];
-                                    // If nested value is undefined or null, return loading proxy for safe chaining
-                                    if (nestedValue === undefined || nestedValue === null) {
-                                        return createAuthLoadingProxy();
-                                    }
-                                    // If nested value is an array, return it as-is
-                                    if (Array.isArray(nestedValue)) {
-                                        return nestedValue;
-                                    }
-                                    // If nested value is an object, wrap recursively
-                                    if (typeof nestedValue === 'object' && nestedValue !== null) {
-                                        return createNestedAuthProxy(nestedValue);
-                                    }
-                                    return nestedValue;
-                                }
-                            });
-                        }
-                        return createNestedAuthProxy(value);
-                    }
+                    // Hand back the real value — no placeholder. A signed-out
+                    // user is null, not a stand-in object: `?.`, `||` and typeof
+                    // must all behave. Templates use `$auth.user?.email`; Alpine
+                    // renders undefined as ''.
                     return value;
                 }
 
@@ -215,8 +131,8 @@ function initializeAuthMagic() {
                     return store.getProvider();
                 }
 
-                // Return loading proxy for undefined properties to allow safe chaining
-                return createAuthLoadingProxy();
+                // Unknown property — undefined, same as any other object.
+                return undefined;
             },
             set(target, prop, value) {
                 // Forward assignments to the store for two-way binding (x-model)
