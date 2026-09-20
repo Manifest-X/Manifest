@@ -25,7 +25,12 @@
         }
 
         & input,
-        & .combobox,
+        & .combobox {
+            width: fit-content
+        }
+
+        /* Own rule: a selector list is not forgiving, so a browser that can't
+           parse the :has() would drop the two plain selectors above with it. */
         & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
             width: fit-content
         }

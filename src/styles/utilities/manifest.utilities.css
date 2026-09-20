@@ -275,7 +275,12 @@
             margin-top: calc(3rem)
         }
 
-        &>details:last-child,
+        &>details:last-child {
+            margin-bottom: calc(3rem)
+        }
+
+        /* Own rule — :not() is not forgiving either, so an unsupported :has()
+           inside it would take :last-child above down with it. */
         &>details:not(:last-child):not(:has(+ details, + hr)) {
             margin-bottom: calc(3rem)
         }

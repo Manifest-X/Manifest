@@ -474,11 +474,14 @@
         text-align: center;
         text-transform: uppercase;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+        /* surface-3, not field-surface: an avatar is content, not a control.
+           Themes are free to make fields translucent, and a see-through avatar
+           bleeds the one stacked behind it. Same value in both modes today. */
+        background-color: var(--color-surface-3, oklch(87% 0 0));
         background-clip: content-box;
         background-size: cover;
         background-position: center;
-        border-radius: var(--radius, 0.5rem);
+        border-radius: 50%;
 
         /* Icon */
         &[x-icon] {
@@ -506,7 +509,7 @@
             width: 9px;
             height: 9px;
             z-index: 1;
-            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-surface-3, oklch(87% 0 0));
             border: 1px solid var(--color-page, oklch(98.5% 0 0));
             border-radius: 50%
         }
@@ -518,7 +521,9 @@
         background-blend-mode: normal;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+            /* Steps off the avatar's own surface, not a field token — darkens in
+               light mode, lightens in dark, and never goes translucent. */
+            background-color: color-mix(in oklch, var(--color-surface-3, oklch(87% 0 0)) 88%, var(--color-content-stark, oklch(20.5% 0 0)));
             background-blend-mode: multiply;
 
             & img {
@@ -570,7 +575,7 @@
         padding-inline-end: 1.5ch;
 
         &:hover .avatar {
-            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+            background-color: color-mix(in oklch, var(--color-surface-3, oklch(87% 0 0)) 88%, var(--color-content-stark, oklch(20.5% 0 0)));
             transition: var(--transition, all .05s ease-in-out)
         }
     }
@@ -668,6 +673,24 @@
             mask-repeat: no-repeat;
             mask-size: 100% 100%;
             mask-image: var(--icon-chevron-down, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m6 9 6 6 6-6'/%3E%3C/svg%3E"))
+        }
+    }
+
+    /* Without base-select the reset's `appearance: button` leaves the select
+       natively rendered, and WebKit then ignores the author's border-radius and
+       imposes its own — so selects stop matching every other field. `appearance:
+       none` hands styling back; it also drops the native arrow, and ::picker-icon
+       only paints under base-select, so redraw the chevron as a background. It
+       can't be masked to currentColor there (an SVG loaded as an image can't see
+       it), hence the baked mid-grey, legible on the field surface in both modes. */
+    @supports not (appearance: base-select) {
+        :where(select):not(.unstyle) {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%23808080' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right var(--spacing-field-padding, 0.625rem) center;
+            background-size: 1rem;
+            padding-inline-end: calc(var(--spacing-field-padding, 0.625rem) * 2 + 1rem)
         }
     }
 }
@@ -3258,7 +3281,12 @@
         }
 
         & input,
-        & .combobox,
+        & .combobox {
+            width: fit-content
+        }
+
+        /* Own rule: a selector list is not forgiving, so a browser that can't
+           parse the :has() would drop the two plain selectors above with it. */
         & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
             width: fit-content
         }
@@ -4880,7 +4908,11 @@
         border-radius: var(--radius, 0.5rem)
     }
 
-    /* Badges */
+    /* Badges. Leading is normal so descenders clear the bottom edge, padding
+       comes off --spacing rather than ch (0.65ch crowds the first letter), and
+       the radius follows --radius instead of a hard pill. The semantic surface
+       stays solid: tinting it and keeping --color-field-inverse drops dark-mode
+       contrast to ~1.1, and moving to --color-content-stark only reaches ~3. */
     :where(.badge) {
         display: inline-flex;
         justify-content: center;
@@ -4888,17 +4920,27 @@
         gap: 0.25rem;
         width: fit-content;
         height: fit-content;
-        padding: 0.35ch 0.65ch;
+        padding: calc(var(--spacing, 0.25rem) * 0.5) calc(var(--spacing, 0.25rem) * 2);
         font-weight: 500;
         font-size: 0.75rem;
-        line-height: 1;
+        line-height: 1.25;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
         background-color: var(--color-field-surface, color-mix(in oklch, oklch(97% 0 0) 10%, transparent));
-        border-radius: 100px;
+        border-radius: calc(var(--radius, 0.5rem) * 0.6);
 
-        /* Solo icons */
-        &:only-child[x-icon] {
-            padding: 0.35ch
+        /* Solo icons square up, as buttons do. (The old :only-child here keyed
+           off the badge's siblings, so an icon badge next to anything got word
+           padding.) */
+        &[x-icon] {
+            padding: calc(var(--spacing, 0.25rem) * 0.5);
+            aspect-ratio: 1
+        }
+
+        /* Same for a badge wrapping a bare <svg>. Its own rule so the plain
+           selector above still lands without :has(). */
+        &:has(> svg:only-child) {
+            padding: calc(var(--spacing, 0.25rem) * 0.5);
+            aspect-ratio: 1
         }
     }
 
@@ -5845,7 +5887,12 @@
             margin-top: calc(3rem)
         }
 
-        &>details:last-child,
+        &>details:last-child {
+            margin-bottom: calc(3rem)
+        }
+
+        /* Own rule — :not() is not forgiving either, so an unsupported :has()
+           inside it would take :last-child above down with it. */
         &>details:not(:last-child):not(:has(+ details, + hr)) {
             margin-bottom: calc(3rem)
         }

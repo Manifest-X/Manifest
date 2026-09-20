@@ -17,11 +17,14 @@
         text-align: center;
         text-transform: uppercase;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
-        background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+        /* surface-3, not field-surface: an avatar is content, not a control.
+           Themes are free to make fields translucent, and a see-through avatar
+           bleeds the one stacked behind it. Same value in both modes today. */
+        background-color: var(--color-surface-3, oklch(87% 0 0));
         background-clip: content-box;
         background-size: cover;
         background-position: center;
-        border-radius: var(--radius, 0.5rem);
+        border-radius: 50%;
 
         /* Icon */
         &[x-icon] {
@@ -49,7 +52,7 @@
             width: 9px;
             height: 9px;
             z-index: 1;
-            background-color: var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent));
+            background-color: var(--color-surface-3, oklch(87% 0 0));
             border: 1px solid var(--color-page, oklch(98.5% 0 0));
             border-radius: 50%
         }
@@ -61,7 +64,9 @@
         background-blend-mode: normal;
 
         &:hover {
-            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+            /* Steps off the avatar's own surface, not a field token — darkens in
+               light mode, lightens in dark, and never goes translucent. */
+            background-color: color-mix(in oklch, var(--color-surface-3, oklch(87% 0 0)) 88%, var(--color-content-stark, oklch(20.5% 0 0)));
             background-blend-mode: multiply;
 
             & img {
@@ -113,7 +118,7 @@
         padding-inline-end: 1.5ch;
 
         &:hover .avatar {
-            background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent));
+            background-color: color-mix(in oklch, var(--color-surface-3, oklch(87% 0 0)) 88%, var(--color-content-stark, oklch(20.5% 0 0)));
             transition: var(--transition, all .05s ease-in-out)
         }
     }
