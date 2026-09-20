@@ -532,11 +532,15 @@ export function stampManifests(root, rels) {
       continue; // invalid JSON — ship as-is
     }
     const dir = mfRel.includes('/') ? mfRel.slice(0, mfRel.lastIndexOf('/') + 1) : '';
-    const paths = [...(mf.preloadedComponents || []), ...(mf.components || [])]
+    const listed = [...(mf.preloadedComponents || []), ...(mf.components || [])]
       .filter((p) => typeof p === 'string' && !p.startsWith('http'))
       .map((p) => dir + p.replace(/^\/+/, ''))
-      .filter((p) => relSet.has(p))
-      .sort();
+      .filter((p) => relSet.has(p));
+    // Convention components (components/<name>.html, unlisted) load with the
+    // same ?v= stamp — hash them too so their edits bust caches.
+    const conventionRe = new RegExp('^' + dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + 'components/[^/]+\\.html$');
+    const convention = [...relSet].filter((p) => conventionRe.test(p));
+    const paths = [...new Set([...listed, ...convention])].sort();
     if (!paths.length) continue;
     const hash = createHash('sha256');
     for (const p of paths) {

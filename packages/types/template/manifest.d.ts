@@ -268,6 +268,16 @@ export type ManifestExport = (opts?: {
     [extra: string]: unknown;
 }) => Promise<unknown>;
 
+/** `$import(opts)` from the import plugin — pick a local file and parse it (json/csv). Resolves the parsed data, or null when the dialog is dismissed. */
+export type ManifestImport = (opts?: {
+    format?: 'json' | 'csv';
+    /** Data source to replace with the parsed content. */
+    source?: string;
+    /** Override the file input's accept list. */
+    accept?: string;
+    [extra: string]: unknown;
+}) => Promise<unknown>;
+
 /** `$device` from the utilities plugin (enriched by the device plugin when present). */
 export interface ManifestDevice {
     readonly os: string;
@@ -424,7 +434,7 @@ export type ManifestDirective =
     | 'x-icon' | 'x-svg' | 'x-markdown' | 'x-code' | 'x-code-group'
     | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-resize' | 'x-computed' | 'x-defer'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
-    | 'x-export' | 'x-pay' | 'x-files' | 'x-data-files'
+    | 'x-export' | 'x-import' | 'x-pay' | 'x-files' | 'x-data-files'
     | 'x-edit' | 'x-text-edit';
 
 // ---------------------------------------------------------------------------
@@ -471,6 +481,8 @@ declare global {
     const $chart: ManifestChart;
     /** Export plugin. */
     const $export: ManifestExport;
+    /** Import plugin. */
+    const $import: ManifestImport;
     /** Element editor (edit plugin; opt-in). */
     const $edit: ManifestEdit;
     /** Text editor (text-edit plugin). */

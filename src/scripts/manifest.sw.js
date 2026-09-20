@@ -19,11 +19,13 @@
 const BUILD_VERSION = '0.0.0-dev';
 const CACHE_PREFIX = 'mnfst-sw:';
 const META_CACHE = CACHE_PREFIX + 'meta';
-const SWR_CAP = 200;
+// Sized to hold a full precache.json warm-up (PRECACHE_MAX_ENTRIES server-side)
+// so precached media isn't evicted before it's ever used offline.
+const SWR_CAP = 500;
 const PRECACHE_PATH = '/precache.json';
 const PRECACHE_CONCURRENCY = 4;
 
-const STATIC_EXT = /\.(css|js|mjs|json|csv|tsv|ya?ml|md|txt|xml|svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|wasm|webmanifest|map)$/i;
+const STATIC_EXT = /\.(css|js|mjs|json|csv|tsv|ya?ml|md|txt|xml|svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|flac|m4a|wasm|webmanifest|map)$/i;
 const SKIP_PATH = /^\/(sw\.js$|precache\.json$|v1\/|_appwrite\/|_ai\/|__mnfst|__edit)/;
 const CDN_HOST = /^(cdn\.manifestx\.dev|cdn\.jsdelivr\.net|unpkg\.com|esm\.run)$/;
 const ICONIFY_HOST = /^api\.(iconify\.design|simplesvg\.com|unisvg\.com)$/;

@@ -2,7 +2,7 @@
 
 (function () {
 
-const MANIFEST_BUILD_VERSION = '0.5.213';
+const MANIFEST_BUILD_VERSION = '0.5.214';
 
 /* Manifest Data Sources - Appwrite Integration */
 

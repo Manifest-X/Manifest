@@ -797,7 +797,12 @@ function navigateToNode(html, path) {             // path indices are relative t
 }
 function resolveComponentFile(manifest, name) {
   const all = [...(manifest.preloadedComponents || []), ...(manifest.components || [])];
-  return all.find(p => String(p).split('/').pop().replace('.html', '') === name) || null;
+  const listed = all.find(p => String(p).split('/').pop().replace('.html', '') === name);
+  if (listed) return listed;
+  // Convention component: components/<name>.html needs no manifest entry.
+  const rel = 'components/' + name + '.html';
+  const file = safeResolve('/' + rel);
+  return file && isFile(file) ? rel : null;
 }
 
 // Theme var write: rewrite (or append) a single `--var: value;` in the target CSS file.

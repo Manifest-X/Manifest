@@ -33,6 +33,8 @@ function makeEnv({ names = ['widget'], loadDelayMs = 5, routing = null, path: cu
         async loadComponent(name) {
             loadCalls.push(name)
             await tick(loadDelayMs)
+            // Unknown names miss (no manifest entry, no components/<name>.html).
+            if (!names.includes(name)) return null
             return `<div class="rendered-${name}"><span>content</span></div>`
         }
     }
@@ -107,18 +109,18 @@ describe('processAll concurrency', () => {
         expect(revertedPlaceholder).toBeTruthy()
     })
 
-    it('(c) a skip branch emits a console.debug line instead of nothing', async () => {
-        // A nested placeholder whose custom element isn't in the registry yet
-        // (the cold-boot scenario from the ticket: registration races the swap
-        // pass) — processAll still queues it, processComponent silently bailed
-        // with nothing to see pre-fix.
+    it('(c) an unregistered name tries the convention path once, then debug-skips without touching the element', async () => {
+        // Unregistered names now attempt the loader's components/<name>.html
+        // convention; when that misses, the placeholder is left in place with a
+        // console.debug line (it may be someone else's custom element).
         mountPlaceholders('x-mystery', 1)
         const { swapping, debugCalls, loadCalls } = makeEnv({ names: ['widget'] }) // 'mystery' not registered
 
         await swapping.processAll()
 
-        expect(loadCalls.length).toBe(0) // never fetched -> would be a silent ghost pre-fix
+        expect(loadCalls).toEqual(['mystery']) // one convention attempt, no swap
         expect(debugCalls.some((args) => String(args[0]).includes('skipped'))).toBe(true)
+        expect(document.querySelector('x-mystery')).toBeTruthy()
     })
 
     it('(d) three consecutive runs over a stable tree: swapIn/load called once per placeholder total', async () => {

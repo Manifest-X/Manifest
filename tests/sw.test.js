@@ -352,18 +352,18 @@ describe('other same-origin static assets: stale-while-revalidate', () => {
         expect(swr.urls().length).toBe(3)
     })
 
-    it('caps the SWR cache at 200 entries, evicting the least recently refreshed', async () => {
+    it('caps the SWR cache at 500 entries, evicting the least recently refreshed', async () => {
         const s = makeScope()
-        for (let i = 0; i < 200; i++) await s.fetchEvent(`/img/${i}.png`)
+        for (let i = 0; i < 500; i++) await s.fetchEvent(`/img/${i}.png`)
         const swr = await s.caches.open('mnfst-sw:1.2.3:dep1:swr')
-        expect(swr.urls().length).toBe(200)
+        expect(swr.urls().length).toBe(500)
         const touch = await s.fetchEvent('/img/0.png') // hit → revalidate re-puts, moving it to the end
         await touch.settle()
-        await s.fetchEvent('/img/200.png')
-        expect(swr.urls().length).toBe(200)
+        await s.fetchEvent('/img/500.png')
+        expect(swr.urls().length).toBe(500)
         expect(swr.urls()).toContain(`${ORIGIN}/img/0.png`)
         expect(swr.urls()).not.toContain(`${ORIGIN}/img/1.png`)
-        expect(swr.urls()).toContain(`${ORIGIN}/img/200.png`)
+        expect(swr.urls()).toContain(`${ORIGIN}/img/500.png`)
     })
 })
 

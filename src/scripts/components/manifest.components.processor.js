@@ -14,6 +14,9 @@ function escapeForSingleQuotedJsString(s) {
         .replace(/\t/g, '\\t');
 }
 
+// Framework web components (not project components) — never fetched.
+const FRAMEWORK_COMPONENT_TAGS = new Set(['code', 'code-group']);
+
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
@@ -23,10 +26,7 @@ window.ManifestComponentsProcessor = {
             console.debug('[Manifest Components] skipped: registry or loader unavailable', element);
             return;
         }
-        if (!registry.registered.has(name)) {
-            console.debug('[Manifest Components] skipped: component not registered', element);
-            return;
-        }
+        if (FRAMEWORK_COMPONENT_TAGS.has(name)) return;
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
             // Pre-rendered content skips re-fetch but still needs Alpine init.
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
@@ -35,8 +35,15 @@ window.ManifestComponentsProcessor = {
             console.debug('[Manifest Components] skipped: already pre-rendered/processed', element);
             return;
         }
+        // Unregistered names still try the loader's components/<name>.html
+        // convention; a miss leaves the element alone (it may be someone else's).
+        const wasRegistered = registry.registered.has(name);
         const content = await loader.loadComponent(name);
         if (!content) {
+            if (!wasRegistered) {
+                console.debug('[Manifest Components] skipped: component not registered', element);
+                return;
+            }
             console.debug('[Manifest Components] skipped: failed to load component', element);
             element.replaceWith(document.createComment(` Failed to load component: ${name} `));
             return;

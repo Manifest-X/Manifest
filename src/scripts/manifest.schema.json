@@ -97,6 +97,11 @@
             "description": "Gitignore-style patterns for files to exclude from the published bundle, independent of git. Applied on top of .gitignore and the built-in secret guards. A .manifestignore file at the project root works the same way.",
             "items": { "type": "string" }
         },
+        "assets": {
+            "type": "array",
+            "description": "Paths or simple globs (e.g. \"sprites/*.png\") of files the hosting service worker precaches for offline use even when nothing in the HTML references them (dynamically loaded sprites, audio, fonts). Files referenced from HTML/CSS are precached automatically.",
+            "items": { "type": "string" }
+        },
         "data": {
             "type": "object",
             "description": "Named data sources made available via $x.<sourceName>. Each value is either a string path/URL or a config object.",
