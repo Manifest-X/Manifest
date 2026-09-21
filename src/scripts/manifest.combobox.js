@@ -23,7 +23,7 @@ if (!window.ManifestUI) {
             const merged = JSON.parse(JSON.stringify(fallbacks || {}));
             try {
                 if (!window.Alpine || typeof Alpine.evaluate !== 'function') return merged;
-                try { Alpine.evaluate(document.body, '$locale && $locale.current'); } catch (_) { }
+                try { Alpine.evaluate(document.body, 'typeof $locale !== "undefined" && $locale.current'); } catch (_) { }
                 for (const name of this._loadedSourceNames()) {
                     let ui;
                     try { ui = Alpine.evaluate(document.body, `$x['${name}'] && $x['${name}']._ui && $x['${name}']._ui['${component}']`); } catch (_) { ui = null; }
