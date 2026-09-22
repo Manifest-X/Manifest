@@ -2,14 +2,14 @@
 
 /* Manifest Render */
 
-import { readFileSync, readSync, mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync, renameSync } from 'node:fs';
+import { readFileSync, readSync, mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync, renameSync, linkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve, dirname, relative, basename, sep } from 'node:path';
 import { createServer } from 'node:http';
-import { cpus } from 'node:os';
+import { cpus, hostname } from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -314,6 +314,7 @@ function parseArgs() {
     if (args[i] === '--concurrency' && args[i + 1]) { out.concurrency = parseInt(args[++i], 10); continue; }
     if (args[i] === '--retries' && args[i + 1]) { out.retries = parseInt(args[++i], 10); continue; }
     if (args[i] === '--dry-run') { out.dryRun = true; continue; }
+    if (args[i] === '--force-lock') { out.forceLock = true; continue; }
     if (args[i] === '--debug-prerender') { out.debugPrerender = true; continue; }
     if (args[i] === '--locale-substitution') { out.localeSubstitution = true; continue; }
     if (args[i] === '--no-locale-substitution') { out.localeSubstitution = false; continue; }
@@ -482,6 +483,7 @@ function resolveConfig() {
       ? pre.paths.map((p) => String(p).replace(/^\/+|\/+$/g, '')).filter(Boolean)
       : [],
     dryRun: !!cli.dryRun,
+    forceLock: !!cli.forceLock,
     debugPrerender: !!cli.debugPrerender,
     // render.icons: "lazy" strips prerender-inlined x-icon SVGs from the
     // output — the icons plugin re-renders them at boot (decorative content;
@@ -3223,6 +3225,121 @@ function startStaticServer(rootDir) {
   });
 }
 
+// --- Output lock (one render per output dir) ---------------------------------
+
+const LOCK_SUFFIX = '.mnfst-lock';
+
+function outputLockPath(outputDir) {
+  return resolve(outputDir) + LOCK_SUFFIX;
+}
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+
+function readLock(lockPath) {
+  try { return JSON.parse(readFileSync(lockPath, 'utf8')); } catch { return null; }
+}
+
+function describeLock(entry, lockPath) {
+  if (!entry) return `unreadable lock file ${lockPath}`;
+  const started = entry.startedAt ? ` since ${entry.startedAt}` : '';
+  const host = entry.hostname && entry.hostname !== hostname() ? ` on ${entry.hostname}` : '';
+  const cmd = entry.argv ? `\n  command: ${entry.argv}` : '';
+  return `pid ${entry.pid}${host}${started}${cmd}`;
+}
+
+function lockIsStale(entry) {
+  if (!entry) return false;
+  if (entry.hostname && entry.hostname !== hostname()) return false;
+  return !pidAlive(entry.pid);
+}
+
+function lockedError(outputDir, lockPath, entry) {
+  const err = new Error(
+    `prerender: another render is already writing ${outputDir}\n` +
+    `  held by ${describeLock(entry, lockPath)}\n` +
+    `  lock: ${lockPath}\n` +
+    `Wait for it to finish, or rerun with --force-lock if that render is gone.`
+  );
+  err.code = 'MNFST_RENDER_LOCKED';
+  err.lock = entry;
+  return err;
+}
+
+/** Remove the lock only if it still carries `token` (undefined = unconditionally). */
+function removeLockIfToken(lockPath, token) {
+  const aside = `${lockPath}.${process.pid}.${randomBytes(4).toString('hex')}`;
+  try { renameSync(lockPath, aside); } catch { return false; }
+  const moved = readLock(aside);
+  if (token === undefined || moved?.token === token) {
+    try { unlinkSync(aside); } catch {}
+    return true;
+  }
+  try { linkSync(aside, lockPath); } catch {}
+  try { unlinkSync(aside); } catch {}
+  return false;
+}
+
+function acquireOutputLock(outputDir, { force = false, root = null, onLog = () => {} } = {}) {
+  const lockPath = outputLockPath(outputDir);
+  const entry = {
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: new Date().toISOString(),
+    root,
+    output: resolve(outputDir),
+    argv: process.argv.slice(1).join(' '),
+    token: randomBytes(12).toString('hex'),
+  };
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const tmp = `${lockPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  writeFileSync(tmp, JSON.stringify(entry, null, 2) + '\n', 'utf8');
+  let acquired = false;
+  try {
+    for (let attempt = 0; attempt < 5 && !acquired; attempt++) {
+      try {
+        linkSync(tmp, lockPath);
+        acquired = true;
+        break;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
+      const held = readLock(lockPath);
+      if (force) {
+        onLog(`prerender: --force-lock: taking over lock from ${describeLock(held, lockPath)}`);
+        removeLockIfToken(lockPath, held ? held.token : undefined);
+      } else if (lockIsStale(held)) {
+        onLog(`prerender: removing stale lock from ${describeLock(held, lockPath)} (process is gone)`);
+        removeLockIfToken(lockPath, held.token);
+      } else {
+        throw lockedError(outputDir, lockPath, held);
+      }
+    }
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
+  if (!acquired) throw lockedError(outputDir, lockPath, readLock(lockPath));
+
+  let released = false;
+  const lock = {
+    path: lockPath,
+    entry,
+    held() {
+      return !released && readLock(lockPath)?.token === entry.token;
+    },
+    release() {
+      if (released) return;
+      released = true;
+      process.off('exit', lock.release);
+      removeLockIfToken(lockPath, entry.token);
+    },
+  };
+  process.on('exit', lock.release);
+  return lock;
+}
+
 // --- Copy project into output so website is self-contained (e.g. for Appwrite). ---
 // Internal/tooling files stay out of the published output: agent instructions,
 // the schema copy, and OS metadata anywhere in the tree.
@@ -3290,6 +3407,27 @@ function stripTailwindCssImportsFromOutput(outputDir) {
 async function main() {
   const config = resolveConfig();
   const startedAt = Date.now();
+  let lock = null;
+  if (!config.dryRun) {
+    try {
+      lock = acquireOutputLock(config.output, {
+        force: config.forceLock,
+        root: config.root,
+        onLog: (message) => console.warn(message),
+      });
+    } catch (err) {
+      if (err.code !== 'MNFST_RENDER_LOCKED') throw err;
+      console.error(err.message);
+      process.exit(1);
+    }
+    config.lock = lock;
+  }
+  const onSignal = (signal) => {
+    if (lock) lock.release();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   let staticServer = null;
   if (config.serve) {
     const { server, url } = await startStaticServer(config.root);
@@ -3302,6 +3440,9 @@ async function main() {
     if (staticServer) {
       await new Promise((res) => staticServer.close(res));
     }
+    if (lock) lock.release();
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
   }
   const elapsedMs = Date.now() - startedAt;
   const totalSeconds = Math.floor(elapsedMs / 1000);
@@ -3409,11 +3550,14 @@ async function runPrerender(config) {
   // Don't copy the previous build (the final output dir) into staging — only the
   // staging dir's own basename is excluded by copyProjectIntoDist.
   const finalBasename = basename(finalOutput);
+  const lockBasename = basename(outputLockPath(finalOutput));
   COPY_EXCLUDE.add(finalBasename);
+  COPY_EXCLUDE.add(lockBasename);
   try {
     copyProjectIntoDist(rootResolved, outputResolved);
   } finally {
     COPY_EXCLUDE.delete(finalBasename);
+    COPY_EXCLUDE.delete(lockBasename);
   }
   // Env placeholders (${VAR}) only resolve at runtime via window.env (populated
   // by the mnfst-run dev server from .env). A static prod build has no
@@ -5230,6 +5374,9 @@ async function runPrerender(config) {
   // Atomic swap: replace the previous output with the freshly built staging dir.
   // rename() is atomic on the same filesystem (staging is a sibling of output),
   // so a consumer never sees a partially written output directory.
+  if (config.lock && !config.lock.held()) {
+    throw new Error(`output lock ${config.lock.path} was taken over by another render; not replacing ${finalOutput}`);
+  }
   if (existsSync(finalOutput)) rmSync(finalOutput, { recursive: true });
   renameSync(stagingOutput, finalOutput);
   config.output = finalOutput;
@@ -5257,6 +5404,8 @@ if (_isDirectEntry) {
 // Exports for the CLI bin script and for unit testing.
 export {
   main,
+  acquireOutputLock,
+  outputLockPath,
   markPrerenderedManifestComponents,
   normalizeLocaleRouteExclude,
   isLocaleRouteExcluded,
