@@ -66,6 +66,17 @@ describe('components convention fallback', () => {
     expect(fetchCount['/components/nope.html']).toBe(1)
   })
 
+  it('treats an app-shell (SPA fallback) response as a miss, not a component', async () => {
+    served['/components/ghost.html'] = '<!DOCTYPE html>\n<html lang="en"><head></head><body><x-ghost></x-ghost></body></html>'
+    const el = await process('x-ghost')
+    expect(document.contains(el)).toBe(true)
+    expect(document.body.innerHTML).not.toContain('<!DOCTYPE')
+    expect(window.ManifestComponentsRegistry.registered.has('ghost')).toBe(false)
+    await process('x-ghost')
+    expect(fetchCount['/components/ghost.html']).toBe(1)
+    delete served['/components/ghost.html']
+  })
+
   it('never fetches framework tags like <x-code>', async () => {
     await process('x-code')
     await process('x-code-group')
