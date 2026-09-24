@@ -20,8 +20,16 @@ const VIEW_TOP = 120   // scroller sits below a page header, like the real app
 
 window.Alpine = Alpine
 const observers = []
-window.ResizeObserver = class { constructor(cb) { this.cb = cb; observers.push(this) } observe() {} disconnect() {} }
-const resize = () => observers.forEach((o) => o.cb([]))
+window.ResizeObserver = class {
+    constructor(cb) { this.cb = cb; this.targets = new Set(); observers.push(this) }
+    observe(t) { this.targets.add(t) }
+    unobserve(t) { this.targets.delete(t) }
+    disconnect() { this.targets.clear() }
+}
+const resize = (target) => observers.forEach((o) => {
+    const hit = target ? (o.targets.has(target) ? [target] : []) : [...o.targets]
+    if (hit.length) o.cb(hit.map((t) => ({ target: t })))
+})
 
 const load = (file) => import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(
     readFileSync(path.join(__dirname, '../src/scripts/' + file), 'utf8')
@@ -177,5 +185,68 @@ describe('x-virtual mounted while hidden', { timeout: 20000 }, () => {
         await scrollToEnd()
         expect(rowsInDom().at(-1).querySelector('.freeze-1').textContent).toBe(String(N - 1))
         expect(totalHeight()).toBeLessThan(N * ROW_H * 2)
+    })
+})
+
+describe('x-virtual row host inside the scroller (wrapper, like table > tbody)', { timeout: 20000 }, () => {
+    const mountTable = (hidden) => {
+        const host = document.createElement('div')
+        host.innerHTML = `
+            <div x-data="{ shown: ${!hidden}, rows: Array.from({ length: 300 }, (_, i) => ({ id: i })) }">
+                <div x-show="shown">
+                    <div x-virtual style="overflow: auto">
+                        <div class="list">
+                            <template x-for="row in rows" :key="row.id"><div class="item" x-text="row.id"></div></template>
+                        </div>
+                    </div>
+                </div>
+            </div>`
+        document.body.appendChild(host)
+        const sc = host.querySelector('[x-virtual]')
+        Object.defineProperty(sc, 'clientHeight', { configurable: true, get: () => sc.closest('[x-show]').style.display === 'none' ? 0 : VIEW_H })
+        Alpine.initTree(host)
+        return { host, sc, list: sc.querySelector('.list') }
+    }
+
+    it('a visible mount does not re-render when only the row host resizes', async () => {
+        const { sc, list } = mountTable(false)
+        await settle(4)
+        expect(list.querySelectorAll('.item').length).toBeGreaterThan(0)
+        let mutations = 0
+        const mo = new MutationObserver((l) => { mutations += l.length })
+        mo.observe(list, { childList: true })
+        resize(list)
+        await new Promise((r) => setTimeout(r, 200))
+        await settle(2)
+        mo.disconnect()
+        expect(mutations).toBe(0)
+        expect(observers.some((o) => o.targets.has(list))).toBe(false)
+        expect(observers.some((o) => o.targets.has(sc))).toBe(true)
+    })
+
+    it('a hidden row host is observed until classified, then released', async () => {
+        const host = document.createElement('div')
+        host.innerHTML = `
+            <div x-data="{ shown: false, rows: Array.from({ length: 300 }, (_, i) => ({ id: i })) }">
+                <div x-virtual style="overflow: auto">
+                    <div class="list" style="display: none">
+                        <template x-for="row in rows" :key="row.id"><div class="item" x-text="row.id"></div></template>
+                    </div>
+                </div>
+            </div>`
+        document.body.appendChild(host)
+        const sc = host.querySelector('[x-virtual]')
+        Object.defineProperty(sc, 'clientHeight', { configurable: true, get: () => VIEW_H })
+        Alpine.initTree(host)
+        const list = sc.querySelector('.list')
+        await settle(3)
+        expect(list.querySelectorAll('.item').length).toBe(0)
+        expect(observers.some((o) => o.targets.has(list))).toBe(true)
+
+        list.style.display = ''
+        resize(list)
+        await settle(4)
+        expect(list.querySelectorAll('.item').length).toBeGreaterThan(0)
+        expect(observers.some((o) => o.targets.has(list))).toBe(false)
     })
 })
