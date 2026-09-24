@@ -118,7 +118,7 @@ const NESTED = `
 
 // x-show strips inline display, so the grid comes from a stylesheet as in real apps.
 beforeAll(() => {
-    document.head.insertAdjacentHTML('beforeend', '<style>.grid-table { display: grid }</style>')
+    document.head.insertAdjacentHTML('beforeend', '<style>.grid-table, .gal-grid { display: grid } .gal-flex { display: flex; flex-wrap: wrap }</style>')
     Alpine.start()
 })
 afterEach(() => { document.body.innerHTML = ''; scroller = null; observers.length = 0 })
@@ -250,3 +250,44 @@ describe('x-virtual row host inside the scroller (wrapper, like table > tbody)',
         expect(observers.some((o) => o.targets.has(list))).toBe(false)
     })
 })
+
+describe('x-virtual gallery mounted while hidden', { timeout: 20000 }, () => {
+    const mountGallery = (cls, opts) => {
+        const host = document.createElement('div')
+        host.innerHTML = `
+            <div x-data="{ shown: false, items: Array.from({ length: 20 }, (_, i) => ({ id: i })) }">
+                <div x-virtual="${opts}" x-show="shown" class="${cls}" style="overflow: auto">
+                    <template x-for="it in items" :key="it.id"><div class="tile" x-text="it.id"></div></template>
+                </div>
+            </div>`
+        document.body.appendChild(host)
+        const sc = host.querySelector('[x-virtual]')
+        Object.defineProperty(sc, 'clientHeight', { configurable: true, get: () => sc.style.display === 'none' ? 0 : VIEW_H })
+        Object.defineProperty(sc, 'clientWidth', { configurable: true, get: () => sc.style.display === 'none' ? 0 : 600 })
+        Alpine.initTree(host)
+        return { host, sc }
+    }
+    const reveal = async ({ host, sc }) => {
+        await settle(2)
+        expect(sc.querySelectorAll('.tile').length).toBe(0)
+        Alpine.$data(host.firstElementChild).shown = true
+        await Alpine.nextTick()
+        resize(sc)
+        await settle(6)
+        const sp = [...sc.querySelectorAll('[data-virtual-spacer]')]
+        for (const s of sp) expect(s.style.height).toMatch(/^\d+(\.\d+)?px$/)
+        expect(sc.querySelectorAll('.tile').length).toBe(20)
+        return sp
+    }
+
+    it('flex-wrap gallery (auto-detected) renders its items once shown', async () => {
+        const sp = await reveal(mountGallery('gal-flex', '{ estimate: { width: 120, height: 120 } }'))
+        for (const s of sp) expect(s.style.flex).toBe('0 0 100%')
+    })
+
+    it("explicit mode: 'gallery' grid renders its items once shown", async () => {
+        const sp = await reveal(mountGallery('gal-grid', "{ mode: 'gallery', estimate: { width: 120, height: 120 } }"))
+        for (const s of sp) expect(s.style.gridColumn).toBe('1 / -1')
+    })
+})
+

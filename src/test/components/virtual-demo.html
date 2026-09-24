@@ -5,6 +5,7 @@
   .vtest .grid-table { grid-template-columns: 4rem 1fr 1.4fr 7rem 6rem; }
   .vtest .vt-h { grid-template-columns: 5rem 16rem 20rem 10rem 8rem 8rem; min-width: 0; }
   .vtest .vt-h-freeze { position: sticky; left: 0; z-index: 1; background: var(--color-page, #fff); }
+  .vtest .vt-j { display: flex; flex-wrap: wrap; gap: .5rem; align-content: flex-start; padding: .5rem; }
   .vtest .tile { display: grid; place-items: center; border-radius: var(--radius); color: #fff; font-weight: 600; }
   .vtest .note { font-size: .78rem; color: var(--color-content-subtle); }
   .vtest .target { border-left: 2px solid var(--color-brand-content); padding-left: .6rem; }
@@ -175,6 +176,16 @@
                     </div>
                 </template>
             </div>
+        </div>
+    </section>
+
+    <!-- Case J — flex-wrap gallery mounted while hidden, few items -->
+    <section class="col gap-2 target" x-data="{ shown: false, few: [] }" x-init="few = view.slice(0, 20); setTimeout(() => shown = true, 600)">
+        <strong class="small">J · Hidden gallery <span class="note">— 20 items, x-show=false at init, revealed after 600ms</span></strong>
+        <div x-virtual="{ estimate: { width: 120, height: 90 } }" x-show="shown" class="panel vt-j" data-case="j" style="height: 240px">
+            <template x-for="r in few" :key="r.id">
+                <div class="tile caption" :style="`width: 120px; height: 90px; background: hsl(${r.hue} 65% 58%)`" x-text="'#' + r.id"></div>
+            </template>
         </div>
     </section>
 
