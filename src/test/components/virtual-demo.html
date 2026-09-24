@@ -154,6 +154,30 @@
         </div>
     </section>
 
+    <!-- Case I — grid-table mounted while hidden (x-show on the container, then on an ancestor) -->
+    <section class="col gap-2 target" x-data="{ cols: ['name', 'email', 'role', 'status', 'value'], shown: false }" x-init="setTimeout(() => shown = true, 600)">
+        <strong class="small">I · Hidden mount <span class="note">— x-show=false at init (container, then ancestor), revealed after 600ms; spacers must span 1 / -1</span></strong>
+        <button class="ghost self-start" @click="shown = !shown" x-text="shown ? 'Hide' : 'Show'"></button>
+        <div x-virtual="{ estimate: 44, overscan: 8 }" x-show="shown" class="grid-table vt-h panel" data-case="i" style="height: 240px">
+            <template x-for="r in view" :key="r.id">
+                <div class="grid-row">
+                    <div class="vt-h-freeze" x-text="r.id"></div>
+                    <template x-for="c in cols" :key="c"><div x-text="r[c]"></div></template>
+                </div>
+            </template>
+        </div>
+        <div x-show="shown">
+            <div x-virtual="{ estimate: 44, overscan: 8 }" class="grid-table vt-h panel" data-case="i2" style="height: 240px">
+                <template x-for="r in view" :key="r.id">
+                    <div class="grid-row">
+                        <div class="vt-h-freeze" x-text="r.id"></div>
+                        <template x-for="c in cols" :key="c"><div x-text="r[c]"></div></template>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </section>
+
     <!-- Case D — ragged flex-wrap gallery -->
     <section class="col gap-2 target">
         <strong class="small">D · Flex-wrap gallery <span class="note">— ragged width + height, virtualize by line</span></strong>

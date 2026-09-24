@@ -19,7 +19,9 @@ const VIEW_H = 400
 const VIEW_TOP = 120   // scroller sits below a page header, like the real app
 
 window.Alpine = Alpine
-window.ResizeObserver = class { observe() {} disconnect() {} }
+const observers = []
+window.ResizeObserver = class { constructor(cb) { this.cb = cb; observers.push(this) } observe() {} disconnect() {} }
+const resize = () => observers.forEach((o) => o.cb([]))
 
 const load = (file) => import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(
     readFileSync(path.join(__dirname, '../src/scripts/' + file), 'utf8')
@@ -56,18 +58,23 @@ HTMLElement.prototype.getBoundingClientRect = function () {
     if (getComputedStyle(this).display === 'none' || getComputedStyle(this).display === 'contents') return zero
     if (this.hasAttribute('data-virtual-spacer')) return box(VIEW_TOP + offsetInHost(this) - scrollTop, parseFloat(this.style.height) || 0)
     const row = rowOf(this)
-    if (row) return box(VIEW_TOP + offsetInHost(row) - scrollTop, ROW_H)
+    if (row) {
+        // A spacer without grid-column: 1/-1 auto-places into the last row's track and stretches it.
+        const bot = spacers()[1]
+        const stretched = row.nextElementSibling === bot && bot.style.gridColumn !== '1 / -1'
+        return box(VIEW_TOP + offsetInHost(row) - scrollTop, stretched ? Math.max(ROW_H, parseFloat(bot.style.height) || 0) : ROW_H)
+    }
     return zero
 }
 
 const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)))
 const settle = async (n = 12) => { for (let i = 0; i < n; i++) await frame() }
 
-function mount(rowInner, count) {
+function mount(rowInner, count, { hidden = false } = {}) {
     const host = document.createElement('div')
     host.innerHTML = `
-        <div x-data="{ rows: Array.from({ length: ${count} }, (_, i) => ({ $id: 'r' + i, n: i })), columns: [{ key: 'a' }, { key: 'b' }, { key: 'c' }] }">
-            <div x-virtual="{ estimate: 44, overscan: 8 }" class="grid-table" style="display: grid; overflow: auto">
+        <div x-data="{ shown: ${!hidden}, rows: Array.from({ length: ${count} }, (_, i) => ({ $id: 'r' + i, n: i })), columns: [{ key: 'a' }, { key: 'b' }, { key: 'c' }] }">
+            <div x-virtual="{ estimate: 44, overscan: 8 }" x-show="shown" class="grid-table" style="overflow: auto">
                 <template x-for="row in rows" :key="row.$id">
                     <div class="grid-row" style="display: contents">${rowInner}</div>
                 </template>
@@ -76,7 +83,7 @@ function mount(rowInner, count) {
     document.body.appendChild(host)
     scroller = host.querySelector('[x-virtual]')
     scrollTop = 0
-    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => VIEW_H })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => scroller.style.display === 'none' ? 0 : VIEW_H })
     Object.defineProperty(scroller, 'clientWidth', { configurable: true, get: () => 600 })
     Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => scrollTop, set: (v) => { scrollTop = v } })
     Alpine.initTree(host)
@@ -101,10 +108,14 @@ const NESTED = `
         <div :class="idx === 0 ? 'freeze-2' : ''" x-text="col.key"></div>
     </template>`
 
-beforeAll(() => { Alpine.start() })
-afterEach(() => { document.body.innerHTML = ''; scroller = null })
+// x-show strips inline display, so the grid comes from a stylesheet as in real apps.
+beforeAll(() => {
+    document.head.insertAdjacentHTML('beforeend', '<style>.grid-table { display: grid }</style>')
+    Alpine.start()
+})
+afterEach(() => { document.body.innerHTML = ''; scroller = null; observers.length = 0 })
 
-describe('x-virtual measures display:contents rows with box-less children', () => {
+describe('x-virtual measures display:contents rows with box-less children', { timeout: 20000 }, () => {
     it('nested <template x-for> in each row: sane spacer, end reachable, bounded DOM', async () => {
         const N = 1000
         mount(NESTED, N)
@@ -141,5 +152,30 @@ describe('x-virtual measures display:contents rows with box-less children', () =
         mount(`<template x-if="false"><div></div></template>`, 200)
         await settle()
         expect(totalHeight()).toBe(200 * 44)
+    })
+})
+
+describe('x-virtual mounted while hidden', { timeout: 20000 }, () => {
+    it('grid container under x-show=false resolves its kind once shown', async () => {
+        const N = 1000
+        const host = mount(NESTED, N, { hidden: true })
+        await settle(3)
+        expect(scroller.style.display).toBe('none')
+        expect(rowsInDom().length).toBe(0)
+
+        Alpine.$data(host.firstElementChild).shown = true
+        await Alpine.nextTick()
+        resize()
+        await settle()
+        for (const sp of spacers()) expect(sp.style.gridColumn).toBe('1 / -1')
+        expect(rowsInDom().length).toBeGreaterThan(0)
+        expect(rowsInDom().length).toBeLessThan(40)
+        const t = totalHeight()
+        expect(t).toBeGreaterThan(N * ROW_H / 2)
+        expect(t).toBeLessThan(N * ROW_H * 2)
+
+        await scrollToEnd()
+        expect(rowsInDom().at(-1).querySelector('.freeze-1').textContent).toBe(String(N - 1))
+        expect(totalHeight()).toBeLessThan(N * ROW_H * 2)
     })
 })
