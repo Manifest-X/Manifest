@@ -52,10 +52,9 @@ function initializeVirtualPlugin() {
         const cs = getComputedStyle(scrollEl);
         if (cs.overflow === 'visible' && cs.overflowY === 'visible') scrollEl.style.overflow = 'auto';
 
-        const kind = detectKind(host);                        // spacer/geometry: table | grid | flex | block
-        const mode = options.mode || detectMode(kind, host);  // windowing: rows | gallery | masonry
-        const isGallery = mode === 'gallery';
-        const isMasonry = mode === 'masonry';
+        const isMasonry = options.mode === 'masonry';
+        let kind = detectKind(host);                  // table | grid | flex | block; null while hidden
+        let isGallery = false;
 
         // Masonry: fixed `columns` or target `columnWidth`; optional per-item `span`/
         // `height` fns from data for ~zero settling; `gap` px (falls back to CSS gap).
@@ -83,6 +82,22 @@ function initializeVirtualPlugin() {
             botSpacer = makeSpacer(kind, colCount);
             host.insertBefore(topSpacer, template);
             host.insertBefore(botSpacer, template);
+            if (kind) applyKind();
+        }
+
+        // A display:none host can't be classified; resolve once it has a box.
+        function applyKind() {
+            styleSpacer(topSpacer, kind);
+            styleSpacer(botSpacer, kind);
+            isGallery = (options.mode || detectMode(kind, host)) === 'gallery';
+        }
+        function resolveKind() {
+            if (kind || isMasonry) return true;
+            if (!(kind = detectKind(host))) return false;
+            if (ro && host !== scrollEl) ro.unobserve(host);
+            applyKind();
+            rebuild();
+            return true;
         }
         const anchor = isMasonry ? sizer : botSpacer;   // rows insert before this
 
@@ -99,6 +114,7 @@ function initializeVirtualPlugin() {
         let totalHeight = 0;                   // masonry: packed content height
         let maxItemH = 0;                      // masonry: back-scan bound
         let ready = false;                     // becomes true once container is sized
+        let ro = null;
 
         const keyFn = buildKeyFn(itemName, keyExpr);
         const avgH = () => (measuredCount > 0 ? measuredSum / measuredCount : estimateH);
@@ -204,11 +220,11 @@ function initializeVirtualPlugin() {
 
         function render() {
             if (isMasonry) return renderMasonry();
-            const total = isGallery ? lines.length : data.length;
-            if (!total) { clearRows(); setHeight(topSpacer, 0); setHeight(botSpacer, 0); return; }
+            if (!data.length) { clearRows(); setHeight(topSpacer, 0); setHeight(botSpacer, 0); return; }
             const vh = scrollEl.clientHeight;
-            if (!vh) return;                                     // defer until sized
+            if (!vh || !resolveKind()) return;                   // defer until sized
             ready = true;
+            const total = isGallery ? lines.length : data.length;   // after resolveKind (may enable gallery)
 
             const eff = Math.max(0, scrollEl.scrollTop - regionTop());
             let startUnit = findStart(eff, total) - overscan;
@@ -358,18 +374,13 @@ function initializeVirtualPlugin() {
         }
 
         // display:contents rows (grid-table) have no box — measure the union of
-        // their cells. Everything else uses offsetHeight.
+        // their cells. Everything else uses offsetHeight. Vertically sticky (top)
+        // cells report their stuck rect and aren't supported; horizontal sticky is fine.
         function measureHeight(node) {
-            if (getComputedStyle(node).display === 'contents') {
-                let top = Infinity, bottom = -Infinity;
-                for (const c of node.children) {
-                    const r = c.getBoundingClientRect();
-                    if (r.top < top) top = r.top;
-                    if (r.bottom > bottom) bottom = r.bottom;
-                }
-                return bottom > top ? bottom - top : 0;
-            }
-            return node.offsetHeight;
+            if (getComputedStyle(node).display !== 'contents') return node.offsetHeight;
+            const b = { top: Infinity, bottom: -Infinity };
+            unionCellRects(node, b);
+            return b.bottom > b.top ? b.bottom - b.top : 0;
         }
 
         // ---- Geometry helpers ----
@@ -420,12 +431,13 @@ function initializeVirtualPlugin() {
         scrollEl.addEventListener('scroll', onScroll, { passive: true });
 
         let resizeTimer = null;
-        const ro = new ResizeObserver(() => {
-            if (!ready) { requestAnimationFrame(render); return; } // first paint once sized, off the observer tick
+        ro = new ResizeObserver(() => {
+            if (!ready) { requestAnimationFrame(() => { rebuild(); render(); }); return; } // first paint once sized, off the observer tick
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => { rebuild(); render(); }, 100);  // debounced re-pack
         });
         ro.observe(scrollEl);
+        if (!kind && !isMasonry && host !== scrollEl) ro.observe(host);   // only until a hidden host is classified
 
         cleanup(() => {
             scrollEl.removeEventListener('scroll', onScroll);
@@ -446,6 +458,7 @@ function detectKind(host) {
     const tag = host.tagName;
     if (tag === 'TBODY' || tag === 'THEAD' || tag === 'TFOOT' || tag === 'TABLE') return 'table';
     const disp = getComputedStyle(host).display;
+    if (disp === 'none') return null;
     if (disp.includes('grid')) return 'grid';
     if (disp.includes('flex')) return 'flex';
     return 'block';
@@ -467,8 +480,6 @@ function makeSpacer(kind, colCount) {
         s.appendChild(td);
     } else {
         s = document.createElement('div');
-        if (kind === 'grid') s.style.gridColumn = '1 / -1';
-        else if (kind === 'flex') s.style.flex = '0 0 100%';
         s.style.width = '100%';
     }
     s.dataset.virtualSpacer = '';
@@ -480,6 +491,26 @@ function makeSpacer(kind, colCount) {
     s.style.background = 'none';
     s.style.pointerEvents = 'none';
     return s;
+}
+
+// Box-less children (template, display:none) report a 0,0 rect that would drag
+// the union to the viewport top; skip them, descend into nested display:contents.
+function unionCellRects(node, b) {
+    for (const c of node.children) {
+        if (c.tagName === 'TEMPLATE') continue;
+        const r = c.getBoundingClientRect();
+        if (!r.width && !r.height) {
+            if (getComputedStyle(c).display === 'contents') unionCellRects(c, b);
+            continue;
+        }
+        if (r.top < b.top) b.top = r.top;
+        if (r.bottom > b.bottom) b.bottom = r.bottom;
+    }
+}
+
+function styleSpacer(s, kind) {
+    s.style.gridColumn = kind === 'grid' ? '1 / -1' : '';
+    s.style.flex = kind === 'flex' ? '0 0 100%' : '';
 }
 
 function setHeight(spacer, px) {
