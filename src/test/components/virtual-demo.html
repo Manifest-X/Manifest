@@ -3,6 +3,8 @@
   .vtest { max-width: 64rem; margin-inline: auto; padding: 1.5rem; }
   .vtest .panel { border: 1px solid var(--color-line); border-radius: var(--radius); overflow: auto; }
   .vtest .grid-table { grid-template-columns: 4rem 1fr 1.4fr 7rem 6rem; }
+  .vtest .vt-h { grid-template-columns: 5rem 16rem 20rem 10rem 8rem 8rem; min-width: 0; }
+  .vtest .vt-h-freeze { position: sticky; left: 0; z-index: 1; background: var(--color-page, #fff); }
   .vtest .tile { display: grid; place-items: center; border-radius: var(--radius); color: #fff; font-weight: 600; }
   .vtest .note { font-size: .78rem; color: var(--color-content-subtle); }
   .vtest .target { border-left: 2px solid var(--color-brand-content); padding-left: .6rem; }
@@ -128,6 +130,25 @@
                     <div x-text="r.email"></div>
                     <div x-text="r.role"></div>
                     <div x-text="r.status"></div>
+                </div>
+            </template>
+        </div>
+    </section>
+
+    <!-- Case H — grid-table rows with nested template x-for, sticky cell, synced header grid -->
+    <section class="col gap-2 target" x-data="{ cols: ['name', 'email', 'role', 'status', 'value'] }">
+        <strong class="small">H · .grid-table + nested &lt;template&gt; <span class="note">— display:contents rows holding a nested x-for; sticky first cell; header is a separate grid synced by horizontal scroll</span></strong>
+        <div class="grid-table vt-h" x-ref="hHead" style="overflow: hidden">
+            <div class="grid-header"><div class="vt-h-freeze">#</div><template x-for="c in cols" :key="c"><div x-text="c"></div></template></div>
+        </div>
+        <div x-virtual="{ estimate: 44, overscan: 8 }" class="grid-table vt-h panel" data-case="h" style="height: 320px; grid-auto-rows: max-content"
+             @scroll="$refs.hHead.scrollLeft = $el.scrollLeft">
+            <template x-for="r in view" :key="r.id">
+                <div class="grid-row">
+                    <div class="vt-h-freeze" x-text="r.id"></div>
+                    <template x-for="(c, idx) in cols" :key="c">
+                        <div :class="idx === 0 ? 'font-semibold' : ''" x-text="r[c]"></div>
+                    </template>
                 </div>
             </template>
         </div>
