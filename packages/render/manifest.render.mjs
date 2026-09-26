@@ -27,20 +27,25 @@ async function importFromProject(moduleName) {
 
 
 async function flushAlpineEffects(page) {
+  // Alpine's scheduler can swallow a nextTick callback (a re-triggered
+  // already-flushed job is dropped), so this wait must be bounded or a page
+  // hangs idle until the per-page timeout kills it.
   await page
     .evaluate(() => {
       return new Promise((resolve) => {
+        const cap = setTimeout(resolve, 3000);
+        const done = () => { clearTimeout(cap); resolve(); };
         try {
           if (typeof Alpine !== 'undefined' && typeof Alpine.nextTick === 'function') {
             Alpine.nextTick(() => {
-              if (typeof Alpine.nextTick === 'function') Alpine.nextTick(resolve);
-              else resolve();
+              if (typeof Alpine.nextTick === 'function') Alpine.nextTick(done);
+              else done();
             });
           } else {
-            queueMicrotask(resolve);
+            queueMicrotask(done);
           }
         } catch {
-          resolve();
+          done();
         }
       });
     })
@@ -149,7 +154,10 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
           try {
             const cfg = window.ManifestDataConfig;
             const main = window.ManifestDataMain;
-            const manifest = await cfg?.ensureManifest?.();
+            const manifest = await Promise.race([
+              Promise.resolve(cfg?.ensureManifest?.()),
+              new Promise((resolve) => setTimeout(resolve, 5000)),
+            ]);
             if (manifest?.data && typeof main?.loadDataSource === 'function') {
               const isAppwrite = cfg.isAppwriteCollection;
               for (const [name, source] of Object.entries(manifest.data)) {
@@ -164,9 +172,14 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
 
           // 6. Run component swapping explicitly so components tied to this route render
           //    and trigger any $x accesses that start on-demand data loads.
+          //    Bounded: a stranded component-load promise must not hang the
+          //    pipeline past the render-ready timeout (step 7 would never run).
           if (window.ManifestComponentsSwapping?.processAll) {
             try {
-              await window.ManifestComponentsSwapping.processAll(normalizedPath);
+              await Promise.race([
+                window.ManifestComponentsSwapping.processAll(normalizedPath),
+                new Promise((resolve) => setTimeout(resolve, ms)),
+              ]);
             } catch (e) {
               return { ok: false, reason: 'processAll-error', message: String(e?.message || e) };
             }
@@ -3608,11 +3621,20 @@ async function runPrerender(config) {
         console.error('  npm i -D puppeteer-core @sparticuz/chromium');
         process.exit(1);
       }
+      // chrome-headless-shell: the new headless mode's captureScreenshot can
+      // hang forever on macOS (frames never produced), which wedges og
+      // snapshots and, through the shared browser, stalls sibling pages.
       return await puppeteer.default.launch({
-        headless: true,
+        headless: 'shell',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
+          // Concurrency keeps sibling tabs backgrounded; without these flags a
+          // backgrounded tab stops producing frames and firing rAF/timers, so
+          // its captureScreenshot (og snapshots) and settle waits hang forever.
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
         ],
       });
     }
@@ -4072,7 +4094,8 @@ async function runPrerender(config) {
       // small ones settle in well under 1 second.
       await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => { });
 
-      // DOM stability after network idle.
+      // DOM stability after network idle. Hard-capped: a page that animates
+      // continuously must not reset the quiet window forever.
       await page.evaluate(() => {
         return new Promise((resolve) => {
           const observer = new MutationObserver(() => {
@@ -4080,8 +4103,9 @@ async function runPrerender(config) {
             stable = setTimeout(finish, 500);
           });
           observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-          const finish = () => { observer.disconnect(); resolve(); };
+          const finish = () => { clearTimeout(cap); observer.disconnect(); resolve(); };
           let stable = setTimeout(finish, 500);
+          const cap = setTimeout(finish, 15000);
         });
       }).catch(() => { });
 
@@ -4112,7 +4136,12 @@ async function runPrerender(config) {
         const ogImageHandled = !!config.seo.meta?.image
           || await page.evaluate(() => !!document.head.querySelector('meta[property="og:image"]'));
         if (!ogImageHandled) {
-          earlySnapshotUrl = await takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir);
+          // Bounded: a CDP call that never returns must cost this page its og
+          // image, not the whole render (the meta fallback image covers it).
+          earlySnapshotUrl = await Promise.race([
+            takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir),
+            new Promise((resolve) => setTimeout(() => resolve(null), 30000)),
+          ]);
         }
       }
 
