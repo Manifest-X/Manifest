@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRecycleGate, isTransientFrameError } from '../src/scripts/manifest.render.mjs';
+import { createRecycleGate, runRenderQueue, isTransientFrameError } from '../src/scripts/manifest.render.mjs';
 
 const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -205,5 +205,138 @@ describe('isTransientFrameError — immediate-requeue classification', () => {
 
         const ordinaryTimestamps = await attemptWithRetry(['net::ERR_CONNECTION_REFUSED', null]);
         expect(ordinaryTimestamps[1] - ordinaryTimestamps[0]).toBeGreaterThanOrEqual(45);
+    });
+});
+
+// Defect (Manifest-Website, 84/86 failed): a timed-out page forced a recycle,
+// the swap detached sibling pages, their retries forced more recycles — a
+// storm. Fake browser: a swap under a live page detaches it.
+describe('runRenderQueue — forced-recycle storm', () => {
+    function fakeBrowser() {
+        const b = { generation: 0, live: new Set(), detachedUnderSwap: 0 };
+        b.swap = async () => {
+            for (const page of b.live) { page.detached = true; b.detachedUnderSwap++; }
+            b.live.clear();
+            await tick(2);
+            b.generation++;
+        };
+        b.render = async ({ ms = 3, hang = false, token } = {}) => {
+            const page = { detached: false, closed: false, generation: b.generation };
+            b.live.add(page);
+            let close;
+            const closed = new Promise((resolve) => { close = resolve; });
+            page.close = () => { page.closed = true; b.live.delete(page); close(); };
+            if (token) token.cancel = page.close;
+            try {
+                if (hang) await closed;
+                else await tick(ms);
+                if (page.detached) throw new Error('Execution context is not available in detached frame');
+            } finally {
+                page.close();
+            }
+            return page;
+        };
+        return b;
+    }
+
+    it('a page that times out mid-run forces one bounded recycle, siblings succeed', async () => {
+        const browser = fakeBrowser();
+        const logs = [];
+        const gate = createRecycleGate({ every: 40, recycle: browser.swap, onLog: (m) => logs.push(m) });
+        const hangs = new Map([[10, 1], [55, 1]]);
+        const done = [];
+        const items = Array.from({ length: 86 }, (_, i) => i);
+        const failures = await runRenderQueue({
+            items,
+            concurrency: 4,
+            gate,
+            pageTimeoutMs: 40,
+            maxRetries: 2,
+            abandonGraceMs: 50,
+            render: async (i, _idx, token) => {
+                const hang = (hangs.get(i) || 0) > 0;
+                if (hang) hangs.set(i, hangs.get(i) - 1);
+                const page = await browser.render({ ms: i % 4, hang, token });
+                if (token.abandoned) return;
+                done.push(i);
+                return page;
+            },
+        });
+        expect(failures).toEqual([]);
+        expect(new Set(done).size).toBe(86);
+        expect(browser.detachedUnderSwap).toBe(0);
+        expect(gate.recycles).toBeLessThanOrEqual(4);
+        expect(gate.forcedRecycles).toBeLessThanOrEqual(2);
+        expect(logs).toEqual([]);
+    });
+
+    it('a page that always wedges cannot drive a recycle loop', async () => {
+        const browser = fakeBrowser();
+        const gate = createRecycleGate({ every: 40, recycle: browser.swap });
+        const failures = await runRenderQueue({
+            items: Array.from({ length: 30 }, (_, i) => i),
+            concurrency: 3,
+            gate,
+            pageTimeoutMs: 30,
+            maxRetries: 2,
+            abandonGraceMs: 50,
+            render: async (i, _idx, token) => browser.render({ hang: i === 3, token }),
+        });
+        expect(failures.map((f) => f.path)).toEqual(['3']);
+        expect(browser.detachedUnderSwap).toBe(0);
+        // 3 attempts, cooldown 10 completed paths between forced swaps
+        expect(gate.forcedRecycles).toBeLessThanOrEqual(3);
+    });
+
+    it('coalesces forced requests per browser generation', async () => {
+        let swaps = 0;
+        const gate = createRecycleGate({ every: 40, forcedCooldown: 1, recycle: async () => { swaps++; } });
+        const gen = await gate.acquire();
+        gate.release();
+        expect(gate.requestRecycle(gen)).toBe(true);
+        expect(gate.requestRecycle(gen)).toBe(true);
+        expect(await gate.maybeRecycle()).toBe(true);
+        expect(swaps).toBe(1);
+        // stale: that browser is already gone
+        expect(gate.requestRecycle(gen)).toBe(false);
+        expect(await gate.maybeRecycle()).toBe(false);
+        expect(swaps).toBe(1);
+    });
+
+    it('counts completed paths only; a forced request does not inflate the count', async () => {
+        const calls = [];
+        const gate = createRecycleGate({ every: 1000, recycle: async (processed, opts) => { calls.push([processed, opts]); } });
+        const flaky = new Set([3, 7]);
+        const failures = await runRenderQueue({
+            items: Array.from({ length: 10 }, (_, i) => i),
+            concurrency: 3,
+            gate,
+            maxRetries: 2,
+            render: async (i) => {
+                await tick(1);
+                if (flaky.delete(i)) throw new Error('Attempted to use detached Frame');
+            },
+        });
+        expect(failures).toEqual([]);
+        expect(gate.pages).toBe(10);
+        gate.requestRecycle();
+        expect(gate.pages).toBe(10);
+        expect(await gate.maybeRecycle()).toBe(true);
+        expect(calls).toEqual([[10, { forced: true }]]);
+    });
+
+    it('rate-limits forced recycles by completed paths', async () => {
+        let swaps = 0;
+        const gate = createRecycleGate({ every: 40, forcedCooldown: 3, recycle: async () => { swaps++; } });
+        gate.requestRecycle();
+        expect(await gate.maybeRecycle()).toBe(true);
+        gate.requestRecycle();
+        expect(await gate.maybeRecycle()).toBe(false);
+        gate.countPage(); gate.countPage();
+        expect(await gate.maybeRecycle()).toBe(false);
+        gate.countPage();
+        expect(await gate.maybeRecycle()).toBe(true);
+        expect(swaps).toBe(2);
+        expect(gate.forcedRecycles).toBe(2);
     });
 });
