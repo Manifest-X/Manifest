@@ -339,4 +339,28 @@ describe('runRenderQueue — forced-recycle storm', () => {
         expect(swaps).toBe(2);
         expect(gate.forcedRecycles).toBe(2);
     });
+    // Defect (I2 review): a browser that dies inside the forced cooldown lost
+    // every path until the cooldown ran out. A dead browser bypasses it.
+    it('recycles a dead browser at once, cooldown or not', async () => {
+        let gen = 0;
+        let alive = true;
+        const gate = createRecycleGate({
+            every: 40,
+            healthy: () => alive,
+            recycle: async () => { gen++; alive = gen !== 1; },
+        });
+        const failures = await runRenderQueue({
+            items: Array.from({ length: 30 }, (_, i) => i),
+            concurrency: 3,
+            gate,
+            maxRetries: 2,
+            render: async (i) => {
+                await tick(1);
+                if (i === 0 && gen === 0) throw new Error('boom');
+                if (!alive) throw new Error('Protocol error: Connection closed.');
+            },
+        });
+        expect(gate.forcedRecycles).toBe(2);
+        expect(failures.length).toBeLessThanOrEqual(3);
+    }, 20000);
 });

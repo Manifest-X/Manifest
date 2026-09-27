@@ -232,11 +232,13 @@ export function isTransientFrameError(message) {
  * Coordinates render workers around a shared browser swapped every `every`
  * completed paths. A recycle pauses new slots, drains in-flight ones, swaps,
  * resumes. Forced recycles are coalesced per browser generation and rate
- * limited by `forcedCooldown` completed paths. Exported for unit tests.
+ * limited by `forcedCooldown` completed paths, unless `healthy()` reports a
+ * dead browser. Exported for unit tests.
  */
 export function createRecycleGate({
   every = 40,
   forcedCooldown = Math.max(1, Math.ceil(every / 4)),
+  healthy = () => true,
   recycle = async () => {},
   drainTimeoutMs = 60000,
   recycleTimeoutMs = 180000,
@@ -253,7 +255,7 @@ export function createRecycleGate({
   const zeroWaiters = [];
   const resumeWaiters = [];
   const wake = (list) => { for (const resolve of list.splice(0)) resolve(); };
-  const due = () => every > 0 && (pages >= every || (forced && sinceForced >= forcedCooldown));
+  const due = () => every > 0 && (pages >= every || (forced && (sinceForced >= forcedCooldown || !healthy())));
 
   return {
     get active() { return active; },
@@ -3771,6 +3773,7 @@ async function runPrerender(config) {
     every: browserRecycleEvery,
     drainTimeoutMs,
     recycleTimeoutMs,
+    healthy: () => !!browser && browser.connected !== false,
     onLog: (message) => process.stderr.write(`prerender: ${message}\n`),
     recycle: async (processed, { forced } = {}) => {
       process.stdout.write(`prerender: recycling browser (${forced ? `forced after ${processed}` : `processed ${processed}`} pages)\n`);
