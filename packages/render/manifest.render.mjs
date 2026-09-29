@@ -4744,14 +4744,17 @@ async function runPrerender(config) {
                 if (name.startsWith(':')) boundAttr = name.slice(1);
                 else if (name.startsWith('x-bind:')) boundAttr = name.slice('x-bind:'.length);
                 if (boundAttr) {
+                  // Removing :foo triggers Alpine's binding teardown, which
+                  // restores the bound attribute to its pre-binding value
+                  // (empty for clones whose template had no static class).
+                  // Snapshot the eval'd value and re-set it after removal so
+                  // the baked attribute survives the unbind. A binding whose
+                  // value evaluated to null (no attribute) is removed all the
+                  // same — left in place it re-evaluates at runtime outside
+                  // the loop scope and throws on every render.
                   const concrete = node.getAttribute(boundAttr);
+                  node.removeAttribute(name);
                   if (concrete != null && String(concrete).trim() !== '') {
-                    // Removing :foo triggers Alpine's binding teardown, which
-                    // restores the bound attribute to its pre-binding value
-                    // (empty for clones whose template had no static class).
-                    // Snapshot the eval'd value and re-set it after removal so
-                    // the baked attribute survives the unbind.
-                    node.removeAttribute(name);
                     node.setAttribute(boundAttr, concrete);
                   }
                   continue;
