@@ -244,7 +244,12 @@ let scrollSweepPending = document.readyState !== 'loading';
 
 document.addEventListener('scroll', (event) => {
     const el = event.target;
-    if (el && el.nodeType === 1) scrolledContainers.add(el);
+    if (!el || el.nodeType !== 1 || scrolledContainers.has(el)) return;
+    // Prune detached entries so long single-route sessions don't retain them
+    if (scrolledContainers.size >= 64) {
+        for (const tracked of scrolledContainers) if (!tracked.isConnected) scrolledContainers.delete(tracked);
+    }
+    scrolledContainers.add(el);
 }, { capture: true, passive: true });
 
 // True when done with the element: reset, or rendered and nothing to reset.
