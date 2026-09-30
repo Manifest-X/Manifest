@@ -1,3 +1,7 @@
+/* manifest.components.js — built from scripts/components/ */
+
+(function () {
+
 /* Manifest Components */
 
 // Base URL for manifest-relative paths (e.g. "../" when viewing dist/index.html). Used by component loader, data loaders, localization.
@@ -57,6 +61,7 @@ window.ManifestComponentsRegistry = {
         // manifest on window yet).  This must be async — a synchronous XHR on
         // the main thread is deprecated and was flagged by PageSpeed.
         let manifest = window.__manifestLoaded || this.manifest;
+        if (!manifest && window.__manifestPromise) manifest = await window.__manifestPromise.catch(() => null);
         if (!manifest) {
             try {
                 const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
@@ -66,6 +71,9 @@ window.ManifestComponentsRegistry = {
                 });
                 if (res.ok) {
                     manifest = await res.json();
+                    // No-loader path: resolve ${VAR} placeholders the dynamic loader would have.
+                    window.ManifestDataConfig?.interpolateManifest?.(manifest);
+                    window.__manifestPromise = Promise.resolve(manifest);   // share with plugins that init after us
                 } else {
                     console.warn('[Manifest] Failed to load manifest.json (HTTP', res.status + ')');
                 }
@@ -94,9 +102,11 @@ window.ManifestComponentsRegistry = {
 window.ManifestComponentsLoader = {
     cache: {},
     _loading: {},
+    _missing: null,
     initialize() {
         this.cache = {};
         this._loading = {};
+        this._missing = new Set();
         // Preload components listed in registry.preloaded
         const registry = window.ManifestComponentsRegistry;
         if (registry && Array.isArray(registry.preloaded)) {
@@ -115,27 +125,50 @@ window.ManifestComponentsLoader = {
             return this._loading[name];
         }
         const registry = window.ManifestComponentsRegistry;
-        if (!registry || !registry.manifest) {
-            console.warn('[Manifest] Manifest not loaded, cannot load component:', name);
+        if (!registry) {
+            console.warn('[Manifest] Registry unavailable, cannot load component:', name);
             return null;
         }
-        const path = (registry.manifest.preloadedComponents || []).concat(registry.manifest.components || [])
+        // No manifest.json is fine — the convention fallback below still resolves.
+        const mf = registry.manifest || {};
+        let path = (mf.preloadedComponents || []).concat(mf.components || [])
             .find(p => p.split('/').pop().replace('.html', '') === name);
+        // Convention fallback: unlisted names resolve to components/<name>.html.
+        let convention = false;
         if (!path) {
-            console.warn('[Manifest] Component', name, 'not found in manifest.');
-            return null;
+            if (!this._missing) this._missing = new Set();
+            if (this._missing.has(name)) return null;
+            path = 'components/' + name + '.html';
+            convention = true;
         }
         const base = (typeof window.getManifestBase === 'function' ? window.getManifestBase() : '') || '/';
-        const url = path.startsWith('/') || path.startsWith('http') ? path : base + path;
+        let url = path.startsWith('/') || path.startsWith('http') ? path : base + path;
+        // Version stamp (publish-injected `deployment`, or authored `version`) busts browser-cached component HTML
+        const stamp = mf.deployment || mf.version;
+        if (stamp) url += (url.includes('?') ? '&' : '?') + 'v=' + encodeURIComponent(String(stamp));
         const promise = (async () => {
             try {
                 const response = await fetch(url);
                 if (!response.ok) {
-                    console.warn('[Manifest] HTML file not found for component', name, 'at path:', path, '(HTTP', response.status + ')');
+                    if (convention) {
+                        this._missing.add(name);
+                        console.warn('[Manifest] Component', name, 'is not listed in manifest.json and', path, 'was not found (HTTP', response.status + ')');
+                    } else {
+                        console.warn('[Manifest] HTML file not found for component', name, 'at path:', path, '(HTTP', response.status + ')');
+                    }
                     return null;
                 }
                 const content = await response.text();
+                // SPA-fallback guard: servers answer missing paths with the app
+                // shell (200 + index.html). A whole document is never a component
+                // — swapping it in nests the page inside itself recursively.
+                if (/^\s*(<!doctype|<html[\s>])/i.test(content)) {
+                    if (convention) this._missing.add(name);
+                    console.warn('[Manifest] Component', name, 'at', path, 'returned a full HTML document (SPA fallback?) — treated as missing');
+                    return null;
+                }
                 this.cache[name] = content;
+                if (convention) registry.registered.add(name);
                 return content;
             } catch (error) {
                 console.warn('[Manifest] Failed to load component', name, 'from', path + ':', error.message);
@@ -151,16 +184,9 @@ window.ManifestComponentsLoader = {
 
 // Components processor
 
-// Escape a string so it's safe to interpolate inside a single-quoted JS
-// string AND inside backtick template literals. The original escape covered
-// the single-quote + whitespace cases but missed three vectors that matter
-// when component templates use backtick literals (e.g. x-text="`Hi $modify('n')`"):
-//   - `\`  → a trailing backslash would escape the closing quote
-//   - `` ` `` → terminates a backtick template literal
-//   - `${` → opens an interpolation that Alpine evaluates as JS
-// Without escaping those, a bound value like `${alert(1)}` from a data
-// source becomes code execution inside the wrapping template literal.
-// Backslash must be escaped FIRST so the other replacements don't compound.
+// Escape a value for safe interpolation in single-quoted JS strings AND
+// backtick template literals. Backslash, backtick, and ${ must be escaped or a
+// bound value like `${alert(1)}` becomes code execution; escape backslash FIRST.
 function escapeForSingleQuotedJsString(s) {
     return String(s)
         .replace(/\\/g, '\\\\')
@@ -172,27 +198,37 @@ function escapeForSingleQuotedJsString(s) {
         .replace(/\t/g, '\\t');
 }
 
+// Framework web components (not project components) — never fetched.
+const FRAMEWORK_COMPONENT_TAGS = new Set(['code', 'code-group']);
+
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
         const registry = window.ManifestComponentsRegistry;
         const loader = window.ManifestComponentsLoader;
         if (!registry || !loader) {
+            console.debug('[Manifest Components] skipped: registry or loader unavailable', element);
             return;
         }
-        if (!registry.registered.has(name)) {
-            return;
-        }
+        if (FRAMEWORK_COMPONENT_TAGS.has(name)) return;
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
-            // Pre-rendered components skip re-fetching, but hydrate-marked content
-            // still needs Alpine initialization (x-data, @click, :class, x-color etc.).
+            // Pre-rendered content skips re-fetch but still needs Alpine init.
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
                 try { window.Alpine.initTree(element); } catch (e) { /* graceful */ }
             }
+            console.debug('[Manifest Components] skipped: already pre-rendered/processed', element);
             return;
         }
+        // Unregistered names still try the loader's components/<name>.html
+        // convention; a miss leaves the element alone (it may be someone else's).
+        const wasRegistered = registry.registered.has(name);
         const content = await loader.loadComponent(name);
         if (!content) {
+            if (!wasRegistered) {
+                console.debug('[Manifest Components] skipped: component not registered', element);
+                return;
+            }
+            console.debug('[Manifest Components] skipped: failed to load component', element);
             element.replaceWith(document.createComment(` Failed to load component: ${name} `));
             return;
         }
@@ -200,6 +236,7 @@ window.ManifestComponentsProcessor = {
         container.innerHTML = content.trim();
         const topLevelElements = Array.from(container.children);
         if (topLevelElements.length === 0) {
+            console.debug('[Manifest Components] skipped: empty component template', element);
             element.replaceWith(document.createComment(` Empty component: ${name} `));
             return;
         }
@@ -226,10 +263,10 @@ window.ManifestComponentsProcessor = {
         const props = {};
         Array.from(element.attributes).forEach(attr => {
             if (attr.name !== name && attr.name !== 'class' && !attr.name.startsWith('data-')) {
-                // Store both original case and lowercase for flexibility
+                // Store original case and lowercase
                 props[attr.name] = attr.value;
                 props[attr.name.toLowerCase()] = attr.value;
-                // For Alpine bindings (starting with :), also store without the : prefix
+                // Alpine bindings (:foo): also store without the colon
                 if (attr.name.startsWith(':')) {
                     const keyWithoutColon = attr.name.substring(1);
                     props[keyWithoutColon] = attr.value;
@@ -292,32 +329,25 @@ window.ManifestComponentsProcessor = {
                                         if (!val || val.trim() === '' || /^[\r\n\t\s]+$/.test(val)) {
                                             return value.includes('||') ? 'null' : "''";
                                         }
-                                        // If value starts with $, it's an Alpine expression - don't quote
+                                        // $-prefixed values are Alpine expressions — don't quote.
                                         if (val.startsWith('$')) {
-                                            // Special handling for x-for, x-if, and x-show with $x data source expressions
-                                            // Add safe fallbacks to prevent errors during initial render when data source hasn't loaded yet
+                                            // Guard $x data-source expressions on x-for/if/show against
+                                            // errors before the source loads: optional-chain + fallback.
                                             if ((attr.name === 'x-for' || attr.name === 'x-if' || attr.name === 'x-show') && val.startsWith('$x') && !val.includes('??')) {
-                                                // Convert regular property access dots to optional chaining for safe navigation
                                                 let safeVal = val.replace(/\./g, '?.');
-                                                // Add fallback based on directive type (only if user hasn't already provided one)
                                                 if (attr.name === 'x-for') {
-                                                    // x-for needs an iterable, so fallback to empty array
                                                     return `${safeVal} ?? []`;
                                                 } else {
-                                                    // x-if and x-show evaluate to boolean, fallback to false
                                                     return `${safeVal} ?? false`;
                                                 }
                                             }
                                             return val;
                                         }
-                                        // Special handling for x-for, x-if, and x-show - these can contain expressions
-                                        // that reference data sources or other dynamic content
+                                        // x-for/if/show can hold expressions (e.g. "card in $x.data.items") — preserve as-is.
                                         if (attr.name === 'x-for' || attr.name === 'x-if' || attr.name === 'x-show') {
-                                            // For these directives, preserve the value as-is to allow Alpine to evaluate it
-                                            // This is critical for x-for expressions like "card in $x.data.items"
                                             return val;
                                         }
-                                        // Always quote string values to ensure they're treated as strings, not variables
+                                        // Quote everything else so it's treated as a string.
                                         return `'${escapeForSingleQuotedJsString(val)}'`;
                                     }
                                 );
@@ -369,19 +399,16 @@ window.ManifestComponentsProcessor = {
                 rootElement.setAttribute('data-component', instanceId);
             }
         });
-        // After rendering, copy all attributes from the original placeholder to the first top-level element
-        // Note: This block ensures the first element has all attributes, including those that might have been
-        // skipped by the first loop due to conditions. Classes are already handled in the first loop, so we skip them here.
+        // Copy any placeholder attributes the first loop skipped onto the first
+        // root element (classes already handled there, so skip them).
         if (topLevelElements.length > 0) {
             const firstRoot = topLevelElements[0];
             Array.from(element.attributes).forEach(attr => {
-                // Skip attributes that were already handled in the first loop
-                // Classes are always handled in the first loop, so skip them here to avoid duplication
                 if (attr.name === 'class') {
-                    return; // Skip - already handled in first loop
+                    return;
                 }
 
-                // Preserve important attributes including data-order, x-route, and other routing/data attributes
+                // Routing/data attributes to preserve
                 const preserveAttributes = [
                     'data-order', 'x-route', 'data-component', 'data-head',
                     'x-route-*', 'data-route-*', 'x-tabpanel'
@@ -396,32 +423,25 @@ window.ManifestComponentsProcessor = {
                     (attr.name !== name && !attr.name.startsWith('data-')) ||
                     attr.name === 'data-order' || attr.name === 'x-route' || attr.name === 'data-head';
 
-                // Only apply if: (1) it wasn't handled in first loop, OR (2) it should be preserved, AND (3) it's not in the skip list
+                // Apply if unhandled or preserved, and not in the skip list.
                 if ((!alreadyHandledInFirstLoop || shouldPreserve) &&
                     !['data-original-placeholder', 'data-pre-rendered', 'data-processed'].includes(attr.name)) {
                     if (attr.name.startsWith('x-') || attr.name.startsWith(':') || attr.name.startsWith('@')) {
-                        // For Alpine directives, merge if they already exist (for x-data, combine objects)
+                        // x-data: merge two object literals; otherwise replace.
                         if (attr.name === 'x-data' && firstRoot.hasAttribute('x-data')) {
-                            // For x-data, we need to merge the objects - this is complex, so for now we'll append
-                            // The user should structure their x-data to avoid conflicts
                             const existing = firstRoot.getAttribute('x-data');
-                            // If both are objects, try to merge them
                             if (existing.trim().startsWith('{') && attr.value.trim().startsWith('{')) {
-                                // Remove outer braces and merge
                                 const existingContent = existing.trim().slice(1, -1).trim();
                                 const newContent = attr.value.trim().slice(1, -1).trim();
                                 const merged = `{ ${existingContent}${existingContent && newContent ? ', ' : ''}${newContent} }`;
                                 firstRoot.setAttribute('x-data', merged);
                             } else {
-                                // If not both objects, replace (user should handle this case)
                                 firstRoot.setAttribute(attr.name, attr.value);
                             }
                         } else {
-                            // For other Alpine directives, replace if they exist
                             firstRoot.setAttribute(attr.name, attr.value);
                         }
                     } else {
-                        // For other attributes, replace if they exist
                         firstRoot.setAttribute(attr.name, attr.value);
                     }
                 }
@@ -429,24 +449,21 @@ window.ManifestComponentsProcessor = {
         }
         const parent = element.parentElement;
         if (!parent || !document.contains(element)) {
+            console.debug('[Manifest Components] skipped: element detached before swap', element);
             return;
         }
         // Replace the placeholder element with the component content
         const fragment = document.createDocumentFragment();
         topLevelElements.forEach(el => fragment.appendChild(el));
 
-        // Replace the placeholder element with the component content
-        // Alpine will auto-initialize on DOM insertion, but we need to ensure
-        // magic methods are ready first. If data plugin is ready, give it a tick
-        // to ensure Alpine has processed the magic method registration.
         parent.replaceChild(fragment, element);
 
-        // Manually initialize Alpine on the swapped-in elements after ensuring
-        // magic methods are available. This prevents "i is not a function" errors.
+        // Manually init Alpine on the swapped-in elements once magic methods are
+        // ready — prevents "i is not a function" errors.
         if (window.Alpine && typeof window.Alpine.initTree === 'function') {
             const initAlpine = () => {
-                // CRITICAL: Ensure auth convenience methods are initialized before Alpine evaluates expressions
-                // This prevents "$auth.isCreatingTeam is not a function" errors after idle/reinitialization
+                // Init auth convenience methods before Alpine evaluates expressions,
+                // else "$auth.isCreatingTeam is not a function" after reinit.
                 if (window.ManifestAppwriteAuthTeamsConvenience && window.ManifestAppwriteAuthTeamsConvenience.initialize) {
                     try {
                         const authStore = window.Alpine.store('auth');
@@ -458,10 +475,8 @@ window.ManifestComponentsProcessor = {
                     }
                 }
 
-                // Re-initialize Alpine on the swapped elements
-                // This ensures magic methods are available when expressions are evaluated
                 topLevelElements.forEach(el => {
-                    if (!el.__x) { // Only init if not already initialized
+                    if (!el.__x) {
                         try {
                             window.Alpine.initTree(el);
                         } catch (e) {
@@ -471,7 +486,7 @@ window.ManifestComponentsProcessor = {
                 });
             };
 
-            // If data plugin is ready, wait a tick to ensure magic method is processed
+            // If the data plugin is ready, wait a tick for its magic method.
             if (window.__manifestDataMagicRegistered) {
                 if (window.Alpine.nextTick) {
                     window.Alpine.nextTick(initAlpine);
@@ -479,18 +494,16 @@ window.ManifestComponentsProcessor = {
                     setTimeout(initAlpine, 0);
                 }
             } else {
-                // Data plugin not ready, initialize immediately (will fail gracefully)
                 initAlpine();
             }
         }
 
-        // Execute scripts after component is rendered
+        // Execute component scripts after render (small delay for the DOM swap)
         if (scripts.length > 0) {
-            // Use a small delay to ensure DOM is updated
             setTimeout(() => {
                 scripts.forEach(script => {
                     if (script.src) {
-                        // External script - create and append to head
+                        // External script → append to head
                         const scriptEl = document.createElement('script');
                         scriptEl.src = script.src;
                         scriptEl.type = script.type;
@@ -498,9 +511,8 @@ window.ManifestComponentsProcessor = {
                         if (script.defer) scriptEl.defer = true;
                         document.head.appendChild(scriptEl);
                     } else if (script.content) {
-                        // Inline script - execute directly
+                        // Inline script → run in global scope
                         try {
-                            // Create a function to execute the script in the global scope
                             const executeScript = new Function(script.content);
                             executeScript();
                         } catch (error) {
@@ -517,10 +529,20 @@ window.ManifestComponentsProcessor = {
 
 // Components swapping
 (function () {
+    // Never reset — ids must stay unique for the life of the page so overlapping
+    // processAll runs can't mint a colliding id for a live instance.
     let componentInstanceCounters = {};
     const swappedInstances = new Set();
     const instanceRouteMap = new Map();
     const placeholderMap = new Map();
+
+    // Serialises processAll: a call while one is in flight coalesces into a
+    // single trailing re-run (latest path wins) instead of interleaving.
+    let activeRun = null;
+    let trailingRun = null;
+    let trailingPath = null;
+    let hasTrailing = false;
+    let trailingSettlers = null;
 
     function getComponentInstanceId(name) {
         if (!componentInstanceCounters[name]) componentInstanceCounters[name] = 1;
@@ -536,9 +558,15 @@ window.ManifestComponentsProcessor = {
     window.ManifestComponentsSwapping = {
         // Swap in source code for a placeholder
         async swapIn(placeholder) {
-            if (placeholder.hasAttribute('data-swapped')) return;
+            if (placeholder.hasAttribute('data-swapped')) {
+                console.debug('[Manifest Components] skipped swapIn: already marked data-swapped', placeholder);
+                return;
+            }
             const processor = window.ManifestComponentsProcessor;
-            if (!processor) return;
+            if (!processor) {
+                console.debug('[Manifest Components] skipped swapIn: processor unavailable', placeholder);
+                return;
+            }
             const name = placeholder.tagName.toLowerCase().replace('x-', '');
             let instanceId = placeholder.getAttribute('data-component');
             if (!instanceId) {
@@ -565,10 +593,16 @@ window.ManifestComponentsProcessor = {
         },
         // Revert to placeholder
         revert(instanceId) {
-            if (!swappedInstances.has(instanceId)) return;
+            if (!swappedInstances.has(instanceId)) {
+                console.debug('[Manifest Components] skipped revert: instance not tracked', instanceId);
+                return;
+            }
             // Remove all elements with data-component=instanceId
             const rendered = Array.from(document.querySelectorAll(`[data-component="${instanceId}"]`));
-            if (rendered.length === 0) return;
+            if (rendered.length === 0) {
+                console.debug('[Manifest Components] skipped revert: no rendered elements found', instanceId);
+                return;
+            }
             const first = rendered[0];
             const parent = first.parentNode;
             // Retrieve the original placeholder from the map
@@ -608,11 +642,14 @@ window.ManifestComponentsProcessor = {
             // Log after revert
             logSiblings(parent, `After revert for ${instanceId}`);
         },
-        // Main swapping logic
-        async processAll(normalizedPathFromEvent = null) {
-            componentInstanceCounters = {};
+        // Main swapping logic — single pass. Call via processAll(), not directly:
+        // this has no re-entrancy guard of its own.
+        async _runProcessAll(normalizedPathFromEvent) {
             const registry = window.ManifestComponentsRegistry;
-            if (!registry) return;
+            if (!registry) {
+                console.debug('[Manifest Components] skipped processAll: registry unavailable');
+                return;
+            }
             const routing = window.ManifestRouting;
 
             // Use normalized path from event if provided, otherwise compute from window.location
@@ -698,6 +735,40 @@ window.ManifestComponentsProcessor = {
                     }
                 }
             }
+        },
+        // Public entry point. Coalesces overlapping calls: while a run is active,
+        // later calls don't start their own interleaved run — they queue exactly
+        // one trailing re-run (latest path wins) and resolve when it finishes.
+        async processAll(normalizedPathFromEvent = null) {
+            if (activeRun) {
+                hasTrailing = true;
+                trailingPath = normalizedPathFromEvent;
+                if (!trailingRun) {
+                    trailingRun = new Promise((resolve, reject) => {
+                        trailingSettlers = { resolve, reject };
+                    });
+                }
+                return trailingRun;
+            }
+            activeRun = this._runProcessAll(normalizedPathFromEvent);
+            let error = null;
+            try {
+                await activeRun;
+            } catch (e) {
+                error = e;
+            } finally {
+                activeRun = null;
+            }
+            if (hasTrailing) {
+                hasTrailing = false;
+                const path = trailingPath;
+                const settlers = trailingSettlers;
+                trailingRun = null;
+                trailingSettlers = null;
+                trailingPath = null;
+                this.processAll(path).then(settlers.resolve, settlers.reject);
+            }
+            if (error) throw error;
         },
         initialize() {
             // On init, process all
@@ -799,6 +870,129 @@ window.ManifestComponentsMutation = {
     }
 }; 
 
+/* Manifest Components — route-level prefetch (batch on route change + on hover) */
+
+(function () {
+    'use strict';
+
+    // <x-*> tag pattern — lowercase, hyphenated.
+    const TAG_RE = /^x-[a-z][a-z0-9-]*$/;
+
+    // Framework web components (not project components) — skip when scanning.
+    const FRAMEWORK_TAGS = new Set(['code', 'code-group']);
+
+    // Anchors already hover-prefetched. WeakSet so detached nodes GC naturally.
+    const prefetchedAnchors = new WeakSet();
+
+    function loader() { return window.ManifestComponentsLoader; }
+
+    // Match a route pattern against a normalized pathname. Mirrors router visibility.
+    function routeMatches(routeValue, pathname) {
+        const pieces = String(routeValue || '').split(',').map((s) => s.trim()).filter(Boolean);
+        let matched = false;
+        let negated = false;
+        for (const piece of pieces) {
+            if (piece === '!*') continue; // catch-all only handled by visibility plugin
+            if (piece.startsWith('!')) {
+                if (piece.slice(1) === pathname) negated = true;
+                continue;
+            }
+            if (piece.startsWith('=')) {
+                if (piece.slice(1) === pathname) matched = true;
+                continue;
+            }
+            if (piece.endsWith('/*')) {
+                const prefix = piece.slice(0, -2);
+                if (pathname === prefix || pathname.startsWith(prefix + '/')) matched = true;
+                continue;
+            }
+            if (piece === pathname) { matched = true; continue; }
+            if (pathname.startsWith(piece + '/')) matched = true;
+        }
+        return matched && !negated;
+    }
+
+    function findRouteSubtrees(pathname) {
+        const normalized = (pathname || '/') === '/' ? '/' : pathname.replace(/^\/|\/$/g, '');
+        const out = [];
+        document.querySelectorAll('[x-route]').forEach((el) => {
+            const value = el.getAttribute('x-route') || '';
+            if (routeMatches(value, normalized)) out.push(el);
+        });
+        return out;
+    }
+
+    function discoverComponentNames(root) {
+        const names = new Set();
+        if (!root || !root.querySelectorAll) return names;
+        // No CSS selector for "tag starts with x-", so scan all and filter in JS.
+        root.querySelectorAll('*').forEach((el) => {
+            const tag = el.tagName.toLowerCase();
+            if (!tag.startsWith('x-') || !TAG_RE.test(tag)) return;
+            const name = tag.slice(2);
+            if (!FRAMEWORK_TAGS.has(name)) names.add(name);
+        });
+        return names;
+    }
+
+    function prefetchForRoute(pathname) {
+        const L = loader();
+        if (!L || typeof L.loadComponent !== 'function') return;
+        const subtrees = findRouteSubtrees(pathname);
+        if (!subtrees.length) return;
+        const names = new Set();
+        for (const subtree of subtrees) {
+            discoverComponentNames(subtree).forEach((n) => names.add(n));
+        }
+        names.forEach((name) => {
+            try { L.loadComponent(name); } catch { /* swallow — dedup is internal */ }
+        });
+    }
+
+    function hrefToPathname(href) {
+        if (!href) return null;
+        if (/^(#|mailto:|tel:|javascript:)/i.test(href)) return null;
+        try {
+            const url = new URL(href, window.location.href);
+            if (url.origin !== window.location.origin) return null;
+            return url.pathname || '/';
+        } catch {
+            return null;
+        }
+    }
+
+    function initialize() {
+        // 1) Parallel batch on route change.
+        window.addEventListener('manifest:route-change', (event) => {
+            const detail = (event && event.detail) || {};
+            const path = detail.normalizedPath || detail.to || '/';
+            const pathname = String(path).startsWith('/') ? String(path) : '/' + String(path);
+            prefetchForRoute(pathname);
+        });
+
+        // 2) Hover prefetch. pointerover bubbles (pointerenter doesn't); WeakSet dedups.
+        document.addEventListener('pointerover', (e) => {
+            if (!e.target || !e.target.closest) return;
+            const a = e.target.closest('a[href]');
+            if (!a || prefetchedAnchors.has(a)) return;
+            // Author opt-out: `data-no-prefetch` skips this anchor.
+            if (a.hasAttribute('data-no-prefetch')) return;
+            const href = a.getAttribute('href');
+            const pathname = hrefToPathname(href);
+            if (!pathname) return;
+            prefetchedAnchors.add(a);
+            prefetchForRoute(pathname);
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initialize);
+    } else {
+        initialize();
+    }
+})();
+
+
 // Main initialization for Manifest Components
 async function initializeComponents() {
     // Registry.initialize() may fetch manifest.json (async) when the loader
@@ -845,3 +1039,5 @@ if (document.readyState === 'loading') {
 window.ManifestComponents = {
     initialize: initializeComponents
 };
+
+})();

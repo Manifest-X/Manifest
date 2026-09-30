@@ -1,15 +1,7 @@
-/* Manifest Tooltips — singleton architecture.
- *
- * Instead of creating one <div popover="hint"> per x-tooltip trigger, this plugin
- * maintains ONE tooltip element per popover host (usually just document.body plus
- * optionally one per open popover). Every trigger with x-tooltip becomes a
- * lightweight content provider that asks the shared controller to show its text,
- * anchored to that trigger.
- *
- * Why: N triggers × 1 tooltip each = N extra DOM nodes that are empty 99% of the
- * time. For dense UIs like colorpicker libraries (~300+ swatches × 20 pickers),
- * this is the difference between a usable page and a laggy one.
- */
+/* Manifest Tooltips */
+
+(function () {
+
 
 // Hover delay from CSS var (with time-unit parsing). Defaults to 500ms.
 function getTooltipHoverDelay(element) {
@@ -36,9 +28,8 @@ function getTooltipHostForTrigger(triggerEl) {
 
 function initializeTooltipPlugin() {
 
-    // Chain mode: if another tooltip was dismissed this recently, the next one
-    // shows immediately (no hover delay). Also used to skip the hide-show flicker
-    // when gliding across many triggers — the singleton just re-anchors.
+    // Chain mode: a recently-dismissed tooltip lets the next show immediately (no
+    // delay), and gliding across triggers re-anchors the singleton without flicker.
     const TOOLTIP_CHAIN_GRACE_MS = 250;
     let _lastTooltipHideTime = 0;
     const markTooltipHidden = () => { _lastTooltipHideTime = Date.now(); };
@@ -46,11 +37,9 @@ function initializeTooltipPlugin() {
     const isInChainWindow = () => (Date.now() - _lastTooltipHideTime) < TOOLTIP_CHAIN_GRACE_MS;
 
     // ---- Singletons per host ----
-    //
-    // Most pages only need one singleton (under document.body). Open popovers (menus,
-    // dialogs) require their own singleton because CSS anchor positioning can't resolve
-    // across the top-layer boundary. We create them lazily on first use and keep them
-    // (small, hidden <div>s) for the life of the host.
+    // One under document.body; open popovers (menus, dialogs) need their own because
+    // CSS anchor positioning can't resolve across the top-layer boundary. Created
+    // lazily, kept for the host's life.
     const _singletons = new WeakMap();
 
     function getSingleton(host) {
@@ -87,12 +76,8 @@ function initializeTooltipPlugin() {
     }
 
     // ---- Controller ----
-    //
-    // Single pending-show timer shared across the whole plugin. If a trigger arms a
-    // show and the user moves to another trigger before it fires, the first timer is
-    // cancelled in favor of the new one. If the singleton is already visible, the new
-    // trigger updates it in place (chain mode) — no hide/show flicker.
-
+    // One shared pending-show timer: moving to another trigger cancels the first. If
+    // the singleton is already visible, the new trigger updates it in place (chain mode).
     let _showTimer = null;
     let _pendingTrigger = null;
     // Hide is deferred briefly so an incoming show on a different trigger can take
@@ -109,9 +94,8 @@ function initializeTooltipPlugin() {
     }
 
 
-    // Update the singleton to point at a trigger (anchor, content, classes) and show it.
-    // Switches between triggers happen by re-anchoring — no positional animation. Any
-    // previous transform state is cleared so the tooltip sits squarely at its anchor.
+    // Point the singleton at a trigger (anchor, content, classes) and show it. Switches
+    // re-anchor with no animation; residual transform state is cleared.
     function showSingletonFor(trigger, contentHtml, positions, allowHtml = true) {
         const host = getTooltipHostForTrigger(trigger);
         const s = getSingleton(host);
@@ -126,9 +110,8 @@ function initializeTooltipPlugin() {
         if (positions.length) s.el.classList.add(positions.join('-'));
         s.currentPositions = positions;
 
-        // Escape by default: dynamic ($x / runtime) content can carry attacker
-        // markup, so it goes in as TEXT. Author-authored literal HTML and the
-        // explicit `.html`/`.safe` opt-in render as markup (allowHtml=true).
+        // Escape by default (dynamic content can carry attacker markup); author HTML
+        // and the .html/.safe opt-in render as markup.
         if (allowHtml) s.el.innerHTML = contentHtml || '';
         else s.el.textContent = contentHtml || '';
 
@@ -139,9 +122,7 @@ function initializeTooltipPlugin() {
         s.activeTrigger = trigger;
         s.currentAnchorName = anchorName;
 
-        // A11y: link the trigger to the tooltip so screen readers announce the
-        // tooltip text as a description when the trigger receives focus or hover.
-        // Per WAI-ARIA, aria-describedby is the standard for this relationship.
+        // A11y: aria-describedby links trigger → tooltip for screen readers.
         if (!s.el.id) s.el.id = 'mnfst-tooltip-' + Math.random().toString(36).slice(2, 9);
         s.el.setAttribute('role', 'tooltip');
         // Preserve any author-provided aria-describedby so we don't stomp it.
@@ -160,11 +141,10 @@ function initializeTooltipPlugin() {
         let wasOpen = false;
         document.querySelectorAll('.tooltip[popover="hint"]:popover-open').forEach(el => {
             wasOpen = true;
-            try { el.hidePopover(); } catch {}
+            try { el.hidePopover(); } catch { }
         });
-        // Restore each tooltip's prior aria-describedby on the trigger it had been
-        // bound to. We can't reach the trigger from the popover alone, so we walk
-        // the tooltipped triggers and remove our id from their describedby list.
+        // Restore each trigger's prior aria-describedby (can't reach it from the
+        // popover, so walk tooltipped triggers).
         document.querySelectorAll('[aria-describedby]').forEach((el) => {
             if (!el._tooltipPriorDescribedBy && el._tooltipPriorDescribedBy !== '') return;
             const prior = el._tooltipPriorDescribedBy;
@@ -172,8 +152,8 @@ function initializeTooltipPlugin() {
             else el.removeAttribute('aria-describedby');
             el._tooltipPriorDescribedBy = undefined;
         });
-        // Only arm the chain window when something was actually open — marking
-        // unconditionally let a plain click fast-track the next focus show.
+        // Only arm the chain window when something was open (else a plain click
+        // would fast-track the next focus show).
         if (wasOpen) markTooltipHidden();
     }
 
@@ -187,10 +167,7 @@ function initializeTooltipPlugin() {
             expression.startsWith('$x.') ||
             (expression.includes('+') || expression.includes('`') || expression.includes('${'));
 
-        // Whether to render the resolved content as HTML. Default false (escape):
-        // dynamic/runtime content can carry attacker markup. Author-authored
-        // literal HTML in the attribute, or an explicit `.html`/`.safe` modifier,
-        // opts into raw markup.
+        // Render as HTML? Default false (escape); author literal HTML or .html/.safe opts in.
         let allowHtml = modifiers.includes('html') || modifiers.includes('safe');
 
         if (expression.startsWith('$x.')) {
@@ -204,8 +181,7 @@ function initializeTooltipPlugin() {
                 }
             });
         } else if (expression.includes('<') && expression.includes('>')) {
-            // Literal HTML string typed into the attribute — author-authored, as
-            // trusted as the surrounding template, so render it as markup.
+            // Literal HTML in the attribute — author-authored, trusted as the template.
             allowHtml = true;
             const escaped = expression.replace(/'/g, "\\'");
             getContent = evaluateLater(`'${escaped}'`);
@@ -276,17 +252,15 @@ function initializeTooltipPlugin() {
         el.addEventListener('mouseenter', requestShow);
         el.addEventListener('mouseleave', requestHide);
 
-        // Keyboard / focus interactions — WCAG 2.1 SC 1.4.13 requires tooltip
-        // content to be accessible to keyboard users via focus, not hover only.
-        // Gated on :focus-visible so mouse-click focus doesn't flash the tooltip.
+        // Keyboard focus (WCAG 2.1 SC 1.4.13). Gated on :focus-visible so mouse-click
+        // focus doesn't flash the tooltip.
         el.addEventListener('focus', () => {
             if (el.matches(':focus-visible')) requestShow();
         });
         el.addEventListener('blur', requestHide);
 
-        // Mousedown/click hides immediately and clears the chain window so a
-        // synthetic re-hover (e.g. content shifting under the cursor after
-        // navigation) waits the full delay instead of showing instantly.
+        // Mousedown/click hides now and clears the chain window, so a synthetic
+        // re-hover (content shifting under the cursor) waits the full delay.
         const hideOnInteraction = () => {
             cancelPendingShow();
             hideAnySingleton();
@@ -306,18 +280,10 @@ function initializeTooltipPlugin() {
     }, true);
 
     // ---- Public programmatic-show API ----
-    //
-    // Flash a tooltip in response to an action (e.g. the code plugin's inline
-    // copy confirmation) without requiring the trigger to carry an x-tooltip
-    // directive. The trigger element acts as the anchor; the singleton is
-    // reused, so this respects chain mode / focus behaviour just like a
-    // hover-shown tooltip would. Auto-hides after `durationMs`.
-    //
-    // `positions` accepts the same vocabulary as the x-tooltip directive's
-    // modifiers — array of any subset of ['top','bottom','start','end',
-    // 'center','corner']. Joined with '-' to form the position class
-    // (e.g. ['top','end'] → '.top-end'), matching what `x-tooltip.top.end`
-    // would emit.
+    // Flash a tooltip for an action (e.g. code plugin's copy confirmation) without an
+    // x-tooltip directive; the trigger is the anchor, the singleton is reused. Auto-
+    // hides after `durationMs`. `positions` is the directive modifier vocabulary
+    // (subset of ['top','bottom','start','end','center','corner'], joined with '-').
     window.ManifestTooltips = window.ManifestTooltips || {};
     window.ManifestTooltips.showTransient = function (triggerEl, contentHtml, durationMs, positions) {
         if (!triggerEl) return;
@@ -344,6 +310,29 @@ function initializeTooltipPlugin() {
             }
         }, duration);
     };
+
+    // ---- Copy buttons ----
+    // button[command="--copy"] copies its label's field (or the [commandfor]
+    // target) and flashes a confirmation: the button's [value] text, else a
+    // check icon. Styled by manifest.input.css.
+    document.addEventListener('click', async (event) => {
+        const btn = event.target.closest ? event.target.closest('button[command="--copy"]') : null;
+        if (!btn) return;
+        event.preventDefault();
+        const forId = btn.getAttribute('commandfor');
+        const source = forId
+            ? document.getElementById(forId)
+            : (btn.closest('label, .label') || btn.parentElement)?.querySelector('input, textarea, select');
+        if (!source) return;
+        try {
+            await navigator.clipboard.writeText(source.value ?? source.textContent);
+            const custom = (btn.value || '').trim();
+            const content = custom
+                ? custom.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
+                : '<span class="field-copied-icon" aria-hidden="true"></span>';
+            window.ManifestTooltips.showTransient(btn, content, 1500, ['top', 'end']);
+        } catch { /* clipboard rejected (browser permissions) — fail silently */ }
+    });
 }
 
 // ---- Plugin init boilerplate ----
@@ -375,3 +364,6 @@ if (window.Alpine && typeof window.Alpine.directive === 'function') {
     }, 50);
     setTimeout(() => clearInterval(checkAlpine), 5000);
 }
+
+
+})();

@@ -9,34 +9,44 @@
 
 @layer utilities {
 
-    /* ---- Editable area (armed) ----
-       Chrome is opt-in. Most uses of this plugin are a resize handle or a sortable
-       list, which should look like themselves; only .authoring gets the outline and
-       the region label. */
+    /* ---- Editing UI scope ----
+       ALL chrome — region outline + label, sortable grips, movable/text outlines,
+       size-handle hairlines, the floating toolbar — lives under ONE scope:
+       [data-edit-ui], on the region itself or any ancestor (e.g. <body data-edit-ui>
+       for a whole editor view). The plugin sets it on `.authoring` regions
+       automatically; everything else opts in with the attribute. A region outside
+       the scope is just as editable — it simply carries no visual cues. */
+
+    /* ---- Editable area (armed) ---- */
     :where([data-edit-armed]) {
         position: relative;
     }
 
     /* Quiet until touched. A page covered in dashed boxes reads as a diagram of
-       itself; the affordance only has to be there when you go looking for it. */
-    :where([data-edit-armed][data-edit-authoring]) {
+       itself; the affordance only has to be there when you go looking for it.
+       While an inner affordance is engaged (text caret, handle, row), the region
+       outline stands down so only the element being edited is highlighted. */
+    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *) {
         outline: 1px dashed transparent;
         outline-offset: 6px;
         border-radius: var(--radius);
         transition: outline-color 0.12s ease;
     }
 
-    :where([data-edit-armed][data-edit-authoring]):hover,
-    :where([data-edit-armed][data-edit-authoring]):focus-within {
+    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *):is(:hover, :focus-within):not(:has([contenteditable]:is(:hover, :focus), [data-edit-handle]:is(:hover, :focus), [data-edit-sortable]:is(:hover, :focus-within), [data-edit-movable]:is(:hover, :focus))) {
         outline-color: var(--color-line);
     }
 
-    :where([data-edit-armed][data-edit-authoring])::before {
+    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *)::before {
         content: attr(data-edit-label);
         position: absolute;
-        inset-block-start: -1.5rem;
-        inset-inline-start: 0;
+        inset-block-start: calc(-0.6em - 6px);
+        inset-inline-start: 0.5rem;
+        padding-inline: 0.3rem;
+        background: var(--color-page);
+        border-radius: 3px;
         font-size: 0.7rem;
+        line-height: 1.2;
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: var(--color-content-subtle);
@@ -45,8 +55,7 @@
         transition: opacity 0.12s ease;
     }
 
-    :where([data-edit-armed][data-edit-authoring]):hover::before,
-    :where([data-edit-armed][data-edit-authoring]):focus-within::before {
+    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *):is(:hover, :focus-within):not(:has([contenteditable]:is(:hover, :focus), [data-edit-handle]:is(:hover, :focus), [data-edit-sortable]:is(:hover, :focus-within), [data-edit-movable]:is(:hover, :focus)))::before {
         opacity: 1;
     }
 
@@ -57,10 +66,28 @@
         transition: opacity 0.12s ease, outline-color 0.12s ease;
     }
 
-    :where([data-edit-sortable]):hover,
-    :where([data-edit-sortable]):focus-within {
-        outline: 1px solid var(--edit-accent, var(--color-brand-content));
-        outline-offset: 3px;
+    /* The grip: the plugin's own inline drag affordance, sitting inside the row
+       at its inline start. A dot grid, revealed on approach. --edit-grip sizes
+       it; `--edit-grip: 0` removes it (e.g. for grid rows where an extra flex
+       item would take a cell). No full-row outline — the grip and the cursor
+       say "draggable" without boxing the content. */
+    :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable])::before {
+        content: '';
+        align-self: center;
+        flex: 0 0 auto;
+        width: var(--edit-grip, 0.6rem);
+        height: 1rem;
+        margin-inline-end: calc(var(--edit-grip, 0.6rem) / 2);
+        background-image: radial-gradient(circle, var(--color-content-subtle) 1px, transparent 1px);
+        background-size: 0.3rem 0.3rem;
+        background-position: center;
+        opacity: 0;
+        transition: opacity 0.12s ease;
+        pointer-events: none;
+    }
+
+    :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable]):is(:hover, :focus-visible)::before {
+        opacity: 0.9;
     }
 
     :where([data-edit-sortable], [data-edit-movable]):focus-visible {
@@ -105,25 +132,30 @@
         touch-action: none;
     }
 
-    :where([data-edit-movable]):hover {
+    :where([data-edit-ui] [data-edit-movable], [data-edit-ui][data-edit-movable]):hover {
         outline: 1px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 2px;
     }
 
-    /* ---- Inline text ---- */
-    :where([data-edit-armed]) [contenteditable="true"] {
+    /* ---- Inline text ----
+       One weight everywhere: hover hints and the focused caret both use the same
+       1px line, so focusing doesn't make the page jump a weight class. */
+    :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"],
+    :where([data-edit-ui])[data-edit-armed] [contenteditable="true"] {
         outline: 1px solid transparent;
         outline-offset: 2px;
         border-radius: 3px;
         transition: outline-color 0.12s ease;
     }
 
-    :where([data-edit-armed]) [contenteditable="true"]:hover {
+    :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"]:hover,
+    :where([data-edit-ui])[data-edit-armed] [contenteditable="true"]:hover {
         outline-color: color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
     }
 
-    :where([data-edit-armed]) [contenteditable="true"]:focus {
-        outline: 2px solid var(--edit-accent, var(--color-brand-content));
+    :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"]:focus,
+    :where([data-edit-ui])[data-edit-armed] [contenteditable="true"]:focus {
+        outline-color: var(--edit-accent, var(--color-brand-content));
     }
 
     /* ---- Size handles ----
@@ -133,14 +165,16 @@
         position: relative;
     }
 
-    /* Handles reveal on approach rather than sitting on the element permanently */
+    /* Handles reveal on approach rather than sitting on the element permanently.
+       The hairline is chrome, so it follows the [data-edit-ui] scope like every
+       other affordance; outside the scope the handles still work (hit areas and
+       resize cursors stay), they just draw nothing. */
     :where([data-edit-sizable]) :where([data-edit-handle])::before {
         opacity: 0;
         transition: opacity 0.12s ease, background-color 0.15s ease;
     }
 
-    :where([data-edit-sizable]):hover :where([data-edit-handle])::before,
-    :where([data-edit-sizable]):focus-within :where([data-edit-handle])::before {
+    :where([data-edit-ui] [data-edit-sizable], [data-edit-ui][data-edit-sizable]):is(:hover, :focus-within) :where([data-edit-handle])::before {
         opacity: 1;
     }
 
@@ -300,8 +334,10 @@
         }
     }
 
+    /* --edit-toolbar: none (any scope up to :root) suppresses it — e.g. a site
+       that demos .authoring regions but has its own publish flow. */
     :root[data-edit-active] :where([data-edit-toolbar]) {
-        display: flex;
+        display: var(--edit-toolbar, flex);
     }
 
     /* A popover: the top layer sits above every stacking context, so no handle,

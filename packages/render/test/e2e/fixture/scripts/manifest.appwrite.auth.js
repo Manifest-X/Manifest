@@ -1,19 +1,13 @@
-/*  Manifest Appwrite Auth
+/* manifest.appwrite.auth.js — built from scripts/auth/ */
+
+(function () {
+
+/*  Manifest Appwrite Auth — config resolution
 /*  By Andrew Matlock under MIT license
-/*  https://github.com/andrewmatlock/Manifest
-/*
-/*  Supports authentication with an Appwrite project
-/*  Requires Alpine JS (alpinejs.dev) to operate
 */
 
-/* Auth config */
-
-// Refuse strings that still contain an unresolved ${VAR} reference. The loader
-// runs window.ManifestDataConfig.interpolateManifest at manifest-load time, so
-// by the time we read these fields the env-var substitution has already been
-// applied. Anything still matching ${VAR} is an undefined env var — passing it
-// to Appwrite would either silently fail or, worse, be sent verbatim as an
-// HTTP header value, leaking the env var name. Loud-fail instead.
+// Reject strings still holding an unresolved ${VAR} — an undefined env var that
+// would leak verbatim into an Appwrite HTTP header. Loud-fail instead.
 function resolvedOrNull(value, fieldName) {
     if (typeof value !== 'string') return value;
     if (/\$\{[^}]+\}/.test(value)) {
@@ -23,7 +17,7 @@ function resolvedOrNull(value, fieldName) {
     return value;
 }
 
-// Load manifest if not already loaded (loader may set __manifestLoaded / registry.manifest)
+// Load manifest if not already loaded
 async function ensureManifest() {
     if (window.ManifestComponentsRegistry?.manifest) {
         return window.ManifestComponentsRegistry.manifest;
@@ -32,10 +26,14 @@ async function ensureManifest() {
         return window.__manifestLoaded;
     }
 
+    if (window.__manifestPromise) {
+        const shared = await window.__manifestPromise.catch(() => null);
+        if (shared) return shared;
+    }
     try {
         const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
-        const response = await fetch(manifestUrl);
-        return await response.json();
+        window.__manifestPromise = fetch(manifestUrl).then(r => r.json()).then(m => { window.ManifestDataConfig?.interpolateManifest?.(m); return m; });
+        return await window.__manifestPromise;
     } catch (error) {
         return null;
     }
@@ -51,71 +49,106 @@ async function getAppwriteConfig() {
     const appwriteConfig = manifest.appwrite;
     const endpoint = resolvedOrNull(appwriteConfig.endpoint, 'endpoint');
     const projectId = resolvedOrNull(appwriteConfig.projectId, 'projectId');
-    // Optional dev key to bypass rate limits in development. The schema
-    // documents `${VAR_NAME}` interpolation for this field specifically —
-    // refuse to forward a literal placeholder as an HTTP header.
+    // Optional dev key to bypass rate limits in development.
     const devKey = appwriteConfig.devKey ? resolvedOrNull(appwriteConfig.devKey, 'devKey') : undefined;
 
     if (!endpoint || !projectId) {
         return null;
     }
-    // devKey is optional: if the user supplied one but it failed to resolve,
-    // resolvedOrNull returned null (and logged) — drop the field rather than
-    // initialize Appwrite with a literal `${VAR}` header.
+    // Supplied-but-unresolved devKey: drop the config rather than send a literal ${VAR} header.
     if (appwriteConfig.devKey && devKey === null) {
         return null;
     }
 
-    // Get auth methods from config (defaults to ["magic", "oauth"] if not specified)
+    // Auth methods (defaults to magic + oauth)
     const authMethods = appwriteConfig.auth?.methods || ["magic", "oauth"];
 
-    // Guest session support: "guest-auto" = automatic, "guest-manual" = manual only
-    const guestAuto = authMethods.includes("guest-auto");
+    // Guest sessions: "guest"/"guest-auto" = automatic, "guest-manual" = manual only.
+    const guestAuto = authMethods.includes("guest") || authMethods.includes("guest-auto");
     const guestManual = authMethods.includes("guest-manual");
     const hasGuest = guestAuto || guestManual;
 
     const magicEnabled = authMethods.includes("magic");
+    const otpEnabled = authMethods.includes("otp");
     const oauthEnabled = authMethods.includes("oauth");
 
-    // Teams support: presence of teams object enables it
+    // Teams (presence of teams object enables it)
     const teamsEnabled = !!appwriteConfig.auth?.teams;
-    const permanentTeams = appwriteConfig.auth?.teams?.permanent || null; // Array of team names (immutable)
-    const templateTeams = appwriteConfig.auth?.teams?.template || null; // Array of team names (can be deleted and reapplied)
-    const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // Polling interval in milliseconds (null = disabled)
+    const permanentTeams = appwriteConfig.auth?.teams?.permanent || null; // immutable
+    const templateTeams = appwriteConfig.auth?.teams?.template || null; // deletable + reappliable
+    const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // ms, null = disabled
+    // Coerce a config boolean that may arrive as an interpolated string. `${VAR}`
+    // placeholders resolve to strings, so a bare !! would read "false" as truthy and
+    // break per-environment config (e.g. teams.guests via `${PUBLIC_GUESTS}`).
+    const toBool = v => typeof v === 'string' ? /^(true|1|yes|on)$/i.test(v.trim()) : !!v;
 
-    // Default roles: permanent (cannot be deleted) and template (can be deleted)
-    // These are objects mapping role names to permissions: { "Admin": ["inviteMembers", ...] }
-    const permanentRoles = appwriteConfig.auth?.roles?.permanent || null; // Object: { "RoleName": ["permission1", ...] }
-    const templateRoles = appwriteConfig.auth?.roles?.template || null; // Object: { "RoleName": ["permission1", ...] }
+    const guestTeams = toBool(appwriteConfig.auth?.teams?.guests); // seed default teams for guests
+    // Seed default teams for authenticated (non-anonymous) sessions. Defaults to true
+    // (historical behavior). Set teams.authenticated:false with teams.guests:true to make
+    // seeding guest-only — e.g. a per-guest sandbox that must never be minted for a
+    // signed-in user who already belongs to their real workspace.
+    const authenticatedTeams = appwriteConfig.auth?.teams?.authenticated === undefined
+        ? true
+        : toBool(appwriteConfig.auth.teams.authenticated);
 
-    // Member roles: derived from permanent and template roles (merged)
-    // This is used for role normalization, permission checking, and creatorRole logic
+    // Guest upgrade: preserve the anonymous account + teams on sign-in (magic/oauth;
+    // OTP can't convert anonymous accounts). Defaults to guestTeams.
+    const guestUpgrade = appwriteConfig.auth?.guestUpgrade !== undefined
+        ? toBool(appwriteConfig.auth.guestUpgrade)
+        : guestTeams;
+
+    // Default roles: { "RoleName": ["permission", ...] }
+    const permanentRoles = appwriteConfig.auth?.roles?.permanent || null; // not deletable
+    const templateRoles = appwriteConfig.auth?.roles?.template || null; // deletable
+
+    // Member roles: permanent + template merged (fallback to legacy memberRoles)
     const memberRoles = permanentRoles || templateRoles
         ? { ...(permanentRoles || {}), ...(templateRoles || {}) }
-        : (appwriteConfig.auth?.memberRoles || null); // Fallback to legacy memberRoles if roles not defined
+        : (appwriteConfig.auth?.memberRoles || null);
 
-    // Creator role: string reference to a role in memberRoles (role creator gets by default)
+    // Creator role: memberRoles key the creator gets by default (legacy singular)
     const creatorRole = appwriteConfig.auth?.creatorRole || null;
+
+    // Creator roles (plural): role(s) assigned to the team creator atomically at creation.
+    // string | string[] | null; explicit null/[] = owner-only. Wins over creatorRole.
+    // Resolves to array (configured) or null (use historical default of first role).
+    let creatorRoles = null;
+    if (appwriteConfig.auth && Object.prototype.hasOwnProperty.call(appwriteConfig.auth, 'creatorRoles')) {
+        const raw = appwriteConfig.auth.creatorRoles;
+        creatorRoles = raw == null ? [] : (Array.isArray(raw) ? raw.filter(r => typeof r === 'string') : [raw]).filter(Boolean);
+    } else if (creatorRole && memberRoles && memberRoles[creatorRole]) {
+        creatorRoles = [creatorRole];
+    }
+
+    // Guest migration: deployed Appwrite Function id that carries guest teams to
+    // the OTP account (which Appwrite can't convert in place).
+    const guestMigrationFunctionId = appwriteConfig.auth?.guestMigration?.functionId || null;
 
     return {
         endpoint,
         projectId,
-        devKey, // Optional dev key for development
+        devKey,
         authMethods,
         guest: hasGuest,
         guestAuto: guestAuto,
         guestManual: guestManual,
-        anonymous: guestAuto, // For backwards compatibility with existing code
+        anonymous: guestAuto, // back-compat alias
         magic: magicEnabled,
+        otp: otpEnabled,
         oauth: oauthEnabled,
         teams: teamsEnabled,
-        permanentTeams: permanentTeams, // Array of team names (cannot be deleted)
-        templateTeams: templateTeams, // Array of team names (can be deleted and reapplied)
-        teamsPollInterval: teamsPollInterval, // Polling interval in milliseconds (null = disabled)
-        memberRoles: memberRoles, // Role definitions: { "RoleName": ["permission1", "permission2"] }
-        permanentRoles: permanentRoles, // Object: { "RoleName": ["permission1", ...] } (cannot be deleted)
-        templateRoles: templateRoles, // Object: { "RoleName": ["permission1", ...] } (can be deleted)
-        creatorRole: creatorRole // String reference to memberRoles key
+        permanentTeams: permanentTeams,
+        templateTeams: templateTeams,
+        teamsPollInterval: teamsPollInterval,
+        guestTeams: guestTeams,
+        authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
+        guestUpgrade: guestUpgrade,
+        guestMigrationFunctionId: guestMigrationFunctionId,
+        memberRoles: memberRoles,
+        permanentRoles: permanentRoles,
+        templateRoles: templateRoles,
+        creatorRole: creatorRole,
+        creatorRoles: creatorRoles
     };
 }
 
@@ -126,7 +159,6 @@ let appwriteTeams = null;
 let appwriteUsers = null;
 
 async function getAppwriteClient() {
-    // Check if Appwrite SDK is loaded
     if (!window.Appwrite || !window.Appwrite.Client || !window.Appwrite.Account) {
         return null;
     }
@@ -141,8 +173,7 @@ async function getAppwriteClient() {
             .setEndpoint(config.endpoint)
             .setProject(config.projectId);
 
-        // Add dev key header if provided (bypasses rate limits in development)
-        // See: https://appwrite.io/docs/advanced/platform/rate-limits#dev-keys
+        // Dev key header bypasses rate limits in development.
         if (config.devKey) {
             appwriteClient.headers['X-Appwrite-Dev-Key'] = config.devKey;
         }
@@ -150,7 +181,6 @@ async function getAppwriteClient() {
         appwriteAccount = new window.Appwrite.Account(appwriteClient);
         appwriteTeams = new window.Appwrite.Teams(appwriteClient);
 
-        // Initialize Users service if available (for fetching user details)
         if (window.Appwrite.Users) {
             appwriteUsers = new window.Appwrite.Users(appwriteClient);
         }
@@ -160,8 +190,9 @@ async function getAppwriteClient() {
         client: appwriteClient,
         account: appwriteAccount,
         teams: appwriteTeams,
-        users: appwriteUsers, // Add users service for fetching user details
-        realtime: window.Appwrite?.Realtime ? new window.Appwrite.Realtime(appwriteClient) : null // Realtime service for subscriptions
+        users: appwriteUsers,
+        functions: window.Appwrite?.Functions ? new window.Appwrite.Functions(appwriteClient) : null,
+        realtime: window.Appwrite?.Realtime ? new window.Appwrite.Realtime(appwriteClient) : null
     };
 }
 
@@ -188,12 +219,8 @@ function initializeAuthStore() {
     // Cross-tab synchronization using localStorage events
     const STORAGE_KEY = 'manifest:auth:state';
 
-    // Whitelist of Appwrite Session fields safe to mirror across tabs.
-    // CRITICALLY excludes `secret` (the bearer credential), `providerAccessToken`,
-    // `providerRefreshToken`, and `providerAccessTokenExpiry`. The cookie set
-    // on the Appwrite domain is the actual auth of record; this localStorage
-    // copy only supports UI cross-tab sync ("someone just logged in here").
-    // An XSS on this origin must not be able to lift session secrets out.
+    // Session fields safe to mirror across tabs. Excludes `secret` and provider
+    // tokens — this copy is only for UI cross-tab sync, not the auth of record.
     const SAFE_SESSION_FIELDS = [
         '$id', 'userId', 'provider', 'expire', 'current',
         'clientName', 'osName', 'osCode', 'deviceName',
@@ -223,6 +250,8 @@ function initializeAuthStore() {
                     store.session = state.session;
                     store.magicLinkSent = state.magicLinkSent || false;
                     store.magicLinkExpired = state.magicLinkExpired || false;
+                    store.otpSent = state.otpSent || false;
+                    store.otpExpired = state.otpExpired || false;
                     store.error = state.error;
                 }
             } catch (error) {
@@ -241,6 +270,8 @@ function initializeAuthStore() {
                 session: sanitizeSessionForStorage(store.session),
                 magicLinkSent: store.magicLinkSent,
                 magicLinkExpired: store.magicLinkExpired,
+                otpSent: store.otpSent,
+                otpExpired: store.otpExpired,
                 error: store.error
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -258,6 +289,10 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
+        otpSent: false, // Email OTP: a code has been emailed and is awaiting entry
+        otpExpired: false, // Email OTP: the entered code was wrong/expired
+        otpPhrase: null, // Email OTP: security phrase to display (when enabled)
+        _otpUserId: null, // Email OTP: userId returned by createEmailToken, used by verifyOTP
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
@@ -385,34 +420,37 @@ function initializeAuthStore() {
 
         // Get personal team (convenience getter - returns first default team)
         get personalTeam() {
-            // This is async, so we can't use a getter directly
-            // Return null and let users call getPersonalTeam() or getDefaultTeams() directly
+            // Lookup is async; use getPersonalTeam()/getDefaultTeams() instead
             return null;
         },
 
-        // Get authentication method (oauth, magic, anonymous)
+        // Get authentication method (anonymous, magic, otp, phone, oauth)
         getMethod() {
             if (!this.session) return null;
-            const provider = this.session.provider;
-            if (provider === 'anonymous') return 'anonymous';
-            if (provider === 'magic-url') return 'magic';
-            // OAuth providers return their name (google, github, etc.)
-            if (provider && provider !== 'anonymous' && provider !== 'magic-url') return 'oauth';
-            return null;
+            // Appwrite session.provider: anonymous | magic-url | email (OTP) |
+            // token (OTP, some versions) | phone | oauth2 (or a specific provider).
+            switch (this.session.provider) {
+                case 'anonymous': return 'anonymous';
+                case 'magic-url': return 'magic';
+                case 'email':     return 'otp';   // this plugin uses email tokens for OTP
+                case 'token':     return 'otp';
+                case 'phone':     return 'phone';
+                case 'oauth2':    return 'oauth';
+                default:          return this.session.provider ? 'oauth' : null;
+            }
         },
 
-        // Get OAuth provider name (google, github, etc.) or null for non-OAuth methods
-        // Uses stored provider from loginOAuth() call, or falls back to session.provider
-        // For existing sessions without stored provider, triggers async fetch from Appwrite identities
+        // OAuth provider name (google, github, …), or null for non-OAuth methods.
+        // Reads stored provider, else falls back to session.provider / identities fetch.
         getProvider() {
             if (!this.session) {
                 return null;
             }
             const sessionProvider = this.session.provider;
 
-            // For OAuth, return the stored provider name (google, github, etc.)
-            // session.provider returns "oauth2" generically, so we use _oauthProvider
-            if (sessionProvider && sessionProvider !== 'anonymous' && sessionProvider !== 'magic-url') {
+            // session.provider is generically "oauth2", so use _oauthProvider. Gate on
+            // getMethod() so non-OAuth sessions skip the pointless identities lookup.
+            if (this.getMethod() === 'oauth') {
                 // Try to get from store first, then localStorage, then sessionStorage
                 let provider = this._oauthProvider;
                 if (!provider) {
@@ -485,6 +523,9 @@ function initializeAuthStore() {
             this.inProgress = true;
             this.error = null;
 
+            // Hoisted so the post-init background team load (below) can read it.
+            let appwriteConfig = null;
+
             try {
                 const appwrite = await config.getAppwriteClient();
                 if (!appwrite) {
@@ -497,7 +538,7 @@ function initializeAuthStore() {
                 this._appwrite = appwrite;
 
                 // Get auth methods config from manifest
-                const appwriteConfig = await config.getAppwriteConfig();
+                appwriteConfig = await config.getAppwriteConfig();
                 this._guestAuto = appwriteConfig?.guestAuto === true;
                 this._guestManual = appwriteConfig?.guestManual === true;
                 this.guestManualEnabled = appwriteConfig?.guestManual === true;
@@ -514,8 +555,7 @@ function initializeAuthStore() {
                         this.isAuthenticated = true;
                         this.isAnonymous = currentSession.provider === 'anonymous';
 
-                        // Restore OAuth provider from localStorage if available (persists across redirects)
-                        // This ensures provider name persists across page refreshes
+                        // Restore OAuth provider from storage (persists across redirects/refresh)
                         if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
                             try {
                                 // Try localStorage first (persists across redirects), fallback to sessionStorage
@@ -548,18 +588,8 @@ function initializeAuthStore() {
                         this.isAnonymous = false;
                     }
 
-                    // Load teams if enabled and user is authenticated
-                    if (this.isAuthenticated && appwriteConfig?.teams && this.listTeams) {
-                        try {
-                            await this.listTeams();
-                            // Auto-create default teams if enabled
-                            if ((appwriteConfig.permanentTeams || appwriteConfig.templateTeams) && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
-                                await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
-                            }
-                        } catch (teamsError) {
-                            // Don't fail initialization if teams fail to load
-                        }
-                    }
+                    // Team loading is deferred (not awaited) — runs in the background after
+                    // manifest:auth:initialized so a session gate isn't held up by it.
                 } catch (error) {
                     // No existing session - this is expected
                     this.isAuthenticated = false;
@@ -571,7 +601,9 @@ function initializeAuthStore() {
                 // Sync state to localStorage
                 syncStateToStorage(this);
             } catch (error) {
-                this.error = error.message;
+                // Passive lifecycle step: resolve to signed-out and log. Don't set
+                // $auth.error — that's reserved for user-actionable sign-in failures.
+                console.warn('[Manifest Appwrite Auth] Session restore failed (treating as signed out):', error?.message || error);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
             } finally {
@@ -579,13 +611,102 @@ function initializeAuthStore() {
                 this._initialized = true;
                 this._initializing = false;
 
-                // Dispatch initialized event - let callback handlers process after
+                // Fire as soon as identity is known, before teams load, so a session
+                // gate / splash clears in a few hundred ms.
                 window.dispatchEvent(new CustomEvent('manifest:auth:initialized', {
                     detail: {
                         isAuthenticated: this.isAuthenticated,
                         isAnonymous: this.isAnonymous
                     }
                 }));
+            }
+
+            // Background load + seed teams after init. Populates reactively; fires
+            // manifest:auth:teams-loaded for anything needing the full set.
+            if (appwriteConfig && this.isAuthenticated && appwriteConfig.teams
+                && (!this.isAnonymous || appwriteConfig.guestTeams)) {
+                this._loadTeamsAndSeed(appwriteConfig)
+                    .then(() => window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
+                        detail: { teams: this.teams, currentTeam: this.currentTeam }
+                    })))
+                    .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
+            }
+        },
+
+        // Clear team state when the identity changes to a different user (e.g. guest
+        // replaced on OTP sign-in). Otherwise stale currentTeam/teams cause 404s.
+        _resetTeamsState() {
+            this.teams = [];
+            this.currentTeam = null;
+            this.currentTeamMemberships = [];
+            this.deletedTemplateTeams = [];
+            this.deletedTemplateRoles = [];
+            this._teamImmutableCache = {};
+            if (this.stopTeamsRealtime) {
+                try { this.stopTeamsRealtime(); } catch (e) { /* ignore */ }
+            }
+        },
+
+        // Call the deployed guest-migration function; the current session authenticates it.
+        // Returns parsed JSON, or null on failure (best-effort — never blocks sign-in).
+        async _callGuestMigration(path, body) {
+            const appwriteConfig = await config.getAppwriteConfig();
+            const fnId = appwriteConfig?.guestMigrationFunctionId;
+            if (!fnId || !this._appwrite?.functions) {
+                return null;
+            }
+            try {
+                const exec = await this._appwrite.functions.createExecution(
+                    fnId, JSON.stringify(body || {}), false, path, 'POST'
+                );
+                const raw = exec?.responseBody ?? exec?.response ?? '';
+                try { return JSON.parse(raw); } catch (e) { return null; }
+            } catch (e) {
+                console.warn(`[Manifest Appwrite Auth] Guest migration ${path} failed:`, e.message);
+                return null;
+            }
+        },
+
+        // Load the user's teams and seed configured defaults. Shared by the guest,
+        // magic-link, OAuth, and init/restore paths.
+        async _loadTeamsAndSeed(appwriteConfig) {
+            const cfg = appwriteConfig || await config.getAppwriteConfig();
+            if (!cfg?.teams) {
+                return;
+            }
+            // Startup race: we can arrive before teams.core/defaults wire listTeams +
+            // ensureDefaultTeams onto the store. Wait briefly rather than skip.
+            const needsSeed = !!(cfg.permanentTeams || cfg.templateTeams);
+            const ready = () => typeof this.listTeams === 'function'
+                && (!needsSeed || typeof window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams === 'function');
+            for (let i = 0; i < 40 && !ready(); i++) {
+                await new Promise(r => setTimeout(r, 50));
+            }
+            if (typeof this.listTeams !== 'function') {
+                console.warn('[Manifest Appwrite Auth] Teams module never became ready; skipping team load/seed.');
+                return;
+            }
+            // Always load the user's real teams. Capture the result — never seed defaults
+            // off an unconfirmed team list: a failed/incomplete load must not read as
+            // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
+            const loadResult = await this.listTeams();
+            if (!needsSeed) {
+                return;
+            }
+            if (loadResult && loadResult.success === false) {
+                console.warn('[Manifest Appwrite Auth] Team list did not load; skipping seed to avoid mis-provisioning.');
+                return;
+            }
+            // Audience gate: seed defaults only for the configured session type. Guests
+            // need teams.guests; authenticated (non-anonymous) sessions need
+            // teams.authenticated (default true). Keeps a per-guest sandbox from being
+            // minted for a signed-in user who already holds their real workspace.
+            const audienceAllows = this.isAnonymous ? !!cfg.guestTeams : (cfg.authenticatedTeams !== false);
+            if (!audienceAllows) {
+                return;
+            }
+            if (window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
+                await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
             }
         },
 
@@ -632,9 +753,15 @@ function initializeAuthStore() {
                     // Ignore
                 }
 
-                // Clear teams for guest sessions (guests don't have teams)
-                this.teams = [];
-                this.currentTeam = null;
+                // Guests are full sessions and can own teams: seed defaults when
+                // guestTeams is enabled, otherwise none.
+                const cfg = await config.getAppwriteConfig();
+                if (cfg?.guestTeams) {
+                    await this._loadTeamsAndSeed(cfg);
+                } else {
+                    this.teams = [];
+                    this.currentTeam = null;
+                }
 
                 syncStateToStorage(this);
                 window.dispatchEvent(new CustomEvent('manifest:auth:anonymous', {
@@ -698,6 +825,12 @@ function initializeAuthStore() {
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
 
+                // Clear email OTP flags
+                this.otpSent = false;
+                this.otpExpired = false;
+                this.otpPhrase = null;
+                this._otpUserId = null;
+
                 // Stop teams realtime subscription if active
                 if (this.stopTeamsRealtime) {
                     this.stopTeamsRealtime();
@@ -712,18 +845,8 @@ function initializeAuthStore() {
                 this.teams = [];
                 this.currentTeam = null;
 
-                // Clear deleted teams tracking for this user (optional - uncomment if you want to clear on logout)
-                // try {
-                //     const userId = this.user?.$id;
-                //     if (userId) {
-                //         localStorage.removeItem(`manifest:deleted-teams:${userId}`);
-                //     }
-                // } catch (e) {
-                //     // Ignore
-                // }
-
-                // Restore to guest state after logout (if guest-auto is enabled)
-                // This only applies to non-guest sessions - if logging out from guest, don't create a new guest
+                // Restore to guest state after logout (guest-auto only, and not when
+                // already a guest — don't mint a new guest on top).
                 if (!this.isAnonymous && this._guestAuto && this._createAnonymousSession) {
                     await this._createAnonymousSession();
                 } else {
@@ -947,57 +1070,6 @@ window.ManifestAppwriteAuth = {
 
 /* Auth frontend */
 
-// Create a safe fallback proxy for undefined properties (similar to data proxies)
-let authLoadingProxy = null;
-function createAuthLoadingProxy() {
-    if (authLoadingProxy) {
-        return authLoadingProxy;
-    }
-
-    const fallback = Object.create(null);
-    fallback[Symbol.toPrimitive] = function (hint) {
-        return hint === 'number' ? 0 : '';
-    };
-    fallback.valueOf = function () { return ''; };
-    fallback.toString = function () { return ''; };
-
-    Object.defineProperty(fallback, 'length', {
-        value: 0,
-        writable: false,
-        enumerable: false,
-        configurable: false
-    });
-
-    authLoadingProxy = new Proxy(fallback, {
-        get(target, key) {
-            if (key === Symbol.iterator) {
-                return function* () { };
-            }
-            if (key === 'then' || key === 'catch' || key === 'finally' ||
-                key === Symbol.toStringTag || key === Symbol.hasInstance ||
-                key === 'constructor' || key === '__proto__' || key === 'prototype') {
-                return undefined;
-            }
-            if (key in target || key === Symbol.toPrimitive) {
-                const value = target[key];
-                if (value !== undefined) {
-                    return value;
-                }
-            }
-            // Return proxy itself for safe chaining (allows $auth.user.email even if user is undefined)
-            return authLoadingProxy;
-        },
-        has(target, key) {
-            if (typeof key === 'string') {
-                return true;
-            }
-            return key in target || key === Symbol.toPrimitive;
-        }
-    });
-
-    return authLoadingProxy;
-}
-
 // Initialize $auth magic method
 function initializeAuthMagic() {
     if (typeof Alpine === 'undefined') {
@@ -1025,8 +1097,7 @@ function initializeAuthMagic() {
                     if (typeof value === 'function') {
                         return value.bind(store);
                     }
-                    // CRITICAL: If property exists but is not a function, check if it should be a convenience method
-                    // This handles cases where the store was recreated and methods are missing
+                    // Non-function value that should be a convenience method → store was recreated
                     if (typeof prop === 'string') {
                         const convenienceMethodNames = [
                             'isCreatingTeam', 'isUpdatingTeam', 'isDeletingTeam', 'isInvitingMember',
@@ -1041,12 +1112,10 @@ function initializeAuthMagic() {
                         ];
 
                         if (convenienceMethodNames.includes(prop)) {
-                            // This should be a function but isn't - try to reinitialize synchronously
+                            // Reinitialize synchronously, then re-check
                             if (window.ManifestAppwriteAuthTeamsConvenience && window.ManifestAppwriteAuthTeamsConvenience.initialize) {
                                 try {
-                                    // Call initialize which will check and re-add methods if needed
                                     window.ManifestAppwriteAuthTeamsConvenience.initialize();
-                                    // Immediately check again - initialize should have added the method
                                     const reinitializedValue = store[prop];
                                     if (typeof reinitializedValue === 'function') {
                                         return reinitializedValue.bind(store);
@@ -1055,8 +1124,7 @@ function initializeAuthMagic() {
                                     // Failed to reinitialize, continue to fallback
                                 }
                             }
-                            // Return a safe fallback function that returns false/empty
-                            // This prevents "is not a function" errors while methods are being reinitialized
+                            // Safe fallbacks while methods reinitialize
                             if (prop.startsWith('is') || prop.startsWith('can') || prop.startsWith('has')) {
                                 return () => false;
                             }
@@ -1069,50 +1137,14 @@ function initializeAuthMagic() {
                             return () => ({ success: false, error: 'Method not initialized' });
                         }
                     }
-                    // CRITICAL: Handle null values - return loading proxy to allow safe chaining
-                    // This prevents errors when accessing $auth.user.email when user is null
-                    if (value === null || value === undefined) {
-                        return createAuthLoadingProxy();
-                    }
-                    // If value is an array, return it as-is (arrays are already iterable and don't need proxying)
-                    if (Array.isArray(value)) {
-                        return value;
-                    }
-                    // If value is an object, wrap it in a proxy for safe nested property access
-                    if (typeof value === 'object' && value !== null) {
-                        // Recursive helper function for nested object proxying
-                        function createNestedAuthProxy(objTarget) {
-                            return new Proxy(objTarget, {
-                                get(objTarget, key) {
-                                    // Handle special keys
-                                    if (key === Symbol.iterator || key === 'then' || key === 'catch' || key === 'finally') {
-                                        return undefined;
-                                    }
-                                    const nestedValue = objTarget[key];
-                                    // If nested value is undefined or null, return loading proxy for safe chaining
-                                    if (nestedValue === undefined || nestedValue === null) {
-                                        return createAuthLoadingProxy();
-                                    }
-                                    // If nested value is an array, return it as-is
-                                    if (Array.isArray(nestedValue)) {
-                                        return nestedValue;
-                                    }
-                                    // If nested value is an object, wrap recursively
-                                    if (typeof nestedValue === 'object' && nestedValue !== null) {
-                                        return createNestedAuthProxy(nestedValue);
-                                    }
-                                    return nestedValue;
-                                }
-                            });
-                        }
-                        return createNestedAuthProxy(value);
-                    }
+                    // Hand back the real value — no placeholder. A signed-out
+                    // user is null, not a stand-in object: `?.`, `||` and typeof
+                    // must all behave. Templates use `$auth.user?.email`; Alpine
+                    // renders undefined as ''.
                     return value;
                 }
 
-                // CRITICAL: If property doesn't exist, check if convenience methods need reinitialization
-                // This prevents "$auth.isCreatingTeam is not a function" errors after idle/reinitialization
-                // Only check for known convenience method names to avoid unnecessary work
+                // Missing property: reinitialize known convenience methods (guards post-idle errors)
                 const convenienceMethodNames = [
                     'isCreatingTeam', 'isUpdatingTeam', 'isDeletingTeam', 'isInvitingMember',
                     'isUpdatingMember', 'isDeletingMember', 'createTeamFromName', 'updateCurrentTeamName',
@@ -1169,8 +1201,8 @@ function initializeAuthMagic() {
                     return store.getProvider();
                 }
 
-                // Return loading proxy for undefined properties to allow safe chaining
-                return createAuthLoadingProxy();
+                // Unknown property — undefined, same as any other object.
+                return undefined;
             },
             set(target, prop, value) {
                 // Forward assignments to the store for two-way binding (x-model)
@@ -1273,13 +1305,14 @@ function initializeTeamsCore() {
                     // Determine initial roles for team creator
                     let creatorRoles = roles;
                     if (creatorRoles.length === 0) {
-                        // If no roles specified, use creatorRole from config
                         const memberRoles = appwriteConfig?.memberRoles;
-                        const creatorRoleName = appwriteConfig?.creatorRole;
+                        const configuredCreatorRoles = appwriteConfig?.creatorRoles; // array | null
 
-                        if (memberRoles && creatorRoleName && memberRoles[creatorRoleName]) {
-                            // Use specified creatorRole
-                            creatorRoles = [creatorRoleName];
+                        if (Array.isArray(configuredCreatorRoles)) {
+                            // Explicitly configured via auth.creatorRoles (or legacy creatorRole).
+                            // An empty array means "owner-only" — the creator holds just
+                            // Appwrite's intrinsic owner, with no template role assigned.
+                            creatorRoles = configuredCreatorRoles.length ? configuredCreatorRoles.slice() : ['owner'];
                         } else if (memberRoles && Object.keys(memberRoles).length > 0) {
                             // No creatorRole specified, find role with all owner permissions or use first
                             let foundRole = null;
@@ -2123,6 +2156,7 @@ function initializeTeamsCore() {
                 this.error = null;
 
                 try {
+                    invalidateRolesCache(teamId);
                     const result = await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: prefs
@@ -2601,9 +2635,11 @@ async function ensureDefaultTeams(store) {
 
                 if (result.success) {
                     createdTeams.push(result.team);
+                } else {
+                    console.warn(`[Manifest Appwrite Auth] Could not seed permanent team "${teamName}":`, result.error);
                 }
             } catch (error) {
-                // Error creating permanent team
+                console.warn(`[Manifest Appwrite Auth] Error seeding permanent team "${teamName}":`, error);
             }
         }
     }
@@ -2643,9 +2679,11 @@ async function ensureDefaultTeams(store) {
 
                 if (result.success) {
                     createdTeams.push(result.team);
+                } else {
+                    console.warn(`[Manifest Appwrite Auth] Could not seed template team "${teamName}":`, result.error);
                 }
             } catch (error) {
-                // Error creating template team
+                console.warn(`[Manifest Appwrite Auth] Error seeding template team "${teamName}":`, error);
             }
         }
     }
@@ -2830,6 +2868,7 @@ function initializeTeamsRolesDefaults() {
                         roles: updatedRoles,
                         deletedTemplateRoles: deletedRoles // Update deleted list in team preferences
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -2933,6 +2972,7 @@ function initializeTeamsRolesDefaults() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
+                        invalidateRolesCache(teamId);
                         await this._appwrite.teams.updatePrefs({
                             teamId: teamId,
                             prefs: updatedPrefs
@@ -3014,8 +3054,7 @@ function validateRoleConfig(memberRoles, creatorRole) {
     const errors = [];
     const warnings = [];
 
-    // If teams not enabled, roles are ignored (graceful degradation)
-    // This validation assumes teams are enabled
+    // Assumes teams enabled; roles are ignored otherwise
 
     // Validate memberRoles structure
     if (memberRoles && typeof memberRoles !== 'object') {
@@ -3040,8 +3079,7 @@ function validateRoleConfig(memberRoles, creatorRole) {
             if (typeof permission !== 'string') {
                 errors.push(`Role "${roleName}" has invalid permission type. Permissions must be strings.`);
             } else if (!OWNER_PERMISSIONS.includes(permission)) {
-                // Custom permission - this is allowed, just log for info
-                // No error, as custom permissions are valid
+                // Custom permissions are valid; no error
             }
         }
     }
@@ -3086,18 +3124,34 @@ function roleHasAllOwnerPermissions(roleName, memberRoles) {
     return OWNER_PERMISSIONS.every(perm => permissions.includes(perm));
 }
 
-// Get user-generated roles from team preferences
+// User-generated roles live in team prefs; one read per team is shared by every permission check
+// for a short window and dropped on any auth change or prefs write
+const ROLES_CACHE_TTL_MS = 15000;
+const rolesCache = new Map();   // teamId -> { at, promise }
+function invalidateRolesCache(teamId) { if (teamId === undefined) rolesCache.clear(); else rolesCache.delete(teamId); }
+if (typeof window !== 'undefined') {
+    ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized', 'manifest:auth:teams-loaded']
+        .forEach(type => window.addEventListener(type, () => invalidateRolesCache()));
+}
+
 async function getUserGeneratedRoles(teamId, appwrite) {
     if (!appwrite || !appwrite.teams) {
         return null;
     }
+    const hit = rolesCache.get(teamId);
+    if (hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) return hit.promise;
+    const promise = readUserGeneratedRoles(teamId, appwrite);
+    rolesCache.set(teamId, { at: Date.now(), promise });
+    promise.catch(() => rolesCache.delete(teamId));   // a null result (no custom roles) is a valid, cached answer
+    return promise;
+}
 
+async function readUserGeneratedRoles(teamId, appwrite) {
     try {
         const prefs = await appwrite.teams.getPrefs({ teamId });
         return prefs?.roles || null;
     } catch (error) {
-        // Team preferences might not have roles yet, or team might be deleted (404)
-        // Silently return null for deleted teams (expected behavior)
+        // Prefs may lack roles, or team deleted (404) → null
         if (error.message && error.message.includes('could not be found')) {
             return null;
         }
@@ -3123,29 +3177,50 @@ function mergeRoles(manifestRoles, userGeneratedRoles) {
     return merged;
 }
 
-// Normalize custom roles for Appwrite (add "owner" if any role requires it)
+// Appwrite membership role tokens allow only [a-zA-Z0-9._-]. Role definitions are
+// keyed by display name (which may contain spaces/unicode), so we store an
+// Appwrite-safe slug on the membership and resolve by matching slug(token) against
+// slug(defName). Idempotent, and "owner" (Appwrite's intrinsic role) passes through.
+function roleSlug(name) {
+    if (name === 'owner') return 'owner';
+    return String(name)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+// Normalize custom roles for Appwrite: slugify tokens (so space/unicode names stay
+// assignable) and add "owner" if any role requires it.
 function normalizeRolesForAppwrite(customRoles, memberRoles, userGeneratedRoles = null) {
     if (!Array.isArray(customRoles)) {
         return customRoles;
     }
 
+    const slugged = customRoles.map(role => roleSlug(role));
+
     // Merge manifest and user-generated roles
     const allRoles = mergeRoles(memberRoles, userGeneratedRoles);
 
-    // If no roles config, return as-is (will use Appwrite's default behavior)
+    // If no roles config, return slugged tokens (Appwrite handles owner default)
     if (!allRoles || Object.keys(allRoles).length === 0) {
-        return customRoles;
+        return slugged;
     }
 
-    // Check if any custom role requires owner
-    const requiresOwner = customRoles.some(role => roleRequiresOwner(role, allRoles));
+    // Which definition slugs require owner — checked by slug so this works whether the
+    // incoming tokens are display names or already slugged.
+    const ownerSlugs = new Set();
+    for (const name of Object.keys(allRoles)) {
+        if (roleRequiresOwner(name, allRoles)) ownerSlugs.add(roleSlug(name));
+    }
+    const requiresOwner = slugged.some(s => ownerSlugs.has(s));
 
     // If owner is already in the list, don't duplicate
-    if (requiresOwner && !customRoles.includes('owner')) {
-        return [...customRoles, 'owner'];
+    if (requiresOwner && !slugged.includes('owner')) {
+        return [...slugged, 'owner'];
     }
 
-    return customRoles;
+    return slugged;
 }
 
 // Normalize Appwrite roles for display (filter "owner" if a custom role replaces it)
@@ -3157,10 +3232,15 @@ function normalizeRolesForDisplay(appwriteRoles, memberRoles, userGeneratedRoles
     // Merge manifest and user-generated roles
     const allRoles = mergeRoles(memberRoles, userGeneratedRoles);
 
-    // If custom roles are defined, always filter out "owner" (it's a background Appwrite role)
-    // "owner" is automatically added by Appwrite for permissions, but shouldn't be displayed
+    // If custom roles are defined, filter out "owner" (a background Appwrite role) and
+    // translate slug tokens back to their display names (legacy exact-name tokens map
+    // through slug() too; unknown tokens pass through as-is).
     if (allRoles && Object.keys(allRoles).length > 0) {
-        return appwriteRoles.filter(role => role !== 'owner');
+        const bySlug = {};
+        for (const name of Object.keys(allRoles)) bySlug[roleSlug(name)] = name;
+        return appwriteRoles
+            .filter(role => role !== 'owner')
+            .map(role => bySlug[roleSlug(role)] || role);
     }
 
     // If no custom roles config, show "owner" as-is (legacy behavior)
@@ -3194,26 +3274,22 @@ function hasPermission(userRoles, permission, memberRoles, userGeneratedRoles = 
         return userRoles.includes('owner');
     }
 
-    // IMPORTANT: When custom roles are defined, we ONLY check custom roles, NOT the owner role.
-    // This is because Appwrite automatically grants "owner" role to users with custom roles
-    // that have native permissions, but we want to restrict them to ONLY the permissions
-    // explicitly defined in their custom role(s).
-
-    // Get user's custom roles (excluding "owner")
+    // With custom roles defined, check ONLY custom roles — Appwrite auto-grants "owner"
+    // alongside them, but permissions must stay limited to the custom role(s).
     const customRoles = userRoles.filter(role => role !== 'owner');
 
-    // If user has no custom roles (only "owner" or empty), grant all permissions
-    // This handles edge cases where:
-    // - User's role was deleted
-    // - User was never assigned a custom role
+    // No custom roles (deleted or never assigned) → full owner permissions
     if (customRoles.length === 0) {
-        // User has no custom roles, so they should have all owner permissions
         return true;
     }
 
-    // Check if any of the user's custom roles has this permission
+    // Check if any of the user's custom roles has this permission. Match by slug so
+    // display-name definitions resolve against slugged membership tokens, and legacy
+    // exact-name tokens still resolve.
+    const bySlug = {};
+    for (const [name, perms] of Object.entries(allRoles)) bySlug[roleSlug(name)] = perms;
     for (const roleName of customRoles) {
-        const rolePermissions = allRoles[roleName];
+        const rolePermissions = bySlug[roleSlug(roleName)];
         if (rolePermissions && Array.isArray(rolePermissions) && rolePermissions.includes(permission)) {
             return true;
         }
@@ -3266,6 +3342,10 @@ function initializeTeamsRoles() {
             // Add role abstraction methods to store
             store.getOwnerPermissions = function () {
                 return getOwnerPermissions();
+            };
+
+            store.roleSlug = function (name) {
+                return roleSlug(name);
             };
 
             store.validateRoleConfig = async function () {
@@ -3440,6 +3520,7 @@ window.ManifestAppwriteAuthTeamsRoles = {
     roleHasAllOwnerPermissions,
     getUserGeneratedRoles,
     mergeRoles,
+    roleSlug,
     normalizeRolesForAppwrite,
     normalizeRolesForDisplay,
     getPrimaryDisplayRole,
@@ -3517,6 +3598,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -3635,6 +3717,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -3736,6 +3819,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
+                    invalidateRolesCache(teamId);
                     await this._appwrite.teams.updatePrefs({
                         teamId: teamId,
                         prefs: updatedPrefs
@@ -3901,6 +3985,8 @@ function initializeTeamsUserRoles() {
                                     deletedTemplateRoles: deletedRoles
                                 };
 
+                                invalidateRolesCache(teamId);
+
                                 await this._appwrite.teams.updatePrefs({
                                     teamId: teamId,
                                     prefs: updatedPrefs
@@ -3936,6 +4022,7 @@ function initializeTeamsUserRoles() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
+                        invalidateRolesCache(teamId);
                         await this._appwrite.teams.updatePrefs({
                             teamId: teamId,
                             prefs: updatedPrefs
@@ -4031,6 +4118,19 @@ window.ManifestAppwriteAuthTeamsUserRoles = {
 
 /* Auth teams - Membership operations */
 
+// The Users service is server-only (node-appwrite); it is never present on the
+// browser SDK, so member-email enrichment degrades gracefully. Warn once rather
+// than on every membership lookup to avoid flooding the console. The flag lives on
+// window (not a module `let`) so "once" holds across the whole page even if the
+// bundle is evaluated more than once or memberships load concurrently.
+function _warnUsersServiceOnce() {
+    if (typeof window !== 'undefined') {
+        if (window.__manifestAuthUsersServiceWarned) return;
+        window.__manifestAuthUsersServiceWarned = true;
+    }
+    console.warn('[Manifest Appwrite Auth] Users service unavailable on the browser SDK — member emails will not be enriched. (This is expected; logged once.)');
+}
+
 // Add membership methods to auth store
 function initializeTeamsMembers() {
     if (typeof Alpine === 'undefined') {
@@ -4113,7 +4213,13 @@ function initializeTeamsMembers() {
 
                     const result = await this._appwrite.teams.createMembership(membershipParams);
 
-                    return { success: true, membership: result };
+                    // Surface the requested vs. stored tokens. They diverge by design —
+                    // role names are slugified for Appwrite, and owner-level roles carry the
+                    // "owner" token — so `normalized: true` signals an intentional transform,
+                    // not a failed write.
+                    const normalized = !(rolesArray.length === normalizedRoles.length
+                        && rolesArray.every((r, i) => r === normalizedRoles[i]));
+                    return { success: true, membership: result, requestedRoles: rolesArray, normalizedRoles, normalized };
                 } catch (error) {
                     this.error = error.message;
                     return { success: false, error: error.message };
@@ -4176,7 +4282,7 @@ function initializeTeamsMembers() {
                                     try {
                                         // Check if users service is available
                                         if (!this._appwrite || !this._appwrite.users || typeof this._appwrite.users.get !== 'function') {
-                                            console.warn('[Manifest Appwrite Auth] Users service not available on Appwrite client');
+                                            _warnUsersServiceOnce();
                                         } else {
                                             const user = await this._appwrite.users.get({ userId: membership.userId });
                                             if (user && user.email) {
@@ -4211,7 +4317,7 @@ function initializeTeamsMembers() {
                                             try {
                                                 // Check if users service is available
                                                 if (!this._appwrite || !this._appwrite.users || typeof this._appwrite.users.get !== 'function') {
-                                                    console.warn('[Manifest Appwrite Auth] Users service not available for pending invite lookup');
+                                                    _warnUsersServiceOnce();
                                                 } else {
                                                     const user = await this._appwrite.users.get({ userId: membership.userId });
                                                     if (user && user.email) {
@@ -4370,7 +4476,13 @@ function initializeTeamsMembers() {
                         await this.refreshPermissionCache();
                     }
 
-                    return { success: true, membership: result };
+                    // `normalized: true` signals the stored tokens intentionally differ from
+                    // the requested roles (slugified names, and an appended "owner" token for
+                    // owner-level roles) — a by-design transform, not a failed write.
+                    const normalized = !(Array.isArray(roles) && Array.isArray(normalizedRoles)
+                        && roles.length === normalizedRoles.length
+                        && roles.every((r, i) => r === normalizedRoles[i]));
+                    return { success: true, membership: result, requestedRoles: roles, normalizedRoles, normalized };
                 } catch (error) {
                     // Revert optimistic update on error
                     if (this.currentTeam && this.currentTeam.$id === teamId && this.listMemberships) {
@@ -4611,19 +4723,8 @@ function initializeTeamsConvenience() {
     const waitForStore = () => {
         const store = Alpine.store('auth');
         if (store) {
-            // Decide whether to (re)attach convenience methods. Use a sentinel
-            // that ONLY this module defines — `createTeamFromName`. The earlier
-            // sentinel (`isCreatingTeam`) was unreliable: the store itself
-            // defines an `isCreatingTeam()` stub at init (see manifest.appwrite
-            // .auth.store.js — the "Stub team convenience methods" block), so
-            // `typeof store.isCreatingTeam === 'function'` is true BEFORE this
-            // module runs. The check then fired false-positive and skipped the
-            // whole `if (needsReinitialization)` block below, leaving the real
-            // convenience methods (startEditingMember, createTeamFromName,
-            // cancelEditingMember, saveEditingMember, deleteMember, leaveTeam,
-            // toggleInviteRole, etc.) unattached — surfacing as
-            // "$auth.startEditingMember is not a function" the moment a user
-            // clicked an edit-member button.
+            // Sentinel must be a method ONLY this module defines. isCreatingTeam
+            // won't do — the store stubs it at init, so it reads present too early.
             const needsReinitialization = typeof store.createTeamFromName !== 'function';
             
             // Ensure cache properties are initialized (methods are already in store)
@@ -4705,8 +4806,7 @@ function initializeTeamsConvenience() {
                 };
             }
 
-            // CRITICAL: Check if convenience methods exist - use isCreatingTeam as the key check
-            // This ensures methods are re-added if the store was replaced or methods were lost after idle
+            // Re-attach methods if the store was replaced or methods were lost after idle
             if (needsReinitialization) {
                 // Convenience method: create team using newTeamName property
                 store.createTeamFromName = async function () {
@@ -5236,14 +5336,8 @@ function initializeTeamsConvenience() {
                     const allRoles = this.allTeamRoles({ $id: teamId });
                     const permissions = allRoles && allRoles[roleName] ? [...allRoles[roleName]] : [];
 
-                    // Ensure allAvailablePermissions is populated (for dropdown)
-                    if (!this.allAvailablePermissions || this.allAvailablePermissions.length === 0) {
-                        if (this.getAllAvailablePermissions) {
-                            await this.getAllAvailablePermissions(teamId);
-                        }
-                    }
-
-                    // Set editing state
+                    // Set state synchronously, before the async fetch below, so a caller
+                    // mutating editingRole.permissions right after isn't overwritten.
                     this.editingRole = {
                         teamId: teamId,
                         oldRoleName: roleName,
@@ -5251,8 +5345,39 @@ function initializeTeamsConvenience() {
                         permissions: permissions
                     };
 
+                    // Ensure allAvailablePermissions is populated (for dropdown)
+                    if (!this.allAvailablePermissions || this.allAvailablePermissions.length === 0) {
+                        if (this.getAllAvailablePermissions) {
+                            await this.getAllAvailablePermissions(teamId);
+                        }
+                    }
+
                     // Don't modify newRolePermissions when editing existing roles - that's only for new role creation
                     // The UI will use editingRole.permissions or pendingPermissions for existing roles
+                };
+
+                // Reactive-safe write: persist via updateUserRole, bypassing the reactive
+                // editingRole (mutating $auth.editingRole.permissions directly recurses).
+                store.updateRolePermissions = async function (teamId, roleName, permissions) {
+                    if (!this.updateUserRole) {
+                        return { success: false, error: 'Roles module not ready' };
+                    }
+                    const plain = Array.isArray(permissions)
+                        ? permissions.filter(p => p && typeof p === 'string')
+                        : [];
+                    return await this.updateUserRole(teamId, roleName, plain);
+                };
+
+                // Set permissions on the in-progress edit by replacing editingRole with a
+                // fresh object (not mutating the reactive nested array). Pair with saveEditingRole().
+                store.setEditingPermissions = function (permissions) {
+                    if (!this.editingRole) {
+                        return;
+                    }
+                    const plain = Array.isArray(permissions)
+                        ? permissions.filter(p => p && typeof p === 'string')
+                        : [];
+                    this.editingRole = { ...this.editingRole, permissions: plain };
                 };
 
                 store.cancelEditingRole = function () {
@@ -5328,7 +5453,19 @@ function initializeTeamsConvenience() {
                     const userMembership = this.currentTeamMemberships.find(
                         m => m.userId === this.user.$id
                     );
-                    return userMembership?.roles || [];
+                    const raw = userMembership?.roles || [];
+                    // Membership tokens are Appwrite-safe slugs; translate them back to the
+                    // author's display names using the cached role map. "owner" and unknown
+                    // tokens pass through unchanged.
+                    const slug = this.roleSlug;
+                    const allRoles = (this.allTeamRoles && this.allTeamRoles(this.currentTeam)) || {};
+                    const keys = Object.keys(allRoles);
+                    if (typeof slug !== 'function' || !keys.length) {
+                        return raw;
+                    }
+                    const bySlug = {};
+                    for (const name of keys) bySlug[slug(name)] = name;
+                    return raw.map(r => (r === 'owner' ? 'owner' : (bySlug[slug(r)] || r)));
                 };
 
                 // Check if current user has a specific permission in the current team
@@ -5348,29 +5485,45 @@ function initializeTeamsConvenience() {
                     return userRoles.includes('owner');
                 };
 
-                // Synchronous version for Alpine.js bindings (uses permission cache)
+                // Sync version for Alpine bindings. Resolves from cached allTeamRoles so it
+                // matches async hasTeamPermission, including custom (non-built-in) keys.
                 store.hasTeamPermissionSync = function (permission) {
                     if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
                         return false;
                     }
 
-                    // Use cached permissions if available (updated by updatePermissionCache)
-                    if (this._permissionCache && typeof this._permissionCache[permission] === 'boolean') {
-                        return this._permissionCache[permission];
+                    const userRoles = this.getCurrentTeamRoles();
+                    if (!Array.isArray(userRoles)) {
+                        return false;
                     }
 
-                    // Fallback: check if user has no custom roles (should have all permissions)
-                    // This matches the logic in hasPermission: if customRoles.length === 0, return true
-                    const userRoles = this.getCurrentTeamRoles();
-                    const customRoles = userRoles.filter(role => role !== 'owner');
+                    // The merged config + user-generated role map for the current team
+                    // (same map the async path resolves against), available synchronously.
+                    const allRoles = (this.allTeamRoles && this.allTeamRoles(this.currentTeam)) || {};
 
-                    // If user has no custom roles (only "owner" or empty), grant all permissions
-                    // This handles users with "No Role" who should have all owner permissions
+                    // No custom roles defined → owner has every permission.
+                    if (!allRoles || Object.keys(allRoles).length === 0) {
+                        return userRoles.includes('owner');
+                    }
+
+                    // User holds no custom role (only "owner" / empty) → all permissions.
+                    const customRoles = userRoles.filter(role => role !== 'owner');
                     if (customRoles.length === 0) {
                         return true;
                     }
 
-                    // If user has custom roles but cache is missing, return false (shouldn't happen if cache is working)
+                    // Granted if any of the user's custom roles includes this permission
+                    // (built-in or custom key). Match by slug so slugged/legacy membership
+                    // tokens resolve against display-name definitions.
+                    const slug = this.roleSlug || (x => x);
+                    const bySlug = {};
+                    for (const [name, perms] of Object.entries(allRoles)) bySlug[slug(name)] = perms;
+                    for (const roleName of customRoles) {
+                        const rolePermissions = bySlug[slug(roleName)];
+                        if (Array.isArray(rolePermissions) && rolePermissions.includes(permission)) {
+                            return true;
+                        }
+                    }
                     return false;
                 };
 
@@ -5380,7 +5533,8 @@ function initializeTeamsConvenience() {
                         return false;
                     }
                     const userRoles = this.getCurrentTeamRoles();
-                    return userRoles.includes(roleName);
+                    const slug = this.roleSlug || (x => x);
+                    return userRoles.some(r => slug(r) === slug(roleName));
                 };
 
                 // Get current user's primary role in current team
@@ -5409,12 +5563,9 @@ function initializeTeamsConvenience() {
                     return userRoles;
                 };
 
-            } // End of if (!store.isCreatingTeam || typeof store.isCreatingTeam !== 'function')
+            } // End needsReinitialization
 
-            // Note: hasPermission from roles module takes (userRoles, permission, teamId)
-            // hasTeamPermission is the convenience wrapper for current team
-
-            // Update cache when team is viewed (wrap existing viewTeam if it exists)
+            // Wrap viewTeam to refresh permission cache after a team is viewed
             if (store.viewTeam && !store._viewTeamWrapped) {
                 const originalViewTeam = store.viewTeam;
                 store.viewTeam = async function (team) {
@@ -5502,6 +5653,17 @@ function initializeAnonymous() {
                     this.user = await this._appwrite.account.get();
                     this.isAuthenticated = true;
                     this.isAnonymous = true;
+
+                    // Seed default teams for the guest when auth.teams.guests is enabled
+                    const appwriteConfig = await config.getAppwriteConfig();
+                    if (appwriteConfig?.guestTeams && this._loadTeamsAndSeed) {
+                        try {
+                            await this._loadTeamsAndSeed(appwriteConfig);
+                        } catch (teamsError) {
+                            // Don't fail guest creation if teams fail to load, but surface why
+                            console.warn('[Manifest Appwrite Auth] Failed to seed guest teams:', teamsError);
+                        }
+                    }
 
                     // Sync state to localStorage for cross-tab synchronization
                     if (this._syncStateToStorage) {
@@ -5601,9 +5763,17 @@ function initializeMagicLinks() {
 
                     const account = this._appwrite.account;
 
+                    // Guest upgrade: when enabled and we're currently a guest, pass the
+                    // anonymous user's own id so Appwrite links the email to that same
+                    // account (preserving its teams) rather than minting a fresh user.
+                    // Otherwise generate a unique id for a brand-new account.
+                    const magicUserId = (appwriteConfig?.guestUpgrade && this.isAnonymous && this.user?.$id)
+                        ? this.user.$id
+                        : ((window.Appwrite?.ID?.unique) ? window.Appwrite.ID.unique() : 'unique()');
+
                     // Try createMagicURLSession first (standard method)
                     if (typeof account.createMagicURLSession === 'function') {
-                        const token = await account.createMagicURLSession('unique()', email, cleanRedirectUrl);
+                        const token = await account.createMagicURLSession(magicUserId, email, cleanRedirectUrl);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -5615,7 +5785,7 @@ function initializeMagicLinks() {
 
                     // Fallback: try createMagicURLToken (alternative method name)
                     if (typeof account.createMagicURLToken === 'function') {
-                        const token = await account.createMagicURLToken('unique()', email, redirectUrl);
+                        const token = await account.createMagicURLToken(magicUserId, email, redirectUrl);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -5758,8 +5928,18 @@ function initializeMagicLinks() {
                 this.magicLinkSent = false;
 
                 try {
-                    // Delete any existing anonymous sessions first
-                    if (this.session && this.isAnonymous) {
+                    const appwriteConfig = await config.getAppwriteConfig();
+                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous);
+                    // A guest being replaced (not upgraded) by a different account — its
+                    // team state must be cleared before loading the new user's teams.
+                    const replacingGuest = this.isAnonymous && !upgradingGuest;
+
+                    // Delete the existing anonymous session first — UNLESS we're upgrading
+                    // the guest in place. For an upgrade the magic token was created against
+                    // the anonymous user's own id, so createSession converts that same
+                    // account (keeping its teams); deleting it first would orphan the teams
+                    // and force a brand-new user.
+                    if (this.session && this.isAnonymous && !upgradingGuest) {
                         try {
                             await this._appwrite.account.deleteSession(this.session.$id);
                         } catch (deleteError) {
@@ -5767,8 +5947,20 @@ function initializeMagicLinks() {
                         }
                     }
 
-                    // Create session from magic link credentials
-                    const session = await this._appwrite.account.createSession(userId, secret);
+                    // Create session from magic link credentials. When upgrading a guest the
+                    // anonymous session may still be active; Appwrite can reject the duplicate
+                    // with a "prohibited" error, in which case the account is already upgraded
+                    // and we just reuse the current session.
+                    let session;
+                    try {
+                        session = await this._appwrite.account.createSession(userId, secret);
+                    } catch (createError) {
+                        if (upgradingGuest && createError.message?.includes('prohibited')) {
+                            session = await this._appwrite.account.getSession('current');
+                        } else {
+                            throw createError;
+                        }
+                    }
                     this.session = session;
                     this.user = await this._appwrite.account.get();
                     this.isAuthenticated = true;
@@ -5784,20 +5976,21 @@ function initializeMagicLinks() {
                         // Ignore
                     }
 
+                    // Replacing a guest with a different account: drop the guest's stale
+                    // team state so listTeams doesn't query teams the new user can't access.
+                    if (replacingGuest && this._resetTeamsState) {
+                        this._resetTeamsState();
+                    }
+
                     // Sync state
                     if (this._syncStateToStorage) {
                         this._syncStateToStorage(this);
                     }
 
-                    // Load teams if enabled
-                    const appwriteConfig = await config.getAppwriteConfig();
+                    // Load teams if enabled (and seed any configured default teams)
                     if (appwriteConfig?.teams && this.listTeams) {
                         try {
-                            await this.listTeams();
-                            // Auto-create default teams if enabled
-                            if ((appwriteConfig.permanentTeams || appwriteConfig.templateTeams) && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
-                                await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(this);
-                            }
+                            await this._loadTeamsAndSeed(appwriteConfig);
                         } catch (teamsError) {
                             console.warn('[Manifest Appwrite Auth] Failed to load teams after magic link login:', teamsError);
                             // Don't fail login if teams fail to load
@@ -5981,6 +6174,322 @@ window.ManifestAppwriteAuthMagicLinks = {
     handleCallbacks: handleMagicLinkCallbacks
 };
 
+/* Auth email OTP (one-time passcode) */
+
+// Two-step in-page flow (no redirect): createEmailOTP(email) emails a code + returns
+// a userId, verifyOTP(code) creates the session.
+// Gotcha: Appwrite can't convert an anonymous guest via OTP — a guest verifying an OTP
+// gets a fresh account (guest teams lost). Use magic links for guest upgrade.
+
+function initializeEmailOTP() {
+    if (typeof Alpine === 'undefined') {
+        return;
+    }
+
+    const config = window.ManifestAppwriteAuthConfig;
+    if (!config) {
+        return;
+    }
+
+    // Resolve an email from an input/selector/{ email } object/string, or auto-find
+    // the nearest email input. Returns { email, inputEl, dataObj }.
+    function resolveEmailInput(emailInputOrRef) {
+        let email = null;
+        let inputEl = null;
+        let dataObj = null;
+
+        if (emailInputOrRef === undefined || emailInputOrRef === null) {
+            let eventTarget = (typeof window !== 'undefined' && window.event) ? window.event.target : null;
+            if (eventTarget) {
+                const form = eventTarget.closest('form');
+                const scope = form || eventTarget.parentElement;
+                if (scope) {
+                    inputEl = scope.querySelector('input[type="email"]');
+                    if (inputEl) email = inputEl.value;
+                }
+            }
+            if (!inputEl) {
+                inputEl = document.querySelector('input[type="email"]');
+                if (inputEl) email = inputEl.value;
+            }
+        } else if (typeof emailInputOrRef === 'string') {
+            try {
+                const element = document.querySelector(emailInputOrRef);
+                if (element && element.tagName === 'INPUT' && element.type === 'email') {
+                    inputEl = element;
+                    email = element.value;
+                } else {
+                    email = emailInputOrRef; // Treat as a direct email string
+                }
+            } catch (e) {
+                email = emailInputOrRef; // Invalid selector -> treat as email string
+            }
+        } else if (emailInputOrRef && typeof emailInputOrRef === 'object') {
+            if (emailInputOrRef.tagName === 'INPUT' || emailInputOrRef.matches?.('input[type="email"]')) {
+                inputEl = emailInputOrRef;
+                email = inputEl.value;
+            } else if ('email' in emailInputOrRef) {
+                email = emailInputOrRef.email;
+                dataObj = emailInputOrRef;
+            }
+        }
+
+        return { email, inputEl, dataObj };
+    }
+
+    const waitForStore = () => {
+        const store = Alpine.store('auth');
+        if (store && !store.createEmailOTP) {
+            // Step 1: email a passcode. { phrase: true } enables Appwrite's anti-phishing
+            // security phrase, surfaced on the store as `otpPhrase`.
+            store.createEmailOTP = async function (email, options = {}) {
+                if (!this._appwrite) {
+                    this._appwrite = await config.getAppwriteClient();
+                }
+                if (!this._appwrite) {
+                    return { success: false, error: 'Appwrite not configured' };
+                }
+
+                // Don't allow OTP request if already signed in (non-anonymous)
+                if (this.isAuthenticated && !this.isAnonymous) {
+                    return { success: false, error: 'Already signed in. Please logout first.' };
+                }
+
+                const appwriteConfig = await config.getAppwriteConfig();
+                if (appwriteConfig && !appwriteConfig.otp) {
+                    return { success: false, error: 'Email OTP authentication is not enabled' };
+                }
+
+                // OTP can't convert a guest — warn so lost guest teams aren't a surprise.
+                if (this.isAnonymous && appwriteConfig?.guestUpgrade) {
+                    console.warn('[Manifest Appwrite Auth] Email OTP cannot upgrade a guest account (Appwrite limitation); the guest session and any guest-created teams will be replaced. Use magic links for guest upgrade.');
+                }
+
+                const account = this._appwrite.account;
+                if (typeof account.createEmailToken !== 'function') {
+                    return {
+                        success: false,
+                        error: 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.'
+                    };
+                }
+
+                this.inProgress = true;
+                this.error = null;
+                this.otpExpired = false;
+
+                try {
+                    const uniqueId = (window.Appwrite?.ID?.unique) ? window.Appwrite.ID.unique() : 'unique()';
+                    // Third arg toggles Appwrite's security phrase feature.
+                    const token = await account.createEmailToken(uniqueId, email, options.phrase === true);
+
+                    // Stash the userId Appwrite assigned; verifyOTP needs it to complete login.
+                    this._otpUserId = token.userId;
+                    this.otpPhrase = token.phrase || null;
+                    this.otpSent = true;
+                    this.otpExpired = false;
+                    this.error = null;
+
+                    window.dispatchEvent(new CustomEvent('manifest:auth:otp-sent', {
+                        detail: { email, phrase: this.otpPhrase }
+                    }));
+
+                    return { success: true, message: 'OTP sent to email', phrase: this.otpPhrase };
+                } catch (error) {
+                    // Appwrite returns 501 when Email OTP isn't enabled — surface an
+                    // actionable message rather than the raw error.
+                    const code = error.code || error.statusCode;
+                    const notEnabled = code === 501 || /not implemented/i.test(error.message || '');
+                    this.error = notEnabled
+                        ? 'Email OTP is not enabled for this Appwrite project. Enable it under Auth → Settings.'
+                        : error.message;
+                    this.otpSent = false;
+                    this.otpExpired = false;
+                    return { success: false, error: this.error };
+                } finally {
+                    this.inProgress = false;
+                }
+            };
+
+            // Convenience: resolve the email from an input/selector/object/string and send.
+            // Clears the email input on success (mirrors sendMagicLink).
+            store.sendEmailOTP = async function (emailInputOrRef, options = {}) {
+                const { email, inputEl, dataObj } = resolveEmailInput(emailInputOrRef);
+
+                if (!email || !email.trim()) {
+                    return { success: false, error: 'Email is required' };
+                }
+
+                const result = await this.createEmailOTP(email.trim(), options);
+
+                if (result.success) {
+                    Promise.resolve().then(() => {
+                        if (inputEl) {
+                            inputEl.value = '';
+                            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        } else if (dataObj) {
+                            dataObj.email = '';
+                        }
+                    });
+                }
+
+                return result;
+            };
+
+            // Step 2: verify the code and create the session.
+            store.verifyOTP = async function (code) {
+                if (!this._appwrite) {
+                    this._appwrite = await config.getAppwriteClient();
+                }
+                if (!this._appwrite) {
+                    return { success: false, error: 'Appwrite not configured' };
+                }
+                if (!this._otpUserId) {
+                    return { success: false, error: 'Request a code first' };
+                }
+                if (!code || !String(code).trim()) {
+                    return { success: false, error: 'Code is required' };
+                }
+
+                this.inProgress = true;
+                this.error = null;
+
+                try {
+                    const appwriteConfig = await config.getAppwriteConfig();
+                    const wasGuest = this.isAnonymous;
+
+                    // Guest team carryover: issue the migration ticket now, while the guest
+                    // session is still authenticated; redeemed after the new session exists.
+                    let migrationTicket = null;
+                    if (wasGuest && appwriteConfig?.guestMigrationFunctionId && this._callGuestMigration) {
+                        const prep = await this._callGuestMigration('/prepare', {});
+                        if (prep?.ok && prep.ticket) migrationTicket = prep.ticket;
+                    }
+
+                    // Appwrite can't convert anonymous accounts via OTP, so delete the
+                    // guest session first to avoid a "session prohibited" conflict.
+                    if (this.session && this.isAnonymous) {
+                        try {
+                            await this._appwrite.account.deleteSession(this.session.$id);
+                        } catch (deleteError) {
+                            // Could not delete anonymous session
+                        }
+                    }
+
+                    const session = await this._appwrite.account.createSession(this._otpUserId, String(code).trim());
+                    this.session = session;
+                    this.user = await this._appwrite.account.get();
+                    this.isAuthenticated = true;
+                    this.isAnonymous = false;
+                    this.otpSent = false;
+                    this.otpExpired = false;
+                    this.otpPhrase = null;
+                    this._otpUserId = null;
+                    this.error = null;
+
+                    // Clear the guest's team state before loading the new user's teams,
+                    // else the stale currentTeam triggers 404s in listTeams.
+                    if (this._resetTeamsState) {
+                        this._resetTeamsState();
+                    }
+
+                    // Redeem the migration ticket as the new account to carry teams over.
+                    // Best-effort; failure never blocks the already-successful sign-in.
+                    if (migrationTicket && this._callGuestMigration) {
+                        await this._callGuestMigration('/commit', { ticket: migrationTicket });
+                    }
+
+                    if (this._syncStateToStorage) {
+                        this._syncStateToStorage(this);
+                    }
+
+                    // Load teams + seed any configured default teams for the new account
+                    if (appwriteConfig?.teams && this.listTeams) {
+                        try {
+                            await this._loadTeamsAndSeed(appwriteConfig);
+                        } catch (teamsError) {
+                            console.warn('[Manifest Appwrite Auth] Failed to load teams after OTP login:', teamsError);
+                        }
+                    }
+
+                    window.dispatchEvent(new CustomEvent('manifest:auth:login', {
+                        detail: { user: this.user }
+                    }));
+
+                    return { success: true, user: this.user };
+                } catch (error) {
+                    const errorMessage = error.message || '';
+                    const errorCode = error.code || error.statusCode || '';
+                    const isExpiredOrInvalid = errorMessage && (
+                        errorMessage.includes('expired') ||
+                        errorMessage.includes('Invalid token') ||
+                        errorMessage.includes('invalid') ||
+                        errorMessage.includes('not found') ||
+                        errorCode === 401 || errorCode === 404
+                    );
+
+                    this.otpExpired = !!isExpiredOrInvalid;
+                    this.error = isExpiredOrInvalid ? null : error.message;
+                    this.isAuthenticated = false;
+                    this.isAnonymous = false;
+
+                    if (this._syncStateToStorage) {
+                        this._syncStateToStorage(this);
+                    }
+
+                    return { success: false, error: error.message };
+                } finally {
+                    this.inProgress = false;
+                }
+            };
+
+            // Convenience: resolve the code from an input/selector/object/string and verify.
+            store.submitOTP = async function (codeInputOrRef) {
+                let code = null;
+                if (codeInputOrRef === undefined || codeInputOrRef === null) {
+                    const el = document.querySelector('input[name="otp"], input[autocomplete="one-time-code"], input[inputmode="numeric"]');
+                    if (el) code = el.value;
+                } else if (typeof codeInputOrRef === 'string') {
+                    try {
+                        const el = document.querySelector(codeInputOrRef);
+                        code = (el && el.tagName === 'INPUT') ? el.value : codeInputOrRef;
+                    } catch (e) {
+                        code = codeInputOrRef;
+                    }
+                } else if (codeInputOrRef && typeof codeInputOrRef === 'object') {
+                    if (codeInputOrRef.tagName === 'INPUT') {
+                        code = codeInputOrRef.value;
+                    } else if ('code' in codeInputOrRef) {
+                        code = codeInputOrRef.code;
+                    } else if ('otp' in codeInputOrRef) {
+                        code = codeInputOrRef.otp;
+                    }
+                }
+
+                return await this.verifyOTP(code);
+            };
+        } else if (!store) {
+            setTimeout(waitForStore, 50);
+        }
+    };
+
+    setTimeout(waitForStore, 100);
+}
+
+// Initialize when Alpine is ready
+document.addEventListener('alpine:init', () => {
+    try {
+        initializeEmailOTP();
+    } catch (error) {
+        // Failed to initialize email OTP
+    }
+});
+
+// Export email OTP interface
+window.ManifestAppwriteAuthEmailOTP = {
+    initialize: initializeEmailOTP
+};
+
+
 /* Auth OAuth */
 
 // Add OAuth methods to auth store
@@ -5998,9 +6507,7 @@ function initializeOAuth() {
     const waitForStore = () => {
         const store = Alpine.store('auth');
         if (store && !store.loginOAuth) {
-            // Add OAuth method to store
-            // Note: Appwrite accepts any provider string (google, github, etc.) and validates on their side
-            // No need to maintain a registry of supported providers
+            // Appwrite validates provider strings server-side; no registry needed here
             store.loginOAuth = async function (provider, successUrl = window.location.href, failureUrl = window.location.href) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
@@ -6020,10 +6527,9 @@ function initializeOAuth() {
                 const cleanSuccessUrl = `${currentUrl.origin}${currentUrl.pathname}`;
                 const cleanFailureUrl = `${currentUrl.origin}${currentUrl.pathname}`;
 
-                // Delete any existing anonymous sessions before OAuth
-                // This prevents conflicts where anonymous sessions might interfere with OAuth
-                // Appwrite will create a new account for OAuth if needed
-                if (this.isAnonymous && this.session) {
+                // Drop anonymous sessions before OAuth — except with guestUpgrade, where the
+                // session stays so Appwrite links the OAuth identity to it (preserving teams)
+                if (this.isAnonymous && this.session && !appwriteConfig?.guestUpgrade) {
                     try {
                         await this._appwrite.account.deleteSession(this.session.$id);
                         this.session = null;
@@ -6055,9 +6561,8 @@ function initializeOAuth() {
                 this.error = null;
 
                 try {
-                    // Use createOAuth2Token (like the working implementation)
-                    // This returns a token/redirect URL that we manually navigate to
-                    // After OAuth, Appwrite redirects back with userId and secret in URL params
+                    // createOAuth2Token returns a URL we navigate to; Appwrite redirects
+                    // back with userId + secret in URL params
                     const token = await this._appwrite.account.createOAuth2Token(
                         provider,
                         cleanSuccessUrl,
@@ -6065,8 +6570,7 @@ function initializeOAuth() {
                         ['email'] // Scopes
                     );
 
-                    // Check for redirectUrl - Appwrite may return it in various formats
-                    // Try multiple property names and formats
+                    // Appwrite may return the redirect URL in several formats
                     let redirectUrl = null;
 
                     if (typeof token === 'string') {
@@ -6083,30 +6587,23 @@ function initializeOAuth() {
                         }
                     }
 
-                    // Clear error state before redirect (whether we found URL or not)
-                    // This prevents any error flash before redirect
+                    // Clear error before redirect to avoid an error flash
                     this.error = null;
 
                     if (redirectUrl) {
-                        // Use requestAnimationFrame to ensure Alpine processes the error clearing
-                        // before redirect happens, preventing error flash
+                        // rAF lets Alpine process the error clear before navigating
                         requestAnimationFrame(() => {
                             window.location.href = redirectUrl;
                         });
-                        // Return immediately - redirect will happen asynchronously
                         return { success: true, redirectUrl: redirectUrl };
                     } else {
-                        // If we can't find redirect URL, log it but don't show error to user
-                        // The redirect might still work via Appwrite's internal handling
+                        // No extractable URL: warn but stay silent — Appwrite's own redirect may still fire
                         console.warn('[Manifest Appwrite Auth] Could not extract redirect URL from token:', token);
-                        // Don't set error - just return failure silently
-                        // This prevents error flash when redirect might still succeed
                         this.inProgress = false;
                         return { success: false, error: 'Could not extract redirect URL' };
                     }
                 } catch (error) {
-                    // Don't show "No redirect URL" errors - they're usually false positives
-                    // Only show other meaningful errors
+                    // "No redirect URL" errors are usually false positives; surface the rest
                     if (!error.message.includes('No redirect URL') && !error.message.includes('redirect')) {
                         this.error = error.message;
                         this.inProgress = false;
@@ -6152,8 +6649,7 @@ function handleOAuthCallbacks() {
         }
         if (storedProvider) {
             store._oauthProvider = storedProvider;
-            // Keep it in localStorage (cleared on logout)
-            // This allows us to show the correct provider name even after page refresh
+            // Stays in localStorage until logout so the provider name survives refresh
         } else {
             console.warn('[Manifest Appwrite Auth] No OAuth provider found in storage');
         }
@@ -6175,8 +6671,16 @@ function handleOAuthCallbacks() {
         store.magicLinkSent = false;
 
         try {
-            // Delete any existing anonymous sessions first
-            if (store.session && store.isAnonymous) {
+            const appwriteConfig = await window.ManifestAppwriteAuthConfig.getAppwriteConfig();
+            const upgradingGuest = !!(appwriteConfig?.guestUpgrade && store.isAnonymous);
+            // A guest being replaced (not upgraded) by a different account — its team
+            // state must be cleared before loading the new user's teams.
+            const replacingGuest = store.isAnonymous && !upgradingGuest;
+
+            // Delete the existing anonymous session first — UNLESS we're upgrading the
+            // guest in place, in which case Appwrite linked the OAuth identity to that
+            // account and the "prohibited" branch below reuses the upgraded session.
+            if (store.session && store.isAnonymous && !upgradingGuest) {
                 try {
                     await store._appwrite.account.deleteSession(store.session.$id);
                 } catch (deleteError) {
@@ -6223,20 +6727,21 @@ function handleOAuthCallbacks() {
                 }
             }
 
+            // Replacing a guest with a different account: drop the guest's stale team
+            // state so listTeams doesn't query teams the new user can't access.
+            if (replacingGuest && store._resetTeamsState) {
+                store._resetTeamsState();
+            }
+
             // Sync state
             if (store._syncStateToStorage) {
                 store._syncStateToStorage(store);
             }
 
-            // Load teams if enabled
-            const appwriteConfig = await window.ManifestAppwriteAuthConfig.getAppwriteConfig();
+            // Load teams if enabled (and seed any configured default teams)
             if (appwriteConfig?.teams && store.listTeams) {
                 try {
-                    await store.listTeams();
-                    // Auto-create default teams if enabled
-                    if ((appwriteConfig.permanentTeams || appwriteConfig.templateTeams) && window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams) {
-                        await window.ManifestAppwriteAuthTeamsDefaults.ensureDefaultTeams(store);
-                    }
+                    await store._loadTeamsAndSeed(appwriteConfig);
                 } catch (teamsError) {
                     console.warn('[Manifest Appwrite Auth] Failed to load teams after OAuth login:', teamsError);
                     // Don't fail login if teams fail to load
@@ -6403,3 +6908,5 @@ if (window.ManifestAppwriteAuthConfig) {
         }
     });
 }
+
+})();

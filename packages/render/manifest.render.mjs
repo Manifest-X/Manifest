@@ -4315,6 +4315,25 @@ async function runPrerender(config) {
       await page.evaluate(() => {
         document.querySelectorAll('[x-markdown]').forEach((el) => {
           if (!el.textContent.trim() && !el.innerHTML.trim()) return;
+          // Only FILE-BACKED markdown is safe to freeze: its content is baked and
+          // the runtime would only re-fetch and re-render the same thing (with an
+          // opacity flash, or a wipe when a route-keyed source starts empty). The
+          // plugin stamps those with data-mnfst-md-src before fetching. An inline
+          // reactive value (x-markdown="note") must KEEP its binding — stripping
+          // it froze live-updating markdown mirrors on prerendered pages.
+          const src = el.getAttribute('data-mnfst-md-src');
+          const literal = /^\s*(['"`]).*\1\s*$/.test(el.getAttribute('x-markdown') || '');
+          if (!src && !literal) {
+            // Reactive: keep the binding, still clean the plugin's leftover styles.
+            const s = el.getAttribute('style') || '';
+            if (s) {
+              const c = s.replace(/\bopacity\s*:\s*0(?:\.\d+)?\s*;?/gi, '')
+                .replace(/\btransition\s*:\s*opacity[^;]*;?/gi, '')
+                .replace(/;\s*;/g, ';').replace(/^\s*;\s*|\s*;\s*$/g, '').trim();
+              if (c) el.setAttribute('style', c); else el.removeAttribute('style');
+            }
+            return;
+          }
           el.removeAttribute('x-markdown');
           // Clean up opacity-0 + transition inline styles the plugin left behind.
           const style = el.getAttribute('style') || '';

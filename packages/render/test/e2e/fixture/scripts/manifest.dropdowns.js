@@ -1,18 +1,21 @@
 /* Manifest Dropdowns */
 
-// Track the user's most recent input modality so we only move focus into a menu
-// (and surface a :focus-visible ring) for keyboard opens. Capture-phase so we
-// see the event before any handler can stop it. This mirrors the heuristic the
-// browser uses for :focus-visible, but lets us decide whether to focus at all.
-let lastInputModality = 'mouse';
-document.addEventListener('keydown', () => { lastInputModality = 'keyboard'; }, true);
-document.addEventListener('pointerdown', () => { lastInputModality = 'mouse'; }, true);
+(function () {
 
-// Initialize plugin when either DOM is ready or Alpine is ready
+
+// Most recent input modality, so we only move focus into a menu for keyboard opens.
+// Capture-phase so no handler can stop it first.
+let lastInputModality = 'mouse';
+// Also the last pressed node: the router claims internal link clicks with
+// stopImmediatePropagation, so pointerdown is our only view of which row a
+// navigating item came from.
+let lastPointerTarget = null;
+document.addEventListener('keydown', () => { lastInputModality = 'keyboard'; }, true);
+document.addEventListener('pointerdown', (e) => { lastInputModality = 'mouse'; lastPointerTarget = e.target; }, true);
+
 function initializeDropdownPlugin() {
-    // Ensure Alpine.js context exists for directives to work. Keep the scope
-    // empty — seeding properties here collides with author state and the
-    // tabs plugin's page-level `tab` property.
+    // Ensure an Alpine context exists. Keep the scope empty — seeding properties
+    // collides with author state and the tabs plugin's `tab` property.
     function ensureAlpineContext() {
         const body = document.body;
         if (!body.hasAttribute('x-data')) {
@@ -94,9 +97,15 @@ function initializeDropdownPlugin() {
                     const uniqueDropdownId = `dropdown-${anchorCode}`;
                     menu.setAttribute('id', uniqueDropdownId);
                     document.body.appendChild(menu);
+                    // Appending to <body> loses the fact that the trigger sits inside a
+                    // dialog, which is how manifest.dialog.css tells a dialog's own menus
+                    // from the page's. An authored menu keeps its place and needs no mark.
+                    if (el.closest('[popover]')) menu.setAttribute('data-popover-nested', '');
                     if (!modifiers.includes('context')) el.setAttribute('popovertarget', uniqueDropdownId);
 
-                    // Initialize Alpine on the cloned menu
+                    // Closed before init so the defer plugin can stash its content
+                    menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
+                    window.ManifestDefer?.defer(menu);
                     Alpine.initTree(menu);
                 } else {
                     // Original behavior for static dropdowns
@@ -124,9 +133,11 @@ function initializeDropdownPlugin() {
                                             menu = menuElement.cloneNode(true);
                                             menu.setAttribute('id', dropdownId);
                                             document.body.appendChild(menu);
+                                            if (el.closest('[popover]')) menu.setAttribute('data-popover-nested', '');
                                             if (!modifiers.includes('context')) el.setAttribute('popovertarget', dropdownId);
 
-                                            // Initialize Alpine on the menu
+                                            menu.setAttribute('popover', modifiers.includes('context') ? 'manual' : '');
+                                            window.ManifestDefer?.defer(menu);
                                             Alpine.initTree(menu);
 
                                             // Set up the dropdown after menu is ready
@@ -175,28 +186,43 @@ function initializeDropdownPlugin() {
                     el.style.setProperty('--trigger-anchor', anchorName);
                     menu.style.setProperty('position-anchor', anchorName);
 
-                    // ----- A11y wiring (WAI-ARIA Menu Button pattern) -----
-                    // The trigger needs `aria-haspopup="menu"`, `aria-controls`, and a
-                    // dynamic `aria-expanded` that follows the popover's open state.
-                    // The menu element gets `role="menu"` and each list item gets
-                    // `role="menuitem"` so screen readers announce the relationship.
-                    //
-                    // We don't apply these for `.context` dropdowns invoked by right-
-                    // click — they're not button-triggered popups in the APG sense.
+                    // Re-point the shared menu at whichever trigger opens it (multi-trigger)
+                    const pointMenuHere = () => {
+                        menu.__mnfstTrigger = el;
+                        const a = el.style.getPropertyValue('--trigger-anchor');
+                        if (a) menu.style.setProperty('position-anchor', a);
+                    };
+                    if (!modifiers.includes('context') && !el.__mnfstAnchorSwapBound) {
+                        el.__mnfstAnchorSwapBound = true;
+                        el.addEventListener('pointerdown', pointMenuHere);
+                        el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') pointMenuHere(); });
+                    }
+
+                    // A11y wiring (WAI-ARIA Menu Button): trigger gets aria-haspopup/
+                    // controls/expanded, menu gets role=menu, items role=menuitem. Skipped
+                    // for .context (right-click) — not button-triggered popups per APG.
                     if (!modifiers.includes('context')) {
                         if (!menu.id) menu.id = 'mnfst-dropdown-' + Math.random().toString(36).slice(2, 9);
                         el.setAttribute('aria-haspopup', 'menu');
                         el.setAttribute('aria-controls', menu.id);
                         el.setAttribute('aria-expanded', menu.matches(':popover-open') ? 'true' : 'false');
                         if (!menu.hasAttribute('role')) menu.setAttribute('role', 'menu');
-                        menu.querySelectorAll('li').forEach((li) => {
+                        // Deferred menus get their items later — role them off the gesture,
+                        // never in the toggle task (243 role writes on a visible list ≈ 70ms)
+                        const roleItems = () => menu.querySelectorAll('li').forEach((li) => {
                             if (!li.hasAttribute('role')) li.setAttribute('role', 'menuitem');
                         });
-                        // Keep aria-expanded in sync with the popover's state.
+                        roleItems();
+                        if (!menu.__mnfstRoleOnRender) {
+                            menu.__mnfstRoleOnRender = true;
+                            menu.addEventListener('manifest:defer-render', roleItems);
+                        }
+                        // Keep aria-expanded in sync across every trigger of this menu.
                         if (!menu.__mnfstAriaToggleBound) {
                             menu.__mnfstAriaToggleBound = true;
                             menu.addEventListener('toggle', (e) => {
-                                el.setAttribute('aria-expanded', e.newState === 'open' ? 'true' : 'false');
+                                const expanded = e.newState === 'open' ? 'true' : 'false';
+                                document.querySelectorAll(`[aria-controls="${menu.id}"]`).forEach(t => t.setAttribute('aria-expanded', expanded));
                             });
                         }
                     }
@@ -208,7 +234,11 @@ function initializeDropdownPlugin() {
                                 clearTimeout(hoverTimeout);
                                 clearTimeout(autoCloseTimeout);
 
-                                menu.showPopover();
+                                pointMenuHere();
+                                // A hover open never runs the trigger's activation behaviour, so
+                                // popovertarget alone doesn't register it as the invoker — say so
+                                // here, or the menu light-dismisses whatever contains its trigger.
+                                menu.showPopover({ source: el });
                             }
                         };
 
@@ -244,44 +274,114 @@ function initializeDropdownPlugin() {
                             if (menu.matches(':popover-open')) menu.hidePopover();
                         };
 
-                        // Bind the right-click trigger once per element. Without
-                        // the guard, reprocessing (router re-walks, re-init) would
-                        // stack duplicate handlers.
+                        // How long after a long-press open to ignore a follow-up native
+                        // contextmenu (Android) or synthetic click.
+                        const LONG_PRESS_DUPE_WINDOW_MS = 750;
+
+                        // Shared positioning: place the menu at (x, y), overriding anchor
+                        // positioning. Used by both the contextmenu (mouse) path and the
+                        // touch long-press path below.
+                        const openContextMenuAt = (triggerTarget, x, y) => {
+                            // Stash the actual right-clicked element so menu items can act on it.
+                            // (triggerTarget is the deepest hit; el is the directive-bearing ancestor.)
+                            menu._triggerEl = triggerTarget.closest('[data-cp-value], [x-data]') || el;
+                            menu._triggerHost = el;
+
+                            menu.style.position = 'fixed';
+                            menu.style.positionAnchor = 'unset';
+                            menu.style.positionArea = 'unset';
+                            menu.style.inset = 'auto';
+                            menu.style.left = x + 'px';
+                            menu.style.top = y + 'px';
+                            menu.style.margin = '0';
+
+                            // beforetoggle isn't reliable for a manual popover opened this way
+                            // (client-reported empty menu) — hydrate the x-defer stash ourselves.
+                            if (window.ManifestDefer?.isPending(menu)) window.ManifestDefer.render(menu);
+
+                            if (!menu.matches(':popover-open')) menu.showPopover();
+
+                            // Adjust if menu overflows viewport
+                            requestAnimationFrame(() => {
+                                const rect = menu.getBoundingClientRect();
+                                if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
+                                if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
+                            });
+                        };
+
+                        // Bind once per element (reprocessing would stack duplicates).
                         if (!el.__mnfstContextTriggerBound) {
                             el.__mnfstContextTriggerBound = true;
                             el.addEventListener('contextmenu', (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
 
-                                // Stash the actual right-clicked element so menu items can act on it.
-                                // (e.target is the deepest hit; el is the directive-bearing ancestor.)
-                                menu._triggerEl = e.target.closest('[data-cp-value], [x-data]') || el;
-                                menu._triggerHost = el;
+                                // Android fires a real contextmenu after a touch long-press too —
+                                // our pointer path already opened the menu, so ignore the dupe.
+                                if (el.__mnfstLongPressOpenedAt && Date.now() - el.__mnfstLongPressOpenedAt < LONG_PRESS_DUPE_WINDOW_MS) return;
 
-                                // Position at cursor, overriding anchor positioning
-                                menu.style.position = 'fixed';
-                                menu.style.positionAnchor = 'unset';
-                                menu.style.positionArea = 'unset';
-                                menu.style.inset = 'auto';
-                                menu.style.left = e.clientX + 'px';
-                                menu.style.top = e.clientY + 'px';
-                                menu.style.margin = '0';
-
-                                if (!menu.matches(':popover-open')) menu.showPopover();
-
-                                // Adjust if menu overflows viewport
-                                requestAnimationFrame(() => {
-                                    const rect = menu.getBoundingClientRect();
-                                    if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width) + 'px';
-                                    if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height) + 'px';
-                                });
+                                openContextMenuAt(e.target, e.clientX, e.clientY);
                             });
+
+                            // iOS Safari never fires `contextmenu` for a touch long-press (Android
+                            // does). Drive the same open from pointer events instead — touch/pen
+                            // only, mouse keeps native contextmenu semantics.
+                            const LONG_PRESS_MS = 500;
+                            const MOVE_SLOP_PX = 10;
+                            let pressTimer = null;
+                            let startX = 0, startY = 0;
+                            let pressTarget = null;
+
+                            const suppressCallout = () => {
+                                el.style.setProperty('-webkit-touch-callout', 'none');
+                                el.style.setProperty('-webkit-user-select', 'none');
+                                el.style.setProperty('user-select', 'none');
+                            };
+                            const restoreCallout = () => {
+                                el.style.removeProperty('-webkit-touch-callout');
+                                el.style.removeProperty('-webkit-user-select');
+                                el.style.removeProperty('user-select');
+                            };
+                            const cancelPress = () => {
+                                if (pressTimer) clearTimeout(pressTimer);
+                                pressTimer = null;
+                                restoreCallout();
+                            };
+
+                            el.addEventListener('pointerdown', (e) => {
+                                if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+                                cancelPress();
+                                startX = e.clientX;
+                                startY = e.clientY;
+                                pressTarget = e.target;
+                                suppressCallout();
+                                pressTimer = setTimeout(() => {
+                                    pressTimer = null;
+                                    restoreCallout();
+                                    el.__mnfstLongPressOpenedAt = Date.now();
+                                    openContextMenuAt(pressTarget, startX, startY);
+                                }, LONG_PRESS_MS);
+                            });
+                            el.addEventListener('pointermove', (e) => {
+                                if (!pressTimer) return;
+                                if (Math.abs(e.clientX - startX) > MOVE_SLOP_PX || Math.abs(e.clientY - startY) > MOVE_SLOP_PX) cancelPress();
+                            });
+                            el.addEventListener('pointerup', cancelPress);
+                            el.addEventListener('pointercancel', cancelPress);
+                            el.addEventListener('scroll', cancelPress, true);
+
+                            // Suppress the synthetic click that follows the touch sequence which
+                            // opened the menu, so it doesn't also activate/navigate the trigger.
+                            el.addEventListener('click', (e) => {
+                                if (el.__mnfstLongPressOpenedAt && Date.now() - el.__mnfstLongPressOpenedAt < LONG_PRESS_DUPE_WINDOW_MS) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                }
+                            }, true);
                         }
 
-                        // Document-level dismiss listeners are GLOBAL — re-binding
-                        // them on every reprocess leaks listeners on `document`.
-                        // Bind once per menu, tied to an AbortController so they
-                        // share one removable signal.
+                        // Document-level dismiss listeners are global — bind once per
+                        // menu via an AbortController so reprocessing can't leak them.
                         if (!menu.__mnfstContextDismissBound) {
                             menu.__mnfstContextDismissBound = true;
                             const ctxAbort = new AbortController();
@@ -295,12 +395,54 @@ function initializeDropdownPlugin() {
                             document.addEventListener('keydown', (e) => {
                                 if (e.key === 'Escape' && menu.matches(':popover-open')) { closeContext(); el.focus(); }
                             }, { signal });
-
-                            // Close after clicking a menu item
-                            menu.addEventListener('click', (e) => {
-                                if (e.target.closest('li, a, button')) closeContext();
-                            }, { signal });
                         }
+                    }
+
+                    // Auto-close on selection: `close` per item, .close for every row
+                    // that isn't an embedded control, `keep-open` to opt back out.
+                    // Context menus auto-close by nature, so .close is implied.
+                    if (modifiers.includes('close') || modifiers.includes('context')) menu.__mnfstAutoClose = true;
+
+                    if (!menu.__mnfstCloseBound) {
+                        menu.__mnfstCloseBound = true;
+
+                        const ROW = 'li, a, button, label, [role=menuitem], [role=option]';
+                        const CONTROL = 'input, select, textarea, [contenteditable]:not([contenteditable=false]), [role=switch], .combobox, [x-dropdown], [popovertarget], [keep-open]';
+
+                        // Close the item's menu plus any menus it was nested in. The owned
+                        // popover isn't always a <menu> (e.g. .dropdown-menu on a div), so
+                        // fall back to it rather than relying on the ancestor lookup.
+                        const closeFrom = (node) => {
+                            let m = node.closest('menu[popover]') || menu;
+                            while (m) {
+                                if (m.matches(':popover-open')) m.hidePopover();
+                                m = m.parentElement?.closest('menu[popover]');
+                            }
+                            if (lastInputModality === 'keyboard') (menu.__mnfstTrigger || el).focus?.();
+                        };
+
+                        menu.addEventListener('click', (e) => {
+                            // Explicit opt-in wins over every exclusion below
+                            const opted = e.target.closest('[close]');
+                            if (opted && menu.contains(opted)) return closeFrom(opted);
+                            if (!menu.__mnfstAutoClose) return;
+
+                            // Outermost row between the click target and the menu
+                            let row = null;
+                            for (let n = e.target; n && n !== menu; n = n.parentElement) {
+                                if (n.matches?.(ROW)) row = n;
+                            }
+                            if (!row) return;
+
+                            // A control that *is* the row is a menu item; one nested
+                            // inside it is embedded UI, so leave the menu open
+                            const hit = e.target.closest(CONTROL);
+                            if (hit && hit !== row && row.contains(hit)) return;
+                            if (row.querySelector(CONTROL)) return;
+                            if (row.matches('[role=switch], [x-dropdown], [popovertarget], [keep-open]')) return;
+
+                            closeFrom(row);
+                        });
                     }
 
                     // Add keyboard navigation handling
@@ -356,11 +498,8 @@ function initializeDropdownPlugin() {
                         } else if (e.key === 'Enter' || e.key === ' ') {
                             // Allow Enter/Space to activate li elements or follow links
                             if (e.target.tagName === 'LI') {
-                                const link = e.target.querySelector('a');
-                                if (link) {
-                                    e.preventDefault();
-                                    link.click();
-                                }
+                                e.preventDefault();
+                                (e.target.querySelector('a') || e.target).click();
                             }
                         }
                     });
@@ -381,14 +520,11 @@ function initializeDropdownPlugin() {
                             if (firstLi && !menu.querySelector('button, [href], input, select, textarea, [tabindex="0"]')) {
                                 firstLi.setAttribute('tabindex', '0');
                                 if (lastInputModality === 'keyboard') {
-                                    // Keyboard open (APG menu pattern): focus the first item;
-                                    // :focus-visible correctly paints the ring.
+                                    // Keyboard open: focus the first item (rings correctly).
                                     firstLi.focus();
                                 } else {
-                                    // Pointer open: park focus on the menu itself so arrow
-                                    // keys still enter the list, without forcing a
-                                    // focus-visible ring on an item the user didn't reach
-                                    // by keyboard.
+                                    // Pointer open: park focus on the menu so arrow keys enter
+                                    // the list without ringing an item the user didn't reach.
                                     if (!menu.hasAttribute('tabindex')) menu.setAttribute('tabindex', '-1');
                                     menu.focus();
                                 }
@@ -417,15 +553,20 @@ function initializeDropdownPlugin() {
                         };
 
                         // Set up listeners on existing menu items
+                        const wiredItems = new WeakSet();
                         const setupMenuItemListeners = () => {
                             const menuItems = menu.querySelectorAll('li, button, a, [role="menuitem"]');
                             menuItems.forEach(item => {
+                                if (wiredItems.has(item)) return;
+                                wiredItems.add(item);
                                 item.addEventListener('mouseenter', cancelCloseTimer);
                             });
                         };
 
-                        // Setup listeners after a brief delay to ensure menu is rendered
+                        // Setup listeners after a brief delay to ensure menu is rendered;
+                        // again when a deferred menu renders its items
                         setTimeout(setupMenuItemListeners, 10);
+                        menu.addEventListener('manifest:defer-render', setupMenuItemListeners);
                     }
                 } // End of setupDropdown function
             });
@@ -433,11 +574,9 @@ function initializeDropdownPlugin() {
     });
 }
 
-// Track initialization to prevent duplicates
 let dropdownPluginInitialized = false;
 
-// True once Alpine has completed its initial DOM walk. Listener is bound at
-// module load so we never miss the event, whatever the script order.
+// True once Alpine finished its initial walk. Bound at load so we never miss it.
 let alpineHasWalked = false;
 document.addEventListener('alpine:initialized', () => { alpineHasWalked = true; });
 
@@ -452,13 +591,10 @@ function ensureDropdownPluginInitialized() {
     dropdownPluginInitialized = true;
     initializeDropdownPlugin();
 
-    // Only walk existing [x-dropdown] subtrees ourselves when Alpine has ALREADY
-    // finished its initial walk (i.e. this plugin loaded late). In the normal
-    // flow we register the directive during `alpine:init`, before Alpine's one
-    // boot walk — so Alpine processes every dropdown with all sibling directives
-    // (x-icon, x-tooltip, …) already registered. Walking here during boot would
-    // re-init those subtrees before the other directives exist, permanently
-    // dropping nested plugin content (e.g. a trailing x-icon in a menu button).
+    // Walk existing [x-dropdown] subtrees only if Alpine already finished its boot
+    // walk (late load). During boot, let Alpine's own walk handle them with all
+    // sibling directives registered — walking here would drop nested plugin content
+    // (e.g. a trailing x-icon in a menu button).
     if (alpineHasWalked && typeof window.Alpine.initTree === 'function') {
         document.querySelectorAll('[x-dropdown]').forEach(el => {
             if (!el.__x) {
@@ -510,4 +646,20 @@ document.addEventListener('click', (event) => {
             }
         });
     }
-}); 
+});
+
+// Auto-close for rows that navigate. The router claims internal link clicks with
+// stopImmediatePropagation, so the menu's own click handler never runs — close on
+// the route change it dispatches instead. Hash links aren't intercepted and still
+// close via the normal path.
+window.addEventListener('manifest:route-change', () => {
+    const pressed = lastPointerTarget;
+    document.querySelectorAll('[popover]:popover-open').forEach((menu) => {
+        if (!menu.__mnfstCloseBound) return;
+        const row = pressed && menu.contains(pressed) ? pressed : null;
+        if (row && row.closest('[keep-open]')) return;
+        if (menu.__mnfstAutoClose || (row && row.closest('[close]'))) menu.hidePopover();
+    });
+});
+
+})();

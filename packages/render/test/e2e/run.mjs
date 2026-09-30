@@ -324,6 +324,24 @@ async function runAssertions() {
       'dynamic x-markdown element opacity is 1 (opacity:0 inline style stripped)',
       `got: ${JSON.stringify(markdownDynamic)}`);
 
+    // Inline reactive x-markdown: the binding must survive prerendering so the
+    // mirror keeps updating when its bound value changes at runtime.
+    const markdownReactive = await page.evaluate(async () => {
+      const out = document.querySelector('#markdown-reactive-out');
+      if (!out) return null;
+      const baked = out.textContent.includes('first note');
+      const kept = out.hasAttribute('x-markdown');
+      document.querySelector('#markdown-reactive-btn').click();
+      await new Promise((r) => setTimeout(r, 400));
+      return { baked, kept, updated: out.textContent.includes('second note') };
+    });
+    assert(markdownReactive && markdownReactive.baked,
+      'reactive x-markdown content baked in prerendered output',
+      JSON.stringify(markdownReactive));
+    assert(markdownReactive && markdownReactive.kept && markdownReactive.updated,
+      'reactive x-markdown keeps its binding and updates at runtime',
+      JSON.stringify(markdownReactive));
+
     // ------- Test: locale switching -----------------------------------------
     const localeInitial = await page.$eval('#current-locale', (el) => el.textContent.trim()).catch(() => null);
     assert(localeInitial === 'en',

@@ -1,4 +1,13 @@
     /* ---- Inline text editing ---- */
+    // Focusing a text leaf selects its content, so the common case — replace the
+    // text — is one click and type. Deferred a frame so it wins over the click's
+    // own caret placement; a second click still collapses to a caret for fine edits.
+    function selectAllIn(el) {
+        requestAnimationFrame(() => {
+            if (document.activeElement !== el) return;
+            try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
+        });
+    }
     // Where x-text-edit is declared, it owns the element: this plugin neither makes
     // its leaves contenteditable nor competes for the caret. If the rich editor has
     // no expression of its own, we capture what it produces as an ordinary text
@@ -24,7 +33,7 @@
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); });
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
             el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(area, el, 'text', el.innerHTML.trim()); });
         });
     }
@@ -57,7 +66,7 @@
                 if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
-                el.addEventListener('focus', () => { el._preEdit = read(); });
+                el.addEventListener('focus', () => { el._preEdit = read(); selectAllIn(el); });
                 el.addEventListener('focusin', () => { el._preEdit = read(); });
                 el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
             });
@@ -102,7 +111,7 @@
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); });
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
             el.addEventListener('input', () => liveMainPropagate(area, el, 'text', el.innerHTML));
             el.addEventListener('blur', () => commitComponentNode(area, el, 'text', el.innerHTML.trim()));
         });

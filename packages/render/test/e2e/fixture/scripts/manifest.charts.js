@@ -1,33 +1,18 @@
-/*  Manifest Charts
+/*  Manifest Charts — in-house SVG chart renderer (themeable, prerender-safe, a11y).
 /*  By Andrew Matlock under MIT license
 /*  https://manifestx.dev
-/*
-/*  An in-house SVG chart renderer. SVG (not canvas) so charts inherit theme
-/*  colors via CSS variables, are restylable with the same selector
-/*  conventions as every other element, survive static prerendering as real
-/*  DOM, and expose accessible <title>/<desc>. The only dependencies are the
-/*  d3-scale / d3-shape / d3-array micro-modules (ISC, ~22KB), lazy-loaded
-/*  from esm.run on first scroll-into-view — the same posture as the code
-/*  plugin loading highlight.js on demand.
+/*  d3-scale/shape/array micro-modules (ISC) lazy-loaded from esm.run on scroll-in.
 */
 
 (function () {
 	'use strict';
 
-	/* ------------------------------------------------------------------ *
-	 * Shared global: ManifestUI (universal `_ui` resolver). Defined guarded so
-	 * charts works whether or not the date picker (which also defines it) is
-	 * loaded. `_ui` is a reserved, self-identifying key: any loaded data source
-	 * may carry a top-level `_ui` object, namespaced per element (`_ui.charts`,
-	 * `_ui.colorpicker`, …); no manifest flag — overrides piggyback on the normal
-	 * local-data/localization model. resolve() deep-merges every loaded source's
-	 * `_ui[component]` onto the plugin's English fallbacks. Kept byte-identical
-	 * across the date picker / color picker copies.
-	 * ------------------------------------------------------------------ */
+	/* Shared localized-UI resolver: deep-merges every loaded source's `_ui[component]`
+	 * onto the plugin's English fallbacks. Guarded; byte-identical across the picker
+	 * copies (first plugin to load defines it). */
 	if (!window.ManifestUI) {
 		window.ManifestUI = {
-			/* Names of data sources that have loaded (current locale). Enumerates loaded
-			 * sources only — never force-loads others just to scan them for `_ui`. */
+			/* Loaded data sources (current locale); never force-loads others. */
 			_loadedSourceNames() {
 				try {
 					const store = window.ManifestDataStore && window.ManifestDataStore.rawDataStore;
@@ -35,13 +20,12 @@
 				} catch (_) { }
 				return [];
 			},
-			/* Deep-merge every loaded source's `_ui[component]` onto `fallbacks`.
-			 * Reads inside the caller's Alpine effect (if any) so $x/$locale make it reactive. */
+			/* Reads inside the caller's Alpine effect (if any) so $x/$locale stay reactive. */
 			resolve(component, fallbacks) {
 				const merged = JSON.parse(JSON.stringify(fallbacks || {}));
 				try {
 					if (!window.Alpine || typeof Alpine.evaluate !== 'function') return merged;
-					try { Alpine.evaluate(document.body, '$locale && $locale.current'); } catch (_) { } // dep → re-resolve on locale switch
+					try { Alpine.evaluate(document.body, 'typeof $locale !== "undefined" && $locale.current'); } catch (_) { } // dep → re-resolve on locale switch
 					for (const name of this._loadedSourceNames()) {
 						let ui;
 						try { ui = Alpine.evaluate(document.body, `$x['${name}'] && $x['${name}']._ui && $x['${name}']._ui['${component}']`); } catch (_) { ui = null; }
@@ -68,6 +52,18 @@
 
 	const SVGNS = 'http://www.w3.org/2000/svg';
 
+	// Lazy localized country names per locale (i18n-iso-countries, keyed by
+	// alpha-2). Falls back to {} (English atlas names) if a locale isn't covered.
+	const _namePacks = {}, _namePackPromise = {};
+	function loadCountryNames(locale) {
+		if (_namePacks[locale]) return Promise.resolve(_namePacks[locale]);
+		if (_namePackPromise[locale]) return _namePackPromise[locale];
+		_namePackPromise[locale] = fetch('https://cdn.jsdelivr.net/npm/i18n-iso-countries@7/langs/' + locale + '.json')
+			.then(r => r.json()).then(d => (_namePacks[locale] = d.countries || {}))
+			.catch(() => (_namePacks[locale] = {}));
+		return _namePackPromise[locale];
+	}
+
 	/* ---- Lazy-load d3 micro-modules once ---------------------------- */
 	let d3Promise = null;
 	function loadD3() {
@@ -87,10 +83,51 @@
 
 	const prefersReducedMotion = () => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) { return false; } };
 
+	// Reconcile the ~20 Natural Earth atlas names that differ from the
+	// country-by-continent source so every rendered country lands in a continent.
+	const _norm = s => String(s || '').toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+	const ATLAS_CONT = { 'fiji': 'Oceania', 'w sahara': 'Africa', 'united states of america': 'North America', 'dem rep congo': 'Africa', 'dominican rep': 'North America', 'falkland is': 'South America', 'fr s antarctic lands': 'Antarctica', 'timor-leste': 'Asia', "côte d'ivoire": 'Africa', 'central african rep': 'Africa', 'eq guinea': 'Africa', 'solomon is': 'Oceania', 'taiwan': 'Asia', 'czechia': 'Europe', 'n cyprus': 'Asia', 'somaliland': 'Africa', 'bosnia and herz': 'Europe', 'macedonia': 'Europe', 'kosovo': 'Europe', 's sudan': 'Africa' };
+
+	/* ---- World map: lazy-load d3-geo + topojson + reference data ----
+	   Geometry (world-atlas) plus ISO codes (i18n-iso-countries) and
+	   continent membership (country-json) — all third-party CDN, fetched
+	   once and indexed onto `geo.meta`. No geographic tables are bundled. */
+	let geoPromise = null;
+	function loadGeo() {
+		if (window.__manifestGeo) return Promise.resolve(window.__manifestGeo);
+		if (geoPromise) return geoPromise;
+		geoPromise = Promise.all([
+			import('https://esm.run/d3-geo@3'),
+			import('https://esm.run/topojson-client@3'),
+			fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json').then(r => r.json()),
+			fetch('https://cdn.jsdelivr.net/npm/i18n-iso-countries@7/codes.json').then(r => r.json()),
+			fetch('https://cdn.jsdelivr.net/npm/country-json/src/country-by-continent.json').then(r => r.json())
+		]).then(([geo, topo, world, codes, contList]) => {
+			const a2 = {}, a3 = {}, num2a2 = {};
+			codes.forEach(c => { const n = Number(c[2]); if (!n) return; a2[c[0]] = n; a3[c[1]] = n; num2a2[n] = c[0]; });
+			const nameToCont = {}; contList.forEach(r => { nameToCont[_norm(r.country)] = r.continent; });
+			const members = {}, idToCont = {};
+			(world.objects.countries.geometries || []).forEach(gm => {
+				const id = Number(gm.id), nm = _norm(gm.properties && gm.properties.name);
+				const cont = nameToCont[nm] || ATLAS_CONT[nm];
+				if (cont) { idToCont[id] = cont; (members[cont] = members[cont] || []).push(id); }
+			});
+			const g = { ...geo, topojson: topo, world, meta: { a2, a3, num2a2, members, idToCont } };
+			window.__manifestGeo = g;
+			return g;
+		}).catch((err) => { geoPromise = null; throw err; });
+		return geoPromise;
+	}
+
 	function initializeChartsPlugin() {
 		const Alpine = window.Alpine;
 		const _registry = Alpine.reactive ? Alpine.reactive({}) : {};
 		let _uid = 0;
+
+		const isDevelopment = window.location.hostname === 'localhost' ||
+			window.location.hostname === '127.0.0.1' ||
+			window.location.hostname.includes('dev') ||
+			window.location.search.includes('debug=true');
 
 		const _nullApi = { type: '', series: [], update() { }, redraw() { }, toString() { return ''; }, valueOf() { return ''; } };
 
@@ -115,6 +152,19 @@
 
 		/* ---- Config normalization ----------------------------------- */
 		function num(v, d) { const n = Number(v); return isNaN(n) ? d : n; }
+
+		// Timeline values: Date → ms, number → as-is, string → parsed date (or
+		// numeric fallback). NaN when absent.
+		function toTime(v) {
+			if (v == null) return NaN;
+			if (v instanceof Date) return v.getTime();
+			if (typeof v === 'number') return v;
+			const t = Date.parse(v);
+			return isNaN(t) ? Number(v) : t;
+		}
+		function chartLocale() {
+			try { return Alpine.store('locale')?.current || document.documentElement.lang || 'en'; } catch (_) { return 'en'; }
+		}
 
 		function configFromDom(el) {
 			// Declarative authoring: <figure x-chart.line><data series="Revenue" :values="..."></data></figure>
@@ -147,11 +197,15 @@
 			cfg.grid = cfg.grid !== false;
 			cfg.tooltip = cfg.tooltip !== false;   // hover tooltips on by default
 			cfg.dataLabels = !!cfg.dataLabels;       // static value labels off by default
+			cfg.gap = num(cfg.gap, 1);               // heatmap tile gutter in px
 			cfg.labels = Array.isArray(cfg.labels) ? cfg.labels : [];
 
-			// Series may be omitted in favor of a single `data` array.
-			if (!cfg.series && cfg.data) cfg.series = [{ name: cfg.name || '', data: cfg.data }];
+			// Series may be omitted in favor of a single `data` array. (A map's
+			// `data` is a region→value object, left untouched for drawMap.)
+			if (!cfg.series && Array.isArray(cfg.data) && cfg.type !== 'map') cfg.series = [{ name: cfg.name || '', data: cfg.data }];
 			if (!Array.isArray(cfg.series)) cfg.series = [];
+
+			if (cfg.type === 'map') cfg.map = cfg.map || 'world';
 
 			// Pie/donut: accept [{label,value}] in data.
 			if ((cfg.type === 'pie' || cfg.type === 'donut') && cfg.series.length) {
@@ -161,7 +215,46 @@
 					s.data = s.data.map(d => num(d.value, 0));
 				}
 			}
+
+			// Gantt: series are tracks of time/numeric/category segments.
+			// (`timeline` accepted as a legacy alias.)
+			if (cfg.type === 'gantt' || cfg.type === 'timeline') {
+				cfg.type = 'gantt';
+				cfg.rowHeight = num(cfg.rowHeight, 28);
+				cfg.markers = Array.isArray(cfg.markers) ? cfg.markers : [];
+			}
+
+			// Gauge: a single value, from `value` or the first series datum.
+			if (cfg.type === 'gauge') {
+				if (cfg.value != null && !cfg.series.length) cfg.series = [{ data: [num(cfg.value, 0)] }];
+				cfg.min = num(cfg.min, 0);
+				cfg.max = num(cfg.max, 100);
+			}
 			return cfg;
+		}
+
+		// Deterministic structural signature of a normalized config, for the redraw
+		// short-circuit below: sorted object keys (key order doesn't matter), arrays
+		// keep position, Dates by epoch ms, typed arrays by value. Functions are
+		// omitted — identity isn't a meaningful "value" for a config comparison and
+		// authors sometimes pass fresh closures that are behaviorally identical.
+		function stableStringify(v, seen) {
+			if (v === null || typeof v !== 'object') return typeof v === 'function' ? undefined : JSON.stringify(v);
+			if (v instanceof Date) return String(v.getTime());
+			if (ArrayBuffer.isView(v)) return '[' + Array.prototype.join.call(v, ',') + ']';
+			seen = seen || new Set();
+			if (seen.has(v)) return '"[Circular]"'; // config is author data; don't trust it's acyclic
+			seen.add(v);
+			let out;
+			if (Array.isArray(v)) {
+				out = '[' + v.map(x => { const s = stableStringify(x, seen); return s === undefined ? 'null' : s; }).join(',') + ']';
+			} else {
+				const parts = [];
+				Object.keys(v).sort().forEach(k => { const s = stableStringify(v[k], seen); if (s !== undefined) parts.push(JSON.stringify(k) + ':' + s); });
+				out = '{' + parts.join(',') + '}';
+			}
+			seen.delete(v);
+			return out;
 		}
 
 		/* ---- SVG helpers -------------------------------------------- */
@@ -176,14 +269,15 @@
 			t.appendChild(document.createTextNode(str == null ? '' : String(str))); // untrusted-safe
 			return t;
 		}
+		// Entry animations run only on first draw; redraws paint final state directly
+		// (else a bound value change replays the reveal every frame). Set by drawChart.
+		let _suppressAnim = false;
 		function animate(el, keyframes, opts) {
-			if (prefersReducedMotion() || typeof el.animate !== 'function') return;
+			if (_suppressAnim || prefersReducedMotion() || typeof el.animate !== 'function') return;
 			try { el.animate(keyframes, Object.assign({ duration: 600, easing: 'cubic-bezier(0.22,1,0.36,1)', fill: 'backwards' }, opts)); } catch (_) { }
 		}
-		// Cursor-following tooltip. Manifest's x-tooltip relies on CSS anchor
-		// positioning, which can't anchor to SVG child elements (no CSS-layout
-		// box) — so charts use their own tip, themed to match, following the
-		// pointer (better UX for dense charts). aria-label carries AT semantics.
+		// Cursor-following tooltip: x-tooltip's CSS anchor positioning can't target SVG
+		// children (no layout box), so charts use their own themed tip. aria-label for AT.
 		function applyTip(seg, tip, cfg) {
 			seg.setAttribute('aria-label', tip);
 			if (!cfg.tooltip) return;
@@ -222,7 +316,7 @@
 					return {
 						get type() { return self.config ? self.config.type : ''; },
 						get series() { return self.config ? self.config.series : []; },
-						update(cfg) { self.config = normalize(cfg, self.el, self.typeFromModifier); self.draw(); },
+						update(cfg) { if (self.applyConfig(normalize(cfg, self.el, self.typeFromModifier))) self.draw(); },
 						redraw() { self.draw(); },
 						toString() { return self.config ? self.config.type : ''; }
 					};
@@ -241,10 +335,17 @@
 					Alpine.effect(() => {
 						// Subscribe to the data store heartbeat so $x loads/locale reloads re-run.
 						try { void Alpine.store('data')?._dataVersion; } catch (_) { }
-						if (getCfg) getCfg(raw => { self.config = normalize(raw, self.el, self.typeFromModifier); self.schedule(); });
-						else { self.config = normalize(configFromDom(self.el), self.el, self.typeFromModifier); self.schedule(); }
+						// Every effect fire re-evaluates the expression (it may read live reactive
+						// state — realtime rows, presence, staged $x hydration — that changes far
+						// more often than the resulting config). applyConfig() short-circuits a
+						// schedule() when the normalized result is value-identical to last time;
+						// the first call always applies (self._sig starts undefined).
+						if (getCfg) getCfg(raw => { if (self.applyConfig(normalize(raw, self.el, self.typeFromModifier))) self.schedule(); });
+						else if (self.applyConfig(normalize(configFromDom(self.el), self.el, self.typeFromModifier))) self.schedule();
 					});
-					// Re-render on locale (axis number/date formatting) and container resize.
+					// Re-render on locale (axis number/date formatting) and container resize —
+					// these change rendering without changing the config, so they bypass the
+					// signature check and always schedule.
 					self._onLocale = () => self.schedule();
 					window.addEventListener('localechange', self._onLocale);
 					self._ro = new ResizeObserver(() => self.schedule());
@@ -252,13 +353,35 @@
 					if (self.el.id) _registry[self.el.id] = self.api;
 				},
 
-				// Coalesce to one draw per tick. Uses setTimeout (not rAF) so draws
-				// still happen when the tab is backgrounded (rAF is paused for hidden
-				// tabs), and does NOT reset a pending timer on re-entry — a
-				// high-frequency reactive trigger (e.g. a plugin bumping the data-store
-				// version every tick) would otherwise perpetually reschedule and starve
-				// the draw.
-				schedule() { if (this._t) return; this._t = setTimeout(() => { this._t = null; this.draw(); }, 0); },
+				// Applies a normalized config, returning whether it actually changed (by
+				// structural signature, not reference) — see stableStringify. Always
+				// "changes" the first time (this._sig starts undefined) so the first draw
+				// is unconditional.
+				applyConfig(next) {
+					const sig = stableStringify(next);
+					const changed = this._sig === undefined || sig !== this._sig;
+					if (changed) { this._sig = sig; this.config = next; }
+					return changed;
+				},
+
+				// One draw per tick. setTimeout (not rAF) so backgrounded tabs still draw;
+				// doesn't reset a pending timer, so a high-frequency trigger can't starve it.
+				schedule() {
+					if (this._t) return;
+					// Runaway-redraw guard: a chart that schedules dozens of times a second
+					// (usually a config-signature miss, or a map's heavy geometry rebuild —
+					// see drawMap) pegs the main thread and shows up to the user as a hung
+					// tab, not a chart bug. Warn once per element so it's self-diagnosing.
+					if (isDevelopment && !this._warnedRedraw) {
+						const now = Date.now();
+						if (!this._scheduleWindowStart || now - this._scheduleWindowStart > 1000) { this._scheduleWindowStart = now; this._scheduleWindowCount = 0; }
+						if (++this._scheduleWindowCount > 20) {
+							this._warnedRedraw = true;
+							try { console.warn('[Manifest Charts] "' + (this.el.id || this.expression || 'chart') + '" redrew ' + this._scheduleWindowCount + '+ times within one second — likely a reactive dependency changing on every read (or, for a map, a legitimately busy data feed hitting its per-draw geometry cost).'); } catch (_) { }
+						}
+					}
+					this._t = setTimeout(() => { this._t = null; this.draw(); }, 0);
+				},
 
 				renderError(msg) { this.el.innerHTML = ''; const d = document.createElement('small'); d.textContent = msg; this.el.appendChild(d); },
 
@@ -272,7 +395,28 @@
 			const cfg = state.config; const d3 = state.d3; const el = state.el;
 			if (!cfg || !d3) return;
 			const width = Math.max(120, el.clientWidth || el.getBoundingClientRect().width || 600);
-			const height = cfg.height;
+
+			// Maps have their own data shape, async geo deps, and aspect-based
+			// height — handled before the cartesian/series path.
+			if (cfg.type === 'map') {
+				el.innerHTML = ''; probePalette(el);
+				const geo = window.__manifestGeo;
+				if (!geo) {
+					el.style.minHeight = (cfg.height || 320) + 'px';
+					loadGeo().then(() => state.schedule()).catch(() => state.renderError('Map data failed to load.'));
+					return;
+				}
+				_suppressAnim = !!state._drawn; state._drawn = true;
+				const mh = cfg.height || Math.round(width * 0.52);
+				el.style.minHeight = mh + 'px';
+				const mroot = svg('svg', { viewBox: `0 0 ${width} ${mh}`, width: '100%', height: String(mh), role: 'img', 'aria-label': cfg.title || 'map', preserveAspectRatio: 'xMidYMid meet' }, el);
+				drawMap(state, mroot, width, mh, geo);
+				return;
+			}
+
+			// Gantt sizes by track count, not a fixed height.
+			const height = cfg.type === 'gantt' ? ganttHeight(cfg) : cfg.height;
+			if (cfg.type === 'gantt') el.style.minHeight = height + 'px';
 
 			el.innerHTML = '';
 			probePalette(el);
@@ -280,18 +424,29 @@
 			const hasData = cfg.series.some(s => Array.isArray(s.data) && s.data.length);
 			if (!hasData) { const d = document.createElement('small'); d.textContent = 'No data'; el.appendChild(d); return; }
 
+			// Animate the reveal only on the first paint; redraws snap to state.
+			_suppressAnim = !!state._drawn;
+			state._drawn = true;
+
 			// Label via aria-label (not an SVG <title>, which renders a native
 			// browser tooltip that conflicts with our cursor tooltip).
 			const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, width: '100%', height: String(height), role: 'img', 'aria-label': cfg.title || (cfg.type + ' chart'), preserveAspectRatio: 'xMidYMid meet' }, el);
 
 			if (cfg.type === 'pie' || cfg.type === 'donut') drawPie(state, root, width, height);
+			else if (cfg.type === 'gauge') drawGauge(state, root, width, height);
+			else if (cfg.type === 'heatmap') drawHeatmap(state, root, width, height);
+			else if (cfg.type === 'gantt') drawGantt(state, root, width, height);
 			else drawCartesian(state, root, width, height);
 		}
 
-		// Palette size is CSS-driven: count consecutive --color-chart-N custom
-		// properties (themes can extend past 8 by defining --color-chart-9, …);
-		// segment colours cycle through however many exist. Re-probed per draw
-		// so per-scope overrides apply.
+		// Gantt height derives from track count (one lane per series) + axis.
+		function ganttHeight(cfg) {
+			const n = Math.max(1, (cfg.series || []).length);
+			return 4 + n * cfg.rowHeight + 22;
+		}
+
+		// Palette size = count of consecutive --color-chart-N tokens (themes may extend
+		// past 8); colours cycle through them. Re-probed per draw for per-scope overrides.
 		let _paletteN = 8;
 		function probePalette(el) {
 			try {
@@ -302,6 +457,17 @@
 			} catch (_) { _paletteN = 8; }
 		}
 		function seriesColorVar(i, explicit) { return explicit || `var(--color-chart-${(i % _paletteN) + 1})`; }
+
+		// Resolve the theme --radius token to user-space px (the viewBox is 1:1
+		// with CSS px), so SVG corners match the rest of the UI's rounding.
+		function cssRadius(el) {
+			try {
+				const v = getComputedStyle(el).getPropertyValue('--radius').trim() || '0.5rem';
+				if (v.endsWith('rem')) return parseFloat(v) * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+				if (v.endsWith('px')) return parseFloat(v);
+				return parseFloat(v) || 8;
+			} catch (_) { return 8; }
+		}
 
 		// Line interpolation: monotone (smooth, default) | linear | step | natural.
 		function curveFor(d3, name) {
@@ -479,7 +645,7 @@
 			});
 		}
 		function animateBar(rect, ih) {
-			if (prefersReducedMotion() || typeof rect.animate !== 'function') return;
+			if (_suppressAnim || prefersReducedMotion() || typeof rect.animate !== 'function') return;
 			rect.style.transformBox = 'fill-box'; rect.style.transformOrigin = 'center bottom';
 			try { rect.animate([{ transform: 'scaleY(0)' }, { transform: 'scaleY(1)' }], { duration: 600, easing: 'cubic-bezier(0.22,1,0.36,1)', fill: 'backwards' }); } catch (_) { }
 		}
@@ -511,7 +677,7 @@
 				const path = svg('path', { class: 'slice', d: arc(slice), style: `--color-chart-color:${seriesColorVar(i)}` }, g);
 				applyTip(path, labels[i] + ': ' + data[i], cfg);
 				if (cfg.dataLabels) { const c = arc.centroid(slice); dataLabel(g, data[i], c[0], c[1], 'middle', 'central', 'inverse'); }
-				if (!prefersReducedMotion() && typeof path.animate === 'function') {
+				if (!_suppressAnim && !prefersReducedMotion() && typeof path.animate === 'function') {
 					path.style.transformBox = 'fill-box'; path.style.transformOrigin = 'center';
 					try { path.animate([{ opacity: 0, transform: 'scale(0.85)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 450, delay: i * 60, easing: 'cubic-bezier(0.22,1,0.36,1)', fill: 'backwards' }); } catch (_) { }
 				}
@@ -519,9 +685,424 @@
 			if (cfg.legend) drawLegend(state, labels);
 		}
 
-		// Legend is a <footer> sibling below the SVG (inline flex), not an
-		// absolute overlay — so it never collides with axis labels. Each item is
-		// a <span> with an <i> swatch carrying the series colour.
+		// Widest rendered label in px (exact via getComputedTextLength, char-estimate
+		// fallback). Sizes axis gutters to their content so charts sit balanced.
+		function labelWidth(root, items, cls) {
+			if (!items || !items.length) return 0;
+			const probe = svg('text', cls ? { class: cls, x: -9999, y: -9999 } : { x: -9999, y: -9999 }, root);
+			let max = 0;
+			for (const s of items) { probe.textContent = String(s); let w = 0; try { w = probe.getComputedTextLength(); } catch (_) { } if (!w) w = String(s).length * 7; if (w > max) max = w; }
+			root.removeChild(probe);
+			return Math.ceil(max);
+		}
+
+		function drawGauge(state, root, width, height) {
+			const cfg = state.config, d3 = state.d3;
+			const value = num(cfg.series[0] && cfg.series[0].data[0], 0);
+			const min = cfg.min, max = cfg.max;
+			const START = -Math.PI / 2, END = Math.PI / 2;
+			const scale = d3.scaleLinear().domain([min, max]).range([START, END]).clamp(true);
+			const unit = cfg.unit || '';
+
+			// Reserve a band below the dial for the min/max labels, then centre the
+			// whole dial (arc + labels) within the frame so nothing spills out.
+			const PAD = 8, labelBand = cfg.axis ? 20 : 0;
+			const r = Math.max(0, Math.min(width / 2 - PAD, height - PAD - labelBand));
+			const thickness = Math.max(8, r * 0.22);
+			const cx = width / 2, cy = Math.max(PAD, (height - (r + labelBand)) / 2) + r;
+			const g = svg('g', { transform: `translate(${cx},${cy})` }, root);
+			// Bands are drawn with square (butt) ends so zone/value joins stay flush;
+			// the whole dial is then clipped to a single rounded full-sweep arc, so
+			// only its two outer corners are rounded — not each interior segment.
+			const arc = d3.arc().innerRadius(r - thickness).outerRadius(r);
+			const clipId = 'mnfst-gauge-' + (++_uid);
+			svg('path', { d: d3.arc().innerRadius(r - thickness).outerRadius(r).cornerRadius(cssRadius(state.el))({ startAngle: START, endAngle: END }) }, svg('clipPath', { id: clipId }, svg('defs', null, root)));
+			const ring = svg('g', { 'clip-path': `url(#${clipId})` }, g);
+
+			// Track, or threshold zone bands when `zones` is given.
+			if (Array.isArray(cfg.zones) && cfg.zones.length) {
+				let from = min;
+				cfg.zones.forEach((z, i) => {
+					const to = num(z.to, max);
+					svg('path', { class: 'gauge-track', d: arc({ startAngle: scale(from), endAngle: scale(to) }), style: `--color-chart-color:${z.color || seriesColorVar(i)}`, opacity: 0.35 }, ring);
+					from = to;
+				});
+			} else {
+				svg('path', { class: 'gauge-track', d: arc({ startAngle: START, endAngle: END }) }, ring);
+			}
+
+			// Value arc — final geometry set unconditionally, so a background tab that
+			// skips the fade reveal still renders correctly.
+			const color = (cfg.series[0] && cfg.series[0].color) || 'var(--color-chart-1)';
+			const valueAngle = scale(value);
+			const vArc = svg('path', { class: 'gauge-value', d: arc({ startAngle: START, endAngle: valueAngle }), style: `--color-chart-color:${color}` }, ring);
+			applyTip(vArc, (cfg.title ? cfg.title + ': ' : '') + value + unit, cfg);
+			animate(vArc, [{ opacity: 0 }, { opacity: 1 }], { duration: 500 });
+
+			// Centered readout + range end labels.
+			text(g, value + unit, { class: 'gauge-label', x: 0, y: -r * 0.12, 'text-anchor': 'middle', 'dominant-baseline': 'central' });
+			if (cfg.axis) {
+				const lr = r - thickness / 2;
+				text(g, String(min), { x: -lr, y: 16, 'text-anchor': 'middle' });
+				text(g, String(max), { x: lr, y: 16, 'text-anchor': 'middle' });
+			}
+		}
+
+		// Heatmap — matrix of cells (row per series, column per datum). Cell colour is a
+		// CSS color-mix of the --color-chart-heat-* tokens via a per-cell `--heat` %.
+		function drawHeatmap(state, root, width, height) {
+			const cfg = state.config, d3 = state.d3;
+			const rows = cfg.series;
+			const cols = cfg.labels.length ? cfg.labels : (rows[0] && Array.isArray(rows[0].data) ? rows[0].data.map((_, i) => i + 1) : []);
+			const rowName = (r, i) => r.name || String(i + 1);
+			const showLabels = cfg.axis;
+
+			// Gutters sized to content: a uniform pad all round, plus a left gutter
+			// measured to the row labels so the grid sits balanced, not lopsided.
+			const PAD = 8;
+			const yW = showLabels ? labelWidth(root, rows.map((r, i) => rowName(r, i)), '') : 0;
+			const m = { top: PAD, right: PAD, bottom: showLabels ? PAD + 16 : PAD, left: showLabels ? PAD + yW + 8 : PAD };
+			const iw = width - m.left - m.right;
+			const ih = height - m.top - m.bottom;
+			// Tiles abut (padding 0); the gutter comes from insetting each rect
+			// by `gap` px (config, default 1; set 0 for a seamless field).
+			const gap = Math.max(0, cfg.gap);
+			const x = d3.scaleBand().domain(cols.map(String)).range([0, iw]).padding(0);
+			const yb = d3.scaleBand().domain(rows.map(rowName)).range([0, ih]).padding(0);
+			const cw = Math.max(0, x.bandwidth() - gap), ch = Math.max(0, yb.bandwidth() - gap);
+
+			// Value domain across every cell.
+			let lo = Infinity, hi = -Infinity;
+			rows.forEach(r => (r.data || []).forEach(v => { const n = num(v, 0); if (n < lo) lo = n; if (n > hi) hi = n; }));
+			if (!isFinite(lo)) { lo = 0; hi = 1; }
+			if (lo === hi) hi = lo + 1;
+
+			const plot = svg('g', { transform: `translate(${m.left},${m.top})` }, root);
+
+			// Round only the grid's outer corners: square tiles clipped to one rounded
+			// rect hugging the cell extent (so the radius doesn't clip empty gutter).
+			const clipId = 'mnfst-heat-' + (++_uid);
+			const cp = svg('clipPath', { id: clipId }, svg('defs', null, root));
+			svg('rect', { x: 0, y: 0, width: Math.max(0, iw - gap), height: Math.max(0, ih - gap), rx: cssRadius(state.el) }, cp);
+			const cellsG = svg('g', { 'clip-path': `url(#${clipId})` }, plot);
+
+			rows.forEach((r, ri) => {
+				const yy = yb(rowName(r, ri));
+				cols.forEach((c, ci) => {
+					const v = num(r.data[ci], 0);
+					const t = Math.round(((v - lo) / (hi - lo)) * 100);
+					const cell = svg('rect', { class: 'heat-cell', x: x(String(c)), y: yy, width: cw, height: ch, style: `--heat:${t}%` }, cellsG);
+					applyTip(cell, (r.name ? r.name + ' · ' : '') + c + ': ' + v, cfg);
+					animate(cell, [{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: (ri + ci) * 20 });
+					if (cfg.dataLabels) dataLabel(plot, v, x(String(c)) + x.bandwidth() / 2, yy + yb.bandwidth() / 2, 'middle', 'central', 'inverse');
+				});
+			});
+
+			if (showLabels) {
+				rows.forEach((r, ri) => text(plot, rowName(r, ri), { x: -8, y: yb(rowName(r, ri)) + yb.bandwidth() / 2, 'text-anchor': 'end', 'dominant-baseline': 'central' }));
+				cols.forEach(c => text(plot, c, { x: x(String(c)) + x.bandwidth() / 2, y: ih + 16, 'text-anchor': 'middle' }));
+			}
+
+			if (cfg.legend) drawHeatLegend(state, lo, hi, m);
+		}
+
+		// Continuous gradient legend for the heatmap: low label, ramp bar, high
+		// label. Padded to the chart's margins so the bar spans the grid width
+		// (bar flexes to fill — see .heat-legend in the CSS).
+		function drawHeatLegend(state, lo, hi, m) {
+			const footer = document.createElement('footer');
+			footer.className = 'heat-legend';
+			footer.style.paddingLeft = m.left + 'px';
+			footer.style.paddingRight = m.right + 'px';
+			const a = document.createElement('span'); a.textContent = lo;
+			const bar = document.createElement('i');
+			const b = document.createElement('span'); b.textContent = hi;
+			footer.append(a, bar, b);
+			state.el.appendChild(footer);
+		}
+
+		// Gantt — each series is a track of `{ from, to, status?, label?, color? }`
+		// segments on a shared X axis, adapting numbers→linear, dates→time, else
+		// category. A `to`-less segment is a point marker.
+		function drawGantt(state, root, width, height) {
+			const cfg = state.config, d3 = state.d3;
+			const tracks = cfg.series;
+			const trackName = (t, i) => t.name || String(i + 1);
+			const showLabels = cfg.axis;
+			const unit = cfg.unit || '';
+			// Uniform pad all round; left gutter measured to the track labels, and
+			// extra headroom when markers carry a label drawn above the lanes.
+			const PAD = 8;
+			const hasMarkerLabels = Array.isArray(cfg.markers) && cfg.markers.some(mk => mk && mk.label);
+			const yW = showLabels ? labelWidth(root, tracks.map((t, i) => trackName(t, i)), 'gantt-track') : 0;
+			const m = { top: PAD + (hasMarkerLabels ? 10 : 0), right: PAD, bottom: 22, left: showLabels ? PAD + yW + 8 : PAD };
+			let iw = width - m.left - m.right;
+			const ih = height - m.top - m.bottom;
+
+			// Axis kind from the first segment's `from`.
+			let firstFrom;
+			for (const t of tracks) { if (t.data && t.data.length) { firstFrom = t.data[0].from; break; } }
+			const mode = (firstFrom instanceof Date) ? 'time'
+				: typeof firstFrom === 'number' ? 'numeric'
+					: (!isNaN(Date.parse(firstFrom)) ? 'time' : 'category');
+
+			// Domain is width-independent; the scale (and its ticks) is built from
+			// the current `iw` so it can be rebuilt after reserving label gutters.
+			let categoryDomain, dmin, dmax, conv, fmtBase;
+			if (mode === 'category') {
+				const seen = [];
+				tracks.forEach(t => (t.data || []).forEach(s => [s.from, s.to].forEach(v => { if (v != null && seen.indexOf(String(v)) < 0) seen.push(String(v)); })));
+				categoryDomain = (cfg.labels && cfg.labels.length) ? cfg.labels.map(String) : seen;
+				fmtBase = v => String(v);
+			} else {
+				conv = mode === 'time' ? toTime : (v => num(v, 0));
+				dmin = Infinity; dmax = -Infinity;
+				tracks.forEach(t => (t.data || []).forEach(s => {
+					const a = conv(s.from), b = conv(s.to != null ? s.to : s.from);
+					if (a < dmin) dmin = a; if (b > dmax) dmax = b;
+				}));
+				if (cfg.min != null) dmin = conv(cfg.min);
+				if (cfg.max != null) dmax = conv(cfg.max);
+				if (!isFinite(dmin) || !isFinite(dmax) || dmin === dmax) { dmin = 0; dmax = 1; }
+				fmtBase = mode === 'time' ? ganttFmt(dmin, dmax) : (v => String(v) + unit);
+			}
+			const buildX = () => {
+				if (mode === 'category') { const sc = d3.scalePoint().domain(categoryDomain).range([0, iw]); return { pos: v => sc(String(v)), ticks: categoryDomain, fmt: fmtBase }; }
+				const sc = (mode === 'time' ? d3.scaleTime() : d3.scaleLinear()).domain([dmin, dmax]).range([0, iw]);
+				return { pos: v => sc(conv(v)), ticks: sc.ticks(Math.max(2, Math.floor(iw / 80))), fmt: fmtBase };
+			};
+			let X = buildX();
+			// Reserve half of each end label so the natural (middle-anchored) edge
+			// ticks sit fully inside the frame — no overflow, no crushing.
+			if (showLabels && X.ticks.length) {
+				const halfFirst = Math.ceil(labelWidth(root, [X.fmt(X.ticks[0])]) / 2);
+				const halfLast = Math.ceil(labelWidth(root, [X.fmt(X.ticks[X.ticks.length - 1])]) / 2);
+				let changed = false;
+				if (PAD + halfFirst > m.left) { m.left = PAD + halfFirst; changed = true; }
+				if (PAD + halfLast > m.right) { m.right = PAD + halfLast; changed = true; }
+				if (changed) { iw = width - m.left - m.right; X = buildX(); }
+			}
+			const pos = X.pos, ticks = X.ticks, fmt = X.fmt;
+			const tipVal = v => mode === 'time' ? fmt(toTime(v)) : String(v) + (mode === 'numeric' ? unit : '');
+
+			const lane = ih / Math.max(1, tracks.length);
+			const pad = Math.min(6, lane * 0.18);
+			const plot = svg('g', { transform: `translate(${m.left},${m.top})` }, root);
+
+			// Grid lines + axis ticks (shared, at the bottom). Labels sit naturally
+			// centred on their tick — the reserved gutters keep the ends inside.
+			ticks.forEach(tk => {
+				const xx = pos(tk);
+				if (xx == null || isNaN(xx)) return;
+				if (cfg.grid) svg('line', { x1: xx, x2: xx, y1: 0, y2: ih }, plot);
+				text(plot, fmt(tk), { x: xx, y: ih + 14, 'text-anchor': 'middle' });
+			});
+
+			// Status → colour, stable across tracks. A per-segment `color` wins;
+			// else the config `colors` map; else the palette in first-seen order.
+			const statusColors = {}; let next = 0;
+			const colorFor = (s) => {
+				if (s.color) return s.color;
+				if (s.status == null) return seriesColorVar(0);
+				if (!(s.status in statusColors)) statusColors[s.status] = (cfg.colors && cfg.colors[s.status]) || seriesColorVar(next++);
+				return statusColors[s.status];
+			};
+
+			tracks.forEach((t, ti) => {
+				const y0 = ti * lane, by = y0 + pad, bh = Math.max(0, lane - pad * 2);
+				if (showLabels) text(plot, trackName(t, ti), { class: 'gantt-track', x: -8, y: y0 + lane / 2, 'text-anchor': 'end', 'dominant-baseline': 'central' });
+				(t.data || []).forEach(s => {
+					const x1 = pos(s.from);
+					if (x1 == null || isNaN(x1)) return;
+					const x2 = s.to != null ? pos(s.to) : x1;
+					const color = colorFor(s);
+					const label = s.status != null ? s.status : (s.label || '');
+					if (!(x2 > x1)) {
+						const pt = svg('rect', { class: 'gantt-point', x: x1 - 1.5, y: by, width: 3, height: bh, style: `--color-chart-color:${color}` }, plot);
+						applyTip(pt, (t.name ? t.name + ' · ' : '') + label + ' · ' + tipVal(s.from), cfg);
+						return;
+					}
+					const seg = svg('rect', { class: 'gantt-segment', x: x1, y: by, width: Math.max(1, x2 - x1), height: bh, style: `--color-chart-color:${color}` }, plot);
+					applyTip(seg, (t.name ? t.name + ' · ' : '') + label + ' · ' + tipVal(s.from) + ' – ' + tipVal(s.to), cfg);
+					animate(seg, [{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: ti * 30 });
+					if (cfg.dataLabels && label && (x2 - x1) > 26) dataLabel(plot, label, (x1 + x2) / 2, y0 + lane / 2, 'middle', 'central', 'inverse');
+				});
+			});
+
+			// Reference markers (e.g. a "now" line).
+			cfg.markers.forEach(mk => {
+				const xx = pos(mk.at);
+				if (!(xx >= 0 && xx <= iw)) return;
+				svg('line', { class: 'gantt-marker', x1: xx, x2: xx, y1: 0, y2: ih, style: mk.color ? `--color-chart-color:${mk.color}` : '' }, plot);
+				if (mk.label) text(plot, mk.label, { class: 'gantt-marker-label', x: xx, y: -1, 'text-anchor': 'middle' });
+			});
+
+			// Status legend (categorical), when more than one is present.
+			const statuses = Object.keys(statusColors);
+			if (cfg.legend && statuses.length > 1) drawSwatchLegend(state, statuses.map(name => ({ name, color: statusColors[name] })));
+		}
+
+		// Axis/tooltip date formatter sized to the visible span.
+		function ganttFmt(dmin, dmax) {
+			const DAY = 86400000, span = dmax - dmin;
+			const opts = span <= 2 * DAY ? { hour: '2-digit', minute: '2-digit' }
+				: span <= 120 * DAY ? { month: 'short', day: 'numeric' }
+					: { month: 'short', year: 'numeric' };
+			let f; try { f = new Intl.DateTimeFormat(chartLocale(), opts); } catch (_) { f = null; }
+			return v => f ? f.format(new Date(v)) : new Date(v).toISOString().slice(0, 16);
+		}
+
+		/* ---- World map (choropleth) --------------------------------- */
+		// Resolve an author key to country numeric id(s): numeric ISO, alpha-2,
+		// alpha-3, continent (name or code → all members), or country name (atlas
+		// names + a few common aliases). Returns [] when unresolved.
+		const _mapAlias = { 'united states': 'united states of america', usa: 'united states of america', 'u.s.': 'united states of america', uk: 'united kingdom', 'great britain': 'united kingdom', russia: 'russia', czechia: 'czechia', 'czech republic': 'czechia', 'south korea': 'south korea', 'north korea': 'north korea', 'dr congo': 'dem. rep. congo', 'democratic republic of the congo': 'dem. rep. congo', tanzania: 'tanzania', bolivia: 'bolivia', laos: 'laos' };
+		const _contAlias = { 'n. america': 'north america', 'n america': 'north america', 's. america': 'south america', 's america': 'south america' };
+		let _nameIdx = null;
+		function nameIndex(geo) {
+			if (_nameIdx) return _nameIdx;
+			_nameIdx = {};
+			geo.world.objects.countries.geometries.forEach(g => { if (g.properties && g.properties.name) _nameIdx[String(g.properties.name).toLowerCase()] = Number(g.id); });
+			Object.keys(_mapAlias).forEach(a => { const id = _nameIdx[_mapAlias[a]]; if (id != null) _nameIdx[a] = id; });
+			return _nameIdx;
+		}
+		function resolveRegion(key, geo) {
+			const k = String(key).trim(); if (!k) return { kind: '', ids: [] };
+			if (/^\d+$/.test(k)) return { kind: 'country', ids: [Number(k)] };
+			const meta = geo.meta || {}, up = k.toUpperCase(), low = k.toLowerCase();
+			if (k.length === 2 && meta.a2 && meta.a2[up] != null) return { kind: 'country', ids: [meta.a2[up]] };
+			if (k.length === 3 && meta.a3 && meta.a3[up] != null) return { kind: 'country', ids: [meta.a3[up]] };
+			const members = meta.members || {};
+			const cont = Object.keys(members).find(c => c.toLowerCase() === (_contAlias[low] || low));
+			if (cont) return { kind: 'continent', code: cont, ids: members[cont] };
+			const id = nameIndex(geo)[low];
+			return id != null ? { kind: 'country', ids: [id] } : { kind: '', ids: [] };
+		}
+
+		// Choropleth: country (or continent-grouped) regions coloured sequentially
+		// (numeric values → heat ramp) or categorically (string values → palette).
+		function drawMap(state, root, width, height, geo) {
+			const cfg = state.config;
+			// The feature collection, fitted projection, and path generator depend only
+			// on the atlas (`geo`) and the element's [width, height] — not on cfg.data —
+			// so a data-only redraw (the common case: realtime values ticking in) reuses
+			// them instead of re-running topojson.feature/fitSize over ~175 polygons.
+			// Cached per element, invalidated when the atlas or size changes.
+			let geom = state._mapGeom;
+			if (!geom || geom.geo !== geo || geom.width !== width || geom.height !== height) {
+				const fc = geo.topojson.feature(geo.world, geo.world.objects.countries);
+				const projection = geo.geoNaturalEarth1().fitSize([width, height], fc);
+				geom = state._mapGeom = { geo, width, height, fc, projection, path: geo.geoPath(projection) };
+			}
+			const { fc, projection, path } = geom;
+
+			// Author data: an object { key: value } or an array of { id|code|name, value } / [key, value].
+			let entries = [];
+			if (Array.isArray(cfg.data)) entries = cfg.data.map(d => Array.isArray(d) ? [d[0], d[1]] : [d.id != null ? d.id : (d.code != null ? d.code : d.name), d.value]);
+			else if (cfg.data && typeof cfg.data === 'object') entries = Object.entries(cfg.data);
+
+			const valueById = {};
+			entries.forEach(([key, val]) => resolveRegion(key, geo).ids.forEach(id => { valueById[id] = val; }));
+
+			// Display name: `_ui.map.regions` override → localized pack ($locale) →
+			// English atlas name. Async packs trigger a redraw on arrival.
+			const num2a2 = (geo.meta && geo.meta.num2a2) || {};
+			const locale = chartLocale();
+			const ui = (window.ManifestUI && window.ManifestUI.resolve) ? window.ManifestUI.resolve('map', {}) : {};
+			const overrides = ui.regions || {};
+			let pack = null;
+			if (locale && locale !== 'en') { if (_namePacks[locale]) pack = _namePacks[locale]; else loadCountryNames(locale).then(() => state.schedule()); }
+			const displayName = (id, eng) => {
+				const a2 = num2a2[id];
+				if (a2 != null && overrides[a2] != null) return overrides[a2];
+				if (overrides[id] != null) return overrides[id];
+				if (overrides[String(id)] != null) return overrides[String(id)];
+				if (overrides[eng] != null) return overrides[eng];
+				if (pack && a2 && pack[a2]) return pack[a2];
+				return eng;
+			};
+
+			// Author-supplied place gazetteer (config `places` or `_ui.map.cities`) for
+			// resolving point names → coords. No city data is bundled.
+			const placesSrc = cfg.places || ui.cities || null;
+			let places = null;
+			if (placesSrc) { places = {}; Object.keys(placesSrc).forEach(k => { places[k.toLowerCase()] = placesSrc[k]; }); }
+
+			// Sequential when every value is numeric, else categorical.
+			const vals = entries.map(e => e[1]);
+			const numeric = vals.length > 0 && vals.every(v => typeof v === 'number' || (typeof v === 'string' && v.trim() !== '' && !isNaN(+v)));
+			let lo = Infinity, hi = -Infinity;
+			if (numeric) { Object.values(valueById).forEach(v => { const n = +v; if (n < lo) lo = n; if (n > hi) hi = n; }); if (!isFinite(lo)) { lo = 0; hi = 1; } if (lo === hi) hi = lo + 1; }
+			const palette = {}; let pIdx = 0;
+
+			const plot = svg('g', {}, root);
+			fc.features.forEach(f => {
+				const id = Number(f.id), v = valueById[id];
+				const region = svg('path', { class: 'map-region', d: path(f) }, plot);
+				const name = displayName(id, (f.properties && f.properties.name) || String(id));
+				if (v != null && v !== '') {
+					if (numeric) { const t = Math.round((+v - lo) / (hi - lo) * 100); region.setAttribute('style', `--color-chart-color:color-mix(in oklch, var(--color-chart-heat-high) ${t}%, var(--color-chart-heat-low))`); }
+					else { if (!(v in palette)) palette[v] = seriesColorVar(pIdx++); region.setAttribute('style', `--color-chart-color:${palette[v]}`); }
+					applyTip(region, name + ': ' + v, cfg);
+					animate(region, [{ opacity: 0 }, { opacity: 1 }], { duration: 250 });
+				} else {
+					applyTip(region, name, cfg);
+				}
+			});
+
+			// Point markers (proportional symbols) — projected through the same
+			// projection. `points: [{ lat, lng, value?, label?, color? }]`, or a
+			// `name` resolved against `places` (`city` is a legacy alias).
+			const pts = Array.isArray(cfg.points) ? cfg.points : [];
+			if (pts.length) {
+				const placeKey = (p) => String(p.name != null ? p.name : (p.city != null ? p.city : '')).toLowerCase();
+				const coord = (p) => {
+					let lat = p.lat != null ? p.lat : p.latitude;
+					let lng = p.lng != null ? p.lng : (p.lon != null ? p.lon : (p.long != null ? p.long : p.longitude));
+					if ((lat == null || lng == null) && places) {
+						const hit = places[placeKey(p)];
+						if (hit) { if (Array.isArray(hit)) { lat = hit[0]; lng = hit[1]; } else { lat = hit.lat; lng = hit.lng; } }
+					}
+					return (lat == null || lng == null) ? null : [+lng, +lat];
+				};
+				const pv = pts.map(p => p.value);
+				const sized = pv.length > 0 && pv.every(v => typeof v === 'number');
+				let pmin = Infinity, pmax = -Infinity;
+				if (sized) { pv.forEach(v => { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }); if (!isFinite(pmin)) { pmin = 0; pmax = 1; } if (pmin === pmax) pmax = pmin + 1; }
+				const rOf = (v) => sized ? 3 + Math.sqrt((+v - pmin) / (pmax - pmin)) * 13 : 4;
+				pts.forEach(p => {
+					const c = coord(p), xy = c && projection(c);
+					if (!xy) return;
+					const label = p.label || p.name || p.city || '';
+					const dot = svg('circle', { class: 'map-point', cx: xy[0], cy: xy[1], r: rOf(p.value), style: p.color ? `--color-chart-color:${p.color}` : '' }, plot);
+					applyTip(dot, label + (p.value != null ? (label ? ': ' : '') + p.value : ''), cfg);
+					animate(dot, [{ opacity: 0 }, { opacity: 1 }], { duration: 250 });
+				});
+			}
+
+			if (cfg.legend) {
+				if (numeric) drawHeatLegend(state, Math.round(lo), Math.round(hi), { left: 8, right: 8 });
+				else if (entries.length) { const items = Object.keys(palette).map(name => ({ name, color: palette[name] })); if (items.length) drawSwatchLegend(state, items); }
+			}
+		}
+
+		// Categorical swatch legend from an explicit [{ name, color }] list
+		// (gantt statuses carry their own colour, unlike series legends).
+		function drawSwatchLegend(state, items) {
+			const footer = document.createElement('footer');
+			items.forEach(it => {
+				const item = document.createElement('span');
+				const sw = document.createElement('i');
+				sw.style.setProperty('--color-chart-color', it.color);
+				const tx = document.createElement('span');
+				tx.textContent = it.name;
+				item.append(sw, tx); footer.appendChild(item);
+			});
+			state.el.appendChild(footer);
+		}
+
+		// Legend is a <footer> sibling below the SVG, not an overlay, so it never
+		// collides with axis labels. Each item: a <span> with an <i> colour swatch.
 		function drawLegend(state, labelsOverride) {
 			const cfg = state.config;
 			const items = labelsOverride || cfg.series.map(s => s.name).filter(Boolean);
@@ -544,10 +1125,8 @@
 			const state = createState(el, expression, modifiers);
 			el._chartState = state;
 			el.classList.add('chart');
-			// Reserve the chart's height up front (parsed from the config, default
-			// 240) so the empty container isn't 0-height — a zero-height box doesn't
-			// reliably trigger the lazy-load IntersectionObserver, and reserving it
-			// also prevents a layout jump when the SVG renders.
+			// Reserve height up front (config, default 240): a 0-height box doesn't
+			// reliably trigger the lazy-load observer, and reserving avoids a layout jump.
 			const hm = expression && /height\s*:\s*(\d+)/.exec(expression);
 			el.style.minHeight = (hm ? +hm[1] : 240) + 'px';
 			observer().observe(el);

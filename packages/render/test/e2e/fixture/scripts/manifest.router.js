@@ -1,3 +1,7 @@
+/* manifest.router.js — built from scripts/router/ */
+
+(function () {
+
 /* Manifest Router */
 
 // Main routing initialization
@@ -124,12 +128,11 @@ let currentRoute = '/';
 let isInternalNavigation = false;
 
 function isPrerenderedStaticBuild() {
-    // When prerendered HTML is served as static pages, prefer normal browser navigation (MPA)
-    // so each URL loads its own prerendered HTML rather than SPA toggling.
+    // Prerendered static pages navigate MPA-style (each URL loads its own HTML).
     const prerendered = document.querySelector('meta[name="manifest:prerendered"]');
     const val = (prerendered?.getAttribute('content') || '').trim().toLowerCase();
     if (prerendered && val !== '0' && val !== 'false') return true;
-    // Backstop: prerender writes this per-page depth marker.
+    // Backstop: per-page depth marker written by prerender.
     return !!document.querySelector('meta[name="manifest:router-base-depth"]');
 }
 
@@ -326,17 +329,12 @@ async function handleRouteChange() {
     const prevRoute = currentRoute;
     currentRoute = newRoute;
 
-    // Handle scrolling based on whether this is an anchor link or route change
+    // Route change scrolls to top; anchor links let the browser scroll naturally.
     if (!window.location.hash) {
-        // This is a route change - scroll to top
-        // Use a small delay to ensure content has loaded
         setTimeout(() => {
-            // Scroll main page to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
-            // Find and scroll scrollable containers to top
-            // Use a generic approach that works with any CSS framework
-            // Only check elements that are likely to be scrollable containers
+            // Also reset any scrollable containers.
             const potentialContainers = document.querySelectorAll('div, main, section, article, aside, nav, header, footer, .prose');
             potentialContainers.forEach(element => {
                 const computedStyle = window.getComputedStyle(element);
@@ -353,11 +351,8 @@ async function handleRouteChange() {
             });
         }, 50);
     } else {
-        // This is an anchor link - let the browser handle the scroll naturally
-        // Use a small delay to ensure content has loaded, then let browser scroll to anchor
         setTimeout(() => {
-            // The browser will automatically scroll to the anchor
-            // We just need to ensure the content is loaded first
+            // Let the browser scroll to the anchor once content has loaded.
         }, 50);
     }
 
@@ -370,18 +365,9 @@ async function handleRouteChange() {
         }
     });
 
-    // SPA route changes use the View Transitions API when available so the
-    // visibility-toggle that listeners perform inside this dispatch is
-    // animated. Cross-document MPA navigations are already handled by
-    // `@view-transition { navigation: auto }` in the framework's reset CSS;
-    // the same `::view-transition-group(*)` rule (driven by
-    // `--view-transition-duration` / `--view-transition-easing`) covers both.
-    //
-    // The callback is synchronous: visibility/head/anchor listeners mutate
-    // the DOM inside `dispatchEvent` and return. Returning anything async
-    // here would freeze the rendered frame until the promise resolves,
-    // adding the entirety of Alpine's pending-update queue to the perceived
-    // navigation time (1–2s on busy pages).
+    // Wrap the SPA dispatch in a View Transition when available (MPA is handled
+    // by @view-transition in reset CSS). Callback must stay synchronous:
+    // returning a promise freezes the frame until Alpine's update queue drains.
     if (shouldUseViewTransition()) {
         document.startViewTransition(() => {
             window.dispatchEvent(event);
@@ -391,30 +377,12 @@ async function handleRouteChange() {
     }
 }
 
-// Decide whether SPA route changes should run inside a View Transition.
-// Three modes, in priority order:
-//
-//   1. `<html data-no-view-transitions>`  → force OFF
-//   2. `<html data-view-transitions>`     → force ON
-//   3. (neither)                          → auto: ON when the current page is
-//                                            under VT_AUTO_THRESHOLD elements,
-//                                            OFF otherwise
-//
-// The auto threshold exists because the View Transitions API rasterizes the
-// full viewport for the "before" and "after" snapshots; cost scales linearly
-// with DOM size and gets noticeable above a few thousand elements (a 10k-
-// element page measured ~500ms per snapshot in dev). Light pages keep the
-// crossfade; heavy pages stay fast.
-//
-// Cross-document (MPA) navigations are unaffected — those use the browser's
-// native cross-document path (`@view-transition { navigation: auto }`),
-// which rasterizes in parallel with page load and doesn't expose the cost.
-//
-// Per-element opt-out (`data-no-view-transition`, singular) on individual
-// elements is handled by the existing reset CSS rule that sets
-// `view-transition-name: none` on them. `prefers-reduced-motion` is
-// respected automatically — the browser falls back to a snap with no
-// animation when the user has it set.
+// Whether SPA route changes run inside a View Transition. Priority:
+// data-no-view-transitions → off, data-view-transitions → on, else auto
+// (on under VT_AUTO_THRESHOLD elements). Auto threshold: VT rasterizes the
+// full viewport per snapshot, so cost scales with DOM size (~500ms/snapshot
+// on a 10k-element page). Per-element opt-out and prefers-reduced-motion are
+// handled in reset CSS / by the browser.
 const VT_AUTO_THRESHOLD = 3000;
 
 function shouldUseViewTransition() {
@@ -431,14 +399,9 @@ function shouldUseViewTransition() {
     }
 }
 
-// Headless automation (Puppeteer / Playwright / Selenium / WebDriver-driven
-// Chromium) frequently captures screenshots mid-transition, producing blank
-// frames. Real browsers report `navigator.webdriver === false` — including
-// when DevTools is open, when launched via `open <url>`, or on mobile — so
-// this check exclusively affects automation tooling and leaves end-user
-// behavior identical. Authors who want transitions in their automation tests
-// can force them on with `<html data-view-transitions>`, which takes priority
-// over this attribute via `shouldUseViewTransition()` above.
+// Disable transitions under WebDriver automation, which captures screenshots
+// mid-transition and gets blank frames. Only affects automation
+// (navigator.webdriver); data-view-transitions overrides.
 if (typeof navigator !== 'undefined' && navigator.webdriver === true) {
     const html = document.documentElement;
     if (html && !html.hasAttribute('data-view-transitions')) {
@@ -514,9 +477,8 @@ function installMpaStickyLocaleLinks() {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        // For prerendered MPA builds, directory paths must have a trailing slash so that the
-        // static file host (e.g. Appwrite) resolves them to the correct index.html rather than
-        // falling back to the root index.html.
+        // MPA directory paths need a trailing slash so the static host resolves
+        // them to the right index.html, not the root one.
         const hasFileExt = /\.[a-zA-Z0-9]+$/.test(adjusted);
         url.pathname = (adjusted !== '/' && !hasFileExt && !adjusted.endsWith('/'))
             ? adjusted + '/'
@@ -547,18 +509,11 @@ function interceptLinkClicks() {
         // Handle pure anchor links normally - don't intercept them
         if (href.startsWith('#')) return;
 
-        // Don't intercept blob: or data: URLs. The export plugin creates a
-        // throwaway <a href="blob:…" download="…"> and programmatically
-        // clicks it to trigger a file save; if the router treats it as a
-        // SPA link, `new URL("blob:http://localhost/UUID", origin).pathname`
-        // resolves to "http://localhost/UUID" which then pushState pushes
-        // as a same-origin path, producing /http://localhost/UUID and
-        // landing the user on a 404 instead of downloading.
+        // Don't intercept blob:/data: (e.g. export plugin's download links) —
+        // pushState would turn them into a bogus same-origin path and 404.
         if (href.startsWith('blob:') || href.startsWith('data:')) return;
 
-        // Honor `download` — the link is opting out of SPA navigation in
-        // favor of letting the browser save its target. Same intent as
-        // blob:/data:, just expressed via the standard HTML attribute.
+        // Honor `download` — same opt-out intent, via the standard attribute.
         if (link.hasAttribute('download')) return;
 
         // Check if it's an external link FIRST (before any other processing)
@@ -651,8 +606,8 @@ function initializeNavigation() {
     handleRouteChange();
 }
 
-// Match the browser URL as soon as this module loads. Later chunks in the same bundle (e.g. router magic)
-// may initialize before DOMContentLoaded; getCurrentRoute() must not stay at '/' or $route breaks article pages.
+// Match the browser URL at module load: later chunks (e.g. router magic) may
+// read getCurrentRoute() before DOMContentLoaded; stale '/' breaks $route.
 currentRoute = pathnameToLogical(window.location.pathname);
 
 // Run immediately if DOM is ready, otherwise wait
@@ -681,39 +636,21 @@ function isPrerenderedStaticMPA() {
     }
 }
 
-// Process visibility for all elements with x-route
-function processRouteVisibility(normalizedPath) {
-    // Static prerender output already contains only this route's sections; x-cloak + toggling here
-    // causes a visible flash (content → hidden via x-cloak → shown when Alpine boots).
-    if (isPrerenderedStaticMPA()) return;
+// Logical path for the current URL, normalized the way route conditions expect
+function currentNormalizedPath() {
+    const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
+    return currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
+}
 
-    const routeElements = document.querySelectorAll('[x-route]');
-
-    // First pass: collect all defined routes (excluding !* and other negative conditions)
-    const definedRoutes = [];
-    routeElements.forEach(element => {
-        const routeCondition = element.getAttribute('x-route');
-        if (!routeCondition) return;
-
-        const conditions = routeCondition.split(',').map(cond => cond.trim());
-        conditions.forEach(cond => {
-            // Only collect positive conditions and wildcards (not negative ones)
-            if (!cond.startsWith('!') && cond !== '!*') {
-                definedRoutes.push(cond);
-            }
-        });
-    });
-
-    // Extract localization codes from manifest.json data sources
+// Localization codes from manifest.json data sources
+function getLocalizationCodes() {
     const localizationCodes = [];
     try {
-        // Check if manifest is available and has data sources
         const manifest = window.ManifestComponentsRegistry?.manifest || window.manifest;
         if (manifest && manifest.data) {
             Object.values(manifest.data).forEach(dataSource => {
                 if (typeof dataSource === 'object' && dataSource !== null) {
                     Object.keys(dataSource).forEach(key => {
-                        // Check if this looks like a localization key (common language codes)
                         if (key.match(/^[a-z]{2}(-[A-Z]{2})?$/)) {
                             localizationCodes.push(key);
                         }
@@ -724,80 +661,117 @@ function processRouteVisibility(normalizedPath) {
     } catch (e) {
         // Ignore errors if manifest is not available
     }
+    return localizationCodes;
+}
 
-    // Check if current route is defined by any route
-    let isRouteDefined = definedRoutes.some(route =>
+// Positive conditions of every route, including routes stashed inside a deferred route
+function collectDefinedRoutes() {
+    const definedRoutes = [];
+    const collect = (element) => {
+        const routeCondition = element.getAttribute('x-route');
+        if (!routeCondition) return;
+        routeCondition.split(',').map(cond => cond.trim()).forEach(cond => {
+            if (!cond.startsWith('!') && cond !== '!*') definedRoutes.push(cond);
+        });
+    };
+    document.querySelectorAll('[x-route]').forEach(collect);
+    document.querySelectorAll('[x-route] > template[data-mnfst-defer]').forEach(tpl => {
+        tpl.content.querySelectorAll('[x-route]').forEach(collect);
+    });
+    return definedRoutes;
+}
+
+// Whether any defined route (or its localized form) covers the path — drives x-route="!*"
+function isRouteDefined(normalizedPath, definedRoutes) {
+    let defined = definedRoutes.some(route =>
         window.ManifestRouting.matchesCondition(normalizedPath, route)
     );
-
-    // Also check if the route starts with a localization code
-    if (!isRouteDefined && localizationCodes.length > 0) {
+    const localizationCodes = getLocalizationCodes();
+    if (!defined && localizationCodes.length > 0) {
         const pathSegments = normalizedPath.split('/').filter(segment => segment);
-        if (pathSegments.length > 0) {
-            const firstSegment = pathSegments[0];
-            if (localizationCodes.includes(firstSegment)) {
-                // This is a localized route - check if the remaining path is defined
-                const remainingPath = pathSegments.slice(1).join('/');
-
-                // If no remaining path, treat as root route
-                if (remainingPath === '') {
-                    isRouteDefined = definedRoutes.some(route =>
-                        window.ManifestRouting.matchesCondition('/', route) ||
-                        window.ManifestRouting.matchesCondition('', route)
-                    );
-                } else {
-                    // Check if the remaining path matches any defined route
-                    isRouteDefined = definedRoutes.some(route =>
-                        window.ManifestRouting.matchesCondition(remainingPath, route)
-                    );
-                }
+        if (pathSegments.length > 0 && localizationCodes.includes(pathSegments[0])) {
+            const remainingPath = pathSegments.slice(1).join('/');
+            if (remainingPath === '') {
+                defined = definedRoutes.some(route =>
+                    window.ManifestRouting.matchesCondition('/', route) ||
+                    window.ManifestRouting.matchesCondition('', route)
+                );
+            } else {
+                defined = definedRoutes.some(route =>
+                    window.ManifestRouting.matchesCondition(remainingPath, route)
+                );
             }
         }
     }
+    return defined;
+}
 
-    routeElements.forEach(element => {
-        const routeCondition = element.getAttribute('x-route');
-        if (!routeCondition) return;
+// Match one route element against a path: true/false, or null when it carries no condition
+function routeMatches(element, normalizedPath, defined) {
+    const routeCondition = element.getAttribute('x-route');
+    if (!routeCondition) return null;
 
-        // Parse route conditions
-        const conditions = routeCondition.split(',').map(cond => cond.trim());
-        const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
-        const negativeConditions = conditions
-            .filter(cond => cond.startsWith('!'))
-            .map(cond => cond.slice(1));
+    const conditions = routeCondition.split(',').map(cond => cond.trim());
+    if (conditions.includes('!*')) {
+        if (defined === undefined) defined = isRouteDefined(normalizedPath, collectDefinedRoutes());
+        return !defined;
+    }
 
-        // Special handling for !* (undefined routes)
-        if (conditions.includes('!*')) {
-            const shouldShow = !isRouteDefined;
-            if (shouldShow) {
-                element.removeAttribute('hidden');
-                element.style.display = '';
-            } else {
-                element.setAttribute('hidden', '');
-                element.style.display = 'none';
-            }
-            return;
-        }
+    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
+    const negativeConditions = conditions
+        .filter(cond => cond.startsWith('!'))
+        .map(cond => cond.slice(1));
+    const hasNegativeMatch = negativeConditions.some(cond =>
+        window.ManifestRouting.matchesCondition(normalizedPath, cond)
+    );
+    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond =>
+        window.ManifestRouting.matchesCondition(normalizedPath, cond)
+    );
+    return hasPositiveMatch && !hasNegativeMatch;
+}
 
-        // Check conditions
-        const hasNegativeMatch = negativeConditions.some(cond =>
-            window.ManifestRouting.matchesCondition(normalizedPath, cond)
-        );
-        const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond =>
-            window.ManifestRouting.matchesCondition(normalizedPath, cond)
-        );
+// Cooperative check (defer plugin): is this route active for the current URL? Static MPA output always is.
+function isRouteActive(element, normalizedPath) {
+    if (isPrerenderedStaticMPA()) return true;
+    return routeMatches(element, normalizedPath === undefined ? currentNormalizedPath() : normalizedPath) !== false;
+}
 
-        const shouldShow = hasPositiveMatch && !hasNegativeMatch;
+// Activation hook fires before the route becomes visible so deferred content renders first
+function showRoute(element) {
+    element.dispatchEvent(new CustomEvent('manifest:route-activate'));
+    element.removeAttribute('hidden');
+    element.style.display = '';
+}
 
-        // Show/hide element
-        if (shouldShow) {
-            element.removeAttribute('hidden');
-            element.style.display = '';
+function hideRoute(element) {
+    element.setAttribute('hidden', '');
+    element.style.display = 'none';
+}
+
+// Process visibility for all elements with x-route
+function processRouteVisibility(normalizedPath) {
+    // Static prerender output already contains only this route's sections; x-cloak + toggling here
+    // causes a visible flash (content → hidden via x-cloak → shown when Alpine boots).
+    if (isPrerenderedStaticMPA()) return;
+
+    const defined = isRouteDefined(normalizedPath, collectDefinedRoutes());
+
+    // Worklist: activating a deferred route can reveal nested routes that need this pass too
+    const seen = new Set();
+    const queue = Array.from(document.querySelectorAll('[x-route]'));
+    while (queue.length) {
+        const element = queue.shift();
+        if (seen.has(element)) continue;
+        seen.add(element);
+        const match = routeMatches(element, normalizedPath, defined);
+        if (match === null) continue;
+        if (match) {
+            showRoute(element);
+            element.querySelectorAll('[x-route]').forEach(nested => { if (!seen.has(nested)) queue.push(nested); });
         } else {
-            element.setAttribute('hidden', '');
-            element.style.display = 'none';
+            hideRoute(element);
         }
-    });
+    }
 }
 
 // Add x-cloak to route elements that don't have it
@@ -815,9 +789,7 @@ function initializeVisibility() {
     addXCloakToRouteElements();
 
     // Process initial visibility (use logical path when app is in a subpath)
-    const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
-    const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-    processRouteVisibility(normalizedPath);
+    processRouteVisibility(currentNormalizedPath());
 
     // Listen for route changes
     window.addEventListener('manifest:route-change', (event) => {
@@ -830,10 +802,7 @@ function initializeVisibility() {
         if (isPrerenderedStaticMPA()) return;
         // Add x-cloak to any new route elements
         addXCloakToRouteElements();
-
-        const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
-        const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-        processRouteVisibility(normalizedPath);
+        processRouteVisibility(currentNormalizedPath());
     });
 }
 
@@ -854,8 +823,10 @@ if (document.readyState === 'loading') {
 window.ManifestRoutingVisibility = {
     initialize: initializeVisibility,
     processRouteVisibility,
+    isRouteActive,
     isPrerenderedStaticMPA
-}; 
+};
+
 
 // Router head
 
@@ -1614,3 +1585,6 @@ if (typeof Alpine !== 'undefined' && window.ManifestRoutingNavigation && window.
 window.ManifestRoutingMagic = {
     initialize: initializeRouterMagic
 };
+
+
+})();

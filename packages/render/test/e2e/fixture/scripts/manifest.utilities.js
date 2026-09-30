@@ -1,3 +1,7 @@
+/* manifest.utilities.js — built from scripts/utilities/ */
+
+(function () {
+
 // Utility generators
 // Functions that generate CSS utilities from CSS variable suffixes
 
@@ -467,6 +471,7 @@ class TailwindCompiler {
             this.compileTimeout = null;
             this.cache = new Map();
             this.hasInitialized = true;
+            this.staticUtilitiesCoveredClasses = null;
             // manifest.code.js (and others) may still register ignore rules; mirror full constructor defaults.
             this.ignoredClassPatterns = [
                 /^hljs/, /^language-/, /^copy$/, /^copied$/, /^lines$/, /^selected$/
@@ -550,6 +555,20 @@ class TailwindCompiler {
 
         // Cache for parsed class names (must be before addCriticalBlockingStylesSync)
         this.classCache = new Map();
+
+        // Read any publish/render-provided static utilities sheet, plus
+        // manifest.json's utilities.safelist/patterns, before the first
+        // compile — those classes are skipped rather than regenerated. Fails
+        // open (never "everything covered") until this resolves — compile()'s
+        // first run awaits it, capped at 2s (see static.js). Once settled,
+        // arm the uncovered-class watcher (a no-op unless the loader actually
+        // skipped fetching the Tailwind engine for this page).
+        this.staticUtilitiesCoveredClasses = null;
+        this.staticUtilitiesReady = Promise.all([
+            this.detectStaticUtilitiesSheet(),
+            this.loadUtilitiesSafelist()
+        ]);
+        this.staticUtilitiesReady.then(() => this.setupUncoveredClassWatcher());
 
         // Add critical styles IMMEDIATELY - don't wait for anything
         this.addCriticalBlockingStylesSync();
@@ -728,8 +747,7 @@ class TailwindCompiler {
 
 
 
-// Synchronous utility generation
-// Methods for generating utilities synchronously before first paint
+// Synchronous utility generation before first paint
 
 TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     if (!this.criticalStyleElement) return;
@@ -737,7 +755,6 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     const syncStart = performance.now();
 
     try {
-        // Extract CSS variables synchronously from already-loaded sources
         const cssVariables = new Map();
 
         // 1. From inline style elements (already in DOM)
@@ -778,7 +795,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                     const rules = Array.from(sheet.cssRules || []);
                     for (const rule of rules) {
                         if (rule.type === CSSRule.STYLE_RULE && rule.styleSheet) {
-                            // Handle @import rules that have nested stylesheets
+                            // @import rules with nested stylesheets
                             try {
                                 const nestedRules = Array.from(rule.styleSheet.cssRules || []);
                                 for (const nestedRule of nestedRules) {
@@ -809,18 +826,10 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
         } catch (e) {
         }
 
-        // 4. From computed styles (if :root is available)
-        // Run even while document.readyState === 'loading'. This method is the
-        // constructor's only origin-independent variable source: getComputedStyle
-        // reads the resolved cascade regardless of stylesheet origin, whereas
-        // method 3 (CSSOM cssRules) throws on cross-origin sheets (e.g. the CDN
-        // build at cdn.jsdelivr.net). The classic <script> blocks on preceding
-        // stylesheets, so :root variables are already resolved here. Skipping
-        // this during 'loading' meant a CDN-hosted page captured zero variables
-        // synchronously, so the critical "all colors" fallback never ran and
-        // variable-derived utilities (bg-line, border-line, …) fell back to
-        // currentColor — pure white in dark mode / black in light — until the
-        // async compile finished.
+        // 4. From computed styles. Runs even during 'loading': getComputedStyle
+        // reads the resolved cascade across origins (CDN sheets), which the CSSOM
+        // path (method 3) can't — without it CDN pages capture no vars and
+        // utilities flash as currentColor.
         try {
             if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
@@ -851,7 +860,6 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 while ((classMatch = classRegex.exec(htmlSource)) !== null) {
                     const classes = classMatch[1].split(/\s+/).filter(Boolean);
                     for (const cls of classes) {
-                        // Match utility patterns that might use CSS variables
                         if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(cls)) {
                             classesToGenerate.add(cls);
                         }
@@ -895,7 +903,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                     variableSuffixes: []
                 };
             } else {
-                // Try to get classes from cache (most efficient - only generate what was used before)
+                // Fall back to the cache (only generate what was used before)
                 const cached = localStorage.getItem('tailwind-cache');
                 let cachedClasses = new Set();
 
@@ -904,17 +912,14 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                         const parsed = JSON.parse(cached);
                         const cacheEntries = Object.values(parsed);
 
-                        // Extract classes from cache keys (format: "class1,class2-themeHash")
                         for (const entry of cacheEntries) {
-                            // Find the cache entry with the most recent timestamp
                             const mostRecent = cacheEntries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
                             if (mostRecent && mostRecent.css) {
-                                // Extract class names from generated CSS
                                 const classMatches = mostRecent.css.match(/\.([a-zA-Z0-9_-]+(?::[a-zA-Z0-9_-]+)*)\s*{/g);
                                 if (classMatches) {
                                     for (const match of classMatches) {
                                         const className = match.replace(/^\./, '').replace(/\s*{.*$/, '');
-                                        // Only include utility classes (not Tailwind native like red-500)
+                                        // Utility classes only (not native like red-500)
                                         if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(className.split(':').pop())) {
                                             cachedClasses.add(className);
                                         }
@@ -962,14 +967,12 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 }
             }
 
-            // If no classes found, generate utilities for all color variables
+            // No classes found: generate every color-* utility to prevent flash.
             if (!usedData || !usedData.classes || usedData.classes.length === 0) {
-                // Generate utilities for all color-* variables to prevent flash
                 const colorVars = Array.from(cssVariables.entries())
                     .filter(([name]) => name.startsWith('color-'));
 
                 if (colorVars.length > 0) {
-                    // Create synthetic classes for all color utilities (text, bg, border)
                     const syntheticClasses = [];
                     for (const [varName] of colorVars) {
                         const suffix = varName.replace('color-', '');
@@ -1046,16 +1049,12 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
             // Ignore parsing errors
         }
 
-        // Method 3: Check computed styles from :root (if available)
-        // Run even during readyState === 'loading' — getComputedStyle resolves
-        // the cascade from cross-origin stylesheets (CDN builds) that the CSSOM
-        // methods above cannot read. See addCriticalBlockingStylesSync for the
-        // full rationale: without this, CDN-hosted pages capture no variables
-        // synchronously and variable-derived utilities flash as currentColor.
+        // Method 3: Computed styles from :root. Runs even during 'loading' —
+        // resolves cross-origin (CDN) vars the CSSOM methods can't; see
+        // addCriticalBlockingStylesSync.
         try {
             if (document.documentElement) {
                 const rootStyles = getComputedStyle(document.documentElement);
-                // Extract all CSS variables, not just color ones
                 const allProps = rootStyles.length;
                 for (let i = 0; i < allProps; i++) {
                     const prop = rootStyles[i];
@@ -1074,14 +1073,12 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
         // Method 4: Scan HTML source directly for class attributes
         try {
             const htmlSource = document.documentElement.outerHTML;
-            // Extract all class attributes from HTML source
             const classRegex = /class=["']([^"']+)["']/gi;
             let classMatch;
             while ((classMatch = classRegex.exec(htmlSource)) !== null) {
                 const classString = classMatch[1];
                 const classes = classString.split(/\s+/).filter(Boolean);
                 for (const cls of classes) {
-                    // Match common color utility patterns (more comprehensive)
                     if (/^(border|bg|text|ring|outline|decoration|caret|accent|fill|stroke)-[a-z0-9-]+(\/[0-9]+)?$/.test(cls)) {
                         commonColorClasses.add(cls);
                     }
@@ -1212,7 +1209,11 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
 
             if (cacheToUse && cacheToUse.css) {
                 const applyCacheStart = performance.now();
-                this.styleElement.textContent = cacheToUse.css;
+                // The cached CSS may predate the static utilities sheet (or come
+                // from a visitor without one) — strip anything it already covers
+                // so we never re-emit those rules.
+                const cachedCss = this.stripCoveredRulesFromCss(cacheToUse.css);
+                this.styleElement.textContent = cachedCss;
                 this.ensureUtilityStylesLast();
                 this.scheduleEnsureUtilityStylesLast();
                 this.lastThemeHash = cacheToUse.themeHash;
@@ -1220,7 +1221,7 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
                 // Also apply cache to critical style element
                 // Extract utilities from @layer utilities block and apply directly (no @layer)
                 if (this.criticalStyleElement && !this.criticalStyleElement.textContent) {
-                    let criticalCss = cacheToUse.css;
+                    let criticalCss = cachedCss;
                     // Remove @layer utilities wrapper if present
                     criticalCss = criticalCss.replace(/@layer\s+utilities\s*\{/g, '').replace(/\}\s*$/, '').trim();
                     if (criticalCss) {
@@ -1496,12 +1497,20 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
 
 // Extract classes from HTML content
 TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
-    // Match class attributes: class="..." or class='...'
-    const classRegex = /class=["']([^"']+)["']/g;
+    // Literal class="..."/class='...' only — lookbehind excludes `:class=`
+    // (Alpine binding), whose "class=" substring would otherwise match and
+    // truncate at the literal's first internal quote, leaking a stray '{'.
+    // Backreference to the opening quote (rather than stopping at either
+    // quote char) so an arbitrary Tailwind value containing the OTHER quote
+    // character — `content-['*']`, `content-['']` — survives instead of
+    // truncating the whole class list at its first `'`.
+    // Whitespace-only split below keeps every token Tailwind would accept
+    // (variants, arbitrary values, leading '-', '!'); only x-/$ tokens drop.
+    const classRegex = /(?<![:\w])class=(["'])((?:(?!\1)[\s\S])*)\1/g;
     let match;
 
     while ((match = classRegex.exec(html)) !== null) {
-        const classString = match[1];
+        const classString = match[2];
         const classes = classString.split(/\s+/).filter(Boolean);
         for (const cls of classes) {
             if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) {
@@ -1519,7 +1528,11 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
         if (classMatches) {
             for (const classMatch of classMatches) {
                 const cls = classMatch.replace(/['"`]/g, '');
-                if (cls && !cls.startsWith('$') && !cls.includes('(')) {
+                // x-data is arbitrary JS — a plain string literal in there
+                // (e.g. `location.pathname.split('/')`) matches this quoted-
+                // token scan too, so require a letter/digit; a punctuation-only
+                // "token" like a bare '/' is skipped (seen on a live page).
+                if (cls && !cls.startsWith('$') && !cls.includes('(') && /[a-zA-Z0-9]/.test(cls)) {
                     classSet.add(cls);
                 }
             }
@@ -1608,7 +1621,7 @@ TailwindCompiler.prototype.getUsedClasses = function () {
         }
 
         const result = {
-            classes: Array.from(allClasses),
+            classes: this.filterStaticallyCoveredClasses(Array.from(allClasses)),
             variableSuffixes: Array.from(usedVariableSuffixes)
         };
 
@@ -1669,7 +1682,7 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                     if (needsFetch) {
                         // Add timestamp for development cache busting, but keep it minimal
                         const timestamp = Math.floor(now / 1000); // Only changes every second
-                        const url = `${source}?t=${timestamp}`;
+                        const url = `${source}${source.includes('?') ? '&' : '?'}t=${timestamp}`;
 
                         const response = await fetch(url);
 
@@ -1708,8 +1721,11 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 TailwindCompiler.prototype.extractThemeVariables = function (cssText) {
     const variables = new Map();
 
-    // Extract ALL CSS custom properties from ANY declaration block
-    const varRegex = /--([\w-]+):\s*([^;]+);/g;
+    // Extract ALL CSS custom properties from ANY declaration block. Terminator
+    // is a lookahead (`;` or `}`) rather than a consumed `;` so the last
+    // declaration in a block still matches when the author omits the
+    // trailing semicolon (valid CSS, e.g. `:root{--x:1rem}`).
+    const varRegex = /--([\w-]+):\s*([^;}]+)(?=[;}])/g;
 
     let varMatch;
     while ((varMatch = varRegex.exec(cssText)) !== null) {
@@ -2176,13 +2192,8 @@ TailwindCompiler.prototype.extractCustomUtilities = function (cssText) {
         // Tolerate parsing errors; this is best-effort
     }
 
-    // Dedupe captured entries per class. The four parser passes above (flat
-    // regex, :where() extractor, compound-selector fallback, universal nested
-    // resolver) can each capture the same source rule with slightly different
-    // whitespace or selector ordering. Without this, the generator emits
-    // duplicate variant blocks at runtime (e.g. four `.\!brand { … }` rules
-    // where one suffices). Normalize whitespace before comparing so trivial
-    // formatting differences collapse.
+    // Dedupe per class: the four parser passes can capture the same rule with
+    // differing whitespace/selector order; normalize before comparing.
     for (const [className, value] of utilities.entries()) {
         if (!Array.isArray(value)) continue;
         const seen = new Set();
@@ -2376,6 +2387,42 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             }
         }
 
+        // Container query variants (Tailwind v4): @[size], @min-[size], @max-[size],
+        // named @sm/@md/… and @max-sm/…, each optionally scoped to a /name container.
+        // Tailwind emits these for its own utilities; recognising them here keeps them
+        // off the "Unknown variant" path and lets the Manifest compiler apply them to
+        // theme/semantic utilities too. The @-prefixed selector is wrapped as an
+        // at-rule by the generator, producing `@container (width …) { … }`.
+        if (variant.startsWith('@')) {
+            const containerSizes = {
+                '3xs': '16rem', '2xs': '18rem', 'xs': '20rem', 'sm': '24rem',
+                'md': '28rem', 'lg': '32rem', 'xl': '36rem', '2xl': '42rem',
+                '3xl': '48rem', '4xl': '56rem', '5xl': '64rem', '6xl': '72rem', '7xl': '80rem'
+            };
+            const slash = variant.indexOf('/');
+            const name = slash !== -1 ? variant.slice(slash + 1) : '';
+            const ctx = name ? `@container ${name}` : '@container';
+            const body = (slash !== -1 ? variant.slice(0, slash) : variant).slice(1); // strip '@'
+            let m;
+            if (body === '' || body === 'container') {
+                return { name: variant, selector: ctx, isArbitrary: false };
+            }
+            if ((m = body.match(/^(?:min-)?\[(.+)\]$/))) {
+                return { name: variant, selector: `${ctx} (width >= ${m[1]})`, isArbitrary: false };
+            }
+            if ((m = body.match(/^max-\[(.+)\]$/))) {
+                return { name: variant, selector: `${ctx} (width < ${m[1]})`, isArbitrary: false };
+            }
+            if ((m = body.match(/^max-(.+)$/))) {
+                if (containerSizes[m[1]]) {
+                    return { name: variant, selector: `${ctx} (width < ${containerSizes[m[1]]})`, isArbitrary: false };
+                }
+            } else if (containerSizes[body]) {
+                return { name: variant, selector: `${ctx} (width >= ${containerSizes[body]})`, isArbitrary: false };
+            }
+            // Unrecognised @-form falls through to the warning below.
+        }
+
         // If no match found, warn once per unique token and return null.
         // Deduped so unsupported variants (e.g. container queries like
         // `@[10rem]:`) don't flood the console on every compile pass.
@@ -2394,8 +2441,7 @@ TailwindCompiler.prototype.parseClassName = function (className) {
 
 
 
-// Compilation methods
-// Main compilation logic and utility generation
+// Compilation logic and utility generation
 
 // Generate utilities from CSS variables
 TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedData) {
@@ -2543,16 +2589,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         generateUtility(className, css);
                     }
 
-                    // Check for opacity variants of this utility. Collect the
-                    // bare opacity base class (e.g. `bg-black/10`) rather than the
-                    // full prefixed class (e.g. `backdrop:bg-black/10`). generateUtility
-                    // discovers and applies variant prefixes itself by matching the
-                    // trailing segment after the last `:`, so passing it the bare base
-                    // lets its variant loop emit the correct selector
-                    // (`.backdrop\:bg-black\/10::backdrop`). Passing the prefixed class
-                    // instead made generateUtility treat it as a plain base class and
-                    // emit a malformed `.backdrop\:bg-black\/10 { … }` rule with no
-                    // `::backdrop` pseudo-element.
+                    // Opacity variants: collect the bare base (e.g. `bg-black/10`),
+                    // not the prefixed class — generateUtility discovers variant
+                    // prefixes itself, so passing the bare base emits the correct
+                    // selector (`.backdrop\:bg-black\/10::backdrop`).
                     const opacityBaseClasses = new Set();
                     for (const cls of usedClasses) {
                         // Parse the class to extract the base utility name
@@ -2612,16 +2652,9 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
             return className.replace(/[^a-zA-Z0-9-]/g, '\\$&');
         };
 
-        // Helper to replace & in CSS selectors (not in property values or comments)
-        // IMPORTANT: For CSS nesting, we should NOT replace & in nested selectors
-        // The & should remain as-is so CSS nesting works correctly
-        // This function should only be used for legacy/flattened CSS, not nested CSS
+        // Replace & in selectors — legacy/flattened CSS only; nested CSS keeps &
+        // as-is so native nesting works.
         const replaceAmpersandInSelectors = (cssText, replacement) => {
-            // For full blocks with nested rules, don't replace & at all - preserve CSS nesting
-            // Check if this looks like nested CSS:
-            // - Has & followed by :, ., [, or whitespace then { (nested selector)
-            // - Has ] & (attribute selector followed by &, like [dir=rtl] &)
-            // - Has & on its own line followed by :, ., or [ (common nested pattern)
             const hasNestedSelectors =
                 /&\s*[:\.\[{]/.test(cssText) ||           // &:not(), &::before, &[attr], & {
                 /&\s*\n\s*[:\.\[{]/.test(cssText) ||      // & on new line followed by selector
@@ -3132,37 +3165,55 @@ TailwindCompiler.prototype.filterCriticalUtilities = function(criticalText, laye
 
 // Main compilation method
 TailwindCompiler.prototype.compile = async function () {
-    if (this.usesStaticPrerenderUtilities) return;
+    if (this.usesStaticPrerenderUtilities) {
+        // Static utilities shipped with the page — nothing to compile.
+        if (!window.__manifestUtilitiesReady) {
+            window.__manifestUtilitiesReady = true;
+            window.dispatchEvent(new CustomEvent('manifest:utilities-ready'));
+        }
+        return;
+    }
 
     const compileStart = performance.now();
 
     try {
-        // Prevent too frequent compilations
+        // Throttled or busy: don't DROP the request — queue exactly one retry
+        // so late-discovered classes (md: variants on swapped-in components)
+        // always get compiled. The pending counter lets manifest:ready and the
+        // prerenderer's settle hold until utilities are actually current.
         const now = Date.now();
-        if (now - this.lastCompileTime < this.minCompileInterval) {
+        if (now - this.lastCompileTime < this.minCompileInterval || this.isCompiling) {
+            if (!this._retryQueued) {
+                this._retryQueued = true;
+                window.__manifestUtilitiesPending = (window.__manifestUtilitiesPending || 0) + 1;
+                setTimeout(() => {
+                    this._retryQueued = false;
+                    window.__manifestUtilitiesPending = Math.max(0, (window.__manifestUtilitiesPending || 1) - 1);
+                    this.compile();
+                }, this.minCompileInterval + 50);
+            }
             return;
         }
         this.lastCompileTime = now;
-
-        if (this.isCompiling) {
-            return;
-        }
         this.isCompiling = true;
+        window.__manifestUtilitiesPending = (window.__manifestUtilitiesPending || 0) + 1;
+        this._compileCounted = true;
 
         // On first run, scan static classes and CSS variables
         if (!this.hasScannedStatic) {
             await this.scanStaticClasses();
 
+            // Wait for the static utilities sheet's covered-class read to
+            // settle (capped at 2s in detectStaticUtilitiesSheet) so this
+            // first compile decision isn't a guess — see static.js.
+            if (this.staticUtilitiesReady) await this.staticUtilitiesReady;
+
             // Fetch CSS content once for initial compilation
             const themeCss = await this.fetchThemeContent();
             if (themeCss) {
-                // Extract and cache custom utilities. We scan framework CSS too
-                // because the generator needs to know about semantic classes
-                // like .brand / .row / .col to emit their responsive/state
-                // variants (e.g. md:row, hover:brand). Base-form re-emission is
-                // suppressed in generateCustomUtilities ("Skip generating base
-                // utility - it already exists in the CSS"); duplicate captures
-                // are collapsed at the end of extractCustomUtilities.
+                // Extract custom utilities. Framework CSS is scanned too so the
+                // generator can emit variants of semantic classes (md:row,
+                // hover:brand); base forms are suppressed in generateCustomUtilities.
                 const discoveredCustomUtilities = this.extractCustomUtilities(themeCss);
                 for (const [name, value] of discoveredCustomUtilities.entries()) {
                     this.customUtilities.set(name, value);
@@ -3173,9 +3224,10 @@ TailwindCompiler.prototype.compile = async function () {
                     this.currentThemeVars.set(name, value);
                 }
 
-                // Generate utilities for all static classes
+                // Generate utilities for all static classes (minus anything the
+                // static utilities sheet already covers).
                 const staticUsedData = {
-                    classes: Array.from(this.staticClassCache),
+                    classes: this.filterStaticallyCoveredClasses(Array.from(this.staticClassCache)),
                     variableSuffixes: []
                 };
                 // Process static classes for variable suffixes
@@ -3316,30 +3368,421 @@ TailwindCompiler.prototype.compile = async function () {
         console.error('[Manifest Utilities] Error compiling Tailwind CSS:', error);
     } finally {
         this.isCompiling = false;
+        if (this._compileCounted) {
+            this._compileCounted = false;
+            window.__manifestUtilitiesPending = Math.max(0, (window.__manifestUtilitiesPending || 1) - 1);
+            if (!window.__manifestUtilitiesPending) {
+                window.dispatchEvent(new CustomEvent('manifest:utilities-idle'));
+            }
+        }
+        // First-compile settle signal for the manifest:ready coordinator.
+        if (!window.__manifestUtilitiesReady) {
+            window.__manifestUtilitiesReady = true;
+            window.dispatchEvent(new CustomEvent('manifest:utilities-ready'));
+        }
     }
 };
 
 
 
-// DOM observation and event handling
-// Methods for watching DOM changes and triggering recompilation
+// Static utilities sheet detection
+// Publish/render may ship a precompiled utilities sheet — `<link rel="stylesheet"
+// data-mnfst-utilities>` or `<style data-mnfst-utilities>`. Read the classes it
+// already covers once so compile() only generates/patches what's left.
+
+TailwindCompiler.prototype.findStaticUtilitiesElement = function () {
+    try {
+        return document.querySelector('link[rel="stylesheet"][data-mnfst-utilities], style[data-mnfst-utilities]');
+    } catch (e) {
+        return null;
+    }
+};
+
+// Top-level selector text only (skips declaration bodies, so values like
+// `margin: .5rem` can't be mistaken for a `.5` class selector).
+TailwindCompiler.prototype.extractSelectorsFromCssText = function (cssText) {
+    const selectors = [];
+    const len = cssText.length;
+    let i = 0;
+    while (i < len) {
+        if (cssText[i] === ' ' || cssText[i] === '\n' || cssText[i] === '\r' || cssText[i] === '\t') { i++; continue; }   // else an @-rule after a newline reads as a selector
+        // Skip inter-rule whitespace first — without this, whitespace before an
+        // `@layer`/`@media` (e.g. after a preceding `@layer base, ...;` statement
+        // or sibling rule) leaves `i` off the '@', so the block below never fires
+        // and the whole nested block is swallowed whole as one bogus selector,
+        // losing every class inside it (real Tailwind/compileUtilities output is
+        // always `@layer theme {...}` followed by `@layer utilities {...}`).
+        while (i < len && /\s/.test(cssText[i])) i++;
+        if (i >= len) break;
+        if (cssText[i] === '/' && cssText[i + 1] === '*') {
+            const end = cssText.indexOf('*/', i + 2);
+            i = end === -1 ? len : end + 2;
+            continue;
+        }
+        if (cssText[i] === '@') {
+            let j = i;
+            while (j < len && cssText[j] !== '{' && cssText[j] !== ';') j++;
+            if (j >= len || cssText[j] === ';') { i = j + 1; continue; }
+            i = j + 1;
+            let depth = 1;
+            const start = i;
+            while (i < len && depth > 0) {
+                if (cssText[i] === '{') depth++;
+                else if (cssText[i] === '}') depth--;
+                i++;
+            }
+            selectors.push(...this.extractSelectorsFromCssText(cssText.slice(start, i - 1)));
+            continue;
+        }
+        const selStart = i;
+        while (i < len && cssText[i] !== '{' && cssText[i] !== '}') i++;
+        if (i >= len || cssText[i] === '}') { i++; continue; }
+        const selector = cssText.slice(selStart, i).trim();
+        i++;
+        let depth = 1;
+        while (i < len && depth > 0) {
+            if (cssText[i] === '{') depth++;
+            else if (cssText[i] === '}') depth--;
+            i++;
+        }
+        if (selector) selectors.push(selector);
+    }
+    return selectors;
+};
+
+// Undo escapeClassName's per-char escaping, including the CSS hex-escape
+// form used for a class whose first character can't appear bare at the start
+// of an identifier — a leading digit. Real Tailwind/CSS.escape emit `\32 `
+// (backslash + hex codepoint + one trailing space) for the '2' in `2xl:*`;
+// a naive `\X` → `X` unescape corrupts this (leaves a stray "2" + space and
+// drops the rest of the selector), so `2xl:` variants silently stopped being
+// recognized as covered — caught by the corpus test (utilities-corpus.test.js).
+TailwindCompiler.prototype.unescapeClassToken = function (token) {
+    return token.replace(/\\([0-9a-fA-F]{1,6}) ?|\\(.)/g, (m, hex, ch) => hex ? String.fromCodePoint(parseInt(hex, 16)) : ch);
+};
+
+// Selectors escape every non-alphanumeric/hyphen char (see escapeClassName),
+// so `.hover\:bg-brand` unescapes back to the `hover:bg-brand` token form
+// used everywhere else (class attributes, usedClasses, parseClassName). The
+// hex-escape alternative is tried first so `\32 ` is consumed as one unit
+// rather than stopping at the literal digits.
+TailwindCompiler.prototype.classNamesFromCssText = function (cssText) {
+    const classSet = new Set();
+    const classRe = /\.((?:\\[0-9a-fA-F]{1,6} ?|\\.|[a-zA-Z0-9_-])+)/g;
+    for (const selector of this.extractSelectorsFromCssText(cssText)) {
+        let m;
+        classRe.lastIndex = 0;
+        while ((m = classRe.exec(selector)) !== null) {
+            classSet.add(this.unescapeClassToken(m[1]));
+        }
+    }
+    return classSet;
+};
+
+// Attempt a synchronous CSSOM read of the static link's rules. Returns a Set
+// of covered classes, or null when nothing could be read — a security error
+// (cross-origin), an exception, a missing sheet, or zero rules (the link
+// hasn't finished loading, or its sheet is genuinely empty). null is never
+// distinguished from "empty": both fail open in filterStaticallyCoveredClasses
+// / stripCoveredRulesFromCss, and neither is ever treated as "everything
+// covered".
+TailwindCompiler.prototype.readStaticUtilitiesRules = function (el) {
+    try {
+        const sheet = Array.from(document.styleSheets).find(s => s.ownerNode === el);
+        const rules = sheet && sheet.cssRules;
+        if (rules && rules.length > 0) {
+            const cssText = Array.from(rules).map(r => r.cssText).join('\n');
+            return this.classNamesFromCssText(cssText);
+        }
+    } catch (e) {
+        // Cross-origin, or not yet parsed.
+    }
+    return null;
+};
+
+// Read the static sheet's covered classes once per page load. `<style>` and
+// an already-loaded `<link>` resolve synchronously. A `<link>` that hasn't
+// finished loading (or whose sheet can't be read yet) is awaited via its
+// `load`/`error` event, capped at 2s, then re-read once more; the caller
+// (compile()'s first run) awaits the returned promise so the very first
+// compile decision sees an accurate covered set rather than a guess. Fails
+// open the whole time — staticUtilitiesCoveredClasses stays null (nothing
+// covered) until a read actually succeeds, never cached as "covered".
+TailwindCompiler.prototype.detectStaticUtilitiesSheet = function () {
+    this.staticUtilitiesCoveredClasses = null;
+    const el = this.findStaticUtilitiesElement();
+    if (!el) return Promise.resolve();
+
+    if (el.tagName === 'STYLE') {
+        this.staticUtilitiesCoveredClasses = this.classNamesFromCssText(el.textContent || '');
+        return Promise.resolve();
+    }
+
+    const covered = this.readStaticUtilitiesRules(el);
+    if (covered) {
+        this.staticUtilitiesCoveredClasses = covered;
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            el.removeEventListener('load', onLoad);
+            el.removeEventListener('error', onError);
+            // staticUtilitiesCoveredClasses stays null (fail open) if this
+            // still can't be read — e.g. a cross-origin sheet without CORS.
+            this.staticUtilitiesCoveredClasses = this.readStaticUtilitiesRules(el);
+            resolve();
+        };
+        const onLoad = () => finish();
+        const onError = () => finish();
+        const timer = setTimeout(finish, 2000);
+        el.addEventListener('load', onLoad, { once: true });
+        el.addEventListener('error', onError, { once: true });
+    });
+};
+
+// manifest.json's `utilities.safelist` (exact class names) / `utilities.patterns`
+// (regex source strings) — classes a project knows are already baked (or
+// intentionally safe to leave unbaked) even though a plain HTML/component
+// scan can't find them, e.g. built from a runtime value
+// (`:class="ok ? 'bg-green-500' : 'bg-amber-500'"`). Read once from the
+// shared manifest.json fetch (already in flight for other plugins); fails
+// open to "no safelist" so a bad/missing config never blocks anything.
+TailwindCompiler.prototype.loadUtilitiesSafelist = async function () {
+    this.safelistClasses = new Set();
+    this.safelistPatterns = [];
+    try {
+        let manifest = window.__manifestLoaded || null;
+        if (!manifest && window.__manifestPromise) manifest = await window.__manifestPromise;
+        const cfg = manifest && typeof manifest === 'object' ? manifest.utilities : null;
+        if (cfg && Array.isArray(cfg.safelist)) {
+            for (const c of cfg.safelist) if (typeof c === 'string' && c) this.safelistClasses.add(c);
+        }
+        if (cfg && Array.isArray(cfg.patterns)) {
+            for (const p of cfg.patterns) {
+                if (typeof p !== 'string') continue;
+                try { this.safelistPatterns.push(new RegExp(p)); } catch (e) { /* invalid pattern, ignore */ }
+            }
+        }
+    } catch (e) {
+        // Fail open: no manifest.json, or it couldn't be read.
+    }
+};
+
+TailwindCompiler.prototype.isClassSafelisted = function (cls) {
+    if (this.safelistClasses && this.safelistClasses.has(cls)) return true;
+    if (this.safelistPatterns) {
+        for (const re of this.safelistPatterns) {
+            if (re.test(cls)) return true;
+        }
+    }
+    return false;
+};
+
+// Single source of truth for "covered" everywhere that concept is used: the
+// static sheet's own classes, or the safelist. Both mean "don't regenerate,
+// and don't treat as a signal that the Tailwind engine needs to load".
+TailwindCompiler.prototype.isClassCovered = function (cls) {
+    const covered = this.staticUtilitiesCoveredClasses;
+    if (covered && covered.has(cls)) return true;
+    return this.isClassSafelisted(cls);
+};
+
+TailwindCompiler.prototype.hasSafelistEntries = function () {
+    return !!((this.safelistClasses && this.safelistClasses.size) || (this.safelistPatterns && this.safelistPatterns.length));
+};
+
+// Drop classes already covered by the static sheet (or the safelist) before
+// generating rules for them again — the JIT should only ever patch what's left.
+TailwindCompiler.prototype.filterStaticallyCoveredClasses = function (classes) {
+    const covered = this.staticUtilitiesCoveredClasses;
+    if ((!covered || covered.size === 0) && !this.hasSafelistEntries()) return classes;
+    return classes.filter(c => !this.isClassCovered(c));
+};
+
+// The localStorage cache (manifest.utilities.cache.js) stores a full compiled
+// stylesheet from a previous visit — one that may predate the static sheet, or
+// come from a visitor without one. Re-applying it verbatim would re-emit every
+// rule the static sheet already covers, so strip those rules out first.
+TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
+    const covered = this.staticUtilitiesCoveredClasses;
+    if (!cssText || ((!covered || covered.size === 0) && !this.hasSafelistEntries())) return cssText;
+
+    const strip = (text) => {
+        const out = [];
+        const len = text.length;
+        let i = 0;
+        while (i < len) {
+            if (text[i] === ' ' || text[i] === '\n' || text[i] === '\r' || text[i] === '\t') { out.push(text[i]); i++; continue; }
+            // Skip (but preserve) inter-rule whitespace before checking for an
+            // at-rule — see extractSelectorsFromCssText for why this matters.
+            const wsStart = i;
+            while (i < len && /\s/.test(text[i])) i++;
+            if (i > wsStart) out.push(text.slice(wsStart, i));
+            if (i >= len) break;
+            if (text[i] === '/' && text[i + 1] === '*') {
+                const end = text.indexOf('*/', i + 2);
+                const stop = end === -1 ? len : end + 2;
+                out.push(text.slice(i, stop));
+                i = stop;
+                continue;
+            }
+            if (text[i] === '@') {
+                let j = i;
+                while (j < len && text[j] !== '{' && text[j] !== ';') j++;
+                if (j >= len || text[j] === ';') { out.push(text.slice(i, j + 1)); i = j + 1; continue; }
+                const atHead = text.slice(i, j + 1);
+                i = j + 1;
+                let depth = 1;
+                const start = i;
+                while (i < len && depth > 0) {
+                    if (text[i] === '{') depth++;
+                    else if (text[i] === '}') depth--;
+                    i++;
+                }
+                out.push(`${atHead}${strip(text.slice(start, i - 1))}}`);
+                continue;
+            }
+            const selStart = i;
+            while (i < len && text[i] !== '{' && text[i] !== '}') i++;
+            if (i >= len || text[i] === '}') { i++; continue; }
+            const selector = text.slice(selStart, i).trim();
+            const bodyStart = i;
+            i++;
+            let depth = 1;
+            while (i < len && depth > 0) {
+                if (text[i] === '{') depth++;
+                else if (text[i] === '}') depth--;
+                i++;
+            }
+            const fullRule = selector + text.slice(bodyStart, i);
+            // Match tokens directly against the bare selector text — it has no
+            // rule body for classNamesFromCssText's selector-then-`{` scan to key off.
+            const classes = [];
+            const classRe = /\.((?:\\[0-9a-fA-F]{1,6} ?|\\.|[a-zA-Z0-9_-])+)/g;
+            let cm;
+            while ((cm = classRe.exec(selector)) !== null) {
+                classes.push(this.unescapeClassToken(cm[1]));
+            }
+            // Only drop a rule once every class it references is covered — a
+            // mixed selector (`:where(.row, .col)`) stays if either is new.
+            const isFullyCovered = classes.length > 0 && classes.every(c => this.isClassCovered(c));
+            if (!isFullyCovered) out.push(fullRule);
+        }
+        return out.join('\n');
+    };
+
+    return strip(cssText);
+};
+
+// Runtime safety net for the loader's Tailwind-engine skip (manifest.js
+// staticUtilitiesFullyCovered): true only when this page (a) asked for the
+// Tailwind engine at all (`data-tailwind`), and (b) publish stamped the
+// static utilities sheet complete, so the loader chose not to fetch it
+// eagerly. Checked against the fuller link-or-style read
+// (findStaticUtilitiesElement) rather than manifest.js's synchronous
+// style-only check — this runs well after boot, so it isn't limited by that
+// decision's timing constraint.
+TailwindCompiler.prototype.tailwindEngineWasSkipped = function () {
+    try {
+        if (!document.querySelector('script[src*="manifest.js"][data-tailwind]')) return false;
+        const el = this.findStaticUtilitiesElement();
+        return !!(el && el.hasAttribute('data-mnfst-utilities-complete'));
+    } catch (e) {
+        return false;
+    }
+};
+
+// Arms once staticUtilitiesReady (sheet + safelist) has settled. Watches for
+// any class token — already on the page, or added/changed after — that the
+// bake doesn't cover and the safelist doesn't excuse: the signal that a
+// "complete" stamp was wrong and the page would otherwise render unstyled.
+// A burst of nodes collapses into one lazy load; the observer disconnects
+// the moment that load succeeds, handing off to the real engine exactly as
+// if it had loaded eagerly.
+TailwindCompiler.prototype.setupUncoveredClassWatcher = function () {
+    if (this.usesStaticPrerenderUtilities) return;
+    if (!this.tailwindEngineWasSkipped()) return;
+    if (window.__mnfstTailwindWatcherArmed) return; // one watcher per page load
+    window.__mnfstTailwindWatcherArmed = true;
+
+    let pending = new Set();
+    let loading = false;
+    let observer = null;
+
+    const collectFrom = (el) => {
+        const cls = el.getAttribute && el.getAttribute('class');
+        if (!cls) return;
+        for (const tok of cls.split(/\s+/)) {
+            if (tok && !this.isClassCovered(tok)) pending.add(tok);
+        }
+    };
+
+    const flush = this.debounce(() => {
+        if (loading || pending.size === 0) return;
+        const classes = Array.from(pending).sort();
+        pending = new Set();
+        loading = true;
+        console.warn('[Manifest Utilities] Uncovered utility class(es) — loading the Tailwind engine:', classes.join(', '));
+        window.Manifest.loadPlugin('tailwind').then(() => {
+            if (observer) observer.disconnect();
+            window.dispatchEvent(new CustomEvent('manifest:utilities-uncovered', { detail: { classes, engineLoaded: true } }));
+        }).catch((err) => {
+            loading = false; // let a further uncovered class try again
+            console.error('[Manifest Utilities] Failed to load the Tailwind engine:', err);
+            window.dispatchEvent(new CustomEvent('manifest:utilities-uncovered', { detail: { classes, engineLoaded: false } }));
+        });
+    }, this.options.debounceTime || 50);
+
+    observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            if (mutation.type === 'attributes') {
+                if (mutation.target.nodeType === Node.ELEMENT_NODE) collectFrom(mutation.target);
+            } else if (mutation.type === 'childList') {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                    collectFrom(node);
+                    if (node.querySelectorAll) {
+                        for (const desc of node.querySelectorAll('[class]')) collectFrom(desc);
+                    }
+                }
+            }
+        }
+        if (pending.size > 0) flush();
+    });
+
+    observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class']
+    });
+    this.uncoveredClassObserver = observer; // exposed for tests/diagnostics
+
+    // A wrongly-stamped "complete" sheet may already have uncovered classes
+    // in the initial markup, before any mutation ever fires — check once now.
+    for (const el of document.querySelectorAll('[class]')) collectFrom(el);
+    if (pending.size > 0) flush();
+};
+
+
+// DOM observation: watch for changes and trigger recompilation
 
 // Setup component load listener and MutationObserver
 TailwindCompiler.prototype.setupComponentLoadListener = function () {
-    // Use a single debounced handler for all component-related events
     const debouncedCompile = this.debounce(() => {
         if (!this.isCompiling) {
             this.compile();
         }
     }, this.options.debounceTime);
 
-    // Listen for custom events when components are loaded/processed
-    // Support both old (manifest) and new (manifest) event names for compatibility
+    // Recompile when components load/process; re-scan so component HTML is covered.
     const handleComponentEvent = () => {
-        // If we haven't scanned static classes yet, trigger a full re-scan
-        // This ensures component HTML files are scanned for utility classes
         if (!this.hasScannedStatic) {
-            // Reset the scan promise to allow re-scanning
             this.staticScanPromise = null;
             this.hasScannedStatic = false;
         }
@@ -3353,12 +3796,9 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     document.addEventListener('manifest:components-processed', handleComponentEvent);
     document.addEventListener('manifest:components-ready', handleComponentEvent);
 
-    // Listen for route changes but don't recompile unnecessarily
+    // On route change, recompile only if genuinely new dynamic classes appeared.
     document.addEventListener('manifest:route-change', (event) => {
-        // Only trigger compilation if we detect new dynamic classes
-        // The existing MutationObserver will handle actual DOM changes
         if (this.hasScannedStatic) {
-            // Wait longer for route content to fully load before checking
             setTimeout(() => {
                 const currentDynamicCount = this.dynamicClassCache.size;
                 const currentClassesHash = this.lastClassesHash;
@@ -3369,10 +3809,9 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                 const dynamicClasses = Array.from(this.dynamicClassCache);
                 const newClassesHash = dynamicClasses.sort().join(',');
 
-                // Only compile if we found genuinely new classes, not just code processing artifacts
                 if (newDynamicCount > currentDynamicCount && newClassesHash !== currentClassesHash) {
                     const newClasses = dynamicClasses.filter(cls =>
-                        // Filter out classes that are likely from code processing
+                        // Ignore highlight/code-processing artifacts
                         !cls.includes('hljs') &&
                         !cls.startsWith('language-') &&
                         !cls.includes('copy') &&
@@ -3383,11 +3822,11 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                         debouncedCompile();
                     }
                 }
-            }, 300); // Longer delay to let code processing finish
+            }, 300); // let code processing finish
         }
     });
 
-    // Use a single MutationObserver for all DOM changes
+    // Single MutationObserver for all DOM changes
     const observer = new MutationObserver((mutations) => {
         let shouldRecompile = false;
 
@@ -3474,15 +3913,10 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     });
 };
 
-// Start processing with initial compilation. DOM observation is owned by
-// setupComponentLoadListener (called separately from main.js init) — that one
-// uses an incremental staticClassCache lookup per mutation, which scales to
-// thousands of elements. A previous version of this method also installed its
-// own MutationObserver here that called getUsedClasses() on EVERY mutation
-// (a full document-wide O(N) DOM scan), so on a busy page with N≥3000 the
-// scan cost exceeded the inter-mutation interval and the main thread froze
-// (~100% CPU on docs site, 3042 elements). That observer was redundant with
-// the incremental one and has been removed.
+// Initial compilation only. DOM observation is owned by
+// setupComponentLoadListener (incremental, scales to thousands of elements);
+// don't add a per-mutation getUsedClasses() scan here — it froze the main
+// thread on busy pages.
 TailwindCompiler.prototype.startProcessing = async function () {
     if (this.usesStaticPrerenderUtilities) return;
     try {
@@ -3495,15 +3929,83 @@ TailwindCompiler.prototype.startProcessing = async function () {
 
 
 
-// Utilities initialization
-// Initialize compiler and set up event listeners
+// Device signal — $device (os / touch / online / standalone / native / platform).
+// Stamps html[data-online|standalone|native] for CSS variants; $device mirrors it reactively.
 
-// Detect operating system and stamp it on <html data-os> so OS variants
-// (mac:, ios:, windows:, …) and the *-only visibility classes can resolve in
-// pure CSS. There is no CSS media feature for OS, so this one-time read is the
-// minimum required. Runs synchronously at script load (documentElement exists
-// during head parsing) to set the marker before first paint. Honors a value
-// already present (e.g. written by the prerenderer or set manually).
+// Stamp device-state attributes before first paint. Honors values already set
+// (prerenderer, the native umbrella, or manual); data-os is set by detectOS.
+function stampManifestDeviceAttrs() {
+    try {
+        const html = document.documentElement;
+        if (!html) return;
+        const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+        if (standalone && !html.hasAttribute('data-standalone')) html.setAttribute('data-standalone', '');
+        if (!html.hasAttribute('data-native')) {
+            const cap = window.Capacitor;
+            const native = !!(cap && (typeof cap.isNativePlatform !== 'function' || cap.isNativePlatform()));
+            if (native) html.setAttribute('data-native', '');
+        }
+        html.setAttribute('data-online', navigator.onLine === false ? 'false' : 'true');
+    } catch (e) {
+        // Non-fatal: device-scoped utilities simply won't match.
+    }
+}
+stampManifestDeviceAttrs();
+
+// Keep html[data-online] and the reactive store in sync with connectivity changes.
+function syncManifestDeviceOnline() {
+    try {
+        const online = navigator.onLine !== false;
+        document.documentElement.setAttribute('data-online', online ? 'true' : 'false');
+        if (window.Alpine && typeof window.Alpine.store === 'function') {
+            const store = window.Alpine.store('device');
+            if (store) store.online = online;
+        }
+    } catch (e) {}
+}
+window.addEventListener('online', syncManifestDeviceOnline);
+window.addEventListener('offline', syncManifestDeviceOnline);
+
+// Register $device + its reactive store once Alpine is available.
+let manifestDeviceInitialized = false;
+function initManifestDeviceSignal() {
+    const html = document.documentElement;
+    window.Alpine.store('device', { online: navigator.onLine !== false });
+    window.Alpine.magic('device', () => ({
+        get os() { return html.getAttribute('data-os') || ''; },
+        get touch() { return (navigator.maxTouchPoints || 0) > 1 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) || false; },
+        get online() { const s = window.Alpine.store('device'); return s ? s.online !== false : navigator.onLine !== false; },
+        get standalone() { return html.hasAttribute('data-standalone') || (!!window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; },
+        get native() { return html.hasAttribute('data-native'); },
+        get platform() { return html.getAttribute('data-platform') || (html.hasAttribute('data-native') ? (html.getAttribute('data-os') || 'native') : 'web'); }
+    }));
+}
+function ensureManifestDeviceInitialized() {
+    if (manifestDeviceInitialized) return;
+    if (!window.Alpine || typeof window.Alpine.magic !== 'function' || typeof window.Alpine.store !== 'function') return;
+    manifestDeviceInitialized = true;
+    initManifestDeviceSignal();
+}
+window.ensureManifestDeviceInitialized = ensureManifestDeviceInitialized;
+document.addEventListener('alpine:init', ensureManifestDeviceInitialized);
+if (window.Alpine && typeof window.Alpine.magic === 'function') {
+    setTimeout(ensureManifestDeviceInitialized, 0);
+} else {
+    const manifestDeviceCheck = setInterval(() => {
+        if (window.Alpine && typeof window.Alpine.magic === 'function') {
+            clearInterval(manifestDeviceCheck);
+            ensureManifestDeviceInitialized();
+        }
+    }, 10);
+    setTimeout(() => clearInterval(manifestDeviceCheck), 5000);
+}
+
+
+// Utilities initialization: create compiler, set up event listeners
+
+// Stamp <html data-os> so OS variants (mac:, ios:, …) resolve in pure CSS
+// (no CSS media feature for OS). Runs synchronously before first paint;
+// honors an existing value (prerenderer or manual).
 function detectOS() {
     try {
         const html = document.documentElement;
@@ -3525,13 +4027,9 @@ function detectOS() {
 }
 detectOS();
 
-// Register the device/OS variants with Tailwind too. The Manifest compiler
-// applies these variants to its own theme-derived/semantic utilities, but
-// standard Tailwind utilities (px-4, flex, …) are emitted by Tailwind's own
-// engine, which only knows its built-in variants. A `<style type="text/tailwindcss">`
-// carrying @custom-variant definitions teaches Tailwind the same variants, so
-// touch:px-4 / mac:flex / cursor:gap-2 resolve like sm:/hover:. Tailwind's
-// browser build reprocesses when this style is added, so load order is moot.
+// Teach Tailwind the same device/OS variants via @custom-variant so its own
+// utilities (px-4, flex) get touch:/mac:/cursor: like sm:/hover: — the Manifest
+// compiler only applies them to its own utilities.
 function injectTailwindVariants() {
     try {
         if (document.getElementById('manifest-tailwind-variants')) return;
@@ -3547,7 +4045,12 @@ function injectTailwindVariants() {
             '@custom-variant linux (&:where([data-os="linux"] *));',
             '@custom-variant ios (&:where([data-os="ios"] *));',
             '@custom-variant android (&:where([data-os="android"] *));',
-            '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));'
+            '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));',
+            '@custom-variant online (&:where([data-online="true"] *));',
+            '@custom-variant offline (&:where([data-online="false"] *));',
+            '@custom-variant standalone (&:where([data-standalone] *));',
+            '@custom-variant native (&:where([data-native] *));',
+            '@custom-variant web (&:where(html:not([data-native]) *));'
         ].join('\n');
         (document.head || document.documentElement).appendChild(style);
     } catch (e) {
@@ -3556,22 +4059,23 @@ function injectTailwindVariants() {
 }
 injectTailwindVariants();
 
-// Initialize immediately without waiting for DOMContentLoaded
-const compiler = new TailwindCompiler();
+// One compiler per page: a second copy would own a rival #manifest-styles and
+// the two order observers would re-append their own style to <head> forever.
+// A compiler whose style element left the document is stale, so it is rebuilt.
+const existingCompiler = window.ManifestUtilities;
+const compiler = (existingCompiler && existingCompiler.styleElement && existingCompiler.styleElement.isConnected)
+    ? existingCompiler
+    : new TailwindCompiler();
 
 // Expose utilities compiler for optional integration
 window.ManifestUtilities = compiler;
 
-// Log when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        // DOM ready
     });
 } else {
-    // DOM already ready
 }
 
-// Log first paint if available
 if ('PerformanceObserver' in window) {
     try {
         const paintObserver = new PerformanceObserver((list) => {
@@ -3584,10 +4088,16 @@ if ('PerformanceObserver' in window) {
     }
 }
 
-// Also handle DOMContentLoaded for any elements that might be added later
-document.addEventListener('DOMContentLoaded', () => {
-    if (!compiler.usesStaticPrerenderUtilities && !compiler.isCompiling) {
-        compiler.compile();
-    }
-});
+// Recompile on DOMContentLoaded for late-added elements
+if (!compiler.__mnfstDomReadyBound) {
+    compiler.__mnfstDomReadyBound = true;
+    document.addEventListener('DOMContentLoaded', () => {
+        if (!compiler.usesStaticPrerenderUtilities && !compiler.isCompiling) {
+            compiler.compile();
+        }
+    });
+}
 
+
+
+})();

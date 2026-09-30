@@ -1,3 +1,9 @@
+/* manifest.appwrite.data.js — built from scripts/data/ */
+
+(function () {
+
+const MANIFEST_BUILD_VERSION = '0.5.218';
+
 /* Manifest Data Sources - Appwrite Integration */
 
 // Cache for Appwrite client (initialized once)
@@ -100,6 +106,32 @@ async function getAppwriteDataServices() {
     };
 }
 
+// Auth pre-flight: one shared account.get() in flight; a pass is cached until auth state changes
+let authCheck = null;
+let authVerified = false;
+['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized']
+    .forEach(type => window.addEventListener(type, () => { authCheck = null; authVerified = false; }));
+
+async function verifyAuthenticated() {
+    if (!window.ManifestAppwriteAuthConfig || authVerified) return;
+    if (!authCheck) {
+        authCheck = (async () => {
+            const { client } = await window.ManifestAppwriteAuthConfig.getAppwriteClient();
+            if (!client || !window.Appwrite?.Account) return true;
+            try {
+                await new window.Appwrite.Account(client).get();
+            } catch (error) {
+                if (error?.code === 401) return false;
+            }
+            authVerified = true; // Anonymous / API-key access proceeds too
+            return true;
+        })().catch(() => true).finally(() => { authCheck = null; });
+    }
+    if (!(await authCheck)) {
+        throw new Error('[Manifest Data] User not authenticated. Please sign in to Appwrite first.');
+    }
+}
+
 // Load rows from Appwrite table
 async function loadTableRows(databaseId, tableId, queries = []) {
     const services = await getAppwriteDataServices();
@@ -107,29 +139,7 @@ async function loadTableRows(databaseId, tableId, queries = []) {
         throw new Error('[Manifest Data] Appwrite TablesDB service not available');
     }
 
-    // Optional: Verify authentication if auth plugin is available
-    // Skip if using API key or anonymous access
-    if (window.ManifestAppwriteAuthConfig) {
-        try {
-            const { client } = await window.ManifestAppwriteAuthConfig.getAppwriteClient();
-            if (client && window.Appwrite?.Account) {
-                const account = new window.Appwrite.Account(client);
-                try {
-                    await account.get(); // This will throw if not authenticated
-                } catch (authError) {
-                    // Only throw if auth plugin is being used - otherwise allow anonymous/API key access
-                    if (authError.code === 401) {
-                        throw new Error('[Manifest Data] User not authenticated. Please sign in to Appwrite first.');
-                    }
-                }
-            }
-        } catch (authCheckError) {
-            // If auth check fails, still try the request (might be anonymous access or API key)
-            if (authCheckError.message?.includes('not authenticated')) {
-                throw authCheckError;
-            }
-        }
-    }
+    await verifyAuthenticated();
 
     try {
         const response = await services.tablesDB.listRows({
@@ -831,12 +841,15 @@ const ALLOWED_VARIABLES = [
 ];
 
 // Get auth store value safely
+// Path is relative to the auth store itself (e.g. "currentTeam.$id", not "auth.currentTeam.$id").
+// Supports optional-chaining syntax ("currentTeam?.$id") by normalizing "?." to "." — a
+// missing intermediate value already returns null via the loop below.
 function getAuthValue(path) {
     try {
         const store = Alpine.store('auth');
         if (!store) return null;
 
-        const parts = path.split('.');
+        const parts = path.replace(/\?\./g, '.').split('.');
         let value = store;
 
         for (const part of parts) {
@@ -863,7 +876,7 @@ function debugAuthStore() {
         if (store.user) {
         }
     } catch (error) {
-        console.error('[Manifest Data Debug] Error inspecting auth store:', error);
+        console.error('[Manifest Data] Error inspecting auth store:', error);
     }
 }
 
@@ -883,7 +896,9 @@ function interpolateVariable(value) {
 
     // Check if it's a variable reference
     if (value.startsWith('$auth.')) {
-        const path = value.substring(1); // Remove leading $
+        // Strip the '$auth.' prefix (not just '$') — Alpine.store('auth') IS the auth
+        // object, so a path starting with another 'auth' segment would never resolve.
+        const path = value.substring('$auth.'.length);
         return getAuthValue(path);
     } else if (value === '$locale.current') {
         return getLocaleValue();
@@ -904,6 +919,12 @@ function isVariable(str) {
     return str.includes('.') || ALLOWED_VARIABLES.includes(str);
 }
 
+// Thrown by interpolateQuery/interpolateObject when a whitelisted $auth.
+// variable hasn't resolved yet (auth store not settled) — buildQueries
+// catches this and returns NOT_READY rather than sending a query with a
+// null/undefined arg (Appwrite 400s on that) to the network.
+const NOT_READY = Symbol('manifest-data-not-ready');
+
 // Interpolate variables in query array
 function interpolateQuery(query) {
     if (!Array.isArray(query) || query.length === 0) {
@@ -915,7 +936,9 @@ function interpolateQuery(query) {
         if (typeof arg === 'string' && isVariable(arg)) {
             // Check if it's in the whitelist
             if (ALLOWED_VARIABLES.includes(arg)) {
-                return interpolateVariable(arg);
+                const value = interpolateVariable(arg);
+                if (value === null || value === undefined) throw NOT_READY;
+                return value;
             } else {
                 console.warn(`[Manifest Data] Variable "${arg}" is not in whitelist. Allowed:`, ALLOWED_VARIABLES);
                 // SECURITY: Return empty string for non-whitelisted variables to prevent injection
@@ -942,7 +965,9 @@ function interpolateObject(obj) {
     for (const [key, value] of Object.entries(obj)) {
         if (typeof value === 'string' && isVariable(value)) {
             if (ALLOWED_VARIABLES.includes(value)) {
-                result[key] = interpolateVariable(value);
+                const resolved = interpolateVariable(value);
+                if (resolved === null || resolved === undefined) throw NOT_READY;
+                result[key] = resolved;
             } else {
                 console.warn(`[Manifest Data] Variable "${value}" is not in whitelist`);
                 // SECURITY: Return empty string for non-whitelisted variables to prevent injection
@@ -959,15 +984,57 @@ function interpolateObject(obj) {
     return result;
 }
 
-// Build queries with scope injection
+// Default scope column names, overridable per data source via `scopeColumn`
+const DEFAULT_SCOPE_COLUMNS = { team: 'teamId', user: 'userId' };
+
+// Event-driven wait for the auth store's initial hydration — resolves immediately
+// once already settled, otherwise waits for manifest:auth:initialized (capped so a
+// misconfigured/absent auth plugin can't hang a read forever).
+const AUTH_INIT_WAIT_MS = 3000;
+function waitForAuthInit(authStore) {
+    if (!authStore || (authStore._initialized && authStore.isAuthenticated !== undefined)) {
+        return Promise.resolve();
+    }
+    if (typeof window === 'undefined') return Promise.resolve();
+    return new Promise(resolve => {
+        let done = false;
+        const timer = setTimeout(finish, AUTH_INIT_WAIT_MS);
+        function finish() {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            window.removeEventListener('manifest:auth:initialized', finish);
+            resolve();
+        }
+        window.addEventListener('manifest:auth:initialized', finish);
+    });
+}
+
+// Build queries with scope injection. Returns null ("not ready") instead of a
+// query array when a $auth. arg or a required scope value hasn't resolved yet
+// — callers must skip the read (never send a null/undefined/empty-equal arg to
+// Appwrite) and retry once auth settles (manifest:auth:initialized/teams-loaded/login).
 // SECURITY: Scope queries are ALWAYS prepended to user queries to prevent bypass
-async function buildQueries(queriesConfig, scope) {
+// scopeColumns: { team, user } column names to filter/write on (default teamId/userId)
+async function buildQueries(queriesConfig, scope, scopeColumns) {
+    const cols = { ...DEFAULT_SCOPE_COLUMNS, ...(scopeColumns || {}) };
     if (!queriesConfig || !Array.isArray(queriesConfig)) {
         return [];
     }
 
+    // Wait for auth to settle before interpolating — a $auth. reference in a raw
+    // user query (queries.default) needs this regardless of whether `scope` is set.
+    const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+    await waitForAuthInit(authStore);
+
     // Interpolate user-provided queries
-    const userQueries = queriesConfig.map(query => interpolateQuery(query));
+    let userQueries;
+    try {
+        userQueries = queriesConfig.map(query => interpolateQuery(query));
+    } catch (e) {
+        if (e === NOT_READY) return null;
+        throw e;
+    }
 
     // SECURITY: Build scope queries FIRST (they will be prepended)
     // This ensures scope restrictions cannot be bypassed by user queries
@@ -989,17 +1056,6 @@ async function buildQueries(queriesConfig, scope) {
     const hasTeamScope = scopeArray.includes('team');
     const hasTeamsScope = scopeArray.includes('teams');
 
-    // Wait for auth store to be initialized (shared for all scopes)
-    const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
-    if (authStore && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
-        let attempts = 0;
-        const maxAttempts = 10; // Wait up to 500ms (10 * 50ms)
-        while (attempts < maxAttempts && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
-            await new Promise(resolve => setTimeout(resolve, 50));
-            attempts++;
-        }
-    }
-
     // Special case: ["user", "team"] or ["user", "teams"] or ["teams", "user"] or ["team", "user"] - use OR logic
     // Show projects that belong to user OR current team OR any of their teams
     // Note: "team" (singular) means currentTeam, "teams" (plural) means all teams in user's teams array
@@ -1014,7 +1070,7 @@ async function buildQueries(queriesConfig, scope) {
         if (isAuthenticated && user) {
             const userId = getAuthValue('userId') || getAuthValue('user.$id') || getAuthValue('user.id') || user.$id || user.id;
             if (userId) {
-                orQueries.push(['equal', 'userId', userId]);
+                orQueries.push(['equal', cols.user, userId]);
             } else {
             }
         } else {
@@ -1043,7 +1099,7 @@ async function buildQueries(queriesConfig, scope) {
         teamIds = [...new Set(teamIds)];
 
         teamIds.forEach(teamId => {
-            orQueries.push(['equal', 'teamId', teamId]);
+            orQueries.push(['equal', cols.team, teamId]);
         });
 
         if (orQueries.length > 0) {
@@ -1053,8 +1109,9 @@ async function buildQueries(queriesConfig, scope) {
                 scopeQueries.push(['or', orQueries]);
             }
         } else {
-            // No user or teams - return no results
-            scopeQueries.push(['equal', 'userId', '']);
+            // No user or teams resolved — not ready (or genuinely unauthenticated):
+            // skip the read rather than send an empty-equal; caller retries on an auth event.
+            return null;
         }
     } else {
         // Handle user scope (when not combined with teams)
@@ -1063,23 +1120,21 @@ async function buildQueries(queriesConfig, scope) {
             const user = authStore?.user;
 
             if (!isAuthenticated || !user) {
-                // User is not authenticated - return no results
-                scopeQueries.push(['equal', 'userId', '']);
-                // SECURITY: Return early with scope query to prevent any data access
-                return scopeQueries;
+                // Not (yet) authenticated — skip the read; caller retries on manifest:auth:login
+                return null;
             }
 
             // Get user ID value
             const userId = getAuthValue('userId') || getAuthValue('user.$id') || getAuthValue('user.id') || user.$id || user.id;
             if (userId) {
-                scopeQueries.push(['equal', 'userId', userId]);
+                scopeQueries.push(['equal', cols.user, userId]);
             } else {
-                // User is authenticated but userId not found - return no results
-                scopeQueries.push(['equal', 'userId', '']);
+                // Authenticated but userId not found — not ready
                 if (!window.__manifestDataDebugLogged) {
                     window.__manifestDataDebugLogged = true;
                     debugAuthStore();
                 }
+                return null;
             }
         }
 
@@ -1092,10 +1147,10 @@ async function buildQueries(queriesConfig, scope) {
                 authStore?.currentTeam?.id;
 
             if (teamId) {
-                scopeQueries.push(['equal', 'teamId', teamId]);
+                scopeQueries.push(['equal', cols.team, teamId]);
             } else {
-                // No team ID found - return no results
-                scopeQueries.push(['equal', 'teamId', '']);
+                // No current team (yet) — skip the read; caller retries on manifest:auth:teams-loaded
+                return null;
             }
         } else if (hasTeamsScope) {
             // Multi-team scope - use all teams user belongs to
@@ -1108,16 +1163,16 @@ async function buildQueries(queriesConfig, scope) {
             if (teamIds.length > 0) {
                 if (teamIds.length === 1) {
                     // Single team - use equal for efficiency
-                    scopeQueries.push(['equal', 'teamId', teamIds[0]]);
+                    scopeQueries.push(['equal', cols.team, teamIds[0]]);
                 } else {
                     // Multiple teams - use Query.or() with multiple Query.equal() calls
                     // Build: Query.or([Query.equal('teamId', id1), Query.equal('teamId', id2), ...])
-                    const equalQueries = teamIds.map(id => ['equal', 'teamId', id]);
+                    const equalQueries = teamIds.map(id => ['equal', cols.team, id]);
                     scopeQueries.push(['or', equalQueries]);
                 }
             } else {
-                // No teams found - return no results
-                scopeQueries.push(['equal', 'teamId', '']);
+                // No teams (yet) — skip the read; caller retries on manifest:auth:teams-loaded
+                return null;
             }
         }
     }
@@ -1195,8 +1250,11 @@ function toAppwriteQuery(queryArray) {
 }
 
 // Build Appwrite queries from configuration
-async function buildAppwriteQueries(queriesConfig, scope) {
-    const queries = await buildQueries(queriesConfig, scope);
+// scopeColumns: { team, user } column names (default teamId/userId) — see manifest.data.config.js getScopeColumns
+// Returns null ("not ready") straight through — see buildQueries.
+async function buildAppwriteQueries(queriesConfig, scope, scopeColumns) {
+    const queries = await buildQueries(queriesConfig, scope, scopeColumns);
+    if (queries === null) return null;
     return queries
         .map(query => toAppwriteQuery(query))
         .filter(query => query !== null);
@@ -1207,24 +1265,19 @@ window.ManifestDataQueries = {
     interpolateVariable,
     interpolateQuery,
     interpolateObject,
+    getAuthValue,
     buildQueries,
     buildAppwriteQueries,
     toAppwriteQuery,
-    ALLOWED_VARIABLES
+    ALLOWED_VARIABLES,
+    DEFAULT_SCOPE_COLUMNS
 };
 
 
-/* Manifest Data Sources - Pagination */
+/* Manifest Data Sources - Pagination (Appwrite) */
 
-// Pagination helper functions for Appwrite data sources
-
-/**
- * Get first page of results (cursor-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply (from manifest or scope)
- * @returns {Promise<{items: Array, cursor: string|null, total: number, hasMore: boolean}>}
- */
+// First page, cursor-based
+// Returns { items, cursor, total, hasMore }
 async function getFirstPage(dataSourceName, limit, baseQueries = []) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     if (!manifest?.data) {
@@ -1305,14 +1358,8 @@ async function getFirstPage(dataSourceName, limit, baseQueries = []) {
     }
 }
 
-/**
- * Get next page of results (cursor-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {string} cursor - Cursor from previous page
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply
- * @returns {Promise<{items: Array, cursor: string|null, total: number, hasMore: boolean}>}
- */
+// Next page from cursor
+// Returns { items, cursor, total, hasMore }
 async function getNextPage(dataSourceName, cursor, limit, baseQueries = []) {
     if (!cursor) {
         throw new Error('[Manifest Data] Cursor is required for next page');
@@ -1390,14 +1437,8 @@ async function getNextPage(dataSourceName, cursor, limit, baseQueries = []) {
     }
 }
 
-/**
- * Get previous page of results (cursor-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {string} cursor - Cursor from current page
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply
- * @returns {Promise<{items: Array, cursor: string|null, total: number, hasMore: boolean}>}
- */
+// Previous page from cursor
+// Returns { items, cursor, total, hasMore }
 async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
     if (!cursor) {
         throw new Error('[Manifest Data] Cursor is required for previous page');
@@ -1475,14 +1516,8 @@ async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
     }
 }
 
-/**
- * Get specific page (offset-based)
- * @param {string} dataSourceName - Name of the data source
- * @param {number} pageNumber - Page number (1-based)
- * @param {number} limit - Number of items per page
- * @param {Array} baseQueries - Base queries to apply
- * @returns {Promise<{items: Array, page: number, total: number, totalPages: number, hasMore: boolean}>}
- */
+// Specific page (1-based), offset-based
+// Returns { items, page, total, totalPages, hasMore }
 async function getPage(dataSourceName, pageNumber, limit, baseQueries = []) {
     if (pageNumber < 1) {
         throw new Error('[Manifest Data] Page number must be >= 1');
@@ -1572,3 +1607,6 @@ window.ManifestDataPagination = {
     getPrevPage,
     getPage
 };
+
+
+})();

@@ -47,6 +47,10 @@
         // being edited. The attributes are all CSS asks for — what is shown, and
         // whether it is shown at all, is decided in the stylesheet.
         area.toggleAttribute('data-edit-authoring', !!area._edit.authoring);
+        // .authoring regions get the UI scope by default; anything else opts in
+        // by putting data-edit-ui on the region or an ancestor. Only remove what
+        // the plugin itself added, never an author's attribute.
+        if (area._edit.authoring && !area.hasAttribute('data-edit-ui')) { area.setAttribute('data-edit-ui', ''); area._uiByPlugin = true; }
         area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
         if (kind === 'static') markStatic(area);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
@@ -73,6 +77,7 @@
         area.querySelectorAll('[data-edit-sortable]').forEach(e => { ['data-edit-sortable', 'data-edit-grabbed', 'data-edit-dragging', 'tabindex', 'role', 'draggable'].forEach(a => e.removeAttribute(a)); e._dragBound = false; });
         [area, ...area.querySelectorAll('[data-edit-sizable],[data-edit-movable]')].forEach(e => { e.removeAttribute('data-edit-sizable'); e.removeAttribute('data-edit-movable'); e._sizeBound = false; });
         area.removeAttribute('data-edit-armed'); area.removeAttribute('data-edit-label');
+        if (area._uiByPlugin) { area.removeAttribute('data-edit-ui'); area._uiByPlugin = false; }
     }
 
     /* ---- Activation: per-area, always-on by default (.gated needs $edit.on()) ---- */

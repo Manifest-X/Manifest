@@ -1,26 +1,125 @@
 /* Manifest Localization */
 
-// Snapshot the original <html lang> attribute at the moment this script
-// loads, before any locale-mutation code (this plugin's own init, or any
-// other script) has had a chance to overwrite it. This is the developer's
-// declared default — the value baked into index.html's <html lang="…"> tag
-// — and is the locale $locale.reset() restores to. Captured at module
-// scope so both initializeLocalizationPlugin and the reset implementation
-// can reach it through lexical closure.
+(function () {
+
+
+// Original <html lang>, snapshotted before any locale mutation — the declared
+// default that $locale.reset() restores to.
 const originalHtmlLang = (typeof document !== 'undefined' && document.documentElement)
     ? (document.documentElement.lang || '')
     : '';
 
-// Global setLocale wrapper - will be replaced with real implementation
+// RTL language codes — shared by the init plugin and the $locale magic.
+const rtlLanguages = new Set([
+    // Arabic script
+    'ar',     // Arabic
+    'az-Arab',// Azerbaijani (Arabic script)
+    'bal',    // Balochi
+    'ckb',    // Central Kurdish (Sorani)
+    'fa',     // Persian (Farsi)
+    'glk',    // Gilaki
+    'ks',     // Kashmiri
+    'ku-Arab',// Kurdish (Arabic script)
+    'lrc',    // Northern Luri
+    'mzn',    // Mazanderani
+    'pnb',    // Western Punjabi (Shahmukhi)
+    'ps',     // Pashto
+    'sd',     // Sindhi
+    'ur',     // Urdu
+
+    // Hebrew script
+    'he',     // Hebrew
+    'yi',     // Yiddish
+    'jrb',    // Judeo-Arabic
+    'jpr',    // Judeo-Persian
+    'lad-Hebr',// Ladino (Hebrew script)
+
+    // Thaana script
+    'dv',     // Dhivehi (Maldivian)
+
+    // N’Ko script
+    'nqo',    // N’Ko (West Africa)
+
+    // Syriac script
+    'syr',    // Syriac
+    'aii',    // Assyrian Neo-Aramaic
+    'arc',    // Aramaic
+    'sam',    // Samaritan Aramaic
+
+    // Mandaic script
+    'mid',    // Mandaic
+
+    // Other RTL minority/obscure scripts
+    'uga',    // Ugaritic
+    'phn',    // Phoenician
+    'xpr',    // Parthian (ancient)
+    'peo',    // Old Persian (cuneiform, but RTL)
+    'pal',    // Middle Persian (Pahlavi)
+    'avst',   // Avestan
+    'man',    // Manding (N'Ko variants)
+]);
+
+// Detect if a language is RTL
+function isRTL(lang) {
+    return rtlLanguages.has(lang);
+}
+
+// Endonym overrides — Intl.DisplayNames returns a wrong/anglicized/bare-code
+// value for these, so pin the native-script names here. Overrides win over Intl.
+const localeNameOverrides = {
+    tl: 'Tagalog',
+    dv: 'ދިވެހި',
+    bal: 'بلوچی',
+    glk: 'گیلکی',
+    pnb: 'پنجابی',
+    aii: 'ܣܘܪܝܬ',
+};
+
+// Native language name (endonym) for a BCP-47 code via Intl.DisplayNames,
+// e.g. 'fr' → "français". Falls back to the raw code if unsupported.
+const localeNameCache = new Map();
+function localeName(code) {
+    if (localeNameOverrides[code]) return localeNameOverrides[code];
+    if (localeNameCache.has(code)) return localeNameCache.get(code);
+    let name = code;
+    try {
+        if (typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function') {
+            name = new Intl.DisplayNames([code], { type: 'language' }).of(code) || code;
+        }
+    } catch { /* unsupported code — keep raw code */ }
+    localeNameCache.set(code, name);
+    return name;
+}
+
+// Rich list backing $locale.list: one item per locale, with ordering views
+// (alphabetical, currentFirst) as non-enumerable getters so x-for/spreads
+// only see the items.
+function buildLocaleList(available, current) {
+    const list = available.map(code => ({
+        code,
+        name: localeName(code),
+        direction: isRTL(code) ? 'rtl' : 'ltr',
+        current: code === current
+    }));
+    Object.defineProperty(list, 'alphabetical', {
+        enumerable: false,
+        get() { return [...list].sort((a, b) => a.name.localeCompare(b.name)); }
+    });
+    Object.defineProperty(list, 'currentFirst', {
+        enumerable: false,
+        get() { return [...list].sort((a, b) => (b.current === true) - (a.current === true)); }
+    });
+    return list;
+}
+
+// Global setLocale wrapper — replaced with the real implementation at init
 let setLocaleImpl = null;
 
-// Wrapper function available immediately
 async function setLocale(newLang, updateUrl = false) {
     if (setLocaleImpl) {
         return await setLocaleImpl(newLang, updateUrl);
     } else {
         console.warn('[Manifest Localization] setLocale implementation not ready yet, will retry');
-        // Wait a bit and try again
         await new Promise(resolve => setTimeout(resolve, 100));
         if (setLocaleImpl) {
             return await setLocaleImpl(newLang, updateUrl);
@@ -35,81 +134,20 @@ window.__manifestSetLocale = setLocale;
 
 function initializeLocalizationPlugin() {
 
-    // Environment detection for debug logging
     const isDevelopment = window.location.hostname === 'localhost' ||
         window.location.hostname === '127.0.0.1' ||
         window.location.hostname.includes('dev') ||
         window.location.search.includes('debug=true');
 
-    // Debug logging helper (always enabled for now)
-    // Debug logging disabled for production
     const debugLog = () => { };
-
-    // RTL language codes - using Set for O(1) lookups
-    const rtlLanguages = new Set([
-        // Arabic script
-        'ar',     // Arabic
-        'az-Arab',// Azerbaijani (Arabic script)
-        'bal',    // Balochi
-        'ckb',    // Central Kurdish (Sorani)
-        'fa',     // Persian (Farsi)
-        'glk',    // Gilaki
-        'ks',     // Kashmiri
-        'ku-Arab',// Kurdish (Arabic script)
-        'lrc',    // Northern Luri
-        'mzn',    // Mazanderani
-        'pnb',    // Western Punjabi (Shahmukhi)
-        'ps',     // Pashto
-        'sd',     // Sindhi
-        'ur',     // Urdu
-
-        // Hebrew script
-        'he',     // Hebrew
-        'yi',     // Yiddish
-        'jrb',    // Judeo-Arabic
-        'jpr',    // Judeo-Persian
-        'lad-Hebr',// Ladino (Hebrew script)
-
-        // Thaana script
-        'dv',     // Dhivehi (Maldivian)
-
-        // N’Ko script
-        'nqo',    // N’Ko (West Africa)
-
-        // Syriac script
-        'syr',    // Syriac
-        'aii',    // Assyrian Neo-Aramaic
-        'arc',    // Aramaic
-        'sam',    // Samaritan Aramaic
-
-        // Mandaic script
-        'mid',    // Mandaic
-
-        // Other RTL minority/obscure scripts
-        'uga',    // Ugaritic
-        'phn',    // Phoenician
-        'xpr',    // Parthian (ancient)
-        'peo',    // Old Persian (cuneiform, but RTL)
-        'pal',    // Middle Persian (Pahlavi)
-        'avst',   // Avestan
-        'man',    // Manding (N'Ko variants)
-    ]);
-
-    // Detect if a language is RTL
-    function isRTL(lang) {
-        return rtlLanguages.has(lang);
-    }
 
     function isPrerenderedStaticBuild() {
         return document.head?.querySelector('meta[name="manifest:prerendered"][content="1"]') !== null;
     }
 
-    // Returns the set of locales the prerender actually generated URL paths for.
-    // Read from `<meta name="manifest:prerender-locales" content="en,fr,...">`.
-    // When the target locale isn't in this set, MPA locale switching should NOT
-    // navigate (it would 404) — instead, fall back to the in-page store update
-    // so locale-aware data sources (e.g. examples on a localization docs page)
-    // can re-render without leaving the current page.
+    // Locales the prerender generated URL paths for (from
+    // <meta name="manifest:prerender-locales">). Switching to a locale not in
+    // this set falls back to an in-page update rather than navigating (404).
     function getPrerenderLocales() {
         const meta = document.head?.querySelector('meta[name="manifest:prerender-locales"]');
         const content = meta?.getAttribute('content') || '';
@@ -124,13 +162,10 @@ function initializeLocalizationPlugin() {
         const pathParts = currentUrl.pathname.split('/').filter(Boolean);
         const hasLanguageInUrl = pathParts[0] && availableLocales.includes(pathParts[0]);
 
-        // Determine path segments without any current locale prefix, for exclude-pattern checking.
         const pathWithoutLocale = hasLanguageInUrl ? pathParts.slice(1) : pathParts;
 
-        // If the current path matches a manifest:locale-route-exclude pattern, do NOT add or
-        // change the locale prefix — this prevents an infinite redirect loop on prerendered
-        // builds where normalizeRedundantLocalePrefixInUrl() strips the locale from the URL
-        // but the localization init would otherwise re-add it via window.location.assign().
+        // Skip locale-prefix changes for paths matching manifest:locale-route-exclude —
+        // avoids a redirect loop against the prerender's locale-stripping.
         const routeExcludeMeta = document.querySelector('meta[name="manifest:locale-route-exclude"]');
         if (routeExcludeMeta) {
             try {
@@ -147,7 +182,7 @@ function initializeLocalizationPlugin() {
                             if (lower[i] !== p[i]) { match = false; break; }
                         }
                         if (match) {
-                            // Path is locale-excluded — return URL unchanged so no navigation is triggered
+                            // Locale-excluded — return URL unchanged so no navigation fires.
                             return currentUrl.toString();
                         }
                     }
@@ -161,24 +196,16 @@ function initializeLocalizationPlugin() {
         return currentUrl.toString();
     }
 
-    // Input validation for language codes.
-    //
-    // Conforms to BCP 47 / ISO 639 shape:
-    //   - 2 or 3 letter primary tag (e.g. en, fr, zh, kab)
-    //   - Optional region: -XX (ISO 3166 alpha-2, e.g. en-US) or -DDD (UN M.49)
-    //   - Optional script: -Xxxx (ISO 15924, e.g. zh-Hans, zh-Hant)
-    //
-    // The previous /^[a-zA-Z0-9_-]+$/ pattern was too permissive — it matched
-    // arbitrary identifiers like `appwriteTableId`, `scope`, `storage` from
-    // non-localization data source configs and added them to `available`.
+    // Validate a BCP 47 / ISO 639 language code: 2-3 letter primary tag, optional
+    // region (-XX / -DDD) or script (-Xxxx). Strict enough to reject stray config
+    // keys (appwriteTableId, scope, …) that a looser pattern let into `available`.
     function isValidLanguageCode(lang) {
         if (typeof lang !== 'string' || lang.length === 0) return false;
         return /^[a-z]{2,3}(?:-(?:[A-Z][a-z]{3}|[A-Z]{2}|\d{3}))?$/i.test(lang);
     }
 
-    // Identify data source entries that are Appwrite collections/buckets.
-    // These have structural keys like `appwriteTableId` / `appwriteBucketId`
-    // that must not be treated as locale codes during locale discovery.
+    // Appwrite data sources carry structural keys (appwriteTableId, …) that must
+    // not be mistaken for locale codes during discovery.
     function isAppwriteDataSource(collection) {
         return !!(collection && typeof collection === 'object' &&
             (collection.appwriteTableId || collection.appwriteBucketId ||
@@ -212,7 +239,7 @@ function initializeLocalizationPlugin() {
         }
     };
 
-    // Initialize empty localization store (create immediately so magic method works)
+    // Seed an empty store immediately so the magic method works
     if (!Alpine.store('locale')) {
         Alpine.store('locale', {
             current: document.documentElement.lang || 'en',
@@ -223,46 +250,43 @@ function initializeLocalizationPlugin() {
     } else {
     }
 
-    // Cache for manifest data
     let manifestCache = null;
 
-    // Get available locales from manifest with caching
+    // Available locales from manifest, cached
     async function getAvailableLocales() {
-        // Return cached data if available
         if (manifestCache) {
             return manifestCache;
         }
 
         try {
             let manifest = window.__manifestLoaded || window.ManifestComponentsRegistry?.manifest;
-            // A partially-seeded global can be truthy yet lack `data` — e.g. another
-            // plugin doing `window.__manifestLoaded.payments = …` before the loader
-            // has populated the full manifest (or in a no-loader setup). Fetch the
-            // real manifest in that case so locale detection still sees every source.
+            // A partially-seeded global can be truthy yet lack `data` — await the
+            // shared in-flight fetch (or start one, one request per boot) so locale
+            // detection sees every source.
             if (!manifest || !manifest.data) {
-                const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
-                const response = await fetch(manifestUrl);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                if (window.__manifestPromise) manifest = await window.__manifestPromise.catch(() => null);
+                if (!manifest || !manifest.data) {
+                    const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
+                    window.__manifestPromise = fetch(manifestUrl).then(r => {
+                        if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+                        return r.json();
+                    }).then(m => { window.ManifestDataConfig?.interpolateManifest?.(m); return m; });
+                    manifest = await window.__manifestPromise;
                 }
-                manifest = await response.json();
             }
 
-            // Validate manifest structure
             if (!manifest || typeof manifest !== 'object') {
                 throw new Error('Invalid manifest structure');
             }
 
-            // Get unique locales from data sources
+            // Collect unique locales across data sources
             const locales = new Set();
             if (manifest.data && typeof manifest.data === 'object') {
-                // Process each data source
                 for (const [sourceName, collection] of Object.entries(manifest.data)) {
-                    // Skip Appwrite collections — their config keys (appwriteTableId,
-                    // scope, storage, etc.) shouldn't be treated as locale codes.
+                    // Skip Appwrite collections (their config keys aren't locales)
                     if (isAppwriteDataSource(collection)) continue;
                     if (collection && typeof collection === 'object') {
-                        // Check for single-file multi-locale CSV (e.g., {"locales": "/path/to/file.csv"})
+                        // Single-file multi-locale CSV, e.g. {"locales": "file.csv"}
                         if (collection.locales && typeof collection.locales === 'string' && collection.locales.endsWith('.csv')) {
                             try {
                                 const base = typeof window.getManifestBase === 'function' ? window.getManifestBase() : '';
@@ -275,7 +299,7 @@ function initializeLocalizationPlugin() {
                                     const lines = csvText.split('\n').filter(line => line.trim());
                                     if (lines.length > 0) {
                                         const headers = lines[0].split(',').map(h => h.trim());
-                                        // First column is typically 'key', rest are locale columns
+                                        // First column is 'key', rest are locale columns
                                         headers.forEach(header => {
                                             if (header !== 'key' && isValidLanguageCode(header)) {
                                                 locales.add(header);
@@ -288,19 +312,15 @@ function initializeLocalizationPlugin() {
                             }
                         }
 
-                        // Check for locale keys in manifest (e.g., {"en": "/path/to/en.csv", "fr": "/path/to/fr.csv"})
+                        // Per-locale keys, e.g. {"en": "en.csv", "fr": "fr.csv"}
                         Object.keys(collection).forEach(key => {
-                            // Exclude reserved config keys (add more as needed for future phases)
                             const reservedKeys = ['url', 'headers', 'params', 'transform', 'defaultValue', 'locales'];
-
-                            // Accept any valid language code that's not a reserved key
-                            // This allows custom locale codes like "klingon", "en", "fr", etc.
                             if (isValidLanguageCode(key) && !reservedKeys.includes(key)) {
                                 locales.add(key);
                             }
                         });
                     } else if (typeof collection === 'string' && collection.endsWith('.csv')) {
-                        // Simple CSV file path - check if it has locale columns
+                        // Bare CSV path — inspect for locale columns
                         try {
                             const base = typeof window.getManifestBase === 'function' ? window.getManifestBase() : '';
                             const csvPath = collection.startsWith('/') ? collection.slice(1) : collection;
@@ -311,11 +331,9 @@ function initializeLocalizationPlugin() {
                                 const lines = csvText.split('\n').filter(line => line.trim());
                                 if (lines.length > 0) {
                                     const headers = lines[0].split(',').map(h => h.trim());
-                                    // Check if this looks like a localized CSV (has 'key' column + locale columns)
-                                    // vs tabular data (has 'id' column)
+                                    // Localized CSV ('key' + locale columns) vs tabular ('id')
                                     const firstHeader = headers[0]?.toLowerCase();
                                     if (firstHeader === 'key' && headers.length > 1) {
-                                        // This is a key-value CSV, check for locale columns
                                         headers.forEach(header => {
                                             if (header !== 'key' && isValidLanguageCode(header)) {
                                                 locales.add(header);
@@ -333,7 +351,7 @@ function initializeLocalizationPlugin() {
                 }
             }
 
-            // If no locales found, fallback to HTML lang or 'en'
+            // No locales found — fall back to HTML lang or 'en'
             if (locales.size === 0) {
                 const htmlLang = document.documentElement.lang;
                 const fallbackLang = htmlLang && isValidLanguageCode(htmlLang) ? htmlLang : 'en';
@@ -341,41 +359,38 @@ function initializeLocalizationPlugin() {
             }
 
             const availableLocales = Array.from(locales);
-
-            // Cache the result
             manifestCache = availableLocales;
             return availableLocales;
         } catch (error) {
             console.error('[Manifest Localization] Error loading manifest:', error);
-            // Fallback to HTML lang or 'en'
             const htmlLang = document.documentElement.lang;
             const fallbackLang = htmlLang && isValidLanguageCode(htmlLang) ? htmlLang : 'en';
             return [fallbackLang];
         }
     }
 
-    // Detect initial locale
+    // Detect initial locale, by priority: URL > localStorage > <html lang> > browser > first available
     function detectInitialLocale(availableLocales) {
 
-        // 1. Check URL path first (highest priority for direct links)
+        // URL path (direct links)
         const pathParts = window.location.pathname.split('/').filter(Boolean);
         if (pathParts[0] && isValidLanguageCode(pathParts[0]) && availableLocales.includes(pathParts[0])) {
             return pathParts[0];
         }
 
-        // 2. Check localStorage (user preference from UI toggles)
+        // localStorage (UI-toggle preference)
         const storedLang = safeStorage.get('lang');
         if (storedLang && isValidLanguageCode(storedLang) && availableLocales.includes(storedLang)) {
             return storedLang;
         }
 
-        // 3. Check HTML lang attribute
+        // <html lang>
         const htmlLang = document.documentElement.lang;
         if (htmlLang && isValidLanguageCode(htmlLang) && availableLocales.includes(htmlLang)) {
             return htmlLang;
         }
 
-        // 4. Check browser language
+        // Browser language
         if (navigator.language) {
             const browserLang = navigator.language.split('-')[0];
             if (isValidLanguageCode(browserLang) && availableLocales.includes(browserLang)) {
@@ -383,15 +398,12 @@ function initializeLocalizationPlugin() {
             }
         }
 
-        // Default to first available locale
         const defaultLang = availableLocales[0] || 'en';
         return defaultLang;
     }
 
-    // Update locale - this is the real implementation
     async function setLocaleReal(newLang, updateUrl = false) {
 
-        // Validate input
         if (!isValidLanguageCode(newLang)) {
             console.error('[Manifest Localization] Invalid language code:', newLang);
             return false;
@@ -399,7 +411,7 @@ function initializeLocalizationPlugin() {
 
         const store = Alpine.store('locale');
 
-        // If available locales aren't loaded yet, load them first
+        // Load available locales if not yet present
         if (!store.available || store.available.length === 0) {
             const availableLocales = await getAvailableLocales();
             if (!availableLocales.includes(newLang)) {
@@ -417,30 +429,15 @@ function initializeLocalizationPlugin() {
 
 
         try {
-            // In prerendered static output, locale switching normally navigates
-            // to the target locale's URL.  But only do this when the target
-            // locale was ACTUALLY prerendered — otherwise navigation would 404.
-            //
-            // When the host site has a single locale (e.g. an English docs site
-            // with locale-aware example data on one page), `prerender-locales`
-            // contains only that locale.  Switching to any other locale falls
-            // through to the in-page store update below — locale-aware data
-            // re-loads via the `localechange` event and the page reflects the
-            // new locale without navigating.
-            // Track whether this is a "scoped" change (in-page only on a
-            // prerendered single-locale site).  Scoped changes must NOT persist
-            // to localStorage or update the URL — the locale is a transient
-            // example/demo state, not a site-wide preference.  Persisting would
-            // leak the demo locale to subsequent page loads via localStorage,
-            // making `<html lang>` mismatch the actual baked content (English
-            // article body with `lang="fr"`) and muddying the SEO signal.
+            // In prerendered output, switching normally navigates to the target
+            // locale's URL — but only if that locale was actually prerendered
+            // (else 404). A single-locale site has no other locale URLs, so every
+            // switch becomes an in-page "scoped demo" change instead. Scoped
+            // changes skip localStorage/URL persistence so they don't leak the
+            // demo locale into later page loads.
             let isScopedDemoChange = false;
             if (isPrerenderedStaticBuild()) {
                 const prerenderLocales = getPrerenderLocales();
-                // Multi-locale site: navigate to the target locale's URL.
-                // Single-locale site: there are no other locale URLs to navigate
-                // to (the renderer skips the redundant default-locale mirror),
-                // so ALL switches must be treated as in-page demos.
                 const isMultiLocaleSite = prerenderLocales.length > 1;
                 const targetIsPrerendered =
                     prerenderLocales.length === 0 ||
@@ -452,17 +449,13 @@ function initializeLocalizationPlugin() {
                     }
                     return true;
                 }
-                // In-page demo: locale-aware data re-renders without navigating.
-                // Mark as scoped so we skip URL/localStorage persistence below.
                 isScopedDemoChange = true;
             }
 
-            // Update store
             store.current = newLang;
             store.direction = isRTL(newLang) ? 'rtl' : 'ltr';
             store._initialized = true;
 
-            // Update HTML safely
             try {
                 document.documentElement.lang = newLang;
                 document.documentElement.dir = store.direction;
@@ -470,34 +463,26 @@ function initializeLocalizationPlugin() {
                 console.error('[Manifest Localization] DOM update error:', domError);
             }
 
-            // Update localStorage safely — but skip for scoped demo changes
-            // so the next page load doesn't restore a non-prerendered locale.
+            // Persist preference, except for scoped demo changes
             if (!isScopedDemoChange) {
                 safeStorage.set('lang', newLang);
             }
 
-            // Update URL based on current URL state and updateUrl parameter.
-            // Skip entirely for scoped demo changes — adding/replacing a locale
-            // prefix would point at a URL that wasn't prerendered (404).
+            // Update URL (replace existing locale prefix, or add when updateUrl).
+            // Skipped for scoped demo changes — the prefixed URL wasn't prerendered.
             try {
                 const currentUrl = new URL(window.location.href);
                 const pathParts = currentUrl.pathname.split('/').filter(Boolean);
                 const hasLanguageInUrl = pathParts[0] && store.available.includes(pathParts[0]);
 
                 if (!isScopedDemoChange && (updateUrl || hasLanguageInUrl)) {
-                    // Update URL if:
-                    // 1. updateUrl is explicitly true (router navigation, initialization)
-                    // 2. OR there's already a language code in the URL (user expects URL to update)
-
                     if (hasLanguageInUrl) {
-                        // Replace existing language code
                         if (pathParts[0] !== newLang) {
                             pathParts[0] = newLang;
                             currentUrl.pathname = '/' + pathParts.join('/');
                             window.history.replaceState({}, '', currentUrl);
                         }
                     } else if (updateUrl && pathParts.length > 0) {
-                        // Add language code only if explicitly requested (router/init)
                         pathParts.unshift(newLang);
                         currentUrl.pathname = '/' + pathParts.join('/');
                         window.history.replaceState({}, '', currentUrl);
@@ -507,7 +492,6 @@ function initializeLocalizationPlugin() {
                 console.error('[Manifest Localization] URL update error:', urlError);
             }
 
-            // Trigger locale change event
             try {
                 window.dispatchEvent(new CustomEvent('localechange', {
                     detail: { locale: newLang }
@@ -520,7 +504,7 @@ function initializeLocalizationPlugin() {
 
         } catch (error) {
             console.error('[Manifest Localization] Error setting locale:', error);
-            // Restore previous state safely
+            // Restore previous state
             const fallbackLang = safeStorage.get('lang') || store.available[0] || 'en';
             store.current = fallbackLang;
             store.direction = isRTL(fallbackLang) ? 'rtl' : 'ltr';
@@ -538,23 +522,17 @@ function initializeLocalizationPlugin() {
     setLocaleImpl = setLocaleReal;
     window.__manifestSetLocale = setLocaleReal;
 
-    // $locale.reset implementation — exposed across functions via window so the
-    // magic registration (in registerLocaleMagic, a sibling top-level function)
-    // can call it. Inlining the logic in the magic's closure would put it out
-    // of scope from safeStorage / isValidLanguageCode / isRTL / originalHtmlLang.
+    // $locale.reset implementation — exposed via window so registerLocaleMagic
+    // (a sibling top-level fn) can call it while keeping closure access to
+    // safeStorage / isValidLanguageCode / isRTL / originalHtmlLang.
     function resetLocaleReal(href) {
         const store = Alpine.store('locale');
         const available = store?.available || [originalHtmlLang || 'en'];
 
-        // 1. Clear stored UI-toggle preference so future page loads re-detect.
+        // Clear stored preference so future loads re-detect
         safeStorage.remove('lang');
 
-        // 2. Resolve the default locale. Matches initial detection minus URL
-        // and localStorage layers, since reset opts out of both:
-        //   a. Original <html lang> baked into index.html (snapshotted at
-        //      plugin init, before any locale mutation).
-        //   b. Browser language if it matches an available locale.
-        //   c. First locale registered in manifest.json.
+        // Resolve default: original <html lang> > browser language > first available
         let defaultLocale = null;
         if (originalHtmlLang
             && isValidLanguageCode(originalHtmlLang)
@@ -570,8 +548,7 @@ function initializeLocalizationPlugin() {
             defaultLocale = available[0] || 'en';
         }
 
-        // 3. Resolve target URL (passed-in href or current) and strip its
-        // leading locale segment, if any.
+        // Resolve target URL and strip any leading locale segment
         let target;
         try {
             target = new URL(href || window.location.href, window.location.href);
@@ -584,9 +561,7 @@ function initializeLocalizationPlugin() {
         }
         target.pathname = '/' + segs.join('/');
 
-        // 4. Apply the default locale to the live store + DOM before
-        // navigating, so $locale.current and any reactive readers update
-        // immediately.
+        // Apply default to live store + DOM before navigating
         if (store && store.current !== defaultLocale) {
             store.current = defaultLocale;
             store.direction = isRTL(defaultLocale) ? 'rtl' : 'ltr';
@@ -601,9 +576,7 @@ function initializeLocalizationPlugin() {
             } catch { /* event dispatch unavailable */ }
         }
 
-        // 5. Navigate to the locale-stripped URL. SPA hop in the live app,
-        // MPA hop in prerendered output so the new URL's prerendered HTML
-        // loads from disk.
+        // Navigate to the locale-stripped URL: SPA hop live, MPA hop when prerendered
         const isSameOrigin = target.origin === window.location.origin;
         const isPrerendered = !!document.querySelector('meta[name="manifest:prerendered"]:not([content="0"]):not([content="false"])');
 
@@ -617,10 +590,9 @@ function initializeLocalizationPlugin() {
     }
     window.__manifestResetLocale = resetLocaleReal;
 
-    // Event listener cleanup tracking
     let routeChangeListener = null;
 
-    // Initialize with manifest data
+    // Initialize from manifest data
     (async () => {
         try {
             const availableLocales = await getAvailableLocales();
@@ -630,25 +602,22 @@ function initializeLocalizationPlugin() {
             const initialLocale = detectInitialLocale(availableLocales);
 
             const success = await setLocale(initialLocale, true);
-            // Locale initialization complete
         } catch (error) {
             console.error('[Manifest Localization] Initialization error:', error);
         }
     })();
 
-    // Listen for router navigation to detect locale changes
+    // Sync locale to router navigation
     routeChangeListener = async (event) => {
         try {
             const newPath = event.detail.to;
 
-            // Extract locale from new path
             const pathParts = newPath.split('/').filter(Boolean);
             const store = Alpine.store('locale');
 
             if (pathParts[0] && isValidLanguageCode(pathParts[0]) && store.available.includes(pathParts[0])) {
                 const newLocale = pathParts[0];
 
-                // Only change if it's different from current locale
                 if (newLocale !== store.current) {
                     await setLocale(newLocale, true);
                 }
@@ -660,7 +629,6 @@ function initializeLocalizationPlugin() {
 
     window.addEventListener('manifest:route-change', routeChangeListener);
 
-    // Cleanup function for memory management
     const cleanup = () => {
         if (routeChangeListener) {
             window.removeEventListener('manifest:route-change', routeChangeListener);
@@ -669,12 +637,10 @@ function initializeLocalizationPlugin() {
         manifestCache = null;
     };
 
-    // Expose cleanup for external use
     window.__manifestLocalizationCleanup = cleanup;
 }
 
-// Register $locale magic method immediately when Alpine is available
-// This ensures it's available even before full initialization completes
+// Register the $locale magic — runs before full init so it's available early
 function registerLocaleMagic() {
 
     if (!window.Alpine) {
@@ -685,7 +651,6 @@ function registerLocaleMagic() {
         return false;
     }
 
-    // Only register once
     if (window.__manifestLocaleMagicRegistered) {
         return true;
     }
@@ -696,7 +661,7 @@ function registerLocaleMagic() {
         Alpine.magic('locale', () => {
             const store = Alpine.store('locale');
 
-            // If store doesn't exist yet, create minimal one
+            // Create a minimal store if none exists yet
             if (!store) {
                 Alpine.store('locale', {
                     current: document.documentElement.lang || 'en',
@@ -712,8 +677,18 @@ function registerLocaleMagic() {
                     if (prop === 'current') return currentStore?.current || document.documentElement.lang || 'en';
                     if (prop === 'available') return currentStore?.available || [document.documentElement.lang || 'en'];
                     if (prop === 'direction') return currentStore?.direction || 'ltr';
+                    if (prop === 'name') {
+                        const fallback = document.documentElement.lang || 'en';
+                        return localeName(currentStore?.current || fallback);
+                    }
+                    if (prop === 'list') {
+                        const fallback = document.documentElement.lang || 'en';
+                        return buildLocaleList(
+                            currentStore?.available || [fallback],
+                            currentStore?.current || fallback
+                        );
+                    }
                     if (prop === 'set') {
-                        // Use the global setLocale function (wrapper or real implementation)
                         return async (locale, updateUrl = false) => {
                             if (window.__manifestSetLocale) {
                                 const result = await window.__manifestSetLocale(locale, updateUrl);
@@ -735,35 +710,9 @@ function registerLocaleMagic() {
                             }
                         };
                     }
-                    // $locale.reset([href]) — restore the project's default
-                    // locale. Reset clears the user's stored language preference,
-                    // recomputes the default from the developer's declarations,
-                    // and applies it to the live store + <html lang>/<html dir>.
-                    //
-                    // Default resolution (matches initial detection minus the
-                    // URL and localStorage layers, since reset explicitly opts
-                    // out of both):
-                    //   1. Original <html lang> baked into index.html
-                    //      (snapshotted at plugin init, before any mutation)
-                    //   2. Browser language (navigator.language) if it matches
-                    //      an available locale
-                    //   3. First locale registered in manifest.json
-                    //
-                    // As a side effect, any leading locale slug in the URL is
-                    // stripped (since the URL prefix would otherwise re-detect
-                    // back into a non-default locale on the next page load).
-                    //
-                    // Forms:
-                    //   $locale.reset()          → reset current URL
-                    //   $locale.reset('/fr/foo') → strip prefix from given href,
-                    //                              then navigate (useful for
-                    //                              "View in default language"
-                    //                              links anywhere on the page)
-                    //
-                    // Routing path: SPA hop via history.pushState when running
-                    // in the live SPA; full navigation via location.assign in
-                    // prerendered MPA mode so the new URL's prerendered HTML
-                    // loads from disk.
+                    // $locale.reset([href]) — restore the project's default locale
+                    // (see resetLocaleReal). Also strips any leading locale slug
+                    // from the URL so it won't re-detect on the next load.
                     if (prop === 'reset') {
                         return (href) => {
                             if (window.__manifestResetLocale) {
@@ -785,16 +734,13 @@ function registerLocaleMagic() {
     }
 }
 
-// Handle initialization
 function setupLocalization() {
 
-    // Try to register magic method immediately
     const registered = registerLocaleMagic();
 
     if (window.Alpine) {
         initializeLocalizationPlugin();
     } else {
-        // Wait for Alpine, then register magic method and initialize
         document.addEventListener('alpine:init', () => {
             const registered = registerLocaleMagic();
             if (registered) {
@@ -806,7 +752,7 @@ function setupLocalization() {
     }
 }
 
-// Track initialization to prevent duplicates
+// Guard against duplicate initialization
 let localizationPluginInitialized = false;
 
 function ensureLocalizationPluginInitialized() {
@@ -818,22 +764,19 @@ function ensureLocalizationPluginInitialized() {
     setupLocalization();
 }
 
-// Expose on window for loader to call if needed
 window.ensureLocalizationPluginInitialized = ensureLocalizationPluginInitialized;
 
-// Register magic method on alpine:init (fires when Alpine initializes)
 document.addEventListener('alpine:init', () => {
     ensureLocalizationPluginInitialized();
 }, { once: true });
 
-// Handle both DOMContentLoaded and immediate execution
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', ensureLocalizationPluginInitialized);
 } else {
     ensureLocalizationPluginInitialized();
 }
 
-// If Alpine is already initialized when this script loads, initialize immediately
+// Alpine already up when this loads — init on next tick / poll
 if (window.Alpine && typeof window.Alpine.magic === 'function') {
     setTimeout(ensureLocalizationPluginInitialized, 0);
 } else {
@@ -845,3 +788,5 @@ if (window.Alpine && typeof window.Alpine.magic === 'function') {
     }, 10);
     setTimeout(() => clearInterval(checkAlpine), 5000);
 }
+
+})();

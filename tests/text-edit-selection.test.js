@@ -124,19 +124,19 @@ describe('x-text-edit selection release', () => {
     })
 })
 
-describe('x-text-edit Cmd+K', () => {
-    const cmdK = (el) => el.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true, cancelable: true }))
-
-    it('removes the link at the caret', () => {
+describe('x-text-edit links', () => {
+    // Cmd/Ctrl+K is deliberately NOT bound: that chord belongs to site search
+    // almost everywhere now. Links go through an `a` control or the unlink command.
+    it('ignores Cmd+K (reserved for site search)', () => {
         const root = mount('<div x-text-edit id="a"><p>see <a href="https://example.com">site</a> now</p></div>')
         const area = root.querySelector('#a')
         focusin(area)
-        const link = area.querySelector('a')
-        select(link.firstChild, 2)                  // caret inside the link
+        select(area.querySelector('a').firstChild, 2)
 
-        cmdK(area)
-        expect(area.querySelector('a')).toBe(null)
-        expect(area.textContent).toBe('see site now')
+        const ev = new window.KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true, cancelable: true })
+        area.dispatchEvent(ev)
+        expect(ev.defaultPrevented).toBe(false)
+        expect(area.querySelector('a')).not.toBe(null)
     })
 
     it('links a selection through the area url control', () => {
@@ -145,9 +145,6 @@ describe('x-text-edit Cmd+K', () => {
         focusin(area)
         select(text(area), 0, 5)
 
-        cmdK(area)
-        expect(document.activeElement).toBe(field)  // the keyboard lands where the toolbar does
-
         field.value = 'https://example.com'
         field.dispatchEvent(new window.Event('change'))
         const link = area.querySelector('a')
@@ -155,31 +152,32 @@ describe('x-text-edit Cmd+K', () => {
         expect(link.textContent).toBe('hello')
     })
 
-    it('falls back to a prompt when the area has no url control', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div>')
-        const area = root.querySelector('#a')
-        const asked = []
-        window.prompt = (message) => { asked.push(message); return 'https://example.com' }
+    it('prefixes https:// on a bare domain and refuses junk', () => {
+        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><input type="url" x-text-edit.a id="u">')
+        const area = root.querySelector('#a'), field = root.querySelector('#u')
         focusin(area)
         select(text(area), 0, 5)
 
-        cmdK(area)
-        expect(asked.length).toBe(1)
-        expect(area.querySelector('a').getAttribute('href')).toBe('https://example.com')
-        delete window.prompt
+        field.value = 'example.com/page'
+        field.dispatchEvent(new window.Event('change'))
+        expect(area.querySelector('a').getAttribute('href')).toBe('https://example.com/page')
+
+        const tail = area.querySelector('p').lastChild      // " world" after the link
+        select(tail, 1, 6)
+        field.value = 'not a url'
+        field.dispatchEvent(new window.Event('change'))
+        expect(area.querySelectorAll('a').length).toBe(1)   // junk did not link
     })
 
-    it('does nothing with a bare caret and no link', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div>')
-        const area = root.querySelector('#a')
-        let asked = 0
-        window.prompt = () => { asked++; return 'https://example.com' }
+    it('unlink removes the link at the caret', () => {
+        const root = mount('<div x-text-edit id="a"><p>see <a href="https://example.com">site</a> now</p></div><button x-text-edit.unlink id="un">Unlink</button>')
+        const area = root.querySelector('#a'), btn = root.querySelector('#un')
         focusin(area)
-        select(text(area), 3)
+        select(area.querySelector('a').firstChild, 2)
 
-        cmdK(area)
-        expect(asked).toBe(0)
+        btn.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, cancelable: true }))
+        btn.click()
         expect(area.querySelector('a')).toBe(null)
-        delete window.prompt
+        expect(area.textContent).toBe('see site now')
     })
 })

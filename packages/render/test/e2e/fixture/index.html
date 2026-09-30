@@ -74,6 +74,14 @@
          strips x-markdown from elements with baked content AND cleans any
          leftover opacity:0 the plugin set during initial render. -->
     <div id="markdown-dynamic" x-data="{ articlePath: 'data/article.md' }" x-markdown="articlePath + ''"></div>
+
+    <!-- Inline REACTIVE x-markdown (value is markdown text, not a file path).
+         The prerender must KEEP this binding: stripping it froze live-updating
+         markdown mirrors (the text-edit docs demo) on prerendered pages. -->
+    <div id="markdown-reactive" x-data="{ note: 'first **note**' }">
+      <button id="markdown-reactive-btn" @click="note = 'second **note**'">Change</button>
+      <div id="markdown-reactive-out" x-markdown="note"></div>
+    </div>
   </section>
 
   <!-- Route: about -->

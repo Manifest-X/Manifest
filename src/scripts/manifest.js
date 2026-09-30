@@ -236,7 +236,6 @@
 		'tabs',
 		'text-edit',
 		'slides',
-		'resize',
 		'colorpicker',
 		'datepicker',
 		'charts',
