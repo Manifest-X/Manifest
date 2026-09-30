@@ -5,6 +5,7 @@
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
     if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
         document.head.appendChild(this.styleElement);
+        if (this.resyncUtilitiesText) this.resyncUtilitiesText();
     }
 };
 

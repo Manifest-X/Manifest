@@ -26,7 +26,11 @@ function scrollable(el) {
     let top = 0
     Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 2000 })
     Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 400 })
-    Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v) => { top = v } })
+    // Chrome: under display:none scrollTop reads 0 and has no client rects, but the offset survives
+    const hidden = () => !!el.closest('[hidden]')
+    Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => hidden() ? 0 : top, set: (v) => { if (!hidden()) top = v } })
+    el.getClientRects = () => hidden() ? [] : [{ width: 1, height: 1 }]
+    el.__offset = () => top
     return el
 }
 function scroll(el, y) {
@@ -89,6 +93,19 @@ describe('scroll reset on route change', () => {
         await wait(80)
         expect(list.scrollTop).toBe(0)
         expect(detail.scrollTop).toBe(0)
+    })
+
+    it('resets a container whose route was hidden when the reset ran, once it shows again', async () => {
+        navigate('/records')
+        await wait(80)
+        const list = document.getElementById('list')
+        scroll(list, 300)
+        navigate('/page-3') // records hidden before the reset runs
+        await wait(80)
+        expect(list.__offset()).toBe(300)
+        navigate('/records')
+        await wait(80)
+        expect(list.__offset()).toBe(0)
     })
 
     it('does not reset for anchor navigation', async () => {

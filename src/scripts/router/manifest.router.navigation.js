@@ -247,8 +247,11 @@ document.addEventListener('scroll', (event) => {
     if (el && el.nodeType === 1) scrolledContainers.add(el);
 }, { capture: true, passive: true });
 
+// True when done with the element: reset, or rendered and nothing to reset.
+// A container under a hidden route reads scrollTop 0 but keeps its offset: stay tracked.
 function resetContainer(element) {
-    if (!element.scrollTop) return;
+    if (!element.getClientRects().length) return false;
+    if (!element.scrollTop) return true;
     const computedStyle = window.getComputedStyle(element);
     const isScrollable = (
         computedStyle.overflowY === 'auto' ||
@@ -257,18 +260,16 @@ function resetContainer(element) {
         computedStyle.overflow === 'scroll'
     ) && element.scrollHeight > element.clientHeight;
     if (isScrollable) element.scrollTop = 0;
+    return true;
 }
 
 function resetScrolledContainers() {
     if (scrollSweepPending) {
         scrollSweepPending = false;
         document.querySelectorAll(SCROLL_CONTAINER_SELECTOR).forEach(resetContainer);
-        scrolledContainers.clear();
-        return;
     }
     for (const element of scrolledContainers) {
-        scrolledContainers.delete(element);
-        if (element.isConnected && element.matches(SCROLL_CONTAINER_SELECTOR)) resetContainer(element);
+        if (!element.isConnected || !element.matches(SCROLL_CONTAINER_SELECTOR) || resetContainer(element)) scrolledContainers.delete(element);
     }
 }
 

@@ -434,7 +434,7 @@ function next() {
         if (!pending.has(rec)) continue;
         if (!rec.el.isConnected) { pending.delete(rec); untrack(rec); continue; }
         const r = rank(rec);
-        // Ties keep registration order (the init walk's document order)
+        // Ties keep registration order: document order for the initial walk, mount order after
         if (!best || r < bestRank || (r === bestRank && rec.priority < best.priority)) {
             best = rec; bestRank = r;
         }
