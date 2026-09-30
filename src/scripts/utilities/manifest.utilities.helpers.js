@@ -381,6 +381,8 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
     // Wait for all fetches to complete
     await Promise.all(fetchPromises);
 
+    // Order-free identity (fetches land in any order) for "theme unchanged" checks
+    this.lastThemeKey = Array.from(themeContents).sort().join('\n');
     return Array.from(themeContents).join('\n');
 };
 

@@ -210,26 +210,7 @@ async function handleRouteChange() {
     if (!window.location.hash) {
         setTimeout(() => {
             window.scrollTo({ top: 0, behavior: 'smooth' });
-
-            // Also reset any scrollable containers.
-            const potentialContainers = document.querySelectorAll('div, main, section, article, aside, nav, header, footer, .prose');
-            potentialContainers.forEach(element => {
-                const computedStyle = window.getComputedStyle(element);
-                const isScrollable = (
-                    computedStyle.overflowY === 'auto' ||
-                    computedStyle.overflowY === 'scroll' ||
-                    computedStyle.overflow === 'auto' ||
-                    computedStyle.overflow === 'scroll'
-                ) && element.scrollHeight > element.clientHeight;
-
-                if (isScrollable) {
-                    element.scrollTop = 0;
-                }
-            });
-        }, 50);
-    } else {
-        setTimeout(() => {
-            // Let the browser scroll to the anchor once content has loaded.
+            resetScrolledContainers();
         }, 50);
     }
 
@@ -254,6 +235,43 @@ async function handleRouteChange() {
     }
 }
 
+// Scroll containers reset on route change. Only elements that fired a scroll
+// event can be off top, so track those instead of sweeping the document.
+const SCROLL_CONTAINER_SELECTOR = 'div, main, section, article, aside, nav, header, footer, .prose';
+const scrolledContainers = new Set();
+// Loaded after parse began → elements may have scrolled unseen; first reset sweeps once
+let scrollSweepPending = document.readyState !== 'loading';
+
+document.addEventListener('scroll', (event) => {
+    const el = event.target;
+    if (el && el.nodeType === 1) scrolledContainers.add(el);
+}, { capture: true, passive: true });
+
+function resetContainer(element) {
+    if (!element.scrollTop) return;
+    const computedStyle = window.getComputedStyle(element);
+    const isScrollable = (
+        computedStyle.overflowY === 'auto' ||
+        computedStyle.overflowY === 'scroll' ||
+        computedStyle.overflow === 'auto' ||
+        computedStyle.overflow === 'scroll'
+    ) && element.scrollHeight > element.clientHeight;
+    if (isScrollable) element.scrollTop = 0;
+}
+
+function resetScrolledContainers() {
+    if (scrollSweepPending) {
+        scrollSweepPending = false;
+        document.querySelectorAll(SCROLL_CONTAINER_SELECTOR).forEach(resetContainer);
+        scrolledContainers.clear();
+        return;
+    }
+    for (const element of scrolledContainers) {
+        scrolledContainers.delete(element);
+        if (element.isConnected && element.matches(SCROLL_CONTAINER_SELECTOR)) resetContainer(element);
+    }
+}
+
 // Whether SPA route changes run inside a View Transition. Priority:
 // data-no-view-transitions → off, data-view-transitions → on, else auto
 // (on under VT_AUTO_THRESHOLD elements). Auto threshold: VT rasterizes the
@@ -270,7 +288,7 @@ function shouldUseViewTransition() {
     if (html.hasAttribute('data-no-view-transitions')) return false;
     if (html.hasAttribute('data-view-transitions')) return true;
     try {
-        return document.querySelectorAll('*').length < VT_AUTO_THRESHOLD;
+        return !document.getElementsByTagName('*')[VT_AUTO_THRESHOLD - 1];
     } catch {
         return false;
     }

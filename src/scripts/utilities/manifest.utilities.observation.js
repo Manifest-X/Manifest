@@ -54,80 +54,29 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
         }
     });
 
-    // Single MutationObserver for all DOM changes
+    // Single MutationObserver for all DOM changes: recompile only when a class not yet seen appears
     const observer = new MutationObserver((mutations) => {
-        let shouldRecompile = false;
+        let fresh = false;
 
         for (const mutation of mutations) {
-            // Skip attribute changes that don't affect utilities
             if (mutation.type === 'attributes') {
-                const attributeName = mutation.attributeName;
-
-                // Skip ignored attributes (like id changes from router)
-                if (this.ignoredAttributes.includes(attributeName)) {
-                    continue;
-                }
-
-                // Only care about class attribute changes
-                if (attributeName !== 'class') {
-                    continue;
-                }
-
-                // If it's a class change, check if we have new classes that need utilities
-                const element = mutation.target;
-                if (element.nodeType === Node.ELEMENT_NODE) {
-                    const currentClasses = Array.from(element.classList || []);
-                    const newClasses = currentClasses.filter(cls => {
-                        // Skip ignored patterns
-                        if (this.ignoredClassPatterns.some(pattern => pattern.test(cls))) {
-                            return false;
-                        }
-
-                        // Check if this class is new (not in our cache)
-                        return !this.staticClassCache.has(cls) && !this.dynamicClassCache.has(cls);
-                    });
-
-                    if (newClasses.length > 0) {
-                        // Add new classes to dynamic cache
-                        newClasses.forEach(cls => this.dynamicClassCache.add(cls));
-                        shouldRecompile = true;
-                        break;
-                    }
-                }
-            }
-            else if (mutation.type === 'childList') {
+                if (this.ignoredAttributes.includes(mutation.attributeName) || mutation.attributeName !== 'class') continue;
+                if (mutation.target.nodeType === Node.ELEMENT_NODE && this.collectNewClasses(mutation.target)) fresh = true;
+            } else if (mutation.type === 'childList') {
                 for (const node of mutation.addedNodes) {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        // Skip ignored elements using configurable selectors
-                        const isIgnoredElement = this.ignoredElementSelectors.some(selector =>
-                            node.tagName?.toLowerCase() === selector.toLowerCase() ||
-                            node.closest(selector)
-                        );
-
-                        if (isIgnoredElement) {
-                            continue;
-                        }
-
-                        // Only recompile for significant changes using configurable selectors
-                        const hasSignificantChange = this.significantChangeSelectors.some(selector => {
-                            try {
-                                return node.matches?.(selector) || node.querySelector?.(selector);
-                            } catch (e) {
-                                return false; // Invalid selector
-                            }
-                        });
-
-                        if (hasSignificantChange) {
-                            shouldRecompile = true;
-                            break;
-                        }
-                    }
+                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                    const isIgnoredElement = this.ignoredElementSelectors.some(selector =>
+                        node.tagName?.toLowerCase() === selector.toLowerCase() ||
+                        node.closest(selector)
+                    );
+                    // Ignored subtrees (code blocks) are collected for the next compile but never trigger one
+                    if (this.collectSubtreeClasses(node, isIgnoredElement)) fresh = true;
+                    else if (!fresh && !isIgnoredElement && !this.hasInitialized && this.isSignificantNode(node)) fresh = true;
                 }
             }
-            if (shouldRecompile) break;
         }
 
-        if (shouldRecompile) {
+        if (fresh) {
             debouncedCompile();
         }
     });
@@ -138,6 +87,43 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
         subtree: true,
         attributes: true,
         attributeFilter: ['class'] // Only observe class changes
+    });
+};
+
+// Record classes not seen before; true when any were new. Quiet = collect without triggering
+TailwindCompiler.prototype.collectNewClasses = function (el, quiet) {
+    const value = el.getAttribute && el.getAttribute('class');
+    if (!value) return false;
+    let fresh = false;
+    for (const cls of value.split(/\s+/)) {
+        if (!cls || this.staticClassCache.has(cls)) continue;
+        if (this.dynamicClassCache.has(cls)) {
+            if (!quiet && this.quietClasses.delete(cls)) fresh = true;
+            continue;
+        }
+        if (this.ignoredClassPatterns.some(pattern => pattern.test(cls))) continue;
+        this.dynamicClassCache.add(cls);
+        if (quiet) this.quietClasses.add(cls); else fresh = true;
+    }
+    return fresh;
+};
+
+TailwindCompiler.prototype.collectSubtreeClasses = function (node, quiet) {
+    let fresh = this.collectNewClasses(node, quiet);
+    const descendants = node.getElementsByTagName ? node.getElementsByTagName('*') : [];
+    for (let i = 0; i < descendants.length; i++) {
+        if (this.collectNewClasses(descendants[i], quiet)) fresh = true;
+    }
+    return fresh;
+};
+
+TailwindCompiler.prototype.isSignificantNode = function (node) {
+    return this.significantChangeSelectors.some(selector => {
+        try {
+            return node.matches?.(selector) || node.querySelector?.(selector);
+        } catch (e) {
+            return false;
+        }
     });
 };
 

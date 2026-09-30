@@ -117,6 +117,9 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
             }
         };
 
+        // Every generated class ends in its variable's suffix: skip variables no used class mentions
+        const usedBases = usedClasses.map(cls => this.parseClassName(cls).baseClass);
+
         // Generate utilities based on variable prefix
         for (const [varName, varValue] of variables.entries()) {
             if (!varName.match(this.regexPatterns.tailwindPrefix)) {
@@ -124,6 +127,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
             }
 
             const suffix = varName.split('-').slice(1).join('-');
+            if (!usedBases.some(base => base.includes(suffix))) continue;
             const value = `var(--${varName})`;
             const prefix = varName.split('-')[0] + '-';
             const generator = this.utilityGenerators[prefix];
@@ -607,47 +611,128 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
     }
 };
 
-// Helper function to sort utilities so base classes come before variants
-TailwindCompiler.prototype.sortUtilities = function(utilitiesText) {
-    if (!utilitiesText) return '';
-    
-    // Split into individual rules (each rule starts with . or @media)
+// Split generated CSS into top-level rules (each starts with . or an at-rule)
+TailwindCompiler.prototype.splitUtilityRules = function (utilitiesText) {
     const rules = [];
     let currentRule = '';
-    const lines = utilitiesText.split('\n');
-    
-    for (const line of lines) {
-        // Check if this line starts a new rule
+    for (const line of utilitiesText.split('\n')) {
         if (line.trim().match(/^(\.|@media|@layer|@supports)/)) {
-            // Save previous rule if exists
-            if (currentRule.trim()) {
-                rules.push(currentRule.trim());
-            }
+            if (currentRule.trim()) rules.push(currentRule.trim());
             currentRule = line;
         } else {
-            // Continue current rule
             currentRule += '\n' + line;
         }
     }
-    // Add last rule
-    if (currentRule.trim()) {
-        rules.push(currentRule.trim());
-    }
-    
-    // Sort: base utilities (no @media) come before variants (with @media)
+    if (currentRule.trim()) rules.push(currentRule.trim());
+    return rules;
+};
+
+// Sort utilities so base classes come before variants (@media)
+TailwindCompiler.prototype.sortUtilities = function (utilitiesText) {
+    if (!utilitiesText) return '';
+    const rules = this.splitUtilityRules(utilitiesText);
     rules.sort((a, b) => {
         const aHasMedia = a.startsWith('@media');
         const bHasMedia = b.startsWith('@media');
-        
-        // Base utilities come before variants
         if (!aHasMedia && bHasMedia) return -1;
         if (aHasMedia && !bHasMedia) return 1;
-        
-        // Same type, maintain order
         return 0;
     });
-    
     return rules.join('\n\n');
+};
+
+// ---- Incremental apply: new rules go in through CSSOM, never a whole-sheet rewrite ----
+
+const utilitiesCssFrom = (applied) => `@layer utilities {\n${applied.base.concat(applied.media).join('\n\n')}\n}`;
+
+// Remember what a full write put in the sheet so later compiles can append to it
+TailwindCompiler.prototype.recordAppliedUtilities = function (sortedUtilities) {
+    const base = [], media = [];
+    for (const rule of this.splitUtilityRules(sortedUtilities)) (rule.startsWith('@media') ? media : base).push(rule);
+    this._applied = {
+        themeKey: this.lastThemeKey,
+        base,
+        media,
+        rules: new Set(base.concat(media)),
+        classes: new Set(this.dynamicClassCache)
+    };
+};
+
+TailwindCompiler.prototype.utilitiesLayerRule = function () {
+    const sheet = this.styleElement && this.styleElement.sheet;
+    if (!sheet || typeof CSSLayerBlockRule === 'undefined') return null;
+    try {
+        for (const rule of sheet.cssRules) {
+            if (rule instanceof CSSLayerBlockRule && rule.name === 'utilities') return rule;
+        }
+    } catch (e) { }
+    return null;
+};
+
+// Prerender snapshots read #manifest-styles text, so render passes always rewrite it
+TailwindCompiler.prototype.canCompileDelta = function () {
+    return !!this._applied && window.__manifestRender !== true && !!this.utilitiesLayerRule();
+};
+
+// Generate only never-compiled classes and insert their rules (base before @media, as sortUtilities orders)
+TailwindCompiler.prototype.compileDelta = function (themeCss) {
+    const applied = this._applied;
+    const candidates = [];
+    for (const cls of this.dynamicClassCache) {
+        if (applied.classes.has(cls)) continue;
+        applied.classes.add(cls);
+        candidates.push(cls);
+    }
+    const classes = this.filterStaticallyCoveredClasses(candidates);
+    if (!classes.length) return;
+
+    const usedData = { classes, variableSuffixes: [] };
+    const generated = [this.generateUtilitiesFromVars(themeCss, usedData), this.generateCustomUtilities(usedData)]
+        .filter(Boolean).join('\n\n');
+    const fresh = generated ? this.splitUtilityRules(generated).filter(rule => !applied.rules.has(rule)) : [];
+    if (!fresh.length) return;
+
+    const layer = this.utilitiesLayerRule();
+    let inserted = !!layer;
+    if (layer) {
+        let firstMedia = layer.cssRules.length;
+        for (let i = 0; i < layer.cssRules.length; i++) {
+            if (layer.cssRules[i] instanceof CSSMediaRule) { firstMedia = i; break; }
+        }
+        try {
+            for (const rule of fresh) {
+                if (rule.startsWith('@media')) layer.insertRule(rule, layer.cssRules.length);
+                else layer.insertRule(rule, firstMedia++);
+            }
+        } catch (e) {
+            inserted = false; // multi-rule chunk or parser-dropped rule: full rewrite below
+        }
+    }
+    for (const rule of fresh) {
+        applied.rules.add(rule);
+        (rule.startsWith('@media') ? applied.media : applied.base).push(rule);
+    }
+    if (!inserted) {
+        this.styleElement.textContent = utilitiesCssFrom(applied);
+        this.ensureUtilityStylesLast();
+    }
+    this.schedulePersistentSave(themeCss);
+};
+
+// Coalesce cache writes: localStorage serialisation is too slow to run per compile
+TailwindCompiler.prototype.schedulePersistentSave = function (themeCss) {
+    clearTimeout(this._persistTimer);
+    this._persistTimer = setTimeout(() => {
+        if (!this._applied) return;
+        const classesHash = Array.from(this.dynamicClassCache).sort().join(',');
+        const themeHash = this.generateThemeHash(themeCss);
+        this.cache.set(`${classesHash}-${themeHash}`, {
+            css: utilitiesCssFrom(this._applied),
+            timestamp: Date.now(),
+            themeHash
+        });
+        this.savePersistentCache();
+    }, 1000);
 };
 
 // Helper function to filter critical utilities that are already in layer utilities
@@ -753,6 +838,7 @@ TailwindCompiler.prototype.compile = async function () {
         }
         this.lastCompileTime = now;
         this.isCompiling = true;
+        this.quietClasses.clear(); // this compile covers them
         window.__manifestUtilitiesPending = (window.__manifestUtilitiesPending || 0) + 1;
         this._compileCounted = true;
 
@@ -843,6 +929,15 @@ TailwindCompiler.prototype.compile = async function () {
             return;
         }
 
+        // Theme unchanged since the last full write: append only the new classes
+        if (this.canCompileDelta()) {
+            const themeCss = await this.fetchThemeContent();
+            if (themeCss && this.lastThemeKey === this._applied.themeKey) {
+                this.compileDelta(themeCss);
+                return;
+            }
+        }
+
         // For subsequent compilations, check for new dynamic classes
         const usedData = this.getUsedClasses();
         const dynamicClasses = Array.from(this.dynamicClassCache);
@@ -907,6 +1002,7 @@ TailwindCompiler.prototype.compile = async function () {
                         });
                     });
                     this.lastClassesHash = dynamicClassesHash;
+                    this.recordAppliedUtilities(allUtilities);
 
                     // Save to cache for next page load
                     const themeHash = this.generateThemeHash(themeCss);
@@ -918,6 +1014,8 @@ TailwindCompiler.prototype.compile = async function () {
                     });
                     this.savePersistentCache();
                 }
+            } else if (this._applied) {
+                this._applied.themeKey = this.lastThemeKey; // same variables, same sheet: later compiles can append again
             }
         }
 
