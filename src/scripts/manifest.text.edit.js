@@ -1338,7 +1338,13 @@
     // Returns the element now holding the line's content — an <li> for a list, so the
     // caller knows to continue the list rather than start a paragraph.
     function convertLine(b) {
-        if (!b || b.closest('pre')) return b;
+        if (!b) return b;
+        // Bounded like every other ancestor lookup: only a <pre> INSIDE the
+        // editor means "we're in a code block". An editor hosted within someone
+        // else's <pre> (a docs code-group wrapper) still converts markdown.
+        const area = b.closest('[data-text-edit]');
+        const pre = b.closest('pre');
+        if (pre && (!area || area.contains(pre))) return b;
         const text = b.textContent;
         for (const rule of LINE_RULES) {
             const m = text.match(rule.re); if (!m) continue;
