@@ -13,7 +13,7 @@
        at DOMContentLoaded, racing against async plugin loads — by the time
        Alpine starts walking the DOM, plugin directives may not yet be
        registered and `$colors`/`$locale` magics will be undefined. -->
-  <script src="/scripts/manifest.js" data-plugins="components,router,data,icons,localization,color,markdown,dropdowns" data-plugin-base="/scripts"></script>
+  <script src="/scripts/manifest.js" data-plugins="components,router,data,icons,localization,color,markdown,dropdowns,code" data-plugin-base="/scripts"></script>
 
   <style>
     body {
@@ -121,6 +121,15 @@
     <span id="xshow-hidden" x-show="false">Hidden</span>
     <button id="xshow-toggle" @click="visible = !visible">Toggle</button>
     <span id="xshow-togglable" x-show="visible">Togglable</span>
+  </div>
+
+  <!-- Code group: the prerender bakes groups already BUILT (data-group-processed,
+       header/tabs/copy in the DOM), which the runtime pipeline rightly skips —
+       but listeners don't survive serialization, so the runtime must re-bind
+       tab switching and copy on the adopted markup. -->
+  <div id="code-group-test" x-code-group copy>
+    <pre x-code="js" name="One">const one = 1;</pre>
+    <pre x-code="js" name="Two">const two = 2;</pre>
   </div>
 
   <!-- x-for over $x data: template must survive prerender so Alpine can re-render

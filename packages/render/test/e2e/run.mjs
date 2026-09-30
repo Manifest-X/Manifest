@@ -501,6 +501,39 @@ async function runAssertions() {
       'no icon elements contain multiple SVGs (no visual duplication)',
       `found ${iconDuplicates} icons with multiple SVGs`);
 
+    // ------- Test: adopted code group re-binds tabs + copy -------------------
+    // The prerender bakes groups already built (data-group-processed); the
+    // runtime must re-attach listeners to that adopted markup, or tabs and
+    // copy buttons ship dead (the manifestx.dev docs regression).
+    const codeGroupState = await page.evaluate(() => {
+      const group = document.querySelector('#code-group-test, pre[x-code-group][data-group-processed]');
+      if (!group) return { error: 'group missing' };
+      const tabs = Array.from(group.querySelectorAll(':scope > header [role="tab"]'));
+      const panels = Array.from(group.children).filter(c => c.hasAttribute('name'));
+      const visible = () => panels.map(p => p.style.display !== 'none');
+      const before = visible();
+      if (tabs[1]) tabs[1].click();
+      const after = visible();
+      return {
+        baked: group.dataset.groupProcessed === 'yes',
+        tabCount: tabs.length,
+        copyBtn: !!group.querySelector(':scope > button.copy'),
+        before, after,
+        secondSelected: tabs[1] ? tabs[1].getAttribute('aria-selected') === 'true' : false,
+      };
+    });
+    assert(!codeGroupState.error && codeGroupState.baked,
+      'code group ships prerendered (data-group-processed baked)',
+      JSON.stringify(codeGroupState));
+    assert(codeGroupState.tabCount === 2 && codeGroupState.copyBtn,
+      'baked code group keeps its tabs and copy button',
+      JSON.stringify(codeGroupState));
+    assert(JSON.stringify(codeGroupState.before) === '[true,false]'
+      && JSON.stringify(codeGroupState.after) === '[false,true]'
+      && codeGroupState.secondSelected,
+      'clicking the second tab of an ADOPTED code group switches panels (listeners re-bound)',
+      `before ${JSON.stringify(codeGroupState.before)} after ${JSON.stringify(codeGroupState.after)}`);
+
     // ------- Test: hydrate marker cleanup -----------------------------------
     const leftoverIds = await page.$$eval('[data-hydrate-id]', (els) => els.length);
     assert(leftoverIds === 0, 'no data-hydrate-id attributes remain after hydration',

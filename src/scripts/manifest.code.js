@@ -265,6 +265,8 @@ async function setupInline(el, hljs) {
 }
 
 function setupInlineCopy(el) {
+    if (el._copyBound) return;   // idempotent: fresh setup and the prerender re-bind share it
+    el._copyBound = true;
     if (!el.hasAttribute('role')) el.setAttribute('role', 'button');
     if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
     if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', 'Click to copy');
@@ -350,10 +352,35 @@ async function setupBlock(pre, hljs) {
         const lang = actualLang || resolveLanguage(hljs, requested);
         setupEditor(pre, code, lang, hljs);
     }
+
+    pre._blockBound = true;   // built this session — the prerender re-bind skips it
 }
 
-function setupBlockCopy(pre, code) {
-    const btn = document.createElement('button');
+// Re-attach behavior to a block adopted from prerendered output: its copy,
+// expand and editor markup is baked, but listeners cannot survive
+// serialization. Idempotent via _blockBound (set by a fresh setupBlock too).
+function rebindBlock(pre) {
+    if (pre._blockBound) return;
+    pre._blockBound = true;
+    const code = pre.querySelector(':scope > code');
+    if (!code) return;
+    const copyBtn = pre.querySelector(':scope > button.copy');
+    if (copyBtn) setupBlockCopy(pre, code, copyBtn);
+    const expandBtn = pre.querySelector(':scope > button.expand');
+    if (expandBtn) {
+        const collapseAt = parseInt(pre.style.getPropertyValue('--collapse-lines'), 10) || 20;
+        const hiddenCount = Math.max(1, code.textContent.split('\n').length - collapseAt);
+        wireExpandButton(pre, expandBtn, hiddenCount);
+    }
+    if (pre.hasAttribute('edit')) {
+        const m = (code.className || '').match(/language-([\w-]+)/);
+        const lang = (m && m[1]) || pre.getAttribute('x-code') || pre.getAttribute('language') || '';
+        loadHighlightJS(lang).then(hljs => setupEditor(pre, code, lang, hljs)).catch(() => { });
+    }
+}
+
+function setupBlockCopy(pre, code, existingBtn) {
+    const btn = existingBtn || document.createElement('button');
     btn.className = 'copy';
     btn.type = 'button';
     btn.setAttribute('aria-label', 'Copy code to clipboard');
@@ -364,7 +391,7 @@ function setupBlockCopy(pre, code) {
             setTimeout(() => btn.classList.remove('copied'), 1500);
         } catch { /* clipboard rejected (browser permissions) — fail silently */ }
     });
-    pre.appendChild(btn);
+    if (!existingBtn) pre.appendChild(btn);
 }
 
 function setupCollapse(pre, code) {
@@ -382,9 +409,13 @@ function setupCollapse(pre, code) {
     btn.className = 'expand';
     btn.type = 'button';
     btn.setAttribute('aria-expanded', 'false');
-    const hiddenCount = lineCount - collapseAt;
-    // Visual label is locale-safe ("+N" / "−"); screen readers get an explicit
-    // English aria-label.
+    wireExpandButton(pre, btn, lineCount - collapseAt);
+    pre.appendChild(btn);
+}
+
+// Visual label is locale-safe ("+N" / "−"); screen readers get an explicit
+// English aria-label. Shared by the build path and the prerender re-bind.
+function wireExpandButton(pre, btn, hiddenCount) {
     const updateLabel = () => {
         const collapsed = pre.hasAttribute('data-collapsed');
         btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
@@ -399,7 +430,6 @@ function setupCollapse(pre, code) {
         updateLabel();
     });
     updateLabel();
-    pre.appendChild(btn);
 }
 
 async function setupEditor(pre, code, lang, hljs) {
@@ -572,25 +602,8 @@ async function setupCodeGroup(group) {
             btn.textContent = name;
             btn.setAttribute('aria-selected', name === active ? 'true' : 'false');
             btn.tabIndex = name === active ? 0 : -1;
-            btn.addEventListener('click', () => activate(name));
             tablist.appendChild(btn);
             return btn;
-        });
-        tabButtons.forEach((btn, idx) => {
-            btn.addEventListener('keydown', (ev) => {
-                if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
-                    ev.preventDefault();
-                    const next = ev.key === 'ArrowRight'
-                        ? (idx + 1) % tabButtons.length
-                        : (idx - 1 + tabButtons.length) % tabButtons.length;
-                    tabButtons[next].focus();
-                    tabButtons[next].click();
-                } else if (ev.key === 'Home') {
-                    ev.preventDefault(); tabButtons[0].focus(); tabButtons[0].click();
-                } else if (ev.key === 'End') {
-                    ev.preventDefault(); tabButtons[tabButtons.length - 1].focus(); tabButtons[tabButtons.length - 1].click();
-                }
-            });
         });
     }
     if (header) pre.insertBefore(header, pre.firstChild);
@@ -614,37 +627,41 @@ async function setupCodeGroup(group) {
     // top-end without competing with the header's scroll region.
     const wrapperHasCopy = pre.hasAttribute('copy');
     const anyPanelCopy = [...sourcePanels, ...ambientChildren].some(p => p.hasAttribute('copy'));
-    let copyBtn = null;
     if (wrapperHasCopy || anyPanelCopy) {
-        copyBtn = document.createElement('button');
+        const copyBtn = document.createElement('button');
         copyBtn.className = 'copy';
         copyBtn.type = 'button';
         copyBtn.setAttribute('aria-label', 'Copy code to clipboard');
-        copyBtn.addEventListener('click', async () => {
-            // Prefer the <pre x-code> panel for copy (its source, not a frame's
-            // rendered text). Headerless groups pick the first ambient <pre x-code>.
-            let activePanel;
-            if (isHeaderless) {
-                activePanel = ambientChildren.find(p => p.tagName === 'PRE' && p.hasAttribute('x-code'));
-            } else {
-                const sameName = sourcePanels.filter(p => p.getAttribute('name') === activeName);
-                activePanel = sameName.find(p => p.tagName === 'PRE' && p.hasAttribute('x-code')) || sameName[0];
-            }
-            if (!activePanel) return;
-            const code = activePanel.querySelector(':scope > code') || activePanel;
-            try {
-                await navigator.clipboard.writeText(code.textContent);
-                copyBtn.classList.add('copied');
-                setTimeout(() => copyBtn.classList.remove('copied'), 1500);
-            } catch { /* clipboard rejected (browser permissions) — fail silently */ }
-        });
         pre.appendChild(copyBtn);
     }
+
+    wireGroup(pre);
+}
+
+// Attach behavior to a built group: tab activation, keyboard nav, wrapper copy.
+// Everything is derived from the built DOM, so this wires a group built this
+// session AND one adopted from prerendered output (whose listeners cannot
+// survive serialization). Idempotent via _groupBound.
+function wireGroup(pre) {
+    if (pre._groupBound) return;
+    pre._groupBound = true;
+
+    const sourcePanels = Array.from(pre.children).filter(c => c.hasAttribute('name'));
+    const ambientCode = Array.from(pre.children).filter(c =>
+        !c.hasAttribute('name') && c.tagName === 'PRE' && c.hasAttribute('x-code'));
+    const tabButtons = Array.from(pre.querySelectorAll(':scope > header [role="tab"]'));
+    const copyBtn = pre.querySelector(':scope > button.copy');
+    const wrapperHasCopy = pre.hasAttribute('copy');
+    const isHeaderless = !pre.querySelector(':scope > header');
+
+    let activeName = (tabButtons.find(b => b.getAttribute('aria-selected') === 'true')
+        || tabButtons[0] || {}).textContent
+        || (sourcePanels[0] && sourcePanels[0].getAttribute('name'))
+        || null;
 
     // Visibility toggle via style.display (pre's display:flex outweighs the UA
     // [hidden] rule). Also flips per-tab copy-button visibility when [copy] is
     // per-panel rather than on the wrapper.
-    let activeName = active;
     function activate(name) {
         activeName = name;
         tabButtons.forEach(btn => {
@@ -662,7 +679,47 @@ async function setupCodeGroup(group) {
             copyBtn.style.display = activeCanCopy ? '' : 'none';
         }
     }
-    if (!isHeaderless) activate(active);
+
+    tabButtons.forEach(btn => btn.addEventListener('click', () => activate(btn.textContent)));
+    tabButtons.forEach((btn, idx) => {
+        btn.addEventListener('keydown', (ev) => {
+            if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+                ev.preventDefault();
+                const next = ev.key === 'ArrowRight'
+                    ? (idx + 1) % tabButtons.length
+                    : (idx - 1 + tabButtons.length) % tabButtons.length;
+                tabButtons[next].focus();
+                tabButtons[next].click();
+            } else if (ev.key === 'Home') {
+                ev.preventDefault(); tabButtons[0].focus(); tabButtons[0].click();
+            } else if (ev.key === 'End') {
+                ev.preventDefault(); tabButtons[tabButtons.length - 1].focus(); tabButtons[tabButtons.length - 1].click();
+            }
+        });
+    });
+
+    if (copyBtn) {
+        copyBtn.addEventListener('click', async () => {
+            // Prefer the <pre x-code> panel for copy (its source, not a frame's
+            // rendered text). Headerless groups pick the first ambient <pre x-code>.
+            let activePanel;
+            if (isHeaderless) {
+                activePanel = ambientCode[0];
+            } else {
+                const sameName = sourcePanels.filter(p => p.getAttribute('name') === activeName);
+                activePanel = sameName.find(p => p.tagName === 'PRE' && p.hasAttribute('x-code')) || sameName[0];
+            }
+            if (!activePanel) return;
+            const code = activePanel.querySelector(':scope > code') || activePanel;
+            try {
+                await navigator.clipboard.writeText(code.textContent);
+                copyBtn.classList.add('copied');
+                setTimeout(() => copyBtn.classList.remove('copied'), 1500);
+            } catch { /* clipboard rejected (browser permissions) — fail silently */ }
+        });
+    }
+
+    if (!isHeaderless && activeName != null) activate(activeName);
 }
 
 // ─── Page scan + observation ─────────────────────────────────────────────────
@@ -754,10 +811,27 @@ function processOne(el) {
     }
 }
 
+// Prerendered pages ship groups/blocks already BUILT (data-group-processed /
+// data-code-block-built baked in), which the processing pipeline rightly skips —
+// but their listeners cannot survive serialization, so tabs, copy, expand and
+// editors arrive dead. Re-attach behavior to that adopted markup. Cheap (no
+// highlighting), so it runs eagerly rather than through the IntersectionObserver.
+function rebindAdopted(root = document) {
+    root.querySelectorAll('[x-code-group][data-group-processed="yes"]').forEach(g => {
+        wireGroup(g);
+        Array.from(g.children).forEach(c => { if (c.dataset && c.dataset.codeBlockBuilt === 'yes') rebindBlock(c); });
+    });
+    root.querySelectorAll('pre[data-code-block-built="yes"]').forEach(rebindBlock);
+    root.querySelectorAll('code[copy][data-code-processed="yes"]').forEach(el => {
+        if (!(el.parentElement && el.parentElement.tagName === 'PRE')) setupInlineCopy(el);
+    });
+}
+
 // Observe every unprocessed candidate in `root` (idempotent). Already-visible
 // elements process immediately so markdown-injected blocks render synchronously
 // instead of waiting for the next IO callback.
 function observeAll(root = document) {
+    rebindAdopted(root);
     const io = ensureObserver();
     const candidates = [
         ...root.querySelectorAll('[x-code]:not([data-code-processed])'),
