@@ -557,6 +557,49 @@ async function runAssertions() {
     assert(leftoverIds === 0, 'no data-hydrate-id attributes remain after hydration',
       `found ${leftoverIds} leftover`);
 
+    // ------- Test: static MPA skip (route visibility + head) ---------------
+    // Baked output holds only this route's sections and head content; the router must leave both alone
+    const routeMutLog = () => {
+      window.__routeMuts = [];
+      new MutationObserver((list) => {
+        for (const r of list) {
+          const t = r.target;
+          if (t.nodeType === 1 && t.hasAttribute('x-route') && ['x-cloak', 'hidden', 'style'].includes(r.attributeName)) {
+            window.__routeMuts.push(`${t.getAttribute('x-route')} ${r.attributeName}`);
+          }
+        }
+      }).observe(document, { attributes: true, subtree: true });
+    };
+    await page.evaluateOnNewDocument(routeMutLog);
+    const mpaState = async () => page.evaluate(() => {
+      const vis = window.ManifestRoutingVisibility;
+      const probe = document.createElement('div');
+      probe.setAttribute('x-route', 'no-such-route');
+      const shown = (id) => { const el = document.getElementById(id); return el ? getComputedStyle(el.closest('[x-route]')).display !== 'none' : null; };
+      return {
+        isMPA: vis ? vis.isPrerenderedStaticMPA() : null,
+        unmatchedActive: vis ? vis.isRouteActive(probe) : null,
+        home: shown('home-heading'),
+        about: shown('about-heading'),
+        heads: Array.from(document.head.querySelectorAll('meta[name="fixture-route-head"]')).map((m) => m.content),
+        muts: window.__routeMuts || [],
+      };
+    });
+    for (const [path, route] of [['/', 'home'], ['/about/', 'about']]) {
+      await page.goto(`http://localhost:${STATIC_PORT}${path}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await new Promise((r) => setTimeout(r, 2000));
+      // Late route-change must not re-run visibility or head injection either
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('manifest:route-change', { detail: { from: location.pathname, to: '/no-such-route', normalizedPath: 'no-such-route' } })));
+      await new Promise((r) => setTimeout(r, 400));
+      const s = await mpaState();
+      const other = route === 'home' ? 'about' : 'home';
+      assert(s.isMPA === true, `${path}: ManifestRoutingVisibility.isPrerenderedStaticMPA() is true`, JSON.stringify(s));
+      assert(s.unmatchedActive === true, `${path}: isRouteActive short-circuits true on static MPA`, JSON.stringify(s));
+      assert(s[route] === true && s[other] === null, `${path}: only the ${route} section is baked and visible`, JSON.stringify(s));
+      assert(s.muts.length === 0, `${path}: router does not toggle x-cloak/hidden/style on baked routes`, JSON.stringify(s.muts));
+      assert(JSON.stringify(s.heads) === JSON.stringify([route]), `${path}: route head content baked once, not re-injected or removed`, JSON.stringify(s.heads));
+    }
+
     // ------- Test: no console errors during all of the above ----------------
     if (consoleErrors.length > 0) {
       log.fail(`console errors during test run: ${consoleErrors.length}`);
