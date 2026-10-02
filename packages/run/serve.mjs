@@ -731,7 +731,7 @@ function serverStaticKey(html, child) {   // mirror the client's staticKey (tag 
   const text = html.slice(child.innerStart, child.innerEnd).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
   return child.tag.toUpperCase() + ':' + text;
 }
-function writeStaticOps(file, key, edits, order) {
+function writeStaticOps(file, key, edits, order, aliases) {
   // Order FIRST: keys match on authored content (edits haven't rewritten it yet) and
   // edit paths are current DOM positions, valid only once the file order matches.
   let reordered = false;
@@ -741,7 +741,26 @@ function writeStaticOps(file, key, edits, order) {
       const kids = []; let n = 0, c;
       while ((c = childAt(html, loc.innerStart, loc.innerEnd, n++))) kids.push(c);
       const keys = dedupedKeys(html, kids);               // ordinal-deduped, mirroring the client
-      const byKey = {}; kids.forEach((k, i) => { byKey[keys[i]] = k; });
+      // A block edited BEFORE its move carries a live key derived from the EDITED text;
+      // the file holds the authored text, so file keys can't resolve it and the whole
+      // order would be skipped. writeStaticMove recorded (live toKey → inserted slice):
+      // bind those entries to their exact inserted child, then key the remaining kids
+      // counting the live base the client's rekey counted (twins keep their ordinals).
+      const bound = new Map();
+      for (const a of (aliases || [])) {
+        if (!order.includes(a.key) || keys.includes(a.key)) continue;   // unedited arrival: file keys already match
+        const kid = kids.find(k => !bound.has(k) && html.slice(k.tagStart, k.closeEnd) === a.slice);
+        if (kid) bound.set(kid, a.key);
+      }
+      const byKey = {};
+      if (bound.size) {
+        const seen = Object.create(null);
+        kids.forEach(k => {
+          const live = bound.get(k), base = live ? live.split('#')[0] : serverStaticKey(html, k);
+          const d = seen[base] = (seen[base] || 0) + 1;
+          byKey[live || (d > 1 ? base + '#' + d : base)] = k;
+        });
+      } else kids.forEach((k, i) => { byKey[keys[i]] = k; });
       const seq = order.map(k => byKey[k]).filter(Boolean);
       if (seq.length === kids.length && seq.length && seq.some((k, i) => k !== kids[i])) {   // skip when already in order
         const reassembled = seq.map(k => html.slice(k.tagStart, k.closeEnd)).join('\n          ');
@@ -774,7 +793,7 @@ function dedupedKeys(html, kids) {
   const seen = Object.create(null);
   return kids.map(k => { const base = serverStaticKey(html, k); const n = seen[base] = (seen[base] || 0) + 1; return n > 1 ? base + '#' + n : base; });
 }
-function writeStaticMove(file, p) {
+function writeStaticMove(file, p, aliases) {
   let html = readFileSync(file, 'utf8');
   const fromLoc = locateEditEl(html, p.from);
   if (!fromLoc) return { region: p.from, status: 'error', reason: `x-edit="${p.from}" not found in ${basename(file)}` };
@@ -800,6 +819,7 @@ function writeStaticMove(file, p) {
   const head = html.slice(0, insertAt), hnl = head.lastIndexOf('\n');
   const indent = hnl >= 0 && /^[ \t]*$/.test(head.slice(hnl + 1)) ? head.slice(hnl + 1) : '';
   writeFileSync(file, head + slice + '\n' + indent + html.slice(insertAt));
+  if (aliases) (aliases[p.to] = aliases[p.to] || []).push({ key: p.toKey, slice });   // the region's order patch may address this child by its LIVE key
   return { region: `${p.from} → ${p.to}`, status: 'written', file: basename(file), key: p.key };
 }
 function writeStaticRegion(file, key, innerHTML, style) {
@@ -1227,6 +1247,7 @@ const server = createServer((req, res) => {
       if (!Array.isArray(patches)) patches = [patches];
       let manifest = {}; try { manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')); } catch {}
       const indexFile = join(root, 'index.html');
+      const moveAliases = {};   // region → [{key: live toKey, slice}] from this batch's moves
       const results = patches.map(p => {
         try {
           if (p.kind === 'data') {
@@ -1238,8 +1259,8 @@ const server = createServer((req, res) => {
             return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
           }
           if (p.kind === 'data-val') return writeDataValue(p, manifest);
-          if (p.kind === 'static') return writeStaticOps(indexFile, p.region, p.edits, p.order);
-          if (p.kind === 'static-move') return writeStaticMove(indexFile, p);
+          if (p.kind === 'static') return writeStaticOps(indexFile, p.region, p.edits, p.order, moveAliases[p.region]);
+          if (p.kind === 'static-move') return writeStaticMove(indexFile, p, moveAliases);
           if (p.kind === 'component') return writeComponentEdits(p, manifest);
           if (p.kind === 'theme') return writeThemeVar(p);
           return { region: p.region, status: 'skipped', reason: `unknown kind ${p.kind}` };

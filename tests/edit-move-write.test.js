@@ -165,6 +165,81 @@ describe('/__edit/save static-move', () => {
         expect(html).toContain('<span data-edit-ghost=""></span>')     // the stray ghost is untouched
     })
 
+    it('a PRE-move text edit does not poison the destination order patch (repro A)', async () => {
+        // Client: edit Alpha → move Alpha to footer → reorder footer (Delta above
+        // Gamma). The arrival's live key re-derived from EDITED text (P:EditedAlpha)
+        // while the file holds the authored text — the order patch must still apply.
+        const idx = INDEX.replace('<p>Intro copy</p>', '<p>Alpha</p>')
+            .replace('<p>Fine print</p>', '<p>Gamma</p>\n        <p>Delta</p>')
+        writeFileSync(path.join(dir, 'index.html'), idx)
+        const { results } = await save([
+            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Alpha', toKey: 'P:EditedAlpha', toOrder: ['P:Gamma', 'P:Delta', 'P:EditedAlpha'] },
+            { kind: 'static', region: 'footer', order: ['P:Delta', 'P:Gamma', 'P:EditedAlpha'], edits: [{ path: '2', key: 'P:EditedAlpha', prop: 'text', value: 'EditedAlpha' }] }
+        ])
+        expect(results.map(r => r.status)).toEqual(['written', 'written'])
+        expect(results[1].reordered).toBe(true)           // the destination order patch APPLIED
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const footer = html.slice(html.indexOf('"footer"'))
+        expect(footer).toContain('<p>EditedAlpha</p>')
+        expect(footer.indexOf('<p>Delta</p>')).toBeLessThan(footer.indexOf('<p>Gamma</p>'))
+        expect(footer.indexOf('<p>Gamma</p>')).toBeLessThan(footer.indexOf('<p>EditedAlpha</p>'))
+    })
+
+    it('a PRE-move edit plus a POST-reorder edit both land on the right elements (repro B)', async () => {
+        // Same as repro A plus an edit of Gamma AFTER the reorder: its path (1) is a
+        // final position — if the order patch is skipped, path 1 is Delta and the
+        // edit destroys Delta's content.
+        const idx = INDEX.replace('<p>Intro copy</p>', '<p>Alpha</p>')
+            .replace('<p>Fine print</p>', '<p>Gamma</p>\n        <p>Delta</p>')
+        writeFileSync(path.join(dir, 'index.html'), idx)
+        const { results } = await save([
+            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Alpha', toKey: 'P:EditedAlpha', toOrder: ['P:Gamma', 'P:Delta', 'P:EditedAlpha'] },
+            { kind: 'static', region: 'footer', order: ['P:Delta', 'P:Gamma', 'P:EditedAlpha'], edits: [
+                { path: '2', key: 'P:EditedAlpha', prop: 'text', value: 'EditedAlpha' },
+                { path: '1', key: 'P:Gamma', prop: 'text', value: 'EditedGamma' }
+            ] }
+        ])
+        expect(results.map(r => r.status)).toEqual(['written', 'written'])
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const footer = html.slice(html.indexOf('"footer"'))
+        expect(footer).toContain('<p>Delta</p>')          // Delta's content survived
+        expect(footer).toContain('<p>EditedGamma</p>')
+        expect(footer).toContain('<p>EditedAlpha</p>')
+        expect(footer).not.toContain('<p>Gamma</p>')
+        expect(footer.indexOf('<p>Delta</p>')).toBeLessThan(footer.indexOf('<p>EditedGamma</p>'))
+        expect(footer.indexOf('<p>EditedGamma</p>')).toBeLessThan(footer.indexOf('<p>EditedAlpha</p>'))
+    })
+
+    it('a PRE-move-edited arrival still resolves next to an authored twin (ordinal dedup)', async () => {
+        // Destination holds an authored twin of the arrival's AUTHORED text. The twin
+        // keeps its live key P:Same; the edited arrival must bind to the inserted
+        // child, not steal the twin's key.
+        const idx = `<!doctype html>
+<html>
+<body>
+    <section x-edit.authoring="hero">
+        <p data-m="arr">Same</p>
+    </section>
+    <section x-edit.authoring="footer">
+        <p data-m="nat">Same</p>
+    </section>
+</body>
+</html>
+`
+        writeFileSync(path.join(dir, 'index.html'), idx)
+        const { results } = await save([
+            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Same', toKey: 'P:Edited', toOrder: ['P:Same', 'P:Edited'] },
+            { kind: 'static', region: 'footer', order: ['P:Edited', 'P:Same'], edits: [{ path: '0', key: 'P:Edited', prop: 'text', value: 'Edited' }] }
+        ])
+        expect(results.map(r => r.status)).toEqual(['written', 'written'])
+        expect(results[1].reordered).toBe(true)
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const footer = html.slice(html.indexOf('"footer"'))
+        expect(footer).toContain('<p data-m="arr">Edited</p>')
+        expect(footer).toContain('<p data-m="nat">Same</p>')
+        expect(footer.indexOf('data-m="arr"')).toBeLessThan(footer.indexOf('data-m="nat"'))
+    })
+
     it('moves the authored markup between regions, placed by toOrder', async () => {
         writeFileSync(path.join(dir, 'index.html'), INDEX)
         const { results } = await save([{
