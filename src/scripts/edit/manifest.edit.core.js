@@ -98,6 +98,9 @@
     }
     const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
+    // The top-level region an element belongs to NOW — resolved at commit time, not
+    // arm time, so a block moved to another region commits against its new home.
+    const regionOf = (el) => areas().find(a => a === el || a.contains(el));
     const key = (area) => area._edit.key;
     function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
     const capOf = (node, cap) => { const i = editInfo(node); return !!i && !i.lock && i.caps.has(cap); };

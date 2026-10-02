@@ -18,8 +18,9 @@
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
             el.addEventListener('blur', () => {
-                const commit = classify(area) === 'component' ? commitComponentNode : commitStaticNode;
-                commit(area, el, 'text', el.innerHTML.trim());
+                const a = regionOf(el) || area;   // the region the element sits in NOW, not where it was armed
+                const commit = classify(a) === 'component' ? commitComponentNode : commitStaticNode;
+                commit(a, el, 'text', el.innerHTML.trim());
             }, true);
         });
     }
@@ -34,7 +35,7 @@
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
             el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
-            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(area, el, 'text', el.innerHTML.trim()); });
+            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()); });   // live region: the element may have moved since arming
         });
     }
 

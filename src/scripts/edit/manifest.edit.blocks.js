@@ -27,7 +27,12 @@
         return el && el.parentElement === area ? el : null;
     }
 
-    const blockArea = (el) => el && el.closest('[data-edit-area]');
+    // The region a block BELONGS TO — from the parent, so a block that is itself an
+    // x-edit region resolves to its outer region, never to itself.
+    const blockArea = (el) => el && el.parentElement && el.parentElement.closest('[data-edit-area]');
+    // A block that is itself an x-edit region owns its own delta addressing; moving
+    // it across regions is refused (reordering it within its parent still works).
+    const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
 
     // Markup without the plugin's own affordances, so a duplicate re-arms cleanly
     // rather than inheriting half-initialised state from its original.
@@ -71,6 +76,7 @@
         const block = el || target;
         if (op === 'paste') return !!clipboard && !!(block ? blockArea(block) : areas().find(isActive));
         if (!block || locked(block)) return false;
+        if (op === 'move' && isRegionBlock(block)) return false;
         const area = blockArea(block);
         if (!area || !isActive(area)) return false;
         if (classify(area) === 'component') return false;          // instances are overridden, not restructured
@@ -128,7 +134,7 @@
     // Programmatic cross-region move (what a pointer drag commits): insert the block
     // into `dest` (area element or x-edit key) before `ref`, or at the end.
     function moveBlock(el, dest, ref) {
-        const block = el ? blockOf(el) || el : target; if (!block || locked(block)) return false;
+        const block = el ? blockOf(el) || el : target; if (!block || locked(block) || isRegionBlock(block)) return false;
         const from = blockArea(block);
         const to = typeof dest === 'string' ? areaByKey(dest) : dest;
         if (!from || !to || to === from || !to._edit) return false;

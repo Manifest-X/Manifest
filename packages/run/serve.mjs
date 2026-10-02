@@ -732,6 +732,24 @@ function serverStaticKey(html, child) {   // mirror the client's staticKey (tag 
   return child.tag.toUpperCase() + ':' + text;
 }
 function writeStaticOps(file, key, edits, order) {
+  // Order FIRST: keys match on authored content (edits haven't rewritten it yet) and
+  // edit paths are current DOM positions, valid only once the file order matches.
+  let reordered = false;
+  if (order && order.length) {
+    let html = readFileSync(file, 'utf8'); const loc = locateEditEl(html, key);
+    if (loc) {
+      const kids = []; let n = 0, c;
+      while ((c = childAt(html, loc.innerStart, loc.innerEnd, n++))) kids.push(c);
+      const keys = dedupedKeys(html, kids);               // ordinal-deduped, mirroring the client
+      const byKey = {}; kids.forEach((k, i) => { byKey[keys[i]] = k; });
+      const seq = order.map(k => byKey[k]).filter(Boolean);
+      if (seq.length === kids.length && seq.length && seq.some((k, i) => k !== kids[i])) {   // skip when already in order
+        const reassembled = seq.map(k => html.slice(k.tagStart, k.closeEnd)).join('\n          ');
+        html = html.slice(0, kids[0].tagStart) + reassembled + html.slice(kids[kids.length - 1].closeEnd);
+        writeFileSync(file, html); reordered = true;
+      }
+    }
+  }
   for (const ed of (edits || [])) {                      // re-read+re-locate each (offsets shift after writes)
     let html = readFileSync(file, 'utf8');
     const loc = locateEditEl(html, key); if (!loc) return { region: key, status: 'error', reason: `x-edit="${key}" not found in ${basename(file)}` };
@@ -742,21 +760,6 @@ function writeStaticOps(file, key, edits, order) {
     else if (ed.prop === 'class') html = html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value) + html.slice(node.openEnd + 1);
     else if (ed.prop === 'style') html = html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value) + html.slice(node.openEnd + 1);
     writeFileSync(file, html);
-  }
-  let reordered = false;
-  if (order && order.length) {
-    let html = readFileSync(file, 'utf8'); const loc = locateEditEl(html, key);
-    if (loc) {
-      const kids = []; let n = 0, c;
-      while ((c = childAt(html, loc.innerStart, loc.innerEnd, n++))) kids.push(c);
-      const byKey = {}; kids.forEach(k => { byKey[serverStaticKey(html, k)] = k; });
-      const seq = order.map(k => byKey[k]).filter(Boolean);
-      if (seq.length === kids.length && seq.length) {
-        const reassembled = seq.map(k => html.slice(k.tagStart, k.closeEnd)).join('\n          ');
-        html = html.slice(0, kids[0].tagStart) + reassembled + html.slice(kids[kids.length - 1].closeEnd);
-        writeFileSync(file, html); reordered = true;
-      }
-    }
   }
   return { region: key, status: 'written', file: basename(file), edits: (edits || []).length, reordered };
 }
@@ -786,10 +789,14 @@ function writeStaticMove(file, p) {
   html = html.slice(0, remStart) + html.slice(child.closeEnd);
   const toLoc = locateEditEl(html, p.to);                             // re-locate: offsets shifted
   if (!toLoc) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found after removal` };
-  const toKids = regionChildren(html, toLoc), toKeys = dedupedKeys(html, toKids);
+  const toKids = regionChildren(html, toLoc);
+  // Positional placement: toOrder minus the arrival is the destination's children, so
+  // the arrival's index in toOrder is where it goes — robust against ordinal re-keys
+  // (a collision renames the twin, so key matching would miss). Any residual order
+  // drift is settled by the region's own order patch, which follows the move.
   const at = (p.toOrder || []).indexOf(p.toKey);
   let insertAt = toLoc.innerEnd;                                      // default: end of region
-  if (at >= 0) for (const k of p.toOrder.slice(at + 1)) { const j = toKeys.indexOf(k); if (j >= 0) { insertAt = toKids[j].tagStart; break; } }
+  if (at >= 0 && at < toKids.length) insertAt = toKids[at].tagStart;
   const head = html.slice(0, insertAt), hnl = head.lastIndexOf('\n');
   const indent = hnl >= 0 && /^[ \t]*$/.test(head.slice(hnl + 1)) ? head.slice(hnl + 1) : '';
   writeFileSync(file, head + slice + '\n' + indent + html.slice(insertAt));

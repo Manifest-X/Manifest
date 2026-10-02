@@ -149,12 +149,190 @@ describe('x-edit cross-region move', () => {
         expect(texts(fresh.b)).toEqual(['Gamma', 'Alpha'])
     })
 
-    it('projects a static-move source patch, without a duplicate order patch', async () => {
+    it('projects a static-move source patch plus both regions\' folded orders', async () => {
         const { a, b } = await regions('p1')
         store().move(a.querySelector('p'), b)
         const patches = store().patches()
         const mv = patches.find(p => p.kind === 'static-move')
         expect(mv).toMatchObject({ from: 'from-p1', to: 'to-p1', key: 'P:Alpha', toKey: 'P:Alpha', toOrder: ['P:Gamma', 'P:Alpha'] })
-        expect(patches.filter(p => p.kind === 'static' && (p.region === 'from-p1' || p.region === 'to-p1'))).toEqual([])
+        // Orders always travel (pre-move reorders are not in the move splice); the
+        // server skips a reorder that is already true of the file.
+        expect(patches.find(p => p.kind === 'static' && p.region === 'from-p1')).toMatchObject({ edits: [], order: ['P:Beta'] })
+        expect(patches.find(p => p.kind === 'static' && p.region === 'to-p1')).toMatchObject({ edits: [], order: ['P:Gamma', 'P:Alpha'] })
+    })
+})
+
+// Regions with text caps, for edit-vs-move interplay.
+async function textRegions(suffix) {
+    const root = mount(`
+        <section x-edit.authoring.sort.text="from-${suffix}"><p>Alpha</p><p>Beta</p></section>
+        <section x-edit.authoring.sort.text="to-${suffix}"><p>Gamma</p></section>`)
+    await flush(); await flush()
+    const [a, b] = root.querySelectorAll('section')
+    return { root, a, b }
+}
+
+const editText = (el, value) => {
+    el.dispatchEvent(new Event('focus'))
+    el.innerHTML = value
+    el.dispatchEvent(new Event('blur'))
+}
+
+describe('x-edit move + text edits (stale-region regressions)', () => {
+    it('a text edit AFTER a move commits against the destination region', async () => {
+        const { a, b } = await textRegions('d1')
+        const alpha = a.querySelector('p')
+        store().move(alpha, b)
+        editText(alpha, 'Edited')
+        const { log, cursor } = store().export()
+        const d = log[cursor - 1]
+        expect(d).toMatchObject({ kind: 'st-node', region: 'to-d1', path: 'P:Alpha', prop: 'text', value: 'Edited' })
+        const st = store().patches().find(p => p.kind === 'static' && p.region === 'to-d1')
+        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Alpha', prop: 'text', value: 'Edited' }))
+        await store().undo()                              // the edit alone
+        expect(alpha.innerHTML).toBe('Alpha')
+        expect(alpha.parentElement).toBe(b)
+    })
+
+    it('a text edit BEFORE a move travels with the block to the destination patch', async () => {
+        const { a, b } = await textRegions('d3')
+        const alpha = a.querySelector('p')
+        editText(alpha, 'Edited')
+        store().move(alpha, b)
+        const { log, cursor } = store().export()
+        const mv = log[cursor - 1]
+        expect(mv.key).toBe('P:Alpha')
+        expect(mv.toKey).toBe('P:Edited')                 // re-derived from current content: what a fresh session sees
+        expect(mv.remap).toContainEqual(['from-d3', 'P:Alpha', 'to-d3', 'P:Edited'])
+        const patches = store().patches()
+        const st = patches.find(p => p.kind === 'static' && p.region === 'to-d3')
+        expect(st).toBeTruthy()
+        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Edited', prop: 'text', value: 'Edited', path: '1' }))
+        await store().undo()                              // the move
+        expect(texts(a)).toEqual(['Edited', 'Beta'])
+        await store().undo()                              // the edit
+        expect(texts(a)).toEqual(['Alpha', 'Beta'])
+    })
+
+    it('a REAL pre-move reorder still publishes as an order patch (no suppression)', async () => {
+        const root = mount(`
+            <section x-edit.authoring.sort="from-o1"><p>Card</p><p>Second</p><p>Third</p></section>
+            <section x-edit.authoring.sort="to-o1"><p>Dest</p></section>`)
+        await flush(); await flush()
+        const [a, b] = root.querySelectorAll('section')
+        const third = a.children[2]
+        const key = (k) => new KeyboardEvent('keydown', { key: k, bubbles: true })
+        third.dispatchEvent(key(' '))                     // grab
+        third.dispatchEvent(key('ArrowUp'))
+        third.dispatchEvent(key('ArrowUp'))
+        third.dispatchEvent(key('Enter'))                 // drop → st-order [Third, Card, Second]
+        expect(texts(a)).toEqual(['Third', 'Card', 'Second'])
+        store().move(a.children[1], b)                    // Card leaves; folded order === fromOrder
+        const st = store().patches().find(p => p.kind === 'static' && p.region === 'from-o1')
+        expect(st).toBeTruthy()
+        expect(st.order).toEqual(['P:Third', 'P:Second'])
+    })
+})
+
+describe('x-edit move key-collision mirroring', () => {
+    const twinRegions = async (suffix, toHtml) => {
+        const root = mount(`
+            <section x-edit.authoring.sort="from-${suffix}"><p data-m="arr">Same</p><p>Beta</p></section>
+            <section x-edit.authoring.sort="to-${suffix}">${toHtml || '<p data-m="nat">Same</p>'}</section>`)
+        await flush(); await flush()
+        const [a, b] = root.querySelectorAll('section')
+        return { root, a, b }
+    }
+
+    it('re-keys POSITIONALLY on arrival: a twin dropped first takes the base key', async () => {
+        const { a, b } = await twinRegions('t1')
+        const arr = a.querySelector('[data-m="arr"]'), nat = b.querySelector('[data-m="nat"]')
+        store().move(arr, b, nat)                         // arrival lands BEFORE its same-key twin
+        expect(arr.getAttribute('data-edit-key')).toBe('P:Same')
+        expect(nat.getAttribute('data-edit-key')).toBe('P:Same#2')
+        const d = store().export().log.at(store().export().cursor - 1)
+        expect(d.toKey).toBe('P:Same')
+        expect(d.toOrder).toEqual(['P:Same', 'P:Same#2'])
+        expect(d.remap).toContainEqual(['to-t1', 'P:Same', 'to-t1', 'P:Same#2'])   // the shifted twin travels on the delta
+    })
+
+    it('replays a collision move with element identity preserved (unsaved source)', async () => {
+        const first = await twinRegions('t2')
+        store().move(first.a.querySelector('[data-m="arr"]'), first.b, first.b.querySelector('[data-m="nat"]'))
+
+        document.body.innerHTML = ''
+        new Function(SRC)()
+        await flush()
+        const fresh = await twinRegions('t2')
+        await new Promise(r => setTimeout(r, 500))
+        const kids = [...fresh.b.children]
+        expect(kids.map(c => c.getAttribute('data-m'))).toEqual(['arr', 'nat'])
+        expect(kids.map(c => c.getAttribute('data-edit-key'))).toEqual(['P:Same', 'P:Same#2'])
+    })
+
+    it('replays idempotently against the WRITTEN source (post-save reload)', async () => {
+        const first = await twinRegions('t3')
+        store().move(first.a.querySelector('[data-m="arr"]'), first.b, first.b.querySelector('[data-m="nat"]'))
+
+        document.body.innerHTML = ''
+        new Function(SRC)()
+        await flush()
+        // What the source writer produced: arrival already spliced before the twin.
+        const root = mount(`
+            <section x-edit.authoring.sort="from-t3"><p>Beta</p></section>
+            <section x-edit.authoring.sort="to-t3"><p data-m="arr">Same</p><p data-m="nat">Same</p></section>`)
+        await flush(); await flush()
+        await new Promise(r => setTimeout(r, 500))
+        const [, b] = root.querySelectorAll('section')
+        const kids = [...b.children]
+        expect(kids.map(c => c.getAttribute('data-m'))).toEqual(['arr', 'nat'])   // no twin swap
+        expect(kids.map(c => c.getAttribute('data-edit-key'))).toEqual(['P:Same', 'P:Same#2'])
+    })
+})
+
+describe('x-edit move of a region-block (refused)', () => {
+    it('refuses $edit.move and can() for a block that is itself an x-edit region', async () => {
+        const root = mount(`
+            <section x-edit.authoring.sort="outer-n1"><div x-edit.sort="inner-n1"><p>One</p></div><p>Two</p></section>
+            <section x-edit.authoring.sort="dest-n1"><p>Three</p></section>`)
+        await flush(); await flush()
+        const [outer, dest] = root.querySelectorAll('section')
+        const inner = outer.firstElementChild
+        const before = store().export().log.length
+        expect(store().can('move', inner)).toBe(false)
+        expect(store().move(inner, dest)).toBe(false)
+        expect(inner.parentElement).toBe(outer)
+        expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
+    })
+
+    it('pointer-dragging a region-block never commits a cross-region move', async () => {
+        const root = mount(`
+            <section x-edit.authoring.sort="outer-n2"><div x-edit.sort="inner-n2"><p>One</p></div><p>Two</p></section>
+            <section x-edit.authoring.sort="dest-n2"><p>Three</p></section>`)
+        await flush(); await flush()
+        const [outer, dest] = root.querySelectorAll('section')
+        const inner = outer.firstElementChild
+        const before = store().export().log.length
+        document.elementFromPoint = () => dest.querySelector('p')
+        inner.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 40, clientY: 40 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 41, clientY: 41 }))
+        document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        expect(inner.parentElement).toBe(outer)
+        expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
+    })
+
+    it('cancels a drop into a region locked mid-drag', async () => {
+        const { a, b } = await regions('lk')
+        const alpha = a.querySelector('p')
+        const before = store().export().log.length
+        document.elementFromPoint = () => b.querySelector('p')
+        alpha.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 40, clientY: 40 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 41, clientY: 41 }))
+        store().lock(b)
+        document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        expect(alpha.parentElement).toBe(a)
+        expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
     })
 })

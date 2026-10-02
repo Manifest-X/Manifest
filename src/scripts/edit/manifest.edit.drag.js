@@ -27,11 +27,11 @@
         }
     }
     function onPointerDown(e) {
-        const item = this, area = item.closest('[data-edit-area]');
+        const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
         const container = item.parentElement;
-        const crossOK = classify(area) === 'static';   // cross-region: static → static only
+        const crossOK = classify(area) === 'static' && !isRegionBlock(item);   // cross-region: static → static only; a region-block only reorders in place
         let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
@@ -105,7 +105,12 @@
             ghost = null; dragged = null;
             if (cancelled) { announce('Cancelled'); return; }
             const dest = item.parentElement;
-            if (crossOK && dest !== container && dest._edit) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+            if (crossOK && dest !== container && dest._edit) {
+                // Re-validate at drop: a region locked or deactivated mid-drag
+                // (reached through the ghost fallback) must not take the block.
+                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort')) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+                else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
+            }
             else finishReorder(area);
         };
         const onUp = () => settle(false);

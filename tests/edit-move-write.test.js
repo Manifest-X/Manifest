@@ -62,7 +62,83 @@ describe('/__edit/save static-move', () => {
         expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(INDEX)
     })
 
+    it('applies the region ORDER before edits, so edit paths are final positions', async () => {
+        // Pre-move text edit travels as a destination edit; its path assumes the
+        // region's final order, so the server must reorder first.
+        writeFileSync(path.join(dir, 'index.html'), INDEX)
+        const { results } = await save([
+            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Intro copy', toKey: 'P:Intro copy', toOrder: ['P:Intro copy', 'P:Fine print'] },
+            { kind: 'static', region: 'footer', order: ['P:Fine print', 'P:Intro copy'], edits: [{ path: '1', key: 'P:Intro copy', prop: 'text', value: 'Edited copy' }] }
+        ])
+        expect(results.map(r => r.status)).toEqual(['written', 'written'])
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const footer = html.slice(html.indexOf('"footer"'))
+        expect(footer).toContain('<p>Edited copy</p>')
+        expect(footer).toContain('<p>Fine print</p>')
+        expect(footer).not.toContain('Intro copy')
+        expect(footer.indexOf('Fine print')).toBeLessThan(footer.indexOf('Edited copy'))
+    })
+
+    it('a pre-move reorder of the source region lands via its order patch', async () => {
+        const idx = INDEX.replace('<h1>Welcome</h1>\n        <p>Intro copy</p>',
+            '<p>Card</p>\n        <p>Second</p>\n        <p>Third</p>')
+        writeFileSync(path.join(dir, 'index.html'), idx)
+        const { results } = await save([
+            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Card', toKey: 'P:Card', toOrder: ['P:Card', 'P:Fine print'] },
+            { kind: 'static', region: 'hero', order: ['P:Third', 'P:Second'], edits: [] }
+        ])
+        expect(results.map(r => r.status)).toEqual(['written', 'written'])
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const hero = html.slice(html.indexOf('"hero"'), html.indexOf('"footer"'))
+        expect(hero.indexOf('Third')).toBeGreaterThan(0)
+        expect(hero.indexOf('Third')).toBeLessThan(hero.indexOf('Second'))
+        expect(hero).not.toContain('Card')
+    })
+
+    it('skips an order that is already true of the file (byte-stable)', async () => {
+        writeFileSync(path.join(dir, 'index.html'), INDEX)
+        const { results } = await save([
+            { kind: 'static', region: 'hero', order: ['P:Welcome... wait', 'nope'], edits: [] }
+        ])
+        expect(results[0].status).toBe('written')         // unknown keys: reorder skipped, file untouched
+        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(INDEX)
+        const { results: r2 } = await save([
+            { kind: 'static', region: 'hero', order: ['H1:Welcome', 'P:Intro copy'], edits: [] }
+        ])
+        expect(r2[0].reordered).toBe(false)
+        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(INDEX)
+    })
+
+    it('places a colliding arrival POSITIONALLY, mirroring fresh-session keys', async () => {
+        const idx = `<!doctype html>
+<html>
+<body>
+    <section x-edit.authoring="hero">
+        <p data-m="arr">Same</p>
+    </section>
+    <section x-edit.authoring="footer">
+        <p data-m="nat">Same</p>
+    </section>
+</body>
+</html>
+`
+        writeFileSync(path.join(dir, 'index.html'), idx)
+        // The arrival landed BEFORE its twin: positionally it takes the base key and
+        // the native twin becomes #2 — the file order must put arr first so a fresh
+        // session derives the same keys the client recorded.
+        const { results } = await save([{
+            kind: 'static-move', from: 'hero', to: 'footer',
+            key: 'P:Same', toKey: 'P:Same', toOrder: ['P:Same', 'P:Same#2']
+        }])
+        expect(results[0].status).toBe('written')
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const footer = html.slice(html.indexOf('"footer"'))
+        expect(footer.indexOf('data-m="arr"')).toBeGreaterThan(0)
+        expect(footer.indexOf('data-m="arr"')).toBeLessThan(footer.indexOf('data-m="nat"'))
+    })
+
     it('moves the authored markup between regions, placed by toOrder', async () => {
+        writeFileSync(path.join(dir, 'index.html'), INDEX)
         const { results } = await save([{
             kind: 'static-move', from: 'hero', to: 'footer',
             key: 'P:Intro copy', toKey: 'P:Intro copy',
