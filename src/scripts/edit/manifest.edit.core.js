@@ -98,6 +98,7 @@
     }
     const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
+    const topArea = (a) => !!a && areas().includes(a);   // only top-level regions can be move endpoints (nested ones can't persist)
     // The top-level region an element belongs to NOW — resolved at commit time, not
     // arm time, so a block moved to another region commits against its new home.
     const regionOf = (el) => areas().find(a => a === el || a.contains(el));
@@ -115,7 +116,11 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.hasAttribute('data-edit-handle'));
+    // Plugin-injected nodes (size handles, drag ghosts) are not authored children —
+    // keys and paths skip them on client AND server (serve.mjs childAt mirrors this).
+    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
+    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
+    const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
     // Identity of a row in a data area. `data-key` is the explicit form; without it,
     // fall back to the x-for's own :key so a plain list needs no extra attribute.
     let _keyWarned = false;

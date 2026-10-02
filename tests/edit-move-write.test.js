@@ -137,6 +137,34 @@ describe('/__edit/save static-move', () => {
         expect(footer.indexOf('data-m="arr"')).toBeLessThan(footer.indexOf('data-m="nat"'))
     })
 
+    it('delete-then-edit: a baseline-order path hits the right element while the short order is skipped', async () => {
+        // The client deleted <h1> (st-children) — the server can't apply the short
+        // order, so the edit's path addresses the UNMODIFIED file: Intro copy is 1.
+        writeFileSync(path.join(dir, 'index.html'), INDEX)
+        const { results } = await save([
+            { kind: 'static', region: 'hero', order: ['P:Intro copy'], edits: [{ path: '1', key: 'P:Intro copy', prop: 'text', value: 'Edited copy' }] }
+        ])
+        expect(results[0].status).toBe('written')
+        expect(results[0].reordered).toBe(false)
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        const hero = html.slice(html.indexOf('"hero"'), html.indexOf('"footer"'))
+        expect(hero).toContain('<h1>Welcome</h1>')
+        expect(hero).toContain('<p>Edited copy</p>')
+        expect(hero).not.toContain('Intro copy')
+    })
+
+    it('path navigation skips plugin-injected nodes, mirroring the client', async () => {
+        const idx = INDEX.replace('<h1>Welcome</h1>', '<span data-edit-ghost=""></span>\n        <h1>Welcome</h1>')
+        writeFileSync(path.join(dir, 'index.html'), idx)
+        const { results } = await save([
+            { kind: 'static', region: 'hero', edits: [{ path: '0', key: 'H1:Welcome', prop: 'text', value: 'Hello' }] }
+        ])
+        expect(results[0].status).toBe('written')
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
+        expect(html).toContain('<h1>Hello</h1>')                       // path 0 = first AUTHORED child
+        expect(html).toContain('<span data-edit-ghost=""></span>')     // the stray ghost is untouched
+    })
+
     it('moves the authored markup between regions, placed by toOrder', async () => {
         writeFileSync(path.join(dir, 'index.html'), INDEX)
         const { results } = await save([{

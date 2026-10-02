@@ -102,6 +102,7 @@
     }
     const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
+    const topArea = (a) => !!a && areas().includes(a);   // only top-level regions can be move endpoints (nested ones can't persist)
     // The top-level region an element belongs to NOW — resolved at commit time, not
     // arm time, so a block moved to another region commits against its new home.
     const regionOf = (el) => areas().find(a => a === el || a.contains(el));
@@ -119,7 +120,11 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.hasAttribute('data-edit-handle'));
+    // Plugin-injected nodes (size handles, drag ghosts) are not authored children —
+    // keys and paths skip them on client AND server (serve.mjs childAt mirrors this).
+    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
+    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
+    const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
     // Identity of a row in a data area. `data-key` is the explicit form; without it,
     // fall back to the x-for's own :key so a plain list needs no extra attribute.
     let _keyWarned = false;
@@ -351,8 +356,10 @@
                 kids.forEach((el, i) => { by[keys[i]] = el; });
                 const markup = html[region] || {};
                 const next = want.map(kk => by[kk] || materialize(markup[kk], kk)).filter(Boolean);
+                // Reinsert at the managed range — never scramble real children past plugin handles.
+                const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(area.children).find(pluginNode) || null;
                 kids.forEach(el => { if (!next.includes(el)) el.remove(); });
-                next.forEach(el => area.appendChild(el));
+                next.forEach(el => area.insertBefore(el, anchor));
             }
         });
     }
@@ -582,7 +589,9 @@
 
     function copyBlock(el) {
         const block = el || target; if (!block) return false;
-        clipboard = { html: blockHTML(block), source: key(blockArea(block)) };
+        const area = blockArea(block);
+        if (!area) return false;                    // a whole region is a container, not a copyable block
+        clipboard = { html: blockHTML(block), source: key(area) };
         bump();
         return true;
     }
@@ -635,6 +644,7 @@
         const from = blockArea(block);
         const to = typeof dest === 'string' ? areaByKey(dest) : dest;
         if (!from || !to || to === from || !to._edit) return false;
+        if (!topArea(from) || !topArea(to)) return false;   // a nested region can't persist a move — refuse, never drop it silently
         if (!isActive(from) || !isActive(to) || locked(to)) return false;
         if (classify(from) !== 'static' || classify(to) !== 'static' || !capOf(to, 'sort')) return false;
         if (block === to || block.contains(to)) return false;
@@ -750,8 +760,9 @@
         const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
+        if (e._editDrag) return; e._editDrag = true;   // one drag per gesture — the innermost sortable item claims it
         const container = item.parentElement;
-        const crossOK = classify(area) === 'static' && !isRegionBlock(item);   // cross-region: static → static only; a region-block only reorders in place
+        const crossOK = classify(area) === 'static' && !isRegionBlock(item) && topArea(area);   // cross-region: top-level static → static only; a region-block only reorders in place
         let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
@@ -828,7 +839,7 @@
             if (crossOK && dest !== container && dest._edit) {
                 // Re-validate at drop: a region locked or deactivated mid-drag
                 // (reached through the ghost fallback) must not take the block.
-                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort')) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort') && topArea(dest)) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
                 else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
             }
             else finishReorder(area);
@@ -850,7 +861,7 @@
     function dropArea(x, y) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
         for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
-            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static') return a;
+            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) return a;
         }
         return null;
     }
@@ -1104,8 +1115,9 @@
     /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
        instance for the scope (this instance vs all) + per-element classes + revert. ---- */
     const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
-    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(Array.from(n.parentElement.children).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
-    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = el.children[i]; if (!el) return null; } return el; }
+    // Paths index authored children only (realChildren): plugin-injected nodes never count.
+    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
+    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
     // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
     // skip the source element (don't fight the caret) and skip any instance that has its
     // OWN committed override for this node/prop (instance overrides always win).
@@ -1405,7 +1417,7 @@
     // already auto-persists to localStorage on commit).
     function buildPatches() {
         const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
-        const toEdits = (paths, area) => {
+        const toEdits = (paths, area, fileOrder) => {
             const e = [];
             Object.entries(paths).forEach(([k, props]) => {
                 // Keys address across a session; the source writer navigates by
@@ -1413,8 +1425,17 @@
                 // server applies order before edits, so current position is the
                 // right one). A deleted element has nothing to write.
                 const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
-                const path = el ? pathOf(el, area) : k;
+                let path = el ? pathOf(el, area) : k;
                 if (area && !el) return;
+                // RULE: paths must be valid against the file state the server will reach —
+                // a pending st-children change can't be applied there (a short order is
+                // skipped), so address by the block's position in the UNMODIFIED file.
+                if (el && el !== area && fileOrder) {
+                    let block = el; while (block.parentElement && block.parentElement !== area) block = block.parentElement;
+                    const fi = fileOrder.indexOf(block.getAttribute('data-edit-key'));
+                    if (fi < 0) return;                          // block not in the file (added this session) — nothing to address
+                    const segs = path.split('.'); segs[0] = String(fi); path = segs.join('.');
+                }
                 Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
             });
             return e;
@@ -1427,7 +1448,9 @@
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
             if (!authoringRegion(region)) return;
-            const edits = toEdits(ss.node[region] || {}, areaByKey(region));
+            const area = areaByKey(region);
+            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region);
+            const edits = toEdits(ss.node[region] || {}, area, structural ? (area && area._baseOrder) || [] : null);
             // A moved region always gets its folded order (pre-move reorders are NOT
             // in the move splice); the server skips a reorder that is already true.
             const order = ss.order[region] || null;

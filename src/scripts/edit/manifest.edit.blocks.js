@@ -85,7 +85,9 @@
 
     function copyBlock(el) {
         const block = el || target; if (!block) return false;
-        clipboard = { html: blockHTML(block), source: key(blockArea(block)) };
+        const area = blockArea(block);
+        if (!area) return false;                    // a whole region is a container, not a copyable block
+        clipboard = { html: blockHTML(block), source: key(area) };
         bump();
         return true;
     }
@@ -138,6 +140,7 @@
         const from = blockArea(block);
         const to = typeof dest === 'string' ? areaByKey(dest) : dest;
         if (!from || !to || to === from || !to._edit) return false;
+        if (!topArea(from) || !topArea(to)) return false;   // a nested region can't persist a move — refuse, never drop it silently
         if (!isActive(from) || !isActive(to) || locked(to)) return false;
         if (classify(from) !== 'static' || classify(to) !== 'static' || !capOf(to, 'sort')) return false;
         if (block === to || block.contains(to)) return false;

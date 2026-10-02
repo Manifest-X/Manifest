@@ -77,8 +77,9 @@
     /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
        instance for the scope (this instance vs all) + per-element classes + revert. ---- */
     const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
-    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(Array.from(n.parentElement.children).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
-    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = el.children[i]; if (!el) return null; } return el; }
+    // Paths index authored children only (realChildren): plugin-injected nodes never count.
+    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
+    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
     // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
     // skip the source element (don't fight the caret) and skip any instance that has its
     // OWN committed override for this node/prop (instance overrides always win).

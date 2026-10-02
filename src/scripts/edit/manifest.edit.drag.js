@@ -30,8 +30,9 @@
         const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
+        if (e._editDrag) return; e._editDrag = true;   // one drag per gesture — the innermost sortable item claims it
         const container = item.parentElement;
-        const crossOK = classify(area) === 'static' && !isRegionBlock(item);   // cross-region: static → static only; a region-block only reorders in place
+        const crossOK = classify(area) === 'static' && !isRegionBlock(item) && topArea(area);   // cross-region: top-level static → static only; a region-block only reorders in place
         let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
@@ -108,7 +109,7 @@
             if (crossOK && dest !== container && dest._edit) {
                 // Re-validate at drop: a region locked or deactivated mid-drag
                 // (reached through the ghost fallback) must not take the block.
-                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort')) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort') && topArea(dest)) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
                 else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
             }
             else finishReorder(area);
@@ -130,7 +131,7 @@
     function dropArea(x, y) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
         for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
-            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static') return a;
+            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) return a;
         }
         return null;
     }

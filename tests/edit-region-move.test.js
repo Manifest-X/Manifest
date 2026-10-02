@@ -322,6 +322,45 @@ describe('x-edit move of a region-block (refused)', () => {
         expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
     })
 
+    it('a drag INSIDE a nested region never disturbs the region-block (one drag per gesture)', async () => {
+        const root = mount(`
+            <section x-edit.authoring.sort="outer-n3"><div x-edit.sort="inner-n3"><p>Inner</p></div><p>Top</p></section>
+            <section x-edit.authoring.sort="dest-n3"><p>Dest</p></section>`)
+        await flush(); await flush()
+        const [outer, dest] = root.querySelectorAll('section')
+        const innerDiv = outer.firstElementChild
+        const innerP = innerDiv.querySelector('p')
+        const before = store().export().log.length
+        document.elementFromPoint = () => dest.querySelector('p')
+        innerP.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 40, clientY: 40 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 41, clientY: 41 }))
+        document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        expect(innerDiv.parentElement).toBe(outer)        // the region-block never leaves
+        expect(innerP.parentElement).toBe(innerDiv)       // the inner item never crosses out
+        expect(store().export().log.length).toBe(before)  // no st-move, no bogus st-order
+        expect(document.querySelector('[data-edit-ghost]')).toBeNull()
+        await store().undo(); await store().undo()        // must not delete the region-block
+        expect(outer.contains(innerDiv)).toBe(true)
+    })
+
+    it('refuses $edit.move when either endpoint region is nested (not top-level)', async () => {
+        const root = mount(`
+            <section x-edit.authoring.sort="outer-m4"><div x-edit.sort="inner-m4"><p>One</p></div><p>Top</p></section>
+            <section x-edit.authoring.sort="dest-m4"><p>Three</p></section>`)
+        await flush(); await flush()
+        const [outer, dest] = root.querySelectorAll('section')
+        const inner = outer.firstElementChild
+        const innerP = inner.querySelector('p')
+        const top = outer.children[1]
+        const before = store().export().log.length
+        expect(store().move(top, inner)).toBe(false)      // destination nested
+        expect(top.parentElement).toBe(outer)
+        expect(store().move(innerP, dest)).toBe(false)    // origin nested
+        expect(innerP.parentElement).toBe(inner)
+        expect(store().export().log.length).toBe(before)  // nothing logged either way
+    })
+
     it('cancels a drop into a region locked mid-drag', async () => {
         const { a, b } = await regions('lk')
         const alpha = a.querySelector('p')
@@ -334,5 +373,80 @@ describe('x-edit move of a region-block (refused)', () => {
         document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
         expect(alpha.parentElement).toBe(a)
         expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
+    })
+})
+
+describe('x-edit publish paths vs the file the server will reach', () => {
+    it('an edit after a sibling DELETE addresses the unmodified file order', async () => {
+        const root = mount(`<section x-edit.authoring.sort.text="del-e1"><p>Alpha</p><p>Beta</p></section>`)
+        await flush(); await flush()
+        const area = root.querySelector('section')
+        const [alpha, beta] = area.querySelectorAll('p')
+        expect(store().remove(alpha)).toBe(true)
+        editText(beta, 'Edited')
+        const st = store().patches().find(p => p.kind === 'static' && p.region === 'del-e1')
+        expect(st).toBeTruthy()
+        // The server skips the short order, so the file keeps Alpha at 0 — Beta is 1.
+        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Beta', prop: 'text', value: 'Edited', path: '1' }))
+    })
+
+    it('cut-then-edit addresses the unmodified file order too', async () => {
+        const root = mount(`<section x-edit.authoring.sort.text="cut-e1"><p>Alpha</p><p>Beta</p></section>`)
+        await flush(); await flush()
+        const area = root.querySelector('section')
+        const [alpha, beta] = area.querySelectorAll('p')
+        expect(store().cut(alpha)).toBe(true)
+        editText(beta, 'Edited')
+        const st = store().patches().find(p => p.kind === 'static' && p.region === 'cut-e1')
+        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Beta', prop: 'text', value: 'Edited', path: '1' }))
+    })
+
+    it('edit-then-reorder still publishes at the post-order position (order applies)', async () => {
+        const root = mount(`<section x-edit.authoring.sort.text="ord-e1"><p>Alpha</p><p>Beta</p></section>`)
+        await flush(); await flush()
+        const area = root.querySelector('section')
+        const alpha = area.querySelector('p')
+        editText(alpha, 'Edited')
+        const key = (k) => new KeyboardEvent('keydown', { key: k, bubbles: true })
+        alpha.dispatchEvent(key(' '))                     // grab
+        alpha.dispatchEvent(key('ArrowDown'))
+        alpha.dispatchEvent(key('Enter'))                 // drop → st-order [Beta, Alpha]
+        const st = store().patches().find(p => p.kind === 'static' && p.region === 'ord-e1')
+        expect(st.order).toEqual(['P:Beta', 'P:Alpha'])
+        // Same-length order IS applied by the server, so the current position is right.
+        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Alpha', prop: 'text', value: 'Edited', path: '1' }))
+    })
+})
+
+describe('x-edit plugin-node indexing (handles/ghosts never count)', () => {
+    it('undo of a reorder keeps real children ahead of injected size handles, and paths skip them', async () => {
+        const root = mount(`<section x-edit.authoring.sort.text.size="sz1"><p>One</p><p>Two</p></section>`)
+        await flush(); await flush()
+        const area = root.querySelector('section')
+        expect([...area.children].filter(c => c.hasAttribute('data-edit-handle')).length).toBeGreaterThan(0)
+        const two = [...area.querySelectorAll('p')].find(p => p.textContent === 'Two')
+        const key = (k) => new KeyboardEvent('keydown', { key: k, bubbles: true })
+        two.dispatchEvent(key(' '))
+        two.dispatchEvent(key('ArrowUp'))
+        two.dispatchEvent(key('Enter'))                   // st-order [Two, One]
+        await store().undo()                              // applyStaticState reorder branch
+        expect(area.firstElementChild.tagName).toBe('P')  // not a handle span
+        expect([...area.children].filter(c => c.tagName === 'P').map(c => c.textContent)).toEqual(['One', 'Two'])
+        const one = area.querySelector('p')
+        editText(one, 'Edited')
+        const st = store().patches().find(p => p.kind === 'static' && p.region === 'sz1')
+        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:One', prop: 'text', value: 'Edited', path: '0' }))
+    })
+})
+
+describe('x-edit copy/cut of a region element', () => {
+    it('returns false instead of throwing (a region is a container, not a block)', async () => {
+        const root = mount(`<section x-edit.authoring.sort="solo-c1"><p>Only</p></section>`)
+        await flush(); await flush()
+        const area = root.querySelector('section')
+        expect(store().copy(area)).toBe(false)
+        expect(store().cut(area)).toBe(false)
+        expect(area.querySelector('p')).toBeTruthy()      // cut must not have removed anything
+        expect(store().copy(area.querySelector('p'))).toBe(true)   // a real block still copies
     })
 })

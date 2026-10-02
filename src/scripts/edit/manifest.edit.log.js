@@ -197,8 +197,10 @@
                 kids.forEach((el, i) => { by[keys[i]] = el; });
                 const markup = html[region] || {};
                 const next = want.map(kk => by[kk] || materialize(markup[kk], kk)).filter(Boolean);
+                // Reinsert at the managed range — never scramble real children past plugin handles.
+                const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(area.children).find(pluginNode) || null;
                 kids.forEach(el => { if (!next.includes(el)) el.remove(); });
-                next.forEach(el => area.appendChild(el));
+                next.forEach(el => area.insertBefore(el, anchor));
             }
         });
     }

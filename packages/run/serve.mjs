@@ -826,6 +826,7 @@ function childAt(html, from, to, idx) {           // nth element child within [f
     const selfClose = html[openEnd - 1] === '/' || VOID_TAGS.has(tag.toLowerCase());
     let innerStart = openEnd + 1, innerEnd = innerStart, closeEnd = openEnd + 1;
     if (!selfClose) { const cl = matchingClose(html, tag, innerStart); if (!cl) return null; innerEnd = cl.start; closeEnd = cl.end; }
+    if (/\sdata-edit-(handle|ghost)[\s=/>]/.test(html.slice(lt, openEnd + 1))) { i = closeEnd; continue; }   // plugin-injected, not an authored child (mirrors the client's realChildren)
     if (count === idx) return { tag, tagStart: lt, openEnd, innerStart, innerEnd, closeEnd };
     count++; i = closeEnd;
   }

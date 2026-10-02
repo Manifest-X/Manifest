@@ -113,7 +113,7 @@
     // already auto-persists to localStorage on commit).
     function buildPatches() {
         const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
-        const toEdits = (paths, area) => {
+        const toEdits = (paths, area, fileOrder) => {
             const e = [];
             Object.entries(paths).forEach(([k, props]) => {
                 // Keys address across a session; the source writer navigates by
@@ -121,8 +121,17 @@
                 // server applies order before edits, so current position is the
                 // right one). A deleted element has nothing to write.
                 const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
-                const path = el ? pathOf(el, area) : k;
+                let path = el ? pathOf(el, area) : k;
                 if (area && !el) return;
+                // RULE: paths must be valid against the file state the server will reach —
+                // a pending st-children change can't be applied there (a short order is
+                // skipped), so address by the block's position in the UNMODIFIED file.
+                if (el && el !== area && fileOrder) {
+                    let block = el; while (block.parentElement && block.parentElement !== area) block = block.parentElement;
+                    const fi = fileOrder.indexOf(block.getAttribute('data-edit-key'));
+                    if (fi < 0) return;                          // block not in the file (added this session) — nothing to address
+                    const segs = path.split('.'); segs[0] = String(fi); path = segs.join('.');
+                }
                 Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
             });
             return e;
@@ -135,7 +144,9 @@
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
             if (!authoringRegion(region)) return;
-            const edits = toEdits(ss.node[region] || {}, areaByKey(region));
+            const area = areaByKey(region);
+            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region);
+            const edits = toEdits(ss.node[region] || {}, area, structural ? (area && area._baseOrder) || [] : null);
             // A moved region always gets its folded order (pre-move reorders are NOT
             // in the move splice); the server skips a reorder that is already true.
             const order = ss.order[region] || null;
