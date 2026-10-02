@@ -1317,6 +1317,45 @@
         return best;
     }
 
+    // A finished inline mark converts the moment its closing marker is typed —
+    // **bold**, *italic*, `code`, ~~struck~~, [text](url) — like any modern
+    // editor, rather than waiting for Enter. Only a pattern ending exactly at
+    // the caret is taken, so half-typed markers never convert under the caret.
+    function endInline(text) {
+        let best = null;
+        for (const rule of INLINE_RULES) {
+            const re = new RegExp(rule.re.source, 'g');
+            let m;
+            while ((m = re.exec(text))) {
+                if (m.index + m[0].length !== text.length) continue;
+                const skip = rule.pre ? m[rule.pre].length : 0;
+                best = { rule, m, start: m.index + skip, len: m[0].length - skip };
+                break;
+            }
+        }
+        return best;
+    }
+
+    function convertInlineAtCaret(area) {
+        const r = range(); if (!r || !r.collapsed) return false;
+        const node = r.startContainer;
+        if (!node || node.nodeType !== 3 || !node.parentElement) return false;
+        const host = node.parentElement.closest('code, pre, a');
+        if (host && area.contains(host)) return false;             // literal contexts keep their text
+        const hit = endInline(node.nodeValue.slice(0, r.startOffset));
+        if (!hit) return false;
+        const el = inlineEl(hit.rule, hit.m); if (!el) return false;
+        record(area);
+        const tail = node.splitText(hit.start);
+        tail.deleteData(0, hit.len);
+        tail.parentNode.insertBefore(el, tail);
+        const s = sel(), nr = document.createRange();
+        nr.setStart(tail, 0); nr.collapse(true);
+        s.removeAllRanges(); s.addRange(nr);
+        record(area);
+        return true;
+    }
+
     function convertInline(root) {
         const nodes = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -2021,6 +2060,7 @@
         });
         el.addEventListener('input', (e) => {
             if (!writing && e.data && applyPending(el, e.data)) { commitValue(); }
+            if (!writing && e.data && autoformat && convertInlineAtCaret(el)) { commitValue(); }
             settle(); sync();
         });
         el.addEventListener('change', e => {

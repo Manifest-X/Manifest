@@ -181,3 +181,41 @@ describe('x-text-edit links', () => {
         expect(area.textContent).toBe('see site now')
     })
 })
+
+describe('x-text-edit inline markdown as you type', () => {
+    // Simulate typing one character: mutate the text node, place the caret
+    // after it, and fire the input event the way the browser would.
+    function typeChar(area, node, ch) {
+        node.insertData(node.length, ch)
+        select(node, node.length)
+        area.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: ch }))
+    }
+
+    it('converts **bold** the moment the closing marker is typed', () => {
+        const root = mount('<div x-text-edit id="a"><p>make </p></div>')
+        const area = root.querySelector('#a')
+        focusin(area)
+        const node = text(area)
+        for (const ch of '**test*') typeChar(area, node, ch)
+        expect(area.querySelector('strong')).toBe(null)     // not yet — marker incomplete
+        typeChar(area, node, '*')
+        const strong = area.querySelector('strong')
+        expect(strong && strong.textContent).toBe('test')
+        expect(area.querySelector('p').textContent).toBe('make test')
+    })
+
+    it('leaves half-typed markers alone and ignores code contexts', () => {
+        const root = mount('<div x-text-edit.html id="a"><p>x </p></div>')
+        const area = root.querySelector('#a')
+        focusin(area)
+        const node = text(area)
+        for (const ch of '`lit`') typeChar(area, node, ch)
+        const code = area.querySelector('code')
+        expect(code && code.textContent).toBe('lit')
+        // typing inside the <code> element must stay literal
+        const inner = code.firstChild
+        for (const ch of ' **no**') typeChar(area, inner, ch)
+        expect(code.querySelector('strong')).toBe(null)
+        expect(code.textContent).toBe('lit **no**')
+    })
+})
