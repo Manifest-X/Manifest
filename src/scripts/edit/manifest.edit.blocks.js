@@ -125,6 +125,22 @@
 
     const cutBlock = (el) => copyBlock(el) && removeBlock(el);
 
+    // Programmatic cross-region move (what a pointer drag commits): insert the block
+    // into `dest` (area element or x-edit key) before `ref`, or at the end.
+    function moveBlock(el, dest, ref) {
+        const block = el ? blockOf(el) || el : target; if (!block || locked(block)) return false;
+        const from = blockArea(block);
+        const to = typeof dest === 'string' ? areaByKey(dest) : dest;
+        if (!from || !to || to === from || !to._edit) return false;
+        if (!isActive(from) || !isActive(to) || locked(to)) return false;
+        if (classify(from) !== 'static' || classify(to) !== 'static' || !capOf(to, 'sort')) return false;
+        if (block === to || block.contains(to)) return false;
+        if (ref && ref.parentElement !== to) ref = null;
+        if (ref) to.insertBefore(block, ref); else to.appendChild(block);
+        commitMove(from, to, block);
+        return true;
+    }
+
     function pasteBlock(el) {
         if (!clipboard) return false;
         const block = el || target;

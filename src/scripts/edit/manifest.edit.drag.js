@@ -31,6 +31,8 @@
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
         const container = item.parentElement;
+        const crossOK = classify(area) === 'static';   // cross-region: static → static only
+        let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
         const preStyle = item.getAttribute('style');
@@ -76,7 +78,13 @@
                 active = true; lift(ev); paint();
             }
             ev.preventDefault();
-            reorderOver(container, px, py);
+            const over = (crossOK && dropArea(px, py)) || ghost.parentElement;   // cross-region drop search
+            if (over !== hovered) {
+                if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
+                hovered = over;
+                if (hovered !== container) hovered.setAttribute('data-edit-dragging-in', '');
+            }
+            reorderOver(over, px, py);
             if (!frame) frame = requestAnimationFrame(paint);
         };
 
@@ -93,8 +101,12 @@
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
+            if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
             ghost = null; dragged = null;
-            if (cancelled) announce('Cancelled'); else finishReorder(area);
+            if (cancelled) { announce('Cancelled'); return; }
+            const dest = item.parentElement;
+            if (crossOK && dest !== container && dest._edit) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+            else finishReorder(area);
         };
         const onUp = () => settle(false);
         // Escape puts it back, the way every drag is expected to be escapable.
@@ -104,10 +116,18 @@
         document.addEventListener('keydown', onKey, true);
     }
     function reorderOver(container, x, y) {
-        if (!dragged || dragged.parentElement !== container) return;
+        if (!dragged) return;
         const ref = afterElement(container, x, y);
-        if (ref === dragged || ref === dragged.nextElementSibling) return;
+        if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
         if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    }
+    // Cross-region drop target: the innermost active static sort region under the pointer.
+    function dropArea(x, y) {
+        const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
+            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static') return a;
+        }
+        return null;
     }
     function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
     // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.

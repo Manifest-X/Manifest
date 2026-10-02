@@ -96,6 +96,7 @@
         const node = {}, order = {}, sigs = {}, base = {}, html = {};
         for (const d of log) {
             if (d.kind === 'st-children' && d.html) Object.assign(html[d.region] = html[d.region] || {}, d.html);
+            if (d.kind === 'st-move' && d.html) { (html[d.from] = html[d.from] || {})[d.key] = d.html; (html[d.to] = html[d.to] || {})[d.toKey] = d.html; }   // both sides can rebuild it
             if (d.kind !== 'st-node') continue;
             const bk = d.region + '|' + d.path;
             const b = base[bk] = base[bk] || {};
@@ -106,6 +107,7 @@
             const d = log[i];
             if (d.kind === 'st-node') { (node[d.region] = node[d.region] || {}); (node[d.region][d.path] = node[d.region][d.path] || {})[d.prop] = d.value; }
             else if (d.kind === 'st-order' || d.kind === 'st-children') order[d.region] = d.order;
+            else if (d.kind === 'st-move') { order[d.from] = d.fromOrder; order[d.to] = d.toOrder; }
         }
         // The markup for anything added or removed comes from the WHOLE log, the same
         // way baselines do — undoing a delete has to be able to rebuild the element,
@@ -232,6 +234,23 @@
         const region = key(area), order = staticKeys(area), before = lastOrder[region] || order;
         if (eq(before, order)) return;
         log.splice(cursor); log.push({ kind: 'st-order', region, order, before }); cursor = log.length; lastOrder[region] = order; saveState(); refresh();
+    }
+    // Cross-region move (static → static): one delta carries both region orders, so a
+    // single undo puts the block back. The item must already sit in its new parent.
+    function commitMove(fromArea, toArea, item) {
+        const from = key(fromArea), to = key(toArea), fromKey = item.getAttribute('data-edit-key') || staticKey(item);
+        const taken = new Set(sortableChildren(toArea).filter(c => c !== item).map(c => c.getAttribute('data-edit-key')).filter(Boolean));
+        let toKey = fromKey;
+        if (taken.has(toKey)) { const base = toKey.split('#')[0]; let n = 1; toKey = base; while (taken.has(toKey)) toKey = base + '#' + ++n; }   // re-key on arrival collision
+        item.setAttribute('data-edit-key', toKey);
+        item.querySelectorAll('[data-edit-key]').forEach(n => n.removeAttribute('data-edit-key'));   // descendants re-key in the new region
+        const html = blockHTML(item);
+        log.splice(cursor);
+        log.push({ kind: 'st-move', from, to, key: fromKey, toKey, fromOrder: staticKeys(fromArea), toOrder: staticKeys(toArea), html });
+        cursor = log.length;
+        lastOrder[from] = staticKeys(fromArea); lastOrder[to] = staticKeys(toArea);
+        markStatic(fromArea); armArea(toArea);   // paths shift on both sides; the arrival needs baselines + affordances
+        saveState(); refresh();
     }
 
     /* ---- Commit / undo / redo (data area snapshots) ---- */

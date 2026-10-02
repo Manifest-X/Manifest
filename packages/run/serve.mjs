@@ -760,6 +760,41 @@ function writeStaticOps(file, key, edits, order) {
   }
   return { region: key, status: 'written', file: basename(file), edits: (edits || []).length, reordered };
 }
+// Cross-region move: lift a child's authored markup out of one x-edit region and
+// splice it into another (same file). Keys mirror the client's staticKeys (ordinal-deduped).
+function regionChildren(html, loc) {
+  const kids = []; let n = 0, c;
+  while ((c = childAt(html, loc.innerStart, loc.innerEnd, n++))) kids.push(c);
+  return kids;
+}
+function dedupedKeys(html, kids) {
+  const seen = Object.create(null);
+  return kids.map(k => { const base = serverStaticKey(html, k); const n = seen[base] = (seen[base] || 0) + 1; return n > 1 ? base + '#' + n : base; });
+}
+function writeStaticMove(file, p) {
+  let html = readFileSync(file, 'utf8');
+  const fromLoc = locateEditEl(html, p.from);
+  if (!fromLoc) return { region: p.from, status: 'error', reason: `x-edit="${p.from}" not found in ${basename(file)}` };
+  if (!locateEditEl(html, p.to)) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found in ${basename(file)}` };
+  const kids = regionChildren(html, fromLoc);
+  const i = dedupedKeys(html, kids).indexOf(p.key);
+  if (i < 0) return { region: p.from, status: 'error', reason: `child '${p.key}' not found in region '${p.from}'` };
+  const child = kids[i], slice = html.slice(child.tagStart, child.closeEnd);
+  let remStart = child.tagStart;
+  const pre = html.slice(0, remStart), nl = pre.lastIndexOf('\n');
+  if (nl >= 0 && /^[ \t]*$/.test(pre.slice(nl + 1))) remStart = nl;   // take the indent + newline with it
+  html = html.slice(0, remStart) + html.slice(child.closeEnd);
+  const toLoc = locateEditEl(html, p.to);                             // re-locate: offsets shifted
+  if (!toLoc) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found after removal` };
+  const toKids = regionChildren(html, toLoc), toKeys = dedupedKeys(html, toKids);
+  const at = (p.toOrder || []).indexOf(p.toKey);
+  let insertAt = toLoc.innerEnd;                                      // default: end of region
+  if (at >= 0) for (const k of p.toOrder.slice(at + 1)) { const j = toKeys.indexOf(k); if (j >= 0) { insertAt = toKids[j].tagStart; break; } }
+  const head = html.slice(0, insertAt), hnl = head.lastIndexOf('\n');
+  const indent = hnl >= 0 && /^[ \t]*$/.test(head.slice(hnl + 1)) ? head.slice(hnl + 1) : '';
+  writeFileSync(file, head + slice + '\n' + indent + html.slice(insertAt));
+  return { region: `${p.from} → ${p.to}`, status: 'written', file: basename(file), key: p.key };
+}
 function writeStaticRegion(file, key, innerHTML, style) {
   let html = readFileSync(file, 'utf8');
   const loc = locateEditEl(html, key);
@@ -1196,6 +1231,7 @@ const server = createServer((req, res) => {
           }
           if (p.kind === 'data-val') return writeDataValue(p, manifest);
           if (p.kind === 'static') return writeStaticOps(indexFile, p.region, p.edits, p.order);
+          if (p.kind === 'static-move') return writeStaticMove(indexFile, p);
           if (p.kind === 'component') return writeComponentEdits(p, manifest);
           if (p.kind === 'theme') return writeThemeVar(p);
           return { region: p.region, status: 'skipped', reason: `unknown kind ${p.kind}` };

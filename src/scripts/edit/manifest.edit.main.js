@@ -2,7 +2,7 @@
     function restore() {
         if (!log.length) return;
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order')) applyStaticState();
+        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order' || d.kind === 'st-move')) applyStaticState();
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
         if (log.some(d => d.kind === 'theme')) applyThemeState();
@@ -32,6 +32,7 @@
             paste(el) { return pasteBlock(el); },
             duplicate(el) { return duplicateBlock(el); },
             remove(el) { return removeBlock(el); },
+            move(el, dest, before) { return moveBlock(el, dest, before); },
             block(node) { return blockOf(node); },
             patches() { return buildPatches(); },            // resolved B-side source patches
             export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)

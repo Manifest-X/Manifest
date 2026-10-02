@@ -47,7 +47,9 @@
     // those deltas neither travel to the source nor survive in the overlay. They stay
     // in the in-memory log, so undo still works for the session.
     const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
-    const persistable = (d) => d.kind !== 'data-splice' && (d.region == null || authoringRegion(d.region));
+    const persistable = (d) => d.kind !== 'data-splice' && (d.kind === 'st-move'
+        ? authoringRegion(d.from) && authoringRegion(d.to)
+        : (d.region == null || authoringRegion(d.region)));
 
     const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -245,6 +247,7 @@
         const node = {}, order = {}, sigs = {}, base = {}, html = {};
         for (const d of log) {
             if (d.kind === 'st-children' && d.html) Object.assign(html[d.region] = html[d.region] || {}, d.html);
+            if (d.kind === 'st-move' && d.html) { (html[d.from] = html[d.from] || {})[d.key] = d.html; (html[d.to] = html[d.to] || {})[d.toKey] = d.html; }   // both sides can rebuild it
             if (d.kind !== 'st-node') continue;
             const bk = d.region + '|' + d.path;
             const b = base[bk] = base[bk] || {};
@@ -255,6 +258,7 @@
             const d = log[i];
             if (d.kind === 'st-node') { (node[d.region] = node[d.region] || {}); (node[d.region][d.path] = node[d.region][d.path] || {})[d.prop] = d.value; }
             else if (d.kind === 'st-order' || d.kind === 'st-children') order[d.region] = d.order;
+            else if (d.kind === 'st-move') { order[d.from] = d.fromOrder; order[d.to] = d.toOrder; }
         }
         // The markup for anything added or removed comes from the WHOLE log, the same
         // way baselines do — undoing a delete has to be able to rebuild the element,
@@ -381,6 +385,23 @@
         const region = key(area), order = staticKeys(area), before = lastOrder[region] || order;
         if (eq(before, order)) return;
         log.splice(cursor); log.push({ kind: 'st-order', region, order, before }); cursor = log.length; lastOrder[region] = order; saveState(); refresh();
+    }
+    // Cross-region move (static → static): one delta carries both region orders, so a
+    // single undo puts the block back. The item must already sit in its new parent.
+    function commitMove(fromArea, toArea, item) {
+        const from = key(fromArea), to = key(toArea), fromKey = item.getAttribute('data-edit-key') || staticKey(item);
+        const taken = new Set(sortableChildren(toArea).filter(c => c !== item).map(c => c.getAttribute('data-edit-key')).filter(Boolean));
+        let toKey = fromKey;
+        if (taken.has(toKey)) { const base = toKey.split('#')[0]; let n = 1; toKey = base; while (taken.has(toKey)) toKey = base + '#' + ++n; }   // re-key on arrival collision
+        item.setAttribute('data-edit-key', toKey);
+        item.querySelectorAll('[data-edit-key]').forEach(n => n.removeAttribute('data-edit-key'));   // descendants re-key in the new region
+        const html = blockHTML(item);
+        log.splice(cursor);
+        log.push({ kind: 'st-move', from, to, key: fromKey, toKey, fromOrder: staticKeys(fromArea), toOrder: staticKeys(toArea), html });
+        cursor = log.length;
+        lastOrder[from] = staticKeys(fromArea); lastOrder[to] = staticKeys(toArea);
+        markStatic(fromArea); armArea(toArea);   // paths shift on both sides; the arrival needs baselines + affordances
+        saveState(); refresh();
     }
 
     /* ---- Commit / undo / redo (data area snapshots) ---- */
@@ -542,6 +563,22 @@
 
     const cutBlock = (el) => copyBlock(el) && removeBlock(el);
 
+    // Programmatic cross-region move (what a pointer drag commits): insert the block
+    // into `dest` (area element or x-edit key) before `ref`, or at the end.
+    function moveBlock(el, dest, ref) {
+        const block = el ? blockOf(el) || el : target; if (!block || locked(block)) return false;
+        const from = blockArea(block);
+        const to = typeof dest === 'string' ? areaByKey(dest) : dest;
+        if (!from || !to || to === from || !to._edit) return false;
+        if (!isActive(from) || !isActive(to) || locked(to)) return false;
+        if (classify(from) !== 'static' || classify(to) !== 'static' || !capOf(to, 'sort')) return false;
+        if (block === to || block.contains(to)) return false;
+        if (ref && ref.parentElement !== to) ref = null;
+        if (ref) to.insertBefore(block, ref); else to.appendChild(block);
+        commitMove(from, to, block);
+        return true;
+    }
+
     function pasteBlock(el) {
         if (!clipboard) return false;
         const block = el || target;
@@ -649,6 +686,8 @@
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
         const container = item.parentElement;
+        const crossOK = classify(area) === 'static';   // cross-region: static → static only
+        let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
         const preStyle = item.getAttribute('style');
@@ -694,7 +733,13 @@
                 active = true; lift(ev); paint();
             }
             ev.preventDefault();
-            reorderOver(container, px, py);
+            const over = (crossOK && dropArea(px, py)) || ghost.parentElement;   // cross-region drop search
+            if (over !== hovered) {
+                if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
+                hovered = over;
+                if (hovered !== container) hovered.setAttribute('data-edit-dragging-in', '');
+            }
+            reorderOver(over, px, py);
             if (!frame) frame = requestAnimationFrame(paint);
         };
 
@@ -711,8 +756,12 @@
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
+            if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
             ghost = null; dragged = null;
-            if (cancelled) announce('Cancelled'); else finishReorder(area);
+            if (cancelled) { announce('Cancelled'); return; }
+            const dest = item.parentElement;
+            if (crossOK && dest !== container && dest._edit) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+            else finishReorder(area);
         };
         const onUp = () => settle(false);
         // Escape puts it back, the way every drag is expected to be escapable.
@@ -722,10 +771,18 @@
         document.addEventListener('keydown', onKey, true);
     }
     function reorderOver(container, x, y) {
-        if (!dragged || dragged.parentElement !== container) return;
+        if (!dragged) return;
         const ref = afterElement(container, x, y);
-        if (ref === dragged || ref === dragged.nextElementSibling) return;
+        if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
         if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    }
+    // Cross-region drop target: the innermost active static sort region under the pointer.
+    function dropArea(x, y) {
+        const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
+            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static') return a;
+        }
+        return null;
     }
     function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
     // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.
@@ -1290,11 +1347,19 @@
             });
             return e;
         };
+        const movedOrder = {};   // region → order already realised by a static-move patch
+        for (let i = 0; i < cursor; i++) {   // cross-region moves travel in log order, ahead of per-region ops
+            const d = log[i];
+            if (d.kind !== 'st-move' || !authoringRegion(d.from) || !authoringRegion(d.to)) continue;
+            patches.push({ kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder });
+            movedOrder[d.from] = JSON.stringify(d.fromOrder); movedOrder[d.to] = JSON.stringify(d.toOrder);
+        }
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
             if (!authoringRegion(region)) return;
             const edits = toEdits(ss.node[region] || {}, areaByKey(region));
-            if (edits.length || ss.order[region]) patches.push({ kind: 'static', region, edits, order: ss.order[region] || null });
+            const order = ss.order[region] && JSON.stringify(ss.order[region]) !== movedOrder[region] ? ss.order[region] : null;   // the move patch already lands this order
+            if (edits.length || order) patches.push({ kind: 'static', region, edits, order });
         });
         const dv = dataValueState();   // data-value edits → field writes (local file / cloud $update)
         Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));
@@ -1367,7 +1432,7 @@
     function restore() {
         if (!log.length) return;
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order')) applyStaticState();
+        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order' || d.kind === 'st-move')) applyStaticState();
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
         if (log.some(d => d.kind === 'theme')) applyThemeState();
@@ -1397,6 +1462,7 @@
             paste(el) { return pasteBlock(el); },
             duplicate(el) { return duplicateBlock(el); },
             remove(el) { return removeBlock(el); },
+            move(el, dest, before) { return moveBlock(el, dest, before); },
             block(node) { return blockOf(node); },
             patches() { return buildPatches(); },            // resolved B-side source patches
             export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)
