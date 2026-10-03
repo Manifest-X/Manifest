@@ -169,6 +169,7 @@ class TailwindCompiler {
         this.lastClassesHash = ''; // Track changes in used classes
         this.staticClassCache = new Set(); // Cache classes found in static HTML/components
         this.dynamicClassCache = new Set(); // Cache classes that appear dynamically
+        this.quietClasses = new Set(); // Seen only inside ignored elements, not yet compiled
         this.hasScannedStatic = false; // Track if we've done initial static scan
         this.staticScanPromise = null; // Promise for initial static scan
         this.ignoredClassPatterns = [ // Patterns for classes to ignore

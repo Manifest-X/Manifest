@@ -5,6 +5,7 @@
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
     if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
         document.head.appendChild(this.styleElement);
+        if (this.resyncUtilitiesText) this.resyncUtilitiesText();
     }
 };
 
@@ -381,6 +382,8 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
     // Wait for all fetches to complete
     await Promise.all(fetchPromises);
 
+    // Order-free identity (fetches land in any order) for "theme unchanged" checks
+    this.lastThemeKey = Array.from(themeContents).sort().join('\n');
     return Array.from(themeContents).join('\n');
 };
 

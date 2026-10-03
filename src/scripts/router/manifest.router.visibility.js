@@ -111,13 +111,14 @@ function isRouteActive(element, normalizedPath) {
 // Activation hook fires before the route becomes visible so deferred content renders first
 function showRoute(element) {
     element.dispatchEvent(new CustomEvent('manifest:route-activate'));
-    element.removeAttribute('hidden');
-    element.style.display = '';
+    if (element.hasAttribute('hidden')) element.removeAttribute('hidden');
+    if (element.style.display) element.style.display = '';
 }
 
+// Skip no-op writes: each one is a mutation record for every observer
 function hideRoute(element) {
-    element.setAttribute('hidden', '');
-    element.style.display = 'none';
+    if (!element.hasAttribute('hidden')) element.setAttribute('hidden', '');
+    if (element.style.display !== 'none') element.style.display = 'none';
 }
 
 // Process visibility for all elements with x-route
