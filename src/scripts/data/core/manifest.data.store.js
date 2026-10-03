@@ -1048,6 +1048,13 @@ function setupLocaleChangeListener() {
                 store._localeChanging = false;
                 bumpAllVersions();
             }
+        } finally {
+            // Early exits (no manifest.data) must not strand the render-ready gate
+            const store = Alpine.store('data');
+            if (store?._localeChanging) {
+                store._localeChanging = false;
+                checkAndDispatchRenderReady();
+            }
         }
     });
 }
