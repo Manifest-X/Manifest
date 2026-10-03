@@ -67,7 +67,7 @@
                 if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
-                el.addEventListener('focus', () => { el._preEdit = read(); selectAllIn(el); });
+                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-text-edit')) selectAllIn(el); });   // the rich editor owns its caret
                 el.addEventListener('focusin', () => { el._preEdit = read(); });
                 el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
             });

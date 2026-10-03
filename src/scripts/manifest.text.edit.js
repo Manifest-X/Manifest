@@ -1019,8 +1019,8 @@
     // not applied; the field re-syncs to the real href, showing it didn't take.
     function normalizeUrl(url) {
         if (/\s/.test(url) || /^\s*javascript:/i.test(url)) return null;
-        if (/^[a-z][a-z0-9+.-]*:/i.test(url) || /^[/#?.]/.test(url)) return url;
-        if (/^[\w-]+(\.[\w-]+)+(\/|$|\?|#)/.test(url)) return 'https://' + url;
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^(mailto|tel|sms):/i.test(url) || /^[/#?.]/.test(url)) return url;
+        if (/^[\w-]+(\.[\w-]+)+(:\d+)?(\/|$|\?|#)/.test(url)) return 'https://' + url;
         return null;
     }
     function setLink(href) {
@@ -1329,7 +1329,10 @@
             while ((m = re.exec(text))) {
                 if (m.index + m[0].length !== text.length) continue;
                 const skip = rule.pre ? m[rule.pre].length : 0;
-                best = { rule, m, start: m.index + skip, len: m[0].length - skip };
+                const start = m.index + skip;
+                // Earliest start wins, like firstInline — ![alt](src) must be
+                // the image rule, not the link rule matching one char later.
+                if (!best || start < best.start) best = { rule, m, start, len: m[0].length - skip };
                 break;
             }
         }
@@ -1912,6 +1915,16 @@
                 // browser picker, Manifest's, or anything that fires `input`.
                 const prop = id === 'background' ? 'backgroundColor' : 'color';
                 let live = null;
+                // A new selection elsewhere ends the pass: without this, a
+                // picker that never fires `change` keeps recolouring the OLD
+                // spans after the writer has selected different text.
+                const dropLive = () => {
+                    if (!live) return;
+                    const r = range();
+                    if (!r || !live.some(sp => sp.isConnected && sp.contains(r.startContainer))) live = null;
+                };
+                document.addEventListener('text-edit:selection', dropLive);
+                cleanup(() => document.removeEventListener('text-edit:selection', dropLive));
                 el.addEventListener('input', () => {
                     const a = resolve(el); if (!a) return;
                     if (el._te.page) { run(a, id, el.value, el._te); return; }   // page vars are cheap to set per tick
@@ -2060,7 +2073,7 @@
         });
         el.addEventListener('input', (e) => {
             if (!writing && e.data && applyPending(el, e.data)) { commitValue(); }
-            if (!writing && e.data && autoformat && convertInlineAtCaret(el)) { commitValue(); }
+            if (!writing && e.data && !e.isComposing && autoformat && convertInlineAtCaret(el)) { commitValue(); }
             settle(); sync();
         });
         el.addEventListener('change', e => {

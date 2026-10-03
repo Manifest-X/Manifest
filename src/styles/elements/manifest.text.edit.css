@@ -59,6 +59,15 @@
         box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
     }
 
+    /* Without the Popover API the attribute is inert and the menu would render
+       permanently fixed on the page — hide it there; the bubble is progressive
+       enhancement. (In supporting browsers a closed popover is hidden natively.) */
+    @supports not selector(:popover-open) {
+        :where([data-text-edit-menu]) {
+            display: none;
+        }
+    }
+
     /* ---- Controls ----
        A control is marked wherever it lives, so a toolbar is optional markup and
        never a requirement. The reset already dims [aria-disabled=true]. */

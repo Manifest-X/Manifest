@@ -68,11 +68,13 @@
 
     /* The grip: the plugin's own inline drag affordance, sitting inside the row
        at its inline start. A dot grid, revealed on approach. --edit-grip sizes
-       it; `--edit-grip: 0` removes it (e.g. for grid rows where an extra flex
-       item would take a cell). No full-row outline — the grip and the cursor
-       say "draggable" without boxing the content. */
+       it; `--edit-grip-display: none` removes it entirely (a zero width alone
+       would still occupy a grid cell). No full-row outline — the grip and the
+       cursor say "draggable" without boxing the content. */
     :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable])::before {
         content: '';
+        display: var(--edit-grip-display, inline-block);
+        vertical-align: middle;
         align-self: center;
         flex: 0 0 auto;
         width: var(--edit-grip, 0.6rem);
