@@ -2,7 +2,17 @@
     function restore() {
         if (!log.length) return;
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order')) applyStaticState();
+        // A replayed move must first converge live keys to the recorded ones (ordinal
+        // renames from collisions). Skipped when the source already holds the move
+        // (post-save reload): fresh derivation then matches the recorded order.
+        for (let i = 0; i < cursor; i++) {
+            const d = log[i];
+            if (d.kind !== 'st-move' || !d.remap) continue;
+            const ta = areaByKey(d.to);
+            if (!ta || eq(staticKeys(ta), d.toOrder)) continue;
+            applyMoveKeys(d, false);
+        }
+        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order' || d.kind === 'st-move')) applyStaticState();
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
         if (log.some(d => d.kind === 'theme')) applyThemeState();
@@ -32,6 +42,7 @@
             paste(el) { return pasteBlock(el); },
             duplicate(el) { return duplicateBlock(el); },
             remove(el) { return removeBlock(el); },
+            move(el, dest, before) { return moveBlock(el, dest, before); },
             block(node) { return blockOf(node); },
             patches() { return buildPatches(); },            // resolved B-side source patches
             export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)

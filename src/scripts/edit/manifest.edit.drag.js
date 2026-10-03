@@ -27,10 +27,13 @@
         }
     }
     function onPointerDown(e) {
-        const item = this, area = item.closest('[data-edit-area]');
+        const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
+        if (e._editDrag) return; e._editDrag = true;   // one drag per gesture — the innermost sortable item claims it
         const container = item.parentElement;
+        const crossOK = classify(area) === 'static' && !isRegionBlock(item) && topArea(area);   // cross-region: top-level static → static only; a region-block only reorders in place
+        let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
         const preStyle = item.getAttribute('style');
@@ -76,7 +79,13 @@
                 active = true; lift(ev); paint();
             }
             ev.preventDefault();
-            reorderOver(container, px, py);
+            const over = (crossOK && dropArea(px, py)) || ghost.parentElement;   // cross-region drop search
+            if (over !== hovered) {
+                if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
+                hovered = over;
+                if (hovered !== container) hovered.setAttribute('data-edit-dragging-in', '');
+            }
+            reorderOver(over, px, py);
             if (!frame) frame = requestAnimationFrame(paint);
         };
 
@@ -93,8 +102,17 @@
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
+            if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
             ghost = null; dragged = null;
-            if (cancelled) announce('Cancelled'); else finishReorder(area);
+            if (cancelled) { announce('Cancelled'); return; }
+            const dest = item.parentElement;
+            if (crossOK && dest !== container && dest._edit) {
+                // Re-validate at drop: a region locked or deactivated mid-drag
+                // (reached through the ghost fallback) must not take the block.
+                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort') && topArea(dest)) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+                else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
+            }
+            else finishReorder(area);
         };
         const onUp = () => settle(false);
         // Escape puts it back, the way every drag is expected to be escapable.
@@ -104,10 +122,18 @@
         document.addEventListener('keydown', onKey, true);
     }
     function reorderOver(container, x, y) {
-        if (!dragged || dragged.parentElement !== container) return;
+        if (!dragged) return;
         const ref = afterElement(container, x, y);
-        if (ref === dragged || ref === dragged.nextElementSibling) return;
+        if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
         if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    }
+    // Cross-region drop target: the innermost active static sort region under the pointer.
+    function dropArea(x, y) {
+        const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
+            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) return a;
+        }
+        return null;
     }
     function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
     // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.

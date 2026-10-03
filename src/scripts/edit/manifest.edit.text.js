@@ -18,8 +18,9 @@
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
             el.addEventListener('blur', () => {
-                const commit = classify(area) === 'component' ? commitComponentNode : commitStaticNode;
-                commit(area, el, 'text', el.innerHTML.trim());
+                const a = regionOf(el) || area;   // the region the element sits in NOW, not where it was armed
+                const commit = classify(a) === 'component' ? commitComponentNode : commitStaticNode;
+                commit(a, el, 'text', el.innerHTML.trim());
             }, true);
         });
     }
@@ -34,7 +35,7 @@
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
             el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
-            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(area, el, 'text', el.innerHTML.trim()); });
+            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()); });   // live region: the element may have moved since arming
         });
     }
 
@@ -76,8 +77,9 @@
     /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
        instance for the scope (this instance vs all) + per-element classes + revert. ---- */
     const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
-    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(Array.from(n.parentElement.children).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
-    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = el.children[i]; if (!el) return null; } return el; }
+    // Paths index authored children only (realChildren): plugin-injected nodes never count.
+    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
+    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
     // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
     // skip the source element (don't fight the caret) and skip any instance that has its
     // OWN committed override for this node/prop (instance overrides always win).
