@@ -127,19 +127,61 @@
 	 * `_x_currentIfEl` (avoids re-rendering heavy content); x-for clones are removed.
 	 * Runs on alpine:init so a page without Alpine keeps its baked content.
 	 */
+	function adoptIfClone(tpl, el) {
+		const A = window.Alpine;
+		// Mirrors Alpine's x-if show() bookkeeping.
+		const undo = () => {
+			A.mutateDom(() => {
+				A.destroyTree(el);
+				el.remove();
+			});
+			delete tpl._x_currentIfEl;
+			delete tpl._x_lastRenderedEl;
+		};
+		// Boot-time false (e.g. data still loading) keeps the clone until
+		// manifest:ready, then removes it only if still false — no blank frame.
+		let pending = false;
+		const adoptedUndo = () => {
+			if (window.__manifestReady || !window.__manifestReadyCoordinator) return undo();
+			queueMicrotask(() => { if (tpl._x_currentIfEl === el) tpl._x_undoIf = adoptedUndo; });
+			if (pending) return;
+			pending = true;
+			window.addEventListener('manifest:ready', () => {
+				if (tpl._x_currentIfEl !== el) return;
+				if (!tpl.isConnected || !A.evaluate(tpl, tpl.getAttribute('x-if'))) {
+					undo();
+					delete tpl._x_undoIf;
+				}
+			}, { once: true });
+		};
+		tpl._x_currentIfEl = el;
+		tpl._x_lastRenderedEl = el;
+		tpl._x_undoIf = adoptedUndo;
+	}
 	function reconcilePrerenderClones() {
 		if (typeof document === 'undefined' || !document.querySelectorAll) return;
+		const adopted = [];
 		document.querySelectorAll('[data-mnfst-prerender-clone]').forEach((el) => {
 			if (el.closest && el.closest('[data-hydrate]')) return;
 			el.removeAttribute('data-mnfst-prerender-clone');
 			const tpl = el.previousElementSibling;
 			if (tpl && tpl.tagName === 'TEMPLATE' && tpl.hasAttribute('x-if')) {
 				// Alpine's x-if show() returns early when _x_currentIfEl is set.
-				tpl._x_currentIfEl = el;
+				adoptIfClone(tpl, el);
+				adopted.push([tpl, el]);
 			} else {
 				el.remove();
 			}
 		});
+		if (!adopted.length) return;
+		// Clones the start walk missed: init once (initTree skips marked nodes).
+		document.addEventListener('alpine:initialized', () => {
+			for (const [tpl, el] of adopted) {
+				if (tpl._x_marker && tpl._x_currentIfEl === el && el.isConnected && !el._x_marker) {
+					window.Alpine.initTree(el);
+				}
+			}
+		}, { once: true });
 	}
 	if (typeof document !== 'undefined') {
 		document.addEventListener('alpine:init', reconcilePrerenderClones, { once: true });
