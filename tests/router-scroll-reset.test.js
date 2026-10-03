@@ -116,3 +116,56 @@ describe('scroll reset on route change', () => {
         expect(list.scrollTop).toBe(50)
     })
 })
+
+// data-scroll-keep opts a container out of EVERY reset — sub-route changes AND
+// full route-area changes. "Keep" that sometimes resets would surprise; an app
+// wanting reset-on-area-change resets itself on manifest:route-change. The
+// router's lazy hidden-route reset would fire on return anyway, so a
+// keep-except-area-change variant is not even expressible without new state.
+describe('data-scroll-keep opt-out', () => {
+    let keep, plain, inner
+    beforeAll(async () => {
+        navigate('/records')
+        await wait(80)
+        const records = document.getElementById('records')
+        records.insertAdjacentHTML('beforeend', `
+            <div id="keep" data-scroll-keep style="overflow-y: auto; height: 400px"></div>
+            <div id="wrap" data-scroll-keep><div id="inner" style="overflow: auto"></div></div>
+            <div id="plain" style="overflow-y: auto; height: 400px"></div>`)
+        keep = scrollable(document.getElementById('keep'))
+        inner = scrollable(document.getElementById('inner'))
+        plain = scrollable(document.getElementById('plain'))
+    })
+
+    it('keeps a marked container across a sub-route change; unmarked sibling still resets', async () => {
+        scroll(keep, 300)
+        scroll(plain, 200)
+        navigate('/records/contacts/c10')
+        await wait(80)
+        expect(keep.scrollTop).toBe(300)
+        expect(plain.scrollTop).toBe(0)
+    })
+
+    it('honours the attribute on an ancestor', async () => {
+        scroll(inner, 150)
+        navigate('/records/contacts/c11')
+        await wait(80)
+        expect(inner.scrollTop).toBe(150)
+    })
+
+    it('keeps the container across a full route-area change and back', async () => {
+        navigate('/page-7')
+        await wait(80)
+        expect(keep.__offset()).toBe(300)
+        navigate('/records')
+        await wait(80)
+        expect(keep.__offset()).toBe(300)
+    })
+
+    it('resumes resetting once the attribute is removed', async () => {
+        keep.removeAttribute('data-scroll-keep')
+        navigate('/records/contacts/c12')
+        await wait(80)
+        expect(keep.scrollTop).toBe(0)
+    })
+})
