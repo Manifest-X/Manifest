@@ -2,16 +2,17 @@
 #
 # No npm token is stored: npm mints a short-lived credential from the workflow's
 # OIDC identity at publish time, and provenance attestation is generated
-# automatically. One workflow serves every package, so each package's npm
-# Trusted Publisher config uses the SAME fields:
-#   Organization or user: Manifest-X
-#   Repository:           Manifest
-#   Workflow filename:    release.yml
-#   Environment name:     (leave blank)
+# automatically. One workflow serves every package; each package's npm Trusted
+# Publisher config uses the SAME fields:
+#   Organization or user: Manifest-X   Repository: Manifest
+#   Workflow filename: release.yml      Environment name: (blank)
 #
-# Run it from the Actions tab -> "Release (npm OIDC)" -> Run workflow, and pick
-# a package (or "all"). Version numbers are derived from the npm registry by
-# scripts/release-bump.mjs exactly as the local release scripts do.
+# Trigger it two ways:
+#   - Actions tab -> "Release (npm OIDC)" -> Run workflow -> pick a package / "all".
+#   - Push a tag:  v*  publishes mnfst,  render-v*  publishes mnfst-render.
+#     (Tags let an agent trigger a release over git without the GitHub UI.)
+# Version numbers are derived from the npm registry by scripts/release-bump.mjs;
+# the tag name is only a trigger, it does not set the version.
 
 name: Release (npm OIDC)
 
@@ -33,6 +34,10 @@ on:
           - mnfst-publish
           - mnfst-docs
           - all
+  push:
+    tags:
+      - 'v*'          # publishes mnfst
+      - 'render-v*'   # publishes mnfst-render
 
 permissions:
   contents: read
@@ -71,11 +76,17 @@ jobs:
       - name: Decide whether this package is selected
         id: gate
         run: |
-          if [ "${{ inputs.package }}" = "all" ] || [ "${{ inputs.package }}" = "${{ matrix.pkg }}" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
+          EV="${{ github.event_name }}"; REF="${{ github.ref }}"; PKG="${{ matrix.pkg }}"
+          run=false
+          if [ "$EV" = "push" ]; then
+            case "$REF" in
+              refs/tags/render-v*) [ "$PKG" = "mnfst-render" ] && run=true ;;
+              refs/tags/v*)        [ "$PKG" = "mnfst" ] && run=true ;;
+            esac
+          elif [ "${{ inputs.package }}" = "all" ] || [ "${{ inputs.package }}" = "$PKG" ]; then
+            run=true
           fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         if: steps.gate.outputs.run == 'true'
