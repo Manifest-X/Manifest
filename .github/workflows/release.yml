@@ -118,7 +118,15 @@ jobs:
       - name: Publish (OIDC, with provenance)
         if: steps.gate.outputs.run == 'true'
         working-directory: ${{ matrix.dir }}
-        run: npm publish --provenance --access public
+        # Surface the npm error as a workflow annotation: run logs need a
+        # signed-in viewer, annotations are public, so an agent can diagnose a
+        # failed release without GitHub credentials.
+        run: |
+          set -o pipefail
+          if ! npm publish --provenance --access public 2>&1 | tee /tmp/publish.log; then
+            tail -n 15 /tmp/publish.log | while IFS= read -r line; do echo "::error title=npm publish (${{ matrix.pkg }})::${line}"; done
+            exit 1
+          fi
 
       - name: Warm CDN (root mnfst only; best-effort, never fails the release)
         if: steps.gate.outputs.run == 'true' && matrix.root == true
