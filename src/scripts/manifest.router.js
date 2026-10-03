@@ -855,11 +855,9 @@ window.ManifestRoutingVisibility = {
 
 // Router head
 
-function isPrerenderedStaticMPA() {
+// Prerendered MPA output has route head content baked in
+function headIsPrerenderedMPA() {
     try {
-        if (window.ManifestRoutingVisibility && typeof window.ManifestRoutingVisibility.isPrerenderedStaticMPA === 'function') {
-            return window.ManifestRoutingVisibility.isPrerenderedStaticMPA();
-        }
         return document.querySelector('meta[name="manifest:prerendered"][content="1"]') !== null;
     } catch (e) {
         return false;
@@ -1021,7 +1019,7 @@ function processElementHeadContent(element, normalizedPath) {
 
 // Process all head content in the DOM
 function processAllHeadContent(normalizedPath) {
-    if (isPrerenderedStaticMPA()) return;
+    if (headIsPrerenderedMPA()) return;
 
     // Find all elements with head templates
     const elementsWithHead = document.querySelectorAll('template[data-head]');
@@ -1084,7 +1082,7 @@ function initializeHeadContent() {
     function processHeadContentAfterComponentsReady() {
         // Process initial head content after a longer delay to let components settle
         setTimeout(() => {
-            if (isPrerenderedStaticMPA()) return;
+            if (headIsPrerenderedMPA()) return;
             const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
             const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
 
@@ -1094,7 +1092,7 @@ function initializeHeadContent() {
 
     // Function to process head content immediately (for projects without components)
     function processHeadContentImmediately() {
-        if (isPrerenderedStaticMPA()) return;
+        if (headIsPrerenderedMPA()) return;
         const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
         const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
         processAllHeadContent(normalizedPath);
@@ -1128,7 +1126,7 @@ function initializeHeadContent() {
 
         // Wait a bit for components to settle after route change
         setTimeout(() => {
-            if (isPrerenderedStaticMPA()) return;
+            if (headIsPrerenderedMPA()) return;
             // Process head content immediately to catch components before they're reverted
             const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
             const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
