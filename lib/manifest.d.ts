@@ -384,6 +384,8 @@ export interface ManifestEdit {
     paste(el?: Element): boolean;
     duplicate(el?: Element): boolean;
     remove(el?: Element): boolean;
+    /** Move a block into another static region (area element or x-edit key), before `ref` or at the end. */
+    move(el: Element | null, dest: Element | string, before?: Element | null): boolean;
     /** The addressable block containing a node, or null. */
     block(node: Element): Element | null;
 }

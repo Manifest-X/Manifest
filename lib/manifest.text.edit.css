@@ -39,6 +39,26 @@
         }
     }
 
+    /* ---- Selection menu (x-text-edit-menu) ----
+       Positioned by the --text-edit-selection-* variables the plugin writes to
+       :root, so the default needs no script; restyle or reposition freely. */
+    :where([data-text-edit-menu]) {
+        position: fixed;
+        margin: 0;
+        inset: auto;
+        left: var(--text-edit-selection-center);
+        top: var(--text-edit-selection-y);
+        transform: translate(-50%, calc(-100% - 0.5rem));
+        display: flex;
+        gap: 0.25rem;
+        align-items: center;
+        padding: 0.25rem;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+    }
+
     /* ---- Controls ----
        A control is marked wherever it lives, so a toolbar is optional markup and
        never a requirement. The reset already dims [aria-disabled=true]. */

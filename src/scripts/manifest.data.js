@@ -2,7 +2,7 @@
 
 (function () {
 
-const MANIFEST_BUILD_VERSION = '0.5.218';
+const MANIFEST_BUILD_VERSION = '0.5.217';
 
 /* Manifest Data Sources - Configuration */
 
@@ -1325,6 +1325,13 @@ function setupLocaleChangeListener() {
                 store._initialized = true;
                 store._localeChanging = false;
                 bumpAllVersions();
+            }
+        } finally {
+            // Early exits (no manifest.data) must not strand the render-ready gate
+            const store = Alpine.store('data');
+            if (store?._localeChanging) {
+                store._localeChanging = false;
+                checkAndDispatchRenderReady();
             }
         }
     });
@@ -11340,7 +11347,7 @@ function registerFilesDirective() {
 // sending a broken/empty-equal query. Retries once when auth settles further;
 // dedup by key so a source pending across repeated loads doesn't stack listeners.
 const pendingAuthRetries = new Set();
-const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login'];
+const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'];
 function scheduleAuthRetry(dataSourceName, locale) {
     if (typeof window === 'undefined') return;
     const key = `${dataSourceName}:${locale}`;
@@ -11352,6 +11359,13 @@ function scheduleAuthRetry(dataSourceName, locale) {
         loadDataSource(dataSourceName, locale, { reload: true });
     };
     AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
+}
+
+// Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
+function authSettledSignedOut() {
+    const auth = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+    if (!auth) return true;
+    return auth._initialized === true && auth.isAuthenticated !== true;
 }
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
@@ -11857,6 +11871,13 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
     const superseded = () => sourceGeneration && sourceGeneration(dataSourceName) !== generation;
 
+    // Signed out: settle empty (not $loading forever); sign-in reloads via the auth retry
+    const settleSignedOut = () => {
+        if (isInitializing || superseded() || !authSettledSignedOut()) return false;
+        updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+        return true;
+    };
+
     return runDeduped(cacheKey, async () => {
         let landed = false;
         try {
@@ -11933,9 +11954,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
                         : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
 
-                    // Not ready (auth/scope unresolved): skip this read, stay pending, retry on an auth event
+                    // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
+                        if (settleSignedOut()) landed = true;
                         return null;
                     }
 
@@ -11974,6 +11996,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
+                        if (settleSignedOut()) landed = true;
                         return null;
                     }
 
