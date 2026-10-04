@@ -13,6 +13,8 @@ function initializeAuthStore() {
 
     // Cross-tab synchronization using localStorage events
     const STORAGE_KEY = 'manifest:auth:state';
+    // Cap on holding scoped data for a guest/callback sign-in that may fail
+    const SIGN_IN_PENDING_MS = 5000;
 
     // Session fields safe to mirror across tabs. Excludes `secret` and provider
     // tokens — this copy is only for UI cross-tab sync, not the auth of record.
@@ -135,6 +137,7 @@ function initializeAuthStore() {
         _appwrite: null,
         _guestAuto: false,
         _guestManual: false,
+        _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
         guestManualEnabled: false,
         _oauthProvider: null, // Store OAuth provider name (google, github, etc.) when login is initiated
         _syncStateToStorage: syncStateToStorage,
@@ -405,6 +408,13 @@ function initializeAuthStore() {
                 this.inProgress = false;
                 this._initialized = true;
                 this._initializing = false;
+
+                // Guest-auto / callback sign-in follows: scoped data holds instead of flashing signed-out
+                if (!this.isAuthenticated) {
+                    let callback = false;
+                    try { callback = !!window.ManifestAppwriteAuthCallbacks?.detect?.().hasCallback; } catch (e) { /* no-op */ }
+                    if (this._guestAuto || callback) this._signInPendingUntil = Date.now() + SIGN_IN_PENDING_MS;
+                }
 
                 // Fire as soon as identity is known, before teams load, so a session
                 // gate / splash clears in a few hundred ms.

@@ -7,6 +7,7 @@
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, afterEach } from 'vitest'
+import { isolateVm } from './helpers/vm-isolation.js'
 import vm from 'vm'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -32,29 +33,29 @@ const SUBSCRIPTS = [
 
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
 const rows = (prefix, n) => Array.from({ length: n }, (_, i) => ({ $id: `${prefix}${i}` }))
-const listeners = []
+let iso = null
 
-async function load(auth, scope = ['user', 'teams'], source) {
+async function load(auth, scope = ['user', 'teams'], source, appwriteAuth) {
     window.Alpine = Alpine
     Alpine.store('auth', auth)
     window.__manifestRender = true
     window.__manifestRenderReady = false
 
     const manifest = {
-        appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db' },
+        appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db', ...(appwriteAuth ? { auth: appwriteAuth } : {}) },
         data: { projects: source || { appwriteTableId: 'projects', appwriteDatabaseId: 'db', scope } }
     }
     const net = { tableCalls: 0, fileCalls: 0 }
     window.ManifestDataAppwrite = {
-        // Count only this load's table: earlier tests' armed retries share window
-        loadTableRows: async (db, table) => { if (table === (source?.appwriteTableId || 'projects')) net.tableCalls++; return rows('p', 2) },
+        loadTableRows: async () => { net.tableCalls++; return rows('p', 2) },
         listBucketFiles: async () => { net.fileCalls++; return rows('f', 2) }
     }
     delete window.ManifestDataRealtime
     window.ManifestComponentsRegistry = { manifest }
 
+    iso = isolateVm()
     const ctx = {
-        window, document, Alpine, console, setTimeout, clearTimeout, setInterval, clearInterval,
+        window, document, Alpine, console, ...iso.timers, clearTimeout, clearInterval,
         requestAnimationFrame: cb => window.requestAnimationFrame(cb),
         cancelAnimationFrame: id => window.cancelAnimationFrame(id),
         CustomEvent: window.CustomEvent, Event: window.Event, location: window.location, history: window.history,
@@ -64,19 +65,17 @@ async function load(auth, scope = ['user', 'teams'], source) {
     for (let i = 0; i < 50 && !Alpine.store('data')?._ready; i++) await settle(5)
 
     const ready = []
-    const onReady = e => ready.push(e.detail)
-    window.addEventListener('manifest:render-ready', onReady)
-    listeners.push(onReady)
+    window.addEventListener('manifest:render-ready', e => ready.push(e.detail))
     return { net, ready, main: window.ManifestDataMain, data: () => Alpine.store('data') }
 }
 
 afterEach(() => {
-    listeners.splice(0).forEach(fn => window.removeEventListener('manifest:render-ready', fn))
+    iso?.release()
+    iso = null
     delete window.__manifestRender
 })
 
 describe('render-ready with a signed-out scoped Appwrite source', () => {
-    // First: later tests arm retries on the shared window that would also answer its events
     it('no auth plugin settles empty; an auth store arriving later reloads', async () => {
         const { net, ready, main, data } = await load(undefined, null, { appwriteTableId: 'late', appwriteDatabaseId: 'db', scope: 'user' })
         await main.loadDataSource('projects')
@@ -127,7 +126,7 @@ describe('render-ready with a signed-out scoped Appwrite source', () => {
     })
 
     it('a signed-in user whose teams have not loaded stays pending', async () => {
-        const { net, main, data } = await load({ _initialized: true, isAuthenticated: true, user: { $id: 'u1' }, currentTeam: null, teams: [] }, 'team')
+        const { net, main, data } = await load({ _initialized: true, isAuthenticated: true, user: { $id: 'u1' }, currentTeam: null, teams: [] }, 'team', undefined, { teams: {} })
         await main.loadDataSource('projects')
         await settle(50)
         expect(net.tableCalls).toBe(0)
@@ -171,5 +170,21 @@ describe('render-ready with a signed-out scoped Appwrite source', () => {
         await settle(80)
         expect(net.tableCalls).toBe(1)
         expect(data().projects?.map(r => r.$id)).toEqual(['p0', 'p1'])
+    })
+})
+
+describe('vm isolation between tests', () => {
+    it('arms a retry (signed-out scoped load)', async () => {
+        const { main, data } = await load({ _initialized: true, isAuthenticated: false, user: null, currentTeam: null, teams: [] }, 'user')
+        await main.loadDataSource('projects')
+        await settle(50)
+        expect(data()._projects_state?.ready).toBe(true)
+    })
+
+    it("an earlier test's armed retry does not fire into this one", async () => {
+        const { net } = await load({ _initialized: true, isAuthenticated: true, user: { $id: 'u1' }, currentTeam: null, teams: [] }, 'user')
+        window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+        await settle(80)
+        expect(net.tableCalls).toBe(0)
     })
 })

@@ -19,11 +19,75 @@ function scheduleAuthRetry(dataSourceName, locale) {
     AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
 }
 
+// Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load
+let teamsSettledFor = null;
+if (typeof window !== 'undefined') {
+    ['manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'].forEach(type =>
+        window.addEventListener(type, () => { teamsSettledFor = authUserId(currentAuth()); }));
+}
+
+function currentAuth() {
+    return typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+}
+
+function authUserId(auth) {
+    return auth?.user?.$id || auth?.user?.id || null;
+}
+
+// Guest-auto or an auth callback is signing in after a signed-out init (bounded by the auth store)
+function signInWaitMs(auth) {
+    if (!auth || auth.isAuthenticated === true) return 0;
+    return Math.max(0, (auth._signInPendingUntil || 0) - Date.now());
+}
+
 // Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
 function authSettledSignedOut() {
-    const auth = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+    const auth = currentAuth();
     if (!auth) return true;
-    return auth._initialized === true && auth.isAuthenticated !== true;
+    return auth._initialized === true && auth.isAuthenticated !== true && signInWaitMs(auth) === 0;
+}
+
+function teamsSettled(auth, manifest) {
+    const id = authUserId(auth);
+    if (id && teamsSettledFor === id) return true;
+    const teams = manifest?.appwrite?.auth?.teams;
+    if (!teams) return true;
+    const guests = typeof teams.guests === 'string' ? /^(true|1|yes|on)$/i.test(teams.guests.trim()) : !!teams.guests;
+    return auth.isAnonymous === true && !guests;
+}
+
+// Auth fully settled (identity + teams) yet the scoped read still can't resolve: it never will
+function authSettledUnresolvable(manifest) {
+    if (authSettledSignedOut()) return true;
+    const auth = currentAuth();
+    return auth._initialized === true && auth.isAuthenticated === true && teamsSettled(auth, manifest);
+}
+
+function isAuthDependent(config) {
+    if (!config || typeof config !== 'object') return false;
+    if (window.ManifestDataConfig?.getScope?.(config)) return true;
+    try { return JSON.stringify(config.queries || '').includes('$auth.'); } catch { return false; }
+}
+
+// Logout / session cleared: drop the previous identity's rows now, then settle for the new one
+function setupAuthResetListener() {
+    const reset = async () => {
+        const manifest = await window.ManifestDataConfig?.ensureManifest?.();
+        const ds = window.ManifestDataStore;
+        const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+        if (!manifest || !ds?.resetSource || !store) return;
+        const raw = ds.rawOf ? ds.rawOf(store) : store;
+        const configs = { ...(manifest.appwrite || {}), ...(manifest.data || {}) };
+        const locale = liveLocale();
+        for (const [name, config] of Object.entries(configs)) {
+            if (!isAuthDependent(config) || raw[`_${name}_state`] === undefined) continue;
+            window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
+            ds.resetSource(name);
+            loadDataSource(name, locale, { reload: true });
+        }
+    };
+    window.addEventListener('manifest:auth:logout', reset);
+    window.addEventListener('manifest:auth:session-cleared', reset);
 }
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
@@ -529,9 +593,20 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
     const superseded = () => sourceGeneration && sourceGeneration(dataSourceName) !== generation;
 
-    // Signed out: settle empty (not $loading forever); sign-in reloads via the auth retry
-    const settleSignedOut = () => {
-        if (isInitializing || superseded() || !authSettledSignedOut()) return false;
+    // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
+    // A pending sign-in holds the source unsettled (one render-ready), bounded by its deadline.
+    const settleUnresolved = (manifest) => {
+        if (isInitializing || superseded()) return false;
+        const wait = signInWaitMs(currentAuth());
+        if (wait > 0) {
+            setTimeout(() => {
+                const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
+                if (state?.ready || superseded() || !authSettledSignedOut()) return;
+                updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+            }, wait + 10);
+            return false;
+        }
+        if (!authSettledUnresolvable(manifest)) return false;
         updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
         return true;
     };
@@ -615,7 +690,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
-                        if (settleSignedOut()) landed = true;
+                        if (settleUnresolved(manifest)) landed = true;
                         return null;
                     }
 
@@ -654,7 +729,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
-                        if (settleSignedOut()) landed = true;
+                        if (settleUnresolved(manifest)) landed = true;
                         return null;
                     }
 
@@ -964,6 +1039,8 @@ async function initializeDataSourcesPlugin() {
 
     // Setup URL change listeners
     setupUrlChangeListeners();
+
+    setupAuthResetListener();
 
     // Register $x magic method (only if Alpine is available)
 
