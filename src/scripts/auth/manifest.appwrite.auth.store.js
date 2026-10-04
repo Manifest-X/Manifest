@@ -15,6 +15,8 @@ function initializeAuthStore() {
     const STORAGE_KEY = 'manifest:auth:state';
     // Cap on holding scoped data for a guest/callback sign-in that may fail
     const SIGN_IN_PENDING_MS = 5000;
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) store._signInPendingUntil = 0; }));
 
     // Session fields safe to mirror across tabs. Excludes `secret` and provider
     // tokens — this copy is only for UI cross-tab sync, not the auth of record.
@@ -40,6 +42,7 @@ function initializeAuthStore() {
                 const state = JSON.parse(e.newValue);
                 const store = Alpine.store('auth');
                 if (store) {
+                    const prevId = store.user?.$id || null;
                     // Update store state from other tab
                     store.isAuthenticated = state.isAuthenticated;
                     store.isAnonymous = state.isAnonymous;
@@ -50,6 +53,15 @@ function initializeAuthStore() {
                     store.otpSent = state.otpSent || false;
                     store.otpExpired = state.otpExpired || false;
                     store.error = state.error;
+                    // Identity ended or changed in another tab: scoped data must drop this tab's rows
+                    const nextId = state.isAuthenticated ? (state.user?.$id || null) : null;
+                    if (prevId && nextId !== prevId) {
+                        if (!nextId) {
+                            store.teams = [];
+                            store.currentTeam = null;
+                        }
+                        window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                    }
                 }
             } catch (error) {
                 // Failed to sync state from other tab
@@ -412,7 +424,11 @@ function initializeAuthStore() {
                 // Guest-auto / callback sign-in follows: scoped data holds instead of flashing signed-out
                 if (!this.isAuthenticated) {
                     let callback = false;
-                    try { callback = !!window.ManifestAppwriteAuthCallbacks?.detect?.().hasCallback; } catch (e) { /* no-op */ }
+                    try {
+                        // Team invites need an existing session (acceptInvite refuses signed-out), so they don't sign in
+                        const info = window.ManifestAppwriteAuthCallbacks?.detect?.();
+                        callback = !!(info?.hasCallback && !info.isTeamInvite);
+                    } catch (e) { /* no-op */ }
                     if (this._guestAuto || callback) this._signInPendingUntil = Date.now() + SIGN_IN_PENDING_MS;
                 }
 
@@ -436,6 +452,13 @@ function initializeAuthStore() {
                     })))
                     .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
             }
+        },
+
+        _clearIdentity() {
+            this.isAuthenticated = false;
+            this.isAnonymous = false;
+            this.user = null;
+            this.session = null;
         },
 
         // Clear team state when the identity changes to a different user (e.g. guest
@@ -652,15 +675,12 @@ function initializeAuthStore() {
 
                 // Restore to guest state after logout (guest-auto only, and not when
                 // already a guest — don't mint a new guest on top).
+                let restored = false;
                 if (!this.isAnonymous && this._guestAuto && this._createAnonymousSession) {
                     await this._createAnonymousSession();
-                } else {
-                    // Clear auth state completely
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
-                    this.user = null;
-                    this.session = null;
+                    restored = this.isAuthenticated && this.isAnonymous;
                 }
+                if (!restored) this._clearIdentity();
 
                 syncStateToStorage(this);
                 window.dispatchEvent(new CustomEvent('manifest:auth:logout'));
@@ -698,6 +718,10 @@ function initializeAuthStore() {
                 // Clear teams on logout error too
                 this.teams = [];
                 this.currentTeam = null;
+                if (!this.isAuthenticated) this._clearIdentity();
+                // Expired session (401) is still a logout: scoped data must drop the old rows
+                syncStateToStorage(this);
+                window.dispatchEvent(new CustomEvent('manifest:auth:logout'));
                 return { success: false, error: error.message };
             } finally {
                 this.inProgress = false;
@@ -749,6 +773,10 @@ function initializeAuthStore() {
                 this.session = null;
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
+                this.teams = [];
+                this.currentTeam = null;
+                syncStateToStorage(this);
+                window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
                 return { success: false, error: error.message };
             } finally {
                 this.inProgress = false;

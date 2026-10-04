@@ -21,9 +21,16 @@ function scheduleAuthRetry(dataSourceName, locale) {
 
 // Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load
 let teamsSettledFor = null;
+// A sign-in deadline already answered by an auth event no longer holds sources
+let answeredDeadline = 0;
 if (typeof window !== 'undefined') {
     ['manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'].forEach(type =>
         window.addEventListener(type, () => { teamsSettledFor = authUserId(currentAuth()); }));
+    // Kept only when logout restored the same (guest) identity whose teams already loaded
+    ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:initialized'].forEach(type =>
+        window.addEventListener(type, () => { if (type === 'manifest:auth:initialized' || teamsSettledFor !== authUserId(currentAuth())) teamsSettledFor = null; }));
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { answeredDeadline = currentAuth()?._signInPendingUntil || 0; }));
 }
 
 function currentAuth() {
@@ -35,9 +42,17 @@ function authUserId(auth) {
 }
 
 // Guest-auto or an auth callback is signing in after a signed-out init (bounded by the auth store)
+// Prerender never waits on (or bakes) a guest's rows
 function signInWaitMs(auth) {
-    if (!auth || auth.isAuthenticated === true) return 0;
-    return Math.max(0, (auth._signInPendingUntil || 0) - Date.now());
+    if (!auth || auth.isAuthenticated === true || window.__manifestRender) return 0;
+    const until = auth._signInPendingUntil || 0;
+    if (until === answeredDeadline) return 0;
+    return Math.max(0, until - Date.now());
+}
+
+function dropSubscription(dataSourceName, unsubscribe) {
+    if (typeof unsubscribe === 'function') unsubscribe();
+    else window.ManifestDataRealtime?.unsubscribeFromDataSource?.(dataSourceName);
 }
 
 // Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
@@ -703,19 +718,21 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         tableId,
                         queries
                     );
+                    if (superseded()) { landed = true; return null; }
 
-                    // Subscribe to real-time updates for this table
+                    // Subscribe to real-time updates for this table (events from a superseded identity drop)
                     if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
-                        await window.ManifestDataRealtime.subscribeToTable(
+                        const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                // Handle real-time events
+                                if (superseded()) return;
                                 await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload);
                             }
                         );
+                        if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else if (bucketId) {
                     // Load from Appwrite storage bucket
@@ -750,17 +767,20 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     data = files;
 
-                    // Subscribe to real-time updates for this bucket
+                    if (superseded()) { landed = true; return null; }
+
+                    // Subscribe to real-time updates for this bucket (events from a superseded identity drop)
                     if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToStorageBucket) {
-                        await window.ManifestDataRealtime.subscribeToStorageBucket(
+                        const unsubscribe = await window.ManifestDataRealtime.subscribeToStorageBucket(
                             dataSourceName,
                             bucketId,
                             scope,
                             async (eventType, payload) => {
-                                // Handle real-time events
+                                if (superseded()) return;
                                 await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload);
                             }
                         );
+                        if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else {
                     console.warn(`[Manifest Data] Appwrite data source "${dataSourceName}" missing tableId or bucketId`);
