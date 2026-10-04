@@ -312,8 +312,14 @@ function writeSource(dataSourceName, data, options = {}) {
 }
 
 // Synchronous replace: local writes ($register, init preload, state-only updates)
+// A write captured under an older generation (scope reset since, e.g. logout) never lands
+function isStaleWrite(dataSourceName, options) {
+    return !!options && options.generation !== undefined && options.generation !== sourceGeneration(dataSourceName);
+}
+
 function updateStore(dataSourceName, data, options = {}) {
     if (isInitializing && !options.allowDuringInit) return;
+    if (isStaleWrite(dataSourceName, options)) return;
     const state = writeSource(dataSourceName, data, { ...options, mode: 'replace' });
     if (!state) return;
     touchSource(dataSourceName);
@@ -323,10 +329,12 @@ function updateStore(dataSourceName, data, options = {}) {
 // Network landing (page load, paged append, realtime batch): buffered, applied
 // with every other landing of the same frame in ONE flush. Resolves once visible.
 function landRows(dataSourceName, rows, options = {}) {
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
     return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
 }
 
 function landRemove(dataSourceName, ids, options = {}) {
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
     return queueLanding({ source: dataSourceName, remove: Array.isArray(ids) ? ids : [ids], options });
 }
 
@@ -1238,6 +1246,7 @@ window.ManifestDataStore = {
     sourceFreshness,
     // Persistence (§12.2)
     sourceGeneration,
+    isStaleWrite,
     resetSource,
     touchSource,
     bumpAllVersions,

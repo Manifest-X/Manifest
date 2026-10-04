@@ -65,7 +65,7 @@ async function load(opts = {}) {
     // Silence the previous page-load's instance (shared happy-dom window)
     const prev = window.ManifestDataPersist
     if (prev) { prev.state.enabled = false; prev.state.scopeExpr = null; prev.state.pending.clear(); clearTimeout(prev.state.writeTimer) }
-    Alpine.store('auth', { currentTeam: opts.team ? { $id: opts.team } : null })
+    Alpine.store('auth', opts.auth || { currentTeam: opts.team ? { $id: opts.team } : null })
     const manifest = opts.manifest || defaultManifest()
     const net = {
         calls: 0, byName: {}, fail: null, gate: null,
@@ -507,6 +507,52 @@ describe('auth events', () => {
         dispatch('manifest:auth:session-cleared')
         await settle(40)
         expect(records()).toEqual([])
+    })
+})
+
+describe('auth-dependent sources without persistence.scope', () => {
+    const mineManifest = () => ({ data: { mine: { url: 'https://api.test/mine', scope: 'user', persist: true } } })
+    const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
+    const signedOut = () => ({ _initialized: true, isAuthenticated: false, user: null })
+
+    it("a signed-out boot never hydrates the previous user's snapshot, and drops it", async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
+        const { data, records } = await load({ manifest: mineManifest(), auth: signedOut() })
+        await settle(40)
+        expect(data().mine).toBeUndefined()
+        expect(records()).toEqual([])
+    })
+
+    it('an unstamped (pre-identity) snapshot is not trusted either', async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2)))
+        const { data } = await load({ manifest: mineManifest(), auth: signedIn('u1') })
+        await settle(40)
+        expect(data().mine).toBeUndefined()
+    })
+
+    it('the same user hydrates their own snapshot', async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
+        const { data } = await load({ manifest: mineManifest(), auth: signedIn('u1') })
+        await settle(40)
+        expect(ids(data().mine)).toEqual(['a0', 'a1'])
+    })
+
+    it('waits for auth to settle, then hydrates only for the matching identity', async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
+        const { data, auth, dispatch } = await load({ manifest: mineManifest(), auth: { _initialized: false } })
+        await settle(40)
+        expect(data().mine).toBeUndefined()
+        Object.assign(auth(), signedIn('u1'))
+        dispatch('manifest:auth:initialized')
+        await settle(40)
+        expect(ids(data().mine)).toEqual(['a0', 'a1'])
+    })
+
+    it('snapshots are stamped with the identity they were read under', async () => {
+        const { main, persist, records } = await load({ manifest: mineManifest(), auth: signedIn('u7') })
+        await main.loadDataSource('mine')
+        await persist.flushPending()
+        expect(records().map(r => [r.key, r.identity])).toEqual([['|mine', 'u7']])
     })
 })
 

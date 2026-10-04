@@ -32,6 +32,7 @@ const SUBSCRIPTS = [
     'shared/manifest.data.proxies.magic.core.js',
     'shared/manifest.data.main.js',
 ].map(f => [f, readFileSync(path.join(DATA, f), 'utf8')])
+const RT_SRC = readFileSync(path.join(DATA, 'appwrite/manifest.data.realtime.js'), 'utf8')
 const AUTH_STORE = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.store.js'), 'utf8')
 
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
@@ -63,6 +64,7 @@ async function load(auth, scope, { appwriteAuth, extra = {}, fetch, loadRows, li
         },
         listBucketFiles: async (...args) => listFiles ? listFiles(...args) : []
     }
+    net.appwrite = window.ManifestDataAppwrite
     if (realtime) window.ManifestDataRealtime = realtime
     else delete window.ManifestDataRealtime
     window.ManifestComponentsRegistry = { manifest }
@@ -73,6 +75,7 @@ async function load(auth, scope, { appwriteAuth, extra = {}, fetch, loadRows, li
         requestAnimationFrame: cb => window.requestAnimationFrame(cb),
         cancelAnimationFrame: id => window.cancelAnimationFrame(id),
         CustomEvent: window.CustomEvent, Event: window.Event, location: window.location, history: window.history,
+        File: window.File, Blob: window.Blob,
         ...(fetch ? { fetch } : {}),
     }
     vm.createContext(ctx)
@@ -96,8 +99,9 @@ function mockRealtime() {
         subs, cbs,
         gate: null,
         calls: 0,
-        async subscribeToTable(name, db, table, scope, cb) { this.calls++; if (this.gate) await this.gate; subs.set(name, 1); cbs.set(name, cb) },
-        async subscribeToStorageBucket(name, bucket, scope, cb) { this.calls++; if (this.gate) await this.gate; subs.set(name, 1); cbs.set(name, cb) },
+        // Ignores isCurrent: exercises the loader's own post-subscribe drop
+        async subscribeToTable(name, db, table, scope, cb) { this.calls++; if (this.gate) await this.gate; subs.set(name, 1); cbs.set(name, cb); return () => { subs.delete(name); cbs.delete(name) } },
+        async subscribeToStorageBucket(name, bucket, scope, cb) { this.calls++; if (this.gate) await this.gate; subs.set(name, 1); cbs.set(name, cb); return () => { subs.delete(name); cbs.delete(name) } },
         unsubscribeFromDataSource: name => { subs.delete(name); cbs.delete(name) },
     }
 }
@@ -298,9 +302,12 @@ describe('logout races (in-flight loads, realtime, re-login)', () => {
         const cb = rt.cbs.get('files')
         logout()
         await settle(60)
+        const created = []
+        window.addEventListener('manifest:file-created', e => created.push(e.detail.fileId))
         await cb('create', { $id: 'late-file' })
         await settle(60)
         expect(Array.from(Alpine.store('data').files ?? [])).toEqual([])
+        expect(created).toEqual([])
     })
 
     it('logout during a bucket realtime subscribe drops that subscription', async () => {
@@ -414,6 +421,225 @@ describe('logout races (in-flight loads, realtime, re-login)', () => {
         expect(Array.from(Alpine.store('data').pub).length).toBe(2)
         expect(mineIds()).toEqual([])
     })
+})
+
+const FILES = { files: { appwriteBucketId: 'files', queries: [['equal', 'ownerId', '$auth.user.$id']] } }
+const fileIds = () => Array.from(Alpine.store('data').files ?? []).map(r => r.$id)
+const Mut = () => window.ManifestDataMutations
+const methods = name => window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler(name, () => {})
+
+describe('async writes started before logout never land after it', () => {
+    it('the store write layer drops writes stamped with an older generation', async () => {
+        const { ids, main } = await load(signedIn('u1'), 'user')
+        await main.loadDataSource('projects')
+        await settle(60)
+        const ds = window.ManifestDataStore
+        const old = ds.sourceGeneration('projects')
+        ds.resetSource('projects')
+        ds.updateStore('projects', [{ $id: 'old-update' }], { generation: old })
+        expect(ids()).toEqual([])
+        await ds.landRows('projects', [{ $id: 'old-land' }], { mode: 'replace', generation: old })
+        expect(ids()).toEqual([])
+        ds.updateStore('projects', [], { loading: false, ready: true })
+        expect(Mut().addEntryToStore('projects', { $id: 'old-add' }, { generation: old })).toBe(false)
+        await ds.landRows('projects', [{ $id: 'current' }], { mode: 'append', generation: ds.sourceGeneration('projects') })
+        await ds.landRemove('projects', ['current'], { generation: old })
+        await settle(30)
+        expect(ids()).toEqual(['current'])
+    })
+
+    it('a create in flight at logout does not add its row', async () => {
+        const { ids, main } = await load(signedIn('u1'), 'user')
+        await main.loadDataSource('projects')
+        await settle(60)
+        const d = deferred()
+        const p = Mut().executeMutation({ type: 'create', dataSourceName: 'projects', data: { title: 'secret' }, apiCall: () => d.p })
+        await settle(10)
+        logout()
+        await settle(60)
+        d.resolve({ $id: 'u1-new', title: 'secret' })
+        await p
+        await settle(60)
+        expect(ids()).toEqual([])
+    })
+
+    it('a delete failing after logout does not roll the row back in', async () => {
+        const { ids, main } = await load(signedIn('u1'), 'user')
+        await main.loadDataSource('projects')
+        await settle(60)
+        const d = deferred()
+        const p = Mut().executeMutation({ type: 'delete', dataSourceName: 'projects', entryId: 'u1-0', apiCall: () => d.p.then(() => { throw new Error('401') }) })
+        await settle(10)
+        logout()
+        await settle(60)
+        d.resolve()
+        await p.catch(() => {})
+        await settle(60)
+        expect(ids()).toEqual([])
+    })
+
+    it("an update ack after a reset does not merge into the next load's row", async () => {
+        const { main } = await load(signedIn('u1'), 'user')
+        await main.loadDataSource('projects')
+        await settle(60)
+        const d = deferred()
+        const p = Mut().executeMutation({ type: 'update', dataSourceName: 'projects', entryId: 'u1-0', data: { title: 'draft' }, apiCall: () => d.p })
+        await settle(10)
+        window.ManifestDataStore.resetSource('projects')
+        await main.loadDataSource('projects')
+        await settle(60)
+        d.resolve({ $id: 'u1-0', title: 'old-identity' })
+        await p
+        await settle(30)
+        expect(Alpine.store('data').projects.find(r => r.$id === 'u1-0').title).toBeUndefined()
+    })
+
+    it('syncEntryFromServer after a reset does not write', async () => {
+        const { main } = await load(signedIn('u1'), 'user')
+        await main.loadDataSource('projects')
+        await settle(60)
+        const d = deferred()
+        const p = Mut().syncEntryFromServer('projects', 'u1-0', () => d.p)
+        window.ManifestDataStore.resetSource('projects')
+        await main.loadDataSource('projects')
+        await settle(60)
+        d.resolve({ $id: 'u1-0', title: 'old-identity' })
+        await p
+        expect(Alpine.store('data').projects.find(r => r.$id === 'u1-0').title).toBeUndefined()
+    })
+
+    it('a $query in flight at logout does not land', async () => {
+        let gate = null
+        const { ids, main } = await load(signedIn('u1'), 'user', {
+            loadRows: async () => { const who = Alpine.store('auth').user?.$id || 'anon'; if (gate) await gate; return [{ $id: `${who}-q` }] }
+        })
+        await main.loadDataSource('projects')
+        await settle(60)
+        const d = deferred()
+        gate = d.p
+        const p = methods('projects')('$query', [['limit', 5]]).catch(() => {})
+        await settle(20)
+        logout()
+        await settle(60)
+        gate = null
+        d.resolve()
+        await p
+        await settle(60)
+        expect(ids()).toEqual([])
+    })
+
+    it('a file upload finishing after logout does not add the file', async () => {
+        await load(signedIn('u1'), null, { extra: FILES, listFiles: async () => [{ $id: 'u1-file' }] })
+        await window.ManifestDataMain.loadDataSource('files')
+        await settle(60)
+        const d = deferred()
+        window.ManifestDataAppwrite.createFile = () => d.p
+        let upErr = null
+        const p = methods('files')('$create', 'f1', { name: 'x.txt', size: 1, type: 'text/plain' }).catch(e => { upErr = e })
+        await settle(20)
+        logout()
+        await settle(60)
+        d.resolve({ $id: 'f1', name: 'x.txt' })
+        await p
+        await settle(60)
+        expect(upErr).toBeNull()
+        expect(fileIds()).toEqual([])
+    })
+
+    it("a bucket $remove's parallel listing does not land after logout", async () => {
+        let gate = null
+        await load(signedIn('u1'), null, { extra: FILES, listFiles: async () => { if (gate) await gate; return [{ $id: 'u1-file' }, { $id: 'u1-other' }] } })
+        await window.ManifestDataMain.loadDataSource('files')
+        await settle(60)
+        const d = deferred()
+        gate = d.p
+        window.ManifestDataAppwrite.deleteFile = async () => ({})
+        const p = methods('files')('$remove', 'u1-file').catch(() => {})
+        await settle(20)
+        logout()
+        await settle(60)
+        gate = null
+        d.resolve()
+        await p
+        await settle(60)
+        expect(fileIds()).toEqual([])
+    })
+
+    it('a realtime event mid-handler when the source resets does not land', async () => {
+        const rt = mockRealtime()
+        await load(signedIn('u1'), null, { realtime: rt, extra: MINE })
+        await window.ManifestDataMain.loadDataSource('mine')
+        await settle(60)
+        const cb = rt.cbs.get('mine')
+        const p = cb('create', { $id: 'mid', ownerId: 'u1' })
+        window.ManifestDataStore.resetSource('mine')
+        await p
+        await settle(60)
+        expect(mineIds()).toEqual([])
+    })
+})
+
+describe('dropping a superseded subscription', () => {
+    // Realtime that ignores isCurrent: the loader's own post-subscribe drop runs
+    function mapRealtime(owner) {
+        const subscriptions = new Map()
+        let gate = null
+        return {
+            subscriptions,
+            hold() { const d = deferred(); gate = d.p; return d },
+            async subscribeToTable(name) {
+                if (gate) await gate
+                const mine = () => {}
+                subscriptions.set(name, owner === 'newer' ? () => {} : mine)
+                return mine
+            },
+            unsubscribeFromDataSource: name => subscriptions.delete(name),
+        }
+    }
+
+    for (const owner of ['self', 'newer']) {
+        it(owner === 'self' ? 'removes its own map entry' : "leaves a newer load's map entry alone", async () => {
+            const rt = mapRealtime(owner)
+            await load(signedIn('u1'), 'user', { realtime: rt })
+            const d = rt.hold()
+            window.ManifestDataMain.loadDataSource('projects')
+            await settle(30)
+            window.ManifestDataStore.resetSource('projects')
+            d.resolve()
+            await settle(60)
+            expect(rt.subscriptions.has('projects')).toBe(owner === 'newer')
+        })
+    }
+})
+
+describe('real realtime module across logout + re-login', () => {
+    for (const order of ['new identity subscribes first', 'old identity subscribes first']) {
+        it(`${order}: one live subscription, and the next logout leaves none`, async () => {
+            await load(signedIn('u1'), 'user')
+            const active = new Map()
+            let n = 0
+            const gates = []
+            window.ManifestDataAppwrite.getAppwriteDataServices = async () => {
+                const d = deferred(); gates.push(d); await d.p
+                return { realtime: { subscribe(ch, cb) { const id = ++n; active.set(id, cb); return () => active.delete(id) } } }
+            }
+            new Function(RT_SRC)()
+            window.ManifestDataMain.loadDataSource('projects')
+            await settle(30)
+            logout()
+            await settle(30)
+            Object.assign(Alpine.store('auth'), signedIn('u2'))
+            window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+            await settle(60)
+            if (order.startsWith('new')) { gates[1].resolve(); await settle(30); gates[0].resolve() }
+            else { gates[0].resolve(); await settle(30); gates[1].resolve() }
+            await settle(100)
+            expect(active.size).toBe(1)
+            logout()
+            await settle(60)
+            expect(active.size).toBe(0)
+        })
+    }
 })
 
 describe('auth store marks the pending sign-in', () => {

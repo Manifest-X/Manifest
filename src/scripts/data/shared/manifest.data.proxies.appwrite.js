@@ -399,7 +399,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
-                    const { runDeduped, landRows } = window.ManifestDataStore || {};
+                    const { runDeduped, landRows, sourceGeneration } = window.ManifestDataStore || {};
+                    const generation = sourceGeneration?.(dataSourceName);
                     const run = async () => {
                         const result = await window.ManifestDataAppwrite.loadTableRows(
                             appwriteConfig.databaseId,
@@ -408,7 +409,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         );
                         // Network landing: query result replaces the source (coalesced, identity-preserving)
                         if (result !== undefined && landRows) {
-                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true });
+                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
                         }
                         return result;
                     };
@@ -577,6 +578,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Use optimistic update via mutation system
                     const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
                     const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+                    const writeOptions = { generation: window.ManifestDataStore?.sourceGeneration?.(dataSourceName) };
                     const manifest = await window.ManifestDataConfig.ensureManifest();
                     const dataSource = manifest?.data?.[dataSourceName];
                     const scope = window.ManifestDataConfig.getScope(dataSource);
@@ -624,7 +626,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                             _optimistic: true // Mark as optimistic
                         };
                         // Optimistic update: immediately add file to store
-                        addEntryToStore(dataSourceName, optimisticFile);
+                        addEntryToStore(dataSourceName, optimisticFile, writeOptions);
                     }
 
                     let result;
@@ -648,7 +650,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                         // Rollback optimistic update on error
                         if (optimisticFile && removeEntryFromStore) {
-                            removeEntryFromStore(dataSourceName, optimisticFile.$id);
+                            removeEntryFromStore(dataSourceName, optimisticFile.$id, writeOptions);
                         }
                         throw error;
                     }
@@ -656,12 +658,12 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Replace optimistic file with real one from server
                     if (optimisticFile && addEntryToStore && removeEntryFromStore) {
                         // Remove optimistic entry
-                        removeEntryFromStore(dataSourceName, optimisticFile.$id);
+                        removeEntryFromStore(dataSourceName, optimisticFile.$id, writeOptions);
                         // Add real entry
-                        addEntryToStore(dataSourceName, result);
+                        addEntryToStore(dataSourceName, result, writeOptions);
                     } else if (addEntryToStore) {
                         // If no optimistic update was done, add now
-                        addEntryToStore(dataSourceName, result);
+                        addEntryToStore(dataSourceName, result, writeOptions);
                     }
 
                     // Link the uploaded file to a table entry, resolved from the
@@ -1104,6 +1106,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         ? Promise.all(fileId.map(id => window.ManifestDataAppwrite.deleteFile(bucketId, id.$id || id)))
                         : window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
 
+                    const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
                     const reloadPromise = window.ManifestDataAppwrite.listBucketFiles(bucketId, []);
 
                     // Do delete and reload in parallel
@@ -1111,7 +1114,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                     // Network landing: reloaded bucket listing replaces the source (coalesced)
                     if (reloadedData && window.ManifestDataStore?.landRows) {
-                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace' });
+                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace', generation });
                     }
 
                     // Reload affected table data sources so fileIds arrays and counters

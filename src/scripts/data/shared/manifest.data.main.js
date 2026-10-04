@@ -50,9 +50,12 @@ function signInWaitMs(auth) {
     return Math.max(0, until - Date.now());
 }
 
+// Drop only this load's subscription; a newer one under the same name stays
 function dropSubscription(dataSourceName, unsubscribe) {
-    if (typeof unsubscribe === 'function') unsubscribe();
-    else window.ManifestDataRealtime?.unsubscribeFromDataSource?.(dataSourceName);
+    if (typeof unsubscribe !== 'function') return;
+    unsubscribe();
+    const subs = window.ManifestDataRealtime?.subscriptions;
+    if (subs?.get?.(dataSourceName) === unsubscribe) subs.delete(dataSourceName);
 }
 
 // Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
@@ -205,7 +208,7 @@ async function filterFilesByScope(files, scope) {
 }
 
 // Handle real-time storage events
-async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload) {
+async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -232,7 +235,7 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append' });
+                landRows(dataSourceName, [file], { mode: 'append', generation });
 
                 // Emit custom event for new file creation so UI can refresh project files
                 window.dispatchEvent(new CustomEvent('manifest:file-created', {
@@ -247,16 +250,16 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append' });
+                landRows(dataSourceName, [file], { mode: 'append', generation });
             } else {
                 // File no longer matches scope, remove it
-                landRemove(dataSourceName, [file.$id]);
+                landRemove(dataSourceName, [file.$id], { generation });
             }
         }
     } else if (eventType === 'delete') {
         const fileId = payload?.$id || payload?.file?.$id || payload?.fileId || payload;
         if (fileId) {
-            landRemove(dataSourceName, [fileId.$id || fileId]);
+            landRemove(dataSourceName, [fileId.$id || fileId], { generation });
         }
     }
 }
@@ -307,7 +310,7 @@ function markEventProcessed(eventKey) {
 }
 
 // Handle real-time events for database tables
-async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload) {
+async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload, generation) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -336,7 +339,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         if (row && row.$id) {
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (rowMatchesScope) {
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
             }
         } else {
             console.warn('[Manifest Data] Invalid row payload in create event:', payload);
@@ -348,12 +351,12 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (!rowMatchesScope) {
                 // Row no longer matches scope, remove it
-                if (existingRow) landRemove(dataSourceName, [row.$id]);
+                if (existingRow) landRemove(dataSourceName, [row.$id], { generation });
                 return;
             }
             if (!existingRow) {
                 // Row not in list, but matches scope now - add it
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
                 return;
             }
 
@@ -413,7 +416,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 const fileIdsChanged = isProjectWithFiles &&
                     JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
 
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
 
                 // Emit custom event for project file updates so UI can refresh
                 if (fileIdsChanged && dataSourceName === 'projects') {
@@ -426,7 +429,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
     } else if (eventType === 'delete') {
         const rowId = payload?.$id || payload?.row?.$id || payload?.rowId || payload;
         if (rowId) {
-            landRemove(dataSourceName, [rowId.$id || rowId]);
+            landRemove(dataSourceName, [rowId.$id || rowId], { generation });
         }
     }
 
@@ -728,9 +731,9 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                if (superseded()) return;
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload);
-                            }
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation);
+                            },
+                            () => !superseded()
                         );
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
@@ -777,8 +780,9 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             scope,
                             async (eventType, payload) => {
                                 if (superseded()) return;
-                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload);
-                            }
+                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation);
+                            },
+                            () => !superseded()
                         );
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
@@ -914,7 +918,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
-                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
             // Return unsealed version for our proxy system
