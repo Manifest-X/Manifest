@@ -10,54 +10,22 @@
 @layer utilities {
 
     /* ---- Editing UI scope ----
-       ALL chrome — region outline + label, sortable grips, movable/text outlines,
-       size-handle hairlines, the floating toolbar — lives under ONE scope:
-       [data-edit-ui], on the region itself or any ancestor (e.g. <body data-edit-ui>
-       for a whole editor view). The plugin sets it on `.authoring` regions
-       automatically; everything else opts in with the attribute. A region outside
-       the scope is just as editable — it simply carries no visual cues. */
+       ALL chrome — cursors, movable/text outlines, size-handle hairlines, drop
+       targets, the floating toolbar — lives under ONE scope: [data-edit-ui], on
+       the region itself or any ancestor (e.g. <body data-edit-ui> for a whole
+       editor view). The plugin sets it on `.authoring` regions automatically;
+       everything else opts in with the attribute. A region outside the scope is
+       just as editable — it simply carries no visual cues. */
 
     /* ---- Editable area (armed) ---- */
     :where([data-edit-armed]) {
         position: relative;
     }
 
-    /* Quiet until touched. A page covered in dashed boxes reads as a diagram of
-       itself; the affordance only has to be there when you go looking for it.
-       While an inner affordance is engaged (text caret, handle, row), the region
-       outline stands down so only the element being edited is highlighted. */
-    :where([data-edit-armed][data-edit-authoring]):where([data-edit-ui], [data-edit-ui] *) {
-        outline: 1px dashed transparent;
-        outline-offset: 6px;
-        border-radius: var(--radius);
-        transition: outline-color 0.12s ease;
-    }
-
-    :where([data-edit-armed][data-edit-authoring]):where([data-edit-ui], [data-edit-ui] *):is(:hover, :focus-within):not(:has([contenteditable]:is(:hover, :focus), [data-edit-handle]:is(:hover, :focus), [data-edit-sortable]:is(:hover, :focus-within), [data-edit-movable]:is(:hover, :focus))) {
-        outline-color: var(--color-line);
-    }
-
-    :where([data-edit-armed][data-edit-authoring]):where([data-edit-ui], [data-edit-ui] *)::before {
-        content: attr(data-edit-label);
-        position: absolute;
-        inset-block-start: calc(-0.6em - 6px);
-        inset-inline-start: 0.5rem;
-        padding-inline: 0.3rem;
-        background: var(--color-page);
-        border-radius: 3px;
-        font-size: 0.7rem;
-        line-height: 1.2;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--color-content-subtle);
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.12s ease;
-    }
-
-    :where([data-edit-armed][data-edit-authoring]):where([data-edit-ui], [data-edit-ui] *):is(:hover, :focus-within):not(:has([contenteditable]:is(:hover, :focus), [data-edit-handle]:is(:hover, :focus), [data-edit-sortable]:is(:hover, :focus-within), [data-edit-movable]:is(:hover, :focus)))::before {
-        opacity: 1;
-    }
+    /* No default region boundary or label: a page being edited should look
+       like the page, not a diagram of its regions. The hooks remain for a real
+       editor product to draw its own — [data-edit-authoring] marks the region
+       and data-edit-label carries "key · regime". */
 
     /* ---- Reorder (pointer + keyboard; touch-action:none lets touch-drag beat scroll) ---- */
     :where([data-edit-sortable]) {
