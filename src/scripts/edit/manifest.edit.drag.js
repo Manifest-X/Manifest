@@ -45,6 +45,12 @@
         // opens is a real element the author can style — by default a translucent
         // copy of what is being dragged, showing exactly where it would land.
         const lift = (ev) => {
+            // Valid cross-region destinations announce themselves for the whole
+            // drag: a dashed target outline, and a min-height (via CSS) so an
+            // EMPTY region has a surface to drop onto at all.
+            if (crossOK) areas().forEach(a => {
+                if (a !== area && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) a.setAttribute('data-edit-drop-target', '');
+            });
             ghost = item.cloneNode(true);
             ghost.setAttribute('data-edit-ghost', '');
             ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
@@ -102,6 +108,7 @@
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
+            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
             if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
             ghost = null; dragged = null;
             if (cancelled) { announce('Cancelled'); return; }
@@ -180,7 +187,9 @@
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
             const baseL = parseFloat(cs.left) || 0, baseT = parseFloat(cs.top) || 0, sx = e.clientX, sy = e.clientY;
             const ov = showOverlay();
-            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(baseL + (ev.clientX - sx), lu, el, parent, 'w') + lu; el.style.top = toUnit(baseT + (ev.clientY - sy), tu, el, parent, 'h') + tu; };
+            // Clamped to the containing block: a freeform card must not leave its canvas.
+            const maxL = () => Math.max(0, parent.clientWidth - el.offsetWidth), maxT = () => Math.max(0, parent.clientHeight - el.offsetHeight);
+            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(Math.min(maxL(), Math.max(0, baseL + (ev.clientX - sx))), lu, el, parent, 'w') + lu; el.style.top = toUnit(Math.min(maxT(), Math.max(0, baseT + (ev.clientY - sy))), tu, el, parent, 'h') + tu; };
             const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov); commitStyle(area, el); };
             document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
         });
@@ -191,8 +200,9 @@
             if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
             const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            if (d[0]) el.style.left = toUnit((parseFloat(cs.left) || 0) + d[0] * step, lu, el, parent, 'w') + lu;
-            if (d[1]) el.style.top = toUnit((parseFloat(cs.top) || 0) + d[1] * step, tu, el, parent, 'h') + tu;
+            const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
+            if (d[0]) el.style.left = toUnit(Math.min(maxL, Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step)), lu, el, parent, 'w') + lu;
+            if (d[1]) el.style.top = toUnit(Math.min(maxT, Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step)), tu, el, parent, 'h') + tu;
             clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(area, el); }, 350);
         });
     }

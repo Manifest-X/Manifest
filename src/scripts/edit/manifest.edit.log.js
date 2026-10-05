@@ -208,7 +208,12 @@
         const region = key(area), path = el.getAttribute('data-edit-key');
         if (!path) return;                          // not an addressable node
         if (prop === 'text') value = sanitizeFor(el, value);
-        const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        // _pre* comes from the focus/open listener; when an edit arrives without
+        // one (programmatic focus, scripted writes), the arm-time baseline keeps
+        // `before` truthful so undo can still reach the original.
+        const fallback = prop === 'text' ? area._baseText && area._baseText[path] : prop === 'class' ? area._baseClass && area._baseClass[path] : area._baseStyle && area._baseStyle[path];
+        const pre = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        const before = pre !== undefined ? pre : fallback;
         if (before === value) return;
         log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();
     }

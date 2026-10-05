@@ -389,9 +389,17 @@
        Swapping the element outright covers every block tag, where formatBlock only
        accepts a short list and disagrees between engines. */
     function setBlock(tag) {
-        const b = blockEl(); if (!b) return;
+        let b = blockEl(); if (!b) return;
         const want = (b.tagName === tag.toUpperCase() ? 'p' : tag).toLowerCase();
         if (b.tagName === want.toUpperCase()) return;
+        // A heading or quote cannot live inside a list — markdown has no
+        // <ul><h2> — so lift the item out of its list first, then retag.
+        // Retagging in place serialized to nothing: the content vanished.
+        if (b.tagName === 'LI' && want !== 'li') {
+            unwrapItem(b);
+            b = blockEl(); if (!b) return;
+            if (b.tagName === want.toUpperCase()) return;
+        }
         const n = document.createElement(want);
         n.setAttribute('style', b.getAttribute('style') || '');
         if (!n.getAttribute('style')) n.removeAttribute('style');
@@ -1641,6 +1649,7 @@
         const was = area || lastFocused;
         if (!area || area === lastFocused) lastFocused = null;
         if (!was) return;
+        was.removeAttribute('data-text-edit-focused');
         was._selection = null;
         was.removeAttribute('data-text-edit-selected');
         document.documentElement.removeAttribute('data-text-edit-selected');
@@ -1696,6 +1705,12 @@
     function allows(area, id, ctrl) {
         const spec = COMMANDS[id], cfg = area && area._te;
         if (!spec || !cfg || cfg.mode === 'plain') return false;
+        // The writer's caret is visibly in ANOTHER editable element (a plain
+        // x-edit leaf, an input, someone else's contenteditable): acting now
+        // would restore this area's old saved range and edit text the writer
+        // can see is not selected. The control goes quiet instead.
+        const live = range();
+        if (live && !area.contains(live.startContainer) && editableElsewhere(live.startContainer)) return false;
         const page = !!(ctrl && ctrl.page && spec.page);
         if (cfg.minimal && spec.block && !page) return false;
         if (cfg.mode !== 'html' && !spec.md && !page) return false;
@@ -1710,6 +1725,13 @@
         const spec = COMMANDS[id]; if (!spec) return;
         const page = !!(ctrl && ctrl.page && spec.page);
         if (!page) {
+            // Checked BEFORE restoring the saved range: if the writer's caret is
+            // visibly in another editable element, restoring first would move the
+            // selection back here and the command would edit text the writer can
+            // see is not selected. (The reset blocks pointer clicks on disabled
+            // controls; this covers keyboard activation.)
+            const live = range();
+            if (live && !area.contains(live.startContainer) && editableElsewhere(live.startContainer)) return;
             restoreRange(area);
             // If the caret could not be put in this area — it was never focused, or
             // the saved range has gone stale — do nothing. Running anyway rewrites
@@ -2064,7 +2086,7 @@
             if (a && el.contains(a)) e.preventDefault();
         });
 
-        el.addEventListener('focusin', () => { lastFocused = el; sync(); });
+        el.addEventListener('focusin', () => { lastFocused = el; el.setAttribute('data-text-edit-focused', ''); sync(); });
         // Focus gone somewhere that is neither this area nor one of its controls.
         el.addEventListener('focusout', (e) => {
             if (keeps(el, e.relatedTarget || pointerTarget)) return;

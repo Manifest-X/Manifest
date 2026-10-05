@@ -13,7 +13,7 @@
 
 (function () {
     const LS_KEY = 'mnfst-edit-log';
-    const SCHEMA = 6;                  // overlay schema version — bump when the delta shape changes
+    const SCHEMA = 7;                  // overlay schema version — bump when the delta shape changes
     const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
     const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
     let dragged = null, autoN = 0;

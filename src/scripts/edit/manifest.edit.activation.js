@@ -28,6 +28,7 @@
             el.setAttribute('data-edit-path', pathOf(el, area));   // still what the source writer navigates by
             if (!(k in area._baseClass)) area._baseClass[k] = el.getAttribute('class') || '';
             if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
+            if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
         markEl(area);
         // Stop at a rich editor: its internals are its own, and marking them would
@@ -56,6 +57,14 @@
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
+        if (!area._dndBound) {
+            area._dndBound = true;
+            // Native HTML5 drag (a text selection, an image, a link) must never
+            // start inside a region: it drops SELECTED TEXT into neighbouring
+            // editable leaves, silently merging elements. All region dragging is
+            // pointer-based.
+            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+        }
         if (!area._ctxBound) {
             area._ctxBound = true;
             // One binding for the whole area: report the block, and fall back to the

@@ -17,7 +17,7 @@
 
 (function () {
     const LS_KEY = 'mnfst-edit-log';
-    const SCHEMA = 6;                  // overlay schema version — bump when the delta shape changes
+    const SCHEMA = 7;                  // overlay schema version — bump when the delta shape changes
     const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
     const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
     let dragged = null, autoN = 0;
@@ -367,7 +367,12 @@
         const region = key(area), path = el.getAttribute('data-edit-key');
         if (!path) return;                          // not an addressable node
         if (prop === 'text') value = sanitizeFor(el, value);
-        const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        // _pre* comes from the focus/open listener; when an edit arrives without
+        // one (programmatic focus, scripted writes), the arm-time baseline keeps
+        // `before` truthful so undo can still reach the original.
+        const fallback = prop === 'text' ? area._baseText && area._baseText[path] : prop === 'class' ? area._baseClass && area._baseClass[path] : area._baseStyle && area._baseStyle[path];
+        const pre = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        const before = pre !== undefined ? pre : fallback;
         if (before === value) return;
         log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();
     }
@@ -775,6 +780,12 @@
         // opens is a real element the author can style — by default a translucent
         // copy of what is being dragged, showing exactly where it would land.
         const lift = (ev) => {
+            // Valid cross-region destinations announce themselves for the whole
+            // drag: a dashed target outline, and a min-height (via CSS) so an
+            // EMPTY region has a surface to drop onto at all.
+            if (crossOK) areas().forEach(a => {
+                if (a !== area && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) a.setAttribute('data-edit-drop-target', '');
+            });
             ghost = item.cloneNode(true);
             ghost.setAttribute('data-edit-ghost', '');
             ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
@@ -832,6 +843,7 @@
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
+            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
             if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
             ghost = null; dragged = null;
             if (cancelled) { announce('Cancelled'); return; }
@@ -910,7 +922,9 @@
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
             const baseL = parseFloat(cs.left) || 0, baseT = parseFloat(cs.top) || 0, sx = e.clientX, sy = e.clientY;
             const ov = showOverlay();
-            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(baseL + (ev.clientX - sx), lu, el, parent, 'w') + lu; el.style.top = toUnit(baseT + (ev.clientY - sy), tu, el, parent, 'h') + tu; };
+            // Clamped to the containing block: a freeform card must not leave its canvas.
+            const maxL = () => Math.max(0, parent.clientWidth - el.offsetWidth), maxT = () => Math.max(0, parent.clientHeight - el.offsetHeight);
+            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(Math.min(maxL(), Math.max(0, baseL + (ev.clientX - sx))), lu, el, parent, 'w') + lu; el.style.top = toUnit(Math.min(maxT(), Math.max(0, baseT + (ev.clientY - sy))), tu, el, parent, 'h') + tu; };
             const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov); commitStyle(area, el); };
             document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
         });
@@ -921,8 +935,9 @@
             if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
             const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            if (d[0]) el.style.left = toUnit((parseFloat(cs.left) || 0) + d[0] * step, lu, el, parent, 'w') + lu;
-            if (d[1]) el.style.top = toUnit((parseFloat(cs.top) || 0) + d[1] * step, tu, el, parent, 'h') + tu;
+            const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
+            if (d[0]) el.style.left = toUnit(Math.min(maxL, Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step)), lu, el, parent, 'w') + lu;
+            if (d[1]) el.style.top = toUnit(Math.min(maxT, Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step)), tu, el, parent, 'h') + tu;
             clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(area, el); }, 350);
         });
     }
@@ -1042,6 +1057,7 @@
     // own caret placement; a second click still collapses to a caret for fine edits.
     function selectAllIn(el) {
         requestAnimationFrame(() => {
+            if (dragged || grabbed) return;              // reordering, not editing
             if (document.activeElement !== el) return;
             try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
         });
@@ -1066,13 +1082,18 @@
     // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
     function armText(area) {
         armRichText(area);
-        area.querySelectorAll('*').forEach(el => {
+        // A region whose root IS the text — <p x-edit.text="note">…</p> — has no
+        // descendant leaves; the area itself is the editable leaf.
+        const nodes = [...area.querySelectorAll('*')];
+        if (!area.children.length) nodes.unshift(area);
+        nodes.forEach(el => {
             if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
             el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
+            el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); } });   // Escape finishes the edit, like the rich editor
             el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()); });   // live region: the element may have moved since arming
         });
     }
@@ -1332,6 +1353,7 @@
             el.setAttribute('data-edit-path', pathOf(el, area));   // still what the source writer navigates by
             if (!(k in area._baseClass)) area._baseClass[k] = el.getAttribute('class') || '';
             if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
+            if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
         markEl(area);
         // Stop at a rich editor: its internals are its own, and marking them would
@@ -1360,6 +1382,14 @@
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
+        if (!area._dndBound) {
+            area._dndBound = true;
+            // Native HTML5 drag (a text selection, an image, a link) must never
+            // start inside a region: it drops SELECTED TEXT into neighbouring
+            // editable leaves, silently merging elements. All region dragging is
+            // pointer-based.
+            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+        }
         if (!area._ctxBound) {
             area._ctxBound = true;
             // One binding for the whole area: report the block, and fall back to the
