@@ -16,9 +16,25 @@ function initializeAuthStore() {
     // Cap on holding scoped data for a guest/callback sign-in that may fail
     const SIGN_IN_PENDING_MS = 5000;
     ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
-        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._sessionUnverified = false; } }));
+        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._authEpoch++; markVerified(store); } }));
 
-    window.addEventListener('online', () => { Alpine.store('auth')?._recheckSession?.(); });
+    // Unverified session: recheck on reconnect, on return to the tab, and on a bounded backoff
+    const RECHECK_DELAYS_MS = [2000, 5000, 15000, 60000];
+    const recheck = () => { Alpine.store('auth')?._recheckSession?.(); };
+    window.addEventListener('online', recheck);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') recheck(); });
+
+    function markVerified(store) {
+        store._sessionUnverified = false;
+        store._recheckAttempt = 0;
+        if (store._recheckTimer) { clearTimeout(store._recheckTimer); store._recheckTimer = null; }
+    }
+
+    function scheduleRecheck(store) {
+        if (!store._sessionUnverified || store._recheckTimer) return;
+        const delay = RECHECK_DELAYS_MS[Math.min(store._recheckAttempt++, RECHECK_DELAYS_MS.length - 1)];
+        store._recheckTimer = setTimeout(() => { store._recheckTimer = null; store._recheckSession(); }, delay);
+    }
 
     // Appwrite's "no session" answer; anything else (offline, 5xx) leaves the session unknown
     const NO_SESSION_TYPES = ['general_unauthorized_scope', 'user_unauthorized', 'user_session_not_found', 'user_jwt_invalid', 'user_not_found', 'user_blocked'];
@@ -50,7 +66,8 @@ function initializeAuthStore() {
                 if (store) {
                     const prevId = store.user?.$id || null;
                     // Update store state from other tab
-                    if (state.isAuthenticated) store._sessionUnverified = false;
+                    store._authEpoch++;
+                    if (state.isAuthenticated) markVerified(store);
                     store.isAuthenticated = state.isAuthenticated;
                     store.isAnonymous = state.isAnonymous;
                     store.user = state.user;
@@ -160,6 +177,9 @@ function initializeAuthStore() {
         _guestManual: false,
         _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
         _sessionUnverified: false, // init could not reach Appwrite: signed out locally, never broadcast
+        _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
+        _recheckTimer: null,
+        _recheckAttempt: 0,
         guestManualEnabled: false,
         _oauthProvider: null, // Store OAuth provider name (google, github, etc.) when login is initiated
         _syncStateToStorage: syncStateToStorage,
@@ -374,6 +394,7 @@ function initializeAuthStore() {
                     // Signed out for now; other tabs keep their session
                     if (!isNoSession(error)) {
                         this._sessionUnverified = true;
+                        scheduleRecheck(this);
                         console.warn('[Manifest Appwrite Auth] Session check failed (signed out until reachable):', error?.message || error);
                     }
                 }
@@ -425,9 +446,11 @@ function initializeAuthStore() {
         },
 
         // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
-        async _restoreSession(appwrite) {
-            this.user = await appwrite.account.get();
+        async _restoreSession(appwrite, isCurrent = () => true) {
+            const user = await appwrite.account.get();
             const sessionsResponse = await appwrite.account.listSessions();
+            if (!isCurrent()) return false;
+            this.user = user;
             const allSessions = sessionsResponse.sessions || [];
             const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
 
@@ -468,29 +491,35 @@ function initializeAuthStore() {
                 this.isAuthenticated = true; // User exists, session might be managed by cookies
                 this.isAnonymous = false;
             }
+            return true;
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
         async _recheckSession() {
             if (!this._sessionUnverified || this._rechecking || !this._appwrite) return;
+            if (this._recheckTimer) { clearTimeout(this._recheckTimer); this._recheckTimer = null; }
             this._rechecking = true;
+            const epoch = this._authEpoch;
+            const current = () => this._authEpoch === epoch && this._sessionUnverified && !this.isAuthenticated;
             try {
-                await this._restoreSession(this._appwrite);
+                if (!await this._restoreSession(this._appwrite, current)) return;
             } catch (error) {
+                if (!current()) return;
+                if (!isNoSession(error)) { scheduleRecheck(this); return; }
                 this._clearIdentity();
-                if (isNoSession(error)) {
-                    this._sessionUnverified = false;
-                    syncStateToStorage(this);
-                    if (this._guestAuto && this._createAnonymousSession) await this._createAnonymousSession();
-                }
+                markVerified(this);
+                syncStateToStorage(this);
+                if (this._guestAuto && this._createAnonymousSession) await this._createAnonymousSession();
                 return;
             } finally {
                 this._rechecking = false;
             }
-            this._sessionUnverified = false;
+            markVerified(this);
             const cfg = await config.getAppwriteConfig();
+            if (this._authEpoch !== epoch) return;
             if (this.isAuthenticated && cfg?.teams && (!this.isAnonymous || cfg.guestTeams)) {
                 try { await this._loadTeamsAndSeed(cfg); } catch (e) { console.warn('[Manifest Appwrite Auth] Team load failed:', e?.message || e); }
+                if (this._authEpoch !== epoch) return;
             }
             syncStateToStorage(this);
             if (this.isAuthenticated) {
@@ -676,7 +705,8 @@ function initializeAuthStore() {
                 return { success: true };
             }
 
-            this._sessionUnverified = false;
+            this._authEpoch++;
+            markVerified(this);
             this.inProgress = true;
 
             try {
@@ -779,7 +809,8 @@ function initializeAuthStore() {
                 return { success: false, error: 'Appwrite not configured' };
             }
 
-            this._sessionUnverified = false;
+            this._authEpoch++;
+            markVerified(this);
             this.inProgress = true;
 
             try {
@@ -837,11 +868,12 @@ function initializeAuthStore() {
 
             try {
                 this.user = await this._appwrite.account.get();
-                if (this.isAuthenticated) this._sessionUnverified = false;
+                if (this.isAuthenticated) markVerified(this);
                 syncStateToStorage(this);
                 return this.user;
             } catch (error) {
                 if (!isNoSession(error)) throw error;
+                markVerified(this);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
                 this.user = null;

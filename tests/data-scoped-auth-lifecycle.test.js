@@ -655,7 +655,7 @@ describe('auth store marks the pending sign-in', () => {
             CustomEvent: class { constructor(t, d) { this.type = t; this.detail = d && d.detail } },
             localStorage: ctx.localStorage,
             ManifestAppwriteAuthConfig: {
-                getAppwriteClient: async () => ({ account: { get: async () => { throw new Error('no session') } } }),
+                getAppwriteClient: async () => ({ account: { get: async () => { throw Object.assign(new Error('no session'), { code: 401 }) } } }),
                 getAppwriteConfig: async () => ({ guestAuto, guestManual: false, teams: false }),
             },
             ManifestAppwriteAuthCallbacks: { detect: () => ({ hasCallback: callback, isTeamInvite: teamInvite }) },
@@ -769,15 +769,16 @@ describe('auth store: a network failure is not a logout', () => {
     const offline = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
     const noSession = () => Object.assign(new Error('User (role: guests) missing scope (account)'), { code: 401, type: 'general_unauthorized_scope' })
 
-    async function boot(getError, { guestAuto = false } = {}) {
+    async function boot(getError, { guestAuto = false, timers = null } = {}) {
         let store = null
         let alpineInit = null
         const writes = []
         const events = []
         const listeners = {}
         const ls = { getItem: () => null, setItem: (k, v) => { if (k === 'manifest:auth:state') writes.push(JSON.parse(v)) }, removeItem: () => {} }
-        const ctx = { console: { ...console, warn: () => {} }, setTimeout, Promise, Date, localStorage: ls, sessionStorage: ls }
+        const ctx = { console: { ...console, warn: () => {} }, setTimeout, clearTimeout, Promise, Date, localStorage: ls, sessionStorage: ls, ...(timers || {}) }
         let account = { get: async () => { throw getError() }, deleteSession: async () => {} }
+        const docListeners = {}
         ctx.window = {
             addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn) },
             dispatchEvent: e => { events.push(e.type); (listeners[e.type] || []).forEach(fn => fn(e)) },
@@ -789,16 +790,27 @@ describe('auth store: a network failure is not a logout', () => {
             },
         }
         ctx.CustomEvent = ctx.window.CustomEvent
-        ctx.document = { addEventListener: (ev, cb) => { if (ev === 'alpine:init') alpineInit = cb } }
+        ctx.document = { visibilityState: 'visible', addEventListener: (ev, cb) => { if (ev === 'alpine:init') alpineInit = cb; else (docListeners[ev] ||= []).push(cb) } }
         ctx.Alpine = { store: (name, val) => { if (val !== undefined) { store = val; return } return name === 'auth' ? store : null } }
         vm.createContext(ctx)
         vm.runInContext(AUTH_STORE, ctx)
         alpineInit()
         await store.init()
+        const visible = async () => { (docListeners.visibilitychange || []).forEach(fn => fn()); await settle(10) }
         const fire = async (type, e = {}) => { (listeners[type] || []).forEach(fn => fn(e)); await settle(10) }
         const storage = value => fire('storage', { key: 'manifest:auth:state', newValue: JSON.stringify(value) })
         const setAccount = a => { account = { deleteSession: async () => {}, ...a } }
-        return { store, writes, events, setAccount, fire, storage }
+        return { store, writes, events, setAccount, fire, storage, visible, listeners }
+    }
+    const manualTimers = () => {
+        const queue = new Map()
+        let id = 0
+        return {
+            queue,
+            timers: { setTimeout: (fn, ms) => { queue.set(++id, { fn, ms }); return id }, clearTimeout: t => { queue.delete(t) } },
+            delays: () => [...queue.values()].map(t => t.ms),
+            async tick() { const [[t, { fn }]] = queue; queue.delete(t); fn(); await settle(10) },
+        }
     }
     const u1 = { isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, session: { $id: 's1' } }
     const online = (id = 'u1', provider = 'email') => ({
@@ -896,6 +908,72 @@ describe('auth store: a network failure is not a logout', () => {
         expect(store._sessionUnverified).toBe(false)
         expect(writes.map(w => w.isAuthenticated)).toEqual([true])
         expect(events).toContain('manifest:auth:login')
+    })
+
+    it('a late 401 from a recheck superseded by another tab signing in is dropped', async () => {
+        const { store, writes, storage, setAccount, listeners } = await boot(offline)
+        let rejectGet
+        setAccount({ get: () => new Promise((_, rej) => { rejectGet = rej }) })
+        listeners.online.forEach(fn => fn({}))
+        await settle(5)
+        await storage({ ...u1, user: { $id: 'u2' } })
+        writes.length = 0
+        rejectGet(noSession())
+        await settle(10)
+        expect(store.user).toEqual({ $id: 'u2' })
+        expect(writes).toEqual([])
+    })
+
+    it('a late success from a recheck superseded by a sign-in here does not adopt the stale user', async () => {
+        const { store, writes, events, setAccount, listeners } = await boot(offline)
+        let resolveGet
+        setAccount({ get: () => new Promise(res => { resolveGet = res }), listSessions: online().listSessions })
+        listeners.online.forEach(fn => fn({}))
+        await settle(5)
+        Object.assign(store, u1, { user: { $id: 'u2' } })
+        listeners['manifest:auth:login'].forEach(fn => fn({}))
+        events.length = 0
+        writes.length = 0
+        resolveGet({ $id: 'u1' })
+        await settle(10)
+        expect(store.user).toEqual({ $id: 'u2' })
+        expect(events).toEqual([])
+        expect(writes).toEqual([])
+    })
+
+    it('rechecks on a bounded backoff while unreachable, and stops once verified', async () => {
+        const t = manualTimers()
+        const { store, setAccount } = await boot(offline, { timers: t.timers })
+        const seen = []
+        for (let i = 0; i < 5; i++) { seen.push(...t.delays()); await t.tick() }
+        expect(seen).toEqual([2000, 5000, 15000, 60000, 60000])
+        expect(store._sessionUnverified).toBe(true)
+        setAccount(online())
+        await t.tick()
+        expect(store.user).toEqual({ $id: 'u1' })
+        expect(t.queue.size).toBe(0)
+    })
+
+    it('returning to the tab rechecks; a sign-in elsewhere cancels the pending retry', async () => {
+        const t = manualTimers()
+        const { store, setAccount, visible } = await boot(offline, { timers: t.timers })
+        setAccount(online())
+        await visible()
+        expect(store.user).toEqual({ $id: 'u1' })
+        expect(t.queue.size).toBe(0)
+        const b = manualTimers()
+        const other = await boot(offline, { timers: b.timers })
+        expect(b.queue.size).toBe(1)
+        await other.storage(u1)
+        expect(b.queue.size).toBe(0)
+    })
+
+    it('a 401 on refresh() in an unverified tab is a genuine signed-out: broadcast and verified', async () => {
+        const { store, writes, setAccount } = await boot(offline)
+        setAccount({ get: async () => { throw noSession() } })
+        await store.refresh().catch(() => {})
+        expect(store._sessionUnverified).toBe(false)
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
     })
 
     it('a recovered check that finds no session broadcasts signed out, then guest-auto runs', async () => {
