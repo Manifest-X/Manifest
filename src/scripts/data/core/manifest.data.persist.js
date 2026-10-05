@@ -522,7 +522,8 @@
         if (majorMinor(record.frameworkVersion) !== majorMinor(state.frameworkVersion)) return { ok: false, drop: true };
         if (record.locale && record.locale !== liveLocale()) return { ok: false };
         // Another identity's (or an unstamped) snapshot never hydrates: the scope alone may be '' for everyone
-        if (cfg.authDependent && record.identity !== authIdentity()) return { ok: false, drop: true };
+        // Signed out (offline boot included) keeps it: logout wipes, a different sign-in drops it
+        if (cfg.authDependent && record.identity !== authIdentity()) return authIdentity() === '' ? { ok: false } : { ok: false, drop: true };
         return { ok: true };
     }
 

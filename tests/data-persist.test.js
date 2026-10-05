@@ -515,12 +515,20 @@ describe('auth-dependent sources without persistence.scope', () => {
     const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
     const signedOut = () => ({ _initialized: true, isAuthenticated: false, user: null })
 
-    it("a signed-out boot never hydrates the previous user's snapshot, and drops it", async () => {
+    it("a signed-out boot never hydrates the previous user's snapshot, but keeps it (offline boot)", async () => {
         idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
         const { data, records } = await load({ manifest: mineManifest(), auth: signedOut() })
         await settle(40)
         expect(data().mine).toBeUndefined()
-        expect(records()).toEqual([])
+        expect(records().map(r => [r.key, r.identity])).toEqual([['|mine', 'u1']])
+    })
+
+    it("a different signed-in identity drops the previous user's snapshot", async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
+        const { data, records } = await load({ manifest: mineManifest(), auth: signedIn('u2') })
+        await settle(40)
+        expect(ids(data().mine)).not.toEqual(['a0', 'a1'])
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
     })
 
     it('an unstamped (pre-identity) snapshot is not trusted either', async () => {
