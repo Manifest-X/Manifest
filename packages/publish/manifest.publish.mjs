@@ -12,7 +12,7 @@ import { deflateRawSync } from 'node:zlib';
 import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 
-const DEFAULT_MCP = 'https://manifest-mcp.manifest-c5f.workers.dev/mcp';
+const DEFAULT_MCP = 'https://mcp.manifestx.dev/mcp';
 
 function log(msg) {
   process.stdout.write(msg + '\n');
@@ -708,8 +708,12 @@ export async function main() {
   try {
     const u = new URL(uploadUrl);
     const mcpHost = new URL(url).host;
-    if (u.protocol !== 'https:' || u.host !== mcpHost) {
-      fail(`refusing to upload to an unexpected endpoint (${u.protocol}//${u.host}); expected https://${mcpHost}.`);
+    // Same host as the configured MCP, or the canonical first-party host — a
+    // project whose .mcp.json still points at the legacy workers.dev URL gets
+    // upload links minted on mcp.manifestx.dev during the domain migration.
+    const canonical = new URL(DEFAULT_MCP).host;
+    if (u.protocol !== 'https:' || (u.host !== mcpHost && u.host !== canonical)) {
+      fail(`refusing to upload to an unexpected endpoint (${u.protocol}//${u.host}); expected https://${mcpHost} or https://${canonical}.`);
     }
   } catch {
     fail('the upload URL returned by the server was malformed.');
