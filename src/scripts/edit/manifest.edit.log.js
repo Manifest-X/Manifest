@@ -267,7 +267,7 @@
             if (el.hasAttribute('data-edit-handle') || el.hasAttribute('data-edit-ghost')) continue;
             if (el.parentElement && el.parentElement.closest('[data-text-edit]')) continue;
             const cur = el.getAttribute('data-edit-key');
-            const base = cur ? cur.split('#')[0] : staticKey(el);
+            const base = cur ? ((/^([\s\S]*)#\d+$/.exec(cur) || [, cur])[1]) : staticKey(el);   // ordinal = last #digits suffix
             const n = seen[base] = (seen[base] || 0) + 1;
             const k = n > 1 ? base + '#' + n : base;
             if (cur !== k) { el.setAttribute('data-edit-key', k); if (cur) changes.push([cur, k]); }

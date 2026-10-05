@@ -36,6 +36,12 @@
         }
     }
 
+    /* An unstyled area has no field padding, so its placeholder hugs the line. */
+    :where([data-text-edit].unstyle)[data-text-edit-empty]::before {
+        inset-block-start: 0;
+        inset-inline: 0;
+    }
+
     /* The FIELD look. `.unstyle` drops it so an area can sit seamlessly in a
        page — a WYSIWYG document inherits its element's own type and colours;
        everything above (caret custody, placeholder, commands) still works. */

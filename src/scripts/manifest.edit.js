@@ -426,7 +426,7 @@
             if (el.hasAttribute('data-edit-handle') || el.hasAttribute('data-edit-ghost')) continue;
             if (el.parentElement && el.parentElement.closest('[data-text-edit]')) continue;
             const cur = el.getAttribute('data-edit-key');
-            const base = cur ? cur.split('#')[0] : staticKey(el);
+            const base = cur ? ((/^([\s\S]*)#\d+$/.exec(cur) || [, cur])[1]) : staticKey(el);   // ordinal = last #digits suffix
             const n = seen[base] = (seen[base] || 0) + 1;
             const k = n > 1 ? base + '#' + n : base;
             if (cur !== k) { el.setAttribute('data-edit-key', k); if (cur) changes.push([cur, k]); }
@@ -833,6 +833,7 @@
         const settle = (cancelled) => {
             document.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onCancel);
             document.removeEventListener('keydown', onKey, true);
             if (frame) cancelAnimationFrame(frame);
             if (!active) return;
@@ -857,10 +858,14 @@
             else finishReorder(area);
         };
         const onUp = () => settle(false);
-        // Escape puts it back, the way every drag is expected to be escapable.
+        // Escape puts it back, the way every drag is expected to be escapable. A
+        // cancelled pointer (OS gesture, alert, pen out of range) also reverts —
+        // otherwise the item wedges position:fixed with drop targets still lit.
+        const onCancel = () => settle(true);
         const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
         document.addEventListener('keydown', onKey, true);
     }
     function reorderOver(container, x, y) {
@@ -1085,16 +1090,16 @@
         // A region whose root IS the text — <p x-edit.text="note">…</p> — has no
         // descendant leaves; the area itself is the editable leaf.
         const nodes = [...area.querySelectorAll('*')];
-        if (!area.children.length) nodes.unshift(area);
+        if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
             el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); } });   // Escape finishes the edit, like the rich editor
-            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()); });   // live region: the element may have moved since arming
+            el.addEventListener('blur', () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
         });
     }
 
@@ -1342,7 +1347,9 @@
             if (k) {
                 // Keep the tally in step so a new element never claims an ordinal
                 // an existing one already holds.
-                const [base, n] = k.split('#');
+                // The ordinal is the LAST #digits suffix — authored text may contain '#'.
+                const m = /^([\s\S]*)#(\d+)$/.exec(k);
+                const base = m ? m[1] : k, n = m ? m[2] : undefined;
                 seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
             } else {
                 const base = el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -1389,6 +1396,7 @@
             // editable leaves, silently merging elements. All region dragging is
             // pointer-based.
             area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });   // nothing drops INTO a region either (an OS image drop would merge into a leaf)
         }
         if (!area._ctxBound) {
             area._ctxBound = true;

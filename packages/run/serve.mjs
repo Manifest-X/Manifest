@@ -756,7 +756,7 @@ function writeStaticOps(file, key, edits, order, aliases) {
       if (bound.size) {
         const seen = Object.create(null);
         kids.forEach(k => {
-          const live = bound.get(k), base = live ? live.split('#')[0] : serverStaticKey(html, k);
+          const live = bound.get(k), base = live ? ((/^([\s\S]*)#\d+$/.exec(live) || [, live])[1]) : serverStaticKey(html, k);   // ordinal = last #digits suffix, matching the client
           const d = seen[base] = (seen[base] || 0) + 1;
           byKey[live || (d > 1 ? base + '#' + d : base)] = k;
         });

@@ -395,9 +395,17 @@
         // A heading or quote cannot live inside a list — markdown has no
         // <ul><h2> — so lift the item out of its list first, then retag.
         // Retagging in place serialized to nothing: the content vanished.
+        // A NESTED item outdents to the top level first, or the lift would
+        // land the new block inside the outer <li>.
         if (b.tagName === 'LI' && want !== 'li') {
-            unwrapItem(b);
-            b = blockEl(); if (!b) return;
+            const area = b.closest('[data-text-edit]');
+            for (let guard = 0; guard < 8; guard++) {
+                const list = b && b.tagName === 'LI' && b.closest('ul, ol');
+                if (!list || !list.parentElement || !list.parentElement.closest('li')) break;
+                indent(-1, area);
+                b = blockEl(); if (!b) return;
+            }
+            if (b.tagName === 'LI') { unwrapItem(b); b = blockEl(); if (!b) return; }
             if (b.tagName === want.toUpperCase()) return;
         }
         const n = document.createElement(want);
@@ -406,6 +414,9 @@
         const off = offsetIn(b);
         while (b.firstChild) n.appendChild(b.firstChild);
         b.replaceWith(n);
+        // A sublist that rode along out of a list item cannot live inside a
+        // heading or quote — it steps out right after the new block.
+        [...n.querySelectorAll(':scope > ul, :scope > ol')].reverse().forEach(l => n.after(l));
         caretIn(n, off);
     }
 
@@ -1705,13 +1716,14 @@
     function allows(area, id, ctrl) {
         const spec = COMMANDS[id], cfg = area && area._te;
         if (!spec || !cfg || cfg.mode === 'plain') return false;
+        const page = !!(ctrl && ctrl.page && spec.page);
         // The writer's caret is visibly in ANOTHER editable element (a plain
         // x-edit leaf, an input, someone else's contenteditable): acting now
         // would restore this area's old saved range and edit text the writer
-        // can see is not selected. The control goes quiet instead.
+        // can see is not selected. The control goes quiet instead. Page
+        // commands write variables, never the selection — they stay live.
         const live = range();
-        if (live && !area.contains(live.startContainer) && editableElsewhere(live.startContainer)) return false;
-        const page = !!(ctrl && ctrl.page && spec.page);
+        if (!page && live && !area.contains(live.startContainer) && editableElsewhere(live.startContainer)) return false;
         if (cfg.minimal && spec.block && !page) return false;
         if (cfg.mode !== 'html' && !spec.md && !page) return false;
         if (page) return true;                       // writes to the area, needs no caret
@@ -2086,7 +2098,7 @@
             if (a && el.contains(a)) e.preventDefault();
         });
 
-        el.addEventListener('focusin', () => { lastFocused = el; el.setAttribute('data-text-edit-focused', ''); sync(); });
+        el.addEventListener('focusin', () => { if (lastFocused && lastFocused !== el) release(lastFocused); lastFocused = el; el.setAttribute('data-text-edit-focused', ''); sync(); });
         // Focus gone somewhere that is neither this area nor one of its controls.
         el.addEventListener('focusout', (e) => {
             if (keeps(el, e.relatedTarget || pointerTarget)) return;

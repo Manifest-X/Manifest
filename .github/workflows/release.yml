@@ -38,6 +38,7 @@ on:
     tags:
       - 'v*'          # publishes mnfst
       - 'render-v*'   # publishes mnfst-render
+      - 'run-v*'      # publishes mnfst-run
 
 permissions:
   contents: read
@@ -81,6 +82,7 @@ jobs:
           if [ "$EV" = "push" ]; then
             case "$REF" in
               refs/tags/render-v*) [ "$PKG" = "mnfst-render" ] && run=true ;;
+              refs/tags/run-v*)    [ "$PKG" = "mnfst-run" ] && run=true ;;
               refs/tags/v*)        [ "$PKG" = "mnfst" ] && run=true ;;
             esac
           elif [ "${{ inputs.package }}" = "all" ] || [ "${{ inputs.package }}" = "$PKG" ]; then

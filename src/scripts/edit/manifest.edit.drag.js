@@ -98,6 +98,7 @@
         const settle = (cancelled) => {
             document.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onCancel);
             document.removeEventListener('keydown', onKey, true);
             if (frame) cancelAnimationFrame(frame);
             if (!active) return;
@@ -122,10 +123,14 @@
             else finishReorder(area);
         };
         const onUp = () => settle(false);
-        // Escape puts it back, the way every drag is expected to be escapable.
+        // Escape puts it back, the way every drag is expected to be escapable. A
+        // cancelled pointer (OS gesture, alert, pen out of range) also reverts —
+        // otherwise the item wedges position:fixed with drop targets still lit.
+        const onCancel = () => settle(true);
         const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
         document.addEventListener('keydown', onKey, true);
     }
     function reorderOver(container, x, y) {

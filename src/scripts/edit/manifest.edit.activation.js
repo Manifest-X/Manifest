@@ -17,7 +17,9 @@
             if (k) {
                 // Keep the tally in step so a new element never claims an ordinal
                 // an existing one already holds.
-                const [base, n] = k.split('#');
+                // The ordinal is the LAST #digits suffix — authored text may contain '#'.
+                const m = /^([\s\S]*)#(\d+)$/.exec(k);
+                const base = m ? m[1] : k, n = m ? m[2] : undefined;
                 seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
             } else {
                 const base = el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -64,6 +66,7 @@
             // editable leaves, silently merging elements. All region dragging is
             // pointer-based.
             area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });   // nothing drops INTO a region either (an OS image drop would merge into a leaf)
         }
         if (!area._ctxBound) {
             area._ctxBound = true;

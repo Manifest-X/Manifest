@@ -32,16 +32,16 @@
         // A region whose root IS the text — <p x-edit.text="note">…</p> — has no
         // descendant leaves; the area itself is the editable leaf.
         const nodes = [...area.querySelectorAll('*')];
-        if (!area.children.length) nodes.unshift(area);
+        if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
             el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); } });   // Escape finishes the edit, like the rich editor
-            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()); });   // live region: the element may have moved since arming
+            el.addEventListener('blur', () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
         });
     }
 
