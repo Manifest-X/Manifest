@@ -514,13 +514,35 @@ describe('auth-dependent sources without persistence.scope', () => {
     const mineManifest = () => ({ data: { mine: { url: 'https://api.test/mine', scope: 'user', persist: true } } })
     const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
     const signedOut = () => ({ _initialized: true, isAuthenticated: false, user: null })
+    const offline = () => ({ ...signedOut(), _sessionUnverified: true })
 
-    it("a signed-out boot never hydrates the previous user's snapshot, but keeps it (offline boot)", async () => {
+    it("a signed-out boot (genuine no-session) never hydrates the previous user's snapshot, and drops it", async () => {
         idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
         const { data, records } = await load({ manifest: mineManifest(), auth: signedOut() })
         await settle(40)
         expect(data().mine).toBeUndefined()
+        expect(records()).toEqual([])
+    })
+
+    it("an offline boot never hydrates the previous user's snapshot, but keeps it", async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
+        const { data, records } = await load({ manifest: mineManifest(), auth: offline() })
+        await settle(40)
+        expect(data().mine).toBeUndefined()
         expect(records().map(r => [r.key, r.identity])).toEqual([['|mine', 'u1']])
+    })
+
+    it('the kept snapshot hydrates once the session check recovers as the same user', async () => {
+        idb.seed(DB(), record('', 'mine', rows('a', 2), { identity: 'u1' }))
+        const { data, auth, dispatch, gate } = await load({ manifest: mineManifest(), auth: offline() })
+        await settle(40)
+        expect(data().mine).toBeUndefined()
+        const open = gate()
+        Object.assign(auth(), signedIn('u1'), { _sessionUnverified: false })
+        dispatch('manifest:auth:login')
+        await settle(40)
+        expect(ids(data().mine)).toEqual(['a0', 'a1'])
+        open()
     })
 
     it("a different signed-in identity drops the previous user's snapshot", async () => {

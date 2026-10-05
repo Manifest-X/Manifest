@@ -47,8 +47,8 @@ async function initializeAppwriteAuthPlugin() {
                     }
                 }
 
-                // If no session and guest-auto is enabled, create guest session
-                if (!store.isAuthenticated && store._guestAuto && store._createAnonymousSession) {
+                // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable)
+                if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
             }, { once: true });

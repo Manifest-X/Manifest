@@ -34,6 +34,7 @@ const SUBSCRIPTS = [
 ].map(f => [f, readFileSync(path.join(DATA, f), 'utf8')])
 const RT_SRC = readFileSync(path.join(DATA, 'appwrite/manifest.data.realtime.js'), 'utf8')
 const AUTH_STORE = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.store.js'), 'utf8')
+const AUTH_MAIN = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.main.js'), 'utf8')
 
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
 const signedOut = () => ({ _initialized: true, isAuthenticated: false, isAnonymous: false, user: null, currentTeam: null, teams: [] })
@@ -768,22 +769,23 @@ describe('auth store: a network failure is not a logout', () => {
     const offline = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
     const noSession = () => Object.assign(new Error('User (role: guests) missing scope (account)'), { code: 401, type: 'general_unauthorized_scope' })
 
-    async function boot(getError) {
+    async function boot(getError, { guestAuto = false } = {}) {
         let store = null
         let alpineInit = null
         const writes = []
         const events = []
+        const listeners = {}
         const ls = { getItem: () => null, setItem: (k, v) => { if (k === 'manifest:auth:state') writes.push(JSON.parse(v)) }, removeItem: () => {} }
         const ctx = { console: { ...console, warn: () => {} }, setTimeout, Promise, Date, localStorage: ls, sessionStorage: ls }
-        let account = { get: async () => { throw getError() } }
+        let account = { get: async () => { throw getError() }, deleteSession: async () => {} }
         ctx.window = {
-            addEventListener: () => {},
-            dispatchEvent: e => events.push(e.type),
+            addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn) },
+            dispatchEvent: e => { events.push(e.type); (listeners[e.type] || []).forEach(fn => fn(e)) },
             CustomEvent: class { constructor(t, d) { this.type = t; this.detail = d && d.detail } },
             localStorage: ls,
             ManifestAppwriteAuthConfig: {
                 getAppwriteClient: async () => ({ account: new Proxy({}, { get: (_, k) => account[k] }) }),
-                getAppwriteConfig: async () => ({ guestAuto: false, guestManual: false, teams: false }),
+                getAppwriteConfig: async () => ({ guestAuto, guestManual: false, teams: false }),
             },
         }
         ctx.CustomEvent = ctx.window.CustomEvent
@@ -793,8 +795,16 @@ describe('auth store: a network failure is not a logout', () => {
         vm.runInContext(AUTH_STORE, ctx)
         alpineInit()
         await store.init()
-        return { store, writes, events, setAccount: a => { account = a } }
+        const fire = async (type, e = {}) => { (listeners[type] || []).forEach(fn => fn(e)); await settle(10) }
+        const storage = value => fire('storage', { key: 'manifest:auth:state', newValue: JSON.stringify(value) })
+        const setAccount = a => { account = { deleteSession: async () => {}, ...a } }
+        return { store, writes, events, setAccount, fire, storage }
     }
+    const u1 = { isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, session: { $id: 's1' } }
+    const online = (id = 'u1', provider = 'email') => ({
+        get: async () => ({ $id: id }),
+        listSessions: async () => ({ sessions: [{ $id: 's1', current: true, provider }] }),
+    })
 
     it('offline init: signed out locally, nothing broadcast to other tabs', async () => {
         const { store, writes, events } = await boot(offline)
@@ -829,6 +839,104 @@ describe('auth store: a network failure is not a logout', () => {
         await expect(store.refresh()).rejects.toThrow()
         expect(store.user).toBeNull()
         expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+    })
+
+    it('offline boot, then another tab signs in: logout here broadcasts signed out', async () => {
+        const { store, writes, events, storage } = await boot(offline)
+        await storage(u1)
+        await store.logout()
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+        expect(events).toContain('manifest:auth:logout')
+    })
+
+    it('offline boot, adopt u1 from another tab, then a 401 on refresh() broadcasts signed out', async () => {
+        const { store, writes, storage, setAccount } = await boot(offline)
+        await storage(u1)
+        setAccount({ get: async () => { throw noSession() } })
+        await expect(store.refresh()).rejects.toThrow()
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+    })
+
+    it('the same through a failing logout (expired session)', async () => {
+        const { store, writes, storage, setAccount } = await boot(offline)
+        await storage(u1)
+        setAccount({ deleteSession: async () => { throw noSession() } })
+        await store.logout()
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+    })
+
+    it('clearSession() after an offline boot broadcasts signed out', async () => {
+        const { store, writes, storage } = await boot(offline)
+        await storage(u1)
+        await store.clearSession()
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+    })
+
+    it('a successful refresh() verifies the session', async () => {
+        const { store, writes, setAccount } = await boot(offline)
+        Object.assign(store, u1)
+        setAccount(online())
+        await store.refresh()
+        expect(store._sessionUnverified).toBe(false)
+        writes.length = 0
+        store._clearIdentity()
+        store._syncStateToStorage(store)
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+    })
+
+    it('coming back online re-runs the session check and signs in as the real user', async () => {
+        const { store, writes, events, fire, setAccount } = await boot(offline)
+        await fire('online')
+        expect(store.isAuthenticated).toBe(false)
+        expect(store._sessionUnverified).toBe(true)
+        expect(writes).toEqual([])
+        setAccount(online())
+        await fire('online')
+        expect(store.user).toEqual({ $id: 'u1' })
+        expect(store._sessionUnverified).toBe(false)
+        expect(writes.map(w => w.isAuthenticated)).toEqual([true])
+        expect(events).toContain('manifest:auth:login')
+    })
+
+    it('a recovered check that finds no session broadcasts signed out, then guest-auto runs', async () => {
+        const { store, writes, fire, setAccount } = await boot(offline, { guestAuto: true })
+        let guests = 0
+        store._createAnonymousSession = async () => { guests++ }
+        setAccount({ get: async () => { throw noSession() } })
+        await fire('online')
+        expect(store._sessionUnverified).toBe(false)
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+        expect(guests).toBe(1)
+    })
+})
+
+describe('auth main: guest-auto after init', () => {
+    async function run(unverified) {
+        let guests = 0
+        const listeners = {}
+        const store = { _initialized: true, isAuthenticated: false, _guestAuto: true, _sessionUnverified: unverified, _createAnonymousSession: async () => { guests++ } }
+        let alpineInit = null
+        const ctx = { console, setTimeout, Promise }
+        ctx.window = {
+            addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn) },
+            ManifestAppwriteAuthConfig: {},
+        }
+        ctx.document = { readyState: 'complete', addEventListener: (ev, cb) => { if (ev === 'alpine:init') alpineInit = cb } }
+        ctx.Alpine = { store: () => store }
+        vm.createContext(ctx)
+        vm.runInContext(AUTH_MAIN, ctx)
+        alpineInit()
+        await settle(200)
+        for (const fn of listeners['manifest:auth:initialized'] || []) await fn()
+        return guests
+    }
+
+    it('a genuine signed-out init creates the guest', async () => {
+        expect(await run(false)).toBe(1)
+    })
+
+    it('an unverified (offline) init does not', async () => {
+        expect(await run(true)).toBe(0)
     })
 })
 

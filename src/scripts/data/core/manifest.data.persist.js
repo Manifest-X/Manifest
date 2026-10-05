@@ -38,6 +38,7 @@
         pending: new Map(),    // source -> time its debounced write is due
         writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
+        hydratedIdentity: null, // identity auth-dependent hydration last ran under
         fetchKicked: new Set(),
         watching: false,
         deployment: null,
@@ -64,6 +65,11 @@
         if (!auth) return '';
         if (auth._initialized !== true) return null;
         return auth.isAuthenticated === true ? String(auth.user?.$id || auth.user?.id || '') : '';
+    }
+
+    function authUnverified() {
+        const auth = (typeof Alpine !== 'undefined' && Alpine.store) ? Alpine.store('auth') : null;
+        return auth?._sessionUnverified === true;
     }
 
     function warnOnce(key, message, error) {
@@ -522,8 +528,8 @@
         if (majorMinor(record.frameworkVersion) !== majorMinor(state.frameworkVersion)) return { ok: false, drop: true };
         if (record.locale && record.locale !== liveLocale()) return { ok: false };
         // Another identity's (or an unstamped) snapshot never hydrates: the scope alone may be '' for everyone
-        // Signed out (offline boot included) keeps it: logout wipes, a different sign-in drops it
-        if (cfg.authDependent && record.identity !== authIdentity()) return authIdentity() === '' ? { ok: false } : { ok: false, drop: true };
+        // An unverified (offline) signed-out boot keeps it for the session check to come back
+        if (cfg.authDependent && record.identity !== authIdentity()) return authUnverified() ? { ok: false } : { ok: false, drop: true };
         return { ok: true };
     }
 
@@ -531,8 +537,13 @@
     // fresh landing (or after a scope change) is discarded
     async function hydrate(sources) {
         const ds = dataStore();
-        // Auth-dependent sources wait for a known identity (re-run on auth events)
-        const known = authIdentity() !== null;
+        // Auth-dependent sources wait for a known identity (re-run on auth events), and retry when it changes
+        const identity = authIdentity();
+        const known = identity !== null;
+        if (known && identity !== state.hydratedIdentity) {
+            for (const [source, cfg] of state.sources) if (cfg.authDependent) state.hydrated.delete(source);
+            state.hydratedIdentity = identity;
+        }
         const pending = sources.filter(source => state.sources.has(source) && !state.hydrated.has(source)
             && (known || !state.sources.get(source).authDependent));
         if (!ds || !pending.length || !state.enabled || state.disabled || state.scopePending) return;

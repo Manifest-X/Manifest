@@ -18,6 +18,8 @@ function initializeAuthStore() {
     ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
         window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._sessionUnverified = false; } }));
 
+    window.addEventListener('online', () => { Alpine.store('auth')?._recheckSession?.(); });
+
     // Appwrite's "no session" answer; anything else (offline, 5xx) leaves the session unknown
     const NO_SESSION_TYPES = ['general_unauthorized_scope', 'user_unauthorized', 'user_session_not_found', 'user_jwt_invalid', 'user_not_found', 'user_blocked'];
     const isNoSession = error => error?.code === 401 || NO_SESSION_TYPES.includes(error?.type);
@@ -48,6 +50,7 @@ function initializeAuthStore() {
                 if (store) {
                     const prevId = store.user?.$id || null;
                     // Update store state from other tab
+                    if (state.isAuthenticated) store._sessionUnverified = false;
                     store.isAuthenticated = state.isAuthenticated;
                     store.isAnonymous = state.isAnonymous;
                     store.user = state.user;
@@ -362,48 +365,7 @@ function initializeAuthStore() {
 
                 // Try to restore existing session
                 try {
-                    this.user = await appwrite.account.get();
-                    const sessionsResponse = await appwrite.account.listSessions();
-                    const allSessions = sessionsResponse.sessions || [];
-                    const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
-
-                    if (currentSession) {
-                        this.session = currentSession;
-                        this.isAuthenticated = true;
-                        this.isAnonymous = currentSession.provider === 'anonymous';
-
-                        // Restore OAuth provider from storage (persists across redirects/refresh)
-                        if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
-                            try {
-                                // Try localStorage first (persists across redirects), fallback to sessionStorage
-                                let storedProvider = localStorage.getItem('manifest:oauth:provider');
-                                if (!storedProvider) {
-                                    storedProvider = sessionStorage.getItem('manifest:oauth:provider');
-                                }
-                                if (storedProvider) {
-                                    this._oauthProvider = storedProvider;
-                                }
-                            } catch (e) {
-                                // Storage error
-                            }
-                        }
-
-                        // If guest is disabled but we have anonymous session, clear it
-                        if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
-                            try {
-                                await appwrite.account.deleteSession(this.session.$id);
-                                this.isAuthenticated = false;
-                                this.isAnonymous = false;
-                                this.user = null;
-                                this.session = null;
-                            } catch (deleteError) {
-                                // Failed to delete guest session
-                            }
-                        }
-                    } else {
-                        this.isAuthenticated = true; // User exists, session might be managed by cookies
-                        this.isAnonymous = false;
-                    }
+                    await this._restoreSession(appwrite);
 
                     // Team loading is deferred (not awaited) — runs in the background after
                     // manifest:auth:initialized so a session gate isn't held up by it.
@@ -459,6 +421,80 @@ function initializeAuthStore() {
                         detail: { teams: this.teams, currentTeam: this.currentTeam }
                     })))
                     .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
+            }
+        },
+
+        // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
+        async _restoreSession(appwrite) {
+            this.user = await appwrite.account.get();
+            const sessionsResponse = await appwrite.account.listSessions();
+            const allSessions = sessionsResponse.sessions || [];
+            const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
+
+            if (currentSession) {
+                this.session = currentSession;
+                this.isAuthenticated = true;
+                this.isAnonymous = currentSession.provider === 'anonymous';
+
+                // Restore OAuth provider from storage (persists across redirects/refresh)
+                if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
+                    try {
+                        // Try localStorage first (persists across redirects), fallback to sessionStorage
+                        let storedProvider = localStorage.getItem('manifest:oauth:provider');
+                        if (!storedProvider) {
+                            storedProvider = sessionStorage.getItem('manifest:oauth:provider');
+                        }
+                        if (storedProvider) {
+                            this._oauthProvider = storedProvider;
+                        }
+                    } catch (e) {
+                        // Storage error
+                    }
+                }
+
+                // If guest is disabled but we have anonymous session, clear it
+                if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
+                    try {
+                        await appwrite.account.deleteSession(this.session.$id);
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                        this.user = null;
+                        this.session = null;
+                    } catch (deleteError) {
+                        // Failed to delete guest session
+                    }
+                }
+            } else {
+                this.isAuthenticated = true; // User exists, session might be managed by cookies
+                this.isAnonymous = false;
+            }
+        },
+
+        // Offline-booted tab: re-run the session check once Appwrite is reachable
+        async _recheckSession() {
+            if (!this._sessionUnverified || this._rechecking || !this._appwrite) return;
+            this._rechecking = true;
+            try {
+                await this._restoreSession(this._appwrite);
+            } catch (error) {
+                this._clearIdentity();
+                if (isNoSession(error)) {
+                    this._sessionUnverified = false;
+                    syncStateToStorage(this);
+                    if (this._guestAuto && this._createAnonymousSession) await this._createAnonymousSession();
+                }
+                return;
+            } finally {
+                this._rechecking = false;
+            }
+            this._sessionUnverified = false;
+            const cfg = await config.getAppwriteConfig();
+            if (this.isAuthenticated && cfg?.teams && (!this.isAnonymous || cfg.guestTeams)) {
+                try { await this._loadTeamsAndSeed(cfg); } catch (e) { console.warn('[Manifest Appwrite Auth] Team load failed:', e?.message || e); }
+            }
+            syncStateToStorage(this);
+            if (this.isAuthenticated) {
+                window.dispatchEvent(new CustomEvent(this.isAnonymous ? 'manifest:auth:anonymous' : 'manifest:auth:login', { detail: { user: this.user } }));
             }
         },
 
@@ -640,6 +676,7 @@ function initializeAuthStore() {
                 return { success: true };
             }
 
+            this._sessionUnverified = false;
             this.inProgress = true;
 
             try {
@@ -742,6 +779,7 @@ function initializeAuthStore() {
                 return { success: false, error: 'Appwrite not configured' };
             }
 
+            this._sessionUnverified = false;
             this.inProgress = true;
 
             try {
@@ -799,6 +837,7 @@ function initializeAuthStore() {
 
             try {
                 this.user = await this._appwrite.account.get();
+                if (this.isAuthenticated) this._sessionUnverified = false;
                 syncStateToStorage(this);
                 return this.user;
             } catch (error) {
