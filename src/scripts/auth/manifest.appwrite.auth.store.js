@@ -16,7 +16,11 @@ function initializeAuthStore() {
     // Cap on holding scoped data for a guest/callback sign-in that may fail
     const SIGN_IN_PENDING_MS = 5000;
     ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
-        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) store._signInPendingUntil = 0; }));
+        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._sessionUnverified = false; } }));
+
+    // Appwrite's "no session" answer; anything else (offline, 5xx) leaves the session unknown
+    const NO_SESSION_TYPES = ['general_unauthorized_scope', 'user_unauthorized', 'user_session_not_found', 'user_jwt_invalid', 'user_not_found', 'user_blocked'];
+    const isNoSession = error => error?.code === 401 || NO_SESSION_TYPES.includes(error?.type);
 
     // Session fields safe to mirror across tabs. Excludes `secret` and provider
     // tokens — this copy is only for UI cross-tab sync, not the auth of record.
@@ -71,6 +75,8 @@ function initializeAuthStore() {
 
     // Helper to sync state to localStorage (for cross-tab communication)
     function syncStateToStorage(store) {
+        // An unverified signed-out state must not sign other tabs out
+        if (store._sessionUnverified && !store.isAuthenticated) return;
         try {
             const state = {
                 isAuthenticated: store.isAuthenticated,
@@ -150,6 +156,7 @@ function initializeAuthStore() {
         _guestAuto: false,
         _guestManual: false,
         _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
+        _sessionUnverified: false, // init could not reach Appwrite: signed out locally, never broadcast
         guestManualEnabled: false,
         _oauthProvider: null, // Store OAuth provider name (google, github, etc.) when login is initiated
         _syncStateToStorage: syncStateToStorage,
@@ -401,11 +408,12 @@ function initializeAuthStore() {
                     // Team loading is deferred (not awaited) — runs in the background after
                     // manifest:auth:initialized so a session gate isn't held up by it.
                 } catch (error) {
-                    // No existing session - this is expected
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
-                    this.user = null;
-                    this.session = null;
+                    this._clearIdentity();
+                    // Signed out for now; other tabs keep their session
+                    if (!isNoSession(error)) {
+                        this._sessionUnverified = true;
+                        console.warn('[Manifest Appwrite Auth] Session check failed (signed out until reachable):', error?.message || error);
+                    }
                 }
 
                 // Sync state to localStorage
@@ -794,7 +802,7 @@ function initializeAuthStore() {
                 syncStateToStorage(this);
                 return this.user;
             } catch (error) {
-                // Session may have expired
+                if (!isNoSession(error)) throw error;
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
                 this.user = null;

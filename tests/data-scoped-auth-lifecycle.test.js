@@ -764,6 +764,74 @@ describe('auth store always announces a logout', () => {
     })
 })
 
+describe('auth store: a network failure is not a logout', () => {
+    const offline = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
+    const noSession = () => Object.assign(new Error('User (role: guests) missing scope (account)'), { code: 401, type: 'general_unauthorized_scope' })
+
+    async function boot(getError) {
+        let store = null
+        let alpineInit = null
+        const writes = []
+        const events = []
+        const ls = { getItem: () => null, setItem: (k, v) => { if (k === 'manifest:auth:state') writes.push(JSON.parse(v)) }, removeItem: () => {} }
+        const ctx = { console: { ...console, warn: () => {} }, setTimeout, Promise, Date, localStorage: ls, sessionStorage: ls }
+        let account = { get: async () => { throw getError() } }
+        ctx.window = {
+            addEventListener: () => {},
+            dispatchEvent: e => events.push(e.type),
+            CustomEvent: class { constructor(t, d) { this.type = t; this.detail = d && d.detail } },
+            localStorage: ls,
+            ManifestAppwriteAuthConfig: {
+                getAppwriteClient: async () => ({ account: new Proxy({}, { get: (_, k) => account[k] }) }),
+                getAppwriteConfig: async () => ({ guestAuto: false, guestManual: false, teams: false }),
+            },
+        }
+        ctx.CustomEvent = ctx.window.CustomEvent
+        ctx.document = { addEventListener: (ev, cb) => { if (ev === 'alpine:init') alpineInit = cb } }
+        ctx.Alpine = { store: (name, val) => { if (val !== undefined) { store = val; return } return name === 'auth' ? store : null } }
+        vm.createContext(ctx)
+        vm.runInContext(AUTH_STORE, ctx)
+        alpineInit()
+        await store.init()
+        return { store, writes, events, setAccount: a => { account = a } }
+    }
+
+    it('offline init: signed out locally, nothing broadcast to other tabs', async () => {
+        const { store, writes, events } = await boot(offline)
+        expect(store.isAuthenticated).toBe(false)
+        expect(store._initialized).toBe(true)
+        expect(events).toContain('manifest:auth:initialized')
+        expect(writes).toEqual([])
+    })
+
+    it('a later state sync from that tab stays local too', async () => {
+        const { store, writes } = await boot(offline)
+        store._syncStateToStorage(store)
+        expect(writes).toEqual([])
+    })
+
+    it('a genuine 401 at init still broadcasts signed out', async () => {
+        const { store, writes } = await boot(noSession)
+        expect(store.isAuthenticated).toBe(false)
+        expect(writes).toHaveLength(1)
+        expect(writes[0].isAuthenticated).toBe(false)
+    })
+
+    it('refresh() offline keeps the identity and broadcasts nothing; a 401 signs out', async () => {
+        const { store, writes, setAccount } = await boot(noSession)
+        writes.length = 0
+        Object.assign(store, { isAuthenticated: true, user: { $id: 'u1' }, session: { $id: 's1' } })
+        setAccount({ get: async () => { throw offline() } })
+        await expect(store.refresh()).rejects.toThrow('Failed to fetch')
+        expect(store.user).toEqual({ $id: 'u1' })
+        expect(writes).toEqual([])
+        setAccount({ get: async () => { throw noSession() } })
+        await expect(store.refresh()).rejects.toThrow()
+        expect(store.user).toBeNull()
+        expect(writes.map(w => w.isAuthenticated)).toEqual([false])
+    })
+})
+
 describe('overlapping locale changes', () => {
     it("an earlier change finishing does not clear the later one's _localeChanging", async () => {
         let call = 0
