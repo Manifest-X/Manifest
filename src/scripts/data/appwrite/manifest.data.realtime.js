@@ -4,7 +4,8 @@
 const subscriptions = new Map(); // Map<dataSourceName, unsubscribeFunction>
 
 // Subscribe to storage bucket file changes
-async function subscribeToStorageBucket(dataSourceName, bucketId, scope, onEvent) {
+// isCurrent: false once the requesting load is superseded (logout) — skip, never touch a newer entry
+async function subscribeToStorageBucket(dataSourceName, bucketId, scope, onEvent, isCurrent) {
     // Unsubscribe from existing subscription if any
     if (subscriptions.has(dataSourceName)) {
         const unsubscribe = subscriptions.get(dataSourceName);
@@ -15,6 +16,7 @@ async function subscribeToStorageBucket(dataSourceName, bucketId, scope, onEvent
     }
 
     const services = await window.ManifestDataAppwrite.getAppwriteDataServices();
+    if (isCurrent && !isCurrent()) return null;
     if (!services?.realtime) {
         console.warn('[Manifest Data] Realtime service not available for', dataSourceName);
         return null;
@@ -84,7 +86,7 @@ function unsubscribeAll() {
 }
 
 // Subscribe to database table row changes
-async function subscribeToTable(dataSourceName, databaseId, tableId, scope, onEvent) {
+async function subscribeToTable(dataSourceName, databaseId, tableId, scope, onEvent, isCurrent) {
     // Unsubscribe from existing subscription if any
     if (subscriptions.has(dataSourceName)) {
         const unsubscribe = subscriptions.get(dataSourceName);
@@ -95,6 +97,7 @@ async function subscribeToTable(dataSourceName, databaseId, tableId, scope, onEv
     }
 
     const services = await window.ManifestDataAppwrite.getAppwriteDataServices();
+    if (isCurrent && !isCurrent()) return null;
     if (!services?.realtime) {
         console.warn('[Manifest Data] Realtime service not available for', dataSourceName);
         return null;
