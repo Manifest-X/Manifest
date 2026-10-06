@@ -124,10 +124,10 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
-        otpSent: false, // Email OTP: a code has been emailed and is awaiting entry
-        otpExpired: false, // Email OTP: the entered code was wrong/expired
-        otpPhrase: null, // Email OTP: security phrase to display (when enabled)
-        _otpUserId: null, // Email OTP: userId returned by createEmailToken, used by verifyOTP
+        otpSent: false, // OTP (email/phone): a code has been sent and is awaiting entry
+        otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
+        otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
+        _otpUserId: null, // OTP: userId returned by createEmailToken/createPhoneToken, used by verifyOTP
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
@@ -728,7 +728,7 @@ function initializeAuthStore() {
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
 
-                // Clear email OTP flags
+                // Clear OTP flags (email/phone)
                 this.otpSent = false;
                 this.otpExpired = false;
                 this.otpPhrase = null;

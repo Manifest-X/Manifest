@@ -119,6 +119,7 @@
                 "guest-manual",
                 "magic",
                 "otp",
+                "phone",
                 "oauth"
             ],
             "teams": {
