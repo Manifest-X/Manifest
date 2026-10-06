@@ -1401,14 +1401,16 @@
         <input type="email" pattern=".*@.*\..*" autocomplete="on" placeholder="email for magic link" aria-label="Email" @keyup.enter="$auth.sendMagicLink()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress" style="flex:1; min-width:13rem">
         <button class="ghost small" @click="$auth.sendMagicLink()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress">Send magic link</button>
         <button class="ghost small" @click="$auth.sendEmailOTP()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress">Email code (OTP)</button>
+        <input type="tel" autocomplete="tel" placeholder="phone for SMS code (+countrycode)" aria-label="Phone" @keyup.enter="$auth.sendPhoneOTP()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress" style="flex:1; min-width:11rem">
+        <button class="ghost small" @click="$auth.sendPhoneOTP()" :disabled="($auth.isAuthenticated && !$auth.isAnonymous) || $auth.inProgress">Text code (OTP)</button>
         <button class="ghost small" @click="$auth.requestGuest()" :disabled="$auth.isAuthenticated || $auth.inProgress">Continue as guest</button>
         <button class="ghost small" @click="$auth.logout()" :disabled="!$auth.isAuthenticated || $auth.inProgress">Logout</button>
       </div>
       <div class="row gap-2" x-show="$auth.otpSent" style="align-items:center">
-        <input name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter the emailed code" aria-label="One-time code" @keyup.enter="$auth.submitOTP()" :disabled="$auth.inProgress" style="flex:1; min-width:11rem">
+        <input name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter the code" aria-label="One-time code" @keyup.enter="$auth.submitOTP()" :disabled="$auth.inProgress" style="flex:1; min-width:11rem">
         <button class="outlined small" @click="$auth.submitOTP()" :disabled="$auth.inProgress">Verify</button>
       </div>
-      <span class="presence-meta" x-show="$auth.otpSent">Code emailed — enter it above to sign in (in-page, no redirect).</span>
+      <span class="presence-meta" x-show="$auth.otpSent">Code sent — enter it above to sign in (in-page, no redirect).</span>
       <span class="presence-meta" x-show="$auth.otpExpired">Code was invalid or expired — try again.</span>
       <span class="presence-meta" x-show="$auth.inProgress">Authorizing…</span>
       <span class="presence-meta" x-show="$auth.magicLinkSent">Magic link sent — check your inbox/spam, then return here.</span>

@@ -1,7 +1,8 @@
 /* Auth email OTP (one-time passcode) */
 
 // Two-step in-page flow (no redirect): createEmailOTP(email) emails a code + returns
-// a userId, verifyOTP(code) creates the session.
+// a userId, verifyOTP(code) creates the session. verifyOTP/submitOTP are shared
+// with phone OTP (users.phone.js).
 // Gotcha: Appwrite can't convert an anonymous guest via OTP — a guest verifying an OTP
 // gets a fresh account (guest teams lost). Use magic links for guest upgrade.
 

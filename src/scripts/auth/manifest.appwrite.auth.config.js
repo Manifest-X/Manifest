@@ -66,6 +66,7 @@ async function getAppwriteConfig() {
 
     const magicEnabled = authMethods.includes("magic");
     const otpEnabled = authMethods.includes("otp");
+    const phoneEnabled = authMethods.includes("phone");
     const oauthEnabled = authMethods.includes("oauth");
 
     // Teams (presence of teams object enables it)
@@ -88,7 +89,7 @@ async function getAppwriteConfig() {
         : toBool(appwriteConfig.auth.teams.authenticated);
 
     // Guest upgrade: preserve the anonymous account + teams on sign-in (magic/oauth;
-    // OTP can't convert anonymous accounts). Defaults to guestTeams.
+    // email/phone OTP can't convert anonymous accounts). Defaults to guestTeams.
     const guestUpgrade = appwriteConfig.auth?.guestUpgrade !== undefined
         ? toBool(appwriteConfig.auth.guestUpgrade)
         : guestTeams;
@@ -131,6 +132,7 @@ async function getAppwriteConfig() {
         anonymous: guestAuto, // back-compat alias
         magic: magicEnabled,
         otp: otpEnabled,
+        phone: phoneEnabled,
         oauth: oauthEnabled,
         teams: teamsEnabled,
         permanentTeams: permanentTeams,
