@@ -33,6 +33,7 @@ function updateEntryInStore(dataSourceName, entryId, updates, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
 
     const { store, arr, index } = findRawIndex(dataSourceName, entryId);
     if (!store || !arr || index === -1) {
@@ -64,6 +65,7 @@ function addEntryToStore(dataSourceName, entry, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
 
     const ds = window.ManifestDataStore;
     const target = ds?.ensureSourceArray?.(dataSourceName);
@@ -95,6 +97,7 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
 
     const { store, arr, index } = findRawIndex(dataSourceName, entryId);
     if (!store || !arr || index === -1) {
@@ -171,6 +174,8 @@ async function executeMutation(mutationConfig) {
     } = mutationConfig;
 
     const mutationId = generateMutationId();
+    // Writes after the API call carry this; a logout/scope reset meanwhile drops them
+    const writeOptions = { ...options, generation: window.ManifestDataStore?.sourceGeneration?.(dataSourceName) };
     let originalData = null;
     let optimisticData = null;
     let resolvedEntryId = entryId;
@@ -263,12 +268,12 @@ async function executeMutation(mutationConfig) {
                         clearSourceCaches(dataSourceName);
                     } else {
                         // Temporary entry not found, just add the real one
-                        addEntryToStore(dataSourceName, result, options);
+                        addEntryToStore(dataSourceName, result, writeOptions);
                     }
                 }
             } else if (type === 'update') {
                 // Update with server response (may have additional fields)
-                updateEntryInStore(dataSourceName, entryId, result, options);
+                updateEntryInStore(dataSourceName, entryId, result, writeOptions);
             }
             // For delete, entry is already removed optimistically, nothing to sync
         }
@@ -303,11 +308,11 @@ async function executeMutation(mutationConfig) {
 
         const rollbackFn = () => {
             if (type === 'create' && optimisticData) {
-                removeEntryFromStore(dataSourceName, optimisticData.$id);
+                removeEntryFromStore(dataSourceName, optimisticData.$id, writeOptions);
             } else if (type === 'update' && originalData) {
-                updateEntryInStore(dataSourceName, entryId, originalData);
+                updateEntryInStore(dataSourceName, entryId, originalData, writeOptions);
             } else if (type === 'delete' && originalData) {
-                addEntryToStore(dataSourceName, originalData);
+                addEntryToStore(dataSourceName, originalData, writeOptions);
             }
         };
 
@@ -331,10 +336,11 @@ async function executeMutation(mutationConfig) {
 
 // Sync entry from server (background reconciliation)
 async function syncEntryFromServer(dataSourceName, entryId, syncFunction) {
+    const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
     try {
         const serverData = await syncFunction();
         if (serverData && serverData.$id) {
-            updateEntryInStore(dataSourceName, entryId, serverData);
+            updateEntryInStore(dataSourceName, entryId, serverData, { generation });
             return serverData;
         }
     } catch (error) {

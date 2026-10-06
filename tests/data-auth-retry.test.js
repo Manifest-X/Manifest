@@ -14,6 +14,7 @@
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, afterEach } from 'vitest'
+import { isolateVm } from './helpers/vm-isolation.js'
 import vm from 'vm'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -38,6 +39,7 @@ const SUBSCRIPTS = [
 ].map(f => [f, readFileSync(path.join(DATA, f), 'utf8')])
 
 const released = []
+let iso = null
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
 const rows = (prefix, n) => Array.from({ length: n }, (_, i) => ({ $id: `${prefix}${i}` }))
 
@@ -46,7 +48,7 @@ async function load() {
     Alpine.store('auth', { _initialized: true, isAuthenticated: true, user: { $id: 'u1' }, currentTeam: null, teams: [] })
 
     const manifest = {
-        appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db' },
+        appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db', auth: { teams: {} } },
         data: {
             projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db', scope: 'team' },
         }
@@ -58,8 +60,9 @@ async function load() {
     delete window.ManifestDataRealtime
     window.ManifestComponentsRegistry = { manifest }
 
+    iso = isolateVm()
     const ctx = {
-        window, document, Alpine, console, setTimeout, clearTimeout, setInterval, clearInterval,
+        window, document, Alpine, console, ...iso.timers, clearTimeout, clearInterval,
         requestAnimationFrame: cb => window.requestAnimationFrame(cb),
         cancelAnimationFrame: id => window.cancelAnimationFrame(id),
         CustomEvent: window.CustomEvent, Event: window.Event, location: window.location, history: window.history,
@@ -70,7 +73,7 @@ async function load() {
     return { net, main: window.ManifestDataMain, data: () => Alpine.store('data') }
 }
 
-afterEach(() => { released.splice(0).forEach(e => Alpine.release(e)); document.body.innerHTML = '' })
+afterEach(() => { iso?.release(); iso = null; released.splice(0).forEach(e => Alpine.release(e)); document.body.innerHTML = '' })
 
 describe('scoped read fail-safe (auth not settled)', () => {
     it('a team scope with no currentTeam yet: no network call, source stays pending, then retries and lands on teams-loaded', async () => {

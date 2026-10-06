@@ -19,11 +19,93 @@ function scheduleAuthRetry(dataSourceName, locale) {
     AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
 }
 
+// Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load
+let teamsSettledFor = null;
+// A sign-in deadline already answered by an auth event no longer holds sources
+let answeredDeadline = 0;
+if (typeof window !== 'undefined') {
+    ['manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'].forEach(type =>
+        window.addEventListener(type, () => { teamsSettledFor = authUserId(currentAuth()); }));
+    // Kept only when logout restored the same (guest) identity whose teams already loaded
+    ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:initialized'].forEach(type =>
+        window.addEventListener(type, () => { if (type === 'manifest:auth:initialized' || teamsSettledFor !== authUserId(currentAuth())) teamsSettledFor = null; }));
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { answeredDeadline = currentAuth()?._signInPendingUntil || 0; }));
+}
+
+function currentAuth() {
+    return typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+}
+
+function authUserId(auth) {
+    return auth?.user?.$id || auth?.user?.id || null;
+}
+
+// Guest-auto or an auth callback is signing in after a signed-out init (bounded by the auth store)
+// Prerender never waits on (or bakes) a guest's rows
+function signInWaitMs(auth) {
+    if (!auth || auth.isAuthenticated === true || window.__manifestRender) return 0;
+    const until = auth._signInPendingUntil || 0;
+    if (until === answeredDeadline) return 0;
+    return Math.max(0, until - Date.now());
+}
+
+// Drop only this load's subscription; a newer one under the same name stays
+function dropSubscription(dataSourceName, unsubscribe) {
+    if (typeof unsubscribe !== 'function') return;
+    unsubscribe();
+    const subs = window.ManifestDataRealtime?.subscriptions;
+    if (subs?.get?.(dataSourceName) === unsubscribe) subs.delete(dataSourceName);
+}
+
 // Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
 function authSettledSignedOut() {
-    const auth = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+    const auth = currentAuth();
     if (!auth) return true;
-    return auth._initialized === true && auth.isAuthenticated !== true;
+    return auth._initialized === true && auth.isAuthenticated !== true && signInWaitMs(auth) === 0;
+}
+
+function teamsSettled(auth, manifest) {
+    const id = authUserId(auth);
+    if (id && teamsSettledFor === id) return true;
+    const teams = manifest?.appwrite?.auth?.teams;
+    if (!teams) return true;
+    const guests = typeof teams.guests === 'string' ? /^(true|1|yes|on)$/i.test(teams.guests.trim()) : !!teams.guests;
+    return auth.isAnonymous === true && !guests;
+}
+
+// Auth fully settled (identity + teams) yet the scoped read still can't resolve: it never will
+function authSettledUnresolvable(manifest) {
+    if (authSettledSignedOut()) return true;
+    const auth = currentAuth();
+    return auth._initialized === true && auth.isAuthenticated === true && teamsSettled(auth, manifest);
+}
+
+function isAuthDependent(config) {
+    if (!config || typeof config !== 'object') return false;
+    if (window.ManifestDataConfig?.getScope?.(config)) return true;
+    try { return JSON.stringify(config.queries || '').includes('$auth.'); } catch { return false; }
+}
+
+// Logout / session cleared: drop the previous identity's rows now, then settle for the new one
+function setupAuthResetListener() {
+    const reset = async () => {
+        const manifest = await window.ManifestDataConfig?.ensureManifest?.();
+        const ds = window.ManifestDataStore;
+        const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+        if (!manifest || !ds?.resetSource || !store) return;
+        const raw = ds.rawOf ? ds.rawOf(store) : store;
+        const configs = { ...(manifest.appwrite || {}), ...(manifest.data || {}) };
+        const locale = liveLocale();
+        for (const [name, config] of Object.entries(configs)) {
+            if (!isAuthDependent(config) || raw[`_${name}_state`] === undefined) continue;
+            window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
+            ds.resetSource(name);
+            loadDataSource(name, locale, { reload: true });
+        }
+    };
+    window.addEventListener('manifest:auth:logout', reset);
+    window.addEventListener('manifest:auth:session-cleared', reset);
 }
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
@@ -126,7 +208,7 @@ async function filterFilesByScope(files, scope) {
 }
 
 // Handle real-time storage events
-async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload) {
+async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -153,7 +235,7 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append' });
+                landRows(dataSourceName, [file], { mode: 'append', generation });
 
                 // Emit custom event for new file creation so UI can refresh project files
                 window.dispatchEvent(new CustomEvent('manifest:file-created', {
@@ -168,16 +250,16 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append' });
+                landRows(dataSourceName, [file], { mode: 'append', generation });
             } else {
                 // File no longer matches scope, remove it
-                landRemove(dataSourceName, [file.$id]);
+                landRemove(dataSourceName, [file.$id], { generation });
             }
         }
     } else if (eventType === 'delete') {
         const fileId = payload?.$id || payload?.file?.$id || payload?.fileId || payload;
         if (fileId) {
-            landRemove(dataSourceName, [fileId.$id || fileId]);
+            landRemove(dataSourceName, [fileId.$id || fileId], { generation });
         }
     }
 }
@@ -228,7 +310,7 @@ function markEventProcessed(eventKey) {
 }
 
 // Handle real-time events for database tables
-async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload) {
+async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload, generation) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -257,7 +339,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         if (row && row.$id) {
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (rowMatchesScope) {
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
             }
         } else {
             console.warn('[Manifest Data] Invalid row payload in create event:', payload);
@@ -269,12 +351,12 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (!rowMatchesScope) {
                 // Row no longer matches scope, remove it
-                if (existingRow) landRemove(dataSourceName, [row.$id]);
+                if (existingRow) landRemove(dataSourceName, [row.$id], { generation });
                 return;
             }
             if (!existingRow) {
                 // Row not in list, but matches scope now - add it
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
                 return;
             }
 
@@ -334,7 +416,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 const fileIdsChanged = isProjectWithFiles &&
                     JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
 
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
 
                 // Emit custom event for project file updates so UI can refresh
                 if (fileIdsChanged && dataSourceName === 'projects') {
@@ -347,7 +429,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
     } else if (eventType === 'delete') {
         const rowId = payload?.$id || payload?.row?.$id || payload?.rowId || payload;
         if (rowId) {
-            landRemove(dataSourceName, [rowId.$id || rowId]);
+            landRemove(dataSourceName, [rowId.$id || rowId], { generation });
         }
     }
 
@@ -529,9 +611,20 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
     const superseded = () => sourceGeneration && sourceGeneration(dataSourceName) !== generation;
 
-    // Signed out: settle empty (not $loading forever); sign-in reloads via the auth retry
-    const settleSignedOut = () => {
-        if (isInitializing || superseded() || !authSettledSignedOut()) return false;
+    // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
+    // A pending sign-in holds the source unsettled (one render-ready), bounded by its deadline.
+    const settleUnresolved = (manifest) => {
+        if (isInitializing || superseded()) return false;
+        const wait = signInWaitMs(currentAuth());
+        if (wait > 0) {
+            setTimeout(() => {
+                const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
+                if (state?.ready || superseded() || !authSettledSignedOut()) return;
+                updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+            }, wait + 10);
+            return false;
+        }
+        if (!authSettledUnresolvable(manifest)) return false;
         updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
         return true;
     };
@@ -615,7 +708,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
-                        if (settleSignedOut()) landed = true;
+                        if (settleUnresolved(manifest)) landed = true;
                         return null;
                     }
 
@@ -628,19 +721,21 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         tableId,
                         queries
                     );
+                    if (superseded()) { landed = true; return null; }
 
-                    // Subscribe to real-time updates for this table
+                    // Subscribe to real-time updates for this table (events from a superseded identity drop)
                     if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
-                        await window.ManifestDataRealtime.subscribeToTable(
+                        const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                // Handle real-time events
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload);
-                            }
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation);
+                            },
+                            () => !superseded()
                         );
+                        if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else if (bucketId) {
                     // Load from Appwrite storage bucket
@@ -654,7 +749,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
-                        if (settleSignedOut()) landed = true;
+                        if (settleUnresolved(manifest)) landed = true;
                         return null;
                     }
 
@@ -675,17 +770,21 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     data = files;
 
-                    // Subscribe to real-time updates for this bucket
+                    if (superseded()) { landed = true; return null; }
+
+                    // Subscribe to real-time updates for this bucket (events from a superseded identity drop)
                     if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToStorageBucket) {
-                        await window.ManifestDataRealtime.subscribeToStorageBucket(
+                        const unsubscribe = await window.ManifestDataRealtime.subscribeToStorageBucket(
                             dataSourceName,
                             bucketId,
                             scope,
                             async (eventType, payload) => {
-                                // Handle real-time events
-                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload);
-                            }
+                                if (superseded()) return;
+                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation);
+                            },
+                            () => !superseded()
                         );
+                        if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else {
                     console.warn(`[Manifest Data] Appwrite data source "${dataSourceName}" missing tableId or bucketId`);
@@ -819,7 +918,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
-                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
             // Return unsealed version for our proxy system
@@ -964,6 +1063,8 @@ async function initializeDataSourcesPlugin() {
 
     // Setup URL change listeners
     setupUrlChangeListeners();
+
+    setupAuthResetListener();
 
     // Register $x magic method (only if Alpine is available)
 
