@@ -76,12 +76,14 @@ function initializePhoneOTP() {
 
                 // Don't allow OTP request if already signed in (non-anonymous)
                 if (this.isAuthenticated && !this.isAnonymous) {
-                    return { success: false, error: 'Already signed in. Please logout first.' };
+                    this.error = 'Already signed in. Please logout first.';
+                    return { success: false, error: this.error };
                 }
 
                 const appwriteConfig = await config.getAppwriteConfig();
                 if (appwriteConfig && !appwriteConfig.phone) {
-                    return { success: false, error: 'Phone OTP authentication is not enabled' };
+                    this.error = 'Phone OTP authentication is not enabled';
+                    return { success: false, error: this.error };
                 }
 
                 // Normalize to E.164: strip separators, require the country code.
@@ -146,7 +148,8 @@ function initializePhoneOTP() {
                 const { phone, inputEl, dataObj } = resolvePhoneInput(phoneInputOrRef);
 
                 if (!phone || !String(phone).trim()) {
-                    return { success: false, error: 'Phone number is required' };
+                    this.error = 'Phone number is required';
+                    return { success: false, error: this.error };
                 }
 
                 const result = await this.createPhoneOTP(String(phone).trim());

@@ -23,7 +23,7 @@ const OTP_SRC = readFileSync(
 )
 
 // Load the real subscripts against a stubbed Alpine store + Appwrite client.
-function loadPhoneOTP({ account = {}, appwriteConfig = { phone: true }, store = {} } = {}) {
+function loadPhoneOTP({ account = {}, appwriteConfig = { phone: true }, store = {}, telInput = null } = {}) {
     const fullStore = {
         user: null,
         session: null,
@@ -47,10 +47,11 @@ function loadPhoneOTP({ account = {}, appwriteConfig = { phone: true }, store = 
         Alpine: {
             store: name => (name === 'auth' ? fullStore : null),
         },
+        Event: class { constructor(type, opts) { this.type = type; this.bubbles = opts?.bubbles } },
         document: {
             readyState: 'complete',
             addEventListener: () => {},
-            querySelector: () => null,
+            querySelector: sel => (telInput && sel === 'input[type="tel"]' ? telInput : null),
         },
     }
     ctx.window = {
@@ -143,6 +144,34 @@ describe('phone OTP', () => {
         expect(result.success).toBe(false)
         expect(result.error).toMatch(/SMS provider/)
         expect(store.otpSent).toBe(false)
+    })
+
+    it('resolves the page tel input when called with no argument, and clears it on success', async () => {
+        const telInput = { tagName: 'INPUT', type: 'tel', value: '+1 415-555-0123', dispatchEvent: vi.fn() }
+        const createPhoneToken = vi.fn(async () => ({ userId: 'u-new' }))
+        const { store } = loadPhoneOTP({ account: { createPhoneToken }, telInput })
+
+        const result = await store.sendPhoneOTP()
+        expect(result.success).toBe(true)
+        expect(createPhoneToken).toHaveBeenCalledWith('unique-id', '+14155550123')
+
+        await Promise.resolve() // input clears on a microtask
+        expect(telInput.value).toBe('')
+        expect(telInput.dispatchEvent).toHaveBeenCalled()
+    })
+
+    it('sets $auth.error on markup-reachable rejections', async () => {
+        const { store } = loadPhoneOTP({ appwriteConfig: { phone: false } })
+        await store.createPhoneOTP('+14155550123')
+        expect(store.error).toMatch(/not enabled/)
+
+        const { store: s2 } = loadPhoneOTP()
+        await s2.createPhoneOTP('4155550123')
+        expect(s2.error).toMatch(/international format/)
+
+        const { store: s3 } = loadPhoneOTP()
+        await s3.sendPhoneOTP('')
+        expect(s3.error).toMatch(/required/)
     })
 
     it('refuses when already signed in non-anonymously', async () => {
