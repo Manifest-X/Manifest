@@ -313,6 +313,56 @@ describe('content-addressed assets: cache first, immutable', () => {
     })
 })
 
+describe('primary CDN mirror fallback', () => {
+    const primary = 'https://cdn.manifestx.dev/npm/mnfst@0.5.222/lib/manifest.min.js'
+    const mirror = 'https://cdn.jsdelivr.net/npm/mnfst@0.5.222/lib/manifest.min.js'
+
+    it('a rejected primary fetch retries on the mirror and caches under the primary URL', async () => {
+        const s = makeScope({ files: { [primary]: 'throw', [mirror]: 'rescued' } })
+        const r = await s.fetchEvent(primary)
+        expect(r.text).toBe('rescued')
+        const assets = await s.caches.open('mnfst-sw:1.2.3:dep1:assets')
+        expect(assets.urls()).toContain(primary)
+        const again = await s.fetchEvent(primary)
+        expect(again.text).toBe('rescued')
+        expect(fetchesTo(s, 'cdn.jsdelivr.net')).toBe(1)
+    })
+
+    it('a non-ok primary response retries on the mirror', async () => {
+        const s = makeScope({ files: { [primary]: () => new Response('', { status: 403 }), [mirror]: 'rescued' } })
+        const r = await s.fetchEvent(primary)
+        expect(r.response.status).toBe(200)
+        expect(r.text).toBe('rescued')
+    })
+
+    it('a non-ok mirror hands back the primary response, uncached', async () => {
+        const s = makeScope({ files: { [primary]: () => new Response('nope', { status: 404 }), [mirror]: () => new Response('', { status: 404 }) } })
+        const r = await s.fetchEvent(primary)
+        expect(r.response.status).toBe(404)
+        const assets = await s.caches.open('mnfst-sw:1.2.3:dep1:assets')
+        expect(assets.urls()).not.toContain(primary)
+    })
+
+    it('a rejected mirror after a rejected primary still fails open to pass-through', async () => {
+        let calls = 0
+        const s = makeScope({ files: {
+            [primary]: () => { if (++calls === 1) throw new TypeError('down'); return new Response('direct') },
+            [mirror]: 'throw',
+        } })
+        const r = await s.fetchEvent(primary)
+        expect(r.text).toBe('direct') // final fallback: plain fetch of the original request
+        expect(fetchesTo(s, 'cdn.jsdelivr.net')).toBe(1)
+    })
+
+    it('never mirrors non-primary CDN hosts', async () => {
+        const url = 'https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js'
+        const s = makeScope({ files: { [url]: () => new Response('x', { status: 500 }) } })
+        const r = await s.fetchEvent(url)
+        expect(r.response.status).toBe(500)
+        expect(fetchesTo(s, 'cdn.jsdelivr.net')).toBe(1)
+    })
+})
+
 describe('other same-origin static assets: stale-while-revalidate', () => {
     it('miss → network; hit → cached copy now, revalidate in the background', async () => {
         let body = 'a1'

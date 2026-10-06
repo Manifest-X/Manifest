@@ -28,6 +28,8 @@ const PRECACHE_CONCURRENCY = 4;
 const STATIC_EXT = /\.(css|js|mjs|json|csv|tsv|ya?ml|md|txt|xml|svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|flac|m4a|wasm|webmanifest|map)$/i;
 const SKIP_PATH = /^\/(sw\.js$|precache\.json$|v1\/|_appwrite\/|_ai\/|__mnfst|__edit)/;
 const CDN_HOST = /^(cdn\.manifestx\.dev|cdn\.jsdelivr\.net|unpkg\.com|esm\.run)$/;
+const PRIMARY_CDN = 'https://cdn.manifestx.dev/npm/';
+const MIRROR_CDN = 'https://cdn.jsdelivr.net/npm/';
 const ICONIFY_HOST = /^api\.(iconify\.design|simplesvg\.com|unisvg\.com)$/;
 const EXACT_PIN = /@\d+\.\d+\.\d+[^/]*(\/|$)/;
 const ANY_PIN = /@[^/]+(\/|$)/;
@@ -127,10 +129,20 @@ function cacheable(response) {
 
 // Cross-origin script tags fetch no-cors (opaque, uncheckable); refetch with
 // CORS so only real 200s are cached. A CORS failure falls back to pass-through.
+// Primary-CDN requests that reject or come back non-ok retry once against the
+// jsDelivr mirror (same /npm/ path), so a blocked or wedged cdn host can't
+// dead-end the boot assets; a good mirror response caches under the original URL.
 function cacheFetch(request) {
 	const url = new URL(request.url);
-	if (url.origin === self.location.origin || request.mode === 'cors') return fetch(request);
-	return fetch(new Request(request.url, { mode: 'cors', credentials: 'omit', redirect: 'follow' }));
+	const direct = url.origin === self.location.origin || request.mode === 'cors'
+		? fetch(request)
+		: fetch(new Request(request.url, { mode: 'cors', credentials: 'omit', redirect: 'follow' }));
+	if (request.url.indexOf(PRIMARY_CDN) !== 0) return direct;
+	const mirror = () => fetch(new Request(MIRROR_CDN + request.url.slice(PRIMARY_CDN.length), { mode: 'cors', credentials: 'omit', redirect: 'follow' }));
+	return direct.then(
+		(res) => (res.ok ? res : mirror().then((alt) => (alt.ok ? alt : res)).catch(() => res)),
+		() => mirror(),
+	);
 }
 
 async function trimSwr(cache) {
