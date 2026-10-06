@@ -71,7 +71,8 @@ function initializePhoneOTP() {
                     this._appwrite = await config.getAppwriteClient();
                 }
                 if (!this._appwrite) {
-                    return { success: false, error: 'Appwrite not configured' };
+                    this.error = 'Appwrite not configured';
+                    return { success: false, error: this.error };
                 }
 
                 // Don't allow OTP request if already signed in (non-anonymous)
@@ -100,10 +101,8 @@ function initializePhoneOTP() {
 
                 const account = this._appwrite.account;
                 if (typeof account.createPhoneToken !== 'function') {
-                    return {
-                        success: false,
-                        error: 'Phone OTP method not available. Please ensure you are using a recent Appwrite SDK.'
-                    };
+                    this.error = 'Phone OTP method not available. Please ensure you are using a recent Appwrite SDK.';
+                    return { success: false, error: this.error };
                 }
 
                 this.inProgress = true;

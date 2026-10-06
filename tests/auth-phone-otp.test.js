@@ -23,7 +23,7 @@ const OTP_SRC = readFileSync(
 )
 
 // Load the real subscripts against a stubbed Alpine store + Appwrite client.
-function loadPhoneOTP({ account = {}, appwriteConfig = { phone: true }, store = {}, telInput = null } = {}) {
+function loadPhoneOTP({ account = {}, appwriteConfig = { phone: true }, store = {}, telInput = null, noClient = false } = {}) {
     const fullStore = {
         user: null,
         session: null,
@@ -59,7 +59,7 @@ function loadPhoneOTP({ account = {}, appwriteConfig = { phone: true }, store = 
         Appwrite: { ID: { unique: () => 'unique-id' } },
         dispatchEvent: e => events.push(e),
         ManifestAppwriteAuthConfig: {
-            getAppwriteClient: async () => ({ account }),
+            getAppwriteClient: async () => (noClient ? null : { account }),
             getAppwriteConfig: async () => appwriteConfig,
         },
     }
@@ -172,6 +172,20 @@ describe('phone OTP', () => {
         const { store: s3 } = loadPhoneOTP()
         await s3.sendPhoneOTP('')
         expect(s3.error).toMatch(/required/)
+
+        const { store: s4 } = loadPhoneOTP({ noClient: true })
+        await s4.createPhoneOTP('+14155550123')
+        expect(s4.error).toMatch(/not configured/)
+    })
+
+    it('email OTP rejections surface on $auth.error the same way', async () => {
+        const { store } = loadPhoneOTP({ appwriteConfig: { phone: true, otp: false } })
+        await store.createEmailOTP('a@b.co')
+        expect(store.error).toMatch(/not enabled/)
+
+        const { store: s2 } = loadPhoneOTP({ noClient: true })
+        await s2.createEmailOTP('a@b.co')
+        expect(s2.error).toMatch(/not configured/)
     })
 
     it('refuses when already signed in non-anonymously', async () => {

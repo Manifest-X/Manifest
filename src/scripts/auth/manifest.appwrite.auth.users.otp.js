@@ -72,17 +72,20 @@ function initializeEmailOTP() {
                     this._appwrite = await config.getAppwriteClient();
                 }
                 if (!this._appwrite) {
-                    return { success: false, error: 'Appwrite not configured' };
+                    this.error = 'Appwrite not configured';
+                    return { success: false, error: this.error };
                 }
 
                 // Don't allow OTP request if already signed in (non-anonymous)
                 if (this.isAuthenticated && !this.isAnonymous) {
-                    return { success: false, error: 'Already signed in. Please logout first.' };
+                    this.error = 'Already signed in. Please logout first.';
+                    return { success: false, error: this.error };
                 }
 
                 const appwriteConfig = await config.getAppwriteConfig();
                 if (appwriteConfig && !appwriteConfig.otp) {
-                    return { success: false, error: 'Email OTP authentication is not enabled' };
+                    this.error = 'Email OTP authentication is not enabled';
+                    return { success: false, error: this.error };
                 }
 
                 // OTP can't convert a guest — warn so lost guest teams aren't a surprise.
@@ -92,10 +95,8 @@ function initializeEmailOTP() {
 
                 const account = this._appwrite.account;
                 if (typeof account.createEmailToken !== 'function') {
-                    return {
-                        success: false,
-                        error: 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.'
-                    };
+                    this.error = 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.';
+                    return { success: false, error: this.error };
                 }
 
                 this.inProgress = true;
@@ -141,7 +142,8 @@ function initializeEmailOTP() {
                 const { email, inputEl, dataObj } = resolveEmailInput(emailInputOrRef);
 
                 if (!email || !email.trim()) {
-                    return { success: false, error: 'Email is required' };
+                    this.error = 'Email is required';
+                    return { success: false, error: this.error };
                 }
 
                 const result = await this.createEmailOTP(email.trim(), options);
