@@ -76,6 +76,8 @@ function initializeAuthStore() {
                     store.magicLinkExpired = state.magicLinkExpired || false;
                     store.otpSent = state.otpSent || false;
                     store.otpExpired = state.otpExpired || false;
+                    // A code row shown here must be verifiable here
+                    if (state.otpSent && state.otpUserId) store._otpUserId = state.otpUserId;
                     store.error = state.error;
                     // Identity ended or changed in another tab: scoped data must drop this tab's rows
                     const nextId = state.isAuthenticated ? (state.user?.$id || null) : null;
@@ -107,6 +109,7 @@ function initializeAuthStore() {
                 magicLinkExpired: store.magicLinkExpired,
                 otpSent: store.otpSent,
                 otpExpired: store.otpExpired,
+                otpUserId: store.otpSent ? store._otpUserId : null,
                 error: store.error
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -128,6 +131,7 @@ function initializeAuthStore() {
         otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
         otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
         _otpUserId: null, // OTP: userId returned by createEmailToken/createPhoneToken, used by verifyOTP
+        _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
@@ -699,6 +703,9 @@ function initializeAuthStore() {
             if (!this._appwrite) {
                 return { success: false, error: 'Appwrite not configured' };
             }
+
+            // A ticket kept from a failed guest OTP must not outlive an explicit logout
+            this._otpMigrationTicket = null;
 
             // If not authenticated, nothing to logout from
             if (!this.isAuthenticated) {
