@@ -354,6 +354,16 @@ describe('primary CDN mirror fallback', () => {
         expect(fetchesTo(s, 'cdn.jsdelivr.net')).toBe(1)
     })
 
+    it('mirrors dist-tag (swr) URLs too, preserving the query string', async () => {
+        const taggedPrimary = 'https://cdn.manifestx.dev/npm/appwrite@latest?v=abc'
+        const taggedMirror = 'https://cdn.jsdelivr.net/npm/appwrite@latest?v=abc'
+        const s = makeScope({ files: { [taggedPrimary]: () => new Response('', { status: 403 }), [taggedMirror]: 'rescued' } })
+        const r = await s.fetchEvent(taggedPrimary)
+        await r.settle()
+        expect(r.text).toBe('rescued')
+        expect(s.fetchLog.some(f => f.url === taggedMirror)).toBe(true)
+    })
+
     it('never mirrors non-primary CDN hosts', async () => {
         const url = 'https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js'
         const s = makeScope({ files: { [url]: () => new Response('x', { status: 500 }) } })
