@@ -843,10 +843,23 @@ function discoverDataPaths(manifest, rootDir, wildcardBases = [], locales = []) 
   // A source mounts under the wildcard route named after it: `docs/*` for key
   // `docs`, or a nested base ending in the key (`docs/framework/*` for key
   // `framework`).
+  const mounts = new Map();
   function mountFor(sourceKey) {
     if (!sourceKey) return null;
-    if (wildcardBases.includes(sourceKey)) return sourceKey;
-    return wildcardBases.find((b) => b.split('/').pop() === sourceKey) || null;
+    if (mounts.has(sourceKey)) return mounts.get(sourceKey);
+    let mount = null;
+    if (wildcardBases.includes(sourceKey)) mount = sourceKey;
+    else {
+      const nested = wildcardBases.filter((b) => b.split('/').pop() === sourceKey);
+      if (nested.length === 1) {
+        mount = nested[0];
+        process.stderr.write(`prerender: data source "${sourceKey}" mounts under ${mount}/*\n`);
+      } else if (nested.length > 1) {
+        process.stderr.write(`prerender: data source "${sourceKey}" matches ${nested.map((b) => b + '/*').join(', ')}; not mounted (ambiguous)\n`);
+      }
+    }
+    mounts.set(sourceKey, mount);
+    return mount;
   }
 
   function expandCandidates(rawPath, sourceKey) {
