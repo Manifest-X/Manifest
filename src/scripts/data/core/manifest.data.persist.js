@@ -36,6 +36,7 @@
         scope: '',
         generation: 0,
         pending: new Map(),    // source -> time its debounced write is due
+        landedIdentity: new Map(), // source -> identity its pending rows were read under
         writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
         hydratedIdentity: null, // identity auth-dependent hydration last ran under
@@ -71,6 +72,19 @@
         const auth = (typeof Alpine !== 'undefined' && Alpine.store) ? Alpine.store('auth') : null;
         return auth?._sessionUnverified === true;
     }
+
+    // Auth's last recorded identity (cross-tab mirror): '' signed out, null unknown
+    function lastKnownIdentity() {
+        try {
+            const saved = JSON.parse((typeof window !== 'undefined' && window.localStorage?.getItem('manifest:auth:state')) || 'null');
+            if (!saved || typeof saved !== 'object') return null;
+            return saved.isAuthenticated ? (String(saved.user?.$id || saved.user?.id || '') || null) : '';
+        } catch { return null; }
+    }
+
+    // Unconfirmed (booting / offline): hydration trusts the last recorded identity; the data reset covers a mismatch
+    function unconfirmed() { return authIdentity() === null || authUnverified(); }
+    function hydrationIdentity() { return unconfirmed() ? lastKnownIdentity() : authIdentity(); }
 
     function warnOnce(key, message, error) {
         if (state.warned.has(key)) return;
@@ -178,7 +192,7 @@
     function register(source, config) {
         const cfg = normalizeConfig(config === undefined ? true : config);
         if (!cfg) { state.sources.delete(source); return false; }
-        cfg.authDependent = isAuthDependent(state.manifest?.data?.[source]);
+        cfg.authDependent = isAuthDependent(state.manifest?.data?.[source] || state.manifest?.appwrite?.[source]);
         state.sources.set(source, cfg);
         state.hydrated.delete(source);
         state.fetchKicked.delete(source);
@@ -263,12 +277,21 @@
         if (next !== state.scope) changeScope(next);
     }
 
+    // Pending saves of rows read under an identity that has since changed never land
+    function dropStaleWrites() {
+        const identity = authIdentity();
+        for (const [source, landed] of [...state.landedIdentity]) {
+            if (landed !== null && landed !== identity) cancelWrites(source);
+        }
+    }
+
     function watchScope() {
         if (state.watching || typeof window === 'undefined') return;
         state.watching = true;
         for (const type of AUTH_EVENTS) {
             window.addEventListener(type, () => {
                 if (!state.enabled) return;
+                dropStaleWrites();
                 if (WIPE_EVENTS.has(type)) deleteScope(state.scope);
                 refreshScope();
                 if (!state.scopePending) hydrate(bootSources()).catch(() => { /* disabled */ });
@@ -442,14 +465,18 @@
         return null;
     }
 
-    function snapshotRecord(source) {
+    function snapshotRecord(source, landed) {
         const cfg = state.sources.get(source);
         const ds = dataStore();
         if (!cfg || !ds) return null;
         const raw = ds.getRawData(source);
         if (raw === null || raw === undefined) return null;
-        const identity = cfg.authDependent ? authIdentity() : undefined;
-        if (identity === null) return null;
+        let identity;
+        if (cfg.authDependent) {
+            // Stamped with the identity the rows were read under; skipped if it changed since
+            identity = authUnverified() ? null : authIdentity();
+            if (identity === null || (landed !== null && landed !== undefined && landed !== identity)) return null;
+        }
         try {
             const snapshot = snapshotOf(source, raw, cfg);
             if (snapshot === null) return null;
@@ -472,9 +499,10 @@
 
     // Every source whose debounce has elapsed is written in ONE transaction
     function flush(sources) {
-        for (const source of sources) state.pending.delete(source);
+        const landedIdentity = new Map(sources.map(source => [source, state.landedIdentity.get(source)]));
+        for (const source of sources) { state.pending.delete(source); state.landedIdentity.delete(source); }
         if (!state.enabled || state.disabled) return Promise.resolve();
-        const records = sources.map(snapshotRecord).filter(Boolean);
+        const records = sources.map(source => snapshotRecord(source, landedIdentity.get(source))).filter(Boolean);
         if (!records.length) return Promise.resolve();
         const generation = state.generation;
         return withStore('readwrite', (store) => { for (const record of records) store.put(record); }).then(() => {
@@ -506,8 +534,9 @@
     }
 
     function cancelWrites(source) {
-        if (source !== undefined) { state.pending.delete(source); return; }
+        if (source !== undefined) { state.pending.delete(source); state.landedIdentity.delete(source); return; }
         state.pending.clear();
+        state.landedIdentity.clear();
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
     }
 
@@ -515,7 +544,12 @@
     function onLanded(sources) {
         if (!state.enabled || state.disabled || state.scopePending) return;   // nothing is keyed under an unresolved scope
         const at = Date.now() + WRITE_DEBOUNCE_MS;
-        for (const source of sources) if (state.sources.has(source)) state.pending.set(source, at);
+        const identity = authIdentity();
+        for (const source of sources) {
+            if (!state.sources.has(source)) continue;
+            state.pending.set(source, at);
+            if (state.sources.get(source).authDependent) state.landedIdentity.set(source, identity);
+        }
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
         scheduleWrites();
     }
@@ -529,8 +563,11 @@
         if (majorMinor(record.frameworkVersion) !== majorMinor(state.frameworkVersion)) return { ok: false, drop: true };
         if (record.locale && record.locale !== liveLocale()) return { ok: false };
         // Another identity's (or an unstamped) snapshot never hydrates: the scope alone may be '' for everyone
-        // An unverified (offline) signed-out boot keeps it for the session check to come back
-        if (cfg.authDependent && record.identity !== authIdentity()) return authUnverified() ? { ok: false } : { ok: false, drop: true };
+        // Before the session is confirmed (booting / offline) a mismatch is kept for the check to come back
+        if (cfg.authDependent) {
+            const identity = hydrationIdentity();
+            if (identity === null || record.identity !== identity) return unconfirmed() ? { ok: false } : { ok: false, drop: true };
+        }
         return { ok: true };
     }
 
@@ -539,7 +576,7 @@
     async function hydrate(sources) {
         const ds = dataStore();
         // Auth-dependent sources wait for a known identity (re-run on auth events), and retry when it changes
-        const identity = authIdentity();
+        const identity = hydrationIdentity();
         const known = identity !== null;
         if (known && identity !== state.hydratedIdentity) {
             for (const [source, cfg] of state.sources) if (cfg.authDependent) state.hydrated.delete(source);

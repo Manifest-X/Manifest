@@ -634,6 +634,102 @@ describe('permission-scoped Appwrite sources (no scope, no $auth. query)', () =>
     })
 })
 
+describe('permission-scoped Appwrite sources before the session is confirmed', () => {
+    const pub = (tier = 'boot') => ({ data: { posts: { appwriteTableId: 'posts', persist: { tier } } } })
+    const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
+    const offline = () => ({ _initialized: true, isAuthenticated: false, user: null, _sessionUnverified: true })
+    const lastKnown = (id) => window.localStorage.setItem('manifest:auth:state', JSON.stringify(id ? { isAuthenticated: true, user: { $id: id } } : { isAuthenticated: false, user: null }))
+    let hang
+    beforeEach(() => {
+        hang = true
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => [] }
+        window.ManifestDataAppwrite = {
+            loadTableRows: async () => {
+                if (hang) return new Promise(() => {})
+                const who = Alpine.store('auth')?.user?.$id || 'anon'
+                return rows(`${who}-`, 1)
+            }
+        }
+    })
+    afterEach(() => { delete window.ManifestDataQueries; delete window.ManifestDataAppwrite; window.localStorage.removeItem('manifest:auth:state') })
+
+    it("auth still booting: the last-known user's snapshot paints before the network", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: 'u1' }))
+        const { data, main } = await load({ manifest: pub(), auth: { _initialized: false } })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).toEqual(['p0', 'p1'])
+    })
+
+    it('auth still booting, signed out last time: the signed-out snapshot paints', async () => {
+        lastKnown(null)
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: '' }))
+        const { data, main } = await load({ manifest: pub(), auth: { _initialized: false } })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).toEqual(['p0', 'p1'])
+    })
+
+    it("auth still booting: another user's snapshot never paints, and is kept", async () => {
+        lastKnown('u2')
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: 'u1' }))
+        const { data, main, records } = await load({ manifest: pub(), auth: { _initialized: false } })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).not.toContain('p0')
+        expect(records().map(r => r.identity)).toEqual(['u1'])
+    })
+
+    it("offline boot: the last-known user's snapshot is shown", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: 'u1' }))
+        const { data, main } = await load({ manifest: pub(), auth: offline() })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).toEqual(['p0', 'p1'])
+    })
+
+    it("the session resolving to a different user drops the shown snapshot and reloads as them", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: 'u1' }))
+        const { data, main, auth, dispatch, records } = await load({ manifest: pub(), auth: { _initialized: false } })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).toEqual(['p0', 'p1'])
+        hang = false
+        Object.assign(auth(), signedIn('u2'))
+        dispatch('manifest:auth:initialized')
+        await settle(80)
+        expect(ids(data().posts)).toEqual(['u2-0'])
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+
+    it('rows read as one user are never saved under the next identity', async () => {
+        hang = false
+        const { main, persist, auth, records } = await load({ manifest: pub('lazy'), auth: signedIn('u1') })
+        await main.loadDataSource('posts')
+        await settle(20)
+        Object.assign(auth(), { isAuthenticated: true, isAnonymous: true, user: { $id: 'g1' } })
+        await persist.flushPending()
+        expect(records().filter(r => ids(r.rows).includes('u1-0') && r.identity !== 'u1')).toEqual([])
+    })
+
+    it('an identity event cancels a pending save of the previous identity', async () => {
+        hang = false
+        const { main, persist, auth, dispatch, records } = await load({ manifest: pub('lazy'), auth: signedIn('u1') })
+        await main.loadDataSource('posts')
+        await settle(20)
+        expect(persist.state.pending.has('posts')).toBe(true)
+        window.ManifestDataAppwrite.loadTableRows = () => new Promise(() => {})
+        Object.assign(auth(), signedIn('u2'))
+        dispatch('manifest:auth:login')
+        expect(persist.state.pending.has('posts')).toBe(false)
+        await persist.flushPending()
+        expect(records()).toEqual([])
+    })
+})
+
 describe('diagnostics', () => {
     it('ManifestData.persistence() reports scope, tiers, row counts and staleness', async () => {
         const savedAt = Date.now() - 1000

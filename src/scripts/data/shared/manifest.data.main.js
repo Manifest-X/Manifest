@@ -90,9 +90,28 @@ function isIdentityBound(config) {
     try { return JSON.stringify(config.queries || '').includes('$auth.'); } catch { return false; }
 }
 
-// Logout / session cleared: drop the previous identity's rows now, then settle for the new one
+// Auth's last recorded identity (cross-tab mirror): '' signed out, null unknown
+function lastKnownIdentity() {
+    try {
+        const saved = JSON.parse(window.localStorage?.getItem('manifest:auth:state') || 'null');
+        if (!saved || typeof saved !== 'object') return null;
+        return saved.isAuthenticated ? (String(saved.user?.$id || saved.user?.id || '') || null) : '';
+    } catch { return null; }
+}
+
+// Confirmed identity: '' signed out (or no auth plugin), null while booting or offline-unverified
+function confirmedIdentity() {
+    const auth = currentAuth();
+    if (!auth) return '';
+    if (auth._initialized !== true || (auth._sessionUnverified === true && auth.isAuthenticated !== true)) return null;
+    return auth.isAuthenticated === true ? (authUserId(auth) || '') : '';
+}
+
+// Identity change (sign-in, sign-out, account switch): identity-bound sources reload for the new identity.
+// A previous user's rows drop at once; rows read signed out stay live until the reload lands.
 function setupAuthResetListener() {
-    const reset = async () => {
+    let bound = (currentAuth() ? confirmedIdentity() : null) ?? lastKnownIdentity();
+    const reset = async (clear) => {
         const manifest = await window.ManifestDataConfig?.ensureManifest?.();
         const ds = window.ManifestDataStore;
         const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
@@ -102,13 +121,25 @@ function setupAuthResetListener() {
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
-            window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
-            ds.resetSource(name);
+            if (clear) {
+                window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
+                ds.resetSource(name);
+            }
             loadDataSource(name, locale, { reload: true });
         }
     };
-    window.addEventListener('manifest:auth:logout', reset);
-    window.addEventListener('manifest:auth:session-cleared', reset);
+    const onAuth = (type) => {
+        const next = confirmedIdentity();
+        if (next === null) return;
+        const prev = bound;
+        bound = next;
+        if (prev === next) return;
+        // Unknown before: rows so far were read under this same session (a sign-out still drops them)
+        if (prev === null && type !== 'manifest:auth:logout' && type !== 'manifest:auth:session-cleared') return;
+        reset(prev !== '');
+    };
+    ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
+        .forEach(type => window.addEventListener(type, () => onAuth(type)));
 }
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to

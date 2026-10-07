@@ -1134,3 +1134,72 @@ describe('bucket $remove keeps the source filter', () => {
         expect(fileIds()).toEqual(['b'])
     })
 })
+
+describe('sign-in and account switch reload identity-bound sources', () => {
+    const guest = id => ({ ...signedOut(), isAuthenticated: true, isAnonymous: true, user: { $id: id } })
+    const signIn = (next, type = 'manifest:auth:login') => { Object.assign(Alpine.store('auth'), next); window.dispatchEvent(new CustomEvent(type)) }
+
+    it("guest -> login: the guest's rows drop at once and the source reloads as the user", async () => {
+        let gate = null
+        const { net, ids, main } = await load(guest('g1'), undefined, { loadRows: async () => { if (gate) await gate; const who = Alpine.store('auth').user?.$id; return [{ $id: `${who}-0` }] } })
+        await main.loadDataSource('projects')
+        await settle(60)
+        expect(ids()).toEqual(['g1-0'])
+        const d = deferred()
+        gate = d.p
+        signIn(signedIn('u1'))
+        await settle(30)
+        expect(ids()).toEqual([])
+        d.resolve()
+        await settle(60)
+        expect(ids()).toEqual(['u1-0'])
+        expect(net.tableCalls).toBe(2)
+    })
+
+    it('account switch (u1 -> u2 login) reloads as u2', async () => {
+        const { ids, main } = await load(signedIn('u1'), undefined)
+        await main.loadDataSource('projects')
+        await settle(60)
+        signIn(signedIn('u2'))
+        await settle(80)
+        expect(ids()).toEqual(['u2-0', 'u2-1'])
+    })
+
+    it('signed out -> login keeps the public rows live until the reload lands', async () => {
+        let gate = null
+        const { ids, main } = await load(signedOut(), undefined, { loadRows: async () => { if (gate) await gate; const who = Alpine.store('auth').user?.$id || 'anon'; return [{ $id: `${who}-0` }] } })
+        await main.loadDataSource('projects')
+        await settle(60)
+        const d = deferred()
+        gate = d.p
+        signIn(signedIn('u1'))
+        await settle(30)
+        expect(ids()).toEqual(['anon-0'])
+        d.resolve()
+        await settle(60)
+        expect(ids()).toEqual(['u1-0'])
+    })
+
+    it('guest-auto logout (anonymous, then logout) reloads once', async () => {
+        const { net, ids, main } = await load(signedIn('u1'), undefined)
+        await main.loadDataSource('projects')
+        await settle(60)
+        const before = net.tableCalls
+        signIn(guest('g1'), 'manifest:auth:anonymous')
+        await settle(5)
+        window.dispatchEvent(new CustomEvent('manifest:auth:logout'))
+        await settle(100)
+        expect(ids()).toEqual(['g1-0', 'g1-1'])
+        expect(net.tableCalls - before).toBe(1)
+    })
+
+    it('auth confirming the same identity does not reload', async () => {
+        const { net, main } = await load(signedIn('u1'), undefined)
+        await main.loadDataSource('projects')
+        await settle(60)
+        window.dispatchEvent(new CustomEvent('manifest:auth:initialized'))
+        window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+        await settle(60)
+        expect(net.tableCalls).toBe(1)
+    })
+})
