@@ -34,6 +34,12 @@ const FIXTURE_SRC_DIR = join(__dirname, 'fixture');
 const REPO_SRC_DIR = join(__dirname, '..', '..', '..', '..', 'src');
 const WORK_DIR = await mkdtemp(join(tmpdir(), 'mnfst-render-e2e-'));
 const FIXTURE_DIR = join(WORK_DIR, 'site');
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, async () => {
+    await rm(WORK_DIR, { recursive: true, force: true });
+    process.exit(130);
+  });
+}
 const FIXTURE_OUT_DIR = join(FIXTURE_DIR, '.out');
 const RENDER_SCRIPT = join(__dirname, '..', '..', 'manifest.render.mjs');
 const DEV_PORT = 5099;

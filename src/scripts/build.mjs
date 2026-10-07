@@ -13,7 +13,14 @@ const BUILD_VERSION = JSON.parse(fs.readFileSync(path.join('..', 'package.json')
 
 // --scripts-out <dir>: build only the script bundles into <dir>; src/, lib/, packages/ untouched
 const scriptsOutArg = process.argv.indexOf('--scripts-out');
-const SCRIPTS_OUT = scriptsOutArg > -1 ? path.resolve(process.argv[scriptsOutArg + 1]) : null;
+const SCRIPTS_OUT = scriptsOutArg > -1 ? path.resolve(process.argv[scriptsOutArg + 1] || '') : null;
+if (SCRIPTS_OUT) {
+    const repoRoot = path.resolve('..');
+    if (!process.argv[scriptsOutArg + 1] || SCRIPTS_OUT === repoRoot || SCRIPTS_OUT.startsWith(repoRoot + path.sep)) {
+        console.error('--scripts-out needs a directory outside the repo');
+        process.exit(1);
+    }
+}
 const MONOLITH_DIR = SCRIPTS_OUT || 'scripts';
 const LIB_DIR = SCRIPTS_OUT || path.join('..', 'lib');
 
