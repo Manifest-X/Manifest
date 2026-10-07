@@ -27,10 +27,13 @@
         }
     }
     function onPointerDown(e) {
-        const item = this, area = item.closest('[data-edit-area]');
+        const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
         if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
+        if (e._editDrag) return; e._editDrag = true;   // one drag per gesture — the innermost sortable item claims it
         const container = item.parentElement;
+        const crossOK = classify(area) === 'static' && !isRegionBlock(item) && topArea(area);   // cross-region: top-level static → static only; a region-block only reorders in place
+        let hovered = container;
         const homeNext = item.nextElementSibling;          // where to put it back if cancelled
         const start = item.getBoundingClientRect();
         const preStyle = item.getAttribute('style');
@@ -42,6 +45,12 @@
         // opens is a real element the author can style — by default a translucent
         // copy of what is being dragged, showing exactly where it would land.
         const lift = (ev) => {
+            // Valid cross-region destinations announce themselves for the whole
+            // drag: a dashed target outline, and a min-height (via CSS) so an
+            // EMPTY region has a surface to drop onto at all.
+            if (crossOK) areas().forEach(a => {
+                if (a !== area && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) a.setAttribute('data-edit-drop-target', '');
+            });
             ghost = item.cloneNode(true);
             ghost.setAttribute('data-edit-ghost', '');
             ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
@@ -76,13 +85,20 @@
                 active = true; lift(ev); paint();
             }
             ev.preventDefault();
-            reorderOver(container, px, py);
+            const over = (crossOK && dropArea(px, py)) || ghost.parentElement;   // cross-region drop search
+            if (over !== hovered) {
+                if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
+                hovered = over;
+                if (hovered !== container) hovered.setAttribute('data-edit-dragging-in', '');
+            }
+            reorderOver(over, px, py);
             if (!frame) frame = requestAnimationFrame(paint);
         };
 
         const settle = (cancelled) => {
             document.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onCancel);
             document.removeEventListener('keydown', onKey, true);
             if (frame) cancelAnimationFrame(frame);
             if (!active) return;
@@ -93,21 +109,43 @@
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             item.removeAttribute('data-edit-dragging');
             area.removeAttribute('data-edit-dragging-in');
+            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
+            if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
             ghost = null; dragged = null;
-            if (cancelled) announce('Cancelled'); else finishReorder(area);
+            if (cancelled) { announce('Cancelled'); return; }
+            const dest = item.parentElement;
+            if (crossOK && dest !== container && dest._edit) {
+                // Re-validate at drop: a region locked or deactivated mid-drag
+                // (reached through the ghost fallback) must not take the block.
+                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort') && topArea(dest)) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
+                else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
+            }
+            else finishReorder(area);
         };
         const onUp = () => settle(false);
-        // Escape puts it back, the way every drag is expected to be escapable.
+        // Escape puts it back, the way every drag is expected to be escapable. A
+        // cancelled pointer (OS gesture, alert, pen out of range) also reverts —
+        // otherwise the item wedges position:fixed with drop targets still lit.
+        const onCancel = () => settle(true);
         const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
         document.addEventListener('keydown', onKey, true);
     }
     function reorderOver(container, x, y) {
-        if (!dragged || dragged.parentElement !== container) return;
+        if (!dragged) return;
         const ref = afterElement(container, x, y);
-        if (ref === dragged || ref === dragged.nextElementSibling) return;
+        if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
         if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    }
+    // Cross-region drop target: the innermost active static sort region under the pointer.
+    function dropArea(x, y) {
+        const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
+            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) return a;
+        }
+        return null;
     }
     function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
     // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.
@@ -154,7 +192,9 @@
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
             const baseL = parseFloat(cs.left) || 0, baseT = parseFloat(cs.top) || 0, sx = e.clientX, sy = e.clientY;
             const ov = showOverlay();
-            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(baseL + (ev.clientX - sx), lu, el, parent, 'w') + lu; el.style.top = toUnit(baseT + (ev.clientY - sy), tu, el, parent, 'h') + tu; };
+            // Clamped to the containing block: a freeform card must not leave its canvas.
+            const maxL = () => Math.max(0, parent.clientWidth - el.offsetWidth), maxT = () => Math.max(0, parent.clientHeight - el.offsetHeight);
+            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(Math.min(maxL(), Math.max(0, baseL + (ev.clientX - sx))), lu, el, parent, 'w') + lu; el.style.top = toUnit(Math.min(maxT(), Math.max(0, baseT + (ev.clientY - sy))), tu, el, parent, 'h') + tu; };
             const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov); commitStyle(area, el); };
             document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
         });
@@ -165,8 +205,9 @@
             if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
             const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
             const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            if (d[0]) el.style.left = toUnit((parseFloat(cs.left) || 0) + d[0] * step, lu, el, parent, 'w') + lu;
-            if (d[1]) el.style.top = toUnit((parseFloat(cs.top) || 0) + d[1] * step, tu, el, parent, 'h') + tu;
+            const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
+            if (d[0]) el.style.left = toUnit(Math.min(maxL, Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step)), lu, el, parent, 'w') + lu;
+            if (d[1]) el.style.top = toUnit(Math.min(maxT, Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step)), tu, el, parent, 'h') + tu;
             clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(area, el); }, 350);
         });
     }

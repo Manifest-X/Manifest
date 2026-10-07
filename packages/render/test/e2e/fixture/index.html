@@ -62,6 +62,7 @@
 
   <!-- Route: home -->
   <section x-route="/">
+    <template data-head><meta name="fixture-route-head" content="home"></template>
     <h1 id="home-heading">Home</h1>
     <p>Current locale: <strong id="current-locale" x-text="$locale.current">?</strong></p>
 
@@ -86,6 +87,7 @@
 
   <!-- Route: about -->
   <section x-route="about">
+    <template data-head><meta name="fixture-route-head" content="about"></template>
     <h1 id="about-heading">About</h1>
     <p>About body.</p>
   </section>
@@ -138,6 +140,38 @@
   <div id="code-group-test" x-code-group copy>
     <pre x-code="js" name="One">const one = 1;</pre>
     <pre x-code="js" name="Two">const two = 2;</pre>
+  </div>
+
+  <!-- x-if adoption: baked clone must bind at runtime (counter, nested x-data
+       init once) and be removable when the expression turns false. -->
+  <div id="xif-test" x-data="{ on: true, count: 0 }">
+    <button id="xif-hide" @click="on = false">Hide</button>
+    <button id="xif-show" @click="on = true">Show</button>
+    <template x-if="on">
+      <div id="xif-content">
+        <button id="xif-btn" @click="count++">Inc</button>
+        <span id="xif-count" x-text="count">0</span>
+        <div x-data="{ inner: 'pending' }" x-init="inner = 'ran'; window.__xifInits = (window.__xifInits || 0) + 1">
+          <span id="xif-inner" x-text="inner"></span>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- x-if true only inside the prerender browser: baked clone must be
+       removed at boot. -->
+  <div id="xif-false-test" x-data>
+    <template x-if="!!window.__manifestRender">
+      <p id="xif-stale">Baked only</p>
+    </template>
+  </div>
+
+  <!-- x-if briefly false at boot (true once settled): baked clone must be
+       kept through the bounce, never blanked. -->
+  <div id="xif-late-test" x-data="{ late: false }" x-init="setTimeout(() => late = true, 50)">
+    <template x-if="late">
+      <p id="xif-late">Settles true</p>
+    </template>
   </div>
 
   <!-- x-for over $x data: template must survive prerender so Alpine can re-render

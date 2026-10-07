@@ -199,7 +199,7 @@ async function runAssertions() {
 
   const browser = await puppeteer.launch({
     executablePath: chromePath,
-    headless: 'new',
+    headless: 'shell',
     args: ['--no-sandbox'],
   });
   try {
@@ -211,9 +211,25 @@ async function runAssertions() {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
 
+    // Record removals of the late-settling x-if clone (flicker check).
+    await page.evaluateOnNewDocument(() => {
+      window.__xifLateRemoved = 0;
+      new MutationObserver((recs) => {
+        for (const r of recs) for (const n of r.removedNodes) if (n.id === 'xif-late') window.__xifLateRemoved++;
+      }).observe(document, { childList: true, subtree: true });
+    });
     await page.goto(`http://localhost:${STATIC_PORT}/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
     // Give Alpine + plugins a beat to settle
     await new Promise((r) => setTimeout(r, 2000));
+
+    // Some sandboxed hosts never produce frames, so page.click (which waits on
+    // one) hangs; fall back to a DOM click there.
+    const framesWork = await page.evaluate(() => new Promise((r) => {
+      requestAnimationFrame(() => r(true));
+      setTimeout(() => r(false), 1500);
+    }));
+    if (!framesWork) log.note('no rendered frames in this environment; using DOM clicks');
+    const click = (sel) => framesWork ? page.click(sel) : page.$eval(sel, (el) => el.click());
 
     // ------- Test: hydration contract was applied and removed --------------
     const contractState = await page.evaluate(() => ({
@@ -239,7 +255,7 @@ async function runAssertions() {
     assert(counterBefore === '0', 'counter initial value is 0',
       `got: ${JSON.stringify(counterBefore)}`);
 
-    await page.click('#counter-btn');
+    await click('#counter-btn');
     await new Promise((r) => setTimeout(r, 200));
     const counterAfter = await page.$eval('#counter-value', (el) => el.textContent.trim()).catch(() => null);
     assert(counterAfter === '1', 'counter increments via @click on explicit data-hydrate island',
@@ -251,7 +267,7 @@ async function runAssertions() {
       'popup A initial state is hidden/closed (from :class false branch)',
       `got: ${JSON.stringify(popupAInitial)}`);
 
-    await page.click('#popup-toggle');
+    await click('#popup-toggle');
     await new Promise((r) => setTimeout(r, 200));
     const popupAToggled = await page.$eval('#popup-a', (el) => el.className).catch(() => null);
     assert(popupAToggled && popupAToggled.includes('visible') && popupAToggled.includes('open') &&
@@ -260,7 +276,7 @@ async function runAssertions() {
       `got: ${JSON.stringify(popupAToggled)}`);
 
     // Toggle back
-    await page.click('#popup-toggle');
+    await click('#popup-toggle');
     await new Promise((r) => setTimeout(r, 200));
     const popupAToggledBack = await page.$eval('#popup-a', (el) => el.className).catch(() => null);
     assert(popupAToggledBack && popupAToggledBack.includes('hidden') && popupAToggledBack.includes('closed') &&
@@ -270,7 +286,7 @@ async function runAssertions() {
 
     // ------- Test: theme switching ------------------------------------------
     const lightInitial = await page.$eval('html', (el) => el.className).catch(() => null);
-    await page.click('#theme-dark');
+    await click('#theme-dark');
     await new Promise((r) => setTimeout(r, 200));
     const darkClassOnHtml = await page.$eval('html', (el) => el.className).catch(() => null);
     assert(darkClassOnHtml && darkClassOnHtml.includes('dark'),
@@ -369,7 +385,7 @@ async function runAssertions() {
       'plan prices show monthly values ("$10", "$30")',
       `got: ${JSON.stringify(pricingInitial.prices)}`);
 
-    await page.click('#frequency-yearly');
+    await click('#frequency-yearly');
     await new Promise((r) => setTimeout(r, 250));
     const pricingToggled = await page.evaluate(() => {
       const prices = Array.from(document.querySelectorAll('#plans .plan-price span')).map((el) => el.textContent.trim());
@@ -469,7 +485,7 @@ async function runAssertions() {
       `display: ${xshowState.togglableDisplay}`);
 
     // Toggle the x-show element on and verify it becomes visible
-    await page.click('#xshow-toggle');
+    await click('#xshow-toggle');
     await new Promise((r) => setTimeout(r, 250));
     const xshowToggled = await page.evaluate(() => {
       const el = document.querySelector('#xshow-togglable');
@@ -478,6 +494,56 @@ async function runAssertions() {
     assert(xshowToggled !== 'none',
       'x-show toggled element becomes visible after click',
       `display: ${xshowToggled}`);
+
+    // ------- Test: adopted x-if clones are live -----------------------------
+    // Regression: reconcilePrerenderClones adopted the baked clone via
+    // _x_currentIfEl without initTree/_x_undoIf — bindings dead, and a false
+    // expression could never remove it.
+    const xifHtml = fixtureHtmlNoComments;
+    assert(/id="xif-content"[^>]*data-mnfst-prerender-clone|data-mnfst-prerender-clone[^>]*id="xif-content"/.test(xifHtml),
+      'x-if clone is baked and tagged in prerendered output');
+    assert(/id="xif-stale"/.test(xifHtml),
+      'render-only x-if clone is baked into prerendered output');
+
+    const xifState = () => page.evaluate(() => ({
+      contents: document.querySelectorAll('#xif-content').length,
+      count: document.querySelector('#xif-count')?.textContent.trim() ?? null,
+      inner: document.querySelector('#xif-inner')?.textContent.trim() ?? null,
+      inits: window.__xifInits || 0,
+      stale: document.querySelectorAll('#xif-stale').length,
+    }));
+    await page.waitForFunction(() => window.__manifestReady === true, { timeout: 16000, polling: 100 }).catch(() => {});
+    const xif0 = await xifState();
+    assert(xif0.contents === 1, 'adopted x-if clone is not duplicated at boot', `got ${xif0.contents}`);
+    assert(xif0.inner === 'ran' && xif0.inits === 1,
+      'x-data/x-init inside adopted x-if clone runs exactly once',
+      `got: ${JSON.stringify(xif0)}`);
+    await click('#xif-btn');
+    await click('#xif-btn');
+    await new Promise((r) => setTimeout(r, 200));
+    const xif1 = await xifState();
+    assert(xif1.count === '2', '@click inside adopted x-if clone increments once per click',
+      `got: ${JSON.stringify(xif1)}`);
+    await click('#xif-hide');
+    await new Promise((r) => setTimeout(r, 200));
+    const xif2 = await xifState();
+    assert(xif2.contents === 0, 'adopted x-if clone is removed when expression turns false',
+      `got: ${JSON.stringify(xif2)}`);
+    await click('#xif-show');
+    await new Promise((r) => setTimeout(r, 200));
+    const xif3 = await xifState();
+    assert(xif3.contents === 1 && xif3.count === '2' && xif3.inits === 2,
+      'x-if re-renders a fresh live clone after hide/show',
+      `got: ${JSON.stringify(xif3)}`);
+    assert(xif3.stale === 0, 'x-if false at boot removes the baked clone',
+      `got ${xif3.stale}`);
+    const xifLate = await page.evaluate(() => ({
+      count: document.querySelectorAll('#xif-late').length,
+      removed: window.__xifLateRemoved,
+    }));
+    assert(xifLate.count === 1 && xifLate.removed === 0,
+      'x-if briefly false at boot keeps the baked clone (no blank frame)',
+      `got: ${JSON.stringify(xifLate)}`);
 
     // ------- Test: $x-driven x-for keeps template, no duplicate clones --------
     // Regression: x-for templates over $x data were removed by the static-template
@@ -556,6 +622,49 @@ async function runAssertions() {
     const leftoverIds = await page.$$eval('[data-hydrate-id]', (els) => els.length);
     assert(leftoverIds === 0, 'no data-hydrate-id attributes remain after hydration',
       `found ${leftoverIds} leftover`);
+
+    // ------- Test: static MPA skip (route visibility + head) ---------------
+    // Baked output holds only this route's sections and head content; the router must leave both alone
+    const routeMutLog = () => {
+      window.__routeMuts = [];
+      new MutationObserver((list) => {
+        for (const r of list) {
+          const t = r.target;
+          if (t.nodeType === 1 && t.hasAttribute('x-route') && ['x-cloak', 'hidden', 'style'].includes(r.attributeName)) {
+            window.__routeMuts.push(`${t.getAttribute('x-route')} ${r.attributeName}`);
+          }
+        }
+      }).observe(document, { attributes: true, subtree: true });
+    };
+    await page.evaluateOnNewDocument(routeMutLog);
+    const mpaState = async () => page.evaluate(() => {
+      const vis = window.ManifestRoutingVisibility;
+      const probe = document.createElement('div');
+      probe.setAttribute('x-route', 'no-such-route');
+      const shown = (id) => { const el = document.getElementById(id); return el ? getComputedStyle(el.closest('[x-route]')).display !== 'none' : null; };
+      return {
+        isMPA: vis ? vis.isPrerenderedStaticMPA() : null,
+        unmatchedActive: vis ? vis.isRouteActive(probe) : null,
+        home: shown('home-heading'),
+        about: shown('about-heading'),
+        heads: Array.from(document.head.querySelectorAll('meta[name="fixture-route-head"]')).map((m) => m.content),
+        muts: window.__routeMuts || [],
+      };
+    });
+    for (const [path, route] of [['/', 'home'], ['/about/', 'about']]) {
+      await page.goto(`http://localhost:${STATIC_PORT}${path}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await new Promise((r) => setTimeout(r, 2000));
+      // Late route-change must not re-run visibility or head injection either
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('manifest:route-change', { detail: { from: location.pathname, to: '/no-such-route', normalizedPath: 'no-such-route' } })));
+      await new Promise((r) => setTimeout(r, 400));
+      const s = await mpaState();
+      const other = route === 'home' ? 'about' : 'home';
+      assert(s.isMPA === true, `${path}: ManifestRoutingVisibility.isPrerenderedStaticMPA() is true`, JSON.stringify(s));
+      assert(s.unmatchedActive === true, `${path}: isRouteActive short-circuits true on static MPA`, JSON.stringify(s));
+      assert(s[route] === true && s[other] === null, `${path}: only the ${route} section is baked and visible`, JSON.stringify(s));
+      assert(s.muts.length === 0, `${path}: router does not toggle x-cloak/hidden/style on baked routes`, JSON.stringify(s.muts));
+      assert(JSON.stringify(s.heads) === JSON.stringify([route]), `${path}: route head content baked once, not re-injected or removed`, JSON.stringify(s.heads));
+    }
 
     // ------- Test: no console errors during all of the above ----------------
     if (consoleErrors.length > 0) {

@@ -925,6 +925,7 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
 
             if (executeMutation && updateEntryInStore) {
                 // Optimistic update: immediately update store
+                const generation = window.ManifestDataStore?.sourceGeneration?.(tableName);
                 updateEntryInStore(tableName, entryId, { [fileIdsColumn]: fileIds });
 
                 // Background sync: update server
@@ -948,7 +949,7 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
                         if (originalEntry) {
                             const originalFileIds = originalEntry[fileIdsColumn] || [];
                             const rolledBackFileIds = originalFileIds.filter(id => id !== fileId);
-                            updateEntryInStore(tableName, entryId, { [fileIdsColumn]: rolledBackFileIds });
+                            updateEntryInStore(tableName, entryId, { [fileIdsColumn]: rolledBackFileIds }, { generation });
                         }
                     }
                     throw updateError;
@@ -1114,6 +1115,7 @@ async function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = '
 
         if (updateEntryInStore) {
             // Optimistic update: immediately update store
+            const generation = window.ManifestDataStore?.sourceGeneration?.(tableName);
             updateEntryInStore(tableName, entryId, { [fileIdsColumn]: fileIds });
 
             // Background sync: update server
@@ -1135,7 +1137,7 @@ async function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = '
                         if (!originalFileIds.includes(fileId)) {
                             originalFileIds.push(fileId);
                         }
-                        updateEntryInStore(tableName, entryId, { [fileIdsColumn]: originalFileIds });
+                        updateEntryInStore(tableName, entryId, { [fileIdsColumn]: originalFileIds }, { generation });
                     }
                 }
                 throw updateError;

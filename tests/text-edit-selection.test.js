@@ -219,3 +219,36 @@ describe('x-text-edit inline markdown as you type', () => {
         expect(code.textContent).toBe('lit **no**')
     })
 })
+
+describe('x-text-edit inline conversion rule priority', () => {
+    function typeChar(area, node, ch) {
+        node.insertData(node.length, ch)
+        select(node, node.length)
+        area.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: ch }))
+    }
+
+    it('![alt](src) converts to an image, not a link with a stray bang', () => {
+        const root = mount('<div x-text-edit.html id="a"><p>pic </p></div>')
+        const area = root.querySelector('#a')
+        focusin(area)
+        const node = text(area)
+        for (const ch of '![alt](x.png)') typeChar(area, node, ch)
+        const img = area.querySelector('img')
+        expect(img && img.getAttribute('src')).toBe('x.png')
+        expect(area.querySelector('a')).toBe(null)
+        expect(area.querySelector('p').textContent).toBe('pic ')
+    })
+
+    it('composition input never converts', () => {
+        const root = mount('<div x-text-edit id="a"><p>x </p></div>')
+        const area = root.querySelector('#a')
+        focusin(area)
+        const node = text(area)
+        for (const ch of '**b**') {
+            node.insertData(node.length, ch)
+            select(node, node.length)
+            area.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: ch, isComposing: true }))
+        }
+        expect(area.querySelector('strong')).toBe(null)
+    })
+})

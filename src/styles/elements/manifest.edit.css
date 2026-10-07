@@ -10,54 +10,22 @@
 @layer utilities {
 
     /* ---- Editing UI scope ----
-       ALL chrome — region outline + label, sortable grips, movable/text outlines,
-       size-handle hairlines, the floating toolbar — lives under ONE scope:
-       [data-edit-ui], on the region itself or any ancestor (e.g. <body data-edit-ui>
-       for a whole editor view). The plugin sets it on `.authoring` regions
-       automatically; everything else opts in with the attribute. A region outside
-       the scope is just as editable — it simply carries no visual cues. */
+       ALL chrome — cursors, movable/text outlines, size-handle hairlines, drop
+       targets, the floating toolbar — lives under ONE scope: [data-edit-ui], on
+       the region itself or any ancestor (e.g. <body data-edit-ui> for a whole
+       editor view). The plugin sets it on `.authoring` regions automatically;
+       everything else opts in with the attribute. A region outside the scope is
+       just as editable — it simply carries no visual cues. */
 
     /* ---- Editable area (armed) ---- */
     :where([data-edit-armed]) {
         position: relative;
     }
 
-    /* Quiet until touched. A page covered in dashed boxes reads as a diagram of
-       itself; the affordance only has to be there when you go looking for it.
-       While an inner affordance is engaged (text caret, handle, row), the region
-       outline stands down so only the element being edited is highlighted. */
-    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *) {
-        outline: 1px dashed transparent;
-        outline-offset: 6px;
-        border-radius: var(--radius);
-        transition: outline-color 0.12s ease;
-    }
-
-    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *):is(:hover, :focus-within):not(:has([contenteditable]:is(:hover, :focus), [data-edit-handle]:is(:hover, :focus), [data-edit-sortable]:is(:hover, :focus-within), [data-edit-movable]:is(:hover, :focus))) {
-        outline-color: var(--color-line);
-    }
-
-    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *)::before {
-        content: attr(data-edit-label);
-        position: absolute;
-        inset-block-start: calc(-0.6em - 6px);
-        inset-inline-start: 0.5rem;
-        padding-inline: 0.3rem;
-        background: var(--color-page);
-        border-radius: 3px;
-        font-size: 0.7rem;
-        line-height: 1.2;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--color-content-subtle);
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.12s ease;
-    }
-
-    :where([data-edit-armed]):where([data-edit-ui], [data-edit-ui] *):is(:hover, :focus-within):not(:has([contenteditable]:is(:hover, :focus), [data-edit-handle]:is(:hover, :focus), [data-edit-sortable]:is(:hover, :focus-within), [data-edit-movable]:is(:hover, :focus)))::before {
-        opacity: 1;
-    }
+    /* No default region boundary or label: a page being edited should look
+       like the page, not a diagram of its regions. The hooks remain for a real
+       editor product to draw its own — [data-edit-authoring] marks the region
+       and data-edit-label carries "key · regime". */
 
     /* ---- Reorder (pointer + keyboard; touch-action:none lets touch-drag beat scroll) ---- */
     :where([data-edit-sortable]) {
@@ -66,29 +34,9 @@
         transition: opacity 0.12s ease, outline-color 0.12s ease;
     }
 
-    /* The grip: the plugin's own inline drag affordance, sitting inside the row
-       at its inline start. A dot grid, revealed on approach. --edit-grip sizes
-       it; `--edit-grip: 0` removes it (e.g. for grid rows where an extra flex
-       item would take a cell). No full-row outline — the grip and the cursor
-       say "draggable" without boxing the content. */
-    :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable])::before {
-        content: '';
-        align-self: center;
-        flex: 0 0 auto;
-        width: var(--edit-grip, 0.6rem);
-        height: 1rem;
-        margin-inline-end: calc(var(--edit-grip, 0.6rem) / 2);
-        background-image: radial-gradient(circle, var(--color-content-subtle) 1px, transparent 1px);
-        background-size: 0.3rem 0.3rem;
-        background-position: center;
-        opacity: 0;
-        transition: opacity 0.12s ease;
-        pointer-events: none;
-    }
-
-    :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable]):is(:hover, :focus-visible)::before {
-        opacity: 0.9;
-    }
+    /* No injected grip: the row itself is the handle (grab cursor), while text
+       inside stays a text surface (text cursor, below). Rows that are pure text
+       still reorder by keyboard. */
 
     :where([data-edit-sortable], [data-edit-movable]):focus-visible {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
@@ -109,6 +57,14 @@
     :where([data-edit-ghost]) {
         opacity: var(--edit-ghost-opacity, 0.4);
         pointer-events: none;
+    }
+
+    /* Valid cross-region destinations during a drag: a dashed invitation, and
+       enough height that an EMPTY region can be dropped onto at all. */
+    :where([data-edit-drop-target]) {
+        outline: 1px dashed color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 55%, transparent);
+        outline-offset: 4px;
+        min-height: 2.5rem;
     }
 
     /* Nothing else should react while a drag is in progress */
@@ -142,6 +98,7 @@
        1px line, so focusing doesn't make the page jump a weight class. */
     :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"],
     :where([data-edit-ui])[data-edit-armed] [contenteditable="true"] {
+        cursor: text;
         outline: 1px solid transparent;
         outline-offset: 2px;
         border-radius: 3px;

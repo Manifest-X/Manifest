@@ -1,10 +1,8 @@
 // Router head
 
-function isPrerenderedStaticMPA() {
+// Prerendered MPA output has route head content baked in
+function headIsPrerenderedMPA() {
     try {
-        if (window.ManifestRoutingVisibility && typeof window.ManifestRoutingVisibility.isPrerenderedStaticMPA === 'function') {
-            return window.ManifestRoutingVisibility.isPrerenderedStaticMPA();
-        }
         return document.querySelector('meta[name="manifest:prerendered"][content="1"]') !== null;
     } catch (e) {
         return false;
@@ -166,26 +164,10 @@ function processElementHeadContent(element, normalizedPath) {
 
 // Process all head content in the DOM
 function processAllHeadContent(normalizedPath) {
-    if (isPrerenderedStaticMPA()) return;
+    if (headIsPrerenderedMPA()) return;
 
     // Find all elements with head templates
     const elementsWithHead = document.querySelectorAll('template[data-head]');
-
-    // Debug: Let's see what's actually in the DOM
-    const allTemplates = document.querySelectorAll('template');
-    allTemplates.forEach((template, index) => {
-        if (template.hasAttribute('data-head')) {
-        } else {
-            // Check if this might be the about template
-            if (template.getAttribute('x-route') === 'about') {
-            }
-        }
-    });
-
-    // Also try a more specific selector to see if we can find the about template
-    const aboutTemplate = document.querySelector('template[x-route="about"]');
-    if (aboutTemplate) {
-    }
 
     // Process each element's head content
     elementsWithHead.forEach((template, index) => {
@@ -245,19 +227,9 @@ function initializeHeadContent() {
     function processHeadContentAfterComponentsReady() {
         // Process initial head content after a longer delay to let components settle
         setTimeout(() => {
-            if (isPrerenderedStaticMPA()) return;
+            if (headIsPrerenderedMPA()) return;
             const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
             const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-
-            // Debug: Check if about component exists
-            const aboutComponent = document.querySelector('[data-component="about-1"]');
-            if (aboutComponent) {
-            }
-
-            // Debug: Check what placeholders exist
-            const placeholders = document.querySelectorAll('x-about, x-home, x-ui');
-            placeholders.forEach((placeholder, index) => {
-            });
 
             processAllHeadContent(normalizedPath);
         }, 200);
@@ -265,7 +237,7 @@ function initializeHeadContent() {
 
     // Function to process head content immediately (for projects without components)
     function processHeadContentImmediately() {
-        if (isPrerenderedStaticMPA()) return;
+        if (headIsPrerenderedMPA()) return;
         const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
         const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
         processAllHeadContent(normalizedPath);
@@ -299,20 +271,10 @@ function initializeHeadContent() {
 
         // Wait a bit for components to settle after route change
         setTimeout(() => {
-            if (isPrerenderedStaticMPA()) return;
+            if (headIsPrerenderedMPA()) return;
             // Process head content immediately to catch components before they're reverted
             const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
             const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-
-            // Debug: Check if about component exists
-            const aboutComponent = document.querySelector('[data-component="about-1"]');
-            if (aboutComponent) {
-            }
-
-            // Debug: Check what placeholders exist
-            const placeholders = document.querySelectorAll('x-about, x-home, x-ui');
-            placeholders.forEach((placeholder, index) => {
-            });
 
             processAllHeadContent(normalizedPath);
         }, 100);

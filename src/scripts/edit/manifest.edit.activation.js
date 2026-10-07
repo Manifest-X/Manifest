@@ -17,7 +17,9 @@
             if (k) {
                 // Keep the tally in step so a new element never claims an ordinal
                 // an existing one already holds.
-                const [base, n] = k.split('#');
+                // The ordinal is the LAST #digits suffix — authored text may contain '#'.
+                const m = /^([\s\S]*)#(\d+)$/.exec(k);
+                const base = m ? m[1] : k, n = m ? m[2] : undefined;
                 seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
             } else {
                 const base = el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -28,6 +30,7 @@
             el.setAttribute('data-edit-path', pathOf(el, area));   // still what the source writer navigates by
             if (!(k in area._baseClass)) area._baseClass[k] = el.getAttribute('class') || '';
             if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
+            if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
         markEl(area);
         // Stop at a rich editor: its internals are its own, and marking them would
@@ -56,6 +59,15 @@
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
+        if (!area._dndBound) {
+            area._dndBound = true;
+            // Native HTML5 drag (a text selection, an image, a link) must never
+            // start inside a region: it drops SELECTED TEXT into neighbouring
+            // editable leaves, silently merging elements. All region dragging is
+            // pointer-based.
+            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });   // nothing drops INTO a region either (an OS image drop would merge into a leaf)
+        }
         if (!area._ctxBound) {
             area._ctxBound = true;
             // One binding for the whole area: report the block, and fall back to the
@@ -113,24 +125,44 @@
     // already auto-persists to localStorage on commit).
     function buildPatches() {
         const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
-        const toEdits = (paths, area) => {
+        const toEdits = (paths, area, fileOrder) => {
             const e = [];
             Object.entries(paths).forEach(([k, props]) => {
                 // Keys address across a session; the source writer navigates by
-                // position, so resolve to where the element actually sits now. An
-                // element that has since been deleted has nothing to write.
+                // position, so resolve to where the element actually sits now (the
+                // server applies order before edits, so current position is the
+                // right one). A deleted element has nothing to write.
                 const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
-                const path = el ? el.getAttribute('data-edit-path') : k;
+                let path = el ? pathOf(el, area) : k;
                 if (area && !el) return;
+                // RULE: paths must be valid against the file state the server will reach —
+                // a pending st-children change can't be applied there (a short order is
+                // skipped), so address by the block's position in the UNMODIFIED file.
+                if (el && el !== area && fileOrder) {
+                    let block = el; while (block.parentElement && block.parentElement !== area) block = block.parentElement;
+                    const fi = fileOrder.indexOf(block.getAttribute('data-edit-key'));
+                    if (fi < 0) return;                          // block not in the file (added this session) — nothing to address
+                    const segs = path.split('.'); segs[0] = String(fi); path = segs.join('.');
+                }
                 Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
             });
             return e;
         };
+        for (let i = 0; i < cursor; i++) {   // cross-region moves travel in log order, ahead of per-region ops
+            const d = log[i];
+            if (d.kind !== 'st-move' || !authoringRegion(d.from) || !authoringRegion(d.to)) continue;
+            patches.push({ kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder });
+        }
         const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
             if (!authoringRegion(region)) return;
-            const edits = toEdits(ss.node[region] || {}, areaByKey(region));
-            if (edits.length || ss.order[region]) patches.push({ kind: 'static', region, edits, order: ss.order[region] || null });
+            const area = areaByKey(region);
+            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region);
+            const edits = toEdits(ss.node[region] || {}, area, structural ? (area && area._baseOrder) || [] : null);
+            // A moved region always gets its folded order (pre-move reorders are NOT
+            // in the move splice); the server skips a reorder that is already true.
+            const order = ss.order[region] || null;
+            if (edits.length || order) patches.push({ kind: 'static', region, edits, order });
         });
         const dv = dataValueState();   // data-value edits → field writes (local file / cloud $update)
         Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));

@@ -94,18 +94,35 @@
     // instead of being left holding the edit. (applyThemeState works the same way.)
     function staticState() {
         const node = {}, order = {}, sigs = {}, base = {}, html = {};
-        for (const d of log) {
+        // An applied move re-addresses every EARLIER delta it carried along (its remap:
+        // the moved keys plus any twins whose ordinal shifted), so ops and baselines
+        // land on the element's current region/key instead of its pre-move address.
+        const moves = [];
+        for (let i = 0; i < cursor; i++) if (log[i].kind === 'st-move' && log[i].remap) moves.push({ i, remap: log[i].remap });
+        const addr = (i, region, path) => {
+            for (const m of moves) {
+                if (m.i <= i) continue;
+                const hit = m.remap.find(r => r[0] === region && r[1] === path);
+                if (hit) { region = hit[2]; path = hit[3]; }
+            }
+            return [region, path];
+        };
+        for (let i = 0; i < log.length; i++) {
+            const d = log[i];
             if (d.kind === 'st-children' && d.html) Object.assign(html[d.region] = html[d.region] || {}, d.html);
+            if (d.kind === 'st-move' && d.html) { (html[d.from] = html[d.from] || {})[d.key] = d.html; (html[d.to] = html[d.to] || {})[d.toKey] = d.html; }   // both sides can rebuild it
             if (d.kind !== 'st-node') continue;
-            const bk = d.region + '|' + d.path;
+            const [region, path] = addr(i, d.region, d.path);
+            const bk = region + '|' + path;
             const b = base[bk] = base[bk] || {};
             if (!(d.prop in b)) b[d.prop] = d.before;
             if (d.sig) sigs[bk] = d.sig;
         }
         for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind === 'st-node') { (node[d.region] = node[d.region] || {}); (node[d.region][d.path] = node[d.region][d.path] || {})[d.prop] = d.value; }
+            if (d.kind === 'st-node') { const [region, path] = addr(i, d.region, d.path); (node[region] = node[region] || {}); (node[region][path] = node[region][path] || {})[d.prop] = d.value; }
             else if (d.kind === 'st-order' || d.kind === 'st-children') order[d.region] = d.order;
+            else if (d.kind === 'st-move') { order[d.from] = d.fromOrder; order[d.to] = d.toOrder; }
         }
         // The markup for anything added or removed comes from the WHOLE log, the same
         // way baselines do — undoing a delete has to be able to rebuild the element,
@@ -180,8 +197,10 @@
                 kids.forEach((el, i) => { by[keys[i]] = el; });
                 const markup = html[region] || {};
                 const next = want.map(kk => by[kk] || materialize(markup[kk], kk)).filter(Boolean);
+                // Reinsert at the managed range — never scramble real children past plugin handles.
+                const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(area.children).find(pluginNode) || null;
                 kids.forEach(el => { if (!next.includes(el)) el.remove(); });
-                next.forEach(el => area.appendChild(el));
+                next.forEach(el => area.insertBefore(el, anchor));
             }
         });
     }
@@ -189,7 +208,12 @@
         const region = key(area), path = el.getAttribute('data-edit-key');
         if (!path) return;                          // not an addressable node
         if (prop === 'text') value = sanitizeFor(el, value);
-        const before = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        // _pre* comes from the focus/open listener; when an edit arrives without
+        // one (programmatic focus, scripted writes), the arm-time baseline keeps
+        // `before` truthful so undo can still reach the original.
+        const fallback = prop === 'text' ? area._baseText && area._baseText[path] : prop === 'class' ? area._baseClass && area._baseClass[path] : area._baseStyle && area._baseStyle[path];
+        const pre = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
+        const before = pre !== undefined ? pre : fallback;
         if (before === value) return;
         log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();
     }
@@ -233,6 +257,62 @@
         if (eq(before, order)) return;
         log.splice(cursor); log.push({ kind: 'st-order', region, order, before }); cursor = log.length; lastOrder[region] = order; saveState(); refresh();
     }
+    // Positional re-key of a region: give every element the key a FRESH session would
+    // derive (markStatic document order, ordinals by position among same-base keys).
+    // That is what keeps client, server, and reload addressing the same elements after
+    // a move shifts membership. Returns the renames as [oldKey, newKey] pairs.
+    function rekeyRegion(area) {
+        const seen = Object.create(null), changes = [];
+        for (const el of [area, ...area.querySelectorAll('*')]) {
+            if (el.hasAttribute('data-edit-handle') || el.hasAttribute('data-edit-ghost')) continue;
+            if (el.parentElement && el.parentElement.closest('[data-text-edit]')) continue;
+            const cur = el.getAttribute('data-edit-key');
+            const base = cur ? ((/^([\s\S]*)#\d+$/.exec(cur) || [, cur])[1]) : staticKey(el);   // ordinal = last #digits suffix
+            const n = seen[base] = (seen[base] || 0) + 1;
+            const k = n > 1 ? base + '#' + n : base;
+            if (cur !== k) { el.setAttribute('data-edit-key', k); if (cur) changes.push([cur, k]); }
+        }
+        return changes;
+    }
+    // Replay/undo/redo of a move's key renames. Resolve-then-set so swapped ordinals
+    // never collide mid-application; the moved element itself (region change) is
+    // handled by applyStaticState's materialization, not here.
+    function applyMoveKeys(d, invert) {
+        if (!d.remap) return;
+        const jobs = [];
+        for (const [r, o, r2, n] of d.remap) {
+            if (r !== r2) continue;
+            const a = areaByKey(r); if (!a) continue;
+            const findKey = invert ? n : o, setKey = invert ? o : n;
+            const el = [a, ...a.querySelectorAll('[data-edit-key]')].find(e => e.getAttribute('data-edit-key') === findKey);
+            if (el) jobs.push([el, setKey]);
+        }
+        jobs.forEach(([el, k]) => el.setAttribute('data-edit-key', k));
+    }
+    // Cross-region move (static → static): one delta carries both region orders, so a
+    // single undo puts the block back. The item must already sit in its new parent.
+    // Both regions are re-keyed positionally and every rename travels on the delta
+    // (remap), so earlier deltas on the moved block — and on ordinal-shifted twins —
+    // keep addressing the right elements.
+    function commitMove(fromArea, toArea, item) {
+        const from = key(fromArea), to = key(toArea), fromKey = item.getAttribute('data-edit-key') || staticKey(item);
+        const descOld = [...item.querySelectorAll('[data-edit-key]')].map(n => [n, n.getAttribute('data-edit-key')]);
+        item.removeAttribute('data-edit-key');
+        item.querySelectorAll('[data-edit-key]').forEach(n => n.removeAttribute('data-edit-key'));   // arrival re-keys in the new region
+        const fromPairs = rekeyRegion(fromArea).map(([o, n]) => [from, o, from, n]);
+        const toPairs = rekeyRegion(toArea).map(([o, n]) => [to, o, to, n]);
+        const toKey = item.getAttribute('data-edit-key');
+        const remap = [[from, fromKey, to, toKey]];
+        descOld.forEach(([n, o]) => { const nk = n.getAttribute('data-edit-key'); if (nk) remap.push([from, o, to, nk]); });
+        remap.push(...fromPairs, ...toPairs);
+        const html = blockHTML(item);
+        log.splice(cursor);
+        log.push({ kind: 'st-move', from, to, key: fromKey, toKey, fromOrder: staticKeys(fromArea), toOrder: staticKeys(toArea), html, remap });
+        cursor = log.length;
+        lastOrder[from] = staticKeys(fromArea); lastOrder[to] = staticKeys(toArea);
+        markStatic(fromArea); armArea(toArea);   // paths shift on both sides; the arrival needs baselines + affordances
+        saveState(); refresh();
+    }
 
     /* ---- Commit / undo / redo (data area snapshots) ---- */
     function commit(area) {
@@ -245,6 +325,7 @@
     const dispatchApply = (d) => { if (d.kind === 'cmp-main' || d.kind === 'cmp-inst') applyComponentState(); else if (d.kind === 'data-val') applyDataValues(); else if (d.kind === 'theme') applyThemeState(); else applyStaticState(); };
     async function undo() {
         if (cursor === 0) return; const d = log[--cursor];
+        if (d.kind === 'st-move') applyMoveKeys(d, true);   // ordinal renames roll back before state re-applies
         if (d.kind === 'data-splice') applySplice(d, true);
         else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
         else dispatchApply(d);
@@ -252,6 +333,7 @@
     }
     async function redo() {
         if (cursor >= log.length) return; const d = log[cursor++];
+        if (d.kind === 'st-move') applyMoveKeys(d, false);
         if (d.kind === 'data-splice') applySplice(d, false);
         else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
         else dispatchApply(d);

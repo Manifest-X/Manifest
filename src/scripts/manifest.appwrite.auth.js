@@ -70,6 +70,7 @@ async function getAppwriteConfig() {
 
     const magicEnabled = authMethods.includes("magic");
     const otpEnabled = authMethods.includes("otp");
+    const phoneEnabled = authMethods.includes("phone");
     const oauthEnabled = authMethods.includes("oauth");
 
     // Teams (presence of teams object enables it)
@@ -92,7 +93,7 @@ async function getAppwriteConfig() {
         : toBool(appwriteConfig.auth.teams.authenticated);
 
     // Guest upgrade: preserve the anonymous account + teams on sign-in (magic/oauth;
-    // OTP can't convert anonymous accounts). Defaults to guestTeams.
+    // email/phone OTP can't convert anonymous accounts). Defaults to guestTeams.
     const guestUpgrade = appwriteConfig.auth?.guestUpgrade !== undefined
         ? toBool(appwriteConfig.auth.guestUpgrade)
         : guestTeams;
@@ -135,6 +136,7 @@ async function getAppwriteConfig() {
         anonymous: guestAuto, // back-compat alias
         magic: magicEnabled,
         otp: otpEnabled,
+        phone: phoneEnabled,
         oauth: oauthEnabled,
         teams: teamsEnabled,
         permanentTeams: permanentTeams,
@@ -218,6 +220,32 @@ function initializeAuthStore() {
 
     // Cross-tab synchronization using localStorage events
     const STORAGE_KEY = 'manifest:auth:state';
+    // Cap on holding scoped data for a guest/callback sign-in that may fail
+    const SIGN_IN_PENDING_MS = 5000;
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._authEpoch++; markVerified(store); } }));
+
+    // Unverified session: recheck on reconnect, on return to the tab, and on a bounded backoff
+    const RECHECK_DELAYS_MS = [2000, 5000, 15000, 60000];
+    const recheck = () => { Alpine.store('auth')?._recheckSession?.(); };
+    window.addEventListener('online', recheck);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') recheck(); });
+
+    function markVerified(store) {
+        store._sessionUnverified = false;
+        store._recheckAttempt = 0;
+        if (store._recheckTimer) { clearTimeout(store._recheckTimer); store._recheckTimer = null; }
+    }
+
+    function scheduleRecheck(store) {
+        if (!store._sessionUnverified || store._recheckTimer) return;
+        const delay = RECHECK_DELAYS_MS[Math.min(store._recheckAttempt++, RECHECK_DELAYS_MS.length - 1)];
+        store._recheckTimer = setTimeout(() => { store._recheckTimer = null; store._recheckSession(); }, delay);
+    }
+
+    // Appwrite's "no session" answer; anything else (offline, 5xx) leaves the session unknown
+    const NO_SESSION_TYPES = ['general_unauthorized_scope', 'user_unauthorized', 'user_session_not_found', 'user_jwt_invalid', 'user_not_found', 'user_blocked'];
+    const isNoSession = error => error?.code === 401 || NO_SESSION_TYPES.includes(error?.type);
 
     // Session fields safe to mirror across tabs. Excludes `secret` and provider
     // tokens — this copy is only for UI cross-tab sync, not the auth of record.
@@ -243,7 +271,10 @@ function initializeAuthStore() {
                 const state = JSON.parse(e.newValue);
                 const store = Alpine.store('auth');
                 if (store) {
+                    const prevId = store.user?.$id || null;
                     // Update store state from other tab
+                    store._authEpoch++;
+                    if (state.isAuthenticated) markVerified(store);
                     store.isAuthenticated = state.isAuthenticated;
                     store.isAnonymous = state.isAnonymous;
                     store.user = state.user;
@@ -252,7 +283,18 @@ function initializeAuthStore() {
                     store.magicLinkExpired = state.magicLinkExpired || false;
                     store.otpSent = state.otpSent || false;
                     store.otpExpired = state.otpExpired || false;
+                    // A code row shown here must be verifiable here
+                    if (state.otpSent && state.otpUserId) store._otpUserId = state.otpUserId;
                     store.error = state.error;
+                    // Identity ended or changed in another tab: scoped data must drop this tab's rows
+                    const nextId = state.isAuthenticated ? (state.user?.$id || null) : null;
+                    if (prevId && nextId !== prevId) {
+                        if (!nextId) {
+                            store.teams = [];
+                            store.currentTeam = null;
+                        }
+                        window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                    }
                 }
             } catch (error) {
                 // Failed to sync state from other tab
@@ -262,6 +304,8 @@ function initializeAuthStore() {
 
     // Helper to sync state to localStorage (for cross-tab communication)
     function syncStateToStorage(store) {
+        // An unverified signed-out state must not sign other tabs out
+        if (store._sessionUnverified && !store.isAuthenticated) return;
         try {
             const state = {
                 isAuthenticated: store.isAuthenticated,
@@ -272,6 +316,7 @@ function initializeAuthStore() {
                 magicLinkExpired: store.magicLinkExpired,
                 otpSent: store.otpSent,
                 otpExpired: store.otpExpired,
+                otpUserId: store.otpSent ? store._otpUserId : null,
                 error: store.error
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -289,10 +334,11 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
-        otpSent: false, // Email OTP: a code has been emailed and is awaiting entry
-        otpExpired: false, // Email OTP: the entered code was wrong/expired
-        otpPhrase: null, // Email OTP: security phrase to display (when enabled)
-        _otpUserId: null, // Email OTP: userId returned by createEmailToken, used by verifyOTP
+        otpSent: false, // OTP (email/phone): a code has been sent and is awaiting entry
+        otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
+        otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
+        _otpUserId: null, // OTP: userId returned by createEmailToken/createPhoneToken, used by verifyOTP
+        _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
@@ -340,6 +386,11 @@ function initializeAuthStore() {
         _appwrite: null,
         _guestAuto: false,
         _guestManual: false,
+        _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
+        _sessionUnverified: false, // init could not reach Appwrite: signed out locally, never broadcast
+        _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
+        _recheckTimer: null,
+        _recheckAttempt: 0,
         guestManualEnabled: false,
         _oauthProvider: null, // Store OAuth provider name (google, github, etc.) when login is initiated
         _syncStateToStorage: syncStateToStorage,
@@ -545,57 +596,18 @@ function initializeAuthStore() {
 
                 // Try to restore existing session
                 try {
-                    this.user = await appwrite.account.get();
-                    const sessionsResponse = await appwrite.account.listSessions();
-                    const allSessions = sessionsResponse.sessions || [];
-                    const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
-
-                    if (currentSession) {
-                        this.session = currentSession;
-                        this.isAuthenticated = true;
-                        this.isAnonymous = currentSession.provider === 'anonymous';
-
-                        // Restore OAuth provider from storage (persists across redirects/refresh)
-                        if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
-                            try {
-                                // Try localStorage first (persists across redirects), fallback to sessionStorage
-                                let storedProvider = localStorage.getItem('manifest:oauth:provider');
-                                if (!storedProvider) {
-                                    storedProvider = sessionStorage.getItem('manifest:oauth:provider');
-                                }
-                                if (storedProvider) {
-                                    this._oauthProvider = storedProvider;
-                                }
-                            } catch (e) {
-                                // Storage error
-                            }
-                        }
-
-                        // If guest is disabled but we have anonymous session, clear it
-                        if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
-                            try {
-                                await appwrite.account.deleteSession(this.session.$id);
-                                this.isAuthenticated = false;
-                                this.isAnonymous = false;
-                                this.user = null;
-                                this.session = null;
-                            } catch (deleteError) {
-                                // Failed to delete guest session
-                            }
-                        }
-                    } else {
-                        this.isAuthenticated = true; // User exists, session might be managed by cookies
-                        this.isAnonymous = false;
-                    }
+                    await this._restoreSession(appwrite);
 
                     // Team loading is deferred (not awaited) — runs in the background after
                     // manifest:auth:initialized so a session gate isn't held up by it.
                 } catch (error) {
-                    // No existing session - this is expected
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
-                    this.user = null;
-                    this.session = null;
+                    this._clearIdentity();
+                    // Signed out for now; other tabs keep their session
+                    if (!isNoSession(error)) {
+                        this._sessionUnverified = true;
+                        scheduleRecheck(this);
+                        console.warn('[Manifest Appwrite Auth] Session check failed (signed out until reachable):', error?.message || error);
+                    }
                 }
 
                 // Sync state to localStorage
@@ -610,6 +622,17 @@ function initializeAuthStore() {
                 this.inProgress = false;
                 this._initialized = true;
                 this._initializing = false;
+
+                // Guest-auto / callback sign-in follows: scoped data holds instead of flashing signed-out
+                if (!this.isAuthenticated) {
+                    let callback = false;
+                    try {
+                        // Team invites need an existing session (acceptInvite refuses signed-out), so they don't sign in
+                        const info = window.ManifestAppwriteAuthCallbacks?.detect?.();
+                        callback = !!(info?.hasCallback && !info.isTeamInvite);
+                    } catch (e) { /* no-op */ }
+                    if (this._guestAuto || callback) this._signInPendingUntil = Date.now() + SIGN_IN_PENDING_MS;
+                }
 
                 // Fire as soon as identity is known, before teams load, so a session
                 // gate / splash clears in a few hundred ms.
@@ -631,6 +654,95 @@ function initializeAuthStore() {
                     })))
                     .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
             }
+        },
+
+        // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
+        async _restoreSession(appwrite, isCurrent = () => true) {
+            const user = await appwrite.account.get();
+            const sessionsResponse = await appwrite.account.listSessions();
+            if (!isCurrent()) return false;
+            this.user = user;
+            const allSessions = sessionsResponse.sessions || [];
+            const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
+
+            if (currentSession) {
+                this.session = currentSession;
+                this.isAuthenticated = true;
+                this.isAnonymous = currentSession.provider === 'anonymous';
+
+                // Restore OAuth provider from storage (persists across redirects/refresh)
+                if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
+                    try {
+                        // Try localStorage first (persists across redirects), fallback to sessionStorage
+                        let storedProvider = localStorage.getItem('manifest:oauth:provider');
+                        if (!storedProvider) {
+                            storedProvider = sessionStorage.getItem('manifest:oauth:provider');
+                        }
+                        if (storedProvider) {
+                            this._oauthProvider = storedProvider;
+                        }
+                    } catch (e) {
+                        // Storage error
+                    }
+                }
+
+                // If guest is disabled but we have anonymous session, clear it
+                if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
+                    try {
+                        await appwrite.account.deleteSession(this.session.$id);
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                        this.user = null;
+                        this.session = null;
+                    } catch (deleteError) {
+                        // Failed to delete guest session
+                    }
+                }
+            } else {
+                this.isAuthenticated = true; // User exists, session might be managed by cookies
+                this.isAnonymous = false;
+            }
+            return true;
+        },
+
+        // Offline-booted tab: re-run the session check once Appwrite is reachable
+        async _recheckSession() {
+            if (!this._sessionUnverified || this._rechecking || !this._appwrite) return;
+            if (this._recheckTimer) { clearTimeout(this._recheckTimer); this._recheckTimer = null; }
+            this._rechecking = true;
+            const epoch = this._authEpoch;
+            const current = () => this._authEpoch === epoch && this._sessionUnverified && !this.isAuthenticated;
+            try {
+                if (!await this._restoreSession(this._appwrite, current)) return;
+            } catch (error) {
+                if (!current()) return;
+                if (!isNoSession(error)) { scheduleRecheck(this); return; }
+                this._clearIdentity();
+                markVerified(this);
+                syncStateToStorage(this);
+                if (this._guestAuto && this._createAnonymousSession) await this._createAnonymousSession();
+                return;
+            } finally {
+                this._rechecking = false;
+            }
+            markVerified(this);
+            const cfg = await config.getAppwriteConfig();
+            if (this._authEpoch !== epoch) return;
+            if (this.isAuthenticated && cfg?.teams && (!this.isAnonymous || cfg.guestTeams)) {
+                try { await this._loadTeamsAndSeed(cfg); } catch (e) { console.warn('[Manifest Appwrite Auth] Team load failed:', e?.message || e); }
+                if (this._authEpoch !== epoch) return;
+            }
+            syncStateToStorage(this);
+            if (this.isAuthenticated) {
+                window.dispatchEvent(new CustomEvent(this.isAnonymous ? 'manifest:auth:anonymous' : 'manifest:auth:login', { detail: { user: this.user } }));
+            }
+        },
+
+        _clearIdentity() {
+            this.isAuthenticated = false;
+            this.isAnonymous = false;
+            this.user = null;
+            this.session = null;
         },
 
         // Clear team state when the identity changes to a different user (e.g. guest
@@ -799,11 +911,16 @@ function initializeAuthStore() {
                 return { success: false, error: 'Appwrite not configured' };
             }
 
+            // A ticket kept from a failed guest OTP must not outlive an explicit logout
+            this._otpMigrationTicket = null;
+
             // If not authenticated, nothing to logout from
             if (!this.isAuthenticated) {
                 return { success: true };
             }
 
+            this._authEpoch++;
+            markVerified(this);
             this.inProgress = true;
 
             try {
@@ -825,7 +942,7 @@ function initializeAuthStore() {
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
 
-                // Clear email OTP flags
+                // Clear OTP flags (email/phone)
                 this.otpSent = false;
                 this.otpExpired = false;
                 this.otpPhrase = null;
@@ -847,15 +964,12 @@ function initializeAuthStore() {
 
                 // Restore to guest state after logout (guest-auto only, and not when
                 // already a guest — don't mint a new guest on top).
+                let restored = false;
                 if (!this.isAnonymous && this._guestAuto && this._createAnonymousSession) {
                     await this._createAnonymousSession();
-                } else {
-                    // Clear auth state completely
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
-                    this.user = null;
-                    this.session = null;
+                    restored = this.isAuthenticated && this.isAnonymous;
                 }
+                if (!restored) this._clearIdentity();
 
                 syncStateToStorage(this);
                 window.dispatchEvent(new CustomEvent('manifest:auth:logout'));
@@ -893,6 +1007,10 @@ function initializeAuthStore() {
                 // Clear teams on logout error too
                 this.teams = [];
                 this.currentTeam = null;
+                if (!this.isAuthenticated) this._clearIdentity();
+                // Expired session (401) is still a logout: scoped data must drop the old rows
+                syncStateToStorage(this);
+                window.dispatchEvent(new CustomEvent('manifest:auth:logout'));
                 return { success: false, error: error.message };
             } finally {
                 this.inProgress = false;
@@ -905,6 +1023,8 @@ function initializeAuthStore() {
                 return { success: false, error: 'Appwrite not configured' };
             }
 
+            this._authEpoch++;
+            markVerified(this);
             this.inProgress = true;
 
             try {
@@ -944,6 +1064,10 @@ function initializeAuthStore() {
                 this.session = null;
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
+                this.teams = [];
+                this.currentTeam = null;
+                syncStateToStorage(this);
+                window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
                 return { success: false, error: error.message };
             } finally {
                 this.inProgress = false;
@@ -958,10 +1082,12 @@ function initializeAuthStore() {
 
             try {
                 this.user = await this._appwrite.account.get();
+                if (this.isAuthenticated) markVerified(this);
                 syncStateToStorage(this);
                 return this.user;
             } catch (error) {
-                // Session may have expired
+                if (!isNoSession(error)) throw error;
+                markVerified(this);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
                 this.user = null;
@@ -1038,8 +1164,8 @@ async function initializeAppwriteAuthPlugin() {
                     }
                 }
 
-                // If no session and guest-auto is enabled, create guest session
-                if (!store.isAuthenticated && store._guestAuto && store._createAnonymousSession) {
+                // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable)
+                if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
             }, { once: true });
@@ -6177,7 +6303,8 @@ window.ManifestAppwriteAuthMagicLinks = {
 /* Auth email OTP (one-time passcode) */
 
 // Two-step in-page flow (no redirect): createEmailOTP(email) emails a code + returns
-// a userId, verifyOTP(code) creates the session.
+// a userId, verifyOTP(code) creates the session. verifyOTP/submitOTP are shared
+// with phone OTP (users.phone.js).
 // Gotcha: Appwrite can't convert an anonymous guest via OTP — a guest verifying an OTP
 // gets a fresh account (guest teams lost). Use magic links for guest upgrade.
 
@@ -6247,17 +6374,20 @@ function initializeEmailOTP() {
                     this._appwrite = await config.getAppwriteClient();
                 }
                 if (!this._appwrite) {
-                    return { success: false, error: 'Appwrite not configured' };
+                    this.error = 'Appwrite not configured';
+                    return { success: false, error: this.error };
                 }
 
                 // Don't allow OTP request if already signed in (non-anonymous)
                 if (this.isAuthenticated && !this.isAnonymous) {
-                    return { success: false, error: 'Already signed in. Please logout first.' };
+                    this.error = 'Already signed in. Please logout first.';
+                    return { success: false, error: this.error };
                 }
 
                 const appwriteConfig = await config.getAppwriteConfig();
                 if (appwriteConfig && !appwriteConfig.otp) {
-                    return { success: false, error: 'Email OTP authentication is not enabled' };
+                    this.error = 'Email OTP authentication is not enabled';
+                    return { success: false, error: this.error };
                 }
 
                 // OTP can't convert a guest — warn so lost guest teams aren't a surprise.
@@ -6267,10 +6397,8 @@ function initializeEmailOTP() {
 
                 const account = this._appwrite.account;
                 if (typeof account.createEmailToken !== 'function') {
-                    return {
-                        success: false,
-                        error: 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.'
-                    };
+                    this.error = 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.';
+                    return { success: false, error: this.error };
                 }
 
                 this.inProgress = true;
@@ -6316,7 +6444,8 @@ function initializeEmailOTP() {
                 const { email, inputEl, dataObj } = resolveEmailInput(emailInputOrRef);
 
                 if (!email || !email.trim()) {
-                    return { success: false, error: 'Email is required' };
+                    this.error = 'Email is required';
+                    return { success: false, error: this.error };
                 }
 
                 const result = await this.createEmailOTP(email.trim(), options);
@@ -6352,26 +6481,33 @@ function initializeEmailOTP() {
 
                 this.inProgress = true;
                 this.error = null;
+                let guestEnded = false;
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
                     const wasGuest = this.isAnonymous;
 
-                    // Guest team carryover: issue the migration ticket now, while the guest
-                    // session is still authenticated; redeemed after the new session exists.
-                    let migrationTicket = null;
+                    // Guest team carryover: issue the migration ticket while the guest session
+                    // still authenticates. Kept on the store, bound to this code's account, so a
+                    // retry after a wrong code redeems it and no other sign-in can.
                     if (wasGuest && appwriteConfig?.guestMigrationFunctionId && this._callGuestMigration) {
                         const prep = await this._callGuestMigration('/prepare', {});
-                        if (prep?.ok && prep.ticket) migrationTicket = prep.ticket;
+                        if (prep?.ok && prep.ticket) {
+                            this._otpMigrationTicket = { ticket: prep.ticket, userId: this._otpUserId };
+                        }
                     }
+                    const kept = this._otpMigrationTicket;
+                    const migrationTicket = kept?.userId === this._otpUserId ? kept.ticket : null;
 
-                    // Appwrite can't convert anonymous accounts via OTP, so delete the
-                    // guest session first to avoid a "session prohibited" conflict.
+                    // Appwrite refuses createSession while any session is active, before it
+                    // checks the code, so the guest session must go first.
                     if (this.session && this.isAnonymous) {
                         try {
                             await this._appwrite.account.deleteSession(this.session.$id);
+                            guestEnded = true;
                         } catch (deleteError) {
-                            // Could not delete anonymous session
+                            const status = deleteError?.code || deleteError?.statusCode;
+                            guestEnded = status === 401 || status === 404;
                         }
                     }
 
@@ -6394,6 +6530,7 @@ function initializeEmailOTP() {
 
                     // Redeem the migration ticket as the new account to carry teams over.
                     // Best-effort; failure never blocks the already-successful sign-in.
+                    this._otpMigrationTicket = null;
                     if (migrationTicket && this._callGuestMigration) {
                         await this._callGuestMigration('/commit', { ticket: migrationTicket });
                     }
@@ -6419,7 +6556,7 @@ function initializeEmailOTP() {
                 } catch (error) {
                     const errorMessage = error.message || '';
                     const errorCode = error.code || error.statusCode || '';
-                    const isExpiredOrInvalid = errorMessage && (
+                    const isExpiredOrInvalid = error.type !== 'user_session_already_exists' && errorMessage && (
                         errorMessage.includes('expired') ||
                         errorMessage.includes('Invalid token') ||
                         errorMessage.includes('invalid') ||
@@ -6429,14 +6566,30 @@ function initializeEmailOTP() {
 
                     this.otpExpired = !!isExpiredOrInvalid;
                     this.error = isExpiredOrInvalid ? null : error.message;
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
+
+                    // Guest session is gone though sign-in failed: drop its identity and teams.
+                    // otpSent, the code's userId and the migration ticket stay for a retry.
+                    if (guestEnded) {
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                        this.user = null;
+                        this.session = null;
+                        if (this._resetTeamsState) {
+                            this._resetTeamsState();
+                        }
+                    }
 
                     if (this._syncStateToStorage) {
                         this._syncStateToStorage(this);
                     }
 
-                    return { success: false, error: error.message };
+                    if (guestEnded) {
+                        window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared', {
+                            detail: { reason: 'otp-failed' }
+                        }));
+                    }
+
+                    return { success: false, error: error.message, guestEnded };
                 } finally {
                     this.inProgress = false;
                 }
@@ -6487,6 +6640,197 @@ document.addEventListener('alpine:init', () => {
 // Export email OTP interface
 window.ManifestAppwriteAuthEmailOTP = {
     initialize: initializeEmailOTP
+};
+
+
+/* Auth phone OTP (SMS one-time passcode) */
+
+// Two-step in-page flow (no redirect): createPhoneOTP(phone) texts a code + returns
+// a userId, then the shared verifyOTP(code)/submitOTP() (users.otp.js) creates the
+// session. Phone numbers must be E.164 (+ country code).
+// Gotcha: like email OTP, Appwrite can't convert an anonymous guest via phone OTP —
+// a guest verifying a code gets a fresh account. Use magic links for guest upgrade.
+
+function initializePhoneOTP() {
+    if (typeof Alpine === 'undefined') {
+        return;
+    }
+
+    const config = window.ManifestAppwriteAuthConfig;
+    if (!config) {
+        return;
+    }
+
+    // Resolve a phone from an input/selector/{ phone } object/string, or auto-find
+    // the nearest tel input. Returns { phone, inputEl, dataObj }.
+    function resolvePhoneInput(phoneInputOrRef) {
+        let phone = null;
+        let inputEl = null;
+        let dataObj = null;
+
+        if (phoneInputOrRef === undefined || phoneInputOrRef === null) {
+            let eventTarget = (typeof window !== 'undefined' && window.event) ? window.event.target : null;
+            if (eventTarget) {
+                const form = eventTarget.closest('form');
+                const scope = form || eventTarget.parentElement;
+                if (scope) {
+                    inputEl = scope.querySelector('input[type="tel"]');
+                    if (inputEl) phone = inputEl.value;
+                }
+            }
+            if (!inputEl) {
+                inputEl = document.querySelector('input[type="tel"]');
+                if (inputEl) phone = inputEl.value;
+            }
+        } else if (typeof phoneInputOrRef === 'string') {
+            try {
+                const element = document.querySelector(phoneInputOrRef);
+                if (element && element.tagName === 'INPUT' && element.type === 'tel') {
+                    inputEl = element;
+                    phone = element.value;
+                } else {
+                    phone = phoneInputOrRef; // Treat as a direct phone string
+                }
+            } catch (e) {
+                phone = phoneInputOrRef; // Invalid selector -> treat as phone string
+            }
+        } else if (phoneInputOrRef && typeof phoneInputOrRef === 'object') {
+            if (phoneInputOrRef.tagName === 'INPUT' || phoneInputOrRef.matches?.('input[type="tel"]')) {
+                inputEl = phoneInputOrRef;
+                phone = inputEl.value;
+            } else if ('phone' in phoneInputOrRef) {
+                phone = phoneInputOrRef.phone;
+                dataObj = phoneInputOrRef;
+            }
+        }
+
+        return { phone, inputEl, dataObj };
+    }
+
+    const waitForStore = () => {
+        const store = Alpine.store('auth');
+        if (store && !store.createPhoneOTP) {
+            // Step 1: text a passcode. Verification reuses verifyOTP/submitOTP.
+            store.createPhoneOTP = async function (phone) {
+                if (!this._appwrite) {
+                    this._appwrite = await config.getAppwriteClient();
+                }
+                if (!this._appwrite) {
+                    this.error = 'Appwrite not configured';
+                    return { success: false, error: this.error };
+                }
+
+                // Don't allow OTP request if already signed in (non-anonymous)
+                if (this.isAuthenticated && !this.isAnonymous) {
+                    this.error = 'Already signed in. Please logout first.';
+                    return { success: false, error: this.error };
+                }
+
+                const appwriteConfig = await config.getAppwriteConfig();
+                if (appwriteConfig && !appwriteConfig.phone) {
+                    this.error = 'Phone OTP authentication is not enabled';
+                    return { success: false, error: this.error };
+                }
+
+                // Normalize to E.164: strip separators, require the country code.
+                const normalized = String(phone).replace(/[\s().-]/g, '');
+                if (!/^\+\d{6,15}$/.test(normalized)) {
+                    this.error = 'Phone number must be in international format, e.g. +14155550123';
+                    return { success: false, error: this.error };
+                }
+
+                // Phone OTP can't convert a guest — warn so lost guest teams aren't a surprise.
+                if (this.isAnonymous && appwriteConfig?.guestUpgrade) {
+                    console.warn('[Manifest Appwrite Auth] Phone OTP cannot upgrade a guest account (Appwrite limitation); the guest session and any guest-created teams will be replaced. Use magic links for guest upgrade.');
+                }
+
+                const account = this._appwrite.account;
+                if (typeof account.createPhoneToken !== 'function') {
+                    this.error = 'Phone OTP method not available. Please ensure you are using a recent Appwrite SDK.';
+                    return { success: false, error: this.error };
+                }
+
+                this.inProgress = true;
+                this.error = null;
+                this.otpExpired = false;
+
+                try {
+                    const uniqueId = (window.Appwrite?.ID?.unique) ? window.Appwrite.ID.unique() : 'unique()';
+                    const token = await account.createPhoneToken(uniqueId, normalized);
+
+                    // Stash the userId Appwrite assigned; verifyOTP needs it to complete login.
+                    this._otpUserId = token.userId;
+                    this.otpPhrase = null; // phone tokens have no security phrase
+                    this.otpSent = true;
+                    this.otpExpired = false;
+                    this.error = null;
+
+                    window.dispatchEvent(new CustomEvent('manifest:auth:otp-sent', {
+                        detail: { phone: normalized }
+                    }));
+
+                    return { success: true, message: 'OTP sent by SMS' };
+                } catch (error) {
+                    // Appwrite returns 501 when phone auth/SMS isn't set up — surface an
+                    // actionable message rather than the raw error.
+                    const code = error.code || error.statusCode;
+                    const notEnabled = code === 501 || /not implemented/i.test(error.message || '');
+                    this.error = notEnabled
+                        ? 'Phone OTP is not enabled for this Appwrite project. Enable Phone under Auth → Settings and configure an SMS provider under Messaging.'
+                        : error.message;
+                    this.otpSent = false;
+                    this.otpExpired = false;
+                    return { success: false, error: this.error };
+                } finally {
+                    this.inProgress = false;
+                }
+            };
+
+            // Convenience: resolve the phone from an input/selector/object/string and send.
+            // Clears the phone input on success (mirrors sendEmailOTP).
+            store.sendPhoneOTP = async function (phoneInputOrRef) {
+                const { phone, inputEl, dataObj } = resolvePhoneInput(phoneInputOrRef);
+
+                if (!phone || !String(phone).trim()) {
+                    this.error = 'Phone number is required';
+                    return { success: false, error: this.error };
+                }
+
+                const result = await this.createPhoneOTP(String(phone).trim());
+
+                if (result.success) {
+                    Promise.resolve().then(() => {
+                        if (inputEl) {
+                            inputEl.value = '';
+                            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        } else if (dataObj) {
+                            dataObj.phone = '';
+                        }
+                    });
+                }
+
+                return result;
+            };
+        } else if (!store) {
+            setTimeout(waitForStore, 50);
+        }
+    };
+
+    setTimeout(waitForStore, 100);
+}
+
+// Initialize when Alpine is ready
+document.addEventListener('alpine:init', () => {
+    try {
+        initializePhoneOTP();
+    } catch (error) {
+        // Failed to initialize phone OTP
+    }
+});
+
+// Export phone OTP interface
+window.ManifestAppwriteAuthPhoneOTP = {
+    initialize: initializePhoneOTP
 };
 
 

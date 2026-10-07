@@ -389,15 +389,34 @@
        Swapping the element outright covers every block tag, where formatBlock only
        accepts a short list and disagrees between engines. */
     function setBlock(tag) {
-        const b = blockEl(); if (!b) return;
+        let b = blockEl(); if (!b) return;
         const want = (b.tagName === tag.toUpperCase() ? 'p' : tag).toLowerCase();
         if (b.tagName === want.toUpperCase()) return;
+        // A heading or quote cannot live inside a list — markdown has no
+        // <ul><h2> — so lift the item out of its list first, then retag.
+        // Retagging in place serialized to nothing: the content vanished.
+        // A NESTED item outdents to the top level first, or the lift would
+        // land the new block inside the outer <li>.
+        if (b.tagName === 'LI' && want !== 'li') {
+            const area = b.closest('[data-text-edit]');
+            for (let guard = 0; guard < 8; guard++) {
+                const list = b && b.tagName === 'LI' && b.closest('ul, ol');
+                if (!list || !list.parentElement || !list.parentElement.closest('li')) break;
+                indent(-1, area);
+                b = blockEl(); if (!b) return;
+            }
+            if (b.tagName === 'LI') { unwrapItem(b); b = blockEl(); if (!b) return; }
+            if (b.tagName === want.toUpperCase()) return;
+        }
         const n = document.createElement(want);
         n.setAttribute('style', b.getAttribute('style') || '');
         if (!n.getAttribute('style')) n.removeAttribute('style');
         const off = offsetIn(b);
         while (b.firstChild) n.appendChild(b.firstChild);
         b.replaceWith(n);
+        // A sublist that rode along out of a list item cannot live inside a
+        // heading or quote — it steps out right after the new block.
+        [...n.querySelectorAll(':scope > ul, :scope > ol')].reverse().forEach(l => n.after(l));
         caretIn(n, off);
     }
 
@@ -1019,8 +1038,8 @@
     // not applied; the field re-syncs to the real href, showing it didn't take.
     function normalizeUrl(url) {
         if (/\s/.test(url) || /^\s*javascript:/i.test(url)) return null;
-        if (/^[a-z][a-z0-9+.-]*:/i.test(url) || /^[/#?.]/.test(url)) return url;
-        if (/^[\w-]+(\.[\w-]+)+(\/|$|\?|#)/.test(url)) return 'https://' + url;
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^(mailto|tel|sms):/i.test(url) || /^[/#?.]/.test(url)) return url;
+        if (/^[\w-]+(\.[\w-]+)+(:\d+)?(\/|$|\?|#)/.test(url)) return 'https://' + url;
         return null;
     }
     function setLink(href) {
@@ -1329,7 +1348,10 @@
             while ((m = re.exec(text))) {
                 if (m.index + m[0].length !== text.length) continue;
                 const skip = rule.pre ? m[rule.pre].length : 0;
-                best = { rule, m, start: m.index + skip, len: m[0].length - skip };
+                const start = m.index + skip;
+                // Earliest start wins, like firstInline — ![alt](src) must be
+                // the image rule, not the link rule matching one char later.
+                if (!best || start < best.start) best = { rule, m, start, len: m[0].length - skip };
                 break;
             }
         }
@@ -1638,6 +1660,7 @@
         const was = area || lastFocused;
         if (!area || area === lastFocused) lastFocused = null;
         if (!was) return;
+        was.removeAttribute('data-text-edit-focused');
         was._selection = null;
         was.removeAttribute('data-text-edit-selected');
         document.documentElement.removeAttribute('data-text-edit-selected');
@@ -1694,6 +1717,13 @@
         const spec = COMMANDS[id], cfg = area && area._te;
         if (!spec || !cfg || cfg.mode === 'plain') return false;
         const page = !!(ctrl && ctrl.page && spec.page);
+        // The writer's caret is visibly in ANOTHER editable element (a plain
+        // x-edit leaf, an input, someone else's contenteditable): acting now
+        // would restore this area's old saved range and edit text the writer
+        // can see is not selected. The control goes quiet instead. Page
+        // commands write variables, never the selection — they stay live.
+        const live = range();
+        if (!page && live && !area.contains(live.startContainer) && editableElsewhere(live.startContainer)) return false;
         if (cfg.minimal && spec.block && !page) return false;
         if (cfg.mode !== 'html' && !spec.md && !page) return false;
         if (page) return true;                       // writes to the area, needs no caret
@@ -1707,6 +1737,13 @@
         const spec = COMMANDS[id]; if (!spec) return;
         const page = !!(ctrl && ctrl.page && spec.page);
         if (!page) {
+            // Checked BEFORE restoring the saved range: if the writer's caret is
+            // visibly in another editable element, restoring first would move the
+            // selection back here and the command would edit text the writer can
+            // see is not selected. (The reset blocks pointer clicks on disabled
+            // controls; this covers keyboard activation.)
+            const live = range();
+            if (live && !area.contains(live.startContainer) && editableElsewhere(live.startContainer)) return;
             restoreRange(area);
             // If the caret could not be put in this area — it was never focused, or
             // the saved range has gone stale — do nothing. Running anyway rewrites
@@ -1912,6 +1949,16 @@
                 // browser picker, Manifest's, or anything that fires `input`.
                 const prop = id === 'background' ? 'backgroundColor' : 'color';
                 let live = null;
+                // A new selection elsewhere ends the pass: without this, a
+                // picker that never fires `change` keeps recolouring the OLD
+                // spans after the writer has selected different text.
+                const dropLive = () => {
+                    if (!live) return;
+                    const r = range();
+                    if (!r || !live.some(sp => sp.isConnected && sp.contains(r.startContainer))) live = null;
+                };
+                document.addEventListener('text-edit:selection', dropLive);
+                cleanup(() => document.removeEventListener('text-edit:selection', dropLive));
                 el.addEventListener('input', () => {
                     const a = resolve(el); if (!a) return;
                     if (el._te.page) { run(a, id, el.value, el._te); return; }   // page vars are cheap to set per tick
@@ -2051,7 +2098,7 @@
             if (a && el.contains(a)) e.preventDefault();
         });
 
-        el.addEventListener('focusin', () => { lastFocused = el; sync(); });
+        el.addEventListener('focusin', () => { if (lastFocused && lastFocused !== el) release(lastFocused); lastFocused = el; el.setAttribute('data-text-edit-focused', ''); sync(); });
         // Focus gone somewhere that is neither this area nor one of its controls.
         el.addEventListener('focusout', (e) => {
             if (keeps(el, e.relatedTarget || pointerTarget)) return;
@@ -2060,7 +2107,7 @@
         });
         el.addEventListener('input', (e) => {
             if (!writing && e.data && applyPending(el, e.data)) { commitValue(); }
-            if (!writing && e.data && autoformat && convertInlineAtCaret(el)) { commitValue(); }
+            if (!writing && e.data && !e.isComposing && autoformat && convertInlineAtCaret(el)) { commitValue(); }
             settle(); sync();
         });
         el.addEventListener('change', e => {

@@ -1,7 +1,8 @@
 /* Auth email OTP (one-time passcode) */
 
 // Two-step in-page flow (no redirect): createEmailOTP(email) emails a code + returns
-// a userId, verifyOTP(code) creates the session.
+// a userId, verifyOTP(code) creates the session. verifyOTP/submitOTP are shared
+// with phone OTP (users.phone.js).
 // Gotcha: Appwrite can't convert an anonymous guest via OTP — a guest verifying an OTP
 // gets a fresh account (guest teams lost). Use magic links for guest upgrade.
 
@@ -71,17 +72,20 @@ function initializeEmailOTP() {
                     this._appwrite = await config.getAppwriteClient();
                 }
                 if (!this._appwrite) {
-                    return { success: false, error: 'Appwrite not configured' };
+                    this.error = 'Appwrite not configured';
+                    return { success: false, error: this.error };
                 }
 
                 // Don't allow OTP request if already signed in (non-anonymous)
                 if (this.isAuthenticated && !this.isAnonymous) {
-                    return { success: false, error: 'Already signed in. Please logout first.' };
+                    this.error = 'Already signed in. Please logout first.';
+                    return { success: false, error: this.error };
                 }
 
                 const appwriteConfig = await config.getAppwriteConfig();
                 if (appwriteConfig && !appwriteConfig.otp) {
-                    return { success: false, error: 'Email OTP authentication is not enabled' };
+                    this.error = 'Email OTP authentication is not enabled';
+                    return { success: false, error: this.error };
                 }
 
                 // OTP can't convert a guest — warn so lost guest teams aren't a surprise.
@@ -91,10 +95,8 @@ function initializeEmailOTP() {
 
                 const account = this._appwrite.account;
                 if (typeof account.createEmailToken !== 'function') {
-                    return {
-                        success: false,
-                        error: 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.'
-                    };
+                    this.error = 'Email OTP method not available. Please ensure you are using a recent Appwrite SDK.';
+                    return { success: false, error: this.error };
                 }
 
                 this.inProgress = true;
@@ -140,7 +142,8 @@ function initializeEmailOTP() {
                 const { email, inputEl, dataObj } = resolveEmailInput(emailInputOrRef);
 
                 if (!email || !email.trim()) {
-                    return { success: false, error: 'Email is required' };
+                    this.error = 'Email is required';
+                    return { success: false, error: this.error };
                 }
 
                 const result = await this.createEmailOTP(email.trim(), options);
@@ -176,26 +179,33 @@ function initializeEmailOTP() {
 
                 this.inProgress = true;
                 this.error = null;
+                let guestEnded = false;
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
                     const wasGuest = this.isAnonymous;
 
-                    // Guest team carryover: issue the migration ticket now, while the guest
-                    // session is still authenticated; redeemed after the new session exists.
-                    let migrationTicket = null;
+                    // Guest team carryover: issue the migration ticket while the guest session
+                    // still authenticates. Kept on the store, bound to this code's account, so a
+                    // retry after a wrong code redeems it and no other sign-in can.
                     if (wasGuest && appwriteConfig?.guestMigrationFunctionId && this._callGuestMigration) {
                         const prep = await this._callGuestMigration('/prepare', {});
-                        if (prep?.ok && prep.ticket) migrationTicket = prep.ticket;
+                        if (prep?.ok && prep.ticket) {
+                            this._otpMigrationTicket = { ticket: prep.ticket, userId: this._otpUserId };
+                        }
                     }
+                    const kept = this._otpMigrationTicket;
+                    const migrationTicket = kept?.userId === this._otpUserId ? kept.ticket : null;
 
-                    // Appwrite can't convert anonymous accounts via OTP, so delete the
-                    // guest session first to avoid a "session prohibited" conflict.
+                    // Appwrite refuses createSession while any session is active, before it
+                    // checks the code, so the guest session must go first.
                     if (this.session && this.isAnonymous) {
                         try {
                             await this._appwrite.account.deleteSession(this.session.$id);
+                            guestEnded = true;
                         } catch (deleteError) {
-                            // Could not delete anonymous session
+                            const status = deleteError?.code || deleteError?.statusCode;
+                            guestEnded = status === 401 || status === 404;
                         }
                     }
 
@@ -218,6 +228,7 @@ function initializeEmailOTP() {
 
                     // Redeem the migration ticket as the new account to carry teams over.
                     // Best-effort; failure never blocks the already-successful sign-in.
+                    this._otpMigrationTicket = null;
                     if (migrationTicket && this._callGuestMigration) {
                         await this._callGuestMigration('/commit', { ticket: migrationTicket });
                     }
@@ -243,7 +254,7 @@ function initializeEmailOTP() {
                 } catch (error) {
                     const errorMessage = error.message || '';
                     const errorCode = error.code || error.statusCode || '';
-                    const isExpiredOrInvalid = errorMessage && (
+                    const isExpiredOrInvalid = error.type !== 'user_session_already_exists' && errorMessage && (
                         errorMessage.includes('expired') ||
                         errorMessage.includes('Invalid token') ||
                         errorMessage.includes('invalid') ||
@@ -253,14 +264,30 @@ function initializeEmailOTP() {
 
                     this.otpExpired = !!isExpiredOrInvalid;
                     this.error = isExpiredOrInvalid ? null : error.message;
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
+
+                    // Guest session is gone though sign-in failed: drop its identity and teams.
+                    // otpSent, the code's userId and the migration ticket stay for a retry.
+                    if (guestEnded) {
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                        this.user = null;
+                        this.session = null;
+                        if (this._resetTeamsState) {
+                            this._resetTeamsState();
+                        }
+                    }
 
                     if (this._syncStateToStorage) {
                         this._syncStateToStorage(this);
                     }
 
-                    return { success: false, error: error.message };
+                    if (guestEnded) {
+                        window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared', {
+                            detail: { reason: 'otp-failed' }
+                        }));
+                    }
+
+                    return { success: false, error: error.message, guestEnded };
                 } finally {
                     this.inProgress = false;
                 }

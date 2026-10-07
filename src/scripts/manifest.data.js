@@ -2,7 +2,7 @@
 
 (function () {
 
-const MANIFEST_BUILD_VERSION = '0.5.218';
+const MANIFEST_BUILD_VERSION = '0.5.217';
 
 /* Manifest Data Sources - Configuration */
 
@@ -590,8 +590,14 @@ function writeSource(dataSourceName, data, options = {}) {
 }
 
 // Synchronous replace: local writes ($register, init preload, state-only updates)
+// A write captured under an older generation (scope reset since, e.g. logout) never lands
+function isStaleWrite(dataSourceName, options) {
+    return !!options && options.generation !== undefined && options.generation !== sourceGeneration(dataSourceName);
+}
+
 function updateStore(dataSourceName, data, options = {}) {
     if (isInitializing && !options.allowDuringInit) return;
+    if (isStaleWrite(dataSourceName, options)) return;
     const state = writeSource(dataSourceName, data, { ...options, mode: 'replace' });
     if (!state) return;
     touchSource(dataSourceName);
@@ -601,10 +607,12 @@ function updateStore(dataSourceName, data, options = {}) {
 // Network landing (page load, paged append, realtime batch): buffered, applied
 // with every other landing of the same frame in ONE flush. Resolves once visible.
 function landRows(dataSourceName, rows, options = {}) {
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
     return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
 }
 
 function landRemove(dataSourceName, ids, options = {}) {
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
     return queueLanding({ source: dataSourceName, remove: Array.isArray(ids) ? ids : [ids], options });
 }
 
@@ -1132,6 +1140,11 @@ function setupTeamChangeListener() {
         }
     };
 
+    // Logout already reset scoped sources (data main); don't reload them again as a team change
+    const syncTeam = () => { lastTeamId = Alpine.store('auth')?.currentTeam?.$id || null; };
+    window.addEventListener('manifest:auth:logout', syncTeam);
+    window.addEventListener('manifest:auth:session-cleared', syncTeam);
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startPolling);
     } else {
@@ -1188,10 +1201,15 @@ function checkAndDispatchRenderReady() {
     }, RENDER_READY_QUIET_MS);
 }
 
+// Latest locale change owns _localeChanging; an older one finishing must not clear it
+let localeChangeSeq = 0;
+
 // Listen for locale changes to reload data
 function setupLocaleChangeListener() {
     window.addEventListener('localechange', async (event) => {
         const newLocale = event.detail.locale;
+        const seq = ++localeChangeSeq;
+        const latest = () => seq === localeChangeSeq;
 
         // Set loading state to prevent flicker
         const store = Alpine.store('data');
@@ -1293,7 +1311,7 @@ function setupLocaleChangeListener() {
                     delete store[dataSourceName];
                     delete store[`_${dataSourceName}_state`];
                 });
-                store._localeChanging = false;
+                if (latest()) store._localeChanging = false;
                 touchSources(store, localizedDataSources);
             }
 
@@ -1308,7 +1326,7 @@ function setupLocaleChangeListener() {
 
             // All localized sources have reloaded — check if everything is settled.
             // This fires manifest:render-ready after a locale change completes end-to-end.
-            checkAndDispatchRenderReady();
+            if (latest()) checkAndDispatchRenderReady();
 
         } catch (error) {
             console.error('[Manifest Data] Error handling locale change:', error);
@@ -1323,8 +1341,15 @@ function setupLocaleChangeListener() {
                     if (!key.startsWith('_') && typeof raw[key] !== 'function') delete store[key];
                 }
                 store._initialized = true;
-                store._localeChanging = false;
+                if (latest()) store._localeChanging = false;
                 bumpAllVersions();
+            }
+        } finally {
+            // Early exits (no manifest.data) must not strand the render-ready gate
+            const store = Alpine.store('data');
+            if (latest() && store?._localeChanging) {
+                store._localeChanging = false;
+                checkAndDispatchRenderReady();
             }
         }
     });
@@ -1499,6 +1524,7 @@ window.ManifestDataStore = {
     sourceFreshness,
     // Persistence (§12.2)
     sourceGeneration,
+    isStaleWrite,
     resetSource,
     touchSource,
     bumpAllVersions,
@@ -1569,6 +1595,7 @@ window.ManifestDataStore = {
         pending: new Map(),    // source -> time its debounced write is due
         writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
+        hydratedIdentity: null, // identity auth-dependent hydration last ran under
         fetchKicked: new Set(),
         watching: false,
         deployment: null,
@@ -1581,6 +1608,26 @@ window.ManifestDataStore = {
     const keyOf = (scope, source) => `${scope}|${source}`;
     const liveLocale = () => (typeof document !== 'undefined' && document.documentElement?.lang)
         || (typeof Alpine !== 'undefined' && Alpine.store?.('locale')?.current) || 'en';
+
+    // Auth-dependent sources (scope / $auth. queries) carry the identity they were read under
+    function isAuthDependent(source) {
+        if (!source || typeof source !== 'object') return false;
+        if (source.scope) return true;
+        try { return JSON.stringify(source.queries || '').includes('$auth.'); } catch { return false; }
+    }
+
+    // Current identity: '' signed out (or no auth plugin), null while auth is still booting
+    function authIdentity() {
+        const auth = (typeof Alpine !== 'undefined' && Alpine.store) ? Alpine.store('auth') : null;
+        if (!auth) return '';
+        if (auth._initialized !== true) return null;
+        return auth.isAuthenticated === true ? String(auth.user?.$id || auth.user?.id || '') : '';
+    }
+
+    function authUnverified() {
+        const auth = (typeof Alpine !== 'undefined' && Alpine.store) ? Alpine.store('auth') : null;
+        return auth?._sessionUnverified === true;
+    }
 
     function warnOnce(key, message, error) {
         if (state.warned.has(key)) return;
@@ -1650,7 +1697,7 @@ window.ManifestDataStore = {
         for (const [name, source] of Object.entries(manifest?.data || {})) {
             if (!source || typeof source !== 'object') continue;
             const cfg = normalizeConfig(source.persist);
-            if (cfg) state.sources.set(name, cfg);
+            if (cfg) { cfg.authDependent = isAuthDependent(source); state.sources.set(name, cfg); }
         }
         state.scopeExpr = typeof manifest?.persistence?.scope === 'string' && manifest.persistence.scope.trim()
             ? manifest.persistence.scope.trim() : null;
@@ -1780,6 +1827,7 @@ window.ManifestDataStore = {
                 if (!state.enabled) return;
                 if (WIPE_EVENTS.has(type)) deleteScope(state.scope);
                 refreshScope();
+                if (!state.scopePending) hydrate(bootSources()).catch(() => { /* disabled */ });
             });
         }
         // Reactive re-evaluation (team switches that fire no event); the switch itself runs outside the effect
@@ -1956,6 +2004,8 @@ window.ManifestDataStore = {
         if (!cfg || !ds) return null;
         const raw = ds.getRawData(source);
         if (raw === null || raw === undefined) return null;
+        const identity = cfg.authDependent ? authIdentity() : undefined;
+        if (identity === null) return null;
         try {
             const snapshot = snapshotOf(source, raw, cfg);
             if (snapshot === null) return null;
@@ -1967,7 +2017,8 @@ window.ManifestDataStore = {
                 savedAt: Date.now(),
                 frameworkVersion: state.frameworkVersion,
                 deployment: state.deployment,
-                locale: liveLocale()
+                locale: liveLocale(),
+                ...(cfg.authDependent ? { identity } : {})
             };
         } catch (error) {
             warnOnce(`snapshot:${source}`, `persistence skipped "${source}" (rows are not serialisable)`, error);
@@ -2033,6 +2084,9 @@ window.ManifestDataStore = {
         if (typeof record.savedAt !== 'number' || Date.now() - record.savedAt > cfg.ttl) return { ok: false, drop: true };
         if (majorMinor(record.frameworkVersion) !== majorMinor(state.frameworkVersion)) return { ok: false, drop: true };
         if (record.locale && record.locale !== liveLocale()) return { ok: false };
+        // Another identity's (or an unstamped) snapshot never hydrates: the scope alone may be '' for everyone
+        // An unverified (offline) signed-out boot keeps it for the session check to come back
+        if (cfg.authDependent && record.identity !== authIdentity()) return authUnverified() ? { ok: false } : { ok: false, drop: true };
         return { ok: true };
     }
 
@@ -2040,7 +2094,15 @@ window.ManifestDataStore = {
     // fresh landing (or after a scope change) is discarded
     async function hydrate(sources) {
         const ds = dataStore();
-        const pending = sources.filter(source => state.sources.has(source) && !state.hydrated.has(source));
+        // Auth-dependent sources wait for a known identity (re-run on auth events), and retry when it changes
+        const identity = authIdentity();
+        const known = identity !== null;
+        if (known && identity !== state.hydratedIdentity) {
+            for (const [source, cfg] of state.sources) if (cfg.authDependent) state.hydrated.delete(source);
+            state.hydratedIdentity = identity;
+        }
+        const pending = sources.filter(source => state.sources.has(source) && !state.hydrated.has(source)
+            && (known || !state.sources.get(source).authDependent));
         if (!ds || !pending.length || !state.enabled || state.disabled || state.scopePending) return;
         for (const source of pending) state.hydrated.add(source);
         const generation = state.generation;
@@ -2846,6 +2908,7 @@ function updateEntryInStore(dataSourceName, entryId, updates, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
 
     const { store, arr, index } = findRawIndex(dataSourceName, entryId);
     if (!store || !arr || index === -1) {
@@ -2877,6 +2940,7 @@ function addEntryToStore(dataSourceName, entry, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
 
     const ds = window.ManifestDataStore;
     const target = ds?.ensureSourceArray?.(dataSourceName);
@@ -2908,6 +2972,7 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return false;
     }
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
 
     const { store, arr, index } = findRawIndex(dataSourceName, entryId);
     if (!store || !arr || index === -1) {
@@ -2984,6 +3049,8 @@ async function executeMutation(mutationConfig) {
     } = mutationConfig;
 
     const mutationId = generateMutationId();
+    // Writes after the API call carry this; a logout/scope reset meanwhile drops them
+    const writeOptions = { ...options, generation: window.ManifestDataStore?.sourceGeneration?.(dataSourceName) };
     let originalData = null;
     let optimisticData = null;
     let resolvedEntryId = entryId;
@@ -3076,12 +3143,12 @@ async function executeMutation(mutationConfig) {
                         clearSourceCaches(dataSourceName);
                     } else {
                         // Temporary entry not found, just add the real one
-                        addEntryToStore(dataSourceName, result, options);
+                        addEntryToStore(dataSourceName, result, writeOptions);
                     }
                 }
             } else if (type === 'update') {
                 // Update with server response (may have additional fields)
-                updateEntryInStore(dataSourceName, entryId, result, options);
+                updateEntryInStore(dataSourceName, entryId, result, writeOptions);
             }
             // For delete, entry is already removed optimistically, nothing to sync
         }
@@ -3116,11 +3183,11 @@ async function executeMutation(mutationConfig) {
 
         const rollbackFn = () => {
             if (type === 'create' && optimisticData) {
-                removeEntryFromStore(dataSourceName, optimisticData.$id);
+                removeEntryFromStore(dataSourceName, optimisticData.$id, writeOptions);
             } else if (type === 'update' && originalData) {
-                updateEntryInStore(dataSourceName, entryId, originalData);
+                updateEntryInStore(dataSourceName, entryId, originalData, writeOptions);
             } else if (type === 'delete' && originalData) {
-                addEntryToStore(dataSourceName, originalData);
+                addEntryToStore(dataSourceName, originalData, writeOptions);
             }
         };
 
@@ -3144,10 +3211,11 @@ async function executeMutation(mutationConfig) {
 
 // Sync entry from server (background reconciliation)
 async function syncEntryFromServer(dataSourceName, entryId, syncFunction) {
+    const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
     try {
         const serverData = await syncFunction();
         if (serverData && serverData.$id) {
-            updateEntryInStore(dataSourceName, entryId, serverData);
+            updateEntryInStore(dataSourceName, entryId, serverData, { generation });
             return serverData;
         }
     } catch (error) {
@@ -7105,6 +7173,7 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
 
             if (executeMutation && updateEntryInStore) {
                 // Optimistic update: immediately update store
+                const generation = window.ManifestDataStore?.sourceGeneration?.(tableName);
                 updateEntryInStore(tableName, entryId, { [fileIdsColumn]: fileIds });
 
                 // Background sync: update server
@@ -7128,7 +7197,7 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
                         if (originalEntry) {
                             const originalFileIds = originalEntry[fileIdsColumn] || [];
                             const rolledBackFileIds = originalFileIds.filter(id => id !== fileId);
-                            updateEntryInStore(tableName, entryId, { [fileIdsColumn]: rolledBackFileIds });
+                            updateEntryInStore(tableName, entryId, { [fileIdsColumn]: rolledBackFileIds }, { generation });
                         }
                     }
                     throw updateError;
@@ -7294,6 +7363,7 @@ async function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = '
 
         if (updateEntryInStore) {
             // Optimistic update: immediately update store
+            const generation = window.ManifestDataStore?.sourceGeneration?.(tableName);
             updateEntryInStore(tableName, entryId, { [fileIdsColumn]: fileIds });
 
             // Background sync: update server
@@ -7315,7 +7385,7 @@ async function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = '
                         if (!originalFileIds.includes(fileId)) {
                             originalFileIds.push(fileId);
                         }
-                        updateEntryInStore(tableName, entryId, { [fileIdsColumn]: originalFileIds });
+                        updateEntryInStore(tableName, entryId, { [fileIdsColumn]: originalFileIds }, { generation });
                     }
                 }
                 throw updateError;
@@ -7915,7 +7985,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
-                    const { runDeduped, landRows } = window.ManifestDataStore || {};
+                    const { runDeduped, landRows, sourceGeneration } = window.ManifestDataStore || {};
+                    const generation = sourceGeneration?.(dataSourceName);
                     const run = async () => {
                         const result = await window.ManifestDataAppwrite.loadTableRows(
                             appwriteConfig.databaseId,
@@ -7924,7 +7995,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         );
                         // Network landing: query result replaces the source (coalesced, identity-preserving)
                         if (result !== undefined && landRows) {
-                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true });
+                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
                         }
                         return result;
                     };
@@ -8093,6 +8164,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Use optimistic update via mutation system
                     const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
                     const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+                    const writeOptions = { generation: window.ManifestDataStore?.sourceGeneration?.(dataSourceName) };
                     const manifest = await window.ManifestDataConfig.ensureManifest();
                     const dataSource = manifest?.data?.[dataSourceName];
                     const scope = window.ManifestDataConfig.getScope(dataSource);
@@ -8140,7 +8212,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                             _optimistic: true // Mark as optimistic
                         };
                         // Optimistic update: immediately add file to store
-                        addEntryToStore(dataSourceName, optimisticFile);
+                        addEntryToStore(dataSourceName, optimisticFile, writeOptions);
                     }
 
                     let result;
@@ -8164,7 +8236,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                         // Rollback optimistic update on error
                         if (optimisticFile && removeEntryFromStore) {
-                            removeEntryFromStore(dataSourceName, optimisticFile.$id);
+                            removeEntryFromStore(dataSourceName, optimisticFile.$id, writeOptions);
                         }
                         throw error;
                     }
@@ -8172,12 +8244,12 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Replace optimistic file with real one from server
                     if (optimisticFile && addEntryToStore && removeEntryFromStore) {
                         // Remove optimistic entry
-                        removeEntryFromStore(dataSourceName, optimisticFile.$id);
+                        removeEntryFromStore(dataSourceName, optimisticFile.$id, writeOptions);
                         // Add real entry
-                        addEntryToStore(dataSourceName, result);
+                        addEntryToStore(dataSourceName, result, writeOptions);
                     } else if (addEntryToStore) {
                         // If no optimistic update was done, add now
-                        addEntryToStore(dataSourceName, result);
+                        addEntryToStore(dataSourceName, result, writeOptions);
                     }
 
                     // Link the uploaded file to a table entry, resolved from the
@@ -8620,6 +8692,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         ? Promise.all(fileId.map(id => window.ManifestDataAppwrite.deleteFile(bucketId, id.$id || id)))
                         : window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
 
+                    const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
                     const reloadPromise = window.ManifestDataAppwrite.listBucketFiles(bucketId, []);
 
                     // Do delete and reload in parallel
@@ -8627,7 +8700,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                     // Network landing: reloaded bucket listing replaces the source (coalesced)
                     if (reloadedData && window.ManifestDataStore?.landRows) {
-                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace' });
+                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace', generation });
                     }
 
                     // Reload affected table data sources so fileIds arrays and counters
@@ -11340,7 +11413,7 @@ function registerFilesDirective() {
 // sending a broken/empty-equal query. Retries once when auth settles further;
 // dedup by key so a source pending across repeated loads doesn't stack listeners.
 const pendingAuthRetries = new Set();
-const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login'];
+const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'];
 function scheduleAuthRetry(dataSourceName, locale) {
     if (typeof window === 'undefined') return;
     const key = `${dataSourceName}:${locale}`;
@@ -11352,6 +11425,95 @@ function scheduleAuthRetry(dataSourceName, locale) {
         loadDataSource(dataSourceName, locale, { reload: true });
     };
     AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
+}
+
+// Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load
+let teamsSettledFor = null;
+// A sign-in deadline already answered by an auth event no longer holds sources
+let answeredDeadline = 0;
+if (typeof window !== 'undefined') {
+    ['manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'].forEach(type =>
+        window.addEventListener(type, () => { teamsSettledFor = authUserId(currentAuth()); }));
+    // Kept only when logout restored the same (guest) identity whose teams already loaded
+    ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:initialized'].forEach(type =>
+        window.addEventListener(type, () => { if (type === 'manifest:auth:initialized' || teamsSettledFor !== authUserId(currentAuth())) teamsSettledFor = null; }));
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { answeredDeadline = currentAuth()?._signInPendingUntil || 0; }));
+}
+
+function currentAuth() {
+    return typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
+}
+
+function authUserId(auth) {
+    return auth?.user?.$id || auth?.user?.id || null;
+}
+
+// Guest-auto or an auth callback is signing in after a signed-out init (bounded by the auth store)
+// Prerender never waits on (or bakes) a guest's rows
+function signInWaitMs(auth) {
+    if (!auth || auth.isAuthenticated === true || window.__manifestRender) return 0;
+    const until = auth._signInPendingUntil || 0;
+    if (until === answeredDeadline) return 0;
+    return Math.max(0, until - Date.now());
+}
+
+// Drop only this load's subscription; a newer one under the same name stays
+function dropSubscription(dataSourceName, unsubscribe) {
+    if (typeof unsubscribe !== 'function') return;
+    unsubscribe();
+    const subs = window.ManifestDataRealtime?.subscriptions;
+    if (subs?.get?.(dataSourceName) === unsubscribe) subs.delete(dataSourceName);
+}
+
+// Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
+function authSettledSignedOut() {
+    const auth = currentAuth();
+    if (!auth) return true;
+    return auth._initialized === true && auth.isAuthenticated !== true && signInWaitMs(auth) === 0;
+}
+
+function teamsSettled(auth, manifest) {
+    const id = authUserId(auth);
+    if (id && teamsSettledFor === id) return true;
+    const teams = manifest?.appwrite?.auth?.teams;
+    if (!teams) return true;
+    const guests = typeof teams.guests === 'string' ? /^(true|1|yes|on)$/i.test(teams.guests.trim()) : !!teams.guests;
+    return auth.isAnonymous === true && !guests;
+}
+
+// Auth fully settled (identity + teams) yet the scoped read still can't resolve: it never will
+function authSettledUnresolvable(manifest) {
+    if (authSettledSignedOut()) return true;
+    const auth = currentAuth();
+    return auth._initialized === true && auth.isAuthenticated === true && teamsSettled(auth, manifest);
+}
+
+function isAuthDependent(config) {
+    if (!config || typeof config !== 'object') return false;
+    if (window.ManifestDataConfig?.getScope?.(config)) return true;
+    try { return JSON.stringify(config.queries || '').includes('$auth.'); } catch { return false; }
+}
+
+// Logout / session cleared: drop the previous identity's rows now, then settle for the new one
+function setupAuthResetListener() {
+    const reset = async () => {
+        const manifest = await window.ManifestDataConfig?.ensureManifest?.();
+        const ds = window.ManifestDataStore;
+        const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+        if (!manifest || !ds?.resetSource || !store) return;
+        const raw = ds.rawOf ? ds.rawOf(store) : store;
+        const configs = { ...(manifest.appwrite || {}), ...(manifest.data || {}) };
+        const locale = liveLocale();
+        for (const [name, config] of Object.entries(configs)) {
+            if (!isAuthDependent(config) || raw[`_${name}_state`] === undefined) continue;
+            window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
+            ds.resetSource(name);
+            loadDataSource(name, locale, { reload: true });
+        }
+    };
+    window.addEventListener('manifest:auth:logout', reset);
+    window.addEventListener('manifest:auth:session-cleared', reset);
 }
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
@@ -11454,7 +11616,7 @@ async function filterFilesByScope(files, scope) {
 }
 
 // Handle real-time storage events
-async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload) {
+async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -11481,7 +11643,7 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append' });
+                landRows(dataSourceName, [file], { mode: 'append', generation });
 
                 // Emit custom event for new file creation so UI can refresh project files
                 window.dispatchEvent(new CustomEvent('manifest:file-created', {
@@ -11496,16 +11658,16 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
             if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append' });
+                landRows(dataSourceName, [file], { mode: 'append', generation });
             } else {
                 // File no longer matches scope, remove it
-                landRemove(dataSourceName, [file.$id]);
+                landRemove(dataSourceName, [file.$id], { generation });
             }
         }
     } else if (eventType === 'delete') {
         const fileId = payload?.$id || payload?.file?.$id || payload?.fileId || payload;
         if (fileId) {
-            landRemove(dataSourceName, [fileId.$id || fileId]);
+            landRemove(dataSourceName, [fileId.$id || fileId], { generation });
         }
     }
 }
@@ -11556,7 +11718,7 @@ function markEventProcessed(eventKey) {
 }
 
 // Handle real-time events for database tables
-async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload) {
+async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload, generation) {
 
     // Deduplicate events
     const eventKey = getEventKey(eventType, payload);
@@ -11585,7 +11747,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         if (row && row.$id) {
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (rowMatchesScope) {
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
             }
         } else {
             console.warn('[Manifest Data] Invalid row payload in create event:', payload);
@@ -11597,12 +11759,12 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (!rowMatchesScope) {
                 // Row no longer matches scope, remove it
-                if (existingRow) landRemove(dataSourceName, [row.$id]);
+                if (existingRow) landRemove(dataSourceName, [row.$id], { generation });
                 return;
             }
             if (!existingRow) {
                 // Row not in list, but matches scope now - add it
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
                 return;
             }
 
@@ -11662,7 +11824,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 const fileIdsChanged = isProjectWithFiles &&
                     JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
 
-                landRows(dataSourceName, [row], { mode: 'append' });
+                landRows(dataSourceName, [row], { mode: 'append', generation });
 
                 // Emit custom event for project file updates so UI can refresh
                 if (fileIdsChanged && dataSourceName === 'projects') {
@@ -11675,7 +11837,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
     } else if (eventType === 'delete') {
         const rowId = payload?.$id || payload?.row?.$id || payload?.rowId || payload;
         if (rowId) {
-            landRemove(dataSourceName, [rowId.$id || rowId]);
+            landRemove(dataSourceName, [rowId.$id || rowId], { generation });
         }
     }
 
@@ -11857,6 +12019,24 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
     const superseded = () => sourceGeneration && sourceGeneration(dataSourceName) !== generation;
 
+    // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
+    // A pending sign-in holds the source unsettled (one render-ready), bounded by its deadline.
+    const settleUnresolved = (manifest) => {
+        if (isInitializing || superseded()) return false;
+        const wait = signInWaitMs(currentAuth());
+        if (wait > 0) {
+            setTimeout(() => {
+                const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
+                if (state?.ready || superseded() || !authSettledSignedOut()) return;
+                updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+            }, wait + 10);
+            return false;
+        }
+        if (!authSettledUnresolvable(manifest)) return false;
+        updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+        return true;
+    };
+
     return runDeduped(cacheKey, async () => {
         let landed = false;
         try {
@@ -11933,9 +12113,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
                         : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
 
-                    // Not ready (auth/scope unresolved): skip this read, stay pending, retry on an auth event
+                    // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
+                        if (settleUnresolved(manifest)) landed = true;
                         return null;
                     }
 
@@ -11948,19 +12129,21 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         tableId,
                         queries
                     );
+                    if (superseded()) { landed = true; return null; }
 
-                    // Subscribe to real-time updates for this table
+                    // Subscribe to real-time updates for this table (events from a superseded identity drop)
                     if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
-                        await window.ManifestDataRealtime.subscribeToTable(
+                        const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                // Handle real-time events
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload);
-                            }
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation);
+                            },
+                            () => !superseded()
                         );
+                        if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else if (bucketId) {
                     // Load from Appwrite storage bucket
@@ -11974,6 +12157,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
+                        if (settleUnresolved(manifest)) landed = true;
                         return null;
                     }
 
@@ -11994,17 +12178,21 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     data = files;
 
-                    // Subscribe to real-time updates for this bucket
+                    if (superseded()) { landed = true; return null; }
+
+                    // Subscribe to real-time updates for this bucket (events from a superseded identity drop)
                     if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToStorageBucket) {
-                        await window.ManifestDataRealtime.subscribeToStorageBucket(
+                        const unsubscribe = await window.ManifestDataRealtime.subscribeToStorageBucket(
                             dataSourceName,
                             bucketId,
                             scope,
                             async (eventType, payload) => {
-                                // Handle real-time events
-                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload);
-                            }
+                                if (superseded()) return;
+                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation);
+                            },
+                            () => !superseded()
                         );
+                        if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else {
                     console.warn(`[Manifest Data] Appwrite data source "${dataSourceName}" missing tableId or bucketId`);
@@ -12138,7 +12326,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
-                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
             // Return unsealed version for our proxy system
@@ -12283,6 +12471,8 @@ async function initializeDataSourcesPlugin() {
 
     // Setup URL change listeners
     setupUrlChangeListeners();
+
+    setupAuthResetListener();
 
     // Register $x magic method (only if Alpine is available)
 

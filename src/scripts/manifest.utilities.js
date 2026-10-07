@@ -599,6 +599,7 @@ class TailwindCompiler {
         this.lastClassesHash = ''; // Track changes in used classes
         this.staticClassCache = new Set(); // Cache classes found in static HTML/components
         this.dynamicClassCache = new Set(); // Cache classes that appear dynamically
+        this.quietClasses = new Set(); // Seen only inside ignored elements, not yet compiled
         this.hasScannedStatic = false; // Track if we've done initial static scan
         this.staticScanPromise = null; // Promise for initial static scan
         this.ignoredClassPatterns = [ // Patterns for classes to ignore
@@ -1338,6 +1339,7 @@ TailwindCompiler.prototype.cleanupCache = function () {
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
     if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
         document.head.appendChild(this.styleElement);
+        if (this.resyncUtilitiesText) this.resyncUtilitiesText();
     }
 };
 
@@ -1714,6 +1716,8 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
     // Wait for all fetches to complete
     await Promise.all(fetchPromises);
 
+    // Order-free identity (fetches land in any order) for "theme unchanged" checks
+    this.lastThemeKey = Array.from(themeContents).sort().join('\n');
     return Array.from(themeContents).join('\n');
 };
 
@@ -2450,6 +2454,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
         const generatedRules = new Set(); // Track generated rules to prevent duplicates
         const variables = this.extractThemeVariables(cssText);
         const { classes: usedClasses, variableSuffixes } = usedData;
+        // Optional: raw rules + their full-regen order keys (incremental apply places deltas by them)
+        const rulesOut = usedData.rulesOut, keysOut = usedData.keysOut;
+        let slot = null;
+        const emit = (rule, sub) => { utilities.push(rule); if (rulesOut) { rulesOut.push(rule); keysOut.push(slot.concat(slot[3] ? 2 : sub)); } }; // opacity rules order by discovery
 
         if (variables.size === 0) {
             return '';
@@ -2474,7 +2482,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
             if (usedClasses.includes(baseClass)) {
                 const rule = `.${escapeClassName(baseClass)} { ${css} }`;
                 if (!generatedRules.has(rule)) {
-                    utilities.push(rule);
+                    emit(rule, 0);
                     generatedRules.add(rule);
                 }
             }
@@ -2485,7 +2493,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                     css + ' !important';
                 const rule = `.${escapeClassName('!' + baseClass)} { ${importantCss} }`;
                 if (!generatedRules.has(rule)) {
-                    utilities.push(rule);
+                    emit(rule, 1);
                     generatedRules.add(rule);
                 }
             }
@@ -2554,26 +2562,33 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                     rule;
 
                 if (!generatedRules.has(finalRule)) {
-                    utilities.push(finalRule);
+                    emit(finalRule, 2);
                     generatedRules.add(finalRule);
                 }
             }
         };
 
+        // Every generated class ends in its variable's suffix: skip variables no used class mentions
+        const usedBases = usedClasses.map(cls => this.parseClassName(cls).baseClass);
+
         // Generate utilities based on variable prefix
+        let vi = -1;
         for (const [varName, varValue] of variables.entries()) {
+            vi++;
             if (!varName.match(this.regexPatterns.tailwindPrefix)) {
                 continue;
             }
 
             const suffix = varName.split('-').slice(1).join('-');
+            if (!usedBases.some(base => base.includes(suffix))) continue;
             const value = `var(--${varName})`;
             const prefix = varName.split('-')[0] + '-';
             const generator = this.utilityGenerators[prefix];
 
             if (generator) {
                 const utilityPairs = generator(suffix, value);
-                for (const [className, css] of utilityPairs) {
+                for (let pi = 0; pi < utilityPairs.length; pi++) {
+                    const [className, css] = utilityPairs[pi];
                     // Check if this specific utility class is actually used (including variants and important)
                     const isUsed = usedClasses.some(cls => {
                         // Parse the class to extract the base utility name
@@ -2586,6 +2601,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                             (baseClass.startsWith('!') && baseClass.slice(1) === className);
                     });
                     if (isUsed) {
+                        slot = [0, vi, pi, 0];
                         generateUtility(className, css);
                     }
 
@@ -2617,6 +2633,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         const opacity = opacityBaseClass.split('/')[1];
                         const opacityValue = `color-mix(in oklch, ${value} ${opacity}%, transparent)`;
                         const opacityCss = css.replace(value, opacityValue);
+                        slot = [0, vi, pi, 1];
                         generateUtility(opacityBaseClass, opacityCss);
                     }
                 }
@@ -2636,6 +2653,9 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
         const utilities = [];
         const generatedRules = new Set();
         const { classes: usedClasses } = usedData;
+        const rulesOut = usedData.rulesOut, keysOut = usedData.keysOut;
+        let slot = null;
+        const emit = (rule, sub) => { utilities.push(rule); if (rulesOut) { rulesOut.push(rule); keysOut.push(slot.concat(sub)); } };
 
         // Helper to clean up [object Object] from CSS strings
         const cleanCssString = (css) => {
@@ -2791,7 +2811,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                     rule = `.${escapeClassName('!' + baseClass)} { ${importantCss} }`;
                 }
                 if (!generatedRules.has(rule)) {
-                    utilities.push(rule);
+                    emit(rule, 1);
                     generatedRules.add(rule);
                 }
             }
@@ -2965,14 +2985,16 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 }
 
                 if (!generatedRules.has(finalRule)) {
-                    utilities.push(finalRule);
+                    emit(finalRule, 2);
                     generatedRules.add(finalRule);
                 }
             }
         };
 
         // Generate utilities for each custom class that's actually used
+        let ci = -1;
         for (const [className, cssOrSelector] of this.customUtilities.entries()) {
+            ci++;
             // Normalize class name: if it starts with !, extract the base name
             const hasImportantPrefix = className.startsWith('!');
             const baseClassName = hasImportantPrefix ? className.slice(1) : className;
@@ -3012,9 +3034,12 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 // Generate utility with base class name (without !)
                 // The CSS already has !important if className started with !
                 if (typeof cssOrSelector === 'string') {
+                    slot = [1, ci, 0, 0];
                     generateUtility(baseClassName, normalizedCss, null);
                 } else if (Array.isArray(cssOrSelector)) {
-                    for (const entry of cssOrSelector) {
+                    for (let ai = 0; ai < cssOrSelector.length; ai++) {
+                        const entry = cssOrSelector[ai];
+                        slot = [1, ci, ai, 0];
                         if (entry && entry.css && entry.selector) {
                             // Ensure entry.css is a string (not an object)
                             const extracted = typeof entry.css === 'string' ? entry.css :
@@ -3035,6 +3060,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                             String(cssOrSelector.css));
                     const selectorCss = cleanCssString(extracted);
 
+                    slot = [1, ci, 0, 0];
                     generateUtility(baseClassName, selectorCss, {
                         selector: cssOrSelector.selector,
                         fullBlock: cssOrSelector.fullBlock || false
@@ -3050,47 +3076,167 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
     }
 };
 
-// Helper function to sort utilities so base classes come before variants
-TailwindCompiler.prototype.sortUtilities = function(utilitiesText) {
-    if (!utilitiesText) return '';
-    
-    // Split into individual rules (each rule starts with . or @media)
+// Split generated CSS into top-level rules (each starts with . or an at-rule)
+TailwindCompiler.prototype.splitUtilityRules = function (utilitiesText) {
     const rules = [];
     let currentRule = '';
-    const lines = utilitiesText.split('\n');
-    
-    for (const line of lines) {
-        // Check if this line starts a new rule
+    for (const line of utilitiesText.split('\n')) {
         if (line.trim().match(/^(\.|@media|@layer|@supports)/)) {
-            // Save previous rule if exists
-            if (currentRule.trim()) {
-                rules.push(currentRule.trim());
-            }
+            if (currentRule.trim()) rules.push(currentRule.trim());
             currentRule = line;
         } else {
-            // Continue current rule
             currentRule += '\n' + line;
         }
     }
-    // Add last rule
-    if (currentRule.trim()) {
-        rules.push(currentRule.trim());
-    }
-    
-    // Sort: base utilities (no @media) come before variants (with @media)
+    if (currentRule.trim()) rules.push(currentRule.trim());
+    return rules;
+};
+
+// Sort utilities so base classes come before variants (@media)
+TailwindCompiler.prototype.sortUtilities = function (utilitiesText) {
+    if (!utilitiesText) return '';
+    const rules = this.splitUtilityRules(utilitiesText);
     rules.sort((a, b) => {
         const aHasMedia = a.startsWith('@media');
         const bHasMedia = b.startsWith('@media');
-        
-        // Base utilities come before variants
         if (!aHasMedia && bHasMedia) return -1;
         if (aHasMedia && !bHasMedia) return 1;
-        
-        // Same type, maintain order
         return 0;
     });
-    
     return rules.join('\n\n');
+};
+
+// ---- Incremental apply: new rules go in through CSSOM, never a whole-sheet rewrite ----
+// Entries mirror the layer's cssRules 1:1, each keyed by where a full regen would emit it
+// ([media, section, var/entry, pair/array, region, sub]); deltas are inserted at that index.
+
+const utilitiesCssFrom = (applied) => `@layer utilities {\n${applied.entries.map(e => e.rule).join('\n\n')}\n}`;
+const isMediaRule = (rule) => rule.trim().startsWith('@media');
+
+function compareKeys(a, b) {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+}
+
+// Raw rules + order keys for a class set, as a full regen would emit them (base before @media, stable)
+TailwindCompiler.prototype.generateKeyedUtilities = function (themeCss, classes) {
+    const usedData = { classes, variableSuffixes: [], rulesOut: [], keysOut: [] };
+    this.generateUtilitiesFromVars(themeCss, usedData);
+    this.generateCustomUtilities(usedData);
+    const out = usedData.rulesOut.map((rule, i) => {
+        const media = isMediaRule(rule) ? 1 : 0;
+        return { rule, key: [media].concat(usedData.keysOut[i]) };
+    });
+    return out.filter(e => !e.key[0]).concat(out.filter(e => e.key[0]));
+};
+
+TailwindCompiler.prototype.utilitiesLayerRule = function () {
+    const sheet = this.styleElement && this.styleElement.sheet;
+    if (!sheet || typeof CSSLayerBlockRule === 'undefined') return null;
+    try {
+        for (const rule of sheet.cssRules) {
+            if (rule instanceof CSSLayerBlockRule && rule.name === 'utilities') return rule;
+        }
+    } catch (e) { }
+    return null;
+};
+
+// Entries must match the parsed sheet rule-for-rule, or deltas could land at the wrong index
+TailwindCompiler.prototype.entriesMatchSheet = function (entries) {
+    const layer = this.utilitiesLayerRule();
+    if (!layer || layer.cssRules.length !== entries.length) return false;
+    for (let i = 0; i < entries.length; i++) {
+        if ((layer.cssRules[i] instanceof CSSMediaRule) !== !!entries[i].key[0]) return false;
+    }
+    return true;
+};
+
+// After a full write: remember its rules so later compiles can insert beside them
+TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss) {
+    this._applied = null;
+    if (window.__manifestRender === true || !this.entriesMatchSheet(entries)) return;
+    this._applied = {
+        themeKey: this.lastThemeKey,
+        themeCss,           // keys index this exact variable order
+        entries,
+        rules: new Set(entries.map(e => e.rule)),
+        classes: new Set(this.dynamicClassCache),
+        dirty: false        // inserted rules not yet in textContent
+    };
+};
+
+// Moving <style> rebuilds its sheet from textContent: write inserted rules back first
+TailwindCompiler.prototype.resyncUtilitiesText = function () {
+    const applied = this._applied;
+    if (!applied || !applied.dirty) return;
+    applied.dirty = false;
+    this.styleElement.textContent = utilitiesCssFrom(applied);
+    if (!this.entriesMatchSheet(applied.entries)) this._applied = null;
+};
+
+// Prerender snapshots read #manifest-styles text, so render passes always rewrite it
+TailwindCompiler.prototype.canCompileDelta = function () {
+    return !!this._applied && window.__manifestRender !== true && !!this.utilitiesLayerRule();
+};
+
+// Generate only never-compiled classes and insert each rule where a full regen would put it.
+// Returns false when a rule's place depends on class discovery order: caller does a full compile.
+TailwindCompiler.prototype.compileDelta = function (themeCss) {
+    const applied = this._applied;
+    const candidates = [];
+    for (const cls of this.dynamicClassCache) if (!applied.classes.has(cls)) candidates.push(cls);
+    const classes = this.filterStaticallyCoveredClasses(candidates);
+    const fresh = classes.length ? this.generateKeyedUtilities(themeCss, classes).filter(e => !applied.rules.has(e.rule)) : [];
+    const entries = applied.entries;
+
+    // Place every rule first; bail before touching the sheet if any is ambiguous
+    const plan = [];
+    for (const e of fresh) {
+        let lo = 0, hi = entries.length;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (compareKeys(entries[mid].key, e.key) <= 0) lo = mid + 1; else hi = mid; }
+        // Same utility, same group, both variants: full regen orders them by discovery
+        if (e.key[5] === 2) {
+            const sameSlot = (x) => x && compareKeys(x.key.slice(0, 5), e.key.slice(0, 5)) === 0 && x.key[5] === 2;
+            if (sameSlot(entries[lo - 1]) || sameSlot(entries[lo]) || plan.some(q => sameSlot(q.e))) return false;
+        }
+        plan.push({ e, at: lo });
+    }
+    for (const cls of candidates) applied.classes.add(cls);
+    if (!plan.length) return true;
+
+    const layer = this.utilitiesLayerRule();
+    try {
+        // Insert in key order; each insert shifts later indices by one
+        plan.sort((x, y) => compareKeys(x.e.key, y.e.key));
+        plan.forEach((q, n) => {
+            layer.insertRule(q.e.rule, q.at + n);
+            entries.splice(q.at + n, 0, q.e);
+            applied.rules.add(q.e.rule);
+        });
+    } catch (err) {
+        // A rule the parser splits or drops: the planned indices no longer hold
+        this._applied = null;
+        return false;
+    }
+    applied.dirty = true;
+    this.schedulePersistentSave(themeCss);
+    return true;
+};
+
+// Coalesce cache writes: localStorage serialisation is too slow to run per compile
+TailwindCompiler.prototype.schedulePersistentSave = function (themeCss) {
+    clearTimeout(this._persistTimer);
+    this._persistTimer = setTimeout(() => {
+        if (!this._applied) return;
+        const classesHash = Array.from(this.dynamicClassCache).sort().join(',');
+        const themeHash = this.generateThemeHash(themeCss);
+        this.cache.set(`${classesHash}-${themeHash}`, {
+            css: utilitiesCssFrom(this._applied),
+            timestamp: Date.now(),
+            themeHash
+        });
+        this.savePersistentCache();
+    }, 1000);
 };
 
 // Helper function to filter critical utilities that are already in layer utilities
@@ -3196,6 +3342,7 @@ TailwindCompiler.prototype.compile = async function () {
         }
         this.lastCompileTime = now;
         this.isCompiling = true;
+        this.quietClasses.clear(); // this compile covers them
         window.__manifestUtilitiesPending = (window.__manifestUtilitiesPending || 0) + 1;
         this._compileCounted = true;
 
@@ -3286,6 +3433,13 @@ TailwindCompiler.prototype.compile = async function () {
             return;
         }
 
+        // Theme unchanged since the last full write: insert only the new classes
+        let prefetchedTheme = null;
+        if (this.canCompileDelta()) {
+            prefetchedTheme = await this.fetchThemeContent();
+            if (prefetchedTheme && this.lastThemeKey === this._applied.themeKey && this.compileDelta(this._applied.themeCss)) return;
+        }
+
         // For subsequent compilations, check for new dynamic classes
         const usedData = this.getUsedClasses();
         const dynamicClasses = Array.from(this.dynamicClassCache);
@@ -3296,7 +3450,7 @@ TailwindCompiler.prototype.compile = async function () {
         // Check if dynamic classes have actually changed
         if (dynamicClassesHash !== this.lastClassesHash || !this.hasInitialized) {
             // Fetch CSS content for dynamic compilation
-            const themeCss = await this.fetchThemeContent();
+            const themeCss = prefetchedTheme || await this.fetchThemeContent();
             if (!themeCss) {
                 this.isCompiling = false;
                 return;
@@ -3323,8 +3477,10 @@ TailwindCompiler.prototype.compile = async function () {
             if (hasVariableChanges || dynamicClassesHash !== this.lastClassesHash) {
 
                 // Generate both variable-based and custom utilities
-                const varUtilities = this.generateUtilitiesFromVars(themeCss, usedData);
-                const customUtilitiesGenerated = this.generateCustomUtilities(usedData);
+                const rulesOut = [], keysOut = [];
+                const keyedData = Object.assign({}, usedData, { rulesOut, keysOut });
+                const varUtilities = this.generateUtilitiesFromVars(themeCss, keyedData);
+                const customUtilitiesGenerated = this.generateCustomUtilities(keyedData);
 
                 let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
                 // Sort utilities so base classes come before variants
@@ -3350,6 +3506,8 @@ TailwindCompiler.prototype.compile = async function () {
                         });
                     });
                     this.lastClassesHash = dynamicClassesHash;
+                    const entries = rulesOut.map((rule, i) => ({ rule, key: [isMediaRule(rule) ? 1 : 0].concat(keysOut[i]) }));
+                    this.recordAppliedUtilities(entries.filter(e => !e.key[0]).concat(entries.filter(e => e.key[0])), themeCss);
 
                     // Save to cache for next page load
                     const themeHash = this.generateThemeHash(themeCss);
@@ -3361,6 +3519,8 @@ TailwindCompiler.prototype.compile = async function () {
                     });
                     this.savePersistentCache();
                 }
+            } else {
+                this._applied = null; // theme text moved: order keys are stale until the next full write
             }
         }
 
@@ -3826,80 +3986,29 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
         }
     });
 
-    // Single MutationObserver for all DOM changes
+    // Single MutationObserver for all DOM changes: recompile only when a class not yet seen appears
     const observer = new MutationObserver((mutations) => {
-        let shouldRecompile = false;
+        let fresh = false;
 
         for (const mutation of mutations) {
-            // Skip attribute changes that don't affect utilities
             if (mutation.type === 'attributes') {
-                const attributeName = mutation.attributeName;
-
-                // Skip ignored attributes (like id changes from router)
-                if (this.ignoredAttributes.includes(attributeName)) {
-                    continue;
-                }
-
-                // Only care about class attribute changes
-                if (attributeName !== 'class') {
-                    continue;
-                }
-
-                // If it's a class change, check if we have new classes that need utilities
-                const element = mutation.target;
-                if (element.nodeType === Node.ELEMENT_NODE) {
-                    const currentClasses = Array.from(element.classList || []);
-                    const newClasses = currentClasses.filter(cls => {
-                        // Skip ignored patterns
-                        if (this.ignoredClassPatterns.some(pattern => pattern.test(cls))) {
-                            return false;
-                        }
-
-                        // Check if this class is new (not in our cache)
-                        return !this.staticClassCache.has(cls) && !this.dynamicClassCache.has(cls);
-                    });
-
-                    if (newClasses.length > 0) {
-                        // Add new classes to dynamic cache
-                        newClasses.forEach(cls => this.dynamicClassCache.add(cls));
-                        shouldRecompile = true;
-                        break;
-                    }
-                }
-            }
-            else if (mutation.type === 'childList') {
+                if (this.ignoredAttributes.includes(mutation.attributeName) || mutation.attributeName !== 'class') continue;
+                if (mutation.target.nodeType === Node.ELEMENT_NODE && this.collectNewClasses(mutation.target)) fresh = true;
+            } else if (mutation.type === 'childList') {
                 for (const node of mutation.addedNodes) {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        // Skip ignored elements using configurable selectors
-                        const isIgnoredElement = this.ignoredElementSelectors.some(selector =>
-                            node.tagName?.toLowerCase() === selector.toLowerCase() ||
-                            node.closest(selector)
-                        );
-
-                        if (isIgnoredElement) {
-                            continue;
-                        }
-
-                        // Only recompile for significant changes using configurable selectors
-                        const hasSignificantChange = this.significantChangeSelectors.some(selector => {
-                            try {
-                                return node.matches?.(selector) || node.querySelector?.(selector);
-                            } catch (e) {
-                                return false; // Invalid selector
-                            }
-                        });
-
-                        if (hasSignificantChange) {
-                            shouldRecompile = true;
-                            break;
-                        }
-                    }
+                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                    const isIgnoredElement = this.ignoredElementSelectors.some(selector =>
+                        node.tagName?.toLowerCase() === selector.toLowerCase() ||
+                        node.closest(selector)
+                    );
+                    // Ignored subtrees (code blocks) are collected for the next compile but never trigger one
+                    if (this.collectSubtreeClasses(node, isIgnoredElement)) fresh = true;
+                    else if (!fresh && !isIgnoredElement && !this.hasInitialized && this.isSignificantNode(node)) fresh = true;
                 }
             }
-            if (shouldRecompile) break;
         }
 
-        if (shouldRecompile) {
+        if (fresh) {
             debouncedCompile();
         }
     });
@@ -3910,6 +4019,43 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
         subtree: true,
         attributes: true,
         attributeFilter: ['class'] // Only observe class changes
+    });
+};
+
+// Record classes not seen before; true when any were new. Quiet = collect without triggering
+TailwindCompiler.prototype.collectNewClasses = function (el, quiet) {
+    const value = el.getAttribute && el.getAttribute('class');
+    if (!value) return false;
+    let fresh = false;
+    for (const cls of value.split(/\s+/)) {
+        if (!cls || this.staticClassCache.has(cls)) continue;
+        if (this.dynamicClassCache.has(cls)) {
+            if (!quiet && this.quietClasses.delete(cls)) fresh = true;
+            continue;
+        }
+        if (this.ignoredClassPatterns.some(pattern => pattern.test(cls))) continue;
+        this.dynamicClassCache.add(cls);
+        if (quiet) this.quietClasses.add(cls); else fresh = true;
+    }
+    return fresh;
+};
+
+TailwindCompiler.prototype.collectSubtreeClasses = function (node, quiet) {
+    let fresh = this.collectNewClasses(node, quiet);
+    const descendants = node.getElementsByTagName ? node.getElementsByTagName('*') : [];
+    for (let i = 0; i < descendants.length; i++) {
+        if (this.collectNewClasses(descendants[i], quiet)) fresh = true;
+    }
+    return fresh;
+};
+
+TailwindCompiler.prototype.isSignificantNode = function (node) {
+    return this.significantChangeSelectors.some(selector => {
+        try {
+            return node.matches?.(selector) || node.querySelector?.(selector);
+        } catch (e) {
+            return false;
+        }
     });
 };
 

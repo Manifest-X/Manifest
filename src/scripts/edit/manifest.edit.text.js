@@ -4,6 +4,7 @@
     // own caret placement; a second click still collapses to a caret for fine edits.
     function selectAllIn(el) {
         requestAnimationFrame(() => {
+            if (dragged || grabbed) return;              // reordering, not editing
             if (document.activeElement !== el) return;
             try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
         });
@@ -18,8 +19,9 @@
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
             el.addEventListener('blur', () => {
-                const commit = classify(area) === 'component' ? commitComponentNode : commitStaticNode;
-                commit(area, el, 'text', el.innerHTML.trim());
+                const a = regionOf(el) || area;   // the region the element sits in NOW, not where it was armed
+                const commit = classify(a) === 'component' ? commitComponentNode : commitStaticNode;
+                commit(a, el, 'text', el.innerHTML.trim());
             }, true);
         });
     }
@@ -27,14 +29,19 @@
     // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
     function armText(area) {
         armRichText(area);
-        area.querySelectorAll('*').forEach(el => {
-            if (el.children.length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+        // A region whose root IS the text — <p x-edit.text="note">…</p> — has no
+        // descendant leaves; the area itself is the editable leaf.
+        const nodes = [...area.querySelectorAll('*')];
+        if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
+        nodes.forEach(el => {
+            if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || el.hasAttribute('x-text') || el.hasAttribute('x-html')) return;
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); const d = el.closest('[draggable="true"]'); if (d) d.setAttribute('draggable', 'false'); selectAllIn(el); });
-            el.addEventListener('blur', () => { const d = el.closest('[data-edit-area] [draggable="false"]'); if (d) d.setAttribute('draggable', 'true'); commitStaticNode(area, el, 'text', el.innerHTML.trim()); });
+            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
+            el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); } });   // Escape finishes the edit, like the rich editor
+            el.addEventListener('blur', () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
         });
     }
 
@@ -66,7 +73,7 @@
                 if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
-                el.addEventListener('focus', () => { el._preEdit = read(); selectAllIn(el); });
+                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-text-edit')) selectAllIn(el); });   // the rich editor owns its caret
                 el.addEventListener('focusin', () => { el._preEdit = read(); });
                 el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
             });
@@ -76,8 +83,9 @@
     /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
        instance for the scope (this instance vs all) + per-element classes + revert. ---- */
     const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
-    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(Array.from(n.parentElement.children).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
-    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = el.children[i]; if (!el) return null; } return el; }
+    // Paths index authored children only (realChildren): plugin-injected nodes never count.
+    function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
+    function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
     // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
     // skip the source element (don't fight the caret) and skip any instance that has its
     // OWN committed override for this node/prop (instance overrides always win).

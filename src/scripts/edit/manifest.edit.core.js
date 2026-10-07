@@ -13,7 +13,7 @@
 
 (function () {
     const LS_KEY = 'mnfst-edit-log';
-    const SCHEMA = 6;                  // overlay schema version — bump when the delta shape changes
+    const SCHEMA = 7;                  // overlay schema version — bump when the delta shape changes
     const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
     const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
     let dragged = null, autoN = 0;
@@ -43,7 +43,9 @@
     // those deltas neither travel to the source nor survive in the overlay. They stay
     // in the in-memory log, so undo still works for the session.
     const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
-    const persistable = (d) => d.kind !== 'data-splice' && (d.region == null || authoringRegion(d.region));
+    const persistable = (d) => d.kind !== 'data-splice' && (d.kind === 'st-move'
+        ? authoringRegion(d.from) && authoringRegion(d.to)
+        : (d.region == null || authoringRegion(d.region)));
 
     const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -96,6 +98,10 @@
     }
     const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
+    const topArea = (a) => !!a && areas().includes(a);   // only top-level regions can be move endpoints (nested ones can't persist)
+    // The top-level region an element belongs to NOW — resolved at commit time, not
+    // arm time, so a block moved to another region commits against its new home.
+    const regionOf = (el) => areas().find(a => a === el || a.contains(el));
     const key = (area) => area._edit.key;
     function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
     const capOf = (node, cap) => { const i = editInfo(node); return !!i && !i.lock && i.caps.has(cap); };
@@ -110,7 +116,11 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    const sortableChildren = (c) => Array.from(c.children).filter(x => x.tagName !== 'TEMPLATE' && !x.hasAttribute('data-edit-handle'));
+    // Plugin-injected nodes (size handles, drag ghosts) are not authored children —
+    // keys and paths skip them on client AND server (serve.mjs childAt mirrors this).
+    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
+    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
+    const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
     // Identity of a row in a data area. `data-key` is the explicit form; without it,
     // fall back to the x-for's own :key so a plain list needs no extra attribute.
     let _keyWarned = false;

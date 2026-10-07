@@ -27,9 +27,7 @@ async function importFromProject(moduleName) {
 
 
 async function flushAlpineEffects(page) {
-  // Alpine's scheduler can swallow a nextTick callback (a re-triggered
-  // already-flushed job is dropped), so this wait must be bounded or a page
-  // hangs idle until the per-page timeout kills it.
+  // Bounded: Alpine's scheduler can swallow a nextTick callback
   await page
     .evaluate(() => {
       return new Promise((resolve) => {
@@ -172,8 +170,7 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
 
           // 6. Run component swapping explicitly so components tied to this route render
           //    and trigger any $x accesses that start on-demand data loads.
-          //    Bounded: a stranded component-load promise must not hang the
-          //    pipeline past the render-ready timeout (step 7 would never run).
+          //    Bounded: a stranded component load must not hang the pipeline.
           if (window.ManifestComponentsSwapping?.processAll) {
             try {
               await Promise.race([
@@ -232,16 +229,16 @@ export function isTransientFrameError(message) {
 }
 
 /**
- * Coordinates N render workers around a shared browser that is swapped out
- * every `every` pages.  Workers hold a slot (acquire/release) for exactly as
- * long as they touch the browser; a recycle pauses new slots first, then
- * drains the in-flight ones, so no worker can ever be blocked on the gate
- * while it is still counted as active.  Every wait is bounded: a stuck page
- * or a stuck browser swap logs and continues instead of hanging the run.
- * Exported for unit tests.
+ * Coordinates render workers around a shared browser swapped every `every`
+ * completed paths. A recycle pauses new slots, drains in-flight ones, swaps,
+ * resumes. Forced recycles are coalesced per browser generation and rate
+ * limited by `forcedCooldown` completed paths, unless `healthy()` reports a
+ * dead browser. Exported for unit tests.
  */
 export function createRecycleGate({
   every = 40,
+  forcedCooldown = Math.max(1, Math.ceil(every / 4)),
+  healthy = () => true,
   recycle = async () => {},
   drainTimeoutMs = 60000,
   recycleTimeoutMs = 180000,
@@ -249,65 +246,150 @@ export function createRecycleGate({
 } = {}) {
   let active = 0;
   let pages = 0;
+  let sinceForced = Infinity;
+  let forced = false;
   let paused = false;
+  let generation = 0;
+  let recycles = 0;
+  let forcedRecycles = 0;
   const zeroWaiters = [];
   const resumeWaiters = [];
   const wake = (list) => { for (const resolve of list.splice(0)) resolve(); };
+  const due = () => every > 0 && (pages >= every || (forced && (sinceForced >= forcedCooldown || !healthy())));
 
   return {
     get active() { return active; },
     get pages() { return pages; },
     get paused() { return paused; },
-    /** Claim a browser slot; blocks while a recycle is pending or running. */
+    get generation() { return generation; },
+    get forced() { return forced; },
+    get recycles() { return recycles; },
+    get forcedRecycles() { return forcedRecycles; },
+    /** Claim a browser slot; resolves with the browser generation. */
     async acquire() {
       while (paused) await new Promise((resolve) => { resumeWaiters.push(resolve); });
       active++;
+      return generation;
     },
     release() {
       active = Math.max(0, active - 1);
       if (active === 0) wake(zeroWaiters);
     },
-    /** Count a page against the recycle threshold. */
-    countPage() { pages++; },
-    /** Make the next maybeRecycle() fire (unstable browser after retries). */
-    requestRecycle() { if (every > 0) pages = Math.max(pages, every); },
-    /** Swap the browser if the threshold is reached.  Never throws. */
+    /** Count one completed path. */
+    countPage() { pages++; sinceForced++; },
+    /** Ask for a fresh browser; ignored if `gen` is already replaced. */
+    requestRecycle(gen) {
+      if (every <= 0) return false;
+      if (gen !== undefined && gen !== generation) return false;
+      forced = true;
+      return true;
+    },
+    /** Swap the browser if due.  Never throws. */
     async maybeRecycle() {
-      if (every <= 0 || paused || pages < every) return false;
-      paused = true; // no new slots from here on — active can only fall
+      if (paused || !due()) return false;
+      paused = true;
       const processed = pages;
+      const isForced = pages < every;
       try {
-        if (active > 0) {
-          // Never swap the browser under a live page — a per-page caller
-          // timeout already bounds how long any page can hold a slot, so
-          // waiting here cannot deadlock. drainTimeoutMs is configured to
-          // exceed that per-page timeout (see recycleDrainTimeout default in
-          // resolveConfig), so hitting it means a page leaked past its own
-          // timeout without releasing — a bug, not a normal recycle path.
-          // Log it and keep waiting rather than recycle while it's live.
+        while (active > 0) {
           const drained = await withDeadline(
             new Promise((resolve) => { zeroWaiters.push(resolve); }),
             drainTimeoutMs
           );
-          if (!drained) {
-            onLog(`recycle: ${active} page(s) still in flight after ${drainTimeoutMs}ms — waiting (a leaked page never released its slot)`);
-            await new Promise((resolve) => { zeroWaiters.push(resolve); });
-          }
+          if (!drained) onLog(`recycle: ${active} page(s) still in flight after ${drainTimeoutMs}ms — waiting (a leaked page never released its slot)`);
         }
-        const swapped = await withDeadline(recycle(processed), recycleTimeoutMs);
+        recycles++;
+        if (isForced) { forcedRecycles++; sinceForced = 0; }
+        const swapped = await withDeadline(recycle(processed, { forced: isForced }), recycleTimeoutMs);
         if (!swapped) onLog(`recycle: browser swap exceeded ${recycleTimeoutMs}ms — continuing`);
-        pages = 0;
         return swapped;
       } catch (err) {
         onLog(`recycle: failed (${err && err.message ? err.message : err}) — continuing`);
-        pages = 0;
         return false;
       } finally {
+        pages = 0;
+        forced = false;
+        generation++;
         paused = false;
         wake(resumeWaiters);
       }
     },
   };
+}
+
+/**
+ * Render `items` through the gate with per-attempt watchdog and retries.
+ * `render(item, index, token)` may set `token.cancel` to tear down a wedged
+ * attempt; a timed-out attempt keeps its slot until cancelled/settled
+ * (bounded by `abandonGraceMs`) so a swap never lands under it.
+ * Exported for unit tests.
+ */
+export async function runRenderQueue({
+  items,
+  concurrency = 1,
+  gate,
+  render,
+  pageTimeoutMs = 0,
+  maxRetries = 2,
+  abandonGraceMs = 15000,
+  labelOf = (item) => String(item),
+  onRetry = () => {},
+  onFail = () => {},
+} = {}) {
+  let index = 0;
+  const failures = [];
+
+  async function worker() {
+    while (true) {
+      const i = index++;
+      if (i >= items.length) return;
+      const item = items[i];
+      const label = labelOf(item);
+      let attempt = 0;
+      while (true) {
+        const token = { abandoned: false, failure: null, cancel: null };
+        const gen = await gate.acquire();
+        let timedOut = false;
+        try {
+          const run = Promise.resolve().then(() => render(item, i, token));
+          const finished = await withDeadline(run, pageTimeoutMs);
+          if (!finished) {
+            timedOut = true;
+            token.abandoned = true;
+            token.failure = { path: label, message: `page render exceeded ${pageTimeoutMs}ms` };
+            // Hold the slot until the orphan is torn down
+            await withDeadline(Promise.resolve().then(() => token.cancel?.()).catch(() => {}), abandonGraceMs);
+            await withDeadline(run.catch(() => {}), abandonGraceMs);
+          }
+        } catch (err) {
+          token.failure = { path: label, message: err && err.message ? err.message : String(err) };
+        } finally {
+          gate.release();
+        }
+        if (!token.failure) { gate.countPage(); break; }
+        if (attempt >= maxRetries) {
+          failures.push(token.failure);
+          onFail(token.failure, failures.length);
+          gate.countPage();
+          gate.requestRecycle(gen);
+          break;
+        }
+        const immediate = isTransientFrameError(token.failure.message);
+        // Suspect browser: fresh one before the retry
+        if (timedOut || (!immediate && attempt + 1 >= Math.ceil(maxRetries / 2))) {
+          gate.requestRecycle(gen);
+          await gate.maybeRecycle();
+        }
+        attempt++;
+        onRetry(token.failure, attempt, immediate);
+        if (!immediate) await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+      await gate.maybeRecycle();
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length || 1) }, () => worker()));
+  return failures;
 }
 
 // --- Config ------------------------------------------------------------------
@@ -3621,17 +3703,13 @@ async function runPrerender(config) {
         console.error('  npm i -D puppeteer-core @sparticuz/chromium');
         process.exit(1);
       }
-      // chrome-headless-shell: the new headless mode's captureScreenshot can
-      // hang forever on macOS (frames never produced), which wedges og
-      // snapshots and, through the shared browser, stalls sibling pages.
+      // Headless shell: new headless can hang captureScreenshot on macOS
       return await puppeteer.default.launch({
         headless: 'shell',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          // Concurrency keeps sibling tabs backgrounded; without these flags a
-          // backgrounded tab stops producing frames and firing rAF/timers, so
-          // its captureScreenshot (og snapshots) and settle waits hang forever.
+          // Background tabs must keep producing frames and timers
           '--disable-background-timer-throttling',
           '--disable-backgrounding-occluded-windows',
           '--disable-renderer-backgrounding',
@@ -3695,9 +3773,10 @@ async function runPrerender(config) {
     every: browserRecycleEvery,
     drainTimeoutMs,
     recycleTimeoutMs,
+    healthy: () => !!browser && browser.connected !== false,
     onLog: (message) => process.stderr.write(`prerender: ${message}\n`),
-    recycle: async (processed) => {
-      process.stdout.write(`prerender: recycling browser (processed ${processed} pages)\n`);
+    recycle: async (processed, { forced } = {}) => {
+      process.stdout.write(`prerender: recycling browser (${forced ? `forced after ${processed}` : `processed ${processed}`} pages)\n`);
       await closeBrowser(browser);
       browser = await launchBrowserBounded();
     },
@@ -3855,6 +3934,7 @@ async function runPrerender(config) {
     // No recycle can run while the caller holds a gate slot, so `browser` is
     // live for the whole call.
     const page = await browser.newPage();
+    if (attempt) attempt.cancel = () => page.close();
     // Render at a typical desktop viewport so layouts dependent on viewport
     // width (responsive flex/grid, container queries, media queries) settle
     // into their desktop variant.  Without this the headless default (often
@@ -4094,8 +4174,7 @@ async function runPrerender(config) {
       // small ones settle in well under 1 second.
       await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => { });
 
-      // DOM stability after network idle. Hard-capped: a page that animates
-      // continuously must not reset the quiet window forever.
+      // DOM stability after network idle (hard-capped).
       await page.evaluate(() => {
         return new Promise((resolve) => {
           const observer = new MutationObserver(() => {
@@ -4136,8 +4215,7 @@ async function runPrerender(config) {
         const ogImageHandled = !!config.seo.meta?.image
           || await page.evaluate(() => !!document.head.querySelector('meta[property="og:image"]'));
         if (!ogImageHandled) {
-          // Bounded: a CDP call that never returns must cost this page its og
-          // image, not the whole render (the meta fallback image covers it).
+          // Bounded: a hung CDP call costs only this page's og image
           earlySnapshotUrl = await Promise.race([
             takeOgSnapshot(page, config.output, is404 ? '__404__' : pathSeg, globalAssetSig, ogCacheDir),
             new Promise((resolve) => setTimeout(() => resolve(null), 30000)),
@@ -5212,103 +5290,32 @@ async function runPrerender(config) {
     }
   }
 
-  // Phase 1: Puppeteer — render base paths, cache raw DOM for substitution.
-  // Any failures (e.g. transient navigation timeouts) are retried up to
-  // `maxRetries` times with a short backoff before being reported as fatal.
-  //
-  // Browser recycling: after every `browserRecycleEvery` successful pages the
-  // gate pauses new work, drains the in-flight pages, swaps the browser and
-  // resumes.  Workers hold a gate slot only while they touch the browser.
-  //
-  // A failure whose message matches a transient Puppeteer/browser-recycle race
-  // (detached frame, destroyed execution context) is requeued immediately —
-  // no backoff — since waiting doesn't help a race and each attempt already
-  // gets its own fresh `pageTimeoutMs` budget.
+  // Phase 1: Puppeteer — render base paths, cache raw DOM for substitution
   async function renderPuppeteerPaths(paths) {
-    let index = 0;
-    const total = paths.length;
-
-    async function worker() {
-      while (true) {
-        const i = index++;
-        if (i >= paths.length) return;
-        const pathSeg = paths[i];
-        const displayPath = pathSeg === '' ? '/' : (pathSeg === NOT_FOUND_PATH ? '/__prerender_404__' : '/' + pathSeg);
-        let attempt = 0;
-        while (true) {
-          // Per-attempt result: `failedPaths` is shared, so a retry must never
-          // read or pop entries another worker pushed.
-          const attemptToken = { abandoned: false, failure: null };
-          await recycleGate.acquire();
-          try {
-            // Watchdog: a wedged renderer never returns, so cap the attempt.
-            const finished = await withDeadline(
-              processPath(pathSeg, i, {
-                attempt: attemptToken,
-                onRawHtml: (seg, html) => {
-                  if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
-                },
-                onLocaleDependentContent: promoteLocaleVariants,
-              }),
-              pageTimeoutMs
-            );
-            if (!finished) {
-              attemptToken.abandoned = true;
-              attemptToken.failure = { path: displayPath, message: `page render exceeded ${pageTimeoutMs}ms` };
-              // A timed-out page is presumed to have wedged the browser (e.g.
-              // a hung page.evaluate on a dead Chrome process) — force a
-              // recycle once this path is done, even if a later retry
-              // "succeeds" by reusing the same possibly-poisoned browser.
-              recycleGate.requestRecycle();
-            }
-          } catch (err) {
-            // Unexpected exception escaped processPath (e.g. browser died mid-call).
-            attemptToken.failure = {
-              path: displayPath,
-              message: err && err.message ? err.message : String(err),
-            };
-          } finally {
-            recycleGate.release();
-          }
-          if (!attemptToken.failure) {
-            recycleGate.countPage();
-            break; // success
-          }
-          if (attempt >= maxRetries) {
-            // Exhausted retries — likely an unstable browser (e.g. cascading
-            // "detached Frame" errors).  Force the next path onto a fresh one.
-            failedPaths.push(attemptToken.failure);
-            if (failedPaths.length <= 10) {
-              process.stderr.write(`prerender: failed ${displayPath}: ${attemptToken.failure.message}\n`);
-            }
-            recycleGate.countPage();
-            recycleGate.requestRecycle();
-            break;
-          }
-          const immediateRequeue = isTransientFrameError(attemptToken.failure.message);
-          // Halfway through retries with no success → preemptively recycle the
-          // browser before the next attempt.  This unblocks cascading frame
-          // failures where the browser process needs a fresh start.  Skipped
-          // for a transient frame error — that's likely already a recycle
-          // race, not a signal to force another one.
-          if (!immediateRequeue && attempt + 1 >= Math.ceil(maxRetries / 2) && recycleGate.pages > 0) {
-            recycleGate.requestRecycle();
-            await recycleGate.maybeRecycle();
-          }
-          attempt++;
-          process.stderr.write(
-            `prerender: retrying ${displayPath} (${attemptToken.failure.message}) (attempt ${attempt + 1}/${maxRetries + 1})${immediateRequeue ? ' — immediate requeue' : ''}\n`
-          );
-          if (!immediateRequeue) await new Promise((r) => setTimeout(r, 500 * attempt));
-        }
-        // Attempt recycle after each completed path (only one worker performs
-        // it; the rest block in acquire()).
-        await recycleGate.maybeRecycle();
-      }
-    }
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, total || 1) }, () => worker())
-    );
+    const failures = await runRenderQueue({
+      items: paths,
+      concurrency,
+      gate: recycleGate,
+      pageTimeoutMs,
+      maxRetries,
+      labelOf: (seg) => (seg === '' ? '/' : (seg === NOT_FOUND_PATH ? '/__prerender_404__' : '/' + seg)),
+      render: (pathSeg, i, attempt) => processPath(pathSeg, i, {
+        attempt,
+        onRawHtml: (seg, html) => {
+          if (seg !== NOT_FOUND_PATH) baseHtmlCache.set(seg || '', html);
+        },
+        onLocaleDependentContent: promoteLocaleVariants,
+      }),
+      onRetry: (failure, attempt, immediate) => {
+        process.stderr.write(
+          `prerender: retrying ${failure.path} (${failure.message}) (attempt ${attempt + 1}/${maxRetries + 1})${immediate ? ' — immediate requeue' : ''}\n`
+        );
+      },
+      onFail: (failure, count) => {
+        if (count <= 10) process.stderr.write(`prerender: failed ${failure.path}: ${failure.message}\n`);
+      },
+    });
+    failedPaths.push(...failures);
   }
 
   try {

@@ -312,8 +312,14 @@ function writeSource(dataSourceName, data, options = {}) {
 }
 
 // Synchronous replace: local writes ($register, init preload, state-only updates)
+// A write captured under an older generation (scope reset since, e.g. logout) never lands
+function isStaleWrite(dataSourceName, options) {
+    return !!options && options.generation !== undefined && options.generation !== sourceGeneration(dataSourceName);
+}
+
 function updateStore(dataSourceName, data, options = {}) {
     if (isInitializing && !options.allowDuringInit) return;
+    if (isStaleWrite(dataSourceName, options)) return;
     const state = writeSource(dataSourceName, data, { ...options, mode: 'replace' });
     if (!state) return;
     touchSource(dataSourceName);
@@ -323,10 +329,12 @@ function updateStore(dataSourceName, data, options = {}) {
 // Network landing (page load, paged append, realtime batch): buffered, applied
 // with every other landing of the same frame in ONE flush. Resolves once visible.
 function landRows(dataSourceName, rows, options = {}) {
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
     return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
 }
 
 function landRemove(dataSourceName, ids, options = {}) {
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
     return queueLanding({ source: dataSourceName, remove: Array.isArray(ids) ? ids : [ids], options });
 }
 
@@ -854,6 +862,11 @@ function setupTeamChangeListener() {
         }
     };
 
+    // Logout already reset scoped sources (data main); don't reload them again as a team change
+    const syncTeam = () => { lastTeamId = Alpine.store('auth')?.currentTeam?.$id || null; };
+    window.addEventListener('manifest:auth:logout', syncTeam);
+    window.addEventListener('manifest:auth:session-cleared', syncTeam);
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startPolling);
     } else {
@@ -910,10 +923,15 @@ function checkAndDispatchRenderReady() {
     }, RENDER_READY_QUIET_MS);
 }
 
+// Latest locale change owns _localeChanging; an older one finishing must not clear it
+let localeChangeSeq = 0;
+
 // Listen for locale changes to reload data
 function setupLocaleChangeListener() {
     window.addEventListener('localechange', async (event) => {
         const newLocale = event.detail.locale;
+        const seq = ++localeChangeSeq;
+        const latest = () => seq === localeChangeSeq;
 
         // Set loading state to prevent flicker
         const store = Alpine.store('data');
@@ -1015,7 +1033,7 @@ function setupLocaleChangeListener() {
                     delete store[dataSourceName];
                     delete store[`_${dataSourceName}_state`];
                 });
-                store._localeChanging = false;
+                if (latest()) store._localeChanging = false;
                 touchSources(store, localizedDataSources);
             }
 
@@ -1030,7 +1048,7 @@ function setupLocaleChangeListener() {
 
             // All localized sources have reloaded — check if everything is settled.
             // This fires manifest:render-ready after a locale change completes end-to-end.
-            checkAndDispatchRenderReady();
+            if (latest()) checkAndDispatchRenderReady();
 
         } catch (error) {
             console.error('[Manifest Data] Error handling locale change:', error);
@@ -1045,8 +1063,15 @@ function setupLocaleChangeListener() {
                     if (!key.startsWith('_') && typeof raw[key] !== 'function') delete store[key];
                 }
                 store._initialized = true;
-                store._localeChanging = false;
+                if (latest()) store._localeChanging = false;
                 bumpAllVersions();
+            }
+        } finally {
+            // Early exits (no manifest.data) must not strand the render-ready gate
+            const store = Alpine.store('data');
+            if (latest() && store?._localeChanging) {
+                store._localeChanging = false;
+                checkAndDispatchRenderReady();
             }
         }
     });
@@ -1221,6 +1246,7 @@ window.ManifestDataStore = {
     sourceFreshness,
     // Persistence (§12.2)
     sourceGeneration,
+    isStaleWrite,
     resetSource,
     touchSource,
     bumpAllVersions,

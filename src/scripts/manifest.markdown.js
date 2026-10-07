@@ -645,15 +645,21 @@ async function initializeMarkdownPlugin() {
 
             // Track last processed content to prevent unnecessary re-renders
             let lastProcessedContent = null;
+            // Baked output is protected from empty-value hides only until the
+            // first live render replaces it; after that, clearing the value
+            // hides the element like it always did.
+            let bakedOnly = hasBakedContent;
 
             effect(() => {
                 getMarkdownContent(async (pathOrContent) => {
                     const mdDone = mdTrack();
                     try {
-                    // Reset visibility if content is empty/undefined
+                    // Reset visibility if content is empty/undefined. Baked
+                    // content stays visible: a reactive expression can evaluate
+                    // empty at boot (data still loading), and hiding then would
+                    // blank prerendered output.
                     if (!pathOrContent || pathOrContent === undefined || pathOrContent === '') {
-                        el.style.opacity = '0';
-                        hasContent = false;
+                        if (!bakedOnly) { el.style.opacity = '0'; hasContent = false; }
                         return;
                     }
 
@@ -726,8 +732,7 @@ async function initializeMarkdownPlugin() {
                     // Ensure we have a string (e.g. $route('path')?.content can be a proxy while loading)
                     const contentStr = typeof markdownContent === 'string' ? markdownContent : '';
                     if (!contentStr || contentStr.trim() === '') {
-                        el.style.opacity = '0';
-                        hasContent = false;
+                        if (!bakedOnly) { el.style.opacity = '0'; hasContent = false; }
                         return;
                     }
 
@@ -770,6 +775,7 @@ async function initializeMarkdownPlugin() {
 
                     // Show content with fade-in
                     hasContent = true;
+                    bakedOnly = false;
                     el.style.opacity = '1';
 
                     // Extract headings for anchor links

@@ -9,13 +9,9 @@
 @layer components {
 
     :where([data-text-edit]) {
-        min-height: var(--text-edit-min-height, 8rem);
-        max-height: var(--text-edit-max-height, none);
+        position: relative;
         overflow-y: auto;
-        padding: var(--text-edit-padding, 0.75rem);
-        background: var(--text-edit-background, var(--color-surface-1));
-        border: 1px solid var(--color-line);
-        border-radius: var(--radius);
+        max-height: var(--text-edit-max-height, none);
         outline: none;
 
         /* Page-level styling — set by .page controls, read back by $text.page.
@@ -26,16 +22,77 @@
         text-align: var(--text-edit-align, start);
         color: var(--text-edit-color, inherit);
 
-        &:focus {
-            border-color: var(--color-content-subtle);
-        }
-
         /* Flagged from script: :empty never matches the <br> a contenteditable
-           keeps, and the tag holding it is not predictable after a wipe. */
+           keeps, and the tag holding it is not predictable after a wipe. The
+           placeholder OVERLAYS the first line (it is not a line of its own), so
+           the caret sits on top of it and nothing jumps when typing starts. */
         &[data-text-edit-empty]::before {
             content: attr(placeholder);
+            position: absolute;
+            inset-block-start: var(--text-edit-padding, 0.75rem);
+            inset-inline: var(--text-edit-padding, 0.75rem);
             color: var(--color-content-subtle);
             pointer-events: none;
+        }
+    }
+
+    /* An unstyled area has no field padding, so its placeholder hugs the line. */
+    :where([data-text-edit].unstyle)[data-text-edit-empty]::before {
+        inset-block-start: 0;
+        inset-inline: 0;
+    }
+
+    /* The FIELD look. `.unstyle` drops it so an area can sit seamlessly in a
+       page — a WYSIWYG document inherits its element's own type and colours;
+       everything above (caret custody, placeholder, commands) still works. */
+    :where([data-text-edit]:not(.unstyle)) {
+        min-height: var(--text-edit-min-height, 8rem);
+        padding: var(--text-edit-padding, 0.75rem);
+        background: var(--text-edit-background, var(--color-surface-1));
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+
+        /* Held while the area owns the editing session — a <select> or colour
+           control takes NATIVE focus by design, and the ring must not flicker
+           off while the writer is mid-command. */
+        &:focus,
+        &[data-text-edit-focused] {
+            border-color: var(--color-content-subtle);
+        }
+    }
+
+    /* ---- Selection menu (x-text-edit-menu) ----
+       Positioned by the --text-edit-selection-* variables the plugin writes to
+       :root, so the default needs no script; restyle or reposition freely. */
+    :where([data-text-edit-menu]) {
+        position: fixed;
+        margin: 0;
+        inset: auto;
+        left: var(--text-edit-selection-center);
+        top: var(--text-edit-selection-y);
+        transform: translate(-50%, calc(-100% - 0.5rem));
+        gap: 0.25rem;
+        align-items: center;
+        padding: 0.25rem;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+    }
+
+    /* display only while OPEN: an author display on the base rule would beat
+       the UA's closed-popover display:none, leaving the menu floating fixed
+       over the page before any selection exists. */
+    :where([data-text-edit-menu]:popover-open) {
+        display: flex;
+    }
+
+    /* Without the Popover API the attribute is inert and the menu would render
+       permanently fixed on the page — hide it there; the bubble is progressive
+       enhancement. (In supporting browsers a closed popover is hidden natively.) */
+    @supports not selector(:popover-open) {
+        :where([data-text-edit-menu]) {
+            display: none;
         }
     }
 

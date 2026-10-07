@@ -1,0 +1,138 @@
+# Release the mnfst packages to npm via GitHub Actions OIDC Trusted Publishing.
+#
+# No npm token is stored: npm mints a short-lived credential from the workflow's
+# OIDC identity at publish time, and provenance attestation is generated
+# automatically. One workflow serves every package; each package's npm Trusted
+# Publisher config uses the SAME fields:
+#   Organization or user: Manifest-X   Repository: Manifest
+#   Workflow filename: release.yml      Environment name: (blank)
+#
+# Trigger it two ways:
+#   - Actions tab -> "Release (npm OIDC)" -> Run workflow -> pick a package / "all".
+#   - Push a tag:  v*  publishes mnfst,  render-v*  publishes mnfst-render.
+#     (Tags let an agent trigger a release over git without the GitHub UI.)
+# Version numbers are derived from the npm registry by scripts/release-bump.mjs;
+# the tag name is only a trigger, it does not set the version.
+
+name: Release (npm OIDC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Which package to publish
+        type: choice
+        default: mnfst
+        options:
+          - mnfst
+          - mnfst-render
+          - mnfst-run
+          - mnfst-types
+          - mnfst-test
+          - mnfst-export
+          - mnfst-starter
+          - mnfst-publish
+          - mnfst-docs
+          - all
+  push:
+    tags:
+      - 'v*'          # publishes mnfst
+      - 'render-v*'   # publishes mnfst-render
+      - 'run-v*'      # publishes mnfst-run
+      - 'publish-v*'  # publishes mnfst-publish
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Publish ${{ matrix.pkg }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # REQUIRED for OIDC trusted publishing + provenance
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: mnfst
+            dir: .
+            root: true
+          - pkg: mnfst-render
+            dir: packages/render
+          - pkg: mnfst-run
+            dir: packages/run
+          - pkg: mnfst-types
+            dir: packages/types
+          - pkg: mnfst-test
+            dir: packages/test
+          - pkg: mnfst-export
+            dir: packages/export
+          - pkg: mnfst-starter
+            dir: packages/create-starter
+          - pkg: mnfst-publish
+            dir: packages/publish
+          - pkg: mnfst-docs
+            dir: packages/docs
+    steps:
+      - name: Decide whether this package is selected
+        id: gate
+        run: |
+          EV="${{ github.event_name }}"; REF="${{ github.ref }}"; PKG="${{ matrix.pkg }}"
+          run=false
+          if [ "$EV" = "push" ]; then
+            case "$REF" in
+              refs/tags/render-v*) [ "$PKG" = "mnfst-render" ] && run=true ;;
+              refs/tags/run-v*)     [ "$PKG" = "mnfst-run" ] && run=true ;;
+              refs/tags/publish-v*) [ "$PKG" = "mnfst-publish" ] && run=true ;;
+              refs/tags/v*)        [ "$PKG" = "mnfst" ] && run=true ;;
+            esac
+          elif [ "${{ inputs.package }}" = "all" ] || [ "${{ inputs.package }}" = "$PKG" ]; then
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm (Trusted Publishing needs npm >= 11.5.1)
+        if: steps.gate.outputs.run == 'true'
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: npm ci
+
+      - name: Bump version from registry (registry-latest + 1 patch)
+        if: steps.gate.outputs.run == 'true'
+        run: node scripts/release-bump.mjs ${{ matrix.dir }}
+
+      - name: Build library (root mnfst only; lib/ from src/)
+        if: steps.gate.outputs.run == 'true' && matrix.root == true
+        run: npm run build
+
+      - name: Publish (OIDC, with provenance)
+        if: steps.gate.outputs.run == 'true'
+        working-directory: ${{ matrix.dir }}
+        # Surface the npm error as a workflow annotation: run logs need a
+        # signed-in viewer, annotations are public, so an agent can diagnose a
+        # failed release without GitHub credentials.
+        run: |
+          set -o pipefail
+          if ! npm publish --provenance --access public 2>&1 | tee /tmp/publish.log; then
+            tail -n 15 /tmp/publish.log | while IFS= read -r line; do echo "::error title=npm publish (${{ matrix.pkg }})::${line}"; done
+            exit 1
+          fi
+
+      - name: Warm CDN (root mnfst only; best-effort, never fails the release)
+        if: steps.gate.outputs.run == 'true' && matrix.root == true
+        run: node scripts/cdn-warm.mjs
+        continue-on-error: true

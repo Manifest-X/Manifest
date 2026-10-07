@@ -13,6 +13,32 @@ function initializeAuthStore() {
 
     // Cross-tab synchronization using localStorage events
     const STORAGE_KEY = 'manifest:auth:state';
+    // Cap on holding scoped data for a guest/callback sign-in that may fail
+    const SIGN_IN_PENDING_MS = 5000;
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._authEpoch++; markVerified(store); } }));
+
+    // Unverified session: recheck on reconnect, on return to the tab, and on a bounded backoff
+    const RECHECK_DELAYS_MS = [2000, 5000, 15000, 60000];
+    const recheck = () => { Alpine.store('auth')?._recheckSession?.(); };
+    window.addEventListener('online', recheck);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') recheck(); });
+
+    function markVerified(store) {
+        store._sessionUnverified = false;
+        store._recheckAttempt = 0;
+        if (store._recheckTimer) { clearTimeout(store._recheckTimer); store._recheckTimer = null; }
+    }
+
+    function scheduleRecheck(store) {
+        if (!store._sessionUnverified || store._recheckTimer) return;
+        const delay = RECHECK_DELAYS_MS[Math.min(store._recheckAttempt++, RECHECK_DELAYS_MS.length - 1)];
+        store._recheckTimer = setTimeout(() => { store._recheckTimer = null; store._recheckSession(); }, delay);
+    }
+
+    // Appwrite's "no session" answer; anything else (offline, 5xx) leaves the session unknown
+    const NO_SESSION_TYPES = ['general_unauthorized_scope', 'user_unauthorized', 'user_session_not_found', 'user_jwt_invalid', 'user_not_found', 'user_blocked'];
+    const isNoSession = error => error?.code === 401 || NO_SESSION_TYPES.includes(error?.type);
 
     // Session fields safe to mirror across tabs. Excludes `secret` and provider
     // tokens — this copy is only for UI cross-tab sync, not the auth of record.
@@ -38,7 +64,10 @@ function initializeAuthStore() {
                 const state = JSON.parse(e.newValue);
                 const store = Alpine.store('auth');
                 if (store) {
+                    const prevId = store.user?.$id || null;
                     // Update store state from other tab
+                    store._authEpoch++;
+                    if (state.isAuthenticated) markVerified(store);
                     store.isAuthenticated = state.isAuthenticated;
                     store.isAnonymous = state.isAnonymous;
                     store.user = state.user;
@@ -47,7 +76,18 @@ function initializeAuthStore() {
                     store.magicLinkExpired = state.magicLinkExpired || false;
                     store.otpSent = state.otpSent || false;
                     store.otpExpired = state.otpExpired || false;
+                    // A code row shown here must be verifiable here
+                    if (state.otpSent && state.otpUserId) store._otpUserId = state.otpUserId;
                     store.error = state.error;
+                    // Identity ended or changed in another tab: scoped data must drop this tab's rows
+                    const nextId = state.isAuthenticated ? (state.user?.$id || null) : null;
+                    if (prevId && nextId !== prevId) {
+                        if (!nextId) {
+                            store.teams = [];
+                            store.currentTeam = null;
+                        }
+                        window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                    }
                 }
             } catch (error) {
                 // Failed to sync state from other tab
@@ -57,6 +97,8 @@ function initializeAuthStore() {
 
     // Helper to sync state to localStorage (for cross-tab communication)
     function syncStateToStorage(store) {
+        // An unverified signed-out state must not sign other tabs out
+        if (store._sessionUnverified && !store.isAuthenticated) return;
         try {
             const state = {
                 isAuthenticated: store.isAuthenticated,
@@ -67,6 +109,7 @@ function initializeAuthStore() {
                 magicLinkExpired: store.magicLinkExpired,
                 otpSent: store.otpSent,
                 otpExpired: store.otpExpired,
+                otpUserId: store.otpSent ? store._otpUserId : null,
                 error: store.error
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -84,10 +127,11 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
-        otpSent: false, // Email OTP: a code has been emailed and is awaiting entry
-        otpExpired: false, // Email OTP: the entered code was wrong/expired
-        otpPhrase: null, // Email OTP: security phrase to display (when enabled)
-        _otpUserId: null, // Email OTP: userId returned by createEmailToken, used by verifyOTP
+        otpSent: false, // OTP (email/phone): a code has been sent and is awaiting entry
+        otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
+        otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
+        _otpUserId: null, // OTP: userId returned by createEmailToken/createPhoneToken, used by verifyOTP
+        _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
@@ -135,6 +179,11 @@ function initializeAuthStore() {
         _appwrite: null,
         _guestAuto: false,
         _guestManual: false,
+        _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
+        _sessionUnverified: false, // init could not reach Appwrite: signed out locally, never broadcast
+        _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
+        _recheckTimer: null,
+        _recheckAttempt: 0,
         guestManualEnabled: false,
         _oauthProvider: null, // Store OAuth provider name (google, github, etc.) when login is initiated
         _syncStateToStorage: syncStateToStorage,
@@ -340,57 +389,18 @@ function initializeAuthStore() {
 
                 // Try to restore existing session
                 try {
-                    this.user = await appwrite.account.get();
-                    const sessionsResponse = await appwrite.account.listSessions();
-                    const allSessions = sessionsResponse.sessions || [];
-                    const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
-
-                    if (currentSession) {
-                        this.session = currentSession;
-                        this.isAuthenticated = true;
-                        this.isAnonymous = currentSession.provider === 'anonymous';
-
-                        // Restore OAuth provider from storage (persists across redirects/refresh)
-                        if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
-                            try {
-                                // Try localStorage first (persists across redirects), fallback to sessionStorage
-                                let storedProvider = localStorage.getItem('manifest:oauth:provider');
-                                if (!storedProvider) {
-                                    storedProvider = sessionStorage.getItem('manifest:oauth:provider');
-                                }
-                                if (storedProvider) {
-                                    this._oauthProvider = storedProvider;
-                                }
-                            } catch (e) {
-                                // Storage error
-                            }
-                        }
-
-                        // If guest is disabled but we have anonymous session, clear it
-                        if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
-                            try {
-                                await appwrite.account.deleteSession(this.session.$id);
-                                this.isAuthenticated = false;
-                                this.isAnonymous = false;
-                                this.user = null;
-                                this.session = null;
-                            } catch (deleteError) {
-                                // Failed to delete guest session
-                            }
-                        }
-                    } else {
-                        this.isAuthenticated = true; // User exists, session might be managed by cookies
-                        this.isAnonymous = false;
-                    }
+                    await this._restoreSession(appwrite);
 
                     // Team loading is deferred (not awaited) — runs in the background after
                     // manifest:auth:initialized so a session gate isn't held up by it.
                 } catch (error) {
-                    // No existing session - this is expected
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
-                    this.user = null;
-                    this.session = null;
+                    this._clearIdentity();
+                    // Signed out for now; other tabs keep their session
+                    if (!isNoSession(error)) {
+                        this._sessionUnverified = true;
+                        scheduleRecheck(this);
+                        console.warn('[Manifest Appwrite Auth] Session check failed (signed out until reachable):', error?.message || error);
+                    }
                 }
 
                 // Sync state to localStorage
@@ -405,6 +415,17 @@ function initializeAuthStore() {
                 this.inProgress = false;
                 this._initialized = true;
                 this._initializing = false;
+
+                // Guest-auto / callback sign-in follows: scoped data holds instead of flashing signed-out
+                if (!this.isAuthenticated) {
+                    let callback = false;
+                    try {
+                        // Team invites need an existing session (acceptInvite refuses signed-out), so they don't sign in
+                        const info = window.ManifestAppwriteAuthCallbacks?.detect?.();
+                        callback = !!(info?.hasCallback && !info.isTeamInvite);
+                    } catch (e) { /* no-op */ }
+                    if (this._guestAuto || callback) this._signInPendingUntil = Date.now() + SIGN_IN_PENDING_MS;
+                }
 
                 // Fire as soon as identity is known, before teams load, so a session
                 // gate / splash clears in a few hundred ms.
@@ -426,6 +447,95 @@ function initializeAuthStore() {
                     })))
                     .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
             }
+        },
+
+        // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
+        async _restoreSession(appwrite, isCurrent = () => true) {
+            const user = await appwrite.account.get();
+            const sessionsResponse = await appwrite.account.listSessions();
+            if (!isCurrent()) return false;
+            this.user = user;
+            const allSessions = sessionsResponse.sessions || [];
+            const currentSession = allSessions.find(s => s.current === true) || allSessions[0];
+
+            if (currentSession) {
+                this.session = currentSession;
+                this.isAuthenticated = true;
+                this.isAnonymous = currentSession.provider === 'anonymous';
+
+                // Restore OAuth provider from storage (persists across redirects/refresh)
+                if (!this.isAnonymous && currentSession.provider !== 'magic-url') {
+                    try {
+                        // Try localStorage first (persists across redirects), fallback to sessionStorage
+                        let storedProvider = localStorage.getItem('manifest:oauth:provider');
+                        if (!storedProvider) {
+                            storedProvider = sessionStorage.getItem('manifest:oauth:provider');
+                        }
+                        if (storedProvider) {
+                            this._oauthProvider = storedProvider;
+                        }
+                    } catch (e) {
+                        // Storage error
+                    }
+                }
+
+                // If guest is disabled but we have anonymous session, clear it
+                if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
+                    try {
+                        await appwrite.account.deleteSession(this.session.$id);
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                        this.user = null;
+                        this.session = null;
+                    } catch (deleteError) {
+                        // Failed to delete guest session
+                    }
+                }
+            } else {
+                this.isAuthenticated = true; // User exists, session might be managed by cookies
+                this.isAnonymous = false;
+            }
+            return true;
+        },
+
+        // Offline-booted tab: re-run the session check once Appwrite is reachable
+        async _recheckSession() {
+            if (!this._sessionUnverified || this._rechecking || !this._appwrite) return;
+            if (this._recheckTimer) { clearTimeout(this._recheckTimer); this._recheckTimer = null; }
+            this._rechecking = true;
+            const epoch = this._authEpoch;
+            const current = () => this._authEpoch === epoch && this._sessionUnverified && !this.isAuthenticated;
+            try {
+                if (!await this._restoreSession(this._appwrite, current)) return;
+            } catch (error) {
+                if (!current()) return;
+                if (!isNoSession(error)) { scheduleRecheck(this); return; }
+                this._clearIdentity();
+                markVerified(this);
+                syncStateToStorage(this);
+                if (this._guestAuto && this._createAnonymousSession) await this._createAnonymousSession();
+                return;
+            } finally {
+                this._rechecking = false;
+            }
+            markVerified(this);
+            const cfg = await config.getAppwriteConfig();
+            if (this._authEpoch !== epoch) return;
+            if (this.isAuthenticated && cfg?.teams && (!this.isAnonymous || cfg.guestTeams)) {
+                try { await this._loadTeamsAndSeed(cfg); } catch (e) { console.warn('[Manifest Appwrite Auth] Team load failed:', e?.message || e); }
+                if (this._authEpoch !== epoch) return;
+            }
+            syncStateToStorage(this);
+            if (this.isAuthenticated) {
+                window.dispatchEvent(new CustomEvent(this.isAnonymous ? 'manifest:auth:anonymous' : 'manifest:auth:login', { detail: { user: this.user } }));
+            }
+        },
+
+        _clearIdentity() {
+            this.isAuthenticated = false;
+            this.isAnonymous = false;
+            this.user = null;
+            this.session = null;
         },
 
         // Clear team state when the identity changes to a different user (e.g. guest
@@ -594,11 +704,16 @@ function initializeAuthStore() {
                 return { success: false, error: 'Appwrite not configured' };
             }
 
+            // A ticket kept from a failed guest OTP must not outlive an explicit logout
+            this._otpMigrationTicket = null;
+
             // If not authenticated, nothing to logout from
             if (!this.isAuthenticated) {
                 return { success: true };
             }
 
+            this._authEpoch++;
+            markVerified(this);
             this.inProgress = true;
 
             try {
@@ -620,7 +735,7 @@ function initializeAuthStore() {
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
 
-                // Clear email OTP flags
+                // Clear OTP flags (email/phone)
                 this.otpSent = false;
                 this.otpExpired = false;
                 this.otpPhrase = null;
@@ -642,15 +757,12 @@ function initializeAuthStore() {
 
                 // Restore to guest state after logout (guest-auto only, and not when
                 // already a guest — don't mint a new guest on top).
+                let restored = false;
                 if (!this.isAnonymous && this._guestAuto && this._createAnonymousSession) {
                     await this._createAnonymousSession();
-                } else {
-                    // Clear auth state completely
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
-                    this.user = null;
-                    this.session = null;
+                    restored = this.isAuthenticated && this.isAnonymous;
                 }
+                if (!restored) this._clearIdentity();
 
                 syncStateToStorage(this);
                 window.dispatchEvent(new CustomEvent('manifest:auth:logout'));
@@ -688,6 +800,10 @@ function initializeAuthStore() {
                 // Clear teams on logout error too
                 this.teams = [];
                 this.currentTeam = null;
+                if (!this.isAuthenticated) this._clearIdentity();
+                // Expired session (401) is still a logout: scoped data must drop the old rows
+                syncStateToStorage(this);
+                window.dispatchEvent(new CustomEvent('manifest:auth:logout'));
                 return { success: false, error: error.message };
             } finally {
                 this.inProgress = false;
@@ -700,6 +816,8 @@ function initializeAuthStore() {
                 return { success: false, error: 'Appwrite not configured' };
             }
 
+            this._authEpoch++;
+            markVerified(this);
             this.inProgress = true;
 
             try {
@@ -739,6 +857,10 @@ function initializeAuthStore() {
                 this.session = null;
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
+                this.teams = [];
+                this.currentTeam = null;
+                syncStateToStorage(this);
+                window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
                 return { success: false, error: error.message };
             } finally {
                 this.inProgress = false;
@@ -753,10 +875,12 @@ function initializeAuthStore() {
 
             try {
                 this.user = await this._appwrite.account.get();
+                if (this.isAuthenticated) markVerified(this);
                 syncStateToStorage(this);
                 return this.user;
             } catch (error) {
-                // Session may have expired
+                if (!isNoSession(error)) throw error;
+                markVerified(this);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
                 this.user = null;

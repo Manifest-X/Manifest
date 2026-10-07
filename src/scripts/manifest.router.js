@@ -333,26 +333,7 @@ async function handleRouteChange() {
     if (!window.location.hash) {
         setTimeout(() => {
             window.scrollTo({ top: 0, behavior: 'smooth' });
-
-            // Also reset any scrollable containers.
-            const potentialContainers = document.querySelectorAll('div, main, section, article, aside, nav, header, footer, .prose');
-            potentialContainers.forEach(element => {
-                const computedStyle = window.getComputedStyle(element);
-                const isScrollable = (
-                    computedStyle.overflowY === 'auto' ||
-                    computedStyle.overflowY === 'scroll' ||
-                    computedStyle.overflow === 'auto' ||
-                    computedStyle.overflow === 'scroll'
-                ) && element.scrollHeight > element.clientHeight;
-
-                if (isScrollable) {
-                    element.scrollTop = 0;
-                }
-            });
-        }, 50);
-    } else {
-        setTimeout(() => {
-            // Let the browser scroll to the anchor once content has loaded.
+            resetScrolledContainers();
         }, 50);
     }
 
@@ -377,6 +358,51 @@ async function handleRouteChange() {
     }
 }
 
+// Scroll containers reset on route change. Only elements that fired a scroll
+// event can be off top, so track those instead of sweeping the document.
+const SCROLL_CONTAINER_SELECTOR = 'div, main, section, article, aside, nav, header, footer, .prose';
+const scrolledContainers = new Set();
+// Loaded after parse began → elements may have scrolled unseen; first reset sweeps once
+let scrollSweepPending = document.readyState !== 'loading';
+
+document.addEventListener('scroll', (event) => {
+    const el = event.target;
+    if (!el || el.nodeType !== 1 || scrolledContainers.has(el)) return;
+    // Prune detached entries so long single-route sessions don't retain them
+    if (scrolledContainers.size >= 64) {
+        for (const tracked of scrolledContainers) if (!tracked.isConnected) scrolledContainers.delete(tracked);
+    }
+    scrolledContainers.add(el);
+}, { capture: true, passive: true });
+
+// True when done with the element: reset, or rendered and nothing to reset.
+// A container under a hidden route reads scrollTop 0 but keeps its offset: stay tracked.
+// data-scroll-keep (on the container or an ancestor) opts out of every reset.
+function resetContainer(element) {
+    if (element.closest('[data-scroll-keep]')) return false;
+    if (!element.getClientRects().length) return false;
+    if (!element.scrollTop) return true;
+    const computedStyle = window.getComputedStyle(element);
+    const isScrollable = (
+        computedStyle.overflowY === 'auto' ||
+        computedStyle.overflowY === 'scroll' ||
+        computedStyle.overflow === 'auto' ||
+        computedStyle.overflow === 'scroll'
+    ) && element.scrollHeight > element.clientHeight;
+    if (isScrollable) element.scrollTop = 0;
+    return true;
+}
+
+function resetScrolledContainers() {
+    if (scrollSweepPending) {
+        scrollSweepPending = false;
+        document.querySelectorAll(SCROLL_CONTAINER_SELECTOR).forEach(resetContainer);
+    }
+    for (const element of scrolledContainers) {
+        if (!element.isConnected || !element.matches(SCROLL_CONTAINER_SELECTOR) || resetContainer(element)) scrolledContainers.delete(element);
+    }
+}
+
 // Whether SPA route changes run inside a View Transition. Priority:
 // data-no-view-transitions → off, data-view-transitions → on, else auto
 // (on under VT_AUTO_THRESHOLD elements). Auto threshold: VT rasterizes the
@@ -393,7 +419,7 @@ function shouldUseViewTransition() {
     if (html.hasAttribute('data-no-view-transitions')) return false;
     if (html.hasAttribute('data-view-transitions')) return true;
     try {
-        return document.querySelectorAll('*').length < VT_AUTO_THRESHOLD;
+        return !document.getElementsByTagName('*')[VT_AUTO_THRESHOLD - 1];
     } catch {
         return false;
     }
@@ -739,13 +765,14 @@ function isRouteActive(element, normalizedPath) {
 // Activation hook fires before the route becomes visible so deferred content renders first
 function showRoute(element) {
     element.dispatchEvent(new CustomEvent('manifest:route-activate'));
-    element.removeAttribute('hidden');
-    element.style.display = '';
+    if (element.hasAttribute('hidden')) element.removeAttribute('hidden');
+    if (element.style.display) element.style.display = '';
 }
 
+// Skip no-op writes: each one is a mutation record for every observer
 function hideRoute(element) {
-    element.setAttribute('hidden', '');
-    element.style.display = 'none';
+    if (!element.hasAttribute('hidden')) element.setAttribute('hidden', '');
+    if (element.style.display !== 'none') element.style.display = 'none';
 }
 
 // Process visibility for all elements with x-route
@@ -830,11 +857,9 @@ window.ManifestRoutingVisibility = {
 
 // Router head
 
-function isPrerenderedStaticMPA() {
+// Prerendered MPA output has route head content baked in
+function headIsPrerenderedMPA() {
     try {
-        if (window.ManifestRoutingVisibility && typeof window.ManifestRoutingVisibility.isPrerenderedStaticMPA === 'function') {
-            return window.ManifestRoutingVisibility.isPrerenderedStaticMPA();
-        }
         return document.querySelector('meta[name="manifest:prerendered"][content="1"]') !== null;
     } catch (e) {
         return false;
@@ -996,26 +1021,10 @@ function processElementHeadContent(element, normalizedPath) {
 
 // Process all head content in the DOM
 function processAllHeadContent(normalizedPath) {
-    if (isPrerenderedStaticMPA()) return;
+    if (headIsPrerenderedMPA()) return;
 
     // Find all elements with head templates
     const elementsWithHead = document.querySelectorAll('template[data-head]');
-
-    // Debug: Let's see what's actually in the DOM
-    const allTemplates = document.querySelectorAll('template');
-    allTemplates.forEach((template, index) => {
-        if (template.hasAttribute('data-head')) {
-        } else {
-            // Check if this might be the about template
-            if (template.getAttribute('x-route') === 'about') {
-            }
-        }
-    });
-
-    // Also try a more specific selector to see if we can find the about template
-    const aboutTemplate = document.querySelector('template[x-route="about"]');
-    if (aboutTemplate) {
-    }
 
     // Process each element's head content
     elementsWithHead.forEach((template, index) => {
@@ -1075,19 +1084,9 @@ function initializeHeadContent() {
     function processHeadContentAfterComponentsReady() {
         // Process initial head content after a longer delay to let components settle
         setTimeout(() => {
-            if (isPrerenderedStaticMPA()) return;
+            if (headIsPrerenderedMPA()) return;
             const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
             const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-
-            // Debug: Check if about component exists
-            const aboutComponent = document.querySelector('[data-component="about-1"]');
-            if (aboutComponent) {
-            }
-
-            // Debug: Check what placeholders exist
-            const placeholders = document.querySelectorAll('x-about, x-home, x-ui');
-            placeholders.forEach((placeholder, index) => {
-            });
 
             processAllHeadContent(normalizedPath);
         }, 200);
@@ -1095,7 +1094,7 @@ function initializeHeadContent() {
 
     // Function to process head content immediately (for projects without components)
     function processHeadContentImmediately() {
-        if (isPrerenderedStaticMPA()) return;
+        if (headIsPrerenderedMPA()) return;
         const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
         const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
         processAllHeadContent(normalizedPath);
@@ -1129,20 +1128,10 @@ function initializeHeadContent() {
 
         // Wait a bit for components to settle after route change
         setTimeout(() => {
-            if (isPrerenderedStaticMPA()) return;
+            if (headIsPrerenderedMPA()) return;
             // Process head content immediately to catch components before they're reverted
             const currentPath = window.ManifestRoutingNavigation?.getCurrentRoute() ?? window.location.pathname;
             const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-
-            // Debug: Check if about component exists
-            const aboutComponent = document.querySelector('[data-component="about-1"]');
-            if (aboutComponent) {
-            }
-
-            // Debug: Check what placeholders exist
-            const placeholders = document.querySelectorAll('x-about, x-home, x-ui');
-            placeholders.forEach((placeholder, index) => {
-            });
 
             processAllHeadContent(normalizedPath);
         }, 100);

@@ -27,7 +27,12 @@
         return el && el.parentElement === area ? el : null;
     }
 
-    const blockArea = (el) => el && el.closest('[data-edit-area]');
+    // The region a block BELONGS TO — from the parent, so a block that is itself an
+    // x-edit region resolves to its outer region, never to itself.
+    const blockArea = (el) => el && el.parentElement && el.parentElement.closest('[data-edit-area]');
+    // A block that is itself an x-edit region owns its own delta addressing; moving
+    // it across regions is refused (reordering it within its parent still works).
+    const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
 
     // Markup without the plugin's own affordances, so a duplicate re-arms cleanly
     // rather than inheriting half-initialised state from its original.
@@ -71,6 +76,7 @@
         const block = el || target;
         if (op === 'paste') return !!clipboard && !!(block ? blockArea(block) : areas().find(isActive));
         if (!block || locked(block)) return false;
+        if (op === 'move' && isRegionBlock(block)) return false;
         const area = blockArea(block);
         if (!area || !isActive(area)) return false;
         if (classify(area) === 'component') return false;          // instances are overridden, not restructured
@@ -79,7 +85,9 @@
 
     function copyBlock(el) {
         const block = el || target; if (!block) return false;
-        clipboard = { html: blockHTML(block), source: key(blockArea(block)) };
+        const area = blockArea(block);
+        if (!area) return false;                    // a whole region is a container, not a copyable block
+        clipboard = { html: blockHTML(block), source: key(area) };
         bump();
         return true;
     }
@@ -124,6 +132,23 @@
     }
 
     const cutBlock = (el) => copyBlock(el) && removeBlock(el);
+
+    // Programmatic cross-region move (what a pointer drag commits): insert the block
+    // into `dest` (area element or x-edit key) before `ref`, or at the end.
+    function moveBlock(el, dest, ref) {
+        const block = el ? blockOf(el) || el : target; if (!block || locked(block) || isRegionBlock(block)) return false;
+        const from = blockArea(block);
+        const to = typeof dest === 'string' ? areaByKey(dest) : dest;
+        if (!from || !to || to === from || !to._edit) return false;
+        if (!topArea(from) || !topArea(to)) return false;   // a nested region can't persist a move — refuse, never drop it silently
+        if (!isActive(from) || !isActive(to) || locked(to)) return false;
+        if (classify(from) !== 'static' || classify(to) !== 'static' || !capOf(to, 'sort')) return false;
+        if (block === to || block.contains(to)) return false;
+        if (ref && ref.parentElement !== to) ref = null;
+        if (ref) to.insertBefore(block, ref); else to.appendChild(block);
+        commitMove(from, to, block);
+        return true;
+    }
 
     function pasteBlock(el) {
         if (!clipboard) return false;
