@@ -81,8 +81,11 @@ function authSettledUnresolvable(manifest) {
     return auth._initialized === true && auth.isAuthenticated === true && teamsSettled(auth, manifest);
 }
 
-function isAuthDependent(config) {
+// Rows depend on who reads them: scope / $auth. queries, or any Appwrite table/bucket (row/file permissions).
+// Reset on identity change only; whether a read needs an identity is buildAppwriteQueries' call (null = wait).
+function isIdentityBound(config) {
     if (!config || typeof config !== 'object') return false;
+    if (window.ManifestDataConfig?.isAppwriteCollection?.(config)) return true;
     if (window.ManifestDataConfig?.getScope?.(config)) return true;
     try { return JSON.stringify(config.queries || '').includes('$auth.'); } catch { return false; }
 }
@@ -98,7 +101,7 @@ function setupAuthResetListener() {
         const configs = { ...(manifest.appwrite || {}), ...(manifest.data || {}) };
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
-            if (!isAuthDependent(config) || raw[`_${name}_state`] === undefined) continue;
+            if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
             window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
             ds.resetSource(name);
             loadDataSource(name, locale, { reload: true });

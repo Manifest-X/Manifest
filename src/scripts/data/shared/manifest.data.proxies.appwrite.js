@@ -1080,10 +1080,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
                     return null;
                 } else if (method === '$remove') {
-                    // Convenience method: delete file with automatic bucket reload and entry unlinking
+                    // Delete file(s), drop them from the source, unlink from table entries
                     // Usage: $x.assets.$remove(fileId)
-                    // Automatically reloads the entire assets bucket and unlinks from table entries
-                    // This is an alias for $delete with the same auto-reload functionality
                     const fileId = args[0];
                     if (!fileId) {
                         throw new Error('[Manifest Data] $remove requires file ID');
@@ -1101,20 +1099,15 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         // Continue with delete even if unlink fails
                     }
 
-                    // Delete file(s) and reload in parallel for speed
-                    const deletePromise = Array.isArray(fileId)
-                        ? Promise.all(fileId.map(id => window.ManifestDataAppwrite.deleteFile(bucketId, id.$id || id)))
-                        : window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
-
+                    const deletedIds = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id.$id || id);
                     const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
-                    const reloadPromise = window.ManifestDataAppwrite.listBucketFiles(bucketId, []);
+                    const result = Array.isArray(fileId)
+                        ? await Promise.all(deletedIds.map(id => window.ManifestDataAppwrite.deleteFile(bucketId, id)))
+                        : await window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
 
-                    // Do delete and reload in parallel
-                    const [result, reloadedData] = await Promise.all([deletePromise, reloadPromise]);
-
-                    // Network landing: reloaded bucket listing replaces the source (coalesced)
-                    if (reloadedData && window.ManifestDataStore?.landRows) {
-                        await window.ManifestDataStore.landRows(dataSourceName, reloadedData, { mode: 'replace', generation });
+                    // Drop the deleted file(s) locally: a relisting would bypass the source's queries and scope
+                    if (window.ManifestDataStore?.landRemove) {
+                        await window.ManifestDataStore.landRemove(dataSourceName, deletedIds, { generation });
                     }
 
                     // Reload affected table data sources so fileIds arrays and counters

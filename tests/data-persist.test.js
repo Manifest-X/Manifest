@@ -586,6 +586,54 @@ describe('auth-dependent sources without persistence.scope', () => {
     })
 })
 
+describe('permission-scoped Appwrite sources (no scope, no $auth. query)', () => {
+    const permManifest = () => ({ data: { projects: { appwriteTableId: 'projects', persist: true } } })
+    const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
+    const signedOut = () => ({ _initialized: true, isAuthenticated: false, user: null })
+    const offline = () => ({ ...signedOut(), _sessionUnverified: true })
+    beforeEach(() => {
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => [] }
+        window.ManifestDataAppwrite = { loadTableRows: async () => { const who = Alpine.store('auth')?.user?.$id || 'anon'; return rows(`${who}-`, 1) } }
+    })
+    afterEach(() => { delete window.ManifestDataQueries; delete window.ManifestDataAppwrite })
+
+    it('snapshots are stamped with the identity they were read under', async () => {
+        const { main, persist, records } = await load({ manifest: permManifest(), auth: signedIn('u7') })
+        await main.loadDataSource('projects')
+        await persist.flushPending()
+        expect(records().map(r => [r.key, r.identity])).toEqual([['|projects', 'u7']])
+    })
+
+    it("a guest boot never hydrates the previous user's snapshot, and drops it", async () => {
+        idb.seed(DB(), record('', 'projects', rows('a', 2), { identity: 'u1' }))
+        const { data, records } = await load({ manifest: permManifest(), auth: signedOut() })
+        await settle(40)
+        expect(ids(data().projects)).not.toContain('a0')
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+
+    it("another user's boot never hydrates it either", async () => {
+        idb.seed(DB(), record('', 'projects', rows('a', 2), { identity: 'u1' }))
+        const { data } = await load({ manifest: permManifest(), auth: signedIn('u2') })
+        await settle(40)
+        expect(ids(data().projects)).not.toContain('a0')
+    })
+
+    it('an offline boot keeps the snapshot and shows it once the session confirms the same user', async () => {
+        idb.seed(DB(), record('', 'projects', rows('a', 2), { identity: 'u1' }))
+        const { data, auth, dispatch, gate, records } = await load({ manifest: permManifest(), auth: offline() })
+        await settle(40)
+        expect(ids(data().projects)).not.toContain('a0')
+        expect(records().map(r => r.identity)).toEqual(['u1'])
+        const open = gate()
+        Object.assign(auth(), signedIn('u1'), { _sessionUnverified: false })
+        dispatch('manifest:auth:login')
+        await settle(40)
+        expect(ids(data().projects)).toEqual(['a0', 'a1'])
+        open()
+    })
+})
+
 describe('diagnostics', () => {
     it('ManifestData.persistence() reports scope, tiers, row counts and staleness', async () => {
         const savedAt = Date.now() - 1000

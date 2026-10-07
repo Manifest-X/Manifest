@@ -52,10 +52,10 @@
     const liveLocale = () => (typeof document !== 'undefined' && document.documentElement?.lang)
         || (typeof Alpine !== 'undefined' && Alpine.store?.('locale')?.current) || 'en';
 
-    // Auth-dependent sources (scope / $auth. queries) carry the identity they were read under
+    // Auth-dependent sources (Appwrite tables/buckets, scope / $auth. queries) carry the identity they were read under
     function isAuthDependent(source) {
         if (!source || typeof source !== 'object') return false;
-        if (source.scope) return true;
+        if (source.scope || source.appwriteTableId || source.appwriteBucketId) return true;
         try { return JSON.stringify(source.queries || '').includes('$auth.'); } catch { return false; }
     }
 
@@ -178,6 +178,7 @@
     function register(source, config) {
         const cfg = normalizeConfig(config === undefined ? true : config);
         if (!cfg) { state.sources.delete(source); return false; }
+        cfg.authDependent = isAuthDependent(state.manifest?.data?.[source]);
         state.sources.set(source, cfg);
         state.hydrated.delete(source);
         state.fetchKicked.delete(source);

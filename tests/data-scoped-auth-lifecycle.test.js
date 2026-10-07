@@ -410,7 +410,7 @@ describe('logout races (in-flight loads, realtime, re-login)', () => {
         }
     })
 
-    it('an unscoped source is untouched by logout; an $auth.-query source is reset', async () => {
+    it('an unscoped Appwrite source reloads as the new identity on logout; an $auth.-query source is reset', async () => {
         const { net, main } = await load(signedIn('u1'), null, { extra: { ...MINE, pub: { appwriteTableId: 'pub', appwriteDatabaseId: 'db' } } })
         await main.loadDataSource('pub')
         await main.loadDataSource('mine')
@@ -418,9 +418,24 @@ describe('logout races (in-flight loads, realtime, re-login)', () => {
         const before = net.tableCalls
         logout()
         await settle(80)
-        expect(net.tableCalls).toBe(before)
-        expect(Array.from(Alpine.store('data').pub).length).toBe(2)
+        expect(net.tableCalls).toBe(before + 1)
+        expect(Array.from(Alpine.store('data').pub).map(r => r.$id)).toEqual(['anon-0', 'anon-1'])
         expect(mineIds()).toEqual([])
+    })
+
+    it('a non-Appwrite source without $auth. is untouched by logout', async () => {
+        let calls = 0
+        window.ManifestDataLoaders = { loadLocalFile: async () => { calls++; return [{ $id: 'k' }] } }
+        await load(signedIn('u1'), null, { extra: { list: 'list.json' } })
+        await window.ManifestDataMain.loadDataSource('list')
+        await settle(60)
+        const before = calls
+        expect(Array.from(Alpine.store('data').list).length).toBe(1)
+        logout()
+        await settle(80)
+        expect(calls).toBe(before)
+        expect(Array.from(Alpine.store('data').list).length).toBe(1)
+        delete window.ManifestDataLoaders
     })
 })
 
@@ -1034,5 +1049,88 @@ describe('overlapping locale changes', () => {
         await settle(500)
         expect(Alpine.store('data')._localeChanging).toBe(false)
         expect(ready.length).toBe(1)
+    })
+})
+
+describe('permission-scoped sources (no scope, no $auth. query)', () => {
+    const PERM_FILES = { files: { appwriteBucketId: 'files' } }
+    const tagged = () => { const who = Alpine.store('auth').user?.$id || 'anon'; return [{ $id: `${who}-file` }] }
+
+    it("logout drops the previous user's table rows and reloads as the new identity", async () => {
+        const { net, ids, state, main } = await load(signedIn('u1'), undefined)
+        await main.loadDataSource('projects')
+        await settle(60)
+        expect(ids()).toEqual(['u1-0', 'u1-1'])
+
+        logout()
+        await settle(80)
+        expect(ids()).toEqual(['anon-0', 'anon-1'])
+        expect(state().ready).toBe(true)
+        expect(net.tableCalls).toBe(2)
+    })
+
+    it("session-cleared drops an unscoped bucket's files", async () => {
+        await load(signedIn('u1'), undefined, { extra: PERM_FILES, listFiles: async () => tagged() })
+        await window.ManifestDataMain.loadDataSource('files')
+        await settle(60)
+        expect(fileIds()).toEqual(['u1-file'])
+
+        logout(signedOut(), 'manifest:auth:session-cleared')
+        await settle(80)
+        expect(fileIds()).toEqual(['anon-file'])
+    })
+
+    it('a public table still renders its rows for a signed-out visitor (never settles empty)', async () => {
+        const { net, ids, state, main } = await load(signedOut(), undefined)
+        await main.loadDataSource('projects')
+        await settle(60)
+        expect(ids()).toEqual(['anon-0', 'anon-1'])
+        expect(state().ready).toBe(true)
+        expect(net.tableCalls).toBe(1)
+    })
+
+    it('a public table loaded signed out reloads after a later logout (guest restored)', async () => {
+        const { net, ids, main } = await load(signedOut(), undefined)
+        await main.loadDataSource('projects')
+        await settle(60)
+        logout({ ...signedOut(), isAuthenticated: true, isAnonymous: true, user: { $id: 'g1' } })
+        await settle(80)
+        expect(ids()).toEqual(['g1-0', 'g1-1'])
+        expect(net.tableCalls).toBe(2)
+    })
+})
+
+describe('bucket $remove keeps the source filter', () => {
+    it("refreshes without an unfiltered listing: other users' readable files never appear", async () => {
+        window.Appwrite = { Query: { equal: (attr, value) => JSON.stringify(['equal', attr, value]) } }
+        const all = [{ $id: 'u1-file', ownerId: 'u1' }, { $id: 'u1-other', ownerId: 'u1' }, { $id: 'shared-file', ownerId: 'u2' }]
+        const listings = []
+        await load(signedIn('u1'), null, {
+            extra: FILES,
+            listFiles: async (bucket, queries) => {
+                listings.push(queries.length)
+                return queries.length ? all.filter(f => f.ownerId === 'u1') : all.slice()
+            }
+        })
+        await window.ManifestDataMain.loadDataSource('files')
+        await settle(60)
+        expect(fileIds()).toEqual(['u1-file', 'u1-other'])
+
+        window.ManifestDataAppwrite.deleteFile = async (bucket, id) => { all.splice(all.findIndex(f => f.$id === id), 1); return {} }
+        await methods('files')('$remove', 'u1-file')
+        await settle(60)
+        expect(fileIds()).toEqual(['u1-other'])
+        expect(listings.every(n => n > 0)).toBe(true)
+        delete window.Appwrite
+    })
+
+    it('removes every file of an array $remove', async () => {
+        await load(signedIn('u1'), null, { extra: FILES, listFiles: async () => [{ $id: 'a' }, { $id: 'b' }, { $id: 'c' }] })
+        await window.ManifestDataMain.loadDataSource('files')
+        await settle(60)
+        window.ManifestDataAppwrite.deleteFile = async () => ({})
+        await methods('files')('$remove', ['a', { $id: 'c' }])
+        await settle(60)
+        expect(fileIds()).toEqual(['b'])
     })
 })
