@@ -19,8 +19,9 @@
  *  - Hydration contract parse/apply errors
  */
 import { spawn } from 'node:child_process';
-import { cp, rm, mkdir, readFile, readdir } from 'node:fs/promises';
+import { cp, rm, mkdtemp, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { join, dirname, extname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,10 +30,11 @@ import { createRequire } from 'node:module';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
-const FIXTURE_DIR = join(__dirname, 'fixture');
+const FIXTURE_SRC_DIR = join(__dirname, 'fixture');
+const REPO_SRC_DIR = join(__dirname, '..', '..', '..', '..', 'src');
+const WORK_DIR = await mkdtemp(join(tmpdir(), 'mnfst-render-e2e-'));
+const FIXTURE_DIR = join(WORK_DIR, 'site');
 const FIXTURE_OUT_DIR = join(FIXTURE_DIR, '.out');
-const SRC_SCRIPTS_DIR = join(__dirname, '..', '..', '..', '..', 'src', 'scripts');
-const SRC_STYLES_DIR = join(__dirname, '..', '..', '..', '..', 'src', 'styles');
 const RENDER_SCRIPT = join(__dirname, '..', '..', 'manifest.render.mjs');
 const DEV_PORT = 5099;
 const STATIC_PORT = 5100;
@@ -58,47 +60,25 @@ function assert(cond, label, detail) {
 }
 
 // ---- fixture prep -----------------------------------------------------------
+function runNode(args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('exit', (code) => code === 0 ? resolve(out) : reject(new Error(`node ${args.join(' ')} exited ${code}\n${out}`)));
+  });
+}
+
+// Fixture copy + scripts built from src/ by the release build, all in a temp dir
 async function prepFixture() {
   log.head('Preparing fixture');
-
-  // Copy the local built Manifest loader + plugins into fixture/scripts.
-  // We want to test the exact local source, not a published version.
-  const fixtureScripts = join(FIXTURE_DIR, 'scripts');
-  if (existsSync(fixtureScripts)) await rm(fixtureScripts, { recursive: true, force: true });
-  await mkdir(fixtureScripts, { recursive: true });
-
-  const scriptFiles = await readdir(SRC_SCRIPTS_DIR, { withFileTypes: true });
-  for (const f of scriptFiles) {
-    if (f.isFile() && f.name.endsWith('.js')) {
-      await cp(join(SRC_SCRIPTS_DIR, f.name), join(fixtureScripts, f.name));
-    }
-  }
-  // Components processor lives in a subdir; we need the monolith build though,
-  // which is what manifest.components.js is.  The monolith is produced by
-  // `npm run build` and copied over manifest.components.js.  If the monolith
-  // hasn't been built yet, the individual pieces won't work.  Try to copy
-  // from /lib as fallback.
-  const libDir = join(__dirname, '..', '..', '..', '..', 'lib');
-  if (existsSync(libDir)) {
-    const libFiles = await readdir(libDir, { withFileTypes: true });
-    for (const f of libFiles) {
-      if (f.isFile() && f.name.endsWith('.js')) {
-        await cp(join(libDir, f.name), join(fixtureScripts, f.name));
-      }
-    }
-  }
-
-  // Also copy styles so <link> tags resolve (even though the fixture doesn't
-  // reference any — prevents 404s if something does).
-  const fixtureStyles = join(FIXTURE_DIR, 'styles');
-  if (existsSync(fixtureStyles)) await rm(fixtureStyles, { recursive: true, force: true });
-  await mkdir(fixtureStyles, { recursive: true });
-
-  if (existsSync(FIXTURE_OUT_DIR)) {
-    await rm(FIXTURE_OUT_DIR, { recursive: true, force: true });
-  }
-
-  log.note('fixture prepared');
+  await cp(FIXTURE_SRC_DIR, FIXTURE_DIR, {
+    recursive: true,
+    filter: (p) => !['.out', 'scripts', 'styles'].includes(relative(FIXTURE_SRC_DIR, p).split('/')[0]),
+  });
+  await runNode(['scripts/build.mjs', '--scripts-out', join(FIXTURE_DIR, 'scripts')], REPO_SRC_DIR);
+  log.note(`fixture prepared in ${FIXTURE_DIR} (scripts built from src/)`);
 }
 
 // ---- minimal static file server --------------------------------------------
@@ -155,7 +135,7 @@ async function runPrerender() {
   // Always run the SOURCE render script (src/scripts/manifest.render.mjs),
   // not the synced copy in packages/render/.  The sync script is separate
   // and may be stale.
-  const sourceRenderScript = join(__dirname, '..', '..', '..', '..', 'src', 'scripts', 'manifest.render.mjs');
+  const sourceRenderScript = join(REPO_SRC_DIR, 'scripts', 'manifest.render.mjs');
   return new Promise((resolve, reject) => {
     const child = spawn('node', [sourceRenderScript, '--root', FIXTURE_DIR], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -484,9 +464,12 @@ async function runAssertions() {
       'x-show="variable" initially-false element stays hidden after hydration',
       `display: ${xshowState.togglableDisplay}`);
 
-    // Toggle the x-show element on and verify it becomes visible
+    // Toggle x-show on; the show waits for a frame, so poll rather than sleep
     await click('#xshow-toggle');
-    await new Promise((r) => setTimeout(r, 250));
+    await page.waitForFunction(
+      () => { const el = document.querySelector('#xshow-togglable'); return el && getComputedStyle(el).display !== 'none'; },
+      { polling: 50, timeout: 5000 },
+    ).catch(() => {});
     const xshowToggled = await page.evaluate(() => {
       const el = document.querySelector('#xshow-togglable');
       return el ? window.getComputedStyle(el).display : 'MISSING';
@@ -708,11 +691,16 @@ async function main() {
   }
 
   log.head(`Results: ${passed} passed, ${failed} failed`);
-  process.exit(failed > 0 ? 1 : 0);
+  return failed > 0 ? 1 : 0;
 }
 
-main().catch((e) => {
+let exitCode = 1;
+try {
+  exitCode = await main();
+} catch (e) {
   log.fail(e.message || String(e));
   if (e.stack) log.note(e.stack);
-  process.exit(1);
-});
+} finally {
+  await rm(WORK_DIR, { recursive: true, force: true });
+}
+process.exit(exitCode);
