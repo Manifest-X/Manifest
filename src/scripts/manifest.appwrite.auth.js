@@ -255,6 +255,19 @@ function initializeAuthStore() {
         'deviceBrand', 'deviceModel', 'countryCode', 'countryName'
     ];
 
+    // User id in a mirrored state ('' / null when signed out)
+    function mirroredUserId(raw) {
+        try { const saved = JSON.parse(raw || 'null'); return saved?.isAuthenticated ? (saved.user?.$id || null) : null; } catch { return null; }
+    }
+
+    // Identity this tab is showing data for: while unverified, the last one mirrored
+    function shownUserId(store, mirrored) {
+        if (store.user?.$id) return store.user.$id;
+        if (!store._sessionUnverified) return null;
+        if (mirrored === undefined) { try { mirrored = localStorage.getItem(STORAGE_KEY); } catch { mirrored = null; } }
+        return mirroredUserId(mirrored);
+    }
+
     function sanitizeSessionForStorage(session) {
         if (!session || typeof session !== 'object') return session;
         const safe = {};
@@ -271,7 +284,8 @@ function initializeAuthStore() {
                 const state = JSON.parse(e.newValue);
                 const store = Alpine.store('auth');
                 if (store) {
-                    const prevId = store.user?.$id || null;
+                    const prevId = shownUserId(store, e.oldValue);
+                    const wasAuthenticated = store.isAuthenticated === true;
                     // Update store state from other tab
                     store._authEpoch++;
                     if (state.isAuthenticated) markVerified(store);
@@ -294,6 +308,9 @@ function initializeAuthStore() {
                             store.currentTeam = null;
                         }
                         window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                    } else if (nextId && !wasAuthenticated) {
+                        // Signed in from another tab: this tab's identity-bound data reloads
+                        window.dispatchEvent(new CustomEvent(state.isAnonymous ? 'manifest:auth:anonymous' : 'manifest:auth:login', { detail: { user: state.user, crossTab: true } }));
                     }
                 }
             } catch (error) {
@@ -717,9 +734,12 @@ function initializeAuthStore() {
             } catch (error) {
                 if (!current()) return;
                 if (!isNoSession(error)) { scheduleRecheck(this); return; }
+                const prevId = shownUserId(this);
                 this._clearIdentity();
                 markVerified(this);
                 syncStateToStorage(this);
+                // Rows shown for the last-known user drop
+                if (prevId) window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
                 if (this._guestAuto && this._createAnonymousSession) await this._createAnonymousSession();
                 return;
             } finally {
@@ -1087,12 +1107,18 @@ function initializeAuthStore() {
                 return this.user;
             } catch (error) {
                 if (!isNoSession(error)) throw error;
+                const prevId = shownUserId(this);
                 markVerified(this);
                 this.isAuthenticated = false;
                 this.isAnonymous = false;
                 this.user = null;
                 this.session = null;
                 syncStateToStorage(this);
+                if (prevId) {
+                    this.teams = [];
+                    this.currentTeam = null;
+                    window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                }
                 throw error;
             }
         }
