@@ -728,6 +728,70 @@ describe('permission-scoped Appwrite sources before the session is confirmed', (
         await persist.flushPending()
         expect(records()).toEqual([])
     })
+
+    it("offline boot, then the session check finds no session: the last-known user's rows and snapshot go", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: 'u1' }))
+        const { data, main, auth, records } = await load({ manifest: pub(), auth: offline() })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).toEqual(['p0', 'p1'])
+        // auth's recheck no-session branch: cleared, verified, mirrored signed out, session-cleared
+        hang = false
+        Object.assign(auth(), { _sessionUnverified: false, isAuthenticated: false, user: null })
+        lastKnown(null)
+        window.dispatchEvent(new window.CustomEvent('manifest:auth:session-cleared'))
+        await settle(80)
+        expect(ids(data().posts)).not.toContain('p0')
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+
+    it('a sign-out reaching an unverified tab before auth marks it verified still drops the rows', async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'posts', rows('p', 2), { identity: 'u1' }))
+        const { data, main, records } = await load({ manifest: pub(), auth: offline() })
+        main.loadDataSource('posts')
+        await settle(60)
+        expect(ids(data().posts)).toEqual(['p0', 'p1'])
+        lastKnown(null)
+        window.dispatchEvent(new window.CustomEvent('manifest:auth:session-cleared'))
+        await settle(80)
+        expect(ids(data().posts)).not.toContain('p0')
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+
+    for (const last of ['u1', '', undefined]) {
+        it(`rows read while auth boots (last known ${JSON.stringify(last)}) are never saved under a different confirmed identity`, async () => {
+            if (last !== undefined) lastKnown(last || null)
+            hang = false
+            let who = 'u1'
+            window.ManifestDataAppwrite.loadTableRows = async () => rows(`${who}-`, 1)
+            const { main, persist, auth, dispatch, records } = await load({ manifest: pub(), auth: { _initialized: false } })
+            await main.loadDataSource('posts')
+            await settle(10)
+            who = 'u2'
+            window.ManifestDataAppwrite.loadTableRows = () => new Promise(() => {})
+            Object.assign(auth(), signedIn('u2'))
+            dispatch('manifest:auth:initialized')
+            await settle(30)
+            await persist.flushPending()
+            expect(records().filter(r => ids(r.rows).includes('u1-0'))).toEqual([])
+        })
+    }
+
+    it('rows read while auth boots are saved once the session confirms the last-known user', async () => {
+        lastKnown('u1')
+        hang = false
+        const { main, persist, auth, dispatch, records } = await load({ manifest: pub(), auth: { _initialized: false } })
+        Object.assign(auth(), { user: { $id: 'u1' } })
+        await main.loadDataSource('posts')
+        await settle(10)
+        Object.assign(auth(), signedIn('u1'))
+        dispatch('manifest:auth:initialized')
+        await settle(30)
+        await persist.flushPending()
+        expect(records().map(r => [r.identity, ids(r.rows)])).toEqual([['u1', ['u1-0']]])
+    })
 })
 
 describe('diagnostics', () => {

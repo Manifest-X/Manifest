@@ -279,6 +279,7 @@
 
     // Pending saves of rows read under an identity that has since changed never land
     function dropStaleWrites() {
+        if (unconfirmed()) return;
         const identity = authIdentity();
         for (const [source, landed] of [...state.landedIdentity]) {
             if (landed !== null && landed !== identity) cancelWrites(source);
@@ -473,9 +474,9 @@
         if (raw === null || raw === undefined) return null;
         let identity;
         if (cfg.authDependent) {
-            // Stamped with the identity the rows were read under; skipped if it changed since
+            // Stamped with the identity the rows were read under; skipped if it changed since or was never known
             identity = authUnverified() ? null : authIdentity();
-            if (identity === null || (landed !== null && landed !== undefined && landed !== identity)) return null;
+            if (identity === null || landed === null || (landed !== undefined && landed !== identity)) return null;
         }
         try {
             const snapshot = snapshotOf(source, raw, cfg);
@@ -544,7 +545,7 @@
     function onLanded(sources) {
         if (!state.enabled || state.disabled || state.scopePending) return;   // nothing is keyed under an unresolved scope
         const at = Date.now() + WRITE_DEBOUNCE_MS;
-        const identity = authIdentity();
+        const identity = hydrationIdentity();
         for (const source of sources) {
             if (!state.sources.has(source)) continue;
             state.pending.set(source, at);

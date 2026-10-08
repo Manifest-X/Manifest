@@ -129,13 +129,14 @@ function setupAuthResetListener() {
         }
     };
     const onAuth = (type) => {
-        const next = confirmedIdentity();
+        const ended = type === 'manifest:auth:logout' || type === 'manifest:auth:session-cleared';
+        const next = confirmedIdentity() ?? (ended ? '' : null);
         if (next === null) return;
         const prev = bound;
         bound = next;
         if (prev === next) return;
         // Unknown before: rows so far were read under this same session (a sign-out still drops them)
-        if (prev === null && type !== 'manifest:auth:logout' && type !== 'manifest:auth:session-cleared') return;
+        if (prev === null && !ended) return;
         reset(prev !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']

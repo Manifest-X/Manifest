@@ -784,13 +784,14 @@ describe('auth store: a network failure is not a logout', () => {
     const offline = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
     const noSession = () => Object.assign(new Error('User (role: guests) missing scope (account)'), { code: 401, type: 'general_unauthorized_scope' })
 
-    async function boot(getError, { guestAuto = false, timers = null } = {}) {
+    async function boot(getError, { guestAuto = false, timers = null, mirror = null } = {}) {
         let store = null
         let alpineInit = null
         const writes = []
         const events = []
         const listeners = {}
-        const ls = { getItem: () => null, setItem: (k, v) => { if (k === 'manifest:auth:state') writes.push(JSON.parse(v)) }, removeItem: () => {} }
+        let mirrored = mirror ? JSON.stringify(mirror) : null
+        const ls = { getItem: k => (k === 'manifest:auth:state' ? mirrored : null), setItem: (k, v) => { if (k === 'manifest:auth:state') { mirrored = v; writes.push(JSON.parse(v)) } }, removeItem: () => {} }
         const ctx = { console: { ...console, warn: () => {} }, setTimeout, clearTimeout, Promise, Date, localStorage: ls, sessionStorage: ls, ...(timers || {}) }
         let account = { get: async () => { throw getError() }, deleteSession: async () => {} }
         const docListeners = {}
@@ -813,7 +814,7 @@ describe('auth store: a network failure is not a logout', () => {
         await store.init()
         const visible = async () => { (docListeners.visibilitychange || []).forEach(fn => fn()); await settle(10) }
         const fire = async (type, e = {}) => { (listeners[type] || []).forEach(fn => fn(e)); await settle(10) }
-        const storage = value => fire('storage', { key: 'manifest:auth:state', newValue: JSON.stringify(value) })
+        const storage = value => { const oldValue = mirrored; mirrored = JSON.stringify(value); return fire('storage', { key: 'manifest:auth:state', oldValue, newValue: mirrored }) }
         const setAccount = a => { account = { deleteSession: async () => {}, ...a } }
         return { store, writes, events, setAccount, fire, storage, visible, listeners }
     }
@@ -1000,6 +1001,66 @@ describe('auth store: a network failure is not a logout', () => {
         expect(store._sessionUnverified).toBe(false)
         expect(writes.map(w => w.isAuthenticated)).toEqual([false])
         expect(guests).toBe(1)
+    })
+
+    it("a recovered check that finds no session after showing the last-known user's data announces session-cleared", async () => {
+        const { store, events, fire, setAccount } = await boot(offline, { mirror: u1 })
+        setAccount({ get: async () => { throw noSession() } })
+        await fire('online')
+        expect(store._sessionUnverified).toBe(false)
+        expect(events).toContain('manifest:auth:session-cleared')
+    })
+
+    it('the same check after a signed-out last session announces nothing', async () => {
+        const { events, fire, setAccount } = await boot(offline, { mirror: { isAuthenticated: false, user: null } })
+        setAccount({ get: async () => { throw noSession() } })
+        await fire('online')
+        expect(events).not.toContain('manifest:auth:session-cleared')
+    })
+
+    it('a 401 on refresh() while signed in announces session-cleared', async () => {
+        const { store, events, setAccount } = await boot(noSession)
+        Object.assign(store, u1, { teams: [{ $id: 't1' }], currentTeam: { $id: 't1' } })
+        setAccount({ get: async () => { throw noSession() } })
+        await store.refresh().catch(() => {})
+        expect(events).toContain('manifest:auth:session-cleared')
+        expect(store.currentTeam).toBeNull()
+    })
+
+    it('an unverified tab showing the last-known user drops it when another tab signs out', async () => {
+        const { events, storage } = await boot(offline, { mirror: u1 })
+        await storage({ isAuthenticated: false, isAnonymous: false, user: null, session: null })
+        expect(events).toContain('manifest:auth:session-cleared')
+    })
+
+    it('a signed-out tab announces a sign-in from another tab', async () => {
+        const { store, events, storage } = await boot(noSession)
+        await storage(u1)
+        expect(store.user).toEqual({ $id: 'u1' })
+        expect(events).toContain('manifest:auth:login')
+        expect(events).not.toContain('manifest:auth:session-cleared')
+    })
+
+    it('a guest sign-in from another tab announces anonymous', async () => {
+        const { events, storage } = await boot(noSession)
+        await storage({ ...u1, isAnonymous: true, user: { $id: 'g1' } })
+        expect(events).toContain('manifest:auth:anonymous')
+    })
+
+    it('an unverified tab adopting the same user from another tab announces the sign-in', async () => {
+        const { store, events, storage } = await boot(offline, { mirror: u1 })
+        await storage(u1)
+        expect(store._sessionUnverified).toBe(false)
+        expect(events).toContain('manifest:auth:login')
+        expect(events).not.toContain('manifest:auth:session-cleared')
+    })
+
+    it('a signed-in tab does not re-announce a same-user sync', async () => {
+        const { store, events, storage } = await boot(noSession)
+        Object.assign(store, u1)
+        events.length = 0
+        await storage(u1)
+        expect(events).toEqual([])
     })
 })
 
