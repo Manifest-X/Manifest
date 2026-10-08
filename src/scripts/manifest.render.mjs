@@ -840,20 +840,43 @@ function discoverDataPaths(manifest, rootDir, wildcardBases = [], locales = []) 
     return wildcardBases.some((base) => rest.startsWith(base + '/'));
   }
 
+  // A source mounts under the wildcard route named after it: `docs/*` for key
+  // `docs`, or a nested base ending in the key (`docs/framework/*` for key
+  // `framework`).
+  const mounts = new Map();
+  function mountFor(sourceKey) {
+    if (!sourceKey) return null;
+    if (mounts.has(sourceKey)) return mounts.get(sourceKey);
+    let mount = null;
+    if (wildcardBases.includes(sourceKey)) mount = sourceKey;
+    else {
+      const nested = wildcardBases.filter((b) => b.split('/').pop() === sourceKey);
+      if (nested.length === 1) {
+        mount = nested[0];
+        process.stderr.write(`prerender: data source "${sourceKey}" mounts under ${mount}/*\n`);
+      } else if (nested.length > 1) {
+        process.stderr.write(`prerender: data source "${sourceKey}" matches ${nested.map((b) => b + '/*').join(', ')}; not mounted (ambiguous)\n`);
+      }
+    }
+    mounts.set(sourceKey, mount);
+    return mount;
+  }
+
   function expandCandidates(rawPath, sourceKey) {
     const p = String(rawPath || '').replace(/^\/+|\/+$/g, '');
     if (!p) return [];
     const candidates = [p];
     if (wildcardBases.length === 0) return candidates;
-    if (!sourceKey || !wildcardBases.includes(sourceKey)) return candidates;
+    const mount = mountFor(sourceKey);
+    if (!mount) return candidates;
     const parts = p.split('/');
     const hasLocalePrefix = parts.length > 1 && localeSet.has(parts[0].toLowerCase());
     if (hasLocalePrefix) {
       const locale = parts[0];
       const rest = parts.slice(1).join('/');
-      if (rest && !rest.startsWith(sourceKey + '/')) candidates.push(`${locale}/${sourceKey}/${rest}`);
-    } else if (!p.startsWith(sourceKey + '/')) {
-      candidates.push(`${sourceKey}/${p}`);
+      if (rest && !rest.startsWith(mount + '/')) candidates.push(`${locale}/${mount}/${rest}`);
+    } else if (!p.startsWith(mount + '/')) {
+      candidates.push(`${mount}/${p}`);
     }
     return candidates;
   }
@@ -5462,6 +5485,7 @@ if (_isDirectEntry) {
 // Exports for the CLI bin script and for unit testing.
 export {
   main,
+  discoverRoutes,
   acquireOutputLock,
   outputLockPath,
   markPrerenderedManifestComponents,
