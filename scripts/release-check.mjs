@@ -43,6 +43,8 @@ export function pickVersions(time, latest, newV, prevV) {
       .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))[0]?.[0];
     if (!prevV) throw new Error(`no version published before ${newV}`);
   }
+  if (!time[prevV]) throw new Error(`version ${prevV} not found on npm`);
+  if (Date.parse(time[prevV]) >= Date.parse(time[newV])) throw new Error(`${prevV} was not published before ${newV} (order is: new previous)`);
   return { newV, prevV };
 }
 
@@ -158,7 +160,7 @@ function commitInTarball(sha, paths, oldSet, newSet) {
 }
 
 function gitCommits(ref, paths, sinceIso) {
-  const out = sh('git', ['-C', repoRoot, 'log', ref, `--since=${sinceIso}`, '--format=%h%x09%cI%x09%s', '--', ...paths]).trim();
+  const out = sh('git', ['-C', repoRoot, 'log', '--no-merges', ref, `--since=${sinceIso}`, '--format=%h%x09%cI%x09%s', '--', ...paths]).trim();
   return out ? out.split('\n').map(l => { const [sha, date, subject] = l.split('\t'); return { sha, date, subject }; }) : [];
 }
 
@@ -174,6 +176,7 @@ function gitSection(pkg, ref, prevT, newT, oldFiles, newFiles) {
 }
 
 function resolveRef(ref) {
+  if (ref !== null && (!ref || ref.startsWith('--') || spawnSync('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', ref]).status !== 0)) throw new Error(`git ref ${ref || '(none)'} not found`);
   for (const r of ref ? [ref] : ['origin/master', 'master']) {
     if (spawnSync('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', r]).status === 0) return r;
   }
@@ -192,7 +195,7 @@ export async function run(argv) {
     const oldFiles = walk(pack(pkg, prevV, tmp));
     const newFiles = walk(pack(pkg, newV, tmp));
     const cmp = compareTrees(oldFiles, newFiles, prevV, newV, tmp);
-    const ref = resolveRef(refIdx !== -1 ? argv[refIdx + 1] : null);
+    const ref = resolveRef(refIdx !== -1 ? (argv[refIdx + 1] ?? '') : null);
     const git = ref ? gitSection(pkg, ref, meta.time[prevV], meta.time[newV], oldFiles, newFiles) : { skipped: 'no git ref' };
     const result = { pkg, prev: { version: prevV, published: meta.time[prevV] }, next: { version: newV, published: meta.time[newV] }, ...cmp, git };
     result.summary = summary(result);
@@ -207,7 +210,7 @@ function summary(r) {
   const head = `${r.pkg} ${r.prev.version} → ${r.next.version}`;
   const missing = r.git.window?.filter(c => c.inTarball === 'missing').length || 0;
   const pending = r.git.after?.filter(c => c.inTarball === 'missing').length || 0;
-  const tail = (missing ? `; ${missing} window commit(s) look absent (heuristic)` : '') + (pending ? `; ${pending} later source commit(s) unreleased` : '');
+  const tail = (missing ? `; ${missing} window commit(s) look absent (heuristic)` : '') + (pending ? `; ${pending} later source commit(s) not in this tarball` : '');
   if (r.verdict === 'stamps-only') return `${head}: VERSION STAMPS ONLY (${r.stamps.length} files differ only by version)${tail}`;
   if (r.verdict === 'identical') return `${head}: IDENTICAL CONTENT${tail}`;
   const add = r.changed.reduce((n, c) => n + (c.add || 0), 0), del = r.changed.reduce((n, c) => n + (c.del || 0), 0);

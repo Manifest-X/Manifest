@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compareTrees, normalise, pickVersions } from '../scripts/release-check.mjs'
@@ -15,6 +15,7 @@ const tree = (v, body = 'run()') => {
     ])
 }
 const tmp = mkdtempSync(join(tmpdir(), 'rc-test-'))
+afterAll(() => rmSync(tmp, { recursive: true, force: true }))
 
 describe('release-check', () => {
     it('version bump with matching integrity is stamps only', () => {
@@ -37,5 +38,10 @@ describe('release-check', () => {
     it('previous version is the last stable publish before the new one', () => {
         const time = { created: 't', modified: 't', '1.0.0': '2026-01-01', '1.0.1-next.0': '2026-01-02', '1.0.1': '2026-01-03' }
         expect(pickVersions(time, '1.0.1')).toEqual({ newV: '1.0.1', prevV: '1.0.0' })
+    })
+    it('rejects a reversed or unknown previous version', () => {
+        const time = { created: 't', modified: 't', '1.0.0': '2026-01-01', '1.0.1': '2026-01-03' }
+        expect(() => pickVersions(time, '1.0.1', '1.0.0', '1.0.1')).toThrow(/not published before/)
+        expect(() => pickVersions(time, '1.0.1', '1.0.1', '9.9.9')).toThrow(/not found/)
     })
 })
