@@ -47,7 +47,8 @@
         "test:e2e:sdk": "node tests/e2e/payments.sdk.e2e.mjs",
         "test:e2e:sw": "node tests/e2e/sw.e2e.mjs",
         "lint": "echo 'No linting configured'",
-        "release:docs": "node scripts/release-bump.mjs packages/docs && cd packages/docs && npm publish --auth-type=web"
+        "release:docs": "node scripts/release-bump.mjs packages/docs && cd packages/docs && npm publish --auth-type=web",
+        "release:check": "node scripts/release-check.mjs"
     },
     "devDependencies": {
         "@rollup/plugin-commonjs": "^28.0.1",
