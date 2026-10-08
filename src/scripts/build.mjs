@@ -11,6 +11,19 @@ import postcss from 'postcss';
 // Package version (stamped into the data bundle)
 const BUILD_VERSION = JSON.parse(fs.readFileSync(path.join('..', 'package.json'), 'utf8')).version;
 
+// --scripts-out <dir>: build only the script bundles into <dir>; src/, lib/, packages/ untouched
+const scriptsOutArg = process.argv.indexOf('--scripts-out');
+const SCRIPTS_OUT = scriptsOutArg > -1 ? path.resolve(process.argv[scriptsOutArg + 1] || '') : null;
+if (SCRIPTS_OUT) {
+    const repoRoot = path.resolve('..');
+    if (!process.argv[scriptsOutArg + 1] || SCRIPTS_OUT === repoRoot || SCRIPTS_OUT.startsWith(repoRoot + path.sep)) {
+        console.error('--scripts-out needs a directory outside the repo');
+        process.exit(1);
+    }
+}
+const MONOLITH_DIR = SCRIPTS_OUT || 'scripts';
+const LIB_DIR = SCRIPTS_OUT || path.join('..', 'lib');
+
 // Configuration
 const CONFIG = {
     // Component subscripts order
@@ -623,7 +636,7 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
 
     // Only write the file if we found at least one subscript
     if (filesFound > 0) {
-        const outputPath = path.join('scripts', outputFile);
+        const outputPath = path.join(MONOLITH_DIR, outputFile);
         // Wrap the combined bundle in an IIFE so subscript top-level declarations
         // stay out of window scope. Cross-plugin surface is explicit window.*
         // exports only; subscript sources stay bare for direct/vm loading.
@@ -691,7 +704,7 @@ function buildUtilitiesNodeModule() {
     const header = '/* manifest.utilities.node.mjs — built from scripts/utilities/ (DOM-free) */\n\n';
     const combined = `${header}${DOM_SHIMS}\n${core.join('\n\n')}\n\n${wrapper}`;
 
-    const outputPath = path.join('scripts', 'manifest.utilities.node.mjs');
+    const outputPath = path.join(MONOLITH_DIR, 'manifest.utilities.node.mjs');
     fs.writeFileSync(outputPath, combined);
     console.log('  ✓ Created manifest.utilities.node.mjs\n');
 }
@@ -701,7 +714,7 @@ function copyFilesToDist() {
     console.log('Copying files to lib directory...\n');
 
     // Create lib directory if it doesn't exist
-    const distDir = path.join('..', 'lib');
+    const distDir = LIB_DIR;
     if (!fs.existsSync(distDir)) {
         fs.mkdirSync(distDir, { recursive: true });
     }
@@ -794,7 +807,9 @@ function copyFilesToDist() {
     // bundle carries it via the reset).
     let copiedCount = 0;
     const pkgVersion = JSON.parse(fs.readFileSync('../package.json', 'utf8')).version;
-    for (const file of filesToCopy) {
+    for (const entry of filesToCopy) {
+        const file = SCRIPTS_OUT ? scriptsOutEntry(entry) : entry;
+        if (file.source === file.dest) { copiedCount++; continue; }
         if (fs.existsSync(file.source)) {
             const baseName = path.basename(file.source);
             // The worker keys its caches by its own version; stamp it at build.
@@ -828,6 +843,15 @@ function copyFilesToDist() {
     console.log(`\n✓ Copied ${copiedCount} file(s) to lib directory\n`);
 }
 
+// Redirect a lib copy into SCRIPTS_OUT, reading monoliths from there
+function scriptsOutEntry({ source, dest }) {
+    const built = path.join(SCRIPTS_OUT, path.basename(source));
+    return {
+        source: source.startsWith('scripts/') && fs.existsSync(built) ? built : source,
+        dest: path.join(SCRIPTS_OUT, path.basename(dest))
+    };
+}
+
 // Compute SHA-384 of every plugin file in lib/ and write lib/manifest.integrity.json.
 // Covers the self-host path only (loader serves unminified `.js`, matching these hashes).
 // The default CDN path loads jsDelivr-auto-minified `.min.js`, whose bytes differ from the
@@ -835,7 +859,7 @@ function copyFilesToDist() {
 function emitIntegrityMap() {
     console.log('Emitting SRI integrity map...');
 
-    const libDir = path.join('..', 'lib');
+    const libDir = LIB_DIR;
     const files = fs.readdirSync(libDir).filter(f =>
         (f.endsWith('.js') || f.endsWith('.min.js')) && f !== 'manifest.js'
     );
@@ -868,10 +892,11 @@ async function build() {
 
     try {
         // Step 1: Build subscripts
+        if (SCRIPTS_OUT) fs.mkdirSync(SCRIPTS_OUT, { recursive: true });
         buildSubscripts();
 
         // Step 2: Build stylesheets
-        await buildStylesheets();
+        if (!SCRIPTS_OUT) await buildStylesheets();
 
         // Step 4: Copy files to lib directory
         copyFilesToDist();
