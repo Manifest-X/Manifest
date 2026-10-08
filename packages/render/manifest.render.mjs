@@ -4508,7 +4508,7 @@ async function runPrerender(config) {
         // observer state at runtime and therefore need the live Alpine scope.
         const INTERACTIVE_DIRECTIVES = new Set([
           'x-color', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
-          'x-toast', 'x-carousel', 'x-resize', 'x-anchors', 'x-model',
+          'x-toast', 'x-carousel', 'x-anchors', 'x-model',
           'x-files', 'x-data-files',
         ]);
         // Runtime-only Alpine magics whose values change after the prerender
