@@ -19,13 +19,14 @@ function scheduleAuthRetry(dataSourceName, locale) {
     AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
 }
 
-// Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load
+// Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load.
+// A cross-tab login arrives before this tab's team load; its teams-loaded follows.
 let teamsSettledFor = null;
 // A sign-in deadline already answered by an auth event no longer holds sources
 let answeredDeadline = 0;
 if (typeof window !== 'undefined') {
     ['manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'].forEach(type =>
-        window.addEventListener(type, () => { teamsSettledFor = authUserId(currentAuth()); }));
+        window.addEventListener(type, e => { if (!e?.detail?.crossTab) teamsSettledFor = authUserId(currentAuth()); }));
     // Kept only when logout restored the same (guest) identity whose teams already loaded
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:initialized'].forEach(type =>
         window.addEventListener(type, () => { if (type === 'manifest:auth:initialized' || teamsSettledFor !== authUserId(currentAuth())) teamsSettledFor = null; }));

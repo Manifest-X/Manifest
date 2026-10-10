@@ -96,14 +96,13 @@ function initializeAuthStore() {
                     // Identity ended or changed in another tab: scoped data must drop this tab's rows
                     const nextId = state.isAuthenticated ? (state.user?.$id || null) : null;
                     if (prevId && nextId !== prevId) {
-                        if (!nextId) {
-                            store.teams = [];
-                            store.currentTeam = null;
-                        }
+                        store._resetTeamsState();
                         window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                        if (nextId) store._adoptCrossTabTeams(nextId);
                     } else if (nextId && !wasAuthenticated) {
                         // Signed in from another tab: this tab's identity-bound data reloads
                         window.dispatchEvent(new CustomEvent(state.isAnonymous ? 'manifest:auth:anonymous' : 'manifest:auth:login', { detail: { user: state.user, crossTab: true } }));
+                        store._adoptCrossTabTeams(nextId);
                     }
                 }
             } catch (error) {
@@ -198,6 +197,7 @@ function initializeAuthStore() {
         _guestManual: false,
         _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
         _sessionUnverified: false, // init could not reach Appwrite: signed out locally, never broadcast
+        _crossTabTeams: null, // ordered team loads for identities adopted from other tabs
         _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
         _recheckTimer: null,
         _recheckAttempt: 0,
@@ -572,6 +572,27 @@ function initializeAuthStore() {
             }
         },
 
+        // Teams for an identity adopted from another tab. That tab seeds; this one
+        // only lists. Loads run in order so a late answer never outlives the identity.
+        _adoptCrossTabTeams(userId) {
+            const current = () => this.isAuthenticated === true && this.user?.$id === userId;
+            const load = async () => {
+                try {
+                    if (!current()) return;
+                    const cfg = await config.getAppwriteConfig();
+                    if (!cfg?.teams || (this.isAnonymous && !cfg.guestTeams) || !current()) return;
+                    await this._loadTeamsAndSeed(cfg, { seed: false });
+                } catch (e) {
+                    console.warn('[Manifest Appwrite Auth] Cross-tab team load failed:', e?.message || e);
+                }
+                if (!current()) { this._resetTeamsState(); return; }
+                window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
+                    detail: { teams: this.teams, currentTeam: this.currentTeam }
+                }));
+            };
+            this._crossTabTeams = (this._crossTabTeams || Promise.resolve()).then(load);
+        },
+
         // Call the deployed guest-migration function; the current session authenticates it.
         // Returns parsed JSON, or null on failure (best-effort — never blocks sign-in).
         async _callGuestMigration(path, body) {
@@ -594,14 +615,14 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
             }
             // Startup race: we can arrive before teams.core/defaults wire listTeams +
             // ensureDefaultTeams onto the store. Wait briefly rather than skip.
-            const needsSeed = !!(cfg.permanentTeams || cfg.templateTeams);
+            const needsSeed = seed && !!(cfg.permanentTeams || cfg.templateTeams);
             const ready = () => typeof this.listTeams === 'function'
                 && (!needsSeed || typeof window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams === 'function');
             for (let i = 0; i < 40 && !ready(); i++) {
