@@ -831,6 +831,68 @@ describe('offline boot: guest-auto deadline and same-user recovery', () => {
         // the snapshot stays on the device for the session check (hydrates again once verified as u1)
         expect(records().map(r => r.identity)).toEqual(['u1'])
     })
+
+    it('offline boot, then the session check recovers as the same user: a permission-only source reloads', async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'items', rows('p', 2), { identity: 'u1' }))
+        const { data, main, auth, dispatch } = await load({ manifest: pub(), auth: offline() })
+        await main.loadDataSource('items').catch(() => {})
+        await settle(60)
+        expect(ids(data().items)).toEqual(['p0', 'p1'])
+        expect(data()._items_state.error).toBeTruthy()
+        expect(calls).toEqual(['anon'])
+        // auth's recheck: verified as u1, login dispatched
+        down = false
+        Object.assign(auth(), signedIn('u1'), { _sessionUnverified: false })
+        dispatch('manifest:auth:login')
+        await settle(80)
+        expect(calls).toEqual(['anon', 'u1'])
+        expect(ids(data().items)).toEqual(['u1-0'])
+        expect(data()._items_state.error).toBeNull()
+    })
+
+    it('the same with no mirrored identity (storage cleared)', async () => {
+        const { data, main, auth, dispatch } = await load({ manifest: pub(), auth: offline() })
+        await main.loadDataSource('items').catch(() => {})
+        await settle(60)
+        expect(calls).toEqual(['anon'])
+        down = false
+        Object.assign(auth(), signedIn('u1'), { _sessionUnverified: false })
+        dispatch('manifest:auth:login')
+        await settle(80)
+        expect(calls).toEqual(['anon', 'u1'])
+        expect(ids(data().items)).toEqual(['u1-0'])
+    })
+
+    it('a normal boot confirming the last-known user does not reload (rows were read under that session)', async () => {
+        lastKnown('u1')
+        down = false
+        const { data, main, auth, dispatch } = await load({ manifest: pub(), auth: { _initialized: false } })
+        Object.assign(auth(), { user: { $id: 'u1' } })
+        await main.loadDataSource('items')
+        await settle(20)
+        expect(calls).toEqual(['u1'])
+        Object.assign(auth(), signedIn('u1'))
+        dispatch('manifest:auth:initialized')
+        await settle(80)
+        expect(calls).toEqual(['u1'])
+        expect(ids(data().items)).toEqual(['u1-0'])
+    })
+
+    it('recovery as a different user still drops the shown snapshot and loads as them', async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'items', rows('p', 2), { identity: 'u1' }))
+        const { data, main, auth, dispatch, records } = await load({ manifest: pub(), auth: offline() })
+        await main.loadDataSource('items').catch(() => {})
+        await settle(60)
+        expect(ids(data().items)).toEqual(['p0', 'p1'])
+        down = false
+        Object.assign(auth(), signedIn('u2'), { _sessionUnverified: false })
+        dispatch('manifest:auth:login')
+        await settle(80)
+        expect(ids(data().items)).toEqual(['u2-0'])
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
 })
 
 describe('diagnostics', () => {

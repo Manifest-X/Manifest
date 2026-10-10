@@ -112,6 +112,8 @@ function confirmedIdentity() {
 // A previous user's rows drop at once; rows read signed out stay live until the reload lands.
 function setupAuthResetListener() {
     let bound = (currentAuth() ? confirmedIdentity() : null) ?? lastKnownIdentity();
+    // Reads under an unverified session failed or came from the snapshot: confirming the same identity still reloads
+    let unverified = currentAuth()?._sessionUnverified === true;
     const reset = async (clear) => {
         const manifest = await window.ManifestDataConfig?.ensureManifest?.();
         const ds = window.ManifestDataStore;
@@ -132,12 +134,17 @@ function setupAuthResetListener() {
     const onAuth = (type) => {
         const ended = type === 'manifest:auth:logout' || type === 'manifest:auth:session-cleared';
         const next = confirmedIdentity() ?? (ended ? '' : null);
-        if (next === null) return;
+        if (next === null) { if (currentAuth()?._sessionUnverified === true) unverified = true; return; }
         const prev = bound;
         bound = next;
-        if (prev === next) return;
-        // Unknown before: rows so far were read under this same session (a sign-out still drops them)
-        if (prev === null && !ended) return;
+        const recovered = unverified;
+        unverified = false;
+        // Same identity, or unknown before (rows so far were read under this same session; a sign-out still drops them):
+        // no reset, but an unverified boot's reads are redone with the rows kept live
+        if (prev === next || (prev === null && !ended)) {
+            if (recovered) reset(false);
+            return;
+        }
         reset(prev !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
