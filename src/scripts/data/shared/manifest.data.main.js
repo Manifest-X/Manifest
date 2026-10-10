@@ -41,10 +41,11 @@ function authUserId(auth) {
     return auth?.user?.$id || auth?.user?.id || null;
 }
 
-// Guest-auto or an auth callback is signing in after a signed-out init (bounded by the auth store)
+// Guest-auto or an auth callback is signing in after a signed-out init (bounded by the auth store).
+// Not while the session is unverified (no sign-in follows until Appwrite is reachable).
 // Prerender never waits on (or bakes) a guest's rows
 function signInWaitMs(auth) {
-    if (!auth || auth.isAuthenticated === true || window.__manifestRender) return 0;
+    if (!auth || auth.isAuthenticated === true || auth._sessionUnverified === true || window.__manifestRender) return 0;
     const until = auth._signInPendingUntil || 0;
     if (until === answeredDeadline) return 0;
     return Math.max(0, until - Date.now());

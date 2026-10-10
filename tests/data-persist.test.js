@@ -794,6 +794,45 @@ describe('permission-scoped Appwrite sources before the session is confirmed', (
     })
 })
 
+describe('offline boot: guest-auto deadline and same-user recovery', () => {
+    // Own table id: reads of other sources (stale retry listeners from earlier page-loads) are not counted
+    const pub = () => ({ data: { items: { appwriteTableId: 'items', persist: { tier: 'boot' } } } })
+    const scoped = () => ({ data: { items: { appwriteTableId: 'items', scope: 'user', persist: { tier: 'boot' } } } })
+    const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
+    const offline = () => ({ _initialized: true, isAuthenticated: false, user: null, _sessionUnverified: true })
+    const lastKnown = (id) => window.localStorage.setItem('manifest:auth:state', JSON.stringify(id ? { isAuthenticated: true, user: { $id: id } } : { isAuthenticated: false, user: null }))
+    const netDown = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
+    let down, calls
+    beforeEach(() => {
+        down = true
+        calls = []
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => [] }
+        window.ManifestDataAppwrite = {
+            loadTableRows: async (db, tableId) => {
+                const who = Alpine.store('auth')?.user?.$id || 'anon'
+                if (tableId === 'items') calls.push(who)
+                if (down) throw netDown()
+                return rows(`${who}-`, 1)
+            }
+        }
+    })
+    afterEach(() => { delete window.ManifestDataQueries; delete window.ManifestDataAppwrite; window.localStorage.removeItem('manifest:auth:state') })
+
+    it("offline with a guest-auto deadline: a scoped source does not keep the last-known user's rows past it", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'items', rows('m', 2), { identity: 'u1' }))
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
+        const { data, main, records } = await load({ manifest: scoped(), auth: { ...offline(), _guestAuto: true, _signInPendingUntil: Date.now() + 300 } })
+        main.loadDataSource('items')
+        await settle(600)
+        expect(ids(data().items)).toEqual([])
+        expect(data()._items_state.ready).toBe(true)
+        expect(calls).toEqual([])
+        // the snapshot stays on the device for the session check (hydrates again once verified as u1)
+        expect(records().map(r => r.identity)).toEqual(['u1'])
+    })
+})
+
 describe('diagnostics', () => {
     it('ManifestData.persistence() reports scope, tiers, row counts and staleness', async () => {
         const savedAt = Date.now() - 1000

@@ -842,6 +842,18 @@ describe('auth store: a network failure is not a logout', () => {
         expect(writes).toEqual([])
     })
 
+    it('offline init with guest-auto sets no sign-in deadline (the guest sign-in cannot follow while unreachable)', async () => {
+        const { store } = await boot(offline, { guestAuto: true })
+        expect(store._sessionUnverified).toBe(true)
+        expect(store._signInPendingUntil).toBe(0)
+    })
+
+    it('a genuine 401 with guest-auto still sets the deadline', async () => {
+        const { store } = await boot(noSession, { guestAuto: true })
+        expect(store._sessionUnverified).toBe(false)
+        expect(store._signInPendingUntil).toBeGreaterThan(Date.now())
+    })
+
     it('a later state sync from that tab stays local too', async () => {
         const { store, writes } = await boot(offline)
         store._syncStateToStorage(store)
