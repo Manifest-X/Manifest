@@ -833,22 +833,29 @@ describe('offline boot: guest-auto deadline and same-user recovery', () => {
     })
 
     it('offline boot, then the session check recovers as the same user: a permission-only source reloads', async () => {
+        // Own source name: leaked reload listeners from earlier tests target 'items' only
         lastKnown('u1')
-        idb.seed(DB(), record('', 'items', rows('p', 2), { identity: 'u1' }))
-        const { data, main, auth, dispatch } = await load({ manifest: pub(), auth: offline() })
-        await main.loadDataSource('items').catch(() => {})
+        const recCalls = []
+        const load0 = window.ManifestDataAppwrite.loadTableRows
+        window.ManifestDataAppwrite.loadTableRows = async (db, tableId) => {
+            if (tableId === 'recovered') recCalls.push(Alpine.store('auth')?.user?.$id || 'anon')
+            return load0(db, tableId)
+        }
+        idb.seed(DB(), record('', 'recovered', rows('p', 2), { identity: 'u1' }))
+        const { data, main, auth, dispatch } = await load({ manifest: { data: { recovered: { appwriteTableId: 'recovered', persist: { tier: 'boot' } } } }, auth: offline() })
+        await main.loadDataSource('recovered').catch(() => {})
         await settle(60)
-        expect(ids(data().items)).toEqual(['p0', 'p1'])
-        expect(data()._items_state.error).toBeTruthy()
-        expect(calls).toEqual(['anon'])
+        expect(ids(data().recovered)).toEqual(['p0', 'p1'])
+        expect(data()._recovered_state.error).toBeTruthy()
+        expect(recCalls).toEqual(['anon'])
         // auth's recheck: verified as u1, login dispatched
         down = false
         Object.assign(auth(), signedIn('u1'), { _sessionUnverified: false })
         dispatch('manifest:auth:login')
         await settle(80)
-        expect(calls).toEqual(['anon', 'u1'])
-        expect(ids(data().items)).toEqual(['u1-0'])
-        expect(data()._items_state.error).toBeNull()
+        expect(recCalls).toEqual(['anon', 'u1'])
+        expect(ids(data().recovered)).toEqual(['u1-0'])
+        expect(data()._recovered_state.error).toBeNull()
     })
 
     it('the same with no mirrored identity (storage cleared)', async () => {
