@@ -32,7 +32,7 @@ gracefully off-device). Inside the Capacitor container it auto-loads regardless.
 ```bash
 npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android \
   @capacitor/splash-screen @capacitor/status-bar
-npm install -D mnfst-render@^0.5.47
+npm install -D mnfst-render@^0.5.48
 ```
 
 Drop `@capacitor/android` if you only ship iOS. The splash-screen and status-bar
@@ -60,7 +60,7 @@ these scripts into `package.json`:
 Render into the dot-folder `.app-www`, never `website/`: a `website/` folder
 switches an SPA project's publish into render mode, and non-dot folders get
 copied into later renders. With a `capacitor.config.*` at the root, `mnfst-render`
-0.5.47+ leaves `ios/`, `android/` and the Capacitor config out of its output, and
+0.5.48+ leaves `ios/`, `android/` and the Capacitor config out of its output, and
 an `--out` render skips the project's regular `website/` output too.
 
 Keep the build and native files out of git noise and out of the website:
