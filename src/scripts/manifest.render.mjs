@@ -3115,15 +3115,82 @@ ${urlEntries.join('\n')}
 }
 
 /**
+ * Group llms entries into sections by first URL segment ("Blog" for /blog/*),
+ * root page as "Overview", in first-encounter order.  Wherever a path holds two
+ * or more sub-areas that each have their own page and children, each sub-area
+ * becomes its own section labelled by its page title, recursively: /docs/ai/*
+ * and /docs/framework/* split into "AI Plugins" and "Framework", and groups
+ * inside them into "Framework / Core Plugins" and so on.  A lone sub-area
+ * (/fr/docs under /fr) is walked through when a split lies below it, and the
+ * first segment then leads the label ("Fr / AI Plugins").
+ */
+function groupLlmsSections(entries, siteName = '') {
+  const titleCase = (s) => s.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const paths = new Set(entries.map((e) => e.pathSeg));
+  const parents = new Set();
+  for (const p of paths) {
+    const segs = p.split('/');
+    for (let i = 1; i < segs.length; i++) parents.add(segs.slice(0, i).join('/'));
+  }
+  const childAreas = new Map();
+  for (const p of paths) {
+    if (!parents.has(p) || !p.includes('/')) continue;
+    const parent = p.slice(0, p.lastIndexOf('/'));
+    if (!childAreas.has(parent)) childAreas.set(parent, new Set());
+    childAreas.get(parent).add(p);
+  }
+  const splits = (prefix) => (childAreas.get(prefix)?.size || 0) >= 2;
+  const below = new Map();
+  const splitsBelow = (prefix) => {
+    if (!below.has(prefix)) {
+      const kids = childAreas.get(prefix);
+      below.set(prefix, splits(prefix) || (kids?.size === 1 && splitsBelow(kids.values().next().value)));
+    }
+    return below.get(prefix);
+  };
+  const suffix = siteName ? new RegExp(`\\s+[—–|-]\\s+${siteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) : null;
+  const titles = new Map(entries.map((e) => [e.pathSeg, e.title || '']));
+  const labelCache = new Map();
+  const titleOf = (area) => {
+    if (labelCache.has(area)) return labelCache.get(area);
+    let t = titles.get(area) || '';
+    if (suffix) t = t.replace(suffix, '');
+    t = t.trim();
+    if (!t || t === siteName || t === area) t = titleCase(area.split('/').pop());
+    labelCache.set(area, t);
+    return t;
+  };
+  const sections = new Map();
+  for (const entry of entries) {
+    const segs = entry.pathSeg.split('/');
+    const first = segs[0] || '';
+    let key = first || 'Overview';
+    const parts = first && !splits(first) && splitsBelow(first) ? [titleCase(first)] : [];
+    let prefix = first;
+    for (let i = 1; first && i < segs.length && splitsBelow(prefix); i++) {
+      const child = segs.slice(0, i + 1).join('/');
+      if (!childAreas.get(prefix).has(child)) break;
+      if (splits(prefix)) {
+        key = child;
+        parts.push(titleOf(child));
+      }
+      prefix = child;
+    }
+    const label = parts.length > 1 || (parts.length && splits(first)) ? parts.join(' / ') : (first ? titleCase(first) : 'Overview');
+    if (!sections.has(key)) sections.set(key, { label, entries: [] });
+    sections.get(key).entries.push(entry);
+  }
+  return sections;
+}
+
+/**
  * Write llms.txt (curated index) and llms-full.txt (concatenated full content)
  * per the llmstxt.org convention.  Read each prerendered HTML file in pathList
  * and extract title / description / body text — these were already filled by
  * injectMetaInDom + smart defaults, so the output reflects the same layered
  * precedence (data-head → prerender.meta → smart defaults) without re-deriving.
  *
- * Pages are grouped into sections by their first URL segment ("Getting Started"
- * for /docs/getting-started/*, etc.) so the index is browseable.  The root /
- * page is treated as the site overview.
+ * Sections come from groupLlmsSections.
  */
 function writeLlmsFiles(outputDir, pathList, liveBase, ctx = {}) {
   const siteName = ctx.siteName || 'Site';
@@ -3144,18 +3211,7 @@ function writeLlmsFiles(outputDir, pathList, liveBase, ctx = {}) {
     });
   }
 
-  // Group entries by section.  For /a/b/c, the section is "a"; for the root,
-  // "Overview".  Sections are presented in first-encounter order to preserve
-  // whatever order the project's manifest.json or yaml index dictated.
-  const sections = new Map();
-  const titleCase = (s) => s.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  for (const entry of entries) {
-    const first = entry.pathSeg.split('/')[0] || '';
-    const sectionKey = first || 'Overview';
-    const sectionLabel = first ? titleCase(first) : 'Overview';
-    if (!sections.has(sectionKey)) sections.set(sectionKey, { label: sectionLabel, entries: [] });
-    sections.get(sectionKey).entries.push(entry);
-  }
+  const sections = groupLlmsSections(entries, siteName);
 
   // --- llms.txt: short curated index ---
   let llms = `# ${siteName}\n`;
@@ -5486,6 +5542,7 @@ if (_isDirectEntry) {
 export {
   main,
   discoverRoutes,
+  groupLlmsSections,
   acquireOutputLock,
   outputLockPath,
   markPrerenderedManifestComponents,
