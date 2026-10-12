@@ -76,7 +76,7 @@ node_modules/
 /ios/
 /android/
 /capacitor.config.*
-/.app-www/
+/.app-www*
 /package.json
 /package-lock.json
 ```
