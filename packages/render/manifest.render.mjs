@@ -3678,11 +3678,19 @@ async function runPrerender(config) {
   const lockBasename = basename(outputLockPath(finalOutput));
   COPY_EXCLUDE.add(finalBasename);
   COPY_EXCLUDE.add(lockBasename);
+  // An --out render (e.g. a Capacitor webDir) also skips the configured web output.
+  const renderBlock = config.manifest?.render ?? config.manifest?.prerender ?? {};
+  const configuredOutput = resolve(rootResolved, renderBlock.output ?? 'website');
+  const configuredBasename = dirname(configuredOutput) === rootResolved && !COPY_EXCLUDE.has(basename(configuredOutput))
+    ? basename(configuredOutput)
+    : null;
+  if (configuredBasename) COPY_EXCLUDE.add(configuredBasename);
   try {
     copyProjectIntoDist(rootResolved, outputResolved);
   } finally {
     COPY_EXCLUDE.delete(finalBasename);
     COPY_EXCLUDE.delete(lockBasename);
+    if (configuredBasename) COPY_EXCLUDE.delete(configuredBasename);
   }
   // Env placeholders (${VAR}) only resolve at runtime via window.env (populated
   // by the mnfst-run dev server from .env). A static prod build has no

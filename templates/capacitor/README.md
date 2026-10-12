@@ -32,6 +32,7 @@ gracefully off-device). Inside the Capacitor container it auto-loads regardless.
 ```bash
 npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android \
   @capacitor/splash-screen @capacitor/status-bar
+npm install -D mnfst-render@^0.5.47
 ```
 
 Drop `@capacitor/android` if you only ship iOS. The splash-screen and status-bar
@@ -46,12 +47,12 @@ Copy `capacitor.config.json` from this folder into your project root and set:
 ## 3. Build the web assets (the offline shell)
 
 Capacitor ships whatever is in `webDir`. Prerender the app into it so the shell
-loads instantly and offline (never a white screen — a Guideline 4.2 tell). Add
-these scripts to `package.json`:
+loads instantly and offline (never a white screen — a Guideline 4.2 tell). Merge
+these scripts into `package.json`:
 
 ```json
 "scripts": {
-  "app:web": "npx mnfst-render --out .app-www",
+  "app:web": "mnfst-render --out .app-www",
   "app:build": "npm run app:web && npx cap sync"
 }
 ```
@@ -59,21 +60,23 @@ these scripts to `package.json`:
 Render into the dot-folder `.app-www`, never `website/`: a `website/` folder
 switches an SPA project's publish into render mode, and non-dot folders get
 copied into later renders. With a `capacitor.config.*` at the root, `mnfst-render`
-(0.5.47+) leaves `ios/`, `android/` and the Capacitor config out of its output.
+0.5.47+ leaves `ios/`, `android/` and the Capacitor config out of its output, and
+an `--out` render skips the project's regular `website/` output too.
 
 Keep the build and native files out of git noise and out of the website:
 
 ```gitignore
 # .gitignore
 node_modules/
-.app-www/
+.app-www*
 ```
 
 ```gitignore
 # .manifestignore
 /ios/
 /android/
-/capacitor.config.json
+/capacitor.config.*
+/.app-www/
 /package.json
 /package-lock.json
 ```
@@ -102,7 +105,7 @@ npm install @capacitor/share @capacitor/haptics @capacitor/app @capacitor/networ
 # plus your chosen secure-storage and biometric plugins
 ```
 
-## 5. Add iOS and sync
+## 5. Add the platforms
 
 ```bash
 npm run app:web
