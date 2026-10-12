@@ -115,6 +115,12 @@ function initializeTeamsCore() {
                     return { success: false, error: 'You must be signed in to list teams' };
                 }
 
+                // Answer for this identity only: a reset or identity change discards it
+                const owner = this.user?.$id || null;
+                const generation = this._teamsEpoch;
+                const stale = () => !this.isAuthenticated || (this.user?.$id || null) !== owner || this._teamsEpoch !== generation;
+                const discarded = { success: false, error: 'Identity changed during team load', stale: true };
+
                 try {
                     const params = {
                         queries: queries
@@ -123,6 +129,7 @@ function initializeTeamsCore() {
                         params.search = search;
                     }
                     const result = await this._appwrite.teams.list(params);
+                    if (stale()) return discarded;
 
                     // Update store with teams
                     this.teams = result.teams || [];
@@ -142,19 +149,24 @@ function initializeTeamsCore() {
                     if (window.ManifestAppwriteAuthTeamsDefaults && this.isTeamImmutable) {
                         for (const team of this.teams) {
                             if (!this._teamImmutableCache[team.$id]) {
-                                this._teamImmutableCache[team.$id] = await this.isTeamImmutable(team.$id);
+                                const immutable = await this.isTeamImmutable(team.$id);
+                                if (stale()) return discarded;
+                                this._teamImmutableCache[team.$id] = immutable;
                             }
                         }
                     }
 
                     // Load deleted template teams (if defaults module is loaded)
                     if (window.ManifestAppwriteAuthTeamsDefaults && this.getDeletedTemplateTeams) {
-                        this.deletedTemplateTeams = await this.getDeletedTemplateTeams();
+                        const deletedTemplateTeams = await this.getDeletedTemplateTeams();
+                        if (stale()) return discarded;
+                        this.deletedTemplateTeams = deletedTemplateTeams;
                     }
 
                     // Clean up duplicate default teams (permanent/template) if any exist
                     if (window.ManifestAppwriteAuthTeamsDefaults && this.cleanupDuplicateDefaultTeams) {
                         const cleanupResult = await this.cleanupDuplicateDefaultTeams();
+                        if (stale()) return discarded;
                         if (cleanupResult.cleaned > 0) {
                             if (cleanupResult.errors && cleanupResult.errors.length > 0) {
                                 console.warn('[Manifest Appwrite Auth] Some duplicate teams could not be deleted:', cleanupResult.errors);
@@ -163,12 +175,15 @@ function initializeTeamsCore() {
                             if (this.listTeams) {
                                 await this.listTeams();
                             }
+                            if (stale()) return discarded;
                         }
                     }
 
                     // Load deleted template roles for current team (if roles defaults module is loaded)
                     if (this.currentTeam && this.currentTeam.$id && window.ManifestAppwriteAuthTeamsRolesDefaults && this.getDeletedTemplateRoles) {
-                        this.deletedTemplateRoles = await this.getDeletedTemplateRoles(this.currentTeam.$id);
+                        const deletedTemplateRoles = await this.getDeletedTemplateRoles(this.currentTeam.$id);
+                        if (stale()) return discarded;
+                        this.deletedTemplateRoles = deletedTemplateRoles;
                     }
 
                     // Set currentTeam to first default team if available and not already set
@@ -177,8 +192,10 @@ function initializeTeamsCore() {
                         const hasDefaultTeams = (appwriteConfig?.permanentTeams && Array.isArray(appwriteConfig.permanentTeams) && appwriteConfig.permanentTeams.length > 0) ||
                             (appwriteConfig?.templateTeams && Array.isArray(appwriteConfig.templateTeams) && appwriteConfig.templateTeams.length > 0);
 
+                        if (stale()) return discarded;
                         if (hasDefaultTeams && window.ManifestAppwriteAuthTeamsDefaults && this.getDefaultTeams) {
                             const defaultTeams = await this.getDefaultTeams();
+                            if (stale()) return discarded;
                             if (defaultTeams.length > 0) {
                                 this.currentTeam = defaultTeams[0];
                             } else {
@@ -193,12 +210,14 @@ function initializeTeamsCore() {
                     if (this.currentTeam && this.currentTeam.$id && window.ManifestAppwriteAuthTeamsMembers && this.listMemberships) {
                         try {
                             const membershipsResult = await this.listMemberships(this.currentTeam.$id);
+                            if (stale()) return discarded;
                             if (membershipsResult.success) {
                                 this.currentTeamMemberships = membershipsResult.memberships || [];
                             }
                         } catch (error) {
                             // Silently handle errors (e.g., team was deleted)
                             // listMemberships already handles "team not found" gracefully
+                            if (stale()) return discarded;
                             this.currentTeamMemberships = [];
                         }
                     }
@@ -208,6 +227,7 @@ function initializeTeamsCore() {
                     // Check for any truthy value (function, object, or true flag)
                     if (!this._teamsRealtimeUnsubscribe && !this._teamsRealtimeSubscribing) {
                         const appwriteConfig = await config.getAppwriteConfig();
+                        if (stale()) return discarded;
                         if (this._appwrite?.realtime && this.startTeamsRealtime) {
                             this.startTeamsRealtime();
                         } else if (appwriteConfig?.teamsPollInterval && typeof appwriteConfig.teamsPollInterval === 'number' && appwriteConfig.teamsPollInterval > 0) {
@@ -221,6 +241,7 @@ function initializeTeamsCore() {
 
                     return { success: true, teams: result.teams || [], total: result.total || 0 };
                 } catch (error) {
+                    if (stale()) return discarded;
                     this.error = error.message;
                     return { success: false, error: error.message };
                 }

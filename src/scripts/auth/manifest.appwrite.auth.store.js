@@ -96,14 +96,13 @@ function initializeAuthStore() {
                     // Identity ended or changed in another tab: scoped data must drop this tab's rows
                     const nextId = state.isAuthenticated ? (state.user?.$id || null) : null;
                     if (prevId && nextId !== prevId) {
-                        if (!nextId) {
-                            store.teams = [];
-                            store.currentTeam = null;
-                        }
+                        store._resetTeamsState();
                         window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
+                        if (nextId) store._adoptCrossTabTeams(nextId);
                     } else if (nextId && !wasAuthenticated) {
                         // Signed in from another tab: this tab's identity-bound data reloads
                         window.dispatchEvent(new CustomEvent(state.isAnonymous ? 'manifest:auth:anonymous' : 'manifest:auth:login', { detail: { user: state.user, crossTab: true } }));
+                        store._adoptCrossTabTeams(nextId);
                     }
                 }
             } catch (error) {
@@ -198,6 +197,8 @@ function initializeAuthStore() {
         _guestManual: false,
         _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
         _sessionUnverified: false, // init could not reach Appwrite: signed out locally, never broadcast
+        _crossTabTeams: null, // latest cross-tab team load; older ones skip their writes
+        _teamsEpoch: 0, // bumped by every team reset; an in-flight listTeams from an older one is discarded
         _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
         _recheckTimer: null,
         _recheckAttempt: 0,
@@ -459,10 +460,14 @@ function initializeAuthStore() {
             // manifest:auth:teams-loaded for anything needing the full set.
             if (appwriteConfig && this.isAuthenticated && appwriteConfig.teams
                 && (!this.isAnonymous || appwriteConfig.guestTeams)) {
+                const owner = this.user?.$id;
                 this._loadTeamsAndSeed(appwriteConfig)
-                    .then(() => window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
-                        detail: { teams: this.teams, currentTeam: this.currentTeam }
-                    })))
+                    .then(() => {
+                        if (!this.isAuthenticated || this.user?.$id !== owner) return;
+                        window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
+                            detail: { teams: this.teams, currentTeam: this.currentTeam }
+                        }));
+                    })
                     .catch(e => console.warn('[Manifest Appwrite Auth] Background team load failed:', e?.message || e));
             }
         },
@@ -568,9 +573,34 @@ function initializeAuthStore() {
             this.deletedTemplateTeams = [];
             this.deletedTemplateRoles = [];
             this._teamImmutableCache = {};
+            this._teamsEpoch++;
             if (this.stopTeamsRealtime) {
                 try { this.stopTeamsRealtime(); } catch (e) { /* ignore */ }
             }
+            if (this.stopTeamsPolling) {
+                try { this.stopTeamsPolling(); } catch (e) { /* ignore */ }
+            }
+        },
+
+        // Teams for an identity adopted from another tab. That tab seeds; this one
+        // only lists. A newer adoption or identity change supersedes this load.
+        _adoptCrossTabTeams(userId) {
+            const token = {};
+            this._crossTabTeams = token;
+            const current = () => this._crossTabTeams === token && this.isAuthenticated === true && this.user?.$id === userId;
+            (async () => {
+                try {
+                    const cfg = await config.getAppwriteConfig();
+                    if (!cfg?.teams || (this.isAnonymous && !cfg.guestTeams) || !current()) return;
+                    await this._loadTeamsAndSeed(cfg, { seed: false });
+                } catch (e) {
+                    console.warn('[Manifest Appwrite Auth] Cross-tab team load failed:', e?.message || e);
+                }
+                if (!current()) return;
+                window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
+                    detail: { teams: this.teams, currentTeam: this.currentTeam }
+                }));
+            })();
         },
 
         // Call the deployed guest-migration function; the current session authenticates it.
@@ -595,14 +625,14 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
             }
             // Startup race: we can arrive before teams.core/defaults wire listTeams +
             // ensureDefaultTeams onto the store. Wait briefly rather than skip.
-            const needsSeed = !!(cfg.permanentTeams || cfg.templateTeams);
+            const needsSeed = seed && !!(cfg.permanentTeams || cfg.templateTeams);
             const ready = () => typeof this.listTeams === 'function'
                 && (!needsSeed || typeof window.ManifestAppwriteAuthTeamsDefaults?.ensureDefaultTeams === 'function');
             for (let i = 0; i < 40 && !ready(); i++) {
@@ -762,19 +792,8 @@ function initializeAuthStore() {
                 this.otpPhrase = null;
                 this._otpUserId = null;
 
-                // Stop teams realtime subscription if active
-                if (this.stopTeamsRealtime) {
-                    this.stopTeamsRealtime();
-                }
-
-                // Stop teams polling if active (fallback)
-                if (this.stopTeamsPolling) {
-                    this.stopTeamsPolling();
-                }
-
-                // Clear teams on logout
-                this.teams = [];
-                this.currentTeam = null;
+                // Clear teams (stops realtime/polling, discards in-flight lists)
+                this._resetTeamsState();
 
                 // Restore to guest state after logout (guest-auto only, and not when
                 // already a guest — don't mint a new guest on top).
@@ -808,19 +827,8 @@ function initializeAuthStore() {
                     this.user = null;
                     this.session = null;
                 }
-                // Stop teams realtime subscription if active
-                if (this.stopTeamsRealtime) {
-                    this.stopTeamsRealtime();
-                }
-
-                // Stop teams polling if active (fallback)
-                if (this.stopTeamsPolling) {
-                    this.stopTeamsPolling();
-                }
-
                 // Clear teams on logout error too
-                this.teams = [];
-                this.currentTeam = null;
+                this._resetTeamsState();
                 if (!this.isAuthenticated) this._clearIdentity();
                 // Expired session (401) is still a logout: scoped data must drop the old rows
                 syncStateToStorage(this);
@@ -856,8 +864,7 @@ function initializeAuthStore() {
                 this._oauthProvider = null;
 
                 // Clear teams
-                this.teams = [];
-                this.currentTeam = null;
+                this._resetTeamsState();
 
                 // Clear OAuth provider from storage
                 try {
@@ -878,8 +885,7 @@ function initializeAuthStore() {
                 this.session = null;
                 this.magicLinkSent = false;
                 this.magicLinkExpired = false;
-                this.teams = [];
-                this.currentTeam = null;
+                this._resetTeamsState();
                 syncStateToStorage(this);
                 window.dispatchEvent(new CustomEvent('manifest:auth:session-cleared'));
                 return { success: false, error: error.message };

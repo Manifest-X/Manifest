@@ -34,6 +34,7 @@ const SUBSCRIPTS = [
 ].map(f => [f, readFileSync(path.join(DATA, f), 'utf8')])
 const RT_SRC = readFileSync(path.join(DATA, 'appwrite/manifest.data.realtime.js'), 'utf8')
 const AUTH_STORE = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.store.js'), 'utf8')
+const TEAMS_CORE = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.teams.core.js'), 'utf8')
 const AUTH_MAIN = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.main.js'), 'utf8')
 
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
@@ -784,7 +785,8 @@ describe('auth store: a network failure is not a logout', () => {
     const offline = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
     const noSession = () => Object.assign(new Error('User (role: guests) missing scope (account)'), { code: 401, type: 'general_unauthorized_scope' })
 
-    async function boot(getError, { guestAuto = false, timers = null, mirror = null } = {}) {
+    // teamsList: the Appwrite teams.list stand-in; loads the real teams.core listTeams
+    async function boot(getError, { guestAuto = false, timers = null, mirror = null, teams = false, guestTeams = false, initAccount = null, teamsList = null } = {}) {
         let store = null
         let alpineInit = null
         const writes = []
@@ -793,7 +795,7 @@ describe('auth store: a network failure is not a logout', () => {
         let mirrored = mirror ? JSON.stringify(mirror) : null
         const ls = { getItem: k => (k === 'manifest:auth:state' ? mirrored : null), setItem: (k, v) => { if (k === 'manifest:auth:state') { mirrored = v; writes.push(JSON.parse(v)) } }, removeItem: () => {} }
         const ctx = { console: { ...console, warn: () => {} }, setTimeout, clearTimeout, Promise, Date, localStorage: ls, sessionStorage: ls, ...(timers || {}) }
-        let account = { get: async () => { throw getError() }, deleteSession: async () => {} }
+        let account = initAccount || { get: async () => { throw getError() }, deleteSession: async () => {} }
         const docListeners = {}
         ctx.window = {
             addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn) },
@@ -801,8 +803,8 @@ describe('auth store: a network failure is not a logout', () => {
             CustomEvent: class { constructor(t, d) { this.type = t; this.detail = d && d.detail } },
             localStorage: ls,
             ManifestAppwriteAuthConfig: {
-                getAppwriteClient: async () => ({ account: new Proxy({}, { get: (_, k) => account[k] }) }),
-                getAppwriteConfig: async () => ({ guestAuto, guestManual: false, teams: false }),
+                getAppwriteClient: async () => ({ account: new Proxy({}, { get: (_, k) => account[k] }), teams: { list: (...a) => teamsList(store, ...a) } }),
+                getAppwriteConfig: async () => ({ guestAuto, guestManual: false, teams, guestTeams }),
             },
         }
         ctx.CustomEvent = ctx.window.CustomEvent
@@ -812,6 +814,10 @@ describe('auth store: a network failure is not a logout', () => {
         vm.runInContext(AUTH_STORE, ctx)
         alpineInit()
         await store.init()
+        if (teamsList) {
+            vm.runInContext(TEAMS_CORE, ctx)
+            await settle(130)
+        }
         const visible = async () => { (docListeners.visibilitychange || []).forEach(fn => fn()); await settle(10) }
         const fire = async (type, e = {}) => { (listeners[type] || []).forEach(fn => fn(e)); await settle(10) }
         const storage = value => { const oldValue = mirrored; mirrored = JSON.stringify(value); return fire('storage', { key: 'manifest:auth:state', oldValue, newValue: mirrored }) }
@@ -1074,6 +1080,184 @@ describe('auth store: a network failure is not a logout', () => {
         await storage(u1)
         expect(events).toEqual([])
     })
+
+    describe('teams follow a cross-tab identity', () => {
+        // Appwrite teams.list stand-in: answers for the session user AT CALL TIME; per-user gates hold an answer
+        const teamsApi = byUser => {
+            const api = { calls: [], gates: {} }
+            api.list = async store => {
+                const uid = store.user?.$id
+                api.calls.push(uid)
+                if (api.gates[uid]) await api.gates[uid].p
+                return { teams: (byUser[uid] || []).map($id => ({ $id })), total: (byUser[uid] || []).length }
+            }
+            api.hold = uid => (api.gates[uid] = deferred())
+            return api
+        }
+        const bootTeams = async (byUser, opts = {}) => {
+            const api = teamsApi(byUser)
+            return { ...await boot(noSession, { teams: true, teamsList: api.list, ...opts }), api }
+        }
+        // Every team/currentTeam write, tagged with the identity shown at that moment
+        const watchTeams = store => {
+            const writes = []
+            for (const key of ['teams', 'currentTeam']) {
+                let v = store[key]
+                Object.defineProperty(store, key, { get: () => v, set: n => { v = n; writes.push({ user: store.user?.$id || null, key, ids: [].concat(n || []).map(t => t.$id) }) }, configurable: true })
+            }
+            return writes
+        }
+        const teamIds = store => store.teams.map(t => t.$id)
+        const u2 = { ...u1, user: { $id: 'u2' } }
+        const signedOutState = { isAuthenticated: false, isAnonymous: false, user: null, session: null }
+
+        it("a sign-in from another tab loads that user's teams here, then announces teams-loaded", async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'] })
+            await storage(u1)
+            expect(api.calls).toEqual(['u1'])
+            expect(teamIds(store)).toEqual(['t1'])
+            expect(store.currentTeam?.$id).toBe('t1')
+            expect(events.indexOf('manifest:auth:login')).toBeGreaterThanOrEqual(0)
+            expect(events.indexOf('manifest:auth:teams-loaded')).toBeGreaterThan(events.indexOf('manifest:auth:login'))
+        })
+
+        it('a switch to another user in another tab drops the old teams at once and loads the new ones', async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'], u2: ['t2'] })
+            await storage(u1)
+            expect(teamIds(store)).toEqual(['t1'])
+            const d = api.hold('u2')
+            events.length = 0
+            await storage(u2)
+            expect(events).toContain('manifest:auth:session-cleared')
+            expect(teamIds(store)).toEqual([])
+            expect(store.currentTeam).toBeNull()
+            d.resolve()
+            await settle(20)
+            expect(teamIds(store)).toEqual(['t2'])
+            expect(events).toContain('manifest:auth:teams-loaded')
+        })
+
+        it('a sign-out in another tab while the teams load is in flight leaves no teams and no teams-loaded', async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'] })
+            const d = api.hold('u1')
+            await storage(u1)
+            await storage(signedOutState)
+            const cleared = events.lastIndexOf('manifest:auth:session-cleared')
+            d.resolve()
+            await settle(20)
+            expect(teamIds(store)).toEqual([])
+            expect(store.currentTeam).toBeNull()
+            expect(events.indexOf('manifest:auth:teams-loaded')).toBeLessThan(cleared)
+        })
+
+        it('a late answer never clobbers a newer identity: u1 -> u2 before u1 teams land', async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'], u2: ['t2'] })
+            const d = api.hold('u1')
+            await storage(u1)
+            await storage(u2)
+            d.resolve()
+            await settle(40)
+            expect(teamIds(store)).toEqual(['t2'])
+            expect(store.currentTeam?.$id).toBe('t2')
+            expect(events.filter(e => e === 'manifest:auth:teams-loaded').length).toBe(1)
+        })
+
+        it("u1's stale answer never lands while u2 is signed in, not even for a moment", async () => {
+            const { store, storage, api } = await bootTeams({ u1: ['t1'], u2: ['t2'] })
+            const d1 = api.hold('u1')
+            const d2 = api.hold('u2')
+            await storage(u1)
+            await storage(u2)
+            const writes = watchTeams(store)
+            d1.resolve()
+            await settle(40)
+            expect(writes.filter(w => w.ids.includes('t1'))).toEqual([])
+            expect(store.currentTeam).toBeNull()
+            d2.resolve()
+            await settle(40)
+            expect(teamIds(store)).toEqual(['t2'])
+            expect(writes.filter(w => w.ids.includes('t1'))).toEqual([])
+        })
+
+        it("a stale cross-tab load does not wipe a newer identity's teams (u1 load -> sign-out -> local sign-in as c)", async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'], c: ['tc'] })
+            const d = api.hold('u1')
+            await storage(u1)
+            await storage(signedOutState)
+            // Local sign-in as c: teams load, then login announces them
+            Object.assign(store, { isAuthenticated: true, isAnonymous: false, user: { $id: 'c' }, session: { $id: 'sc' } })
+            await store._loadTeamsAndSeed({ teams: true })
+            store._syncStateToStorage(store)
+            await settle(10)
+            expect(teamIds(store)).toEqual(['tc'])
+            d.resolve()
+            await settle(40)
+            expect(teamIds(store)).toEqual(['tc'])
+            expect(store.currentTeam?.$id).toBe('tc')
+            expect(events.filter(e => e === 'manifest:auth:teams-loaded')).toEqual([])
+        })
+
+        it("a hung team request for u1 does not block u2's teams", async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'], u2: ['t2'] })
+            api.hold('u1')
+            await storage(u1)
+            await storage(u2)
+            await settle(40)
+            expect(api.calls).toEqual(['u1', 'u2'])
+            expect(teamIds(store)).toEqual(['t2'])
+            expect(store.currentTeam?.$id).toBe('t2')
+            expect(events).toContain('manifest:auth:teams-loaded')
+        })
+
+        it("this tab's own init team load landing after a cross-tab switch never shows u1's teams on u2", async () => {
+            const api = teamsApi({ u1: ['t1'], u2: ['t2'] })
+            const d = api.hold('u1')
+            const initAccount = { ...online('u1'), deleteSession: async () => {} }
+            const { store, events, storage } = await boot(noSession, { teams: true, teamsList: api.list, initAccount, mirror: u1 })
+            expect(store.user?.$id).toBe('u1')
+            expect(api.calls).toEqual(['u1'])
+            events.length = 0
+            const writes = watchTeams(store)
+            await storage(u2)
+            d.resolve()
+            await settle(40)
+            expect(writes.filter(w => w.ids.includes('t1'))).toEqual([])
+            expect(teamIds(store)).toEqual(['t2'])
+            expect(store.currentTeam?.$id).toBe('t2')
+            expect(events.filter(e => e === 'manifest:auth:teams-loaded').length).toBe(1)
+        })
+
+        it('a switch to a guest without guest teams drops the teams and loads none', async () => {
+            const { store, events, storage, api } = await bootTeams({ u1: ['t1'] })
+            const calls = api.calls
+            await storage(u1)
+            events.length = 0
+            await storage({ ...u1, isAnonymous: true, user: { $id: 'g1' } })
+            expect(events).toContain('manifest:auth:session-cleared')
+            expect(teamIds(store)).toEqual([])
+            expect(calls).toEqual(['u1'])
+            expect(events).not.toContain('manifest:auth:teams-loaded')
+        })
+
+        for (const [how, listTeams] of [['answers failure', async () => ({ success: false, error: 'offline' })], ['throws', async () => { throw new Error('offline') }]]) {
+            it(`a teams API that ${how} still announces teams-loaded (settles empty rather than holding sources)`, async () => {
+                const { store, events, storage } = await boot(noSession, { teams: true })
+                store.listTeams = listTeams
+                await storage(u1)
+                expect(teamIds(store)).toEqual([])
+                expect(events).toContain('manifest:auth:teams-loaded')
+            })
+        }
+
+        it('teams not configured: the sign-in is announced, nothing is loaded', async () => {
+            const { events, storage, api } = await bootTeams({ u1: ['t1'] }, { teams: false })
+            const calls = api.calls
+            await storage(u1)
+            expect(calls).toEqual([])
+            expect(events).toContain('manifest:auth:login')
+            expect(events).not.toContain('manifest:auth:teams-loaded')
+        })
+    })
 })
 
 describe('auth main: guest-auto after init', () => {
@@ -1210,7 +1394,7 @@ describe('bucket $remove keeps the source filter', () => {
 
 describe('sign-in and account switch reload identity-bound sources', () => {
     const guest = id => ({ ...signedOut(), isAuthenticated: true, isAnonymous: true, user: { $id: id } })
-    const signIn = (next, type = 'manifest:auth:login') => { Object.assign(Alpine.store('auth'), next); window.dispatchEvent(new CustomEvent(type)) }
+    const signIn = (next, type = 'manifest:auth:login', detail = null) => { Object.assign(Alpine.store('auth'), next); window.dispatchEvent(new CustomEvent(type, detail ? { detail } : undefined)) }
 
     it("guest -> login: the guest's rows drop at once and the source reloads as the user", async () => {
         let gate = null
@@ -1274,5 +1458,39 @@ describe('sign-in and account switch reload identity-bound sources', () => {
         window.dispatchEvent(new CustomEvent('manifest:auth:login'))
         await settle(60)
         expect(net.tableCalls).toBe(1)
+    })
+
+    it('a cross-tab sign-in keeps live team-scoped rows until this tab announces teams-loaded (no empty settle)', async () => {
+        const { net, ids, main } = await load(signedOut(), 'teams', { appwriteAuth: { teams: {} } })
+        await main.loadDataSource('projects')
+        await settle(60)
+        // Rows on screen when the other tab signs in (e.g. hydrated last-known rows)
+        window.ManifestDataStore.updateStore('projects', [{ $id: 'kept' }], { loading: false, error: null, ready: true })
+        signIn(signedIn('u1'), 'manifest:auth:login', { user: { $id: 'u1' }, crossTab: true })
+        await settle(80)
+        expect(net.tableCalls).toBe(0)
+        expect(ids()).toEqual(['kept'])
+        Object.assign(Alpine.store('auth'), signedIn('u1', 't1'))
+        window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'))
+        await settle(80)
+        expect(ids()).toEqual(['u1-0', 'u1-1'])
+        expect(net.tableCalls).toBe(1)
+    })
+
+    it('a cross-tab switch (u1 -> u2 via session-cleared) reloads team-scoped rows only once u2 teams land', async () => {
+        const { net, ids, state, main } = await load(signedIn('u1', 't1'), 'teams', { appwriteAuth: { teams: {} } })
+        window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'))
+        await main.loadDataSource('projects')
+        await settle(60)
+        expect(ids()).toEqual(['u1-0', 'u1-1'])
+        signIn(signedIn('u2'), 'manifest:auth:session-cleared')
+        await settle(60)
+        expect(ids()).toEqual([])
+        expect(state().ready).not.toBe(true)
+        expect(net.tableCalls).toBe(1)
+        Object.assign(Alpine.store('auth'), signedIn('u2', 't2'))
+        window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'))
+        await settle(80)
+        expect(ids()).toEqual(['u2-0', 'u2-1'])
     })
 })
