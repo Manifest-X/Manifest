@@ -3116,7 +3116,8 @@ ${urlEntries.join('\n')}
 
 /**
  * Group llms entries into sections by first URL segment ("Blog" for /blog/*),
- * root page as "Overview", in first-encounter order.  Wherever a path holds two
+ * root page as "Overview", in first-encounter order with each split section
+ * placed directly after its parent.  Wherever a path holds two
  * or more sub-areas that each have their own page and children, each sub-area
  * becomes its own section labelled by its page title, recursively: /docs/ai/*
  * and /docs/framework/* split into "AI Plugins" and "Framework", and groups
@@ -3180,7 +3181,21 @@ function groupLlmsSections(entries, siteName = '') {
     if (!sections.has(key)) sections.set(key, { label, entries: [] });
     sections.get(key).entries.push(entry);
   }
-  return sections;
+  const keys = [...sections.keys()];
+  const parentOf = (key) => keys.filter((k) => key.startsWith(k + '/')).sort((a, b) => b.length - a.length)[0];
+  const kids = new Map();
+  for (const key of keys) {
+    const parent = parentOf(key) ?? '';
+    if (!kids.has(parent)) kids.set(parent, []);
+    kids.get(parent).push(key);
+  }
+  const ordered = new Map();
+  const visit = (key) => {
+    ordered.set(key, sections.get(key));
+    for (const child of kids.get(key) || []) visit(child);
+  };
+  for (const key of kids.get('') || []) visit(key);
+  return ordered;
 }
 
 /**

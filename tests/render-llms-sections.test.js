@@ -116,4 +116,25 @@ describe('llms.txt sections', () => {
         ]), 'Manifest');
         expect(shape(out).map(([, label]) => label)).toEqual(['Guides', 'Api Reference']);
     });
+
+    it('places split sections right after their parent, whatever the page order', () => {
+        const out = groupLlmsSections(entries([
+            ['docs', 'Docs — M'],
+            ['docs/ai', 'AI — M'],
+            ['docs/framework', 'Framework — M'],
+            ['legal', 'Legal — M'],
+            ['docs/framework/guides', 'Guides — M'],
+            ['docs/framework/api', 'API — M'],
+            ['docs/ai/setup', 'Setup — M'],
+            ['docs/ai/projects', 'Projects — M'],
+            ['docs/framework/guides/one', 'One — M'],
+            ['docs/framework/api/auth', 'Auth — M'],
+            ['docs/ai/setup/claude', 'Claude — M'],
+            ['docs/ai/projects/edit', 'Edit — M'],
+            ['legal/terms', 'Terms — M'],
+        ]), 'M');
+        expect([...out.values()].map((s) => s.label)).toEqual([
+            'Docs', 'AI', 'AI / Setup', 'AI / Projects', 'Framework', 'Framework / Guides', 'Framework / API', 'Legal',
+        ]);
+    });
 });
