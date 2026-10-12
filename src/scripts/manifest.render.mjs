@@ -3467,13 +3467,20 @@ const COPY_EXCLUDE = new Set([
   'CLAUDE.md', 'AGENTS.md', 'manifest.schema.json',
 ]);
 
+// Capacitor-wrapped projects: native projects and config stay out of the web
+// output, else each `cap sync` nests ios/App/App/public/ios/… deeper.
+const CAPACITOR_CONFIGS = ['capacitor.config.json', 'capacitor.config.ts', 'capacitor.config.js'];
+const CAPACITOR_EXCLUDE = new Set(['ios', 'android', ...CAPACITOR_CONFIGS]);
+
 function copyProjectIntoDist(rootResolved, outputResolved) {
   const outputDirName = basename(outputResolved);
   COPY_EXCLUDE.add(outputDirName);
+  const wrapped = CAPACITOR_CONFIGS.some((f) => existsSync(join(rootResolved, f)));
   const entries = readdirSync(rootResolved, { withFileTypes: true });
   for (const ent of entries) {
     const name = ent.name;
     if (COPY_EXCLUDE.has(name) || name.startsWith('.')) continue;
+    if (wrapped && CAPACITOR_EXCLUDE.has(name)) continue;
     const src = join(rootResolved, name);
     const dest = join(outputResolved, name);
     cpSync(src, dest, {
@@ -5488,6 +5495,7 @@ export {
   discoverRoutes,
   acquireOutputLock,
   outputLockPath,
+  copyProjectIntoDist,
   markPrerenderedManifestComponents,
   normalizeLocaleRouteExclude,
   isLocaleRouteExcluded,

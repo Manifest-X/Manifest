@@ -27,28 +27,58 @@ Add a `device` block to your `manifest.json` (an empty object is enough):
 That loads `manifest.device.js` on the web build too (all capabilities degrade
 gracefully off-device). Inside the Capacitor container it auto-loads regardless.
 
-## 2. Build the web assets (the offline shell)
-
-Capacitor ships whatever is in `webDir`. Prerender the app so the shell loads
-instantly and offline (never a white screen — a Guideline 4.2 tell):
+## 2. Install Capacitor + this config
 
 ```bash
-npx mnfst-render
+npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android \
+  @capacitor/splash-screen @capacitor/status-bar
 ```
 
-This writes static output to `dist/` (matches `webDir` in `capacitor.config.json`).
-
-## 3. Install Capacitor + this config
-
-```bash
-npm install @capacitor/core @capacitor/cli
-npx cap init
-```
+Drop `@capacitor/android` if you only ship iOS. The splash-screen and status-bar
+plugins back the `SplashScreen` and `StatusBar` entries in the config.
 
 Copy `capacitor.config.json` from this folder into your project root and set:
-- `appId` — your reverse-DNS bundle id (e.g. `com.acme.nurvana`)
-- `appName` — the display name
-- `webDir` — leave as `dist` unless you render elsewhere
+- `appId` — your reverse-DNS bundle id (e.g. `com.acme.app`); it can't change after the first store upload
+- `appName` — the display name (`short_name` from `manifest.json`)
+- `webDir` — leave as `.app-www`
+- `plugins.PushNotifications` — add `{ "presentationOptions": ["badge", "sound", "alert"] }` only if you use `$push`
+
+## 3. Build the web assets (the offline shell)
+
+Capacitor ships whatever is in `webDir`. Prerender the app into it so the shell
+loads instantly and offline (never a white screen — a Guideline 4.2 tell). Add
+these scripts to `package.json`:
+
+```json
+"scripts": {
+  "app:web": "npx mnfst-render --out .app-www",
+  "app:build": "npm run app:web && npx cap sync"
+}
+```
+
+Render into the dot-folder `.app-www`, never `website/`: a `website/` folder
+switches an SPA project's publish into render mode, and non-dot folders get
+copied into later renders. With a `capacitor.config.*` at the root, `mnfst-render`
+(0.5.47+) leaves `ios/`, `android/` and the Capacitor config out of its output.
+
+Keep the build and native files out of git noise and out of the website:
+
+```gitignore
+# .gitignore
+node_modules/
+.app-www/
+```
+
+```gitignore
+# .manifestignore
+/ios/
+/android/
+/capacitor.config.json
+/package.json
+/package-lock.json
+```
+
+Commit `ios/` and `android/`; Capacitor writes its own `.gitignore` in each.
 
 ## 4. Install the capability plugins you use
 
@@ -75,11 +105,12 @@ npm install @capacitor/share @capacitor/haptics @capacitor/app @capacitor/networ
 ## 5. Add iOS and sync
 
 ```bash
+npm run app:web
 npx cap add ios
-npx cap sync ios
+npx cap add android   # optional
 ```
 
-Re-run `npx mnfst-render && npx cap sync ios` whenever the web app changes.
+Run `npm run app:build` whenever the web app changes.
 
 ## 6. Configure Info.plist and entitlements
 
@@ -91,7 +122,7 @@ In Xcode (`npx cap open ios`), under the app target:
   - `NSFaceIDUsageDescription` — for `$biometric`
 - **Push:** add the *Push Notifications* capability and *Background Modes → Remote notifications*.
 - **Deep links:** add *Associated Domains* (`applinks:yourdomain.com`) for universal links, or a custom URL scheme for `myapp://` links — both arrive via `$links`.
-- **Privacy manifest:** add `PrivacyInfo.xcprivacy` declaring data collection + required-reason API codes (mandatory since 2024, and covered SDKs like Capacitor plugins ship their own). See the [App Store Readiness guide](https://manifestx.dev/docs/publishing/app-store-readiness).
+- **Privacy manifest:** add `PrivacyInfo.xcprivacy` declaring data collection + required-reason API codes (mandatory since 2024, and covered SDKs like Capacitor plugins ship their own). See [Passing review](https://manifestx.dev/docs/framework/publishing/native-apps#passing-review).
 
 ## 7. Native feel (already mostly handled by Manifest)
 
@@ -109,7 +140,7 @@ npx cap open ios
 
 Set your signing team, run on a simulator/device, then Archive → upload to
 **TestFlight**. Before submitting, self-audit against the
-[iOS 4.2 checklist](https://manifestx.dev/docs/publishing/app-store-readiness) —
+[Passing review checklist](https://manifestx.dev/docs/framework/publishing/native-apps#passing-review) —
 ship at least one genuine native capability (Face ID, push, camera, or share) and
 name it in the review notes so the reviewer finds it.
 
@@ -117,4 +148,4 @@ name it in the review notes so the reviewer finds it.
 
 Physical goods may use Apple Pay / a normal processor in-app (Guideline 3.1.3(e)).
 Digital goods and subscriptions consumed in-app must use In-App Purchase (3.1.1) —
-keep those web-billed and outside the app. See the readiness guide.
+keep those web-billed and outside the app. See [Passing review](https://manifestx.dev/docs/framework/publishing/native-apps#passing-review).
