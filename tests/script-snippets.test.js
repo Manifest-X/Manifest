@@ -18,7 +18,8 @@ describe('script snippets', () => {
     it('build config lists the same carriers', () => {
         const build = read('build.mjs')
         for (const [snippet, plugins] of Object.entries(SNIPPETS)) {
-            expect(build).toContain(`'${snippet}': [${plugins.map((p) => `'${p}'`).join(', ')}]`)
+            const listed = build.match(new RegExp(`'${snippet.replace(/\./g, '\\.')}'\\s*:\\s*\\[([^\\]]*)\\]`))
+            expect(listed?.[1].match(/'[^']+'/g).map((p) => p.slice(1, -1))).toEqual(plugins)
         }
     })
 

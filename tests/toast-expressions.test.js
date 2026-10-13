@@ -80,6 +80,15 @@ describe('x-toast plain text stays plain', () => {
         ['C:\\new\\table', 'C:\\new\\table'],
         ['Node.js', 'Node.js'],
         ['top-parent', 'top-parent'],
+        ['2026-10-13', '2026-10-13'],
+        ['24/7', '24/7'],
+        ['1,000', '1,000'],
+        ['50-50', '50-50'],
+        ['3.0', '3.0'],
+        ['[]', '[]'],
+        ['{}', '{}'],
+        ['new', 'new'],
+        ['default', 'default'],
     ])('%s', async (attr, expected) => {
         warn.mockClear(); error.mockClear()
         const toast = await toastFor(`x-toast="${attr}"`)
@@ -165,6 +174,7 @@ describe('x-toast expressions evaluate', () => {
         expect(await toastFor(`x-toast="off && 'Reason'"`, '{ off: false }')).toBeNull()
         expect(await toastFor(`x-toast="off ? 'Reason' : ''"`, '{ off: false }')).toBeNull()
         expect(await toastFor('x-toast="v"', '{ v: null }')).toBeNull()
+        expect(await toastFor('x-toast="v"', '{ v: [] }')).toBeNull()
     })
 
     it('real errors warn with the authored expression and show nothing', async () => {
