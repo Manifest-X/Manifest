@@ -3,6 +3,56 @@
 (function () {
 
 
+// mnfst:expressions:start — synced by the build from scripts/snippets/manifest.expressions.js; edit there
+// Directive values: any JS expression evaluates; text that isn't one stays verbatim.
+
+const EXPR_BARE_IDENTIFIER = /^[\p{ID_Start}$_][\p{ID_Continue}$]*$/u;
+
+function exprParses(src) {
+    try { new Function('return (' + src + '\n)'); return true; } catch { return false; }
+}
+
+function exprInScope(el, name) {
+    try { return name in Alpine.$data(el); } catch { return false; }
+}
+
+// Errors come back as values: unresolved names read as plain text
+// ("Re-run", "Hello, world"); other errors warn against the authored expression
+const exprGuarded = (src) =>
+    '(() => { try { return (' + src + '\n) } catch (e) { return { __exprError: e } } })()';
+
+function exprUnwrap(v, el, src) {
+    const err = v && typeof v === 'object' && v.__exprError;
+    if (!(err instanceof Error)) return v;
+    if (err instanceof ReferenceError) return undefined;
+    console.warn(`Alpine Expression Error: ${err.message}\n\nExpression: "${src}"\n\n`, el);
+    return null;
+}
+
+// null for static text; else (cb) => cb(value, asText), asText meaning the
+// authored text shows instead (unresolved name, undefined, NaN)
+function expressionResolver(el, src, evaluateLater) {
+    if (src.startsWith('$x.')) {
+        const getValue = evaluateLater(src);
+        return (cb) => getValue(v => cb(v, false));
+    }
+    let getValue;
+    if (EXPR_BARE_IDENTIFIER.test(src)) {
+        // Single word: a scope value or magic, else text (never a global like Image or close)
+        const getWord = evaluateLater(exprGuarded(src));
+        getValue = (cb) => (src.startsWith('$') || exprInScope(el, src)) ? getWord(cb) : cb(undefined);
+    } else if (exprParses(src)) {
+        getValue = evaluateLater(exprGuarded(src));
+    } else {
+        return null;
+    }
+    return (cb) => getValue(raw => {
+        const v = exprUnwrap(raw, el, src);
+        cb(v, v === undefined || Number.isNaN(v));
+    });
+}
+// mnfst:expressions:end
+
 const TOAST_DURATION = 3000; // Default duration in ms
 
 function initializeToastPlugin() {
@@ -127,7 +177,7 @@ function initializeToastPlugin() {
     };
 
     // Add toast directive
-    Alpine.directive('toast', (el, { modifiers, expression }, { evaluate }) => {
+    Alpine.directive('toast', (el, { modifiers, expression }, { evaluateLater }) => {
         // Parse options from modifiers
         const options = {
             type: modifiers.includes('brand') ? 'brand' :
@@ -146,32 +196,11 @@ function initializeToastPlugin() {
             options.duration = modifiers.includes('long') ? TOAST_DURATION * 2 : TOAST_DURATION;
         }
 
-        // Handle both static and dynamic expressions
-        let message;
-        try {
-            // Check if expression starts with $x (data sources)
-            if (expression.startsWith('$x.')) {
-                // Use evaluate for $x expressions to access collections
-                message = evaluate(expression);
-            } else if (expression.includes('<') && expression.includes('>')) {
-                // Treat as literal HTML string - preserve spaces and formatting
-                // Escape quotes to prevent syntax errors, but keep the HTML intact
-                const escapedExpression = expression.replace(/'/g, "\\'");
-                message = evaluate(`'${escapedExpression}'`);
-            } else if (expression.includes('+') || expression.includes('`') || expression.includes('${')) {
-                // Try to evaluate as a dynamic expression
-                message = evaluate(expression);
-            } else {
-                // Use as static string
-                message = expression;
-            }
-        } catch (e) {
-            // If evaluation fails, use the expression as a static string
-            message = expression;
-        }
-
-        // Store the toast options on the element
-        el._toastOptions = { message, options };
+        // Static text (author HTML included) shows as written; expressions
+        // evaluate on every click. Empty results (null, false, '') show nothing.
+        const src = expression.trim();
+        const evaluate = expressionResolver(el, src, evaluateLater);
+        if (evaluate && src.startsWith('$x.')) evaluate(() => {}); // starts the source loading
 
         // Add click handler that works with other handlers
         const originalClick = el.onclick;
@@ -181,7 +210,11 @@ function initializeToastPlugin() {
                 originalClick.call(el, e);
             }
             // Show toast after original handler
-            showToast(message, options);
+            if (!evaluate) { showToast(expression, options); return; }
+            evaluate((v, asText) => {
+                if (asText) showToast(expression, options);
+                else if (v != null && v !== false && v !== '') showToast(String(v), options);
+            });
         };
     });
 

@@ -181,7 +181,7 @@ describe('x-tooltip expressions evaluate', () => {
         expect(tip).toBeNull()
         expect(warn).toHaveBeenCalledTimes(1)
         expect(warn.mock.calls[0][0]).toContain('Expression: "user.name"')
-        expect(warn.mock.calls[0][0]).not.toContain('__tooltipError')
+        expect(warn.mock.calls[0][0]).not.toContain('__exprError')
         silence.mockRestore()
     })
 })

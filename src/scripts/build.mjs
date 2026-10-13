@@ -194,6 +194,13 @@ const CONFIG = {
         'manifest.native.camera.js'
     ],
 
+    // Shared JS snippets, synced into each carrying plugin between the
+    // snippet's own marker lines so every plugin stays standalone.
+    // Source of truth: scripts/snippets/.
+    scriptSnippets: {
+        'manifest.expressions.js': ['manifest.tooltips.js', 'manifest.toasts.js']
+    },
+
     // Core plugins that should load first
     corePlugins: ['scripts/manifest.components.js'],
 
@@ -208,6 +215,7 @@ const CONFIG = {
         'scripts/edit/**',
         'scripts/chat/**',
         'scripts/device/**',
+        'scripts/snippets/**',
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
@@ -301,6 +309,35 @@ function buildSubscripts() {
     combineSubscripts(CONFIG.nativeSubscripts, 'manifest.device.js', 'device');
 
     console.log('✓ Subscripts built successfully!\n');
+}
+
+// Sync shared JS snippets into the plugins that carry them
+function syncScriptSnippets() {
+    console.log('Syncing script snippets...');
+    for (const [snippet, plugins] of Object.entries(CONFIG.scriptSnippets)) {
+        const name = snippet.replace(/^manifest\.|\.js$/g, '');
+        const startMarker = `// mnfst:${name}:start`;
+        const endMarker = `// mnfst:${name}:end`;
+        const body = fs.readFileSync(path.join('scripts/snippets', snippet), 'utf8').trim();
+        if (!body.startsWith(startMarker) || !body.endsWith(endMarker)) {
+            console.error(`  \u2716 ${snippet}: must open with ${startMarker} and close with ${endMarker}`);
+            process.exit(1);
+        }
+        for (const plugin of plugins) {
+            const content = fs.readFileSync(path.join('scripts', plugin), 'utf8');
+            const start = content.indexOf(startMarker);
+            const end = start === -1 ? -1 : content.indexOf(endMarker, start);
+            if (end === -1) {
+                console.error(`  \u2716 ${plugin}: missing ${name} snippet markers`);
+                process.exit(1);
+            }
+            const synced = content.slice(0, start) + body + content.slice(end + endMarker.length);
+            const outputPath = path.join(MONOLITH_DIR, plugin);
+            if (synced !== content || SCRIPTS_OUT) fs.writeFileSync(outputPath, synced);
+            console.log(`  \u2713 ${snippet} \u2192 ${plugin}`);
+        }
+    }
+    console.log('');
 }
 
 // Build stylesheets
@@ -894,6 +931,7 @@ async function build() {
         // Step 1: Build subscripts
         if (SCRIPTS_OUT) fs.mkdirSync(SCRIPTS_OUT, { recursive: true });
         buildSubscripts();
+        syncScriptSnippets();
 
         // Step 2: Build stylesheets
         if (!SCRIPTS_OUT) await buildStylesheets();
