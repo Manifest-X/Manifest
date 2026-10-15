@@ -77,20 +77,20 @@ describe('2. .inline stays one line', () => {
         const el = area('html.inline', 'x', 1)
         const ev = transfer(el, 'drop', { 'text/html': '<p>a</p><p>b</p>' })
         expect(ev.defaultPrevented).toBe(true)
-        expect(inserted).toEqual(['a b'])
+        expect(el.innerHTML).toBe('xa b')
     })
 
     it('a multi-line text drop is flattened; a one-line drop is left native', () => {
         const el = area('inline', 'x', 1)
         expect(transfer(el, 'drop', { 'text/plain': 'a\nb' }).defaultPrevented).toBe(true)
-        expect(inserted).toEqual(['a b'])
+        expect(el.innerHTML).toBe('xa b')
         expect(transfer(el, 'drop', { 'text/plain': 'ab' }).defaultPrevented).toBe(false)
     })
 
     it.each(['insertText', 'insertReplacementText', 'insertCompositionText'])('%s with a newline lands as one line', (type) => {
         const el = area('html.inline', 'x', 1)
         expect(beforeinput(el, type, 'one\ntwo <b>').defaultPrevented).toBe(true)
-        expect(inserted).toEqual(['one two &lt;b&gt;'])
+        expect(el.innerHTML).toBe('xone two &lt;b&gt;')
         expect(beforeinput(el, type, 'plain').defaultPrevented).toBe(false)
     })
 
@@ -305,6 +305,71 @@ describe('markdown escapes round-trip as literal text', () => {
 
     it('real markdown still converts', () => {
         expect(RT().fromMarkdown('# Head\n\n- item\n\n~~gone~~')).toBe('<h1>Head</h1><ul><li>item</li></ul><p><s>gone</s></p>')
+    })
+})
+
+describe('re-review regressions', () => {
+    const md = (html) => RT().toMarkdown(parse(html))
+    const back = (markdown) => md(RT().fromMarkdown(markdown))
+
+    it.each(['`\\d+\\.\\d+`', '`a\\-b \\+c \\#d`', '`x\\\\y`', '`*not em*`', 'Text with `a_b_c` code.'])('A. code span %s keeps its backslashes', (src) => {
+        expect(back(src)).toBe(src)
+    })
+
+    it('A. code span content is verbatim html', () => {
+        expect(RT().fromMarkdown('`\\d+\\.\\d+`')).toBe('<p><code>\\d+\\.\\d+</code></p>')
+    })
+
+    it('A. an escaped backtick outside code stays literal', () => {
+        expect(RT().fromMarkdown('a \\` b')).toBe('<p>a ` b</p>')
+    })
+
+    it('A. fenced code keeps backslashes', () => {
+        expect(back('```\n\\d+\\.\\d+ \\# \\-\n```')).toBe('```\n\\d+\\.\\d+ \\# \\-\n```')
+    })
+
+    it.each([[['3x2'], [3, 2]], [[[3, 2]], [3, 2]], [[4, 1], [4, 1]]])('C. table(%j) is columns × rows', (args, want) => {
+        const el = area('html', '<p>x</p>', 1)
+        api(el).table(...args)
+        const host = parse(inserted[0]), rows = host.querySelectorAll('tr')
+        expect([rows[0].cells.length, rows.length]).toEqual(want)
+    })
+
+    it('D. inline markdown stores no line-start escapes and reloads them literally', () => {
+        const root = mount(`<div x-data="{ t: '1. Introduction' }"><div x-rich-text.inline="t" id="a"></div></div>`)
+        const el = root.querySelector('#a')
+        expect(el.innerHTML).toBe('1. Introduction')
+        expect(api(el).value).toBe('1. Introduction')
+        api(el).value = '# Not a heading - really'
+        expect(el.innerHTML).toBe('# Not a heading - really')
+        expect(api(el).value).toBe('# Not a heading - really')
+    })
+
+    it('table cells join their paragraphs with a space', () => {
+        const el = area('html', '<table><tbody><tr><td><p>a</p><p>b</p></td><td>c</td></tr></tbody></table>')
+        expect(api(el).markdown()).toBe('a b · c')
+    })
+
+    it.each(['a<br>  1. b', 'a<br>  - b', 'a<br>   # b'])('a line after a break with leading spaces stays text: %s', (html) => {
+        const out = parse(RT().fromMarkdown(md(`<p>${html}</p>`)))
+        expect(out.querySelector('ol, ul, h1')).toBe(null)
+        expect(out.textContent.replace(/\s+/g, ' ')).toBe(parse(html).textContent.replace(/\s+/g, ' '))
+    })
+
+    it('.inline backstop keeps one space at block boundaries, never doubled', () => {
+        const el = area('html.inline', 'x', 1)
+        el.innerHTML = 'bbx<p>y</p>z <strong> w</strong><br> v'
+        el.dispatchEvent(new window.InputEvent('input', { bubbles: true }))
+        expect(el.innerHTML).toBe('bbx y z <strong>w</strong> v')
+    })
+
+    it('.inline.html paste is inserted by hand, never via execCommand', () => {
+        const el = area('html.inline', 'x', 1)
+        transfer(el, 'paste', { 'text/html': '<span style="font-size: 16px">one</span> <b style="color:red">two</b>' })
+        expect(inserted).toEqual([])
+        expect(document.execCommand).not.toHaveBeenCalledWith('insertHTML', expect.anything(), expect.anything())
+        expect(el.innerHTML).toBe('xone <b>two</b>')
+        expect(api(el).value).toBe('xone <b>two</b>')
     })
 })
 

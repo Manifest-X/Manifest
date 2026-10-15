@@ -371,7 +371,8 @@ describe('14. tables pasted into markdown', () => {
         const area = root.querySelector('#a')
         focusin(area); select(area.firstChild, 1)
         paste(area, { 'text/html': TABLE })
-        expect(inserted[0]).toBe('Stem · Price <b>Rose</b> · 4')
+        expect(area.innerHTML).toBe('xStem · Price <b>Rose</b> · 4')
+        expect(inserted).toEqual([])
     })
 
     it('serialize readably if one reaches a markdown document anyway', () => {

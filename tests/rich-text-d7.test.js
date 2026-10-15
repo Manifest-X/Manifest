@@ -363,13 +363,13 @@ describe('.inline', () => {
     it('flattens a multi-paragraph html paste to one line', () => {
         const el = area('html.inline', 'x', 1)
         paste(el, { 'text/html': '<h1>Big</h1>\n<p>one <em>two</em></p><ul><li>three</li><li>four<br>five</li></ul>' })
-        expect(inserted).toEqual(['Big one <em>two</em> three four five'])
+        expect(el.innerHTML).toBe('xBig one <em>two</em> three four five')
     })
 
     it('flattens a multi-line text paste to one line', () => {
         const el = area('inline', 'x', 1)
         paste(el, { 'text/plain': 'one\n\ntwo **bold**\nthree' })
-        expect(inserted).toEqual(['one two <strong>bold</strong> three'])
+        expect(el.innerHTML).toBe('xone two <strong>bold</strong> three')
     })
 
     it('flattens a plain paste in .plain.inline', () => {
