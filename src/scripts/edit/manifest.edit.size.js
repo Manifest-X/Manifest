@@ -8,7 +8,7 @@
          --edit-size-snap-distance  1rem                         magnet tolerance (NOT a grid step)
          --edit-size-snap-distance-x/-y  per-axis tolerance
          --edit-size-collapse-x/-y  120px                        collapse below this → [data-edit-collapsed] + 'edit:collapse' event
-       (min/max come from the element's native min-/max-width/height.) */
+       (min/max come from the element's native min-/max-width/height; % against the containing block.) */
     let overlayEl;
     // Fires while dragging (done:false) and once on commit (done:true), so consumers
     // that must re-measure — charts, virtual lists — can track the drag and settle.
@@ -27,6 +27,45 @@
     function physical(pos, el) {
         const rtl = isRTL(el);
         return pos.replace(/start/g, rtl ? 'right' : 'left').replace(/end/g, rtl ? 'left' : 'right');
+    }
+    // Containing-block size for % limits: the parent's content box in flow, the
+    // offsetParent's padding box when absolute, the viewport when fixed. An
+    // auto-height parent has no definite height, so % height limits drop (null).
+    function blockSize(el, dim) {
+        const pos = getComputedStyle(el).position;
+        if (pos === 'fixed') return dim === 'w' ? document.documentElement.clientWidth : document.documentElement.clientHeight;
+        const cb = pos === 'absolute' ? el.offsetParent || el.parentElement : el.parentElement;
+        if (!cb) return null;
+        const ps = getComputedStyle(cb), w = dim === 'w';
+        const box = w ? cb.clientWidth : cb.clientHeight;
+        if (pos === 'absolute') return box;
+        if (!w && !definiteHeight(cb)) return null;
+        return box - (parseFloat(w ? ps.paddingLeft : ps.paddingTop) || 0) - (parseFloat(w ? ps.paddingRight : ps.paddingBottom) || 0);
+    }
+    // Specified height via Typed OM; without it (Firefox) only an inline height counts.
+    function definiteHeight(el) {
+        for (let n = el, depth = 0; n && depth < 32; n = n.parentElement, depth++) {
+            if (n === document.documentElement) return true;               // % on the root resolves against the viewport
+            const pos = getComputedStyle(n).position;
+            if (pos === 'absolute' || pos === 'fixed') return true;
+            let h;
+            if (n.computedStyleMap) { try { h = String(n.computedStyleMap().get('height')).trim(); } catch { } }
+            if (h == null) h = (n.style && n.style.height || '').trim() || 'auto';
+            if (h === 'auto' || h === '') return false;
+            if (!h.endsWith('%')) return true;                           // a length (or calc) is definite
+        }
+        return false;
+    }
+    function limitPx(v, el, dim, none) {
+        v = String(v || '').trim();
+        if (!v || v === 'none' || v === 'auto') return none;
+        if (/^-?[\d.]+%$/.test(v)) { const b = blockSize(el, dim); return b == null ? none : parseFloat(v) / 100 * b; }
+        const px = toPx(v, el, dim);
+        return px == null ? none : px;
+    }
+    function limits(el, cs) {
+        const minW = limitPx(cs.minWidth, el, 'w', 0), minH = limitPx(cs.minHeight, el, 'h', 0);
+        return { minW, minH, maxW: Math.max(minW, limitPx(cs.maxWidth, el, 'w', Infinity)), maxH: Math.max(minH, limitPx(cs.maxHeight, el, 'h', Infinity)) };   // min wins, as in CSS
     }
     const defaultEdges = (axes) => axes === 'x' ? ['left', 'right'] : axes === 'y' ? ['top', 'bottom'] : ['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
 
@@ -61,7 +100,7 @@
         const [kx, ky] = map[e.key], step = e.shiftKey ? 32 : 8, cs = getComputedStyle(el);
         const right = pos.includes('right'), left = pos.includes('left'), top = pos.includes('top'), bottom = pos.includes('bottom');
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
-        const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity, minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
+        const { minW, maxW, minH, maxH } = limits(el, cs);
         if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
         if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
         sizeEvent(el, false);
@@ -78,8 +117,7 @@
         const cs = getComputedStyle(el), rect = el.getBoundingClientRect();
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
         const baseW = parseFloat(cs.width) || rect.width, baseH = parseFloat(cs.height) || rect.height, sx = e.clientX, sy = e.clientY;
-        const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity;
-        const minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
+        const { minW, maxW, minH, maxH } = limits(el, cs);
         const right = pos.includes('right'), left = pos.includes('left'), bottom = pos.includes('bottom'), top = pos.includes('top');
         const tolX = toPx(cssVar(el, '--edit-size-snap-distance-x', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'w') || 0;
         const tolY = toPx(cssVar(el, '--edit-size-snap-distance-y', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'h') || 0;

@@ -329,7 +329,7 @@
         if (d.kind === 'data-splice') applySplice(d, true);
         else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
         else dispatchApply(d);
-        saveState(); refresh();
+        rebaseFocused(); saveState(); refresh();
     }
     async function redo() {
         if (cursor >= log.length) return; const d = log[cursor++];
@@ -337,7 +337,7 @@
         if (d.kind === 'data-splice') applySplice(d, false);
         else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
         else dispatchApply(d);
-        saveState(); refresh();
+        rebaseFocused(); saveState(); refresh();
     }
 
     /* ---- Projections (static/data); component projections come from componentState() ---- */

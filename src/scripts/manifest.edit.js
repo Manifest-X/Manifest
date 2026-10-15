@@ -488,7 +488,7 @@
         if (d.kind === 'data-splice') applySplice(d, true);
         else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
         else dispatchApply(d);
-        saveState(); refresh();
+        rebaseFocused(); saveState(); refresh();
     }
     async function redo() {
         if (cursor >= log.length) return; const d = log[cursor++];
@@ -496,7 +496,7 @@
         if (d.kind === 'data-splice') applySplice(d, false);
         else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
         else dispatchApply(d);
-        saveState(); refresh();
+        rebaseFocused(); saveState(); refresh();
     }
 
     /* ---- Projections (static/data); component projections come from componentState() ---- */
@@ -735,10 +735,13 @@
 
     /* ---- Drag: reorder (in-flow, pointer+keyboard) OR move (positioned) ----
        Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
-       Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel. */
+       Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel;
+       Alt/Option+arrow moves the focused row one step; in text only Up/Down (Left/Right stay word-jump).
+       CSS-var config:
+         --edit-drop-reach        48px        how far outside a cross-region destination a drop still lands in it */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
     let grabbed = null, liveRegion;
-    function announce(msg) { if (!liveRegion) { liveRegion = document.createElement('div'); liveRegion.setAttribute('data-edit-live', ''); liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
+    function announce(msg) { if (!liveRegion || !liveRegion.isConnected) { liveRegion = document.createElement('div'); liveRegion.setAttribute('data-edit-live', ''); liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
 
     function makeSortable(container) {
         sortableChildren(container).forEach(child => {
@@ -820,7 +823,7 @@
                 active = true; lift(ev); paint();
             }
             ev.preventDefault();
-            const over = (crossOK && dropArea(px, py)) || ghost.parentElement;   // cross-region drop search
+            const over = (crossOK && dropArea(px, py, area)) || ghost.parentElement;   // cross-region drop search
             if (over !== hovered) {
                 if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
                 hovered = over;
@@ -874,13 +877,27 @@
         if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
         if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
     }
-    // Cross-region drop target: the innermost active static sort region under the pointer.
-    function dropArea(x, y) {
+    // Cross-region drop target: the innermost valid region under the pointer, else
+    // the nearest valid one within reach — regions are often shorter than their column.
+    const dropValid = (a) => !!a && !!a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a);
+    function dropArea(x, y, origin) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
         for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
-            if (a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) return a;
+            if (dropValid(a)) return a;
         }
-        return null;
+        const cands = [origin, ...document.querySelectorAll('[data-edit-drop-target]')].filter((a, i, all) => dropValid(a) && all.indexOf(a) === i);
+        const inside = (r, pad) => x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
+        let best = null, bestD = Infinity;
+        for (const a of cands) {
+            const r = a.getBoundingClientRect();
+            const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+            const reach = toPx(cssVar(a, '--edit-drop-reach', ''), a, 'w') ?? 48;
+            // The block wrapping the region (its column) counts as its surface, unless it wraps another candidate too.
+            const p = a.parentElement;
+            const column = p && p !== document.body && p !== document.documentElement && !cands.some(o => o !== a && p.contains(o)) && inside(p.getBoundingClientRect(), 0);
+            if ((inside(r, reach) || column) && d < bestD) { best = a; bestD = d; }
+        }
+        return best;
     }
     function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
     // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.
@@ -897,10 +914,21 @@
         }
         return null;
     }
-    // Keyboard reorder: grab → arrows move among siblings → drop.
+    // Keyboard reorder: grab → arrows move among siblings → drop. Space/Enter belong
+    // to text and controls inside the row; Alt+arrow moves the row directly.
+    const ownControl = (e, item) => e.target !== item && !!e.target.closest && item.contains(e.target.closest('a[href], button, summary, [role="button"], [role="link"]'));
     function onItemKeydown(e) {
         const item = this, area = item.closest('[data-edit-area]'); if (!isActive(area)) return;
-        if (e.key === ' ' || e.key === 'Enter') {
+        if (e._editRow) return;                            // the innermost row claims the key
+        const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+        const wordJump = inText(e) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
+        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !wordJump) {
+            const home = item.parentElement && item.parentElement.closest('[data-edit-area]');   // the row's region, never the row itself
+            if (!isActive(home)) return;
+            e._editRow = true; e.preventDefault(); stepRow(item, home, dir); return;
+        }
+        if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item)) {
+            e._editRow = true;
             e.preventDefault();
             if (grabbed === item) { grabbed = null; item.removeAttribute('data-edit-grabbed'); finishReorder(area); item.focus(); announce('Dropped'); }
             else { if (grabbed) grabbed.removeAttribute('data-edit-grabbed'); grabbed = item; item.setAttribute('data-edit-grabbed', ''); announce('Grabbed — arrow keys to move, Enter to drop'); }
@@ -908,13 +936,31 @@
         }
         if (grabbed !== item) return;
         if (e.key === 'Escape') { e.preventDefault(); grabbed = null; item.removeAttribute('data-edit-grabbed'); item.focus(); announce('Cancelled'); return; }
-        const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
         if (dir == null) return;
+        e._editRow = true;
         e.preventDefault();
         const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
         if (j < 0 || j >= sibs.length) return;
         if (dir > 0) sibs[j].after(item); else sibs[j].before(item);
         item.focus(); announce(`Position ${j + 1} of ${sibs.length}`);
+    }
+    // One step, committed at once. The row itself never leaves the DOM — its
+    // neighbours move round it — so focus and the caret in its text survive.
+    function stepRow(item, area, dir) {
+        const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
+        if (i < 0 || j < 0 || j >= sibs.length) { announce(`Position ${i + 1} of ${sibs.length}`); return; }
+        const other = sibs[j], between = [];
+        for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
+        if (dir > 0) { item.before(other); between.forEach(n => item.before(n)); }
+        else { item.after(other); between.forEach(n => item.after(n)); }
+        const focused = document.activeElement, sel = window.getSelection && window.getSelection();
+        const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+        finishReorder(area);
+        if (focused && focused.isConnected && document.activeElement !== focused) {
+            focused.focus();
+            if (range) try { sel.removeAllRanges(); sel.addRange(range); } catch { }
+        }
+        announce(`Moved to position ${j + 1} of ${sibs.length}`);
     }
     // Move mode: positioned elements → pointer-drag left/top (touch-capable) + keyboard nudge, unit-preserving.
     function makeMovable(el) {
@@ -958,7 +1004,7 @@
          --edit-size-snap-distance  1rem                         magnet tolerance (NOT a grid step)
          --edit-size-snap-distance-x/-y  per-axis tolerance
          --edit-size-collapse-x/-y  120px                        collapse below this → [data-edit-collapsed] + 'edit:collapse' event
-       (min/max come from the element's native min-/max-width/height.) */
+       (min/max come from the element's native min-/max-width/height; % against the containing block.) */
     let overlayEl;
     // Fires while dragging (done:false) and once on commit (done:true), so consumers
     // that must re-measure — charts, virtual lists — can track the drag and settle.
@@ -977,6 +1023,45 @@
     function physical(pos, el) {
         const rtl = isRTL(el);
         return pos.replace(/start/g, rtl ? 'right' : 'left').replace(/end/g, rtl ? 'left' : 'right');
+    }
+    // Containing-block size for % limits: the parent's content box in flow, the
+    // offsetParent's padding box when absolute, the viewport when fixed. An
+    // auto-height parent has no definite height, so % height limits drop (null).
+    function blockSize(el, dim) {
+        const pos = getComputedStyle(el).position;
+        if (pos === 'fixed') return dim === 'w' ? document.documentElement.clientWidth : document.documentElement.clientHeight;
+        const cb = pos === 'absolute' ? el.offsetParent || el.parentElement : el.parentElement;
+        if (!cb) return null;
+        const ps = getComputedStyle(cb), w = dim === 'w';
+        const box = w ? cb.clientWidth : cb.clientHeight;
+        if (pos === 'absolute') return box;
+        if (!w && !definiteHeight(cb)) return null;
+        return box - (parseFloat(w ? ps.paddingLeft : ps.paddingTop) || 0) - (parseFloat(w ? ps.paddingRight : ps.paddingBottom) || 0);
+    }
+    // Specified height via Typed OM; without it (Firefox) only an inline height counts.
+    function definiteHeight(el) {
+        for (let n = el, depth = 0; n && depth < 32; n = n.parentElement, depth++) {
+            if (n === document.documentElement) return true;               // % on the root resolves against the viewport
+            const pos = getComputedStyle(n).position;
+            if (pos === 'absolute' || pos === 'fixed') return true;
+            let h;
+            if (n.computedStyleMap) { try { h = String(n.computedStyleMap().get('height')).trim(); } catch { } }
+            if (h == null) h = (n.style && n.style.height || '').trim() || 'auto';
+            if (h === 'auto' || h === '') return false;
+            if (!h.endsWith('%')) return true;                           // a length (or calc) is definite
+        }
+        return false;
+    }
+    function limitPx(v, el, dim, none) {
+        v = String(v || '').trim();
+        if (!v || v === 'none' || v === 'auto') return none;
+        if (/^-?[\d.]+%$/.test(v)) { const b = blockSize(el, dim); return b == null ? none : parseFloat(v) / 100 * b; }
+        const px = toPx(v, el, dim);
+        return px == null ? none : px;
+    }
+    function limits(el, cs) {
+        const minW = limitPx(cs.minWidth, el, 'w', 0), minH = limitPx(cs.minHeight, el, 'h', 0);
+        return { minW, minH, maxW: Math.max(minW, limitPx(cs.maxWidth, el, 'w', Infinity)), maxH: Math.max(minH, limitPx(cs.maxHeight, el, 'h', Infinity)) };   // min wins, as in CSS
     }
     const defaultEdges = (axes) => axes === 'x' ? ['left', 'right'] : axes === 'y' ? ['top', 'bottom'] : ['top', 'right', 'bottom', 'left', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
 
@@ -1011,7 +1096,7 @@
         const [kx, ky] = map[e.key], step = e.shiftKey ? 32 : 8, cs = getComputedStyle(el);
         const right = pos.includes('right'), left = pos.includes('left'), top = pos.includes('top'), bottom = pos.includes('bottom');
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
-        const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity, minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
+        const { minW, maxW, minH, maxH } = limits(el, cs);
         if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
         if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
         sizeEvent(el, false);
@@ -1028,8 +1113,7 @@
         const cs = getComputedStyle(el), rect = el.getBoundingClientRect();
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
         const baseW = parseFloat(cs.width) || rect.width, baseH = parseFloat(cs.height) || rect.height, sx = e.clientX, sy = e.clientY;
-        const minW = parseFloat(cs.minWidth) || 0, maxW = parseFloat(cs.maxWidth) || Infinity;
-        const minH = parseFloat(cs.minHeight) || 0, maxH = parseFloat(cs.maxHeight) || Infinity;
+        const { minW, maxW, minH, maxH } = limits(el, cs);
         const right = pos.includes('right'), left = pos.includes('left'), bottom = pos.includes('bottom'), top = pos.includes('top');
         const tolX = toPx(cssVar(el, '--edit-size-snap-distance-x', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'w') || 0;
         const tolY = toPx(cssVar(el, '--edit-size-snap-distance-y', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'h') || 0;
@@ -1560,6 +1644,42 @@
         bar.querySelector('[data-a="redo"]').disabled = cursor >= log.length;
     }
 
+    /* ---- Undo/redo hotkeys: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y ----
+       On wherever a region is active; data-edit-hotkeys="off" on a region or any
+       ancestor opts it out. Text that is still being typed keeps the browser's own
+       undo until it commits on blur; fields and x-text-edit keep theirs always. */
+    const leafText = (el) => el.hasAttribute('data-edit-field') && !el.hasAttribute('data-edit-rich') ? el.textContent : el.innerHTML.trim();
+    const hotkeysOff = (el) => !!el.closest('[data-edit-hotkeys="off"]');
+    // A leaf the user was typing in commits on blur against its focus-time value;
+    // after history rewrites it under the caret, that value must follow (again
+    // once Alpine has re-rendered a data field).
+    function rebaseFocused() {
+        const el = document.activeElement;
+        if (!el || el._preEdit === undefined || !el.isContentEditable) return;
+        const sync = () => { if (document.activeElement === el) el._preEdit = leafText(el); };
+        sync(); setTimeout(sync, 0);
+    }
+    function onHistoryKey(e) {
+        if (e.defaultPrevented || e.altKey || !(e.metaKey || e.ctrlKey) || dragged) return;   // never mid-drag
+        const k = (e.key || '').toLowerCase();
+        const isRedo = (k === 'z' && e.shiftKey) || (k === 'y' && e.ctrlKey && !e.metaKey && !e.shiftKey);
+        if (!isRedo && !(k === 'z' && !e.shiftKey)) return;
+        const t = e.target && e.target.nodeType === 1 ? e.target : document.body;
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[data-text-edit]')) return;
+        const region = t.closest('[data-edit-area]');
+        if (region) {
+            const top = regionOf(region);
+            if (!top || !isActive(top) || hotkeysOff(region)) return;
+        } else {
+            if (t.isContentEditable) return;                         // someone else's editor
+            if (!areas().some(a => isActive(a) && !hotkeysOff(a))) return;
+        }
+        if (t.isContentEditable && t._preEdit !== undefined && leafText(t) !== t._preEdit) return;   // uncommitted typing: native undo
+        if (isRedo ? cursor >= log.length : cursor === 0) return;
+        e.preventDefault();
+        isRedo ? redo() : undo();
+    }
+
 
     /* ---- Restore persisted edits + boot (registers x-edit directive + $edit magic) ---- */
     function restore() {
@@ -1615,6 +1735,7 @@
         loadState();
         setTimeout(() => { armAll(); restore(); }, 450);   // arm (captures baselines) THEN re-apply persisted edits
         window.addEventListener('manifest:route-change', () => setTimeout(refresh, 0));   // chrome follows the route
+        document.addEventListener('keydown', onHistoryKey);
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

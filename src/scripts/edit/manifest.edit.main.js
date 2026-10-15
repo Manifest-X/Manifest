@@ -52,6 +52,7 @@
         loadState();
         setTimeout(() => { armAll(); restore(); }, 450);   // arm (captures baselines) THEN re-apply persisted edits
         window.addEventListener('manifest:route-change', () => setTimeout(refresh, 0));   // chrome follows the route
+        document.addEventListener('keydown', onHistoryKey);
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

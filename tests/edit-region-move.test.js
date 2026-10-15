@@ -407,10 +407,7 @@ describe('x-edit publish paths vs the file the server will reach', () => {
         const area = root.querySelector('section')
         const alpha = area.querySelector('p')
         editText(alpha, 'Edited')
-        const key = (k) => new KeyboardEvent('keydown', { key: k, bubbles: true })
-        alpha.dispatchEvent(key(' '))                     // grab
-        alpha.dispatchEvent(key('ArrowDown'))
-        alpha.dispatchEvent(key('Enter'))                 // drop → st-order [Beta, Alpha]
+        alpha.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }))   // text row: Alt+arrow → st-order [Beta, Alpha]
         const st = store().patches().find(p => p.kind === 'static' && p.region === 'ord-e1')
         expect(st.order).toEqual(['P:Beta', 'P:Alpha'])
         // Same-length order IS applied by the server, so the current position is right.
@@ -425,10 +422,8 @@ describe('x-edit plugin-node indexing (handles/ghosts never count)', () => {
         const area = root.querySelector('section')
         expect([...area.children].filter(c => c.hasAttribute('data-edit-handle')).length).toBeGreaterThan(0)
         const two = [...area.querySelectorAll('p')].find(p => p.textContent === 'Two')
-        const key = (k) => new KeyboardEvent('keydown', { key: k, bubbles: true })
-        two.dispatchEvent(key(' '))
-        two.dispatchEvent(key('ArrowUp'))
-        two.dispatchEvent(key('Enter'))                   // st-order [Two, One]
+        two.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }))   // st-order [Two, One]
+        expect([...area.children].filter(c => c.tagName === 'P').map(c => c.textContent)).toEqual(['Two', 'One'])
         await store().undo()                              // applyStaticState reorder branch
         expect(area.firstElementChild.tagName).toBe('P')  // not a handle span
         expect([...area.children].filter(c => c.tagName === 'P').map(c => c.textContent)).toEqual(['One', 'Two'])
