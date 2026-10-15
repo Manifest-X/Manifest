@@ -574,6 +574,23 @@ describe('client and writer agree', () => {
     })
 })
 
+describe('.all on leaves', () => {
+    it('.all controls and $rich.all are unavailable on an Edit leaf; standalone fields keep them', async () => {
+        const root = await mount(`<div x-data><div id="bar"><button x-rich-text.align.all.center id="al">C</button></div><section x-edit="al1"><p>One two</p></section><div x-rich-text.html id="fld"><p>Field</p></div></div>`)
+        const p = root.querySelector('p'), btn = root.querySelector('#al'), fld = root.querySelector('#fld')
+        await enter(p)
+        select(p.firstChild, 0, 3)
+        await flush()
+        expect(btn.getAttribute('aria-disabled')).toBe('true')
+        btn.click()
+        p._editRt.all = { align: 'center' }
+        expect(p.getAttribute('style')).toBe(null)
+        await blur(p)
+        fld._rt.api.all = { align: 'center' }
+        expect(fld.getAttribute('style')).toContain('--rich-text-align')
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)

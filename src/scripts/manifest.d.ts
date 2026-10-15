@@ -509,6 +509,8 @@ export interface ManifestRichTextAttachOptions {
     mode?: 'block' | 'inline';
     /** Inline html only: `<br>` line breaks are kept, Shift+Enter inserts one, pasted blocks become lines. */
     breaks?: boolean;
+    /** false: `.all` controls and `$rich.all` are unavailable (no area-wide --rich-text-* styles). Default true. */
+    all?: boolean;
     /** Storage format: 'markdown' (default), 'html' or 'plain'. */
     format?: 'markdown' | 'html' | 'plain';
     /** Initial value; omitted, the element's existing markup is the content. */

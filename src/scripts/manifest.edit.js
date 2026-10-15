@@ -1652,7 +1652,7 @@
         if (el._editRt || el._pieceMode) return;                         // a focused piece re-attaches when it leaves piece mode
         const RT = rtEngine();
         el._editRtPrior = ['role', 'aria-multiline'].map(a => [a, el.getAttribute(a)]);
-        const h = RT && RT.attach(el, { mode: 'inline', breaks: true, format, onChange: () => { } });
+        const h = RT && RT.attach(el, { mode: 'inline', breaks: true, all: false, format, onChange: () => { } });
         if (!h) { el.setAttribute('contenteditable', 'true'); return; }
         el._editRt = h;
         el.setAttribute('data-edit-text', '');
