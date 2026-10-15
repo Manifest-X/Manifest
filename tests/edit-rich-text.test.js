@@ -463,8 +463,10 @@ describe('line breaks in leaves', () => {
         const p = root.querySelector('p')
         await enter(p)
         select(p.firstChild, 9)
+        let inputs = 0; p.addEventListener('input', () => inputs++)
         key(p, { key: 'Enter', shiftKey: true })
         expect(p.innerHTML).toBe('Roses are<br> red')
+        expect(inputs).toBe(1)                                            // so component mirroring and listeners see it
         expect(p._editRt.can('undo')).toBe(true)
     })
 
@@ -543,6 +545,37 @@ describe('history across the hand-off', () => {
         z(two, true); await flush(); expect(two.innerHTML).toBe('<strong>Two</strong>')
         await blur(two)
         expect(cursor()).toBe(base + 2)
+    })
+
+    it('steps that fire no input (Shift+Enter, autoformat) are part of the handed-off session', async () => {
+        const root = await mount(`<section x-edit="hh4"><p>Cell</p><p>Other</p></section>`)
+        const p = root.querySelector('p'), base = cursor()
+        await enter(p)
+        await type(p, 'Cellab', 'b')
+        select(p.firstChild, 5)
+        key(p, { key: 'Enter', shiftKey: true })
+        expect(p.innerHTML).toBe('Cella<br>b')
+        z(p); z(p)
+        expect(p.innerHTML).toBe('Cell')
+        z(p); await flush()                                               // hand-off: the session is logged, undone, then Edit undoes on
+        expect(log()[base]).toMatchObject({ prop: 'text', before: 'Cell', value: 'Cella<br>b' })
+        while (cursor() <= base) { z(p, true); await flush() }
+        expect(p.innerHTML).toBe('Cella<br>b')
+        await blur(p)
+        expect(cursor()).toBe(base + 1)
+        const q = root.querySelectorAll('p')[1]
+        await enter(q)
+        q.firstChild.nodeValue = 'Other **bold**'; window.getSelection().collapse(q.firstChild, 14)
+        q.dispatchEvent(new InputEvent('input', { bubbles: true, data: '*' }))
+        await new Promise(r => setTimeout(r, 450))
+        expect(q.innerHTML).toBe('Other <strong>bold</strong>')
+        while (q._editRt.can('undo')) z(q)
+        z(q); await flush()                                               // the session is logged and undone, then the paragraph's edit
+        expect(p.innerHTML).toBe('Cell')
+        expect(log()[base + 1]).toMatchObject({ value: 'Other <strong>bold</strong>' })
+        while (cursor() < base + 2) { z(q, true); await flush() }
+        expect(q.innerHTML).toBe('Other <strong>bold</strong>')
+        await blur(q)
     })
 
     it('Ctrl+Y redoes the leaf\'s own step, not Edit\'s', async () => {

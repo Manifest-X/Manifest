@@ -526,6 +526,8 @@ export interface ManifestRichTextHandle extends ManifestRichText {
     el: Element;
     /** Remove editing and restore the element's own contenteditable/role/aria-multiline. */
     detach(): void;
+    /** Markup of the newest step in the field's undo history (a pending typing burst is recorded first). */
+    newest(): string;
 }
 
 /**

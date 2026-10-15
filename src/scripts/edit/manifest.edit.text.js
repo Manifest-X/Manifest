@@ -52,18 +52,20 @@
         if (e.defaultPrevented) e.stopImmediatePropagation();
     }
     function handOff(el) {
-        const h = el._editRt, top = el._sessionTop;
-        el._sessionTop = null;
-        if (!h || !h.can('redo') || top == null || !el._commitText) return;
+        const h = el._editRt;
+        if (!h || !h.can('redo') || !el._commitText) return;
+        const top = sessionTop(el);
         if (el._commitText(top)) undo();
     }
     // Drops follow the area's rule (none while active), ahead of Rich Text's own drop handling.
     function noDrop(el) {
         el.addEventListener('drop', (e) => { const a = regionOf(el); if (a && isActive(a)) { e.preventDefault(); e.stopImmediatePropagation(); } });
     }
-    // The session's furthest state: what the text holds whenever nothing is left to redo.
-    function trackTop(el) {
-        el.addEventListener('input', () => { const h = el._editRt; if (h && !h.can('redo') && el._leafRead) el._sessionTop = el._leafRead(); });
+    // The session's furthest state: the newest entry in the leaf's Rich Text history.
+    function sessionTop(el) {
+        const html = el._editRt.newest();
+        if (!(el._editField && !el._editRich)) return html.trim();
+        const t = document.createElement('template'); t.innerHTML = html; return t.content.textContent;
     }
     // Copies and ghosts of a leaf carry none of the engine's attributes or --rich-text-* state.
     function unrich(src, copy) {
@@ -78,11 +80,11 @@
     // `commit(value?)` logs the leaf's text against its session start (_preEdit).
     function bindLeaf(el, commit, input) {
         if (el._textBound) return; el._textBound = true;
-        el._commitText = commit; el._leafRead = () => el.innerHTML.trim();
-        el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); el._sessionTop = null; selectAllIn(el); });
+        el._commitText = commit;
+        el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); selectAllIn(el); });
         el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.isContentEditable) { e.preventDefault(); e.stopImmediatePropagation(); leaveText(el); } });
         el.addEventListener('keydown', richHistoryKey);
-        trackTop(el); noDrop(el);
+        noDrop(el);
         if (input) el.addEventListener('input', input);
         el.addEventListener('blur', () => commit());
     }
@@ -142,11 +144,10 @@
                     el._dvBound = true;
                     const read = () => rich ? leafHTML(el) : el.textContent;
                     el._commitText = (v) => commitDataValue(area, source, id, field, v ?? read(), el);
-                    el._leafRead = () => rich ? el.innerHTML.trim() : el.textContent;
-                    el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); el._sessionTop = null; if (!authoredRich(el)) selectAllIn(el); });   // the rich editor owns its caret
+                    el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); if (!authoredRich(el)) selectAllIn(el); });   // the rich editor owns its caret
                     el.addEventListener('focusin', () => { el._preEdit = leafText(el); });
                     el.addEventListener('keydown', richHistoryKey);
-                    trackTop(el); noDrop(el);
+                    noDrop(el);
                     el.addEventListener('blur', () => el._commitText(), true);
                 }
                 if (!authoredRich(el)) editable(el, rich ? 'html' : 'plain');
