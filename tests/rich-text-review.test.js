@@ -453,6 +453,81 @@ describe('fourth-pass: undoing a typing burst restores where it started', () => 
         expect(caretAt(el)).toBe(5)
         expect(el._history.stack.length).toBe(3)
     })
+
+    // Each step: [command, value after it, caret after it]
+    const walk = (el, steps) => steps.forEach(([cmd, value, caret]) => {
+        api(el)[cmd]()
+        expect([cmd, api(el).value, caretAt(el)]).toEqual([cmd, value, caret])
+    })
+
+    it('burst then paste: undo returns to each edit start, redo to each edit end', () => {
+        const el = area('html.inline', 'x')
+        api(el).value = 'hello world'
+        focusin(el); select(el.firstChild, 5)
+        type(el, 'XYZ')
+        transfer(el, 'paste', { 'text/plain': '!' })
+        walk(el, [
+            ['undo', 'helloXYZ world', 8], ['undo', 'hello world', 5],
+            ['redo', 'helloXYZ world', 8], ['redo', 'helloXYZ! world', 9],
+            ['undo', 'helloXYZ world', 8], ['undo', 'hello world', 5]
+        ])
+    })
+
+    it('moved bursts: undo to where each started, redo to where each ended', async () => {
+        const el = area('html.inline', 'x')
+        api(el).value = 'hello world'
+        focusin(el); select(el.firstChild, 5)
+        type(el, 'XYZ')
+        await tick(450)
+        select(el.firstChild, 0)
+        type(el, 'AB')
+        walk(el, [
+            ['undo', 'helloXYZ world', 0], ['undo', 'hello world', 5],
+            ['redo', 'helloXYZ world', 8], ['redo', 'ABhelloXYZ world', 2],
+            ['undo', 'helloXYZ world', 0], ['redo', 'ABhelloXYZ world', 2]
+        ])
+    })
+
+    it('IME composition: one step, undo to its start, redo to its end', () => {
+        const el = area('html.inline', 'x')
+        api(el).value = 'hello world'
+        focusin(el); select(el.firstChild, 6)
+        const node = el.firstChild
+        ;['k', 'ka', 'か'].forEach((data, i, all) => {
+            el.dispatchEvent(new window.InputEvent('beforeinput', { bubbles: true, cancelable: false, inputType: 'insertCompositionText', data }))
+            const prev = i ? all[i - 1].length : 0
+            node.replaceData(6, prev, data)
+            select(node, 6 + data.length)
+            el.dispatchEvent(new window.InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data, isComposing: true }))
+        })
+        el.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: 'か' }))
+        expect(api(el).value).toBe('hello かworld')
+        walk(el, [
+            ['undo', 'hello world', 6], ['redo', 'hello かworld', 7], ['undo', 'hello world', 6]
+        ])
+        expect(el._history.stack.length).toBe(2)
+    })
+
+    it('block paste is its own step after a typing burst, like .inline', () => {
+        // The browser's insertHTML: content at the caret, then a synchronous input event
+        document.execCommand = vi.fn((cmd, _ui, value) => {
+            if (cmd !== 'insertHTML') return true
+            const r = window.getSelection().getRangeAt(0), text = parse(value).textContent
+            r.startContainer.insertData(r.startOffset, text)
+            select(r.startContainer, r.startOffset + text.length)
+            r.startContainer.parentElement.closest('[data-rich-text]').dispatchEvent(new window.InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }))
+            return true
+        })
+        const el = area('', '<p>hello world</p>', 5)
+        type(el, 'XYZ')
+        transfer(el, 'paste', { 'text/plain': 'Q' })
+        expect(api(el).value).toBe('helloXYZQ world')
+        walk(el, [
+            ['undo', 'helloXYZ world', 8], ['undo', 'hello world', 5],
+            ['redo', 'helloXYZ world', 8], ['redo', 'helloXYZQ world', 9]
+        ])
+        expect(el._history.stack.length).toBe(3)
+    })
 })
 
 describe('9. command methods are typed', () => {
