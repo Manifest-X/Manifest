@@ -795,7 +795,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.svg.js', dest: '../lib/manifest.svg.js' },
         { source: 'scripts/manifest.sw.js', dest: '../lib/manifest.sw.js' },  // Service worker module (version-stamped below)
         { source: 'scripts/manifest.tabs.js', dest: '../lib/manifest.tabs.js' },
-        { source: 'scripts/manifest.text.edit.js', dest: '../lib/manifest.text.edit.js' },
+        { source: 'scripts/manifest.rich.text.js', dest: '../lib/manifest.rich.text.js' },
         { source: 'scripts/manifest.color.js', dest: '../lib/manifest.color.js' },
         { source: 'scripts/manifest.toasts.js', dest: '../lib/manifest.toasts.js' },
         { source: 'scripts/manifest.tooltips.js', dest: '../lib/manifest.tooltips.js' },
@@ -831,7 +831,7 @@ function copyFilesToDist() {
         { source: 'styles/elements/manifest.slides.css', dest: '../lib/manifest.slides.css' },
         { source: 'styles/elements/manifest.switch.css', dest: '../lib/manifest.switch.css' },
         { source: 'styles/elements/manifest.table.css', dest: '../lib/manifest.table.css' },
-        { source: 'styles/elements/manifest.text.edit.css', dest: '../lib/manifest.text.edit.css' },
+        { source: 'styles/elements/manifest.rich.text.css', dest: '../lib/manifest.rich.text.css' },
         { source: 'styles/elements/manifest.toast.css', dest: '../lib/manifest.toast.css' },
         { source: 'styles/elements/manifest.tooltip.css', dest: '../lib/manifest.tooltip.css' },
         { source: 'styles/elements/manifest.typography.css', dest: '../lib/manifest.typography.css' },

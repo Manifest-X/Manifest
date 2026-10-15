@@ -69,6 +69,10 @@ window.ManifestComponentsLoader = {
                     console.warn('[Manifest] Component', name, 'at', path, 'returned a full HTML document (SPA fallback?) — treated as missing');
                     return null;
                 }
+                // On-use plugins the component references load before it is inserted
+                if (window.Manifest && typeof window.Manifest.loadUsed === 'function') {
+                    try { await window.Manifest.loadUsed(content); } catch (_) { /* never blocks the component */ }
+                }
                 this.cache[name] = content;
                 if (convention) registry.registered.add(name);
                 return content;

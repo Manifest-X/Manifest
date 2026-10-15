@@ -93,7 +93,7 @@
         if (action === 'size') return !!el._edit && el._edit.caps.has('size') && !lockedFor(el, 'size');
         // Text: an editable leaf (or a rich-editor host), never a container or a bound element.
         if (action === 'text') return capOf(el, 'text') && !el.hasAttribute('x-text') && !el.hasAttribute('x-html')
-            && (el.getAttribute('contenteditable') === 'true' || !!el._pieceMode || el.hasAttribute('data-text-edit') || (el._editField != null && capOf(el, 'data')));
+            && (el.getAttribute('contenteditable') === 'true' || !!el._pieceMode || el.hasAttribute('data-rich-text') || (el._editField != null && capOf(el, 'data')));
         // attrs: any attribute (static elements); class: the class list (static and component nodes).
         if (action === 'attrs' || action === 'class') {
             if (kind === 'data' || lockedFor(el, 'attrs')) return false;

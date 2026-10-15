@@ -7,12 +7,12 @@
             try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
         });
     }
-    // Where x-text-edit is declared, it owns the element: this plugin neither makes
+    // Where x-rich-text is declared, it owns the element: this plugin neither makes
     // its leaves contenteditable nor competes for the caret. If the rich editor has
     // no expression of its own, we capture what it produces as an ordinary text
     // delta, so a rich field inside a page-editing region publishes like any other.
     function armRichText(area) {
-        area.querySelectorAll('[data-text-edit]:not([data-text-edit-bound])').forEach(el => {
+        area.querySelectorAll('[data-rich-text]:not([data-rich-text-bound])').forEach(el => {
             if (!capOf(el, 'text') || !/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
@@ -32,7 +32,7 @@
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
-            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
+            if (el.closest('[data-rich-text]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
             el.setAttribute('contenteditable', 'true');
@@ -59,10 +59,10 @@
                 el._editField = field;
                 // x-html fields hold markup; x-text fields are plain.
                 el._editRich = rich;
-                if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
+                if (!el.hasAttribute('data-rich-text')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
-                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-text-edit')) selectAllIn(el); });   // the rich editor owns its caret
+                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-rich-text')) selectAllIn(el); });   // the rich editor owns its caret
                 el.addEventListener('focusin', () => { el._preEdit = read(); });
                 el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
             });
@@ -96,7 +96,7 @@
         armRichText(area);
         componentNodes(root).forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
-            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
+            if (el.closest('[data-rich-text]')) return;                 // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');

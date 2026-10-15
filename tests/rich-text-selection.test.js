@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.text.edit.js'), 'utf8')
+const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.rich.text.js'), 'utf8')
 
 beforeAll(() => {
     window.Alpine = Alpine
@@ -45,7 +45,7 @@ function select(node, start, end) {
 // Every selection event an area emits, newest last.
 function watch(el) {
     const seen = []
-    el.addEventListener('text-edit:selection', (e) => seen.push(e.detail))
+    el.addEventListener('rich-text:selection', (e) => seen.push(e.detail))
     return seen
 }
 
@@ -53,30 +53,30 @@ const text = (area) => area.querySelector('p').firstChild
 
 beforeEach(() => {
     document.body.replaceChildren()
-    document.documentElement.removeAttribute('data-text-edit-selected')
+    document.documentElement.removeAttribute('data-rich-text-selected')
     window.getSelection().removeAllRanges()
 })
 
-describe('x-text-edit selection release', () => {
+describe('x-rich-text selection release', () => {
     it('releases when focus leaves for plain page text', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><span id="plain">elsewhere</span>')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><span id="plain">elsewhere</span>')
         const area = root.querySelector('#a')
         focusin(area)
         select(text(area), 0, 5)
-        expect(area.hasAttribute('data-text-edit-selected')).toBe(true)
-        expect(document.documentElement.hasAttribute('data-text-edit-selected')).toBe(true)
+        expect(area.hasAttribute('data-rich-text-selected')).toBe(true)
+        expect(document.documentElement.hasAttribute('data-rich-text-selected')).toBe(true)
 
         const seen = watch(area)
         pointerdown(root.querySelector('#plain'))   // plain text takes no focus
         focusout(area, null)
 
         expect(seen).toEqual([null])
-        expect(area.hasAttribute('data-text-edit-selected')).toBe(false)
-        expect(document.documentElement.hasAttribute('data-text-edit-selected')).toBe(false)
+        expect(area.hasAttribute('data-rich-text-selected')).toBe(false)
+        expect(document.documentElement.hasAttribute('data-rich-text-selected')).toBe(false)
     })
 
     it('keeps the selection when a bound control is clicked', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><button x-text-edit.strong id="b">B</button>')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><button x-rich-text.strong id="b">B</button>')
         const area = root.querySelector('#a')
         focusin(area)
         select(text(area), 0, 5)
@@ -85,15 +85,15 @@ describe('x-text-edit selection release', () => {
         pointerdown(root.querySelector('#b'))
         focusout(area, null)                        // a button never reports itself as relatedTarget
         expect(seen).toEqual([])
-        expect(area.hasAttribute('data-text-edit-selected')).toBe(true)
+        expect(area.hasAttribute('data-rich-text-selected')).toBe(true)
 
         focusout(area, root.querySelector('#b'))    // nor when it does
         expect(seen).toEqual([])
-        expect(area.hasAttribute('data-text-edit-selected')).toBe(true)
+        expect(area.hasAttribute('data-rich-text-selected')).toBe(true)
     })
 
     it('releases the area being left for another area', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><div x-text-edit id="b"><p>second area</p></div>')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><div x-rich-text id="b"><p>second area</p></div>')
         const [a, b] = [root.querySelector('#a'), root.querySelector('#b')]
         focusin(a)
         select(text(a), 0, 5)
@@ -105,13 +105,13 @@ describe('x-text-edit selection release', () => {
         select(text(b), 0, 6)
 
         expect(seen).toEqual([null])
-        expect(a.hasAttribute('data-text-edit-selected')).toBe(false)
-        expect(b.hasAttribute('data-text-edit-selected')).toBe(true)
-        expect(document.documentElement.hasAttribute('data-text-edit-selected')).toBe(true)
+        expect(a.hasAttribute('data-rich-text-selected')).toBe(false)
+        expect(b.hasAttribute('data-rich-text-selected')).toBe(true)
+        expect(document.documentElement.hasAttribute('data-rich-text-selected')).toBe(true)
     })
 
     it('releases on a selection that moves to another area without a focus change', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><div x-text-edit id="b"><p>second area</p></div>')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><div x-rich-text id="b"><p>second area</p></div>')
         const [a, b] = [root.querySelector('#a'), root.querySelector('#b')]
         focusin(a)
         select(text(a), 0, 5)
@@ -119,16 +119,16 @@ describe('x-text-edit selection release', () => {
         const seen = watch(a)
         select(text(b), 0, 6)
         expect(seen).toEqual([null])
-        expect(a.hasAttribute('data-text-edit-selected')).toBe(false)
-        expect(b.hasAttribute('data-text-edit-selected')).toBe(true)
+        expect(a.hasAttribute('data-rich-text-selected')).toBe(false)
+        expect(b.hasAttribute('data-rich-text-selected')).toBe(true)
     })
 })
 
-describe('x-text-edit links', () => {
+describe('x-rich-text links', () => {
     // Cmd/Ctrl+K is deliberately NOT bound: that chord belongs to site search
     // almost everywhere now. Links go through an `a` control or the unlink command.
     it('ignores Cmd+K (reserved for site search)', () => {
-        const root = mount('<div x-text-edit id="a"><p>see <a href="https://example.com">site</a> now</p></div>')
+        const root = mount('<div x-rich-text id="a"><p>see <a href="https://example.com">site</a> now</p></div>')
         const area = root.querySelector('#a')
         focusin(area)
         select(area.querySelector('a').firstChild, 2)
@@ -140,7 +140,7 @@ describe('x-text-edit links', () => {
     })
 
     it('links a selection through the area url control', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><input type="url" x-text-edit.a id="u">')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><input type="url" x-rich-text.a id="u">')
         const area = root.querySelector('#a'), field = root.querySelector('#u')
         focusin(area)
         select(text(area), 0, 5)
@@ -153,7 +153,7 @@ describe('x-text-edit links', () => {
     })
 
     it('prefixes https:// on a bare domain and refuses junk', () => {
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><input type="url" x-text-edit.a id="u">')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><input type="url" x-rich-text.a id="u">')
         const area = root.querySelector('#a'), field = root.querySelector('#u')
         focusin(area)
         select(text(area), 0, 5)
@@ -170,7 +170,7 @@ describe('x-text-edit links', () => {
     })
 
     it('unlink removes the link at the caret', () => {
-        const root = mount('<div x-text-edit id="a"><p>see <a href="https://example.com">site</a> now</p></div><button x-text-edit.unlink id="un">Unlink</button>')
+        const root = mount('<div x-rich-text id="a"><p>see <a href="https://example.com">site</a> now</p></div><button x-rich-text.unlink id="un">Unlink</button>')
         const area = root.querySelector('#a'), btn = root.querySelector('#un')
         focusin(area)
         select(area.querySelector('a').firstChild, 2)
@@ -182,7 +182,7 @@ describe('x-text-edit links', () => {
     })
 })
 
-describe('x-text-edit inline markdown as you type', () => {
+describe('x-rich-text inline markdown as you type', () => {
     // Simulate typing one character: mutate the text node, place the caret
     // after it, and fire the input event the way the browser would.
     function typeChar(area, node, ch) {
@@ -192,7 +192,7 @@ describe('x-text-edit inline markdown as you type', () => {
     }
 
     it('converts **bold** the moment the closing marker is typed', () => {
-        const root = mount('<div x-text-edit id="a"><p>make </p></div>')
+        const root = mount('<div x-rich-text id="a"><p>make </p></div>')
         const area = root.querySelector('#a')
         focusin(area)
         const node = text(area)
@@ -205,7 +205,7 @@ describe('x-text-edit inline markdown as you type', () => {
     })
 
     it('leaves half-typed markers alone and ignores code contexts', () => {
-        const root = mount('<div x-text-edit.html id="a"><p>x </p></div>')
+        const root = mount('<div x-rich-text.html id="a"><p>x </p></div>')
         const area = root.querySelector('#a')
         focusin(area)
         const node = text(area)
@@ -222,7 +222,7 @@ describe('x-text-edit inline markdown as you type', () => {
     })
 })
 
-describe('x-text-edit inline conversion rule priority', () => {
+describe('x-rich-text inline conversion rule priority', () => {
     function typeChar(area, node, ch) {
         node.insertData(node.length, ch)
         select(node, node.length)
@@ -230,7 +230,7 @@ describe('x-text-edit inline conversion rule priority', () => {
     }
 
     it('![alt](src) converts to an image, not a link with a stray bang', () => {
-        const root = mount('<div x-text-edit.html id="a"><p>pic </p></div>')
+        const root = mount('<div x-rich-text.html id="a"><p>pic </p></div>')
         const area = root.querySelector('#a')
         focusin(area)
         const node = text(area)
@@ -242,7 +242,7 @@ describe('x-text-edit inline conversion rule priority', () => {
     })
 
     it('composition input never converts', () => {
-        const root = mount('<div x-text-edit id="a"><p>x </p></div>')
+        const root = mount('<div x-rich-text id="a"><p>x </p></div>')
         const area = root.querySelector('#a')
         focusin(area)
         const node = text(area)

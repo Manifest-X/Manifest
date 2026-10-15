@@ -12,8 +12,8 @@ import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.text.edit.js'), 'utf8')
-const CSS = readFileSync(path.join(__dirname, '../src/styles/elements/manifest.text.edit.css'), 'utf8')
+const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.rich.text.js'), 'utf8')
+const CSS = readFileSync(path.join(__dirname, '../src/styles/elements/manifest.rich.text.css'), 'utf8')
 
 beforeAll(() => {
     window.Alpine = Alpine
@@ -22,7 +22,7 @@ beforeAll(() => {
     Alpine.start()
 })
 
-const TE = () => window.ManifestTextEdit
+const TE = () => window.ManifestRichText
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms))
 
 function mount(html) {
@@ -89,7 +89,7 @@ describe('1. markdown mode cannot store live markup through link/image syntax', 
     })
 
     it('writes a bound markdown value through the sanitizer', () => {
-        const root = mount(`<div x-data="{ post: '![a](x&quot;onerror=&quot;location=name)' }"><div x-text-edit="post" id="a"></div></div>`)
+        const root = mount(`<div x-data="{ post: '![a](x&quot;onerror=&quot;location=name)' }"><div x-rich-text="post" id="a"></div></div>`)
         expect(root.querySelector('#a [onerror]')).toBe(null)
     })
 
@@ -106,7 +106,7 @@ describe('1. markdown mode cannot store live markup through link/image syntax', 
     })
 
     it('sanitizes markdown pasted as plain text', () => {
-        const root = mount('<div x-text-edit id="a"><p>x</p></div>')
+        const root = mount('<div x-rich-text id="a"><p>x</p></div>')
         const area = root.querySelector('#a')
         focusin(area); select(text(area), 1)
         paste(area, { 'text/plain': '![a](x"onerror="alert(1))' })
@@ -152,16 +152,16 @@ describe('2. typed HTML is stored as text, not markup', () => {
 
 describe('3. an unknown command never turns a control into an area', () => {
     it.each([
-        ['button', '<button x-text-edit.bold id="c">B</button>', 'strong'],
-        ['select', '<select x-text-edit.heading id="c"><option>p</option></select>', null],
-        ['a', '<a href="#" x-text-edit.italic id="c">I</a>', 'em'],
-        ['input', '<input x-text-edit.link id="c">', 'a'],
+        ['button', '<button x-rich-text.bold id="c">B</button>', 'strong'],
+        ['select', '<select x-rich-text.heading id="c"><option>p</option></select>', null],
+        ['a', '<a href="#" x-rich-text.italic id="c">I</a>', 'em'],
+        ['input', '<input x-rich-text.link id="c">', 'a'],
     ])('%s', (_tag, html, hint) => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
         const root = mount(html)
         const c = root.querySelector('#c')
         expect(c.hasAttribute('contenteditable')).toBe(false)
-        expect(c.hasAttribute('data-text-edit')).toBe(false)
+        expect(c.hasAttribute('data-rich-text')).toBe(false)
         expect(c.getAttribute('role')).not.toBe('textbox')
         const said = warn.mock.calls.map(a => a.join(' ')).join('\n')
         expect(said).toMatch(/unknown command/)
@@ -169,13 +169,13 @@ describe('3. an unknown command never turns a control into an area', () => {
     })
 
     it('the header comment names a real command', () => {
-        expect(SRC.slice(0, 600)).not.toMatch(/x-text-edit\.bold/)
+        expect(SRC.slice(0, 600)).not.toMatch(/x-rich-text\.bold/)
     })
 })
 
 describe('4. controls are disabled until the area has a caret', () => {
     it('stays disabled for an area that was never focused', async () => {
-        const root = mount('<div x-text-edit id="a"><p>hi</p></div><button x-text-edit.strong id="b">B</button><button x-text-edit.undo id="u">U</button>')
+        const root = mount('<div x-rich-text id="a"><p>hi</p></div><button x-rich-text.strong id="b">B</button><button x-rich-text.undo id="u">U</button>')
         await tick()
         const [area, b, u] = ['#a', '#b', '#u'].map(s => root.querySelector(s))
         expect(b.getAttribute('aria-disabled')).toBe('true')
@@ -188,7 +188,7 @@ describe('4. controls are disabled until the area has a caret', () => {
 
 describe('5. a released area is not restored by a toolbar click', () => {
     it('drops the saved range when another field takes focus', () => {
-        const root = mount('<div id="dlg"><div x-text-edit id="a"><p>hello world</p></div><button x-text-edit.strong id="b">B</button></div><input id="other">')
+        const root = mount('<div id="dlg"><div x-rich-text id="a"><p>hello world</p></div><button x-rich-text.strong id="b">B</button></div><input id="other">')
         const [area, b, other] = ['#a', '#b', '#other'].map(s => root.querySelector(s))
         focusin(area); select(text(area), 0, 5)
         focusout(area, other)                       // browser order: the area lets go first
@@ -200,7 +200,7 @@ describe('5. a released area is not restored by a toolbar click', () => {
     })
 
     it('a disabled control does not take focus on mousedown', async () => {
-        const root = mount('<div x-text-edit id="a"><p>hi</p></div><select x-text-edit.block id="s"><option value="p">P</option></select><button x-text-edit.strong id="b">B</button>')
+        const root = mount('<div x-rich-text id="a"><p>hi</p></div><select x-rich-text.block id="s"><option value="p">P</option></select><button x-rich-text.strong id="b">B</button>')
         await tick()
         for (const c of [root.querySelector('#s'), root.querySelector('#b')]) {
             expect(c.getAttribute('aria-disabled')).toBe('true')
@@ -211,13 +211,13 @@ describe('5. a released area is not restored by a toolbar click', () => {
     })
 
     it('disabled controls still receive the pointer, so the click lands on them', () => {
-        expect(CSS).toMatch(/\[data-text-edit-control\]\[aria-disabled=true\][^{]*\{[^}]*pointer-events:\s*auto/)
+        expect(CSS).toMatch(/\[data-rich-text-control\]\[aria-disabled=true\][^{]*\{[^}]*pointer-events:\s*auto/)
     })
 })
 
 describe('6. typing after a converted mark is unmarked', () => {
     it('moves text the browser typed into the mark back out after it', () => {
-        const root = mount('<div x-text-edit id="a"><p>make </p></div>')
+        const root = mount('<div x-rich-text id="a"><p>make </p></div>')
         const area = root.querySelector('#a')
         focusin(area)
         const node = text(area)
@@ -242,7 +242,7 @@ describe('6. typing after a converted mark is unmarked', () => {
 
 describe('7. IME composition', () => {
     it('leaves Enter and Backspace to the IME while composing', () => {
-        const root = mount('<div x-text-edit id="a"><p>ab</p></div>')
+        const root = mount('<div x-rich-text id="a"><p>ab</p></div>')
         const area = root.querySelector('#a')
         focusin(area); select(text(area), 2)
         expect(key(area, { key: 'Enter', isComposing: true }).defaultPrevented).toBe(false)
@@ -253,7 +253,7 @@ describe('7. IME composition', () => {
     })
 
     it('applies an armed mark when composition ends, not mid-composition', () => {
-        const root = mount('<div x-text-edit id="a"><p>ab</p></div><button x-text-edit.strong id="b">B</button>')
+        const root = mount('<div x-rich-text id="a"><p>ab</p></div><button x-rich-text.strong id="b">B</button>')
         const area = root.querySelector('#a')
         focusin(area)
         const node = text(area)
@@ -273,7 +273,7 @@ describe('8–10. history', () => {
     const type = (area, node, s) => { node.appendData(s); select(node, node.length); input(area, { data: s.slice(-1) }) }
 
     it('8. undo works in .plain (plugin history)', () => {
-        const root = mount('<div x-text-edit.plain id="a">hello</div>')
+        const root = mount('<div x-rich-text.plain id="a">hello</div>')
         const area = root.querySelector('#a')
         focusin(area); select(area.firstChild, 5)
         type(area, area.firstChild, ' world')
@@ -285,7 +285,7 @@ describe('8–10. history', () => {
     })
 
     it('9. the first undo inside the coalescing window is not swallowed', () => {
-        const root = mount(`<div x-data="{ post: 'hello' }"><div x-text-edit="post" id="a"></div><button x-text-edit.undo id="u">U</button></div>`)
+        const root = mount(`<div x-data="{ post: 'hello' }"><div x-rich-text="post" id="a"></div><button x-rich-text.undo id="u">U</button></div>`)
         const area = root.querySelector('#a'), u = root.querySelector('#u')
         focusin(area); select(text(area), 5)
         type(area, text(area), ' world')
@@ -295,7 +295,7 @@ describe('8–10. history', () => {
     })
 
     it('10. native undo/redo (Edit menu, shake) route to the plugin history', () => {
-        const root = mount(`<div x-data="{ post: 'hello' }"><div x-text-edit="post" id="a"></div></div>`)
+        const root = mount(`<div x-data="{ post: 'hello' }"><div x-rich-text="post" id="a"></div></div>`)
         const area = root.querySelector('#a')
         focusin(area); select(text(area), 5)
         type(area, text(area), ' world')
@@ -310,7 +310,7 @@ describe('8–10. history', () => {
 
 describe('11. .plain', () => {
     it('keeps the lines of a multi-line paste', () => {
-        const root = mount('<div x-text-edit.plain id="a">ab</div>')
+        const root = mount('<div x-rich-text.plain id="a">ab</div>')
         const area = root.querySelector('#a')
         focusin(area); select(area.firstChild, 1)
         paste(area, { 'text/plain': 'one\ntwo <b>\r\nthree' })
@@ -318,7 +318,7 @@ describe('11. .plain', () => {
     })
 
     it('refuses formatting shortcuts and formatting input', () => {
-        const root = mount('<div x-text-edit.plain id="a">ab</div>')
+        const root = mount('<div x-rich-text.plain id="a">ab</div>')
         const area = root.querySelector('#a')
         focusin(area); select(area.firstChild, 0, 2)
         for (const k of ['b', 'i', 'u']) expect(key(area, { key: k, metaKey: true }).defaultPrevented).toBe(true)
@@ -332,10 +332,10 @@ describe('12. the selection menu follows scrolling', () => {
         let top = 100
         vi.spyOn(window.Range.prototype, 'getBoundingClientRect').mockImplementation(() =>
             ({ left: 10, top, width: 20, height: 10, right: 30, bottom: top + 10, x: 10, y: top }))
-        const root = mount('<div x-text-edit id="a"><p>hello world</p></div><div x-text-edit-menu id="m"><button x-text-edit.strong>B</button></div>')
+        const root = mount('<div x-rich-text id="a"><p>hello world</p></div><div x-rich-text-menu id="m"><button x-rich-text.strong>B</button></div>')
         const area = root.querySelector('#a')
         focusin(area); select(text(area), 0, 5)
-        const y = () => document.documentElement.style.getPropertyValue('--text-edit-selection-y')
+        const y = () => document.documentElement.style.getPropertyValue('--rich-text-selection-y')
         expect(y()).toBe('100px')
         top = 40
         window.dispatchEvent(new window.Event('scroll'))
@@ -346,12 +346,12 @@ describe('12. the selection menu follows scrolling', () => {
 
 describe('13. stylesheet scoping', () => {
     it('only icon-only buttons get the compact icon padding', () => {
-        expect(CSS).not.toMatch(/:where\(button\[data-text-edit-control\]\)\s*\{/)
-        expect(CSS).toMatch(/button\[data-text-edit-control\]:has\(> svg:only-child\)/)
+        expect(CSS).not.toMatch(/:where\(button\[data-rich-text-control\]\)\s*\{/)
+        expect(CSS).toMatch(/button\[data-rich-text-control\]:has\(> svg:only-child\)/)
     })
 
-    it('--text-edit-background applies to unstyled areas too', () => {
-        expect(CSS).toMatch(/\.unstyle[^{]*--text-edit-background[^{]*\{[^}]*background:\s*var\(--text-edit-background\)/)
+    it('--rich-text-background applies to unstyled areas too', () => {
+        expect(CSS).toMatch(/\.unstyle[^{]*--rich-text-background[^{]*\{[^}]*background:\s*var\(--rich-text-background\)/)
     })
 })
 
@@ -359,19 +359,20 @@ describe('14. tables pasted into markdown', () => {
     const TABLE = '<table><tr><th>Stem</th><th>Price</th></tr><tr><td><b>Rose</b></td><td>4</td></tr></table>'
 
     it('become one paragraph per row with cells joined by " · "', () => {
-        const root = mount('<div x-text-edit id="a"><p>x</p></div>')
+        const root = mount('<div x-rich-text id="a"><p>x</p></div>')
         const area = root.querySelector('#a')
         focusin(area); select(text(area), 1)
         paste(area, { 'text/html': TABLE })
         expect(inserted[0]).toBe('<p>Stem · Price</p><p><b>Rose</b> · 4</p>')
     })
 
-    it('become line breaks in a .minimal area', () => {
-        const root = mount('<div x-text-edit.minimal id="a"><p>x</p></div>')
+    it('flatten to one line in an .inline area', () => {
+        const root = mount('<div x-rich-text.inline id="a">x</div>')
         const area = root.querySelector('#a')
-        focusin(area); select(text(area), 1)
+        focusin(area); select(area.firstChild, 1)
         paste(area, { 'text/html': TABLE })
-        expect(inserted[0]).toBe('Stem · Price<br><b>Rose</b> · 4')
+        expect(area.innerHTML).toBe('xStem · Price <b>Rose</b> · 4')
+        expect(inserted).toEqual([])
     })
 
     it('serialize readably if one reaches a markdown document anyway', () => {

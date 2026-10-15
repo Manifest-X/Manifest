@@ -967,7 +967,7 @@ function indexRegion(html, name, node) {
     n.kids = kidsOf(html, n);
     let floor = n.innerStart;
     n.kids.forEach((k, i) => { k.path = (n.path ? n.path + '.' : '') + i; k.lead = leadOf(html, k, floor); floor = k.closeEnd; });
-    if (n.name === 'template' || rendered(n) || (!n.implied && hasAttrNamed(open(n), a => a.startsWith('x-text-edit')))) return;
+    if (n.name === 'template' || rendered(n) || (!n.implied && hasAttrNamed(open(n), a => a.startsWith('x-rich-text')))) return;
     n.kids.forEach(visit);
   };
   node.path = '';

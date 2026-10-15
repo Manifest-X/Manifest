@@ -78,7 +78,7 @@
 
     <!-- Inline REACTIVE x-markdown (value is markdown text, not a file path).
          The prerender must KEEP this binding: stripping it froze live-updating
-         markdown mirrors (the text-edit docs demo) on prerendered pages. -->
+         markdown mirrors (the rich-text docs demo) on prerendered pages. -->
     <div id="markdown-reactive" x-data="{ note: 'first **note**' }">
       <button id="markdown-reactive-btn" @click="note = 'second **note**'">Change</button>
       <div id="markdown-reactive-out" x-markdown="note"></div>

@@ -45,7 +45,7 @@
   <link rel="stylesheet" href="/styles/elements/manifest.radio.css">
   <link rel="stylesheet" href="/styles/elements/manifest.range.css">
   <link rel="stylesheet" href="/styles/elements/manifest.edit.css">
-  <link rel="stylesheet" href="/styles/elements/manifest.text.edit.css">
+  <link rel="stylesheet" href="/styles/elements/manifest.rich.text.css">
   <link rel="stylesheet" href="/styles/elements/manifest.sidebar.css">
   <link rel="stylesheet" href="/styles/elements/manifest.slides.css">
   <link rel="stylesheet" href="/styles/elements/manifest.switch.css">
@@ -88,7 +88,7 @@
   <script src="/scripts/manifest.svg.js"></script>
   <script src="/scripts/manifest.payments.js"></script>
   <script src="/scripts/manifest.edit.js"></script>
-  <script src="/scripts/manifest.text.edit.js"></script>
+  <script src="/scripts/manifest.rich.text.js"></script>
   <script src="/scripts/manifest.router.js"></script>
   <script src="/scripts/manifest.slides.js"></script>
   <script src="/scripts/manifest.status.js"></script>
@@ -209,7 +209,7 @@
     <a href="/dropdowns">Dropdowns</a>
     <a href="/copy">Copy input</a>
     <a href="/sortable">Sortable</a>
-    <a href="/text-edit">Text edit</a>
+    <a href="/rich-text">Rich text</a>
     <a href="/native">Native</a>
   </nav>
 
@@ -281,7 +281,7 @@
   </div>
 
   <!-- Text editor — one page editor, all controls authored -->
-  <div class="col gap-4 p-4" x-route="text-edit" x-data="{
+  <div class="col gap-4 p-4" x-route="rich-text" x-data="{
     doc: '&lt;h1&gt;Bloom &amp;amp; Bramble&lt;/h1&gt;&lt;p&gt;Seasonal arrangements, &lt;strong&gt;delivered weekly&lt;/strong&gt;. Type &lt;code&gt;## &lt;/code&gt; or &lt;code&gt;- &lt;/code&gt; at the start of a line, or &lt;code&gt;**bold**&lt;/code&gt; anywhere, and it becomes the real thing.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Cut this morning&lt;/li&gt;&lt;li&gt;Within 50 miles&lt;/li&gt;&lt;/ul&gt;&lt;blockquote&gt;Every stem is local.&lt;/blockquote&gt;',
     imageUrl: '',
     tableSize: '3x3',
@@ -295,20 +295,20 @@
       if (!want && el.matches(':popover-open')) el.hidePopover();
     },
     get words() { return (this.doc.replace(/<[^>]*>/g, ' ').trim().match(/\S+/g) || []).length },
-    newPage() { this.doc = ''; $text.page = {}; $text.focus(); }
-  }" @text-edit:selection="bubble($event.detail)">
+    newPage() { this.doc = ''; $rich.all = {}; $rich.focus(); }
+  }" @rich-text:selection="bubble($event.detail)">
 
     <!-- Toolbar: ordinary Manifest elements. The plugin injects none of this. -->
     <div class="col gap-1 p-2 bg-surface-1 border border-line rounded sticky top-0 z-10">
 
       <div class="row-wrap gap-1 items-center">
-        <button class="ghost sm" x-text-edit.undo aria-label="Undo" x-tooltip="Undo"><span x-icon="lucide:undo-2"></span></button>
-        <button class="ghost sm" x-text-edit.redo aria-label="Redo" x-tooltip="Redo"><span x-icon="lucide:redo-2"></span></button>
-        <button class="ghost sm" x-text-edit.clear aria-label="Clear formatting" x-tooltip="Clear formatting"><span x-icon="lucide:remove-formatting"></span></button>
+        <button class="ghost sm" x-rich-text.undo aria-label="Undo" x-tooltip="Undo"><span x-icon="lucide:undo-2"></span></button>
+        <button class="ghost sm" x-rich-text.redo aria-label="Redo" x-tooltip="Redo"><span x-icon="lucide:redo-2"></span></button>
+        <button class="ghost sm" x-rich-text.clear aria-label="Clear formatting" x-tooltip="Clear formatting"><span x-icon="lucide:remove-formatting"></span></button>
 
         <div class="divider vertical h-6"></div>
 
-        <select x-text-edit.block class="sm hug" aria-label="Paragraph style">
+        <select x-rich-text.block class="sm hug" aria-label="Paragraph style">
           <option value="p">Normal</option>
           <option value="h1">Heading 1</option>
           <option value="h2">Heading 2</option>
@@ -320,7 +320,7 @@
           <option value="figcaption">Caption</option>
         </select>
 
-        <select x-text-edit.font class="sm hug" aria-label="Font">
+        <select x-rich-text.font class="sm hug" aria-label="Font">
           <option value="inherit">Default</option>
           <option value="Arial">Arial</option>
           <option value="Georgia">Georgia</option>
@@ -328,7 +328,7 @@
           <option value="ui-monospace">Mono</option>
         </select>
 
-        <select x-text-edit.size class="sm hug" aria-label="Font size">
+        <select x-rich-text.size class="sm hug" aria-label="Font size">
           <option value="12px">12</option>
           <option value="14px">14</option>
           <option value="16px">16</option>
@@ -340,38 +340,38 @@
 
         <div class="divider vertical h-6"></div>
 
-        <button class="ghost sm" x-text-edit.strong aria-label="Bold" x-tooltip="Bold ⌘B"><span x-icon="lucide:bold"></span></button>
-        <button class="ghost sm" x-text-edit.em aria-label="Italic" x-tooltip="Italic ⌘I"><span x-icon="lucide:italic"></span></button>
-        <button class="ghost sm" x-text-edit.u aria-label="Underline" x-tooltip="Underline ⌘U"><span x-icon="lucide:underline"></span></button>
-        <button class="ghost sm" x-text-edit.s aria-label="Strikethrough" x-tooltip="Strikethrough"><span x-icon="lucide:strikethrough"></span></button>
-        <button class="ghost sm" x-text-edit.code aria-label="Inline code" x-tooltip="Code"><span x-icon="lucide:code"></span></button>
-        <button class="ghost sm" x-text-edit.sup aria-label="Superscript" x-tooltip="Superscript"><span x-icon="lucide:superscript"></span></button>
-        <button class="ghost sm" x-text-edit.sub aria-label="Subscript" x-tooltip="Subscript"><span x-icon="lucide:subscript"></span></button>
+        <button class="ghost sm" x-rich-text.strong aria-label="Bold" x-tooltip="Bold ⌘B"><span x-icon="lucide:bold"></span></button>
+        <button class="ghost sm" x-rich-text.em aria-label="Italic" x-tooltip="Italic ⌘I"><span x-icon="lucide:italic"></span></button>
+        <button class="ghost sm" x-rich-text.u aria-label="Underline" x-tooltip="Underline ⌘U"><span x-icon="lucide:underline"></span></button>
+        <button class="ghost sm" x-rich-text.s aria-label="Strikethrough" x-tooltip="Strikethrough"><span x-icon="lucide:strikethrough"></span></button>
+        <button class="ghost sm" x-rich-text.code aria-label="Inline code" x-tooltip="Code"><span x-icon="lucide:code"></span></button>
+        <button class="ghost sm" x-rich-text.sup aria-label="Superscript" x-tooltip="Superscript"><span x-icon="lucide:superscript"></span></button>
+        <button class="ghost sm" x-rich-text.sub aria-label="Subscript" x-tooltip="Subscript"><span x-icon="lucide:subscript"></span></button>
 
         <label class="row items-center gap-1 hug" x-tooltip="Text colour">
           <span x-icon="lucide:baseline"></span>
-          <input type="color" x-text-edit.color aria-label="Text colour" class="unstyle w-6 h-6 rounded border border-line">
+          <input type="color" x-rich-text.color aria-label="Text colour" class="unstyle w-6 h-6 rounded border border-line">
         </label>
         <label class="row items-center gap-1 hug" x-tooltip="Highlight">
           <span x-icon="lucide:highlighter"></span>
-          <input type="color" x-text-edit.background aria-label="Highlight colour" class="unstyle w-6 h-6 rounded border border-line">
+          <input type="color" x-rich-text.background aria-label="Highlight colour" class="unstyle w-6 h-6 rounded border border-line">
         </label>
-        <button class="ghost sm" x-text-edit.mark aria-label="Mark" x-tooltip="Mark"><span x-icon="lucide:pen-line"></span></button>
+        <button class="ghost sm" x-rich-text.mark aria-label="Mark" x-tooltip="Mark"><span x-icon="lucide:pen-line"></span></button>
       </div>
 
       <div class="row-wrap gap-1 items-center">
-        <select x-text-edit.align class="sm hug" aria-label="Alignment">
+        <select x-rich-text.align class="sm hug" aria-label="Alignment">
           <option value="start">Align start</option>
           <option value="center">Centre</option>
           <option value="end">Align end</option>
           <option value="justify">Justify</option>
         </select>
 
-        <button class="ghost sm" x-text-edit.ul aria-label="Bulleted list" x-tooltip="Bulleted list"><span x-icon="lucide:list"></span></button>
-        <button class="ghost sm" x-text-edit.ol aria-label="Numbered list" x-tooltip="Numbered list"><span x-icon="lucide:list-ordered"></span></button>
-        <button class="ghost sm" x-text-edit.checklist aria-label="Checklist" x-tooltip="Checklist"><span x-icon="lucide:list-checks"></span></button>
-        <button class="ghost sm" x-text-edit.outdent aria-label="Outdent" x-tooltip="Outdent ⇧Tab"><span x-icon="lucide:indent-decrease"></span></button>
-        <button class="ghost sm" x-text-edit.indent aria-label="Indent" x-tooltip="Indent Tab"><span x-icon="lucide:indent-increase"></span></button>
+        <button class="ghost sm" x-rich-text.ul aria-label="Bulleted list" x-tooltip="Bulleted list"><span x-icon="lucide:list"></span></button>
+        <button class="ghost sm" x-rich-text.ol aria-label="Numbered list" x-tooltip="Numbered list"><span x-icon="lucide:list-ordered"></span></button>
+        <button class="ghost sm" x-rich-text.checklist aria-label="Checklist" x-tooltip="Checklist"><span x-icon="lucide:list-checks"></span></button>
+        <button class="ghost sm" x-rich-text.outdent aria-label="Outdent" x-tooltip="Outdent ⇧Tab"><span x-icon="lucide:indent-decrease"></span></button>
+        <button class="ghost sm" x-rich-text.indent aria-label="Indent" x-tooltip="Indent Tab"><span x-icon="lucide:indent-increase"></span></button>
 
         <div class="divider vertical h-6"></div>
 
@@ -379,7 +379,7 @@
         <menu popover id="insert-link" class="p-2" style="min-width: 18rem">
           <label class="col gap-1">
             <span class="caption">Link URL — empty it to unlink</span>
-            <input type="url" class="sm" x-text-edit.a placeholder="https://">
+            <input type="url" class="sm" x-rich-text.a placeholder="https://">
           </label>
         </menu>
 
@@ -389,49 +389,49 @@
             <span class="caption">Image URL</span>
             <input type="url" class="sm" x-model="imageUrl" placeholder="https://">
           </label>
-          <button class="brand sm" x-text-edit.img="imageUrl">Insert image</button>
+          <button class="brand sm" x-rich-text.img="imageUrl">Insert image</button>
         </menu>
 
         <button class="ghost sm" x-dropdown="insert-table" aria-label="Table" x-tooltip="Table"><span x-icon="lucide:table"></span></button>
         <menu popover id="insert-table" class="p-2 col gap-1" style="min-width: 15rem">
           <label class="col gap-1">
-            <span class="caption">Rows × columns</span>
+            <span class="caption">Columns × rows</span>
             <input type="text" class="sm" x-model="tableSize" placeholder="3x3">
           </label>
-          <button class="brand sm" x-text-edit.table="tableSize">Insert table</button>
+          <button class="brand sm" x-rich-text.table="tableSize">Insert table</button>
           <hr class="divider">
           <small>In a table</small>
-          <button class="ghost sm trailing" x-text-edit.row-before><span x-icon="lucide:between-vertical-end"></span>Row above</button>
-          <button class="ghost sm trailing" x-text-edit.row-after><span x-icon="lucide:between-vertical-start"></span>Row below</button>
-          <button class="ghost sm trailing" x-text-edit.column-before><span x-icon="lucide:between-horizontal-end"></span>Column before</button>
-          <button class="ghost sm trailing" x-text-edit.column-after><span x-icon="lucide:between-horizontal-start"></span>Column after</button>
+          <button class="ghost sm trailing" x-rich-text.row-before><span x-icon="lucide:between-vertical-end"></span>Row above</button>
+          <button class="ghost sm trailing" x-rich-text.row-after><span x-icon="lucide:between-vertical-start"></span>Row below</button>
+          <button class="ghost sm trailing" x-rich-text.column-before><span x-icon="lucide:between-horizontal-end"></span>Column before</button>
+          <button class="ghost sm trailing" x-rich-text.column-after><span x-icon="lucide:between-horizontal-start"></span>Column after</button>
           <hr class="divider">
-          <button class="ghost sm trailing" x-text-edit.merge><span x-icon="lucide:table-cells-merge"></span>Merge cells</button>
-          <button class="ghost sm trailing" x-text-edit.split><span x-icon="lucide:table-cells-split"></span>Split cell</button>
-          <button class="ghost sm trailing" x-text-edit.table-header><span x-icon="lucide:table-columns-split"></span>Header row</button>
+          <button class="ghost sm trailing" x-rich-text.merge><span x-icon="lucide:table-cells-merge"></span>Merge cells</button>
+          <button class="ghost sm trailing" x-rich-text.split><span x-icon="lucide:table-cells-split"></span>Split cell</button>
+          <button class="ghost sm trailing" x-rich-text.table-header><span x-icon="lucide:table-columns-split"></span>Header row</button>
           <hr class="divider">
-          <button class="ghost sm negative trailing" x-text-edit.row-remove><span x-icon="lucide:rows-3"></span>Delete row</button>
-          <button class="ghost sm negative trailing" x-text-edit.column-remove><span x-icon="lucide:columns-3"></span>Delete column</button>
-          <button class="ghost sm negative trailing" x-text-edit.table-remove><span x-icon="lucide:trash-2"></span>Delete table</button>
+          <button class="ghost sm negative trailing" x-rich-text.row-remove><span x-icon="lucide:rows-3"></span>Delete row</button>
+          <button class="ghost sm negative trailing" x-rich-text.column-remove><span x-icon="lucide:columns-3"></span>Delete column</button>
+          <button class="ghost sm negative trailing" x-rich-text.table-remove><span x-icon="lucide:trash-2"></span>Delete table</button>
           <span class="caption text-content-subtle">Tab moves cell to cell and adds a row at the end. Arrows cross the text first, then the grid.</span>
         </menu>
 
-        <button class="ghost sm" x-text-edit.hr aria-label="Horizontal line" x-tooltip="Horizontal line"><span x-icon="lucide:minus"></span></button>
-        <button class="ghost sm" x-text-edit.figure aria-label="Figure" x-tooltip="Figure"><span x-icon="lucide:frame"></span></button>
-        <button class="ghost sm" x-text-edit.dl aria-label="Definition list" x-tooltip="Definition list"><span x-icon="lucide:book-a"></span></button>
-        <button class="ghost sm" x-text-edit.kbd aria-label="Keyboard key" x-tooltip="Keyboard key"><span x-icon="lucide:keyboard"></span></button>
-        <button class="ghost sm" x-text-edit.abbr aria-label="Abbreviation" x-tooltip="Abbreviation"><span x-icon="lucide:whole-word"></span></button>
-        <button class="ghost sm" x-text-edit.small aria-label="Small" x-tooltip="Small"><span x-icon="lucide:a-large-small"></span></button>
+        <button class="ghost sm" x-rich-text.hr aria-label="Horizontal line" x-tooltip="Horizontal line"><span x-icon="lucide:minus"></span></button>
+        <button class="ghost sm" x-rich-text.figure aria-label="Figure" x-tooltip="Figure"><span x-icon="lucide:frame"></span></button>
+        <button class="ghost sm" x-rich-text.dl aria-label="Definition list" x-tooltip="Definition list"><span x-icon="lucide:book-a"></span></button>
+        <button class="ghost sm" x-rich-text.kbd aria-label="Keyboard key" x-tooltip="Keyboard key"><span x-icon="lucide:keyboard"></span></button>
+        <button class="ghost sm" x-rich-text.abbr aria-label="Abbreviation" x-tooltip="Abbreviation"><span x-icon="lucide:whole-word"></span></button>
+        <button class="ghost sm" x-rich-text.small aria-label="Small" x-tooltip="Small"><span x-icon="lucide:a-large-small"></span></button>
 
         <div class="divider vertical h-6"></div>
 
-        <!-- Page-level: writes CSS variables on the area, not into the document -->
+        <!-- .all: CSS variables on the area, not in the document -->
         <button class="ghost sm" x-dropdown="page-setup" aria-label="Page setup" x-tooltip="Page setup"><span x-icon="lucide:file-cog"></span></button>
         <menu popover id="page-setup" class="p-3 col gap-2" style="min-width: 16rem">
           <small>Page — applies to the whole document</small>
           <label class="col gap-1">
             <span class="caption">Font</span>
-            <select x-text-edit.font.page class="sm">
+            <select x-rich-text.font.all class="sm">
               <option value="">Default</option>
               <option value="Georgia">Georgia</option>
               <option value="Arial">Arial</option>
@@ -440,7 +440,7 @@
           </label>
           <label class="col gap-1">
             <span class="caption">Base size</span>
-            <select x-text-edit.size.page class="sm">
+            <select x-rich-text.size.all class="sm">
               <option value="">Default</option>
               <option value="14px">14</option>
               <option value="16px">16</option>
@@ -449,7 +449,7 @@
           </label>
           <label class="col gap-1">
             <span class="caption">Line spacing</span>
-            <select x-text-edit.leading.page class="sm">
+            <select x-rich-text.leading.all class="sm">
               <option value="">Default</option>
               <option value="1.4">Tight</option>
               <option value="1.6">Normal</option>
@@ -458,9 +458,9 @@
           </label>
           <label class="row items-center justify-between gap-2">
             <span class="caption">Page colour</span>
-            <input type="color" class="unstyle w-6 h-6 rounded border border-line" x-text-edit.background.page aria-label="Page colour">
+            <input type="color" class="unstyle w-6 h-6 rounded border border-line" x-rich-text.background.all aria-label="Page colour">
           </label>
-          <button class="ghost sm" @click="$text.page = {}">Reset page styles</button>
+          <button class="ghost sm" @click="$rich.all = {}">Reset page styles</button>
         </menu>
 
         <button class="ghost sm" @click="newPage()" x-tooltip="New page"><span x-icon="lucide:file-plus"></span></button>
@@ -477,23 +477,23 @@
     <div popover="manual" x-ref="bubble"
          class="row gap-1 p-1 bg-surface-1 border border-line rounded shadow"
          style="position: fixed; margin: 0; inset: auto; transform: translate(-50%, -125%);
-                left: var(--text-edit-selection-center); top: var(--text-edit-selection-y)">
-      <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
-      <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
-      <button class="ghost sm" x-text-edit.code aria-label="Code"><span x-icon="lucide:code"></span></button>
-      <button class="ghost sm" x-text-edit.h2 aria-label="Heading"><span x-icon="lucide:heading-2"></span></button>
-      <button class="ghost sm" x-text-edit.blockquote aria-label="Quote"><span x-icon="lucide:text-quote"></span></button>
+                left: var(--rich-text-selection-center); top: var(--rich-text-selection-y)">
+      <button class="ghost sm" x-rich-text.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
+      <button class="ghost sm" x-rich-text.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
+      <button class="ghost sm" x-rich-text.code aria-label="Code"><span x-icon="lucide:code"></span></button>
+      <button class="ghost sm" x-rich-text.h2 aria-label="Heading"><span x-icon="lucide:heading-2"></span></button>
+      <button class="ghost sm" x-rich-text.blockquote aria-label="Quote"><span x-icon="lucide:text-quote"></span></button>
       <button class="ghost sm" x-dropdown="bubble-link" aria-label="Link"><span x-icon="lucide:link"></span></button>
       <menu popover id="bubble-link" class="p-2" style="min-width: 16rem">
-        <input type="url" class="sm" x-text-edit.a placeholder="https://">
+        <input type="url" class="sm" x-rich-text.a placeholder="https://">
       </menu>
     </div>
 
     <!-- The page -->
     <div class="center">
-      <div x-text-edit.html="doc" placeholder="Write something…" aria-label="Document"
+      <div x-rich-text.html="doc" placeholder="Write something…" aria-label="Document"
            class="w-full max-w-[52rem]"
-           style="--text-edit-min-height: 60vh; --text-edit-padding: 4rem 4.5rem"></div>
+           style="--rich-text-min-height: 60vh; --rich-text-padding: 4rem 4.5rem"></div>
     </div>
 
     <details class="max-w-[52rem] mx-auto w-full">
@@ -1453,7 +1453,7 @@
       if (want && !el.matches(':popover-open')) el.showPopover();
       if (!want && el.matches(':popover-open')) el.hidePopover();
     },
-  }" @text-edit:selection.window="bubble($event.detail)">
+  }" @rich-text:selection.window="bubble($event.detail)">
 
     <!-- Side panel — OUTSIDE the canvas; theme controls target the canvas via its scope key -->
     <aside class="editor-panel">
@@ -1479,27 +1479,27 @@
         <label>Corner radius <input type="range" min="0" max="2" step="0.125" data-unit="rem" x-edit.cssvar="site:--radius"></label>
       </div>
 
-      <!-- Rich text controls. No x-text-edit-for: they follow the focused field.
+      <!-- Rich text controls. No x-rich-text-for: they follow the focused field.
            The pointerdown guard keeps a miss between buttons from blurring the field
            and losing the selection the controls are about to act on. -->
       <div class="group" @pointerdown="if (!$event.target.closest('input, select, textarea')) $event.preventDefault()">
         <h2>Text</h2>
         <div class="row-wrap gap-1">
-          <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
-          <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
-          <button class="ghost sm" x-text-edit.u aria-label="Underline"><span x-icon="lucide:underline"></span></button>
-          <button class="ghost sm" x-text-edit.s aria-label="Strikethrough"><span x-icon="lucide:strikethrough"></span></button>
-          <button class="ghost sm" x-text-edit.code aria-label="Code"><span x-icon="lucide:code"></span></button>
-          <button class="ghost sm" x-text-edit.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>
+          <button class="ghost sm" x-rich-text.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
+          <button class="ghost sm" x-rich-text.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
+          <button class="ghost sm" x-rich-text.u aria-label="Underline"><span x-icon="lucide:underline"></span></button>
+          <button class="ghost sm" x-rich-text.s aria-label="Strikethrough"><span x-icon="lucide:strikethrough"></span></button>
+          <button class="ghost sm" x-rich-text.code aria-label="Code"><span x-icon="lucide:code"></span></button>
+          <button class="ghost sm" x-rich-text.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>
         </div>
         <div class="row-wrap gap-1">
-          <button class="ghost sm" x-text-edit.ul aria-label="Bulleted list"><span x-icon="lucide:list"></span></button>
-          <button class="ghost sm" x-text-edit.ol aria-label="Numbered list"><span x-icon="lucide:list-ordered"></span></button>
-          <button class="ghost sm" x-text-edit.blockquote aria-label="Quote"><span x-icon="lucide:text-quote"></span></button>
-          <button class="ghost sm" x-text-edit.clear aria-label="Clear formatting"><span x-icon="lucide:remove-formatting"></span></button>
+          <button class="ghost sm" x-rich-text.ul aria-label="Bulleted list"><span x-icon="lucide:list"></span></button>
+          <button class="ghost sm" x-rich-text.ol aria-label="Numbered list"><span x-icon="lucide:list-ordered"></span></button>
+          <button class="ghost sm" x-rich-text.blockquote aria-label="Quote"><span x-icon="lucide:text-quote"></span></button>
+          <button class="ghost sm" x-rich-text.clear aria-label="Clear formatting"><span x-icon="lucide:remove-formatting"></span></button>
         </div>
         <label>Block
-          <select x-text-edit.block class="sm">
+          <select x-rich-text.block class="sm">
             <option value="p">Paragraph</option>
             <option value="h1">Heading 1</option>
             <option value="h2">Heading 2</option>
@@ -1507,8 +1507,8 @@
             <option value="blockquote">Quote</option>
           </select>
         </label>
-        <label>Text colour <input type="color" x-text-edit.color></label>
-        <label>Link <input type="url" class="sm" x-text-edit.a placeholder="https://"></label>
+        <label>Text colour <input type="color" x-rich-text.color></label>
+        <label>Link <input type="url" class="sm" x-rich-text.a placeholder="https://"></label>
         <span class="caption text-content-subtle">These follow the rich text field you are in. Catalog names are data values, not rich text, so they dim there.</span>
       </div>
 
@@ -1526,22 +1526,22 @@
     <div popover="manual" x-ref="bubble"
          class="row gap-1 p-1 bg-surface-1 border border-line rounded"
          style="position: fixed; margin: 0; inset: auto; transform: translate(-50%, -125%);
-                left: var(--text-edit-selection-center); top: var(--text-edit-selection-y)">
-      <button class="ghost sm" x-text-edit.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
-      <button class="ghost sm" x-text-edit.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
-      <button class="ghost sm" x-text-edit.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>
-      <button class="ghost sm" x-text-edit.h2 aria-label="Heading"><span x-icon="lucide:heading-2"></span></button>
+                left: var(--rich-text-selection-center); top: var(--rich-text-selection-y)">
+      <button class="ghost sm" x-rich-text.strong aria-label="Bold"><span x-icon="lucide:bold"></span></button>
+      <button class="ghost sm" x-rich-text.em aria-label="Italic"><span x-icon="lucide:italic"></span></button>
+      <button class="ghost sm" x-rich-text.mark aria-label="Highlight"><span x-icon="lucide:highlighter"></span></button>
+      <button class="ghost sm" x-rich-text.h2 aria-label="Heading"><span x-icon="lucide:heading-2"></span></button>
     </div>
 
     <!-- Canvas — a partially built webpage; pure theme scope "site" (cascade target, not an area) -->
     <main class="canvas bg-page col gap-6" x-edit.theme="site" x-dropdown.context="canvas-menu" data-edit-theme-file="test/themes/site.css" style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
 
       <!-- Static text -->
-      <!-- x-text-edit inside an x-edit region: the rich editor owns the element,
+      <!-- x-rich-text inside an x-edit region: the rich editor owns the element,
            x-edit captures what it produces as an ordinary text delta -->
       <header class="col gap-2" x-edit.move.text.size.persist="hero">
-        <div x-text-edit.html class="h2" style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><h1>Bloom &amp; Bramble</h1></div>
-        <div x-text-edit.html style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><p>Seasonal arrangements, <strong>delivered weekly</strong>. Select any text for the bubble menu, or use the panel.</p></div>
+        <div x-rich-text.html class="h2" style="color: var(--color-content-stark); --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none"><h1>Bloom &amp; Bramble</h1></div>
+        <div x-rich-text.html style="color: var(--color-content-neutral); --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none"><p>Seasonal arrangements, <strong>delivered weekly</strong>. Select any text for the bubble menu, or use the panel.</p></div>
       </header>
 
       <!-- Static sort + text + style -->
@@ -1549,12 +1549,12 @@
         <small class="caption" style="color: var(--color-content-neutral);">Features · drag to reorder or into another card · click text · right-click for actions · 3rd is locked</small>
         <div class="row-wrap gap-3" x-edit.move.text.size.persist="features">
           <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
-            <div x-text-edit.html.minimal style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><strong>Fresh daily</strong></div>
-            <div x-text-edit.html.minimal class="small" style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none">Cut this morning.</div>
+            <div x-rich-text.html.inline style="color: var(--color-content-stark); --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none"><strong>Fresh daily</strong></div>
+            <div x-rich-text.html.inline class="small" style="color: var(--color-content-neutral); --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none">Cut this morning.</div>
           </div>
           <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
-            <div x-text-edit.html.minimal style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><strong>Local growers</strong></div>
-            <div x-text-edit.html.minimal class="small" style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none">Within 50 miles.</div>
+            <div x-rich-text.html.inline style="color: var(--color-content-stark); --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none"><strong>Local growers</strong></div>
+            <div x-rich-text.html.inline class="small" style="color: var(--color-content-neutral); --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none">Within 50 miles.</div>
           </div>
           <div class="col gap-1 p-4 bg-surface-1" x-edit.lock style="border-radius: var(--radius); min-width: 150px;">
             <strong style="color: var(--color-content-stark);">Guaranteed</strong><span class="small" style="color: var(--color-content-neutral);">x-edit.lock — read-only.</span>
@@ -1570,7 +1570,7 @@
             <div class="col gap-1 p-4 bg-surface-1" :data-key="p.id" style="border-radius: var(--radius); min-width: 150px;">
               <!-- The rich editor bound straight to the data field: the record holds
                    markup, so the name is styleable like any other text -->
-              <div x-text-edit.html.minimal="p.name" style="color: var(--color-content-stark); font-weight: 700; --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"></div>
+              <div x-rich-text.html.inline="p.name" style="color: var(--color-content-stark); font-weight: 700; --rich-text-min-height: 0; --rich-text-padding: 0; border: 0; background: none"></div>
               <span class="small" x-text="'$' + p.price" style="color: var(--color-brand-content);"></span>
             </div>
           </template>

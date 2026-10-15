@@ -25,7 +25,7 @@
         };
         const walk = (el, path) => {
             markEl(el, path);
-            if (el !== area && (el.hasAttribute('data-text-edit') || isRendered(el))) return;
+            if (el !== area && (el.hasAttribute('data-rich-text') || isRendered(el))) return;
             let i = 0;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
@@ -121,7 +121,7 @@
                 const n = { key: id };
                 const at = originAt.get(originOf(id)); if (at != null) n.at = at;
                 const e = editsFor(id); if (e) n.edits = e;
-                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-text-edit')) {
+                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
                     if (id[0] === '~' || ss.touched.has(isRoot ? '#' + region : id) || kids.some(nontrivial)) n.children = kids;
                 }

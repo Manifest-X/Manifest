@@ -107,8 +107,8 @@
     /* ---- Safety ---- */
     const nodeSig = (el) => el ? el.tagName.toLowerCase() : '';
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
-    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
-        ? window.ManifestTextEdit.sanitize(html, true, true)
+    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-rich-text') && window.ManifestRichText
+        ? window.ManifestRichText.sanitize(html, true, true)
         : sanitizeHTML(html);
 
     function sanitizeHTML(html) {
@@ -219,7 +219,7 @@
     const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
     const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TITLE', 'XMP']);
     const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
-    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-text-edit') || ownText(el);
+    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el);
     function isContainer(el) {
         if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
         return !isTextEl(el);

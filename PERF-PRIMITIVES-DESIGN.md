@@ -162,7 +162,7 @@ deviations, all accepted:
    a route-level decision and potentially a LARGE win (whole inactive pages
    hold no bindings); tracked as a Phase 2 candidate, not done here.
 2. Containers carrying a child-owning directive (`x-html`, `x-text`,
-   `x-virtual`, `x-colorpicker`, `x-date`, `x-text-edit`, `x-chart`, …) are
+   `x-virtual`, `x-colorpicker`, `x-date`, `x-rich-text`, `x-chart`, …) are
    never deferred — they render their own children.
 3. Empty containers are not registered (tooltip singletons, datepicker
    shells).
@@ -871,7 +871,7 @@ scratch folder, same probe, same machine, runs back to back):
 Flag off is at parity with master (ready within 13ms, same longest task;
 the blocked delta is run noise on a 2s task). Flag on removes the ~2s boot
 task, which in this project is the inactive editor (`x-route="/"`), chat and
-text-edit demo pages initialising for a `/perf` visit — the exact shape
+rich-text demo pages initialising for a `/perf` visit — the exact shape
 Playcom's platform page has.
 
 **Recommendation: do not make it default yet — soak it on Playcom first.**

@@ -111,8 +111,8 @@
     /* ---- Safety ---- */
     const nodeSig = (el) => el ? el.tagName.toLowerCase() : '';
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
-    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
-        ? window.ManifestTextEdit.sanitize(html, true, true)
+    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-rich-text') && window.ManifestRichText
+        ? window.ManifestRichText.sanitize(html, true, true)
         : sanitizeHTML(html);
 
     function sanitizeHTML(html) {
@@ -223,7 +223,7 @@
     const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
     const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TITLE', 'XMP']);
     const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
-    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-text-edit') || ownText(el);
+    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el);
     function isContainer(el) {
         if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
         return !isTextEl(el);
@@ -762,7 +762,7 @@
         if (action === 'size') return !!el._edit && el._edit.caps.has('size') && !lockedFor(el, 'size');
         // Text: an editable leaf (or a rich-editor host), never a container or a bound element.
         if (action === 'text') return capOf(el, 'text') && !el.hasAttribute('x-text') && !el.hasAttribute('x-html')
-            && (el.getAttribute('contenteditable') === 'true' || !!el._pieceMode || el.hasAttribute('data-text-edit') || (el._editField != null && capOf(el, 'data')));
+            && (el.getAttribute('contenteditable') === 'true' || !!el._pieceMode || el.hasAttribute('data-rich-text') || (el._editField != null && capOf(el, 'data')));
         // attrs: any attribute (static elements); class: the class list (static and component nodes).
         if (action === 'attrs' || action === 'class') {
             if (kind === 'data' || lockedFor(el, 'attrs')) return false;
@@ -1503,12 +1503,12 @@
             try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
         });
     }
-    // Where x-text-edit is declared, it owns the element: this plugin neither makes
+    // Where x-rich-text is declared, it owns the element: this plugin neither makes
     // its leaves contenteditable nor competes for the caret. If the rich editor has
     // no expression of its own, we capture what it produces as an ordinary text
     // delta, so a rich field inside a page-editing region publishes like any other.
     function armRichText(area) {
-        area.querySelectorAll('[data-text-edit]:not([data-text-edit-bound])').forEach(el => {
+        area.querySelectorAll('[data-rich-text]:not([data-rich-text-bound])').forEach(el => {
             if (!capOf(el, 'text') || !/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
@@ -1528,7 +1528,7 @@
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
-            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
+            if (el.closest('[data-rich-text]')) return;                 // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
             el.setAttribute('contenteditable', 'true');
@@ -1555,10 +1555,10 @@
                 el._editField = field;
                 // x-html fields hold markup; x-text fields are plain.
                 el._editRich = rich;
-                if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
+                if (!el.hasAttribute('data-rich-text')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
-                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-text-edit')) selectAllIn(el); });   // the rich editor owns its caret
+                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-rich-text')) selectAllIn(el); });   // the rich editor owns its caret
                 el.addEventListener('focusin', () => { el._preEdit = read(); });
                 el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
             });
@@ -1592,7 +1592,7 @@
         armRichText(area);
         componentNodes(root).forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
-            if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
+            if (el.closest('[data-rich-text]')) return;                 // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');
@@ -1823,7 +1823,7 @@
         };
         const walk = (el, path) => {
             markEl(el, path);
-            if (el !== area && (el.hasAttribute('data-text-edit') || isRendered(el))) return;
+            if (el !== area && (el.hasAttribute('data-rich-text') || isRendered(el))) return;
             let i = 0;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
@@ -1919,7 +1919,7 @@
                 const n = { key: id };
                 const at = originAt.get(originOf(id)); if (at != null) n.at = at;
                 const e = editsFor(id); if (e) n.edits = e;
-                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-text-edit')) {
+                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
                     if (id[0] === '~' || ss.touched.has(isRoot ? '#' + region : id) || kids.some(nontrivial)) n.children = kids;
                 }
@@ -2031,7 +2031,7 @@
     /* ---- Undo/redo hotkeys: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y ----
        On wherever a region is active; data-edit-hotkeys="off" on a region or any
        ancestor opts it out. Text that is still being typed keeps the browser's own
-       undo until it commits on blur; fields and x-text-edit keep theirs always. */
+       undo until it commits on blur; fields and x-rich-text keep theirs always. */
     const leafText = (el) => el._editField && !el._editRich ? el.textContent : el.innerHTML.trim();
     const hotkeysOff = (el) => !!el.closest('[data-edit-hotkeys="off"]');
     // A focused leaf's baseline follows history rewrites under the caret.
@@ -2047,7 +2047,7 @@
         const isRedo = (k === 'z' && e.shiftKey) || (k === 'y' && e.ctrlKey && !e.metaKey && !e.shiftKey);
         if (!isRedo && !(k === 'z' && !e.shiftKey)) return;
         const t = e.target && e.target.nodeType === 1 ? e.target : document.body;
-        if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[data-text-edit]')) return;
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[data-rich-text]')) return;
         const region = t.closest('[data-edit-area]');
         if (region) {
             const top = regionOf(region);

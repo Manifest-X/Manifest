@@ -419,41 +419,106 @@ export interface ManifestEdit {
     revert(el?: Element): boolean;
 }
 
-/** Text editor (`x-text-edit`) — the area this element sits in, or the last focused one. */
-export interface ManifestTextEdit {
-    /** The stored value, in the mode the directive was given. Assigning replaces the
-     *  document and resets undo history. */
+/** Rich text editor (`x-rich-text`): the area this element sits in, or the last focused one. */
+export interface ManifestRichText {
+    /** The stored value, in the area's format. Assigning replaces the document and resets undo history. */
     value: string;
     focus(): void;
     /** The href at the caret; assign to set it, assign '' to unlink. */
     link: string;
-    /** Page-level styles (font, size, leading, align, color, background) as CSS
-     *  custom properties on the area. Presentation, not document content — persist
-     *  it yourself. Assign `{}` to clear. */
-    page: Record<string, string>;
+    /** Document-wide styles (font, size, leading, align, color, background) as CSS custom
+     *  properties on the area; not part of the stored value. Assign `{}` to clear. */
+    all: Record<string, string>;
     /** Select the whole document. */
     selectAll(): void;
-    /** The current selection and its geometry, or null. Also emitted as a
-     *  `text-edit:selection` event and as --text-edit-selection-* custom properties
-     *  on the area, for anchoring a menu to it. */
+    /** The current selection and its geometry, or null. Also emitted as a `rich-text:selection`
+     *  event and as --rich-text-selection-* custom properties. */
     selection: {
         collapsed: boolean; text: string;
         x: number; y: number; width: number; height: number;
         top: number; bottom: number; left: number; right: number;
     } | null;
-    /** Apply a command. Commands are named for the tag they produce — 'strong',
-     *  'blockquote', 'h2', 'ul', 'a', 'img', 'table' — plus the operations with no
-     *  tag of their own: 'indent', 'outdent', 'align', 'color', 'background',
-     *  'font', 'size', 'checklist', 'clear', 'undo', 'redo', 'block'. */
-    run(command: string, arg?: string | number): void;
+    /** Apply a command. Commands are HTML tag names ('strong', 'h2', 'ul', 'a', 'table', …) plus
+     *  'indent', 'outdent', 'align', 'color', 'background', 'font', 'size', 'leading', 'checklist',
+     *  'unlink', 'clear', 'undo', 'redo', 'block' and the table operations. Every command is also
+     *  a method: `$rich.strong()`, `$rich.table(3, 2)` (columns, rows). */
+    run(command: string, arg?: unknown): void;
     /** Whether that command is active at the caret. */
     active(command: string): boolean;
-    /** Whether that command is available in this area's mode. */
+    /** Whether that command is available here (format, .inline, caret). */
     can(command: string): boolean;
-    /** Read the content as markdown regardless of the storage mode. */
+    /** Read the content as markdown regardless of the storage format. */
     markdown(): string;
-    /** Read the content as sanitized HTML regardless of the storage mode. */
+    /** Read the content as sanitized HTML regardless of the storage format. */
     html(): string;
+
+    // Inline tags: toggle on the selection, or arm for the next typed text
+    strong(): void; b(): void; em(): void; i(): void; s(): void; del(): void; code(): void;
+    bdi(): void; cite(): void; ins(): void; kbd(): void; mark(): void; q(): void; samp(): void;
+    small(): void; span(): void; sub(): void; sup(): void; u(): void; var(): void;
+    /** `title` attribute (html only). */
+    abbr(title?: string): void;
+    /** `title` attribute (html only). */
+    dfn(title?: string): void;
+    /** Direction, default 'rtl' (html only). */
+    bdo(dir?: 'ltr' | 'rtl' | 'auto'): void;
+    /** Machine-readable `value` (html only). */
+    data(value?: string): void;
+    /** `datetime` attribute (html only). */
+    time(datetime?: string): void;
+    /** Link the selection; '' unlinks. */
+    a(href?: string): void;
+    unlink(): void;
+    br(): void;
+    /** Break opportunity (html only). */
+    wbr(): void;
+    img(src: string, alt?: string): void;
+
+    // Block tags: convert the block (again returns to p)
+    p(): void; h1(): void; h2(): void; h3(): void; h4(): void; h5(): void; h6(): void;
+    blockquote(): void; pre(): void; address(): void;
+    ul(): void; ol(): void; li(): void; checklist(): void; hr(): void;
+    figure(): void; figcaption(): void; dl(): void; dt(): void; dd(): void;
+    /** Any block tag by name, e.g. block('h2'). */
+    block(tag: string): void;
+
+    /** Insert a columns × rows table (default 3 × 3). */
+    table(columns?: number, rows?: number): void;
+    'row-before'(): void; 'row-after'(): void; 'row-remove'(): void;
+    'column-before'(): void; 'column-after'(): void; 'column-remove'(): void;
+    'table-remove'(): void; 'table-header'(): void; merge(): void; split(): void;
+
+    indent(): void; outdent(): void;
+    align(value?: 'start' | 'center' | 'end' | 'justify' | string): void;
+    leading(value: string): void;
+    color(value: string): void;
+    background(value: string): void;
+    font(value: string): void;
+    size(value: string | number): void;
+    clear(): void;
+    undo(): void;
+    redo(): void;
+}
+
+/** Options for `ManifestRichText.attach()`. */
+export interface ManifestRichTextAttachOptions {
+    /** 'block' (default) or 'inline' (single line: no block commands, Enter fires `rich-text:enter`). */
+    mode?: 'block' | 'inline';
+    /** Storage format: 'markdown' (default), 'html' or 'plain'. */
+    format?: 'markdown' | 'html' | 'plain';
+    /** Initial value; omitted, the element's existing markup is the content. */
+    value?: string;
+    /** No markdown autoformat while typing. */
+    literal?: boolean;
+    /** Called with the stored value after every change. */
+    onChange?(value: string): void;
+}
+
+/** Returned by `ManifestRichText.attach()`: the `$rich` surface plus detach(). */
+export interface ManifestRichTextHandle extends ManifestRichText {
+    el: Element;
+    /** Remove editing and restore the element's own contenteditable/role/aria-multiline. */
+    detach(): void;
 }
 
 /**
@@ -466,7 +531,7 @@ export type ManifestDirective =
     | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-computed' | 'x-defer'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
     | 'x-export' | 'x-import' | 'x-pay' | 'x-files' | 'x-data-files'
-    | 'x-edit' | 'x-text-edit';
+    | 'x-edit' | 'x-rich-text';
 
 // ---------------------------------------------------------------------------
 // Global declarations (what Alpine exposes inside `x-data`, `x-show`, etc.)
@@ -516,8 +581,8 @@ declare global {
     const $import: ManifestImport;
     /** Element editor (edit plugin; opt-in). */
     const $edit: ManifestEdit;
-    /** Text editor (text-edit plugin). */
-    const $text: ManifestTextEdit;
+    /** Rich text editor (rich-text plugin; loaded on use). */
+    const $rich: ManifestRichText;
     /** Device/platform info (utilities; enriched by the device plugin). */
     const $device: ManifestDevice;
     /** Native share (device plugin). */
@@ -552,6 +617,14 @@ declare global {
         };
         Alpine?: unknown;
         __manifestLoaded?: unknown;
+        /** Rich text engine (rich-text plugin). */
+        ManifestRichText?: {
+            attach(el: Element, options?: ManifestRichTextAttachOptions): ManifestRichTextHandle | null;
+            toMarkdown(root: Element): string;
+            fromMarkdown(markdown: string): string;
+            sanitize(html: string, allowBlocks?: boolean, keepStyle?: boolean): string;
+            commands(): string[];
+        };
     }
 
     /**
