@@ -612,6 +612,42 @@ describe('data values', () => {
     })
 })
 
+describe('live reload after our own publish', () => {
+    const reloadEvent = (files) => { const e = new CustomEvent('manifest:live-reload', { cancelable: true, detail: { files } }); window.dispatchEvent(e); return e.defaultPrevented }
+    it('the reload our publish triggers is skipped; other changes, or later ones, still reload', async () => {
+        const root = await mount(`<section x-edit="lr1"><p>One</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p); p.firstChild.nodeValue = 'Uno'; await blur(p)
+        let answer
+        const realFetch = window.fetch
+        window.fetch = vi.fn(() => new Promise(r => { answer = r }))
+        const reload = vi.fn()
+        const loc = window.location, realReload = loc.reload
+        try { loc.reload = reload } catch { }
+        try {
+            const done = store().publish()
+            await flush()
+            expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }])).toBe(true)          // in flight: held
+            answer({ json: () => ({ results: [{ region: 'lr1', status: 'written', file: 'index.html' }], base: { 'index.html': 'h1' } }) })
+            await done
+            await flush()
+            expect(reload).not.toHaveBeenCalled()
+            expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }])).toBe(true)          // ours, just after
+            expect(reloadEvent([{ rel: 'index.html', hash: 'other' }])).toBe(false)      // someone else's change
+            expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }, { rel: 'about.html', hash: 'x' }])).toBe(false)
+            // An external change arriving during a publish reloads once the answer is in
+            await enter(p); p.firstChild.nodeValue = 'Eins'; await blur(p)
+            const again = store().publish()
+            await flush()
+            expect(reloadEvent([{ rel: 'about.html', hash: 'z' }])).toBe(true)
+            answer({ json: () => ({ results: [] }) })
+            await again; await flush()
+            expect(loc.reload).toBe(reload)
+            expect(reload).toHaveBeenCalledTimes(1)
+        } finally { window.fetch = realFetch; try { loc.reload = realReload } catch { } }
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)

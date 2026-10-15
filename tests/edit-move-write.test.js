@@ -578,6 +578,20 @@ describe('startup sweep', () => {
         expect(stale.results[0].reason).toContain('rebase')
     })
 
+    it('SSE reload messages name every file with its hash, matching what the save returned', async () => {
+        const events = []
+        const sse = http.get(`http://localhost:${port}/__mnfst_sse__?tabId=r-${Date.now()}`, res => res.on('data', c => events.push(String(c))))
+        await new Promise(r => setTimeout(r, 300))
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="r"><p>One</p></section>`)
+        await new Promise(r => setTimeout(r, 700)); events.length = 0
+        const res = await save([tree('r', [n('r', 'P:One', { edits: { text: 'Uno' } })])])
+        expect(res.results[0].status).toBe('written')
+        await new Promise(r => setTimeout(r, 600))
+        sse.destroy()
+        const msg = events.join('').split('\n').filter(l => l.startsWith('data:')).map(l => JSON.parse(l.slice(5))).find(m => m.type === 'reload')
+        expect(msg.files).toEqual([{ rel: 'index.html', hash: res.base['index.html'] }])
+    })
+
     it('SSE css messages carry the file and its new hash', async () => {
         const events = []
         const sse = http.get(`http://localhost:${port}/__mnfst_sse__?tabId=h-${Date.now()}`, res => res.on('data', c => events.push(String(c))))

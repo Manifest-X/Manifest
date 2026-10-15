@@ -227,6 +227,23 @@
     // A refusal for files changed since load keeps the log and reports them ($edit.stale,
     // `edit:stale`). Reload to take the new source, or publish({ rebase: true }) to write
     // the edits over it; the history is kept until a publish succeeds.
+    // The live reload a successful publish of ours triggers is not taken: the page is
+    // already rebased, and typing begun since would be lost. Reloads that arrive while a
+    // publish is in flight wait for its answer; anything not written by it still reloads.
+    let ownWrites = null, inFlight = 0, held = [];
+    const ours = (files) => !!ownWrites && Date.now() < ownWrites.until && files.length > 0 && files.every(f => f && ownWrites.files[f.rel] && ownWrites.files[f.rel] === f.hash);
+    window.addEventListener('manifest:live-reload', (e) => {
+        const files = (e.detail && e.detail.files) || [];
+        if (inFlight) { e.preventDefault(); held.push(files); return; }
+        if (ours(files)) e.preventDefault();
+    });
+    function settled(r) {
+        inFlight = Math.max(0, inFlight - 1);
+        if (r && r.base) ownWrites = { files: Object.assign({}, r.base), until: Date.now() + 3000 };
+        if (inFlight) return;
+        const pending = held; held = [];
+        if (pending.some(f => !ours(f))) location.reload();
+    }
     function publish(opts) {
         const done = (r) => {
             if (r && r.base && baseFiles) Object.assign(baseFiles, r.base);
@@ -241,7 +258,9 @@
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
             if (!patches.length) return Promise.resolve({ results: [] });
             const body = baseFiles ? { patches, base: baseFiles } : patches;
-            return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).then(done);
+            inFlight++;
+            return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
+                .then(r => { const out = done(r); settled(r); return out; }, (err) => { settled(null); throw err; });
         };
         return opts && opts.rebase ? loadBase().then(send) : send();
     }

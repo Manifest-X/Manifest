@@ -108,7 +108,8 @@ const LIVE_RELOAD_SCRIPT = `<script>
   var es = new EventSource('/__mnfst_sse__?tabId=' + encodeURIComponent(tabId));
   es.onmessage = function (e) {
     var d = JSON.parse(e.data);
-    if (d.rel) window.dispatchEvent(new CustomEvent('manifest:source-change', { detail: { file: d.rel, hash: d.hash } }));
+    var files = d.files || (d.rel ? [{ rel: d.rel, hash: d.hash }] : []);
+    files.forEach(function (f) { window.dispatchEvent(new CustomEvent('manifest:source-change', { detail: { file: f.rel, hash: f.hash } })); });
     if (d.type === 'css') {
       document.querySelectorAll('link[rel="stylesheet"]').forEach(function (l) {
         var base = l.href.split('?')[0];
@@ -117,7 +118,8 @@ const LIVE_RELOAD_SCRIPT = `<script>
     } else if (d.type === 'data') {
       window.dispatchEvent(new CustomEvent('manifest:dev-reload'));
     } else {
-      location.reload();
+      // Cancelable: a page that wrote these files itself (and is already up to date) may keep its state
+      if (window.dispatchEvent(new CustomEvent('manifest:live-reload', { cancelable: true, detail: { files: files } }))) location.reload();
     }
   };
   // Don't close on error — let EventSource auto-reconnect (carries the same
@@ -589,23 +591,26 @@ const EDIT_TEMP = /\.mnfst-edit-\d+-\d+\.tmp$/;
 const IGNORE = /node_modules|\.git|\.mnfst-edit-\d+-\d+\.tmp$/;
 const quietPaths = new Map();   // root-relative path → quiet until (ms)
 const relKey = (p) => String(p).replace(/\\/g, '/').replace(/^\/+/, '');
+const pendingChanges = new Set();
 try {
   watch(root, { recursive: true }, (_event, filename) => {
     if (!filename || IGNORE.test(filename)) return;
     const until = quietPaths.get(relKey(filename));
     if (until && until > Date.now()) return;
+    pendingChanges.add(relKey(filename));
     clearTimeout(debounce);
     debounce = setTimeout(() => {
-      const ext = extname(filename).toLowerCase();
-      const rel = relKey(filename);
-      let hash = null; try { hash = fileHash(join(root, rel)); } catch { }
-      if (ext === '.css') {
-        broadcast({ type: 'css', file: '/' + rel, rel, hash });
-      } else if (['.csv', '.json', '.yaml', '.yml', '.md'].includes(ext)) {
-        broadcast({ type: 'data', rel, hash });
-      } else {
-        broadcast({ type: 'reload' });
+      const changed = [...pendingChanges]; pendingChanges.clear();
+      const reload = [];
+      for (const rel of changed) {
+        const ext = extname(rel).toLowerCase();
+        let hash = null; try { hash = fileHash(join(root, rel)); } catch { }
+        if (ext === '.css') broadcast({ type: 'css', file: '/' + rel, rel, hash });
+        else if (['.csv', '.json', '.yaml', '.yml', '.md'].includes(ext)) broadcast({ type: 'data', rel, hash });
+        else reload.push({ rel, hash });
       }
+      // One reload naming every file (with its hash), so a page can tell its own publish from other changes
+      if (reload.length) broadcast({ type: 'reload', files: reload });
     }, 60);
   });
 } catch {
