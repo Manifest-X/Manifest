@@ -28,7 +28,7 @@
         let t = '';
         for (const n of el.childNodes) {
             if (n.nodeType === 3) t += n.textContent;
-            else if (n.nodeType === 1 && !pluginNode(n) && n.tagName !== 'TEMPLATE' && !isGenerated(n)) t += sourceText(n);
+            else if (n.nodeType === 1 && !pluginNode(n) && n.tagName !== 'TEMPLATE' && !isGenerated(n) && !n._manifestComponent) t += sourceText(n);
         }
         return t;
     }
@@ -52,7 +52,7 @@
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
-            const assigned = el.getAttribute('data-edit-key');
+            const assigned = el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
             if (assigned) return assigned;
             const base = staticKey(el);
             const n = seen[base] = (seen[base] || 0) + 1;
@@ -255,7 +255,8 @@
         editEls.add(el); resetAreas();
     }
     let areasCache = null;
-    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; }));
+    // Top-level areas: no x-edit above them in the same file (component markup is another file's).
+    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el; n; n = n.parentElement) { if (n !== el && n._edit) return false; if (n._manifestComponent) return true; } return true; }));
     const resetAreas = () => { areasCache = null; };
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
     // A key mounted more than once (a component used several times) is not editable.
@@ -282,7 +283,7 @@
     }
     const sourceFile = (area) => { const c = sourceComponent(area); return c ? componentFile(c) : 'index.html'; };
     const topArea = (a) => !!a && areas().includes(a);
-    const regionOf = (el) => el && areas().find(a => a === el || a.contains(el));
+    const regionOf = (el) => el && areas().reduce((best, a) => (a === el || a.contains(el)) && (!best || best.contains(a)) ? a : best, null);
     const key = (area) => area._edit.key;
     function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
     const capOf = (node, cap) => { const i = editInfo(node); return !!i && i.caps.has(cap) && !lockedFor(node, cap); };
@@ -292,9 +293,11 @@
     /* ---- Regime classification ---- */
     function classify(area) {
         if (listTpl(area)) return 'data';
-        if ((area.matches('[data-component]') && !sourceComponent(area)) || area.querySelector('[data-component]')) return 'component';
+        if ((area.matches('[data-component]') && !sourceComponent(area)) || cmpRoot(area)) return 'component';
         return 'static';
     }
+    // An instance the area overrides by path: a route component with no x-edit region of its own.
+    const cmpRoot = (area) => [...area.querySelectorAll('[data-component]')].find(r => regionOf(r) === area && !r.querySelector('[data-edit-area]'));
     function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');

@@ -197,7 +197,7 @@ describe('publish round trips', () => {
             { kind: 'static-tree', region: 'u10', tree: { key: '@u10@SECTION:One', edits: { title: 'x' } } },
             { kind: 'static-tree', region: 'missing', tree: { key: '', children: [] } }
         ])
-        expect(res.results.map(x => x.status)).toEqual(['error', 'error'])
+        expect(res.results.map(x => x.status)).toEqual(['skipped', 'error'])   // the failure names its area
         expect(regionSource()).toBe(body)
     })
 

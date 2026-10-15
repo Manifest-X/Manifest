@@ -32,7 +32,7 @@
         let t = '';
         for (const n of el.childNodes) {
             if (n.nodeType === 3) t += n.textContent;
-            else if (n.nodeType === 1 && !pluginNode(n) && n.tagName !== 'TEMPLATE' && !isGenerated(n)) t += sourceText(n);
+            else if (n.nodeType === 1 && !pluginNode(n) && n.tagName !== 'TEMPLATE' && !isGenerated(n) && !n._manifestComponent) t += sourceText(n);
         }
         return t;
     }
@@ -56,7 +56,7 @@
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
-            const assigned = el.getAttribute('data-edit-key');
+            const assigned = el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
             if (assigned) return assigned;
             const base = staticKey(el);
             const n = seen[base] = (seen[base] || 0) + 1;
@@ -259,7 +259,8 @@
         editEls.add(el); resetAreas();
     }
     let areasCache = null;
-    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; }));
+    // Top-level areas: no x-edit above them in the same file (component markup is another file's).
+    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el; n; n = n.parentElement) { if (n !== el && n._edit) return false; if (n._manifestComponent) return true; } return true; }));
     const resetAreas = () => { areasCache = null; };
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
     // A key mounted more than once (a component used several times) is not editable.
@@ -286,7 +287,7 @@
     }
     const sourceFile = (area) => { const c = sourceComponent(area); return c ? componentFile(c) : 'index.html'; };
     const topArea = (a) => !!a && areas().includes(a);
-    const regionOf = (el) => el && areas().find(a => a === el || a.contains(el));
+    const regionOf = (el) => el && areas().reduce((best, a) => (a === el || a.contains(el)) && (!best || best.contains(a)) ? a : best, null);
     const key = (area) => area._edit.key;
     function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
     const capOf = (node, cap) => { const i = editInfo(node); return !!i && i.caps.has(cap) && !lockedFor(node, cap); };
@@ -296,9 +297,11 @@
     /* ---- Regime classification ---- */
     function classify(area) {
         if (listTpl(area)) return 'data';
-        if ((area.matches('[data-component]') && !sourceComponent(area)) || area.querySelector('[data-component]')) return 'component';
+        if ((area.matches('[data-component]') && !sourceComponent(area)) || cmpRoot(area)) return 'component';
         return 'static';
     }
+    // An instance the area overrides by path: a route component with no x-edit region of its own.
+    const cmpRoot = (area) => [...area.querySelectorAll('[data-component]')].find(r => regionOf(r) === area && !r.querySelector('[data-edit-area]'));
     function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');
@@ -490,7 +493,7 @@
         const { main, inst, sigs } = componentState();
         areas().forEach(area => {
             if (classify(area) !== 'component') return;
-            const comp = componentName(area), region = key(area), root = area.querySelector('[data-component]'); if (!root) return;
+            const comp = componentName(area), region = key(area), root = cmpRoot(area); if (!root) return;
             componentNodes(root).forEach(el => {
                 const p = el._editPath;
                 const expect = sigs[comp + '|' + p];
@@ -604,6 +607,7 @@
             const k = el.getAttribute('data-edit-key');
             if (k != null && !m.has(k)) m.set(k, el);
         }));
+        roots.forEach(area => area.querySelectorAll('[data-edit-host]').forEach(el => { const k = el.getAttribute('data-edit-host'); if (!m.has(k)) m.set(k, el); }));
         return m;
     }
 
@@ -772,13 +776,16 @@
                 if (!c || !c.isConnected) continue;
                 entries.splice(i--, 1); progress = true;
                 const kids = sortableChildren(c);
-                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c));
-                const stay = kids.filter(el => !next.includes(el) && !claimed.has(el.getAttribute('data-edit-key')) && !html[el.getAttribute('data-edit-key')]);
+                // A component host's other roots go with its first
+                const group = (el) => { const g = [el]; if (el._manifestHost) for (let n = el.nextElementSibling; n && n._manifestHost === el._manifestHost; n = n.nextElementSibling) g.push(n); return g; };
+                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c)).flatMap(el => el.hasAttribute('data-edit-host') ? group(el) : [el]);
+                const idOf = (el) => el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
+                const stay = kids.filter(el => !next.includes(el) && !claimed.has(idOf(el)) && !html[idOf(el)]);
                 const target = [...next, ...stay];
                 if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
                 const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
                 const leads = new Map(target.map(el => [el, el.isConnected ? leadNodes(el) : el._editLead || []]));
-                kids.forEach(el => { if (target.includes(el)) return; el._editLead = leadNodes(el); el._editLead.forEach(n => n.remove()); el.remove(); const k = el.getAttribute('data-edit-key'); if (k) detached.set(k, el); });
+                kids.forEach(el => { if (target.includes(el)) return; el._editLead = leadNodes(el); el._editLead.forEach(n => n.remove()); el.remove(); const k = idOf(el); if (k) detached.set(k, el); });
                 target.forEach(el => { const from = regionOf(el); if (from) touchedAreas.add(from); c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null); const l = leads.get(el); if (l.length) el.before(...l); });
                 const a = regionOf(c); if (a) touchedAreas.add(a);
             }
@@ -1257,7 +1264,7 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; out.push(ch); if (isContainer(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]') || ch._manifestComponent) return; out.push(ch); if (isContainer(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
@@ -1947,6 +1954,7 @@
         if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if (el._manifestComponent && el !== area) return;          // a component host: its markup is another file's
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
@@ -1990,7 +1998,7 @@
     }
 
     /* ---- Components: nodes addressed by structural path; scope via $edit.scope ---- */
-    const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
+    const componentName = (area) => { const r = cmpRoot(area); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
     function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
     function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
     // 'main' scope: mirror live to other instances without their own override.
@@ -1999,7 +2007,7 @@
         const comp = componentName(area), path = sourceEl._editPath, { inst } = componentState();
         areas().forEach(a => {
             if (classify(a) !== 'component' || componentName(a) !== comp) return;
-            const root = a.querySelector('[data-component]'); if (!root) return;
+            const root = cmpRoot(a); if (!root) return;
             const el = path === '' ? root : nodeByPath(root, path); if (!el || el === sourceEl) return;
             const iv = (inst[key(a)] && inst[key(a)][path]) || {}; if (iv[prop] !== undefined) return;   // override wins
             if (prop === 'class') writeClass(el, value);
@@ -2007,7 +2015,7 @@
         });
     }
     function armComponent(area) {
-        const root = area.querySelector('[data-component]'); if (!root) return;
+        const root = cmpRoot(area); if (!root) return;
         if (!area._editScope) area._editScope = 'instance';
         area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {};
         const markClass = (el) => { const p = pathOf(el, root); el._editPath = p; if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
@@ -2310,10 +2318,25 @@
             markEl(el, path);
             if (el !== area && opaque(el)) return;
             if (el._editRt || ((first || el._editRtFormat) && wholeLeaf(el) && capOf(el, 'text') && !isRendered(el))) { if (first) count(el); return; }
-            let i = 0;
+            let i = 0, prevHost = null;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
-                walk(c, path === '' ? String(i) : path + '.' + i);
+                const p = path === '' ? String(i) : path + '.' + i;
+                // Another component's markup is one opaque element here, its <x-name> host
+                // (data-edit-host; its first root stands for it, the rest follow it)
+                if (c._manifestComponent) {
+                    const same = !!c._manifestHost && c._manifestHost === prevHost;
+                    prevHost = c._manifestHost || null;
+                    if (same) continue;
+                    if (!c.hasAttribute('data-edit-host')) {
+                        let k = '!' + mint();
+                        if (first) { const b = 'X-' + c._manifestComponent.toUpperCase() + ':', n = seen[b] = (seen[b] || 0) + 1; k = canonKey(region, n > 1 ? b + '#' + n : b); originAt.set(k, p); }
+                        c.setAttribute('data-edit-host', k);
+                    }
+                    i++; continue;
+                }
+                prevHost = null;
+                walk(c, p);
                 i++;
             }
         };
@@ -2423,6 +2446,9 @@
                 return list ? list.filter(k => k[0] === '@').map(k => { const b = { key: k }, at = originAt.get(k); if (at != null) b.at = at; if (ids && ids[k]) b.fp = ids[k]; return b; }) : null;
             };
             const build = (el, isRoot) => {
+                const host = !isRoot && el.getAttribute('data-edit-host');
+                if (host) { if (host[0] === '!') return null; const h = { key: host }, at = originAt.get(host); if (at != null) h.at = at; if (ids && ids[host]) h.fp = ids[host]; return h; }
+                if (!isRoot && el._manifestComponent) return null;
                 const id = el.getAttribute('data-edit-key');
                 if (!id || id[0] === '!') return null;
                 const n = { key: id };
@@ -2483,14 +2509,15 @@
     }
     // The source now holds every published edit: history starts again from here, and
     // identities are re-derived from the page as a fresh load of that source would.
-    // Deltas for areas not on the page were not published; they stay.
-    function rebase() {
-        const mounted = (r) => r == null || !!areaByKey(r);
+    // Deltas for areas not on the page were not published; they stay, as do those of
+    // `keep` (areas a publish left out), whose identities are left as they are.
+    function rebase(keep) {
+        const mounted = (r) => r == null || (!!areaByKey(r) && !(keep && keep.has(r)));
         const pending = (d) => (d.kind === 'st-move' ? [d.from, d.to] : [d.region]).some(r => !mounted(r));
         // Runtime locks are app state, not source: carried over by element.
         const locks = [];
         const lockState = lockStateNow();
-        keyMap(staticAreas()).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
+        keyMap(staticAreas().filter(a => !(keep && keep.has(key(a))))).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
         const nonStaticLocks = log.slice(0, cursor).filter(d => d.kind === 'lock' && !/^[~@]/.test(d.key) && !pending(d));
         let c = 0;
         log = log.filter((d, i) => { const keep = pending(d); if (keep && i < cursor) c++; return keep; });
@@ -2505,11 +2532,18 @@
             ver++;
         };
         saveState();
+        const keptAt = keep ? [...originAt].filter(([k]) => keep.has(decodeURIComponent(k.slice(1, k.indexOf('@', 1))))) : [];
         originAt.clear();
+        keptAt.forEach(([k, p]) => originAt.set(k, p));
         areas().forEach(a => {
+            if (keep && keep.has(key(a))) return;
             const kind = classify(a);
             a._baseText = {}; a._baseClass = {}; a._baseStyle = {};
-            if (kind === 'static') { [a, ...a.querySelectorAll('[data-edit-key]')].forEach(n => n.removeAttribute('data-edit-key')); a._marked = false; markStatic(a); }
+            if (kind === 'static') {
+                [a, ...a.querySelectorAll('[data-edit-key]')].forEach(n => { if (regionOf(n) === a) n.removeAttribute('data-edit-key'); });
+                a.querySelectorAll('[data-edit-host]').forEach(n => { if (regionOf(n.parentElement) === a) n.removeAttribute('data-edit-host'); });
+                a._marked = false; markStatic(a);
+            }
             if (kind === 'component' && a._armed) armComponent(a);
             lastSnap[key(a)] = snapshot(a, kind);
         });
@@ -2606,7 +2640,7 @@
     // fingerprints of keys with twins there (which may not be the elements this page shows).
     let overNewer = false;
     function publishNow(opts) {
-        const done = (r) => {
+        const done = (r, keep) => {
             if (r && r.base && baseFiles) Object.entries(r.base).forEach(([f, h]) => { if (!overNewer || !/\.html?$/i.test(f)) baseFiles[f] = h; });
             if (r && r.ids && baseIds) {
                 if (!overNewer) baseIds = r.ids;
@@ -2615,19 +2649,38 @@
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;
             if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
-            if (published(r)) rebase();
+            if (published(keep ? { results: r.results.filter(x => !(x && keep.has(x.region))) } : r)) rebase(keep);
             takeHeldReload();
             return r;
+        };
+        // An area the writer could not resolve does not hold the others back: they are sent
+        // again without it (and areas a move ties to it); its edits stay, its refusal is returned.
+        const leftOut = (r, patches) => {
+            if (!r || !Array.isArray(r.results) || (Array.isArray(r.stale) && r.stale.length)) return null;
+            const failed = new Set(r.results.filter(x => x && x.failed != null).map(x => x.failed));
+            if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
+            for (let grew = true; grew;) { grew = false; log.slice(0, cursor).forEach(d => { if (d.kind === 'st-move' && failed.has(d.from) !== failed.has(d.to)) { failed.add(d.from); failed.add(d.to); grew = true; } }); }
+            return patches.some(p => !failed.has(p.region)) ? failed : null;
         };
         const send = () => {
             commitFocused(true);   // typing under way publishes with the rest (identities are re-derived from the page after)
             const patches = buildPatches();
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
             if (!patches.length) { takeHeldReload(); return Promise.resolve({ results: [] }); }   // nothing to send: a held reload goes now
-            const body = { patches, base: baseFiles };
-            inFlight++;
-            return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
-                .then(r => { const out = done(r); settled(r, !!(opts && opts.rebase)); return out; }, (err) => { settled(null); throw err; });
+            const post = (ps) => { inFlight++; return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patches: ps, base: baseFiles }) }).then(r => r.json()).catch(err => { settled(null); throw err; }); };
+            return post(patches).then(r => {
+                const out = leftOut(r, patches);
+                if (!out) { const o = done(r); settled(r, !!(opts && opts.rebase)); return o; }
+                settled(r, false);
+                const rest = patches.filter(p => !out.has(p.region));
+                return post(rest).then(r2 => {
+                    const results = patches.map((p, i) => out.has(p.region)
+                        ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: 'not published: a move ties it to an area that failed' })
+                        : r2.results[rest.indexOf(p)]);
+                    const merged = Object.assign({}, r2, { results });
+                    const o = done(merged, out); settled(r2, !!(opts && opts.rebase)); return o;
+                });
+            });
         };
         // mnfst-run gets a publish only with the base the page loaded; a missing one is
         // fetched once more, else the publish is refused and the history kept.

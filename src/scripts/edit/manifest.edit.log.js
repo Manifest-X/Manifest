@@ -64,7 +64,7 @@
         const { main, inst, sigs } = componentState();
         areas().forEach(area => {
             if (classify(area) !== 'component') return;
-            const comp = componentName(area), region = key(area), root = area.querySelector('[data-component]'); if (!root) return;
+            const comp = componentName(area), region = key(area), root = cmpRoot(area); if (!root) return;
             componentNodes(root).forEach(el => {
                 const p = el._editPath;
                 const expect = sigs[comp + '|' + p];
@@ -178,6 +178,7 @@
             const k = el.getAttribute('data-edit-key');
             if (k != null && !m.has(k)) m.set(k, el);
         }));
+        roots.forEach(area => area.querySelectorAll('[data-edit-host]').forEach(el => { const k = el.getAttribute('data-edit-host'); if (!m.has(k)) m.set(k, el); }));
         return m;
     }
 
@@ -346,13 +347,16 @@
                 if (!c || !c.isConnected) continue;
                 entries.splice(i--, 1); progress = true;
                 const kids = sortableChildren(c);
-                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c));
-                const stay = kids.filter(el => !next.includes(el) && !claimed.has(el.getAttribute('data-edit-key')) && !html[el.getAttribute('data-edit-key')]);
+                // A component host's other roots go with its first
+                const group = (el) => { const g = [el]; if (el._manifestHost) for (let n = el.nextElementSibling; n && n._manifestHost === el._manifestHost; n = n.nextElementSibling) g.push(n); return g; };
+                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c)).flatMap(el => el.hasAttribute('data-edit-host') ? group(el) : [el]);
+                const idOf = (el) => el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
+                const stay = kids.filter(el => !next.includes(el) && !claimed.has(idOf(el)) && !html[idOf(el)]);
                 const target = [...next, ...stay];
                 if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
                 const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
                 const leads = new Map(target.map(el => [el, el.isConnected ? leadNodes(el) : el._editLead || []]));
-                kids.forEach(el => { if (target.includes(el)) return; el._editLead = leadNodes(el); el._editLead.forEach(n => n.remove()); el.remove(); const k = el.getAttribute('data-edit-key'); if (k) detached.set(k, el); });
+                kids.forEach(el => { if (target.includes(el)) return; el._editLead = leadNodes(el); el._editLead.forEach(n => n.remove()); el.remove(); const k = idOf(el); if (k) detached.set(k, el); });
                 target.forEach(el => { const from = regionOf(el); if (from) touchedAreas.add(from); c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null); const l = leads.get(el); if (l.length) el.before(...l); });
                 const a = regionOf(c); if (a) touchedAreas.add(a);
             }
