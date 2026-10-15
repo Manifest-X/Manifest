@@ -1787,9 +1787,11 @@
     const HISTORY_CAP = 200;
     const IDLE = 400;
 
+    // Every entry is a settled state (trailing block, tables), so settling never makes the field differ from its history
     function record(area) {
         const h = area._history; if (!h || h.restoring) return;
         clearTimeout(h.timer); h.timer = null;
+        if (area._rt && area._rt.settle) area._rt.settle();
         const html = area.innerHTML;
         // Unchanged: the entry learns where the next edit starts (`before`, for undo);
         // `caret` stays where the edit that produced it ended (for redo)
@@ -1827,6 +1829,7 @@
         h.at = next; h.restoring = true;
         const entry = h.stack[next];
         area.innerHTML = entry.html;
+        if (area._rt && area._rt.settle) { area._rt.settle(); entry.html = area.innerHTML; }
         area.focus();
         caretIn(area, by < 0 && entry.before != null ? entry.before : entry.caret);
         saveRange(area);
@@ -2553,9 +2556,10 @@
         // $rich.strong(), $rich.table(3, 2)
         Object.keys(COMMANDS).forEach(id => { api[id] = (...args) => run(el, id, COMMANDS[id].args > 1 ? args : args[0]); });
 
-        el._rt = { format, inline: single, breaks: lines, noAll: !allStyles, api };
+        el._rt = { format, inline: single, breaks: lines, noAll: !allStyles, api, settle };
         areas.add(el);
         settle();
+        el._history.stack[0].html = el.innerHTML;
         setTimeout(sync, 0);
 
         const destroy = () => {
