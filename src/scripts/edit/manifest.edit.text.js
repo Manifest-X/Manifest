@@ -131,8 +131,11 @@
         const lv = (tpl.getAttribute('x-for').match(/^\s*([\w$]+)\s+in\b/) || [])[1]; if (!lv) return;
         const source = dataSourceName(area), fieldRe = new RegExp('^\\s*' + lv + '\\.([\\w$]+)\\s*$');
         sortableChildren(area).forEach(clone => {
-            const id = clone.getAttribute('data-key'); if (id == null) return;
-            clone.querySelectorAll('*').forEach(el => {
+            // The record: :data-key names its id; otherwise the row's own x-for scope gives the record (the writer matches records by id)
+            let id = clone.getAttribute('data-key');
+            if (id == null) { let rec = null; try { rec = window.Alpine.$data(clone)[lv]; } catch { } if (rec && rec.id != null) id = String(rec.id); }
+            if (id == null) return;
+            [clone, ...clone.querySelectorAll('*')].forEach(el => {
                 const rich = el.hasAttribute('x-html');
                 if ((el.children.length && !(rich && plainFormatted(el))) || el.hasAttribute('data-edit-handle')) return;
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;

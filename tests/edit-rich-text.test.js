@@ -694,6 +694,22 @@ describe('.all on leaves', () => {
 })
 
 describe('data values', () => {
+    it('rows need no :data-key: the x-for scope names the record; a row that is itself the field is editable', async () => {
+        const root = await mount(`<div x-data="{ rows: [{ id: 7, name: 'Rose' }, { id: 8, name: 'Lily' }] }"><ul x-edit.move.data="dv2"><template x-for="r in rows" :key="r.id"><li x-text="r.name"></li></template></ul><i id="out" x-text="rows.map(r => r.name).join()"></i></div>`)
+        await frame()
+        const li = root.querySelectorAll('li')[1], at = cursor()
+        expect(li._editRt).toBeTruthy()
+        await enter(li)
+        li.textContent = 'Iris'
+        await blur(li)
+        await frame()
+        expect(cursor()).toBe(at + 1)
+        expect(log().at(-1)).toMatchObject({ kind: 'data-val', id: '8', field: 'name', value: 'Iris', before: 'Lily' })
+        expect(root.querySelector('#out').textContent).toBe('Rose,Iris')
+        await store().undo(); await frame()
+        expect(root.querySelector('#out').textContent).toBe('Rose,Lily')
+    })
+
     it('undoing the only data-val delta restores the model', async () => {
         const root = await mount(`<div x-data="{ rows: [{ id: 1, name: 'Rose' }] }"><ul x-edit.move.data="dv1"><template x-for="r in rows" :key="r.id"><li :data-key="r.id"><span x-text="r.name"></span></li></template></ul><i id="out" x-text="rows[0].name"></i></div>`)
         await frame()
