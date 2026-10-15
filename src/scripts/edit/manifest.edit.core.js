@@ -67,13 +67,19 @@
             else if (s) localStorage.removeItem(lsKey(lsPath));
         } catch { }
     };
-    const saveState = (path = location.pathname) => {
+    // One document, one log: an SPA's routes share it, so every path this page has been at
+    // holds the same state (a publish from one route leaves no published deltas under another).
+    const sessionPaths = new Set([location.pathname]);
+    const saveState = (path) => {
         if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); }
         const done = log.slice(0, cursor).filter(d => persisted.has(d)), ahead = log.slice(cursor).filter(d => persisted.has(d));
-        try {
-            if (!done.length && !ahead.length) localStorage.removeItem(lsKey(path));
-            else localStorage.setItem(lsKey(path), JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
-        } catch { }
+        sessionPaths.add(path || location.pathname);
+        (path ? [path] : [...sessionPaths]).forEach(p => {
+            try {
+                if (!done.length && !ahead.length) localStorage.removeItem(lsKey(p));
+                else localStorage.setItem(lsKey(p), JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
+            } catch { }
+        });
     };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     // Nearest value of a custom property, `none` included ('' when unset).

@@ -221,7 +221,7 @@ describe('nesting into a small empty container', () => {
         return rects
     }
     async function setup() {
-        const root = await mount(`<section x-edit.move="nest-small"><p>One</p><p>Two</p><div class="box"></div><p>Three</p></section>`)
+        const root = await mount(`<section x-edit.move="nest-small-${Math.random().toString(36).slice(2)}"><p>One</p><p>Two</p><div class="box"></div><p>Three</p></section>`)   // a region key of its own: a remount shows the log's edits
         const section = root.querySelector('section')
         const proto = Element.prototype.getBoundingClientRect
         Element.prototype.getBoundingClientRect = function () { return layout(section).get(this) || proto.call(this) }
