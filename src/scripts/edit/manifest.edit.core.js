@@ -234,17 +234,21 @@
     const editEls = new Set();
     const themeScopes = {};
     const warnedRetired = new Set();
-    // Inside what a plugin renders (x-html output and the like) nothing is source: an x-edit there is not a region.
-    const renderedHost = (el) => { for (let n = el && el.parentElement; n; n = n.parentElement) if (n.nodeType === 1 && isRendered(n)) return n; return null; };
+    // Within an area, a rendered host's content is not editable (the leaf exclusion).
     const insideRendered = (el) => { const a = regionOf(el); for (let n = el && el.parentElement; n; n = n.parentElement) { if (isRendered(n)) return true; if (n === a) break; } return false; };
-    const warnedRendered = new Set();
-    function registerEdit(el, modifiers, expression) {
-        const rh = renderedHost(el);
-        if (rh) {
-            const k = (expression || '').trim() || '(unnamed)';
-            if (!warnedRendered.has(k)) { warnedRendered.add(k); console.warn(`[edit] x-edit="${k}" is inside content a plugin renders (${[...rh.attributes].map(a => a.name).find(n => RENDERED.some(r => n === r || n.startsWith(r + '.')))}); it is not editable`); }
-            return;
+    // Hosts whose content is generated output, not authored markup: an area inside one edits
+    // in the page, but its markup is in no HTML file mnfst-run can write (x-code-group,
+    // x-carousel and x-defer keep their authored children, so those can be written).
+    const GENERATED = RENDERED.filter(r => r !== 'x-code-group' && r !== 'x-carousel' && r !== 'x-defer');
+    function generatedBy(el) {
+        for (let n = el && el.parentElement; n; n = n.parentElement) {
+            if (n.nodeType !== 1) continue;
+            const a = [...n.attributes].map(x => x.name.toLowerCase()).find(x => GENERATED.some(r => x === r || x.startsWith(r + '.')));
+            if (a) return a.split('.')[0];
         }
+        return null;
+    }
+    function registerEdit(el, modifiers, expression) {
         if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
         modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
         if (modifiers.includes('lock')) {
@@ -260,13 +264,13 @@
         if (!caps.size) DEFAULT_CAPS.forEach(c => caps.add(c));
         if ((expression || '').trim() && [...editEls].some(e => e !== el && e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
         const bare = modifiers.includes('bare');
-        el._edit = { key: k, caps, gated: modifiers.includes('gated'), theme, persist: modifiers.includes('persist'), bare };
+        el._edit = { key: k, caps, gated: modifiers.includes('gated'), theme, persist: modifiers.includes('persist'), bare, rendered: generatedBy(el) };
         el.setAttribute('data-edit-area', bare ? 'bare' : '');
         editEls.add(el); resetAreas();
     }
     let areasCache = null;
     // Top-level areas: no x-edit above them in the same file (component markup is another file's).
-    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el; n; n = n.parentElement) { if (n !== el && n._edit) return false; if (n._manifestComponent) return true; } return true; }));
+    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el; n; n = n.parentElement) { if (n !== el && n._edit) return false; if (n._manifestComponent || (n !== el && isRendered(n))) return true; } return true; }));
     const resetAreas = () => { areasCache = null; };
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
     // A key mounted more than once (a component used several times) is not editable.
