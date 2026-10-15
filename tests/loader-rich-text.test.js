@@ -141,6 +141,35 @@ describe('rich-text plugin loading', () => {
         expect(injected()).toContain('rich.text')
     })
 
+    it('a failed on-use load is tried once per page and warned once', async () => {
+        boot({}, '<main id="m"></main>'); await settle()
+        window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = false
+        const attempts = []
+        const append = document.head.appendChild.bind(document.head)
+        vi.spyOn(document.head, 'appendChild').mockImplementation((n) => {
+            if (n.tagName === 'SCRIPT' && /rich\.text/.test(n.src)) {
+                attempts.push(n.src)
+                setTimeout(() => n.dispatchEvent(new window.Event('error')), 0)
+                return n
+            }
+            return append(n)
+        })
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        for (let i = 0; i < 10; i++) {
+            const row = document.createElement('div')
+            row.innerHTML = '<div x-rich-text></div>'
+            document.getElementById('m').appendChild(row)
+            await settle(10)
+        }
+        await settle()
+        const hosts = new Set(attempts.map(u => new URL(u).host))
+        expect(attempts.length).toBe(hosts.size)                 // one pass down the CDN chain
+        expect(warn.mock.calls.filter(a => a.join(' ').includes('Failed to load plugin rich-text')).length).toBe(1)
+        expect(await window.Manifest.loadUsed('<div x-rich-text></div>')).toEqual([])
+        window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true
+        vi.restoreAllMocks()
+    })
+
     it('an explicit list without it stays a constraint', async () => {
         boot({ 'data-plugins': 'tabs' }, '<div x-rich-text></div>'); await settle()
         expect(injected()).not.toContain('rich.text')

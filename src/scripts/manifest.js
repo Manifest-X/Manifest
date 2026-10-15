@@ -635,7 +635,9 @@
 	// Post-boot usage: component HTML, x-html and markdown content load the
 	// on-use plugins they reference. Derive path only, like the boot sniff.
 	let usageSniff = false;
-	const usageLoaded = (p) => pluginLoads.has(p);
+	// A failed on-use load is not retried within this page load
+	const usageFailed = new Set();
+	const usageLoaded = (p) => pluginLoads.has(p) || usageFailed.has(p);
 	function loadUsed(source, version = RESOLVED_VERSION) {
 		if (!usageSniff || !source || typeof document === 'undefined') return Promise.resolve([]);
 		let root = source;
@@ -650,6 +652,8 @@
 		if (!used.length) return Promise.resolve([]);
 		const list = resolveDependencies(used).filter(p => !usageLoaded(p));
 		return Promise.all(list.map(p => addScript(p, version).catch(error => {
+			if (usageFailed.has(p)) return;
+			usageFailed.add(p);
 			console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
 		}))).then(() => list);
 	}
@@ -1070,6 +1074,7 @@
 						if (used.length > 0) {
 							const late = resolveDependencies(used).filter(p => !pluginsToLoad.includes(p));
 							await Promise.all(late.map(p => addScript(p, config.version).catch(error => {
+								usageFailed.add(p);
 								console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
 							})));
 						}
