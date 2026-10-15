@@ -29,7 +29,10 @@
         if (!el || el.nodeType !== 1) return null;
         const area = regionOf(el);
         if (!area || !isActive(area)) return null;
-        return { el, area, kind: classify(area) };
+        const kind = classify(area);
+        // A component root also carries its placeholder's class and attributes
+        if (kind === 'static' && el._manifestComponent) return null;
+        return { el, area, kind };
     }
     function setAttr(name, value, el) {
         const t = attrTarget(el); if (!t) return false;

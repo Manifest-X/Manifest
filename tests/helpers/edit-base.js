@@ -9,13 +9,16 @@ const getJSON = (port, p) => new Promise((resolve, reject) => {
 const originOf = (k) => k && k[0] === '~' ? k.slice(k.indexOf('~', 1) + 1) : k
 
 export async function withBase(port, patches) {
-    const { files, ids } = await getJSON(port, '/__edit/base')
+    const { files, ids: byFile } = await getJSON(port, '/__edit/base')
+    let ids = {}
     const fill = (t) => {
         if (!t || typeof t !== 'object') return
         if (typeof t.key === 'string' && t.fp == null && ids[originOf(t.key)]) t.fp = ids[originOf(t.key)]
         ;(Array.isArray(t.children) ? t.children : []).forEach(fill)
         ;(Array.isArray(t.base) ? t.base : []).forEach(fill)
     }
-    for (const p of patches) if (p && p.kind === 'static-tree' && p.tree) { (p.tree.children || []).forEach(fill); (p.tree.base || []).forEach(fill) }
+    // A component region's ids are its file's (declared, or components/<name>.html)
+    const fileOf = (p) => p.component == null ? 'index.html' : Object.keys(byFile).find(f => f === `components/${p.component}.html` || f.endsWith(`/${p.component}.html`))
+    for (const p of patches) if (p && p.kind === 'static-tree' && p.tree) { ids = byFile[fileOf(p)] || {}; (p.tree.children || []).forEach(fill); (p.tree.base || []).forEach(fill) }
     return { patches, base: files }
 }

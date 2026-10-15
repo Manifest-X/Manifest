@@ -62,7 +62,7 @@ const NEST = `<section x-edit="u">
 </section>
 `
 // Fingerprints of `src` as a page loading it would get them.
-async function loadedIds(src) { writeFileSync(path.join(dir, 'index.html'), src); return (await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())).ids }
+async function loadedIds(src) { writeFileSync(path.join(dir, 'index.html'), src); return (await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())).ids['index.html'] }
 const tree = (region, children, extra = {}) => ({ kind: 'static-tree', region, tree: { key: '', children }, ...extra })
 const n = (region, key, more = {}) => ({ key: K(region, key), ...more })
 
@@ -463,19 +463,55 @@ describe('/__edit/save parsing as a browser does', () => {
         const base = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
         expect(base.files['index.html']).toMatch(/^[0-9a-f]{40}$/)
         writeFileSync(path.join(dir, 'index.html'), src.replace('One', 'One ').replace('<p>One </p>', '<p>One</p> '))
-        const stale = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' }, fp: base.ids[K('h', 'P:One')] })])], base: base.files }) }).then(r => r.json())
+        const stale = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' }, fp: base.ids['index.html'][K('h', 'P:One')] })])], base: base.files }) }).then(r => r.json())
         expect(stale.results[0].status).toBe('error')
         expect(stale.results[0].reason).toContain('source changed since this page loaded (index.html)')
         const fresh = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
-        const ok = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' }, fp: fresh.ids[K('h', 'P:One')] })])], base: fresh.files }) }).then(r => r.json())
+        const ok = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' }, fp: fresh.ids['index.html'][K('h', 'P:One')] })])], base: fresh.files }) }).then(r => r.json())
         expect(ok.results[0].status).toBe('written')
         expect(ok.base['index.html']).toMatch(/^[0-9a-f]{40}$/)
         expect(ok.base['index.html']).not.toBe(fresh.files['index.html'])
     })
 })
 
+describe('/__edit/save static areas in component files', () => {
+    const raw = (body) => fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify(body) }).then(r => r.json())
+    const comp = (rel, text) => { mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); writeFileSync(path.join(dir, rel), text) }
+    const cTree = (component, region, children) => ({ kind: 'static-tree', region, component, tree: { key: '', path: true, children } })
+
+    it('writes the component file; its ids and base come from /__edit/base; fingerprints are required', async () => {
+        writeFileSync(path.join(dir, 'index.html'), `<x-promo></x-promo>`)
+        comp('components/promo.html', `<section x-edit="pr">\n  <h2>Promo</h2>\n</section>\n`)
+        const { files, ids } = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
+        expect(Object.keys(ids)).toContain('components/promo.html')
+        const fp = ids['components/promo.html'][K('pr', 'H2:Promo')]
+        expect(fp).toBeTruthy()
+        const noFp = await raw({ patches: [cTree('promo', 'pr', [n('pr', 'H2:Promo', { at: '0', edits: { text: 'X' } })])], base: files })
+        expect(noFp.results[0].reason).toContain('without the fingerprint')
+        const ok = await raw({ patches: [cTree('promo', 'pr', [n('pr', 'H2:Promo', { at: '0', fp, edits: { text: 'Promo page' } })])], base: files })
+        expect(ok.results[0].status, JSON.stringify(ok)).toBe('written')
+        expect(readFileSync(path.join(dir, 'components/promo.html'), 'utf8')).toBe(`<section x-edit="pr">\n  <h2>Promo page</h2>\n</section>\n`)
+        expect(ok.ids['components/promo.html'][K('pr', 'H2:Promo page')]).toBeTruthy()
+        expect(file()).toBe(`<x-promo></x-promo>`)
+    })
+
+    it('refuses components that are not declared or by convention, and props bound by $modify', async () => {
+        writeFileSync(path.join(dir, 'index.html'), `<x-promo></x-promo>`)
+        comp('components/promo.html', `<section x-edit="pr">\n  <a href="$modify('link')">Go</a>\n</section>\n`)
+        for (const component of ['../index', 'nope', '../.git/x', '../NODE_MODULES/pkg/page']) {
+            const r = await save([cTree(component, 'pr', [n('pr', 'A:Go', { at: '0', edits: { text: 'Went' } })])])
+            expect(r.results[0].status, component).toBe('error')
+        }
+        const bound = await save([cTree('promo', 'pr', [n('pr', 'A:Go', { at: '0', edits: { href: '/x' } })])])
+        expect(bound.results[0].reason).toContain('$modify')
+        const text = await save([cTree('promo', 'pr', [n('pr', 'A:Go', { at: '0', edits: { text: 'Went' } })])])
+        expect(text.results[0].status).toBe('written')
+        expect(readFileSync(path.join(dir, 'components/promo.html'), 'utf8')).toContain(`<a href="$modify('link')">Went</a>`)
+    })
+})
+
 describe('/__edit/save element fingerprints', () => {
-    const ids = () => fetch(`http://localhost:${port}/__edit/base`).then(r => r.json()).then(j => j.ids)
+    const ids = () => fetch(`http://localhost:${port}/__edit/base`).then(r => r.json()).then(j => j.ids['index.html'])
     // Every node carries the fingerprint the page loaded with, as the client sends it.
     const withFp = (t, map) => { if (map[t.key]) t.fp = map[t.key]; (t.children || []).forEach(c => withFp(c, map)); (t.base || []).forEach(b => withFp(b, map)); return t }
     // A root without a base is only a path to its edits, as the client sends it.
@@ -533,9 +569,9 @@ describe('/__edit/save element fingerprints', () => {
         page(src.replace('<p>Alpha</p>\n  <p>Beta</p>', '<p>Beta</p>\n  <p>Alpha</p>'))
         const first = await send([tree('f5', [n('f5', 'P:Gamma', { at: '2', edits: { text: 'Gamma page' } })])], map)
         expect(first.results[0].status).toBe('written')
-        expect(first.ids[K('f5', 'P:Gamma page')]).toBeTruthy()
+        expect(first.ids['index.html'][K('f5', 'P:Gamma page')]).toBeTruthy()
         // A second publish without a reload uses the ids the first returned.
-        const second = await send([tree('f5', [n('f5', 'P:Gamma page', { at: '2', edits: { text: 'Gamma again' } })])], first.ids)
+        const second = await send([tree('f5', [n('f5', 'P:Gamma page', { at: '2', edits: { text: 'Gamma again' } })])], first.ids['index.html'])
         expect(second.results[0].status).toBe('written')
         expect(file()).toContain('<p>Beta</p>\n  <p>Alpha</p>\n  <p>Gamma again</p>')
         // A stale fingerprint for the same key is refused.

@@ -1175,7 +1175,17 @@ function indexRegion(html, name, node) {
   return reg;
 }
 const fpHash = (s) => createHash('sha1').update(s).digest('hex').slice(0, 12);
-// Fingerprints of every static element in index.html's areas, by key.
+// Fingerprints of every static element by file: index.html and each component file.
+function allSourceIds(files) {
+  let manifest = {}; try { manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')); } catch {}
+  const out = { 'index.html': sourceIds(join(root, 'index.html')) };
+  for (const rel of files) {
+    if (rel === 'index.html' || !/\.html$/i.test(rel)) continue;
+    const names = [basename(rel, '.html'), rel.replace(/^components\//, '').replace(/\.html$/i, '')];
+    if (names.some(n => resolveComponentFile(manifest, n) === rel)) out[rel] = sourceIds(join(root, rel));
+  }
+  return out;
+}
 function sourceIds(file) {
   const out = {};
   let html; try { html = readFileSync(file, 'utf8'); } catch { return out; }
@@ -1279,6 +1289,8 @@ function writeStaticTrees(file, patches) {
       const val = (prop === 'class' || prop === 'style') && (v === '' || v == null) ? null : v === false ? null : v === true ? '' : v;
       const why = attrRefusal(prop, val, node.name);
       if (why) fail(`${prop} on ${node.name}: ${why}`);
+      const cur = ((scanTag(open) || { attrs: [] }).attrs.find(a => a.lower === String(prop).toLowerCase()) || {}).value;
+      if (cur && /\$modify\(/.test(cur)) fail(`${prop} on ${node.name} is set by a component prop ($modify); edit it where the component is used`);
       open = setAttr(open, prop, val == null ? null : String(val));
       attrsEdited = true;
     }
@@ -1918,7 +1930,8 @@ const server = createServer((req, res) => {
     if (!EDIT_ENABLED) { res.writeHead(404); res.end(); return; }
     if (listenPort && req.headers.origin && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ files: baseHashes(), ids: sourceIds(join(root, 'index.html')) }));
+    const files = baseHashes();
+    res.end(JSON.stringify({ files, ids: allSourceIds(Object.keys(files)) }));
     return;
   }
 
@@ -1942,12 +1955,28 @@ const server = createServer((req, res) => {
       VFS = new Map(); READS = new Set();
       let results, written = null;
       try {
+        // Static areas: index.html, or the component file a region is authored in.
         const trees = patches.filter(p => p && p.kind === 'static-tree');
-        let treeResults = [];
-        try { treeResults = trees.length ? writeStaticTrees(indexFile, trees) : []; }
-        catch (e) { treeResults = trees.map(p => ({ region: p.region, status: 'error', reason: e.message })); }
+        const treeResults = new Map(), byFile = new Map();
+        for (const p of trees) {
+          let file = indexFile;
+          if (p.component != null) {
+            const rel = resolveComponentFile(manifest, p.component);
+            if (!rel) { treeResults.set(p, { region: p.region, status: 'error', reason: `component '${p.component}' not registered` }); continue; }
+            file = resolveRel(rel);
+            if (!file || !isFile(file)) { treeResults.set(p, { region: p.region, status: 'error', reason: `file not found: ${rel}` }); continue; }
+          }
+          if (!byFile.has(file)) byFile.set(file, []);
+          byFile.get(file).push(p);
+        }
+        for (const [file, group] of byFile) {
+          let rs;
+          try { rs = writeStaticTrees(file, group); }
+          catch (e) { rs = group.map(p => ({ region: p.region, status: 'error', reason: e.message })); }
+          group.forEach((p, i) => treeResults.set(p, rs[i]));
+        }
         results = patches.map(p => {
-          if (p && p.kind === 'static-tree') return treeResults[trees.indexOf(p)];
+          if (p && p.kind === 'static-tree') return treeResults.get(p);
           try {
             if (!p || typeof p !== 'object') return { status: 'error', reason: 'malformed patch' };
             if (p.kind === 'data') {
@@ -1980,7 +2009,7 @@ const server = createServer((req, res) => {
         }
       } finally { VFS = null; READS = null; }
       const stale = results.find(r => r && r.stale);
-      reply(200, written ? { results, base: written, ids: sourceIds(indexFile) } : stale ? { results, stale: stale.stale } : { results });
+      reply(200, written ? { results, base: written, ids: allSourceIds(Object.keys(baseHashes())) } : stale ? { results, stale: stale.stale } : { results });
     } catch (e) {
       console.error('[mnfst-run] /__edit/save failed:', e);
       reply(500, { results: [], error: String(e && e.message || e) });

@@ -1,7 +1,8 @@
 // A happy-dom page served by the real dev server (--edit): the source file is the page,
 // Edit boots on it and talks to /__edit/base and /__edit/save. `net.baseDown` makes the
-// base endpoint answer 503.
-import { writeFileSync, readFileSync, mkdtempSync, rmSync } from 'fs'
+// base endpoint answer 503. `opts.files` adds project files; `opts.dom` is the page as
+// mounted (default: the body), and `opts.mounted(root)` runs on it before Edit boots.
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { spawn } from 'child_process'
 import http from 'http'
@@ -13,11 +14,12 @@ import { EDIT_SRC } from './edit-setup.js'
 const SERVE = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../packages/run/serve.mjs')
 const page = (body) => `<!doctype html>\n<html>\n<body>\n${body}\n</body>\n</html>\n`
 
-export async function bootLivePage(body, net = {}) {
+export async function bootLivePage(body, net = {}, opts = {}) {
     const dir = mkdtempSync(path.join(tmpdir(), 'mnfst-edit-live-'))
     const file = path.join(dir, 'index.html')
     writeFileSync(file, page(body))
     writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'live' }))
+    for (const [rel, text] of Object.entries(opts.files || {})) { mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); writeFileSync(path.join(dir, rel), text) }
     const ask = 41000 + Math.floor(Math.random() * 3000)
     const proc = spawn(process.execPath, [SERVE, dir, '--edit', '--no-open', '--no-idle-shutdown', '--port', String(ask)], { stdio: ['ignore', 'pipe', 'pipe'] })
     const port = await new Promise((resolve, reject) => {
@@ -41,15 +43,17 @@ export async function bootLivePage(body, net = {}) {
     }
     const root = document.createElement('div')
     root.setAttribute('x-data', '')
-    root.innerHTML = body
+    root.innerHTML = opts.dom || body
     document.body.appendChild(root)
+    if (opts.mounted) opts.mounted(root)
     new Function(EDIT_SRC)()
     window.Alpine = Alpine; globalThis.Alpine = Alpine
     Alpine.start()
     await new Promise(r => setTimeout(r, 900))
     return {
         port,
-        src: () => readFileSync(file, 'utf8'),
+        src: (rel = 'index.html') => readFileSync(path.join(dir, rel), 'utf8'),
+        write: (rel, text) => writeFileSync(path.join(dir, rel), text),
         setSrc: (s) => writeFileSync(file, s),
         page,
         stop: () => { try { proc.kill() } catch { } try { rmSync(dir, { recursive: true, force: true }) } catch { } }
