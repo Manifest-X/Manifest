@@ -15,7 +15,7 @@
         if (!log.length) return;
         pruneLoaded();
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        if (log.some(d => /^st-/.test(d.kind))) applyStaticState();
+        if (log.some(d => /^st-/.test(d.kind))) { surfaceConflicts(areas()); applyStaticState(); }
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
         if (log.some(d => d.kind === 'theme')) applyThemeState();
@@ -33,7 +33,7 @@
             cleanup(() => releaseEdit(el));
         });
         Alpine.store('edit', {
-            active: false, canUndo: false, canRedo: false, version: 0, stale: [],
+            active: false, canUndo: false, canRedo: false, version: 0, stale: [], conflicts: [],
             onPublish: null,
             toggle() { this.active ? off() : on(); }, on() { on(); }, off() { off(); },
             undo() { return undo(); }, redo() { return redo(); },

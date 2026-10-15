@@ -384,8 +384,14 @@ export interface ManifestEdit {
     off(): void;
     undo(): Promise<void>;
     redo(): Promise<void>;
-    /** Source files that changed since the page loaded, from the last refused publish. */
+    /** Source files that changed since the page loaded, from the last refused publish (also an
+     *  `edit:stale` event on document, detail `{ files }`), or a reload held back because it
+     *  would lose unpublished edits. */
     stale: string[];
+    /** Edits dropped because their element changed in the source before they were published
+     *  (also an `edit:conflict` event on document, detail `{ conflicts }`). `element` is the
+     *  edited element's tag and opening text; `value` what the edit set. */
+    conflicts: Array<{ region: string; key: string; element: string; prop: string; value: unknown; before: unknown }>;
     /** Send every area's patches; on success the history is cleared (the source now holds it).
      *  `rebase: true` takes the current source as the base (writes over external changes). */
     publish(opts?: { rebase?: boolean }): Promise<unknown>;

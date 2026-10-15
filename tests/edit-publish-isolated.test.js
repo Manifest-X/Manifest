@@ -12,7 +12,7 @@ import { spawn } from 'child_process'
 import http from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import Alpine from 'alpinejs'
 import { EDIT_SRC } from './helpers/edit-setup.js'
 
@@ -70,6 +70,73 @@ async function mount(html) {
 const regionSource = () => { const s = readFileSync(path.join(dir, 'index.html'), 'utf8'); return s.slice(s.indexOf('<body>') + 7, s.indexOf('</body>')).trim() }
 const editText = (el, value) => { el.dispatchEvent(new Event('focus')); el.innerHTML = value; el.dispatchEvent(new Event('blur')) }
 const statuses = (res) => res.results.map(r => r.status)
+
+describe('live reload around our own publishes', () => {
+    const reloadEvent = (files) => { const e = new CustomEvent('manifest:live-reload', { cancelable: true, detail: { files } }); window.dispatchEvent(e); return e.defaultPrevented }
+    let realFetch, reload, realReload
+    const loc = window.location
+    beforeEach(() => { store().onPublish = null; realFetch = window.fetch; reload = vi.fn(); realReload = loc.reload; try { loc.reload = reload } catch { } })
+    afterEach(() => { window.fetch = realFetch; try { loc.reload = realReload } catch { } store().onPublish = (patches) => post(patches) })
+
+    it('the reload our publish triggers is skipped; other changes, or later ones, still reload', async () => {
+        const root = await mount(`<section x-edit="lr1"><p>One</p></section>`)
+        const p = root.querySelector('p')
+        editText(p, 'Uno')
+        let answer
+        window.fetch = vi.fn(() => new Promise(r => { answer = r }))
+        const done = store().publish()
+        await flush()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }])).toBe(true)          // in flight: held
+        answer({ json: () => ({ results: [{ region: 'lr1', status: 'written', file: 'index.html' }], base: { 'index.html': 'h1' } }) })
+        await done; await flush()
+        expect(reload).not.toHaveBeenCalled()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }])).toBe(true)          // ours, just after
+        expect(reloadEvent([{ rel: 'index.html', hash: 'other' }])).toBe(false)      // someone else's change
+        expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }, { rel: 'about.html', hash: 'x' }])).toBe(false)
+        // An external change arriving during a publish reloads once the answer is in
+        editText(p, 'Eins')
+        const again = store().publish()
+        await flush()
+        expect(reloadEvent([{ rel: 'about.html', hash: 'z' }])).toBe(true)
+        answer({ json: () => ({ results: [] }) })
+        await again; await flush()
+        expect(loc.reload).toBe(reload)
+        expect(reload).toHaveBeenCalledTimes(1)
+    })
+
+    it('after a rebase publish the page re-reads the source: the next reload is not skipped, and with none coming it reloads itself', async () => {
+        const root = await mount(`<section x-edit="lr2"><p>One</p></section>`)
+        editText(root.querySelector('p'), 'Uno')
+        window.fetch = vi.fn(async (url) => String(url).includes('/__edit/base')
+            ? { ok: true, json: async () => ({ files: { 'index.html': 'b2' } }) }
+            : { json: async () => ({ results: [{ region: 'lr2', status: 'written', file: 'index.html' }], base: { 'index.html': 'h2' } }) })
+        await store().publish({ rebase: true })
+        await flush()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'h2' }])).toBe(false)         // our write, but over a source the page never loaded
+        expect(reload).not.toHaveBeenCalled()
+        await new Promise(r => setTimeout(r, 1600))
+        expect(reload).toHaveBeenCalledTimes(1)                                       // no live reload arrived: the page reloads itself
+    })
+
+    it('a reload that would lose unpersisted edits is held back, and says so', async () => {
+        const root = await mount(`<section x-edit="lr3"><p>One</p></section>`)
+        editText(root.querySelector('p'), 'Uno')
+        const stale = []
+        const onStale = (e) => stale.push(e.detail.files)
+        document.addEventListener('edit:stale', onStale)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        expect(reloadEvent([{ rel: 'index.html', hash: 'ext' }])).toBe(true)
+        const said = warn.mock.calls.map(c => String(c[0])).join('\n')
+        warn.mockRestore(); document.removeEventListener('edit:stale', onStale)
+        expect(said).toMatch(/would lose unpublished edits/)
+        expect(stale).toEqual([['index.html']])
+        expect(store().stale).toContain('index.html')
+        expect(reload).not.toHaveBeenCalled()
+        store().onPublish = () => ({ results: [{ region: 'lr3', status: 'written' }] })   // leave nothing pending
+        await store().publish()
+        store().stale = []
+    })
+})
 
 describe('source writer allowlist', () => {
     const INLINE = '<a href="/x">a</a> <abbr title="t">abbr</abbr> <b>b</b> <bdi>bdi</bdi> <bdo dir="rtl">bdo</bdo> <cite>cite</cite> <code>code</code> <data value="7">data</data> <del>del</del> <dfn title="d">dfn</dfn> <em>em</em> <i>i</i> <ins>ins</ins> <kbd>kbd</kbd> <mark>mark</mark> <q>q</q> <s>s</s> <samp>samp</samp> <small>small</small> <span>span</span> <strong>strong</strong> <sub>sub</sub> <sup>sup</sup> <time datetime="2026-10-15">time</time> <u>u</u> <var>var</var> x<wbr>y<br>z'
@@ -148,5 +215,36 @@ describe('SPA routes', () => {
         expect(stored('/a')).toBe(null)
         expect(stored('/b')).toBe(null)
         history.pushState({}, '', '/')
+    })
+})
+
+describe('edits whose element changed in the source', () => {
+    it('are surfaced ($edit.conflicts, edit:conflict, a warning), kept out of patches and dropped from the log', async () => {
+        const body = `<section x-edit.persist="cf"><p>Beta text</p><p>Gamma</p></section>`
+        const root = await mount(body)
+        const [beta, gamma] = root.querySelectorAll('p')
+        editText(beta, 'Beta edited')
+        editText(gamma, 'Gamma edited')
+        // An external change rewrites the edited paragraph, then the page reloads
+        document.body.innerHTML = ''
+        const events = [], onConflict = (e) => events.push(e.detail)
+        document.addEventListener('edit:conflict', onConflict)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        new Function(EDIT_SRC)()
+        await flush()
+        const fresh = await mount(body.replace('Beta text', 'Beta external'))
+        await new Promise(r => setTimeout(r, 600))
+        const said = warn.mock.calls.map(c => String(c[0])).join('\n')
+        warn.mockRestore(); document.removeEventListener('edit:conflict', onConflict)
+        const conflict = { region: 'cf', key: '@cf@P:Beta text', element: 'P:Beta text', prop: 'text', value: 'Beta edited', before: 'Beta text' }
+        expect(store().conflicts).toEqual([conflict])
+        expect(events).toEqual([{ conflicts: [conflict] }])
+        expect(said).toMatch(/changed in the source were dropped/)
+        expect(fresh.querySelectorAll('p')[0].textContent).toBe('Beta external')
+        expect(fresh.querySelectorAll('p')[1].textContent).toBe('Gamma edited')
+        expect(log().map(d => d.path)).toEqual(['@cf@P:Gamma'])
+        expect(JSON.stringify(store().patches())).not.toMatch(/Beta edited|@cf@P:Beta/)
+        store().onPublish = () => ({ results: [{ region: 'cf', status: 'written' }] })
+        await store().publish()
     })
 })

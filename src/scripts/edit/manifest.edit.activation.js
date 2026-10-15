@@ -84,11 +84,11 @@
     let estore, booted = false, armQueued = false;
     const isActive = (a) => !!a && !!a._edit && (!a._edit.gated || !!(estore && estore.active));
     function armAll() {
-        let fresh = false;
-        areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; fresh = true; } });
+        const fresh = [];
+        areas().forEach(a => { if (isActive(a) && !a._armed) { if (!a._editBound) fresh.push(a); lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } });
         // A region mounted again after boot (x-if, a deferred route) shows the edits the log still holds for it
-        if (booted && fresh) {
-            if (log.some(d => /^st-/.test(d.kind))) applyStaticState();
+        if (booted && fresh.length) {
+            if (log.some(d => /^st-/.test(d.kind))) { surfaceConflicts(fresh); applyStaticState(); }
             if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         }
         armThemeControls(); refresh(); booted = true;
@@ -255,19 +255,34 @@
     // The live reload a successful publish of ours triggers is not taken: the page is
     // already rebased, and typing begun since would be lost. Reloads that arrive while a
     // publish is in flight wait for its answer; anything not written by it still reloads.
-    let ownWrites = null, inFlight = 0, held = [];
-    const ours = (files) => !!ownWrites && Date.now() < ownWrites.until && files.length > 0 && files.every(f => f && ownWrites.files[f.rel] && ownWrites.files[f.rel] === f.hash);
+    // After a stale refusal or a rebase write the page shows an older source than the file,
+    // so no reload is ours to skip, and with no live reload coming the page reloads itself.
+    // A reload never discards edits it cannot restore: with unpersisted edits pending, the
+    // page stays and says so (edit:stale), so they can be published first.
+    let ownWrites = null, inFlight = 0, held = [], resync = false;
+    const ours = (files) => !resync && !!ownWrites && Date.now() < ownWrites.until && files.length > 0 && files.every(f => f && ownWrites.files[f.rel] && ownWrites.files[f.rel] === f.hash);
+    const reloadSafe = () => log.every(d => d.kind === 'lock' || persisted.has(d));
+    function reloadIfSafe(files) {
+        if (reloadSafe()) return location.reload();
+        const changed = files.map(f => f && f.rel).filter(Boolean);
+        if (estore) estore.stale = [...new Set([...(estore.stale || []), ...changed])];
+        console.warn('[edit] the source changed, but a reload would lose unpublished edits: publish (with rebase), then reload');
+        document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: changed } }));
+    }
     window.addEventListener('manifest:live-reload', (e) => {
         const files = (e.detail && e.detail.files) || [];
         if (inFlight) { e.preventDefault(); held.push(files); return; }
-        if (ours(files)) e.preventDefault();
+        if (ours(files)) { e.preventDefault(); return; }
+        if (!reloadSafe()) { e.preventDefault(); reloadIfSafe(files); }
     });
-    function settled(r) {
+    function settled(r, rebased) {
         inFlight = Math.max(0, inFlight - 1);
         if (r && r.base) ownWrites = { files: Object.assign({}, r.base), until: Date.now() + 3000 };
+        if (r && Array.isArray(r.stale) && r.stale.length) resync = true;
+        if (rebased && published(r) && r.base) { resync = true; setTimeout(() => { if (resync) reloadIfSafe(Object.keys(r.base).map(rel => ({ rel }))); }, 1500); }
         if (inFlight) return;
         const pending = held; held = [];
-        if (pending.some(f => !ours(f))) location.reload();
+        if (pending.some(f => !ours(f))) reloadIfSafe(pending.flat());
     }
     // Publishes run one at a time: a second waits for the first, then builds on its result.
     let publishing = Promise.resolve();
@@ -293,7 +308,7 @@
             const body = baseFiles ? { patches, base: baseFiles } : patches;
             inFlight++;
             return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
-                .then(r => { const out = done(r); settled(r); return out; }, (err) => { settled(null); throw err; });
+                .then(r => { const out = done(r); settled(r, !!(opts && opts.rebase)); return out; }, (err) => { settled(null); throw err; });
         };
         return opts && opts.rebase ? loadBase(true).then(send) : send();
     }

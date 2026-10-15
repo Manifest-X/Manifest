@@ -191,6 +191,29 @@
         if (el.getAttribute(prop) !== v) el.setAttribute(prop, v);
     }
 
+    // Edits whose element is gone from the source (an external change rewrote it): shown
+    // nowhere and never publishable, so they are surfaced ($edit.conflicts, `edit:conflict`,
+    // a warning) and dropped from the log. Checked against a freshly rendered source only.
+    function surfaceConflicts(fresh) {
+        const live = keyMap(staticAreas()), lost = [], regions = new Set(fresh.map(key));
+        const gone = (d) => d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && regions.has(d.region) && classify(areaByKey(d.region)) === 'static' && !live.has(d.path);
+        log.forEach((d, i) => { if (gone(d) && i < cursor) lost.push(d); });
+        if (!log.some(gone)) return [];
+        const latest = new Map();
+        lost.forEach(d => latest.set(d.path + '|' + d.prop, d));
+        const found = [...latest.values()].map(d => ({ region: d.region, key: d.path, element: d.path.slice(d.path.indexOf('@', 1) + 1), prop: d.prop, value: d.value, before: d.before }));
+        let c = 0;
+        log = log.filter((d, i) => { const keep = !gone(d); if (keep && i < cursor) c++; return keep; });
+        cursor = c; ver++;
+        saveState(); refresh();
+        if (found.length) {
+            if (estore) estore.conflicts = [...(estore.conflicts || []), ...found];
+            console.warn('[edit] edits to elements that changed in the source were dropped:', found.map(f => `${f.element} (${f.prop}: ${String(f.value).slice(0, 60)})`).join('; '));
+            document.dispatchEvent(new CustomEvent('edit:conflict', { detail: { conflicts: found } }));
+        }
+        return found;
+    }
+
     // One pass over every static area: orders place elements by identity (moving them
     // between areas when the log says so), then props are applied.
     function applyStaticState() {
