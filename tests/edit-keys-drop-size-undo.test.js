@@ -14,9 +14,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import postcss from 'postcss'
 import Alpine from 'alpinejs'
+import { EDIT_SRC } from './helpers/edit-setup.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.edit.js'), 'utf8')
+const SRC = EDIT_SRC
 const CSS = path.join(__dirname, '../src/styles/elements/manifest.edit.css')
 
 const flush = () => new Promise(r => setTimeout(r, 0))
@@ -59,13 +60,14 @@ afterEach(() => {
 })
 
 describe('reorderable text keeps Space/Enter; Alt+arrow moves rows', () => {
-    it('Space and Enter in a text row reach the text instead of grabbing', async () => {
+    it('Space in a text row reaches the text and Enter is swallowed, neither grabbing', async () => {
         const root = await mount(`<section x-edit="k-space"><p>Alpha</p><p>Beta</p></section>`)
         const p = root.querySelector('p')
         expect(p.hasAttribute('data-edit-piece')).toBe(true)
         expect(p.getAttribute('contenteditable')).toBe('true')
         expect(key(p, { key: ' ' }).defaultPrevented).toBe(false)
-        expect(key(p, { key: 'Enter' }).defaultPrevented).toBe(false)
+        expect(key(p, { key: 'Enter' }).defaultPrevented).toBe(true)
+        expect(p.innerHTML).toBe('Alpha')
         expect(p.hasAttribute('data-edit-dragging')).toBe(false)
     })
 
@@ -295,13 +297,16 @@ describe('undo/redo hotkeys', () => {
         expect(p.innerHTML).toBe('Changed')
     })
 
-    it('uncommitted typing keeps the native undo', async () => {
+    it('uncommitted typing is undone by Rich Text, not Edit', async () => {
         const { p } = await edited()
         const two = p.nextElementSibling
         two.dispatchEvent(new Event('focus'))
         two.innerHTML = 'Two typed'
+        window.getSelection().collapse(two.firstChild, 9)
+        two.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'd' }))
         const at = store().export().cursor
-        expect(key(two, { key: 'z', metaKey: true }).defaultPrevented).toBe(false)
+        expect(key(two, { key: 'z', metaKey: true }).defaultPrevented).toBe(true)
+        expect(two.innerHTML).toBe('Two')
         expect(store().export().cursor).toBe(at)
     })
 
@@ -334,7 +339,8 @@ describe('undo/redo hotkeys', () => {
     it('data-edit-hotkeys="off" on a region or <html> opts out', async () => {
         const { root } = await edited('data-edit-hotkeys="off"')
         const at = store().export().cursor
-        expect(key(root.querySelector('p'), { key: 'z', metaKey: true }).defaultPrevented).toBe(false)
+        key(root.querySelector('p'), { key: 'z', metaKey: true })
+        expect(root.querySelector('p').innerHTML).toBe('Changed')
         expect(key(document.body, { key: 'z', metaKey: true }).defaultPrevented).toBe(false)   // the only active region is off
         expect(store().export().cursor).toBe(at)
         document.body.innerHTML = ''

@@ -14,10 +14,9 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import Alpine from 'alpinejs'
+import { EDIT_SRC } from './helpers/edit-setup.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const RICH = readFileSync(path.join(__dirname, '../src/scripts/manifest.rich.text.js'), 'utf8')
-const EDIT = readFileSync(path.join(__dirname, '../src/scripts/manifest.edit.js'), 'utf8')
 const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
 
 const flush = () => new Promise(r => setTimeout(r, 0))
@@ -39,9 +38,7 @@ beforeAll(async () => {
         proc.stdout.on('data', scan); proc.stderr.on('data', scan)
     })
     window.Alpine = Alpine; globalThis.Alpine = Alpine
-    new Function(RICH)()
-    new Function(EDIT)()
-    document.execCommand = () => true
+    new Function(EDIT_SRC)()
     Alpine.start()
     await new Promise(r => setTimeout(r, 500))
 }, 15000)

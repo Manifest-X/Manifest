@@ -13,9 +13,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import Alpine from 'alpinejs'
+import { EDIT_SRC } from './helpers/edit-setup.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.edit.js'), 'utf8')
+const SRC = EDIT_SRC
 const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
 const flush = () => new Promise(r => setTimeout(r, 0))
 
@@ -69,7 +70,7 @@ const norm = (root) => {
         if (a.parentElement.closest('[data-edit-area]')) return
         const c = a.cloneNode(true)
         c.querySelectorAll('[data-edit-handle],[data-edit-ghost]').forEach(n => n.remove())
-        ;[c, ...c.querySelectorAll('*')].forEach(n => [...n.attributes].forEach(at => { if (/^(data-edit-|contenteditable$|tabindex$)/.test(at.name)) n.removeAttribute(at.name) }))
+        ;[c, ...c.querySelectorAll('*')].forEach(n => [...n.attributes].forEach(at => { if (/^(data-edit-|data-rich-text|role$|aria-multiline$|contenteditable$|tabindex$)/.test(at.name)) n.removeAttribute(at.name) }))
         out[a.getAttribute('data-edit-key')] = c.innerHTML.replace(/>\s+</g, '><').replace(/\s+/g, ' ').trim()
     })
     return Object.values(out)

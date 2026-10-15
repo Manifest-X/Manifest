@@ -11,9 +11,10 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
+import { EDIT_SRC } from './helpers/edit-setup.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.edit.js'), 'utf8')
+const SRC = EDIT_SRC
 
 const flush = () => new Promise(r => setTimeout(r, 0))
 

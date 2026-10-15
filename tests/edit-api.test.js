@@ -11,9 +11,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import postcss from 'postcss'
 import Alpine from 'alpinejs'
+import { EDIT_SRC } from './helpers/edit-setup.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.edit.js'), 'utf8')
+const SRC = EDIT_SRC
 const CSS = path.join(__dirname, '../src/styles/elements/manifest.edit.css')
 
 const flush = () => new Promise(r => setTimeout(r, 0))
@@ -123,7 +124,7 @@ describe('visuals and .bare', () => {
         const p = root.querySelector('p')
         editText(p, 'Edited')
         const attrs = [...document.querySelectorAll('*')].flatMap(el => [...el.attributes].map(a => a.name)).filter(n => n.startsWith('data-edit-'))
-        expect(new Set(attrs)).toEqual(new Set(['data-edit-area', 'data-edit-key', 'data-edit-piece']))
+        expect(new Set(attrs)).toEqual(new Set(['data-edit-area', 'data-edit-key', 'data-edit-piece', 'data-edit-text']))
         expect(document.querySelector('[data-edit-toolbar], [data-edit-menu]')).toBeNull()
         expect(document.documentElement.hasAttribute('data-edit-active')).toBe(false)
     })
