@@ -425,6 +425,35 @@ describe('publish round trips', () => {
         expect(regionSource()).toBe(`<section x-edit="rb1"><p>Beta</p><p>Alpha</p><p>Gamma edited</p></section>`)
     })
 
+    it('rebase in the edited area itself: an added or renamed sibling merges; the edited element changed is refused', async () => {
+        const body = `<section x-edit="rb3"><h1>Hello</h1><p>World</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        let root = await mount(body)
+        writeFileSync(path.join(dir, 'index.html'), page(`<section x-edit="rb3"><h1>Hello</h1><p>World</p><p>Added elsewhere</p></section>`))
+        editText(root.querySelector('h1'), 'Hello page')
+        let res = await store().publish({ rebase: true })
+        expect(res.results[0].status).toBe('written')
+        expect(regionSource()).toBe(`<section x-edit="rb3"><h1>Hello page</h1><p>World</p><p>Added elsewhere</p></section>`)
+        document.body.innerHTML = ''
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        root = await mount(body)
+        writeFileSync(path.join(dir, 'index.html'), page(`<section x-edit="rb3"><h1>Hello</h1><p>World changed</p></section>`))
+        editText(root.querySelector('h1'), 'Hello page')
+        res = await store().publish({ rebase: true })
+        expect(res.results[0].status).toBe('written')
+        expect(regionSource()).toBe(`<section x-edit="rb3"><h1>Hello page</h1><p>World changed</p></section>`)
+        document.body.innerHTML = ''
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        root = await mount(body)
+        writeFileSync(path.join(dir, 'index.html'), page(`<section x-edit="rb3"><h1>Hello</h1><p>World changed</p></section>`))
+        editText(root.querySelector('p'), 'World page')
+        res = await store().publish({ rebase: true })
+        expect(res.results[0].status).toBe('error')
+        expect(res.results[0].reason).toContain('changed or was removed since this page loaded')
+        expect(regionSource()).toBe(`<section x-edit="rb3"><h1>Hello</h1><p>World changed</p></section>`)
+        await store().undo()
+    })
+
     it('a page move into a container reordered elsewhere is refused, not reverted', async () => {
         const body = `<section x-edit="rb2"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
         writeFileSync(path.join(dir, 'index.html'), page(body))
