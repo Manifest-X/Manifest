@@ -67,6 +67,7 @@
         setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
         window.addEventListener('click', onAreaLinkClick, true);
+        window.addEventListener('auxclick', onAreaLinkClick, true);
         document.addEventListener('contextmenu', onContextCapture, true);
         document.addEventListener('dropdown:context', onContextCapture, true);
         // SPA navigation: the state so far is saved under the page it was made on.

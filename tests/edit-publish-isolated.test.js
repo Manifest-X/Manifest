@@ -449,6 +449,26 @@ describe('reloads, keyed regions and lasting conflicts', () => {
         store().clearConflicts()
     })
 
+    it('the conflict warning names each changed element once', async () => {
+        store().clearConflicts()
+        const body = `<section x-edit.persist="dn1"><p>Alpha</p><p>Beta</p><p>Gamma</p><p>Delta</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        let root = await mount(body)
+        const sec = root.querySelector('section'), P = (t) => [...sec.querySelectorAll('p')].find(p => p.textContent === t)
+        store().move(P('Delta'), sec, P('Alpha'))
+        const changed = body.replace('<p>Beta</p>', '<p>Beta two</p><p>Epsilon</p>')
+        writeFileSync(path.join(dir, 'index.html'), page(changed))
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        root = await reloadWith(changed)
+        const text = warn.mock.calls.map(c => c.join(' ')).find(t => /changed in the source/.test(t))
+        warn.mockRestore()
+        const reason = store().conflicts[0].reason
+        store().clearConflicts()
+        expect(text).toContain('P:Beta, P:Gamma, P:Delta changed in the source')
+        expect(text).toContain('(moved P:Delta)')
+        expect(reason).toBe('P:Beta, P:Gamma, P:Delta changed in the source where the layout was edited, so the layout edits (moved P:Delta) were not applied')
+    })
+
     it('an untyped copy of an element renamed in place follows its new source text, as the writer copies it', async () => {
         const body = `<section x-edit.persist="cp1"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
         writeFileSync(path.join(dir, 'index.html'), page(body))

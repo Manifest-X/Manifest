@@ -11,12 +11,14 @@
     // whatever the contenteditable state (a piece at rest is contenteditable=false). A
     // contenteditable=false island that is not a resting piece keeps its links. Runs on window,
     // capture, ahead of the router's document listener.
+    function islandLink(link, area) {
+        const off = link.closest('[contenteditable="false"]');
+        return !!off && area.contains(off) && !off.hasAttribute('data-edit-piece-mode');
+    }
     function onAreaLinkClick(e) {
         const link = e.target && e.target.closest && e.target.closest('a[href]');
         const area = link && regionOf(link);
-        if (!area || !isActive(area)) return;
-        const off = link.closest('[contenteditable="false"]');
-        if (off && area.contains(off) && !off.hasAttribute('data-edit-piece-mode')) return;
+        if (!area || !isActive(area) || islandLink(link, area)) return;
         e.preventDefault();
     }
 

@@ -316,11 +316,12 @@
                 });
             });
             const changed = containers.flatMap(c => c.changed);
-            const moves = [...movedKeys].filter(k => k && k[0] === '@').map(label);
+            const names = [...new Set(changed.map(x => x.was || x.now))];
+            const moves = [...new Set([...movedKeys].filter(k => k && k[0] === '@').map(label))];
             const what = [moves.length && `moved ${moves.join(', ')}`, copies.length && `copied ${copies.map(c => `${c.of} ("${String(c.text).slice(0, 40)}")`).join(', ')}`].filter(Boolean).join('; ');
             found.push({ region, key: '', element: containers.map(c => c.container ? label(c.container) : region).join(', '), prop: 'structure',
                 value: { changed, moved: moves, copies }, before: null,
-                reason: `${changed.map(x => x.was || x.now).join(', ')} changed in the source where the layout was edited, so the layout edits (${what || 'reordering'}) were not applied` });
+                reason: `${names.join(', ')} changed in the source where the layout was edited, so the layout edits (${what || 'reordering'}) were not applied` });
         });
         found.forEach(f => { conflicts.push(f); if (persistOf(f.region)) keptConflicts.add(f); });
         let c = 0;

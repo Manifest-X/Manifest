@@ -305,6 +305,7 @@
     function onPieceKeydown(e, area) {
         if (e._editRow) return;
         const t = e.target;
+        if (e.key === 'Enter' && t.matches && t.matches('a[href]') && islandLink(t, area)) return;
         if (t._pieceMode && e.key === 'Enter') { e._editRow = true; e.preventDefault(); exitPieceMode(t, true); return; }
         let item = null;
         for (let n = t; n && n !== area; n = n.parentElement) if (n.hasAttribute && n.hasAttribute('data-edit-piece') && movable(n)) { item = n; break; }

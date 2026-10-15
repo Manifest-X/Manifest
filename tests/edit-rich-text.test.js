@@ -741,6 +741,22 @@ describe('links in active areas and fields are content', () => {
         p.blur(); await flush()
         expect(p.hasAttribute('data-edit-piece-mode')).toBe(false)
     })
+
+    it('a middle-click is blocked as a click is; Enter on an island link is left to the link', async () => {
+        const root = await mount(`<div x-data><section x-edit="lk2"><p>See <a href="/a">the link</a></p><a href="/i" id="img"><img src="/x.png" alt=""></a><div contenteditable="false" id="isle"><a href="/b" id="isl">island</a></div></section>
+            <div x-rich-text.html id="f2"><p>Go <a href="/c" id="l2">c</a></p><p contenteditable="false"><a href="/d" id="isl2">d</a></p></div></div>`)
+        await flush()
+        const aux = (el) => { const e = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }); el.dispatchEvent(e); return e.defaultPrevented }
+        expect(aux(root.querySelector('section p a'))).toBe(true)
+        expect(aux(root.querySelector('#img img'))).toBe(true)
+        expect(aux(root.querySelector('#l2'))).toBe(true)
+        expect(aux(root.querySelector('#isl'))).toBe(false)
+        expect(aux(root.querySelector('#isl2'))).toBe(false)
+        expect(key(root.querySelector('#isl'), { key: 'Enter' }).defaultPrevented).toBe(false)
+        expect(root.querySelector('#isle').hasAttribute('data-edit-dragging')).toBe(false)
+        expect(key(root.querySelector('#isl2'), { key: 'Enter' }).defaultPrevented).toBe(false)
+        expect(root.querySelector('#f2').innerHTML).toBe('<p>Go <a href="/c" id="l2">c</a></p><p contenteditable="false"><a href="/d" id="isl2">d</a></p>')
+    })
 })
 
 describe('drops', () => {
