@@ -148,3 +148,19 @@ describe('typed and pending marks', () => {
         expect(el.innerHTML).toBe('<p>Hi <strong>bo<em>ld</em></strong><em>x</em></p>')
     })
 })
+
+describe('markdown paste', () => {
+    it('keeps only what markdown can store: html-only marks are unwrapped', () => {
+        let inserted = []
+        document.execCommand = vi.fn((cmd, _ui, v) => { if (cmd === 'insertHTML') inserted.push(v); return true })
+        const root = mount(`<div x-rich-text id="m"><p>One</p></div><div x-rich-text.inline id="i">x</div>`)
+        const el = root.querySelector('#m'), il = root.querySelector('#i')
+        const paste = (target, html) => { const ev = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(ev, 'clipboardData', { value: { getData: (t) => t === 'text/html' ? html : 'x' } }); target.dispatchEvent(ev) }
+        focusin(el); select(el.querySelector('p').firstChild, 3)
+        paste(el, '<p><u>under</u> <mark>hi</mark> H<sub>2</sub>O <strong>bold</strong> <a href="/x">l</a></p>')
+        expect(inserted.at(-1)).toBe('<p>under hi H2O <strong>bold</strong> <a href="/x">l</a></p>')
+        focusin(il); select(il.firstChild, 1)
+        paste(il, '<u>u</u><em>e</em><span style="color:red">s</span>')
+        expect(il.innerHTML).toBe('xu<em>e</em>s')
+    })
+})
