@@ -131,3 +131,19 @@ describe('the writer', () => {
         expect(live.src()).not.toContain('<x-card')
     })
 })
+
+describe('locks on a host whose component has a region of its own', () => {
+    it('lock it as a piece of the area around it; text in it follows the lock too', async () => {
+        const promo = sec('promo'), p = promo.querySelector('p')
+        expect(promo.getAttribute('data-edit-host')).toMatch(/^@page@X-PROMO:/)
+        expect(store().lock(promo, 'move')).toBe(true)
+        expect(store().export().log.at(-1)).toMatchObject({ kind: 'lock', region: 'page', key: promo.getAttribute('data-edit-host') })
+        expect(store().can('move', promo)).toBe(false)
+        expect(store().can('text', p)).toBe(true)
+        expect(store().lock(promo, 'text')).toBe(true)
+        expect(store().can('text', p)).toBe(false)
+        store().unlock(promo)
+        expect(store().can('move', promo)).toBe(true)
+        expect(store().can('text', p)).toBe(true)
+    })
+})

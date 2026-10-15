@@ -230,7 +230,7 @@
         // Runtime locks are app state, not source: carried over by element.
         const locks = [];
         const lockState = lockStateNow();
-        keyMap(staticAreas().filter(a => !(keep && keep.has(key(a))))).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
+        keyMap(staticAreas().filter(a => !(keep && keep.has(key(a))))).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m), k === el.getAttribute('data-edit-host')]); });
         const nonStaticLocks = log.slice(0, cursor).filter(d => d.kind === 'lock' && !/^[~@]/.test(d.key) && !pending(d));
         let c = 0;
         log = log.filter((d, i) => { const keep = pending(d); if (keep && i < cursor) c++; return keep; });
@@ -238,8 +238,8 @@
         const relock = () => {
             const add = (d) => { log.splice(cursor, 0, d); cursor++; if (persistOf(d.region)) persisted.add(d); };
             nonStaticLocks.forEach(add);
-            locks.forEach(([el, m]) => {
-                const a = regionOf(el), k = el.getAttribute('data-edit-key'); if (!a || !k) return;
+            locks.forEach(([el, m, host]) => {
+                const a = host ? blockArea(el) : regionOf(el), k = el.getAttribute(host ? 'data-edit-host' : 'data-edit-key'); if (!a || !k) return;
                 [true, false].forEach(v => { const acts = [...m].filter(([, x]) => x === v).map(([act]) => act); if (acts.length) add({ kind: 'lock', region: key(a), key: k, actions: acts.length === LOCK_ACTIONS.length ? [] : acts, value: v }); });
             });
             ver++;
