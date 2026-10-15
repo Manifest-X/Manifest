@@ -107,8 +107,8 @@
     }
 
     /* ---- Inline text ---- */
-    :where([data-edit-area]:not([data-edit-area="bare"])) :where([contenteditable="true"]):where(:not([data-edit-area="bare"] *)),
-    :where([data-edit-area][contenteditable="true"]:not([data-edit-area="bare"])) {
+    :where([data-edit-area]:not([data-edit-area="bare"])) :where([contenteditable="true"], [data-edit-text]):where(:not([data-edit-area="bare"] *)),
+    :where([data-edit-area]:is([contenteditable="true"], [data-edit-text]):not([data-edit-area="bare"])) {
         cursor: text;
         outline: 1px solid transparent;
         outline-offset: 2px;

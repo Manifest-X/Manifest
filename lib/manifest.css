@@ -3027,8 +3027,8 @@
     }
 
     /* ---- Inline text ---- */
-    :where([data-edit-area]:not([data-edit-area="bare"])) :where([contenteditable="true"]):where(:not([data-edit-area="bare"] *)),
-    :where([data-edit-area][contenteditable="true"]:not([data-edit-area="bare"])) {
+    :where([data-edit-area]:not([data-edit-area="bare"])) :where([contenteditable="true"], [data-edit-text]):where(:not([data-edit-area="bare"] *)),
+    :where([data-edit-area]:is([contenteditable="true"], [data-edit-text]):not([data-edit-area="bare"])) {
         cursor: text;
         outline: 1px solid transparent;
         outline-offset: 2px;
@@ -3860,7 +3860,7 @@
 
 @layer components {
 
-    :where([data-rich-text]) {
+    :where([data-rich-text]:not([data-edit-text])) {
         position: relative;
         overflow-y: auto;
         max-height: var(--rich-text-max-height, none);
@@ -3896,7 +3896,7 @@
     }
 
     /* Field look; .unstyle drops it */
-    :where([data-rich-text]:not(.unstyle)) {
+    :where([data-rich-text]:not(.unstyle, [data-edit-text])) {
         min-height: var(--rich-text-min-height, 8rem);
         padding: var(--rich-text-padding, 0.75rem);
         background: var(--rich-text-background, var(--color-surface-1));
@@ -3911,7 +3911,7 @@
     }
 
     /* Single-line (.inline) */
-    :where([data-rich-text-inline]:not(.unstyle)) {
+    :where([data-rich-text-inline]:not(.unstyle, [data-edit-text])) {
         min-height: var(--rich-text-min-height, auto);
     }
 
@@ -3969,7 +3969,7 @@
     }
 
     /* ---- Editable content ---- */
-    :where([data-rich-text]) {
+    :where([data-rich-text]:not([data-edit-text])) {
 
         & > * + * {
             margin-block-start: 0.75em;

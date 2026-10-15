@@ -7,13 +7,71 @@
             try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
         });
     }
+    /* ---- Rich Text engine: every editable leaf is an inline Rich Text field ---- */
+    const richLeaves = new Set();
+    let rtMissing = false;
+    function rtEngine() {
+        const RT = window.ManifestRichText;
+        if (RT && typeof RT.attach === 'function') return RT;
+        if (!rtMissing) { rtMissing = true; console.warn('[edit] Rich Text is not loaded; text leaves fall back to plain contenteditable'); }
+        return null;
+    }
+    // Edit's own listeners are bound before this, so they run ahead of Rich Text's.
+    function editable(el, format) {
+        el._editRtFormat = format;
+        if (el._editRt) return;
+        const RT = rtEngine();
+        el._editRtPrior = ['role', 'aria-multiline'].map(a => [a, el.getAttribute(a)]);
+        const h = RT && RT.attach(el, { mode: 'inline', format, onChange: () => { } });
+        if (!h) { el.setAttribute('contenteditable', 'true'); return; }
+        el._editRt = h;
+        el.setAttribute('data-edit-text', '');
+        richLeaves.add(el);
+    }
+    function unedit(el) {
+        const h = el._editRt; if (!h) return;
+        el._editRt = null; richLeaves.delete(el);
+        el.removeAttribute('data-edit-text');
+        h.detach();
+    }
+    // Leaves inside `area`, and any no longer on the page.
+    const uneditIn = (area) => richLeaves.forEach(el => { if (!el.isConnected || (area && area.contains(el))) unedit(el); });
+    // Rich Text's history spans one edit session: it restarts at focus and when Edit's history moves the text.
+    const restartRich = (el) => { const h = el._editRt; if (h) h.value = h.value; };
+    // Cmd/Ctrl+Z in a leaf: Rich Text's steps first, then Edit's.
+    function richHistoryKey(e) {
+        const h = this._editRt, dir = historyDir(e);
+        if (!h || !dir || h.can(dir)) return;
+        onHistoryKey(e);
+        if (e.defaultPrevented) e.stopImmediatePropagation();
+    }
+    // Copies and ghosts of a leaf carry none of the engine's attributes.
+    function unrich(src, copy) {
+        const s = [src, ...src.querySelectorAll('*')], c = [copy, ...copy.querySelectorAll('*')];
+        s.forEach((n, i) => {
+            if (!n._editRt || !c[i]) return;
+            [...c[i].attributes].forEach(a => { if (a.name.startsWith('data-rich-text')) c[i].removeAttribute(a.name); });
+            (n._editRtPrior || []).forEach(([a, v]) => v == null ? c[i].removeAttribute(a) : c[i].setAttribute(a, v));
+        });
+    }
+    function bindLeaf(el, commit, input) {
+        if (el._textBound) return; el._textBound = true;
+        el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); selectAllIn(el); });
+        el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.isContentEditable) { e.preventDefault(); e.stopImmediatePropagation(); leaveText(el); } });
+        el.addEventListener('keydown', richHistoryKey);
+        if (input) el.addEventListener('input', input);
+        el.addEventListener('blur', commit);
+    }
+    // A rich editor other than this leaf's own owns `el`.
+    const richOwned = (el) => { const o = el.closest('[data-rich-text]'); return !!o && (o !== el || !el._editRt); };
+
     // Where x-rich-text is declared, it owns the element: this plugin neither makes
     // its leaves contenteditable nor competes for the caret. If the rich editor has
     // no expression of its own, we capture what it produces as an ordinary text
     // delta, so a rich field inside a page-editing region publishes like any other.
     function armRichText(area) {
         area.querySelectorAll('[data-rich-text]:not([data-rich-text-bound])').forEach(el => {
-            if (!capOf(el, 'text') || !/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;
+            if (el._editRt || !capOf(el, 'text') || !/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
             el.addEventListener('blur', () => {
@@ -32,14 +90,11 @@
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
-            if (el.closest('[data-rich-text]')) return;                 // the rich editor owns this subtree
+            if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
-            el.setAttribute('contenteditable', 'true');
-            if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
-            el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.isContentEditable) { e.preventDefault(); e.stopPropagation(); leaveText(el); } });
-            el.addEventListener('blur', () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
+            bindLeaf(el, () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
+            editable(el, 'html');
         });
     }
 
@@ -59,12 +114,15 @@
                 el._editField = field;
                 // x-html fields hold markup; x-text fields are plain.
                 el._editRich = rich;
-                if (!el.hasAttribute('data-rich-text')) el.setAttribute('contenteditable', 'true');
-                if (el._dvBound) return; el._dvBound = true;
-                const read = () => rich ? el.innerHTML.trim() : el.textContent;
-                el.addEventListener('focus', () => { el._preEdit = read(); if (!el.hasAttribute('data-rich-text')) selectAllIn(el); });   // the rich editor owns its caret
-                el.addEventListener('focusin', () => { el._preEdit = read(); });
-                el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
+                if (!el._dvBound) {
+                    el._dvBound = true;
+                    const read = () => rich ? el.innerHTML.trim() : el.textContent;
+                    el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); if (!authoredRich(el)) selectAllIn(el); });   // the rich editor owns its caret
+                    el.addEventListener('focusin', () => { el._preEdit = leafText(el); });
+                    el.addEventListener('keydown', richHistoryKey);
+                    el.addEventListener('blur', () => commitDataValue(area, source, id, field, read(), el), true);
+                }
+                if (!authoredRich(el)) editable(el, rich ? 'html' : 'plain');
             });
         });
     }
@@ -96,14 +154,11 @@
         armRichText(area);
         componentNodes(root).forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
-            if (el.closest('[data-rich-text]')) return;                 // the rich editor owns this subtree
+            if (richOwned(el)) return;                                  // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
-            el.setAttribute('contenteditable', 'true');
-            if (el._textBound) return; el._textBound = true;
-            el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
-            el.addEventListener('input', () => liveMainPropagate(area, el, 'text', el.innerHTML));
-            el.addEventListener('blur', () => commitComponentNode(area, el, 'text', el.innerHTML.trim()));
+            bindLeaf(el, () => commitComponentNode(area, el, 'text', el.innerHTML.trim()), () => liveMainPropagate(area, el, 'text', el.innerHTML));
+            editable(el, 'html');
         });
     }
     // Escape leaves text with the piece focused, so Alt+arrows move it.
@@ -113,6 +168,7 @@
         if (!piece) return;
         if (piece.isContentEditable) {
             piece._pieceMode = true;
+            unedit(piece);                                              // a focused piece is not a text field
             piece.setAttribute('contenteditable', 'false');
             piece.addEventListener('focusout', () => exitPieceMode(piece), { once: true });
         }
@@ -122,6 +178,6 @@
     function exitPieceMode(el, edit) {
         if (!el._pieceMode) return;
         el._pieceMode = false;
-        if (el.getAttribute('contenteditable') === 'false') el.setAttribute('contenteditable', 'true');
+        if (el.getAttribute('contenteditable') === 'false') { el.removeAttribute('contenteditable'); editable(el, el._editRtFormat || 'html'); }
         if (edit) { try { el.focus(); } catch { } selectAllIn(el); }
     }

@@ -204,6 +204,7 @@
         const lift = (ev) => {
             if (s.crossOK) areas().forEach(a => { if (a !== area && dropValid(a)) a.setAttribute('data-edit-drop-target', ''); });
             const ghost = s.ghost = item.cloneNode(true);
+            unrich(item, ghost);
             ghost.setAttribute('data-edit-ghost', '');
             ghost.setAttribute('x-ignore', '');
             ghost.removeAttribute('id');

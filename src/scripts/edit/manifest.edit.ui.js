@@ -8,23 +8,29 @@
     /* ---- Undo/redo hotkeys: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y ----
        On wherever a region is active; data-edit-hotkeys="off" on a region or any
        ancestor opts it out. Text that is still being typed keeps the browser's own
-       undo until it commits on blur; fields and x-rich-text keep theirs always. */
-    const leafText = (el) => el._editField && !el._editRich ? el.textContent : el.innerHTML.trim();
+       undo until it commits on blur; fields and x-rich-text keep theirs always. A leaf
+       on Rich Text uses Rich Text's history while it has steps (richHistoryKey). */
+    const leafText = (el) => el._editField && !el._editRich ? el.textContent : el._editRt ? sanitizeFor(el, el.innerHTML.trim()) : el.innerHTML.trim();
     const hotkeysOff = (el) => !!el.closest('[data-edit-hotkeys="off"]');
     // A focused leaf's baseline follows history rewrites under the caret.
     function rebaseFocused() {
         const el = document.activeElement;
         if (!el || el._preEdit === undefined || !el.isContentEditable) return;
-        const sync = () => { if (document.activeElement === el) el._preEdit = leafText(el); };
+        const sync = () => { if (document.activeElement === el) { restartRich(el); el._preEdit = leafText(el); } };
         sync(); setTimeout(sync, 0);
     }
-    function onHistoryKey(e) {
-        if (e.defaultPrevented || e.altKey || !(e.metaKey || e.ctrlKey) || dragged) return;   // never mid-drag
+    function historyDir(e) {
+        if (e.altKey || !(e.metaKey || e.ctrlKey)) return null;
         const k = (e.key || '').toLowerCase();
-        const isRedo = (k === 'z' && e.shiftKey) || (k === 'y' && e.ctrlKey && !e.metaKey && !e.shiftKey);
-        if (!isRedo && !(k === 'z' && !e.shiftKey)) return;
+        if (k === 'z') return e.shiftKey ? 'redo' : 'undo';
+        return k === 'y' && e.ctrlKey && !e.metaKey && !e.shiftKey ? 'redo' : null;
+    }
+    function onHistoryKey(e) {
+        if (e.defaultPrevented || dragged) return;   // never mid-drag
+        const dir = historyDir(e); if (!dir) return;
+        const isRedo = dir === 'redo';
         const t = e.target && e.target.nodeType === 1 ? e.target : document.body;
-        if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[data-rich-text]')) return;
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || authoredRich(t.closest('[data-rich-text]'))) return;
         const region = t.closest('[data-edit-area]');
         if (region) {
             const top = regionOf(region);

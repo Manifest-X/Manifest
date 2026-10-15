@@ -107,9 +107,10 @@
     /* ---- Safety ---- */
     const nodeSig = (el) => el ? el.tagName.toLowerCase() : '';
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
-    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-rich-text') && window.ManifestRichText
-        ? window.ManifestRichText.sanitize(html, true, true)
-        : sanitizeHTML(html);
+    // x-rich-text fields keep blocks; every other text leaf is inline. Rich Text's allowlist when loaded.
+    const authoredRich = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-rich-text') && !el._editRt;
+    const sanitizeFor = (el, html) => !window.ManifestRichText ? sanitizeHTML(html)
+        : window.ManifestRichText.sanitize(html, authoredRich(el), true);
 
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);

@@ -23,8 +23,11 @@
             if (!(k in area._baseStyle)) area._baseStyle[k] = ownStyle(el);
             if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
+        // Inside a Rich Text leaf: counted, as the source writer counts them, never keyed.
+        const count = (el) => { for (const c of el.children) { const b = staticKey(c); seen[b] = (seen[b] || 0) + 1; count(c); } };
         const walk = (el, path) => {
             markEl(el, path);
+            if (el._editRt) { if (first) count(el); return; }
             if (el !== area && (el.hasAttribute('data-rich-text') || isRendered(el))) return;
             let i = 0;
             for (const c of el.children) {
@@ -36,6 +39,7 @@
         walk(area, '');
     }
     function armArea(area) {
+        uneditIn(null);
         const kind = classify(area);
         if (kind === 'static') markStatic(area);
         markPieces(area);
@@ -67,6 +71,7 @@
         if (gripFor && area.contains(gripFor)) hideGrip();
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { if (e._editPos) { e.style.removeProperty('position'); e._editPos = false; } });
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
+        uneditIn(area);
         [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; });
         area.querySelectorAll('[data-edit-piece]').forEach(unmarkPiece);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { e._sizeBound = false; });

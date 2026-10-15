@@ -898,12 +898,15 @@ const RAW_EDIT = new Set(['script', 'style', 'textarea', 'title', 'noscript', 't
 // Text sanitizer for edited content: the client's allowlist (inline marks, plus the
 // rich editor's blocks), script-bearing elements dropped with their content, other
 // tags unwrapped, attributes allowlisted per tag.
-const SAN_OK = new Set(['b', 'i', 'em', 'strong', 'u', 's', 'del', 'ins', 'small', 'code', 'mark', 'sub', 'sup', 'br', 'span', 'a', 'kbd', 'samp', 'var', 'abbr', 'cite', 'q', 'dfn', 'time', 'img',
+const SAN_OK = new Set(['b', 'i', 'em', 'strong', 'u', 's', 'del', 'ins', 'small', 'code', 'mark', 'sub', 'sup', 'br', 'wbr', 'span', 'a', 'kbd', 'samp', 'var', 'abbr', 'cite', 'q', 'dfn', 'time', 'data', 'bdi', 'bdo', 'img',
   'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'address', 'figure', 'figcaption', 'dl', 'dt', 'dd', 'ul', 'ol', 'li', 'hr', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'caption', 'colgroup', 'col', 'input']);
 const SAN_DROP = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'noscript', 'template', 'svg', 'math', 'textarea', 'title', 'select', 'frame', 'frameset', 'base', 'form', 'button', 'xmp', 'noembed', 'noframes', 'plaintext']);
+// The one attribute Rich Text keeps on each of these inline tags.
+const TEXT_ATTR = { abbr: 'title', dfn: 'title', bdo: 'dir', data: 'value', time: 'datetime' };
 function textAttrOk(tag, n, v) {
   if (tag === 'a' && n === 'href') return !attrRefusal(n, v, tag);
   if (tag === 'img' && (n === 'alt' || n === 'src')) return !attrRefusal(n, v, tag);
+  if (TEXT_ATTR[tag] === n) return n === 'dir' ? /^(ltr|rtl|auto)$/i.test(v) : !attrRefusal(n, v, tag);
   if (tag === 'input') return n === 'type' ? /^checkbox$/i.test(v) : n === 'checked';
   if ((tag === 'td' || tag === 'th') && (n === 'colspan' || n === 'rowspan')) return /^[1-9]\d{0,2}$/.test(v);
   if (n === 'style') return !/expression|url\s*\(|javascript:|@import/i.test(v) && !attrRefusal(n, v, tag);
