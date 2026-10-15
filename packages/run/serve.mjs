@@ -1237,7 +1237,10 @@ function writeStaticTrees(file, patches) {
   if (refused) return patches.map(p => ({ region: p.region, status: 'error', reason: `refused: ${refused}` }));
   const html = vread(file);
   const doc = parseHTML(html);
-  const fail = (msg) => { const e = new Error(msg); e.edit = true; throw e; };
+  // A failure names the area it is in, so the page can publish the others without it.
+  let current = null;
+  const regionOfKey = (k) => { const m = /^(?:~[a-z0-9]+~)?@([^@]*)@/.exec(String(k || '')); return m ? decodeURIComponent(m[1]) : current; };
+  const fail = (msg, region) => { const e = new Error(msg); e.edit = true; e.region = region === undefined ? current : region; throw e; };
   const bad = checkNesting(doc);
   if (bad) return patches.map(p => ({ region: p.region, status: 'error', reason: `source does not nest cleanly at <${bad.name}> (offset ${bad.tagStart}); not editing it` }));
   const regions = new Map();
@@ -1395,6 +1398,7 @@ function writeStaticTrees(file, patches) {
   const out = [];
   try {
     for (const p of patches) {
+      current = p.region;
       const reg = region(p.region);
       if (!reg) fail(`x-edit="${p.region}" not found in ${basename(file)}`);
       const t = p.tree || {};
@@ -1404,7 +1408,7 @@ function writeStaticTrees(file, patches) {
       const [markup, sk] = renderAt(reg.root, t, false, false, rootAnc);
       out.push({ reg, text: markup, sk });
     }
-    for (const r of rebuilt) for (const k of r.kids || []) if (!placed.has(k) && !removed.has(k.key)) fail(`'${k.key}' would be lost (not placed, not removed)`);
+    for (const r of rebuilt) for (const k of r.kids || []) if (!placed.has(k) && !removed.has(k.key)) fail(`'${k.key}' would be lost (not placed, not removed)`, regionOfKey(k.key));
     const roots = new Set([...regions.values()].filter(Boolean).map(r => r.root));
     // Every placed element's source ancestors must be rebuilt (or removed), up to its area.
     for (const [node] of placed) {
@@ -1413,15 +1417,16 @@ function writeStaticTrees(file, patches) {
         // Its source parent must be rebuilt; higher up, a path (rendered from the tree) is fine too.
         const how = placed.get(a);
         if (how === 'rebuilt' || (how === 'path' && a !== node.parent)) { if (roots.has(a)) break; continue; }
-        if (how) fail(`'${node.key}' would appear twice: its source container is kept as is`);
+        if (how) fail(`'${node.key}' would appear twice: its source container is kept as is`, regionOfKey(node.key));
         if (removed.has(a.key)) break;
-        if (roots.has(a) || !a.parent || a.parent === doc) fail(`'${node.key}' moved, but its source area is not rebuilt`);
+        if (roots.has(a) || !a.parent || a.parent === doc) fail(`'${node.key}' moved, but its source area is not rebuilt`, regionOfKey(node.key));
       }
     }
     // A removal needs its container rebuilt (or an ancestor removed), or it stays in the file.
     for (const k of removed) {
-      const m = /^@([^@]*)@/.exec(k); if (!m) fail(`not a source element: ${k}`);
-      const reg = region(decodeURIComponent(m[1])); const node = reg && reg.byKey.get(k);
+      const m = /^@([^@]*)@/.exec(k); if (!m) fail(`not a source element: ${k}`, null);
+      current = decodeURIComponent(m[1]);
+      const reg = region(current); const node = reg && reg.byKey.get(k);
       if (!node) fail(`removed element '${k}' not found`);
       let ok = placed.get(node.parent) === 'rebuilt';
       for (let a = node.parent; !ok && a && !roots.has(a); a = a.parent) if (removed.has(a.key)) ok = true;
@@ -1429,7 +1434,9 @@ function writeStaticTrees(file, patches) {
     }
   } catch (e) {
     if (!e.edit) throw e;
-    return patches.map(p => ({ region: p.region, status: 'error', reason: e.message }));
+    if (!patches.some(p => p.region === e.region)) e.region = null;
+    return patches.map(p => e.region == null || p.region === e.region ? { region: p.region, status: 'error', reason: e.message, ...(e.region != null ? { failed: e.region } : {}) }
+      : { region: p.region, status: 'skipped', reason: `not written: x-edit="${e.region}" failed; nothing was written` });
   }
   let next = html;
   out.slice().sort((a, b) => b.reg.root.tagStart - a.reg.root.tagStart).forEach(({ reg, text }) => { next = next.slice(0, reg.root.tagStart) + text + next.slice(reg.root.closeEnd); });

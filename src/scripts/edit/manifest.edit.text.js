@@ -117,6 +117,7 @@
         if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if (el._manifestComponent && el !== area) return;          // a component host: its markup is another file's
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
@@ -160,7 +161,7 @@
     }
 
     /* ---- Components: nodes addressed by structural path; scope via $edit.scope ---- */
-    const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
+    const componentName = (area) => { const r = cmpRoot(area); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
     function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
     function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
     // 'main' scope: mirror live to other instances without their own override.
@@ -169,7 +170,7 @@
         const comp = componentName(area), path = sourceEl._editPath, { inst } = componentState();
         areas().forEach(a => {
             if (classify(a) !== 'component' || componentName(a) !== comp) return;
-            const root = a.querySelector('[data-component]'); if (!root) return;
+            const root = cmpRoot(a); if (!root) return;
             const el = path === '' ? root : nodeByPath(root, path); if (!el || el === sourceEl) return;
             const iv = (inst[key(a)] && inst[key(a)][path]) || {}; if (iv[prop] !== undefined) return;   // override wins
             if (prop === 'class') writeClass(el, value);
@@ -177,7 +178,7 @@
         });
     }
     function armComponent(area) {
-        const root = area.querySelector('[data-component]'); if (!root) return;
+        const root = cmpRoot(area); if (!root) return;
         if (!area._editScope) area._editScope = 'instance';
         area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {};
         const markClass = (el) => { const p = pathOf(el, root); el._editPath = p; if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };

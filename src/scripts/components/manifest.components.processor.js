@@ -194,6 +194,7 @@ window.ManifestComponentsProcessor = {
         };
         topLevelElements.forEach(processElementProps);
         // Apply attributes from placeholder to root elements
+        const host = {};
         topLevelElements.forEach(rootElement => {
             Array.from(element.attributes).forEach(attr => {
                 if (attr.name === 'class') {
@@ -212,6 +213,7 @@ window.ManifestComponentsProcessor = {
             });
             // The file this markup came from (Edit writes regions authored in it back there)
             rootElement._manifestComponent = name;
+            rootElement._manifestHost = host;
             // Set data-component=instanceId if provided
             if (instanceId) {
                 rootElement.setAttribute('data-component', instanceId);

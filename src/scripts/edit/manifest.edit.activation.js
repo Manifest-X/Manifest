@@ -31,10 +31,25 @@
             markEl(el, path);
             if (el !== area && opaque(el)) return;
             if (el._editRt || ((first || el._editRtFormat) && wholeLeaf(el) && capOf(el, 'text') && !isRendered(el))) { if (first) count(el); return; }
-            let i = 0;
+            let i = 0, prevHost = null;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
-                walk(c, path === '' ? String(i) : path + '.' + i);
+                const p = path === '' ? String(i) : path + '.' + i;
+                // Another component's markup is one opaque element here, its <x-name> host
+                // (data-edit-host; its first root stands for it, the rest follow it)
+                if (c._manifestComponent) {
+                    const same = !!c._manifestHost && c._manifestHost === prevHost;
+                    prevHost = c._manifestHost || null;
+                    if (same) continue;
+                    if (!c.hasAttribute('data-edit-host')) {
+                        let k = '!' + mint();
+                        if (first) { const b = 'X-' + c._manifestComponent.toUpperCase() + ':', n = seen[b] = (seen[b] || 0) + 1; k = canonKey(region, n > 1 ? b + '#' + n : b); originAt.set(k, p); }
+                        c.setAttribute('data-edit-host', k);
+                    }
+                    i++; continue;
+                }
+                prevHost = null;
+                walk(c, p);
                 i++;
             }
         };
@@ -144,6 +159,9 @@
                 return list ? list.filter(k => k[0] === '@').map(k => { const b = { key: k }, at = originAt.get(k); if (at != null) b.at = at; if (ids && ids[k]) b.fp = ids[k]; return b; }) : null;
             };
             const build = (el, isRoot) => {
+                const host = !isRoot && el.getAttribute('data-edit-host');
+                if (host) { if (host[0] === '!') return null; const h = { key: host }, at = originAt.get(host); if (at != null) h.at = at; if (ids && ids[host]) h.fp = ids[host]; return h; }
+                if (!isRoot && el._manifestComponent) return null;
                 const id = el.getAttribute('data-edit-key');
                 if (!id || id[0] === '!') return null;
                 const n = { key: id };
@@ -204,14 +222,15 @@
     }
     // The source now holds every published edit: history starts again from here, and
     // identities are re-derived from the page as a fresh load of that source would.
-    // Deltas for areas not on the page were not published; they stay.
-    function rebase() {
-        const mounted = (r) => r == null || !!areaByKey(r);
+    // Deltas for areas not on the page were not published; they stay, as do those of
+    // `keep` (areas a publish left out), whose identities are left as they are.
+    function rebase(keep) {
+        const mounted = (r) => r == null || (!!areaByKey(r) && !(keep && keep.has(r)));
         const pending = (d) => (d.kind === 'st-move' ? [d.from, d.to] : [d.region]).some(r => !mounted(r));
         // Runtime locks are app state, not source: carried over by element.
         const locks = [];
         const lockState = lockStateNow();
-        keyMap(staticAreas()).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
+        keyMap(staticAreas().filter(a => !(keep && keep.has(key(a))))).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
         const nonStaticLocks = log.slice(0, cursor).filter(d => d.kind === 'lock' && !/^[~@]/.test(d.key) && !pending(d));
         let c = 0;
         log = log.filter((d, i) => { const keep = pending(d); if (keep && i < cursor) c++; return keep; });
@@ -226,11 +245,18 @@
             ver++;
         };
         saveState();
+        const keptAt = keep ? [...originAt].filter(([k]) => keep.has(decodeURIComponent(k.slice(1, k.indexOf('@', 1))))) : [];
         originAt.clear();
+        keptAt.forEach(([k, p]) => originAt.set(k, p));
         areas().forEach(a => {
+            if (keep && keep.has(key(a))) return;
             const kind = classify(a);
             a._baseText = {}; a._baseClass = {}; a._baseStyle = {};
-            if (kind === 'static') { [a, ...a.querySelectorAll('[data-edit-key]')].forEach(n => n.removeAttribute('data-edit-key')); a._marked = false; markStatic(a); }
+            if (kind === 'static') {
+                [a, ...a.querySelectorAll('[data-edit-key]')].forEach(n => { if (regionOf(n) === a) n.removeAttribute('data-edit-key'); });
+                a.querySelectorAll('[data-edit-host]').forEach(n => { if (regionOf(n.parentElement) === a) n.removeAttribute('data-edit-host'); });
+                a._marked = false; markStatic(a);
+            }
             if (kind === 'component' && a._armed) armComponent(a);
             lastSnap[key(a)] = snapshot(a, kind);
         });
@@ -308,7 +334,7 @@
     // fingerprints of keys with twins there (which may not be the elements this page shows).
     let overNewer = false;
     function publishNow(opts) {
-        const done = (r) => {
+        const done = (r, keep) => {
             if (r && r.base && baseFiles) Object.entries(r.base).forEach(([f, h]) => { if (!overNewer || !/\.html?$/i.test(f)) baseFiles[f] = h; });
             if (r && r.ids && baseIds) {
                 if (!overNewer) baseIds = r.ids;
@@ -317,17 +343,36 @@
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;
             if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
-            if (published(r)) rebase();
+            if (published(keep ? { results: r.results.filter(x => !(x && keep.has(x.region))) } : r)) rebase(keep);
             return r;
+        };
+        // An area the writer could not resolve does not hold the others back: they are sent
+        // again without it (and areas a move ties to it); its edits stay, its refusal is returned.
+        const leftOut = (r, patches) => {
+            if (!r || !Array.isArray(r.results) || (Array.isArray(r.stale) && r.stale.length)) return null;
+            const failed = new Set(r.results.filter(x => x && x.failed != null).map(x => x.failed));
+            if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
+            for (let grew = true; grew;) { grew = false; log.slice(0, cursor).forEach(d => { if (d.kind === 'st-move' && failed.has(d.from) !== failed.has(d.to)) { failed.add(d.from); failed.add(d.to); grew = true; } }); }
+            return patches.some(p => !failed.has(p.region)) ? failed : null;
         };
         const send = () => {
             const patches = buildPatches();
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
             if (!patches.length) return Promise.resolve({ results: [] });
-            const body = { patches, base: baseFiles };
-            inFlight++;
-            return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
-                .then(r => { const out = done(r); settled(r, !!(opts && opts.rebase)); return out; }, (err) => { settled(null); throw err; });
+            const post = (ps) => { inFlight++; return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patches: ps, base: baseFiles }) }).then(r => r.json()).catch(err => { settled(null); throw err; }); };
+            return post(patches).then(r => {
+                const out = leftOut(r, patches);
+                if (!out) { const o = done(r); settled(r, !!(opts && opts.rebase)); return o; }
+                settled(r, false);
+                const rest = patches.filter(p => !out.has(p.region));
+                return post(rest).then(r2 => {
+                    const results = patches.map((p, i) => out.has(p.region)
+                        ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: 'not published: a move ties it to an area that failed' })
+                        : r2.results[rest.indexOf(p)]);
+                    const merged = Object.assign({}, r2, { results });
+                    const o = done(merged, out); settled(r2, !!(opts && opts.rebase)); return o;
+                });
+            });
         };
         // mnfst-run gets a publish only with the base the page loaded; a missing one is
         // fetched once more, else the publish is refused and the history kept.
