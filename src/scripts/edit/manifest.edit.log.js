@@ -13,7 +13,7 @@
         return d;
     }
     function deltaPersists(d) {
-        if (d.kind === 'data-splice') return false;
+        if (d.kind === 'data-splice' || d.kind === 'show') return false;
         if (d.kind === 'st-move') return persistOf(d.from) && persistOf(d.to);
         return d.region != null && persistOf(d.region);
     }
@@ -426,7 +426,14 @@
         else applyStaticState();
     };
     // Returns a promise only when a data snapshot must settle, so undo stays synchronous otherwise.
+    function applyShow(d, back) {
+        const area = areaByKey(d.region); if (!area) return;
+        const el = d.key === '' ? area : [...area.querySelectorAll('[x-show]')].find(n => identity(n, area) === d.key);
+        if (!el) return;
+        try { setShow(el, d.expr, back ? d.before : d.value); } catch { }
+    }
     function step(d, back) {
+        if (d.kind === 'show') { applyShow(d, back); return null; }
         if (d.kind === 'st-move') applyMoveKeys(d, back);
         if (d.kind === 'data-splice') applySplice(d, back);
         else if (d.kind === 'data') { const snap = back ? d.before : d.after; lastSnap[d.region] = snap; return applySnap(areaByKey(d.region), d.kind, snap); }

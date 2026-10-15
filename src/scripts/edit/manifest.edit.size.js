@@ -109,11 +109,18 @@
     const lengthVar = (el, base, axis, dim) => { const v = axisVar(el, base, axis); return v ? toPx(v, el, dim) : null; };
     // Close rides x-show: only an assignable expression can be set false.
     const ASSIGNABLE = /^\s*[A-Za-z_$][\w$]*(\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]+\])*\s*$/;
-    function closeVia(el) {
+    const showable = (v) => { try { return JSON.stringify(v) !== undefined ? JSON.parse(JSON.stringify(v)) : true; } catch { return true; } };
+    function setShow(el, expr, value) { window.Alpine.evaluate(el, `${expr} = ${JSON.stringify(value)}`); }
+    // Closing is logged with the size change, so one undo reopens it.
+    function closeVia(area, el, join) {
         const expr = el.getAttribute('x-show');
         if (expr == null) return false;
         if (!ASSIGNABLE.test(expr)) { console.warn('[edit] --edit-size-close needs an assignable x-show expression (e.g. x-show="open"):', expr); return false; }
-        try { window.Alpine.evaluate(el, `${expr} = false`); return true; } catch (err) { console.warn('[edit] could not close via x-show:', err); return false; }
+        let before;
+        try { before = showable(window.Alpine.evaluate(el, expr)); setShow(el, expr, false); } catch (err) { console.warn('[edit] could not close via x-show:', err); return false; }
+        const id = identity(el, area);
+        if (id != null) pushDelta(Object.assign({ kind: 'show', region: key(area), key: id, expr, before, value: false }, join ? { join: true } : {}));
+        return true;
     }
     function startSize(e, el, pos) {
         const area = regionOf(el);
@@ -141,8 +148,8 @@
             if ((shutX || shutY) && el.hasAttribute('x-show')) {
                 if (shutX) el.style.width = toUnit(minW, wu, el, el.parentElement, 'w') + wu;
                 if (shutY) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;
-                commitStyle(area, el); sizeEvent(el, true);
-                closeVia(el);
+                const sized = commitStyle(area, el); sizeEvent(el, true);
+                closeVia(area, el, sized);
                 return;
             }
             commitStyle(area, el); sizeEvent(el, true);

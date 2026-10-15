@@ -427,7 +427,35 @@ describe('size variables', () => {
         pull(aside.querySelector('[data-edit-handle="right"]'), -250)   // raw 50px < 100px
         expect(aside.style.width).toBe('120px')
         expect(Alpine.$data(host).sidebar).toBe(false)
-        expect(last()).toMatchObject({ kind: 'st-node', prop: 'style' })
+        const { log, cursor } = store().export()
+        expect(log[cursor - 2]).toMatchObject({ kind: 'st-node', prop: 'style' })
+        expect(log[cursor - 1]).toMatchObject({ kind: 'show', expr: 'sidebar', before: true, value: false, join: true })
+    })
+
+    it('one undo after a close restores the size and reopens; redo closes again', async () => {
+        const root = await mount(`<div x-data="{ panel: { open: 'yes' } }"><aside x-show="panel.open" x-edit.size="${id('side4')}" style="width: 300px; min-width: 120px; --edit-size: x; --edit-size-close: 100px">Side</aside></div>`)
+        const aside = root.querySelector('aside'), data = Alpine.$data(root.firstElementChild)
+        const at = store().export().cursor
+        pull(aside.querySelector('[data-edit-handle="right"]'), -250)
+        expect(data.panel.open).toBe(false)
+        expect(aside.style.width).toBe('120px')
+        expect(store().export().cursor).toBe(at + 2)
+        expect(last()).toMatchObject({ kind: 'show', expr: 'panel.open', before: 'yes', value: false, join: true })
+        await store().undo()
+        expect(store().export().cursor).toBe(at)
+        expect(data.panel.open).toBe('yes')
+        expect(aside.getAttribute('style')).toContain('width: 300px')
+        await store().redo()
+        expect(data.panel.open).toBe(false)
+        expect(aside.getAttribute('style')).toContain('width: 120px')   // happy-dom's style object lags the attribute after x-show
+        expect(store().export().cursor).toBe(at + 2)
+    })
+
+    it('a close is not persisted or published', async () => {
+        const root = await mount(`<div x-data="{ open: true }"><aside x-show="open" x-edit.size.persist="side-p" style="width: 300px; --edit-size-close: 100px">Side</aside></div>`)
+        pull(root.querySelector('[data-edit-handle="right"]'), -250)
+        expect(JSON.parse(localStorage.getItem('mnfst-edit-log')).log.some(d => d.kind === 'show')).toBe(false)
+        expect(store().patches().some(p => p.kind === 'show')).toBe(false)
     })
 
     it('close needs an assignable x-show expression', async () => {
