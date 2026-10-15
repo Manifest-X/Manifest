@@ -1120,13 +1120,13 @@
         return { container: parent, ref };
     }
     // Middle band of a container nests; its edges insert before/after it.
-    function inMiddle(el, x, y, parent) {
-        const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
+    function inBand(r, horiz, x, y) {
         const lo = horiz ? r.left : r.top, size = horiz ? r.width : r.height, p = horiz ? x : y;
         if (!size) return true;
         const edge = Math.min(size * 0.25, 24);
         return p >= lo + edge && p <= lo + size - edge;
     }
+    const inMiddle = (el, x, y, parent) => inBand(el.getBoundingClientRect(), flowAxis(parent) === 'x', x, y);
     const dropValid = (a) => !!a && !!a._edit && accepts(a) && classify(a) === 'static' && topArea(a);
     // Another area under the pointer, else the nearest within reach.
     function dropArea(x, y, origin) {
@@ -1148,6 +1148,11 @@
     }
     function dropTarget(x, y, s) {
         if (s.dataList) return { container: s.home, ref: afterElement(s.home, x, y) };
+        // Nested: the container's bands stay where they were before the ghost went in
+        // (its size and the layout around it change once it does).
+        const n = s.nested;
+        if (n && n.el.isConnected && s.ghost.parentElement === n.el && x >= n.rect.left && x <= n.rect.right && y >= n.rect.top && y <= n.rect.bottom && inBand(n.rect, n.horiz, x, y)) return { container: n.el, ref: afterElement(n.el, x, y) };
+        s.nested = null;
         const region = s.crossOK ? dropArea(x, y, s.area) : s.area;
         if (!region) return null;
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
@@ -1156,7 +1161,10 @@
                 if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
-                if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
+                if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) {
+                    if (s.ghost && s.ghost.parentElement !== el) s.nested = { el, rect: el.getBoundingClientRect(), horiz: flowAxis(parent) === 'x' };
+                    return { container: el, ref: afterElement(el, x, y) };
+                }
                 if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
             }
         }
@@ -1168,7 +1176,7 @@
         for (const el of sortableChildren(c)) {
             if (el === dragged || el.hasAttribute('data-edit-dragging') || lockedFor(el, 'move')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
-            const sameRow = Math.abs(cy - y) <= b.height / 2;
+            const sameRow = Math.abs(cy - y) < b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
         }
         return null;
@@ -2232,13 +2240,14 @@
             // the rewrite if the source no longer has them).
             const baseOf = (parent) => {
                 const list = parent === '' ? (ss.orderBase[region] || {})[''] : Object.values(ss.orderBase).map(m => m[parent]).find(Boolean);
-                return list ? list.filter(k => k[0] === '@').map(k => { const at = originAt.get(k); return at != null ? { key: k, at } : { key: k }; }) : null;
+                return list ? list.filter(k => k[0] === '@').map(k => { const b = { key: k }, at = originAt.get(k); if (at != null) b.at = at; if (baseIds && baseIds[k]) b.fp = baseIds[k]; return b; }) : null;
             };
             const build = (el, isRoot) => {
                 const id = el.getAttribute('data-edit-key');
                 if (!id || id[0] === '!') return null;
                 const n = { key: id };
                 const at = originAt.get(originOf(id)); if (at != null) n.at = at;
+                if (baseIds && baseIds[originOf(id)]) n.fp = baseIds[originOf(id)];
                 const e = editsFor(id); if (e) n.edits = e;
                 if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
@@ -2250,7 +2259,7 @@
             };
             const tree = build(area, true);
             if (!tree || !(tree.edits || tree.children)) return;
-            delete tree.at;
+            delete tree.at; delete tree.fp;
             out.push({ kind: 'static-tree', region, tree });
         });
         // Removed: named by a structural delta's `before`, absent from every current order.
@@ -2331,13 +2340,20 @@
     const published = (r) => !(r && Array.isArray(r.results) && r.results.some(x => x && x.status === 'error'));
     // Source file hashes as the page loaded them (mnfst-run --edit); a publish carries them
     // so the server can refuse when a file changed underneath this page.
-    let baseFiles = null;
-    function loadBase() {
+    // With them, each source element's fingerprint as loaded: the server refuses an edit
+    // whose element no longer matches (changed, or a twin that moved).
+    let baseFiles = null, baseIds = null;
+    function loadBase(filesOnly) {
         if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return Promise.resolve(null);
-        return fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.files) baseFiles = j.files; return baseFiles; }).catch(() => null);
+        return fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => {
+            if (j && j.files) baseFiles = j.files;
+            if (j && j.ids && !filesOnly) baseIds = j.ids;
+            return baseFiles;
+        }).catch(() => null);
     }
-    // Stylesheets and data hot-swap without a reload: the dev server sends their new hash.
-    window.addEventListener('manifest:source-change', (e) => { const d = e.detail || {}; if (baseFiles && d.file && d.hash) baseFiles[d.file] = d.hash; });
+    // Stylesheets and data hot-swap: their new hash applies. HTML waits for the reload
+    // (a cancelled one leaves the page on what it loaded); our own writes advance on publish.
+    window.addEventListener('manifest:source-change', (e) => { const d = e.detail || {}; if (baseFiles && d.file && d.hash && !/\.html?$/i.test(d.file)) baseFiles[d.file] = d.hash; });
     // A refusal for files changed since load keeps the log and reports them ($edit.stale,
     // `edit:stale`). Reload to take the new source, or publish({ rebase: true }) to write
     // the edits over it; the history is kept until a publish succeeds.
@@ -2368,6 +2384,7 @@
     function publishNow(opts) {
         const done = (r) => {
             if (r && r.base && baseFiles) Object.assign(baseFiles, r.base);
+            if (r && r.ids && baseIds) baseIds = r.ids;
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;
             if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
@@ -2383,7 +2400,7 @@
             return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
                 .then(r => { const out = done(r); settled(r); return out; }, (err) => { settled(null); throw err; });
         };
-        return opts && opts.rebase ? loadBase().then(send) : send();
+        return opts && opts.rebase ? loadBase(true).then(send) : send();
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {

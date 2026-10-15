@@ -38,13 +38,13 @@
         return { container: parent, ref };
     }
     // Middle band of a container nests; its edges insert before/after it.
-    function inMiddle(el, x, y, parent) {
-        const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
+    function inBand(r, horiz, x, y) {
         const lo = horiz ? r.left : r.top, size = horiz ? r.width : r.height, p = horiz ? x : y;
         if (!size) return true;
         const edge = Math.min(size * 0.25, 24);
         return p >= lo + edge && p <= lo + size - edge;
     }
+    const inMiddle = (el, x, y, parent) => inBand(el.getBoundingClientRect(), flowAxis(parent) === 'x', x, y);
     const dropValid = (a) => !!a && !!a._edit && accepts(a) && classify(a) === 'static' && topArea(a);
     // Another area under the pointer, else the nearest within reach.
     function dropArea(x, y, origin) {
@@ -66,6 +66,11 @@
     }
     function dropTarget(x, y, s) {
         if (s.dataList) return { container: s.home, ref: afterElement(s.home, x, y) };
+        // Nested: the container's bands stay where they were before the ghost went in
+        // (its size and the layout around it change once it does).
+        const n = s.nested;
+        if (n && n.el.isConnected && s.ghost.parentElement === n.el && x >= n.rect.left && x <= n.rect.right && y >= n.rect.top && y <= n.rect.bottom && inBand(n.rect, n.horiz, x, y)) return { container: n.el, ref: afterElement(n.el, x, y) };
+        s.nested = null;
         const region = s.crossOK ? dropArea(x, y, s.area) : s.area;
         if (!region) return null;
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
@@ -74,7 +79,10 @@
                 if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
-                if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
+                if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) {
+                    if (s.ghost && s.ghost.parentElement !== el) s.nested = { el, rect: el.getBoundingClientRect(), horiz: flowAxis(parent) === 'x' };
+                    return { container: el, ref: afterElement(el, x, y) };
+                }
                 if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
             }
         }
@@ -86,7 +94,7 @@
         for (const el of sortableChildren(c)) {
             if (el === dragged || el.hasAttribute('data-edit-dragging') || lockedFor(el, 'move')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
-            const sameRow = Math.abs(cy - y) <= b.height / 2;
+            const sameRow = Math.abs(cy - y) < b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
         }
         return null;
