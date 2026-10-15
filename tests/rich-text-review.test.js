@@ -405,6 +405,56 @@ describe('third-pass regressions', () => {
     })
 })
 
+describe('fourth-pass: undoing a typing burst restores where it started', () => {
+    const caretAt = (el) => {
+        const r = window.getSelection().getRangeAt(0), pre = document.createRange()
+        pre.selectNodeContents(el); pre.setEnd(r.startContainer, r.startOffset)
+        return pre.toString().length
+    }
+    // One keystroke as a browser delivers it: beforeinput, the edit, input
+    const type = (el, text) => {
+        el.dispatchEvent(new window.InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }))
+        const r = window.getSelection().getRangeAt(0), node = r.startContainer, at = r.startOffset
+        node.insertData(at, text)
+        select(node, at + text.length)
+        el.dispatchEvent(new window.InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+    }
+
+    it('type, paste, undo twice: the caret is back at the burst start', () => {
+        const el = area('html.inline', 'x')
+        api(el).value = 'hello world'
+        focusin(el); select(el.firstChild, 5)
+        type(el, 'XYZ')
+        transfer(el, 'paste', { 'text/plain': '!' })
+        expect(api(el).value).toBe('helloXYZ! world')
+        api(el).undo()
+        expect(api(el).value).toBe('helloXYZ world')
+        expect(caretAt(el)).toBe(8)
+        api(el).undo()
+        expect(api(el).value).toBe('hello world')
+        expect(caretAt(el)).toBe(5)
+        expect(el._history.stack.length).toBe(3)              // no extra steps
+        expect(api(el).can('undo')).toBe(false)
+    })
+
+    it('a caret moved between two bursts is where the second one undoes to', async () => {
+        const el = area('html.inline', 'x')
+        api(el).value = 'hello world'
+        focusin(el); select(el.firstChild, 5)
+        type(el, 'XYZ')
+        await tick(450)                                         // the first burst lands
+        select(el.firstChild, 0)
+        type(el, 'A')
+        api(el).undo()
+        expect(api(el).value).toBe('helloXYZ world')
+        expect(caretAt(el)).toBe(0)
+        api(el).undo()
+        expect(api(el).value).toBe('hello world')
+        expect(caretAt(el)).toBe(5)
+        expect(el._history.stack.length).toBe(3)
+    })
+})
+
 describe('9. command methods are typed', () => {
     it.each(['strong(', 'abbr(title?', 'img(src', 'table(columns?', 'h2(', 'figcaption(', 'undo(', "'row-before'("])('declares %s', (sig) => {
         expect(DTS).toContain(sig)
