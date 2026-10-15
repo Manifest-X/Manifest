@@ -200,6 +200,87 @@ describe('cross-region drop reach', () => {
     })
 })
 
+describe('nesting into a small empty container', () => {
+    // A block layout that reflows as the ghost moves: rows 40px, an empty box 40px tall,
+    // growing with what goes in it. The dragged piece (fixed) is out of flow.
+    const ROW = 40
+    let restore
+    function layout(section) {
+        const rects = new Map()
+        const skip = (c) => c.hasAttribute('data-edit-dragging') || c.hasAttribute('data-edit-handle') || c.hasAttribute('data-edit-grip')
+        const place = (container, top) => {
+            for (const c of container.children) {
+                if (skip(c)) continue
+                const h = c.classList.contains('box') ? Math.max(ROW, place(c, top) - top) : ROW
+                rects.set(c, { left: 0, top, right: 400, bottom: top + h, width: 400, height: h, x: 0, y: top })
+                top += h
+            }
+            return top
+        }
+        rects.set(section, { left: 0, top: 0, right: 400, bottom: place(section, 0), width: 400, height: place(section, 0), x: 0, y: 0 })
+        return rects
+    }
+    async function setup() {
+        const root = await mount(`<section x-edit.move="nest-small"><p>One</p><p>Two</p><div class="box"></div><p>Three</p></section>`)
+        const section = root.querySelector('section')
+        const proto = Element.prototype.getBoundingClientRect
+        Element.prototype.getBoundingClientRect = function () { return layout(section).get(this) || proto.call(this) }
+        restore = () => { Element.prototype.getBoundingClientRect = proto }
+        document.elementFromPoint = (x, y) => {
+            let best = null, depth = -1
+            for (const [el, r] of layout(section)) {
+                if (x < r.left || x > r.right || y < r.top || y >= r.bottom) continue
+                let d = 0; for (let n = el; n !== section; n = n.parentElement) d++
+                if (d > depth) { best = el; depth = d }
+            }
+            return best
+        }
+        const [one, two, box, three] = section.children
+        return { section, one, two, box, three }
+    }
+    afterEach(() => { document.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true })); if (restore) restore(); restore = null })
+    const ev = (type, x, y, target = document) => target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }))
+    const ghostIn = (box) => !!box.querySelector('[data-edit-ghost]')
+    // Sweep the pointer across the box's original rows; at each row, move twice and record.
+    function sweep(item, box, ys) {
+        const r = item.getBoundingClientRect()
+        ev('pointerdown', 20, r.top + 20, item)
+        ev('pointermove', 20, r.top + (ys[0] > r.top ? 30 : 10))
+        return ys.map(y => { ev('pointermove', 20, y); const a = ghostIn(box); ev('pointermove', 21, y); const b = ghostIn(box); return a === b ? a : 'flip' })
+    }
+
+    it('up from below: the middle band nests and holds while the box grows', async () => {
+        const { box, three } = await setup()          // box spans 80..120
+        const ys = []; for (let y = 126; y >= 74; y -= 2) ys.push(y)
+        const got = sweep(three, box, ys)
+        expect(got).not.toContain('flip')
+        const nested = ys.filter((y, i) => got[i] === true)
+        expect(nested.length).toBeGreaterThanOrEqual(10)    // 90..110: the box's middle half
+        expect(Math.max(...nested) - Math.min(...nested)).toBe((nested.length - 1) * 2)   // one band
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        const r = three.getBoundingClientRect()
+        ev('pointerdown', 20, r.top + 20, three)
+        for (const y of [r.top + 10, 110, 100, 99, 100]) ev('pointermove', 20, y)
+        ev('pointerup', 20, 100)
+        expect(three.parentElement).toBe(box)
+    })
+
+    it('down from directly above: the piece lands in the box', async () => {
+        const { box, two } = await setup()
+        const ys = []; for (let y = 74; y <= 126; y += 2) ys.push(y)
+        const got = sweep(two, box, ys)
+        expect(got).not.toContain('flip')
+        expect(got.filter(g => g === true).length).toBeGreaterThanOrEqual(10)
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        expect(two.parentElement).not.toBe(box)
+        const r = two.getBoundingClientRect()
+        ev('pointerdown', 20, r.top + 20, two)
+        for (const y of [r.top + 30, 90, 100, 101, 100]) ev('pointermove', 20, y)
+        ev('pointerup', 20, 100)
+        expect(two.parentElement).toBe(box)
+    })
+})
+
 describe('resize limits', () => {
     async function sizable(style, parentStyle = '') {
         const root = await mount(`<div class="parent" style="${parentStyle}"><div x-edit.size="sz-${Math.random().toString(36).slice(2)}" style="${style}">Box</div></div>`)
