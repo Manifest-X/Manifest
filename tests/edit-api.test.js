@@ -553,6 +553,28 @@ describe('content model and titling comments', () => {
         expect(area.querySelectorAll('section > p')[1]).toBe(b)                                          // the same element came back
     })
 
+    it('template contents count: a piece whose x-if can render a link cannot go into a link', async () => {
+        const root = await mount(`<section x-edit="${id('tpl')}"><a href="/card"><div class="in"><span>card</span></div></a><div class="p"><template x-if="false"><a href="/x">x</a></template></div></section>`)
+        expect(store().move(root.querySelector('.p'), root.querySelector('.in'))).toBe(false)
+    })
+
+    it('a duplicate does not copy its titling comment', async () => {
+        const root = await mount(`<section x-edit="${id('dc')}"><p>Zero</p><!-- Card --><p>One</p></section>`)
+        const area = root.querySelector('section')
+        store().duplicate(area.querySelectorAll('p')[1])
+        expect([...area.childNodes].filter(n => n.nodeType === 8).length).toBe(1)
+    })
+
+    it('theme values: strings and data images pass; breakouts, script urls and expression() do not', async () => {
+        const root = await mount(`<input x-edit.cssvar="--brand-y" value="red">`)
+        const input = root.querySelector('input')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        const tryValue = (v) => { const at = store().export().cursor; input.value = v; input.dispatchEvent(new Event('change')); return store().export().cursor > at; }
+        expect(['url(data:image/png;base64,AAAA)', '"a; b {c}"', 'calc(1px + 2px)'].map(tryValue)).toEqual([true, true, true])
+        expect(['red; }', 'url(javascript:alert(1))', 'expression(alert(1))', 'url(data:text/html,x)', 'a </style>', '"open', '(a]'].map(tryValue)).toEqual([false, false, false, false, false, false, false])
+        warn.mockRestore()
+    })
+
     it('theme values that would leave their declaration are refused', async () => {
         const root = await mount(`<input x-edit.cssvar="--brand-x" value="red">`)
         const input = root.querySelector('input'), at = store().export().cursor

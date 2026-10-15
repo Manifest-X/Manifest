@@ -60,6 +60,7 @@
         estore = Alpine.store('edit');
         Alpine.magic('edit', () => Alpine.store('edit'));
         loadState();
+        loadBase();
         setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
         document.addEventListener('contextmenu', onContextCapture, true);

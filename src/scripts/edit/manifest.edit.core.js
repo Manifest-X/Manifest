@@ -284,7 +284,10 @@
         if (piece.parentElement === container) return true;
         const anc = [];
         for (let a = container; a && a.nodeType === 1; a = a.parentElement) anc.push(a.tagName.toLowerCase());
-        const sub = new Set([piece, ...piece.querySelectorAll('*')].map(n => n.tagName.toLowerCase()));
+        // Template contents count: an x-if can render them right here (the server counts them too).
+        const sub = new Set();
+        const add = (root) => [root, ...root.querySelectorAll('*')].forEach(n => { if (n.nodeType !== 1) return; sub.add(n.tagName.toLowerCase()); if (n.tagName === 'TEMPLATE' && n.content) [...n.content.children].forEach(add); });
+        add(piece);
         return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
     }
 
