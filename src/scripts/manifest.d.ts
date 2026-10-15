@@ -384,8 +384,11 @@ export interface ManifestEdit {
     off(): void;
     undo(): Promise<void>;
     redo(): Promise<void>;
-    /** Send every area's patches; on success the history is cleared (the source now holds it). */
-    publish(): Promise<unknown>;
+    /** Source files that changed since the page loaded, from the last refused publish. */
+    stale: string[];
+    /** Send every area's patches; on success the history is cleared (the source now holds it).
+     *  `rebase: true` takes the current source as the base (writes over external changes). */
+    publish(opts?: { rebase?: boolean }): Promise<unknown>;
     /** The resolved source patches for every area, without sending them. */
     patches(): unknown[];
     /** The raw delta log — persist it yourself to move edits between devices. */

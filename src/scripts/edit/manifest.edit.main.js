@@ -31,11 +31,11 @@
             cleanup(() => releaseEdit(el));
         });
         Alpine.store('edit', {
-            active: false, canUndo: false, canRedo: false, version: 0,
+            active: false, canUndo: false, canRedo: false, version: 0, stale: [],
             onPublish: null,
             toggle() { this.active ? off() : on(); }, on() { on(); }, off() { off(); },
             undo() { return undo(); }, redo() { return redo(); },
-            publish() { return publish(); },
+            publish(opts) { return publish(opts); },
             patches() { return buildPatches(); },
             export() { return JSON.parse(JSON.stringify({ log, cursor })); },
             get target() { void this.version; return target; },
