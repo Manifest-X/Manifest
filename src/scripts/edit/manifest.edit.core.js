@@ -116,9 +116,21 @@
     const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
     // Leaf text: Rich Text's allowlist; no interactive element inside another (or inside an
     // interactive leaf), no empty link; a trailing <br> shows nothing, so none is kept.
+    // The end of the text, along the last-descendant chain: <br>s, blank text and the inline elements they leave empty go.
+    function trimTail(root) {
+        for (let guard = 0; guard < 1000; guard++) {
+            let n = root.lastChild;
+            while (n && n.nodeType === 1 && n.tagName !== 'BR' && n.lastChild) n = n.lastChild;
+            if (!n || n === root) return;
+            const gone = n.nodeType === 3 ? !n.nodeValue.trim() : n.nodeType === 8 || n.tagName === 'BR' || (!n.firstChild && !/^(IMG|WBR)$/.test(n.tagName));
+            if (!gone) return;
+            n.remove();
+        }
+    }
     function leafClean(html, host) {
         const t = document.createElement('template');
-        t.innerHTML = inlineClean(html).replace(/(\s*<br>)+\s*$/, '');
+        t.innerHTML = inlineClean(html);
+        trimTail(t.content);
         const sel = CONTENT_RULES.interactive.join(','), hosted = !!(host && host.closest && host.closest('a, button'));
         [...t.content.querySelectorAll(sel)].forEach(n => { if (hosted || (n.parentElement && n.parentElement.closest(sel))) n.replaceWith(...n.childNodes); });
         t.content.querySelectorAll('a').forEach(a => { if (!a.textContent.trim() && !a.querySelector('img')) a.replaceWith(...a.childNodes); });

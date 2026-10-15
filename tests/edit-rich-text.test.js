@@ -433,6 +433,26 @@ describe('line breaks in leaves', () => {
         expect(p.innerHTML).toBe('1 Main St<br>Springfield<br>USA')
     })
 
+    it('a trailing <br> inside an inline element is not logged; the element it empties goes too', async () => {
+        const root = await mount(`<section x-edit="br5"><h1>Hello <strong>world</strong></h1><p>Read the <a href="/g">guide</a></p></section>`)
+        const h1 = root.querySelector('h1'), p = root.querySelector('p'), at = cursor()
+        await enter(h1)
+        select(h1.querySelector('strong').firstChild, 5)
+        key(h1, { key: 'Enter', shiftKey: true })
+        expect(h1.innerHTML).toBe('Hello <strong>world<br><br></strong>')
+        await blur(h1)
+        expect(cursor()).toBe(at)
+        await enter(p)
+        const a = p.querySelector('a')
+        select(a.firstChild, 5)
+        key(p, { key: 'Enter', shiftKey: true })
+        a.lastChild.before(document.createTextNode(' '))
+        p.append(document.createElement('em'))
+        await blur(p)
+        expect(cursor()).toBe(at)
+        expect(store().patches().some(x => JSON.stringify(x).includes('<br>'))).toBe(false)
+    })
+
     it('Shift+Enter mid-line splits the line with one <br>', async () => {
         const root = await mount(`<section x-edit="br2"><p>Roses are red</p></section>`)
         const p = root.querySelector('p')
