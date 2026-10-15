@@ -316,6 +316,18 @@ describe('publish round trips', () => {
         expect(document.querySelector('h1')._editRt).toBeTruthy()
     })
 
+    it('what a leaf shows after blur is what the writer writes', async () => {
+        const body = `<section x-edit="k5"><p>One</p></section>`
+        let shown
+        const r = await roundTrip(body, async (root) => {
+            const p = root.querySelector('p')
+            editText(p, 'One <span style="color: blue; @import \'x.css\'">a</span><img src="data:image/svg+xml;base64,PHN2Zz4=" alt="s"><span style="color: green">b</span> <a href="javascript:x()">c</a>')
+            shown = p.innerHTML
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<section x-edit="k5"><p>${shown}</p></section>`)
+    })
+
     it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
         const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
         const r = await roundTrip(body, async (root) => {

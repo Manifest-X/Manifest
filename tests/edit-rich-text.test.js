@@ -562,6 +562,18 @@ describe('history across the hand-off', () => {
     })
 })
 
+describe('client and writer agree', () => {
+    it('leaf text drops what the writer drops: @import styles and non-raster data images', async () => {
+        const root = await mount(`<section x-edit="ag1"><p>One</p><p>Two <span style="color: red">x</span></p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        p.innerHTML = 'One <span style="color: blue; @import \'x.css\'">a</span><img src="data:image/svg+xml;base64,PHN2Zz4=" alt="s"><img src="data:image/png;base64,iVBO" alt="r"><span style="color: green">b</span>'
+        await blur(p)
+        expect(log().at(-1).value).toBe('One <span>a</span><img alt="s"><img src="data:image/png;base64,iVBO" alt="r"><span style="color: green">b</span>')
+        expect(window.ManifestRichText.sanitize('<img src="data:image/svg+xml,<svg/>">', false)).toBe('<img>')
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)

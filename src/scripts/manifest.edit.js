@@ -120,6 +120,7 @@
     const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
     // Leaf text: Rich Text's allowlist; no interactive element inside another (or inside an
     // interactive leaf), no empty link; a trailing <br> shows nothing, so none is kept.
+    const attrKept = (n, a) => !attrRefusal(a.name, a.value, n.tagName) && !(a.name === 'style' && /expression|url\s*\(|javascript:|@import/i.test(a.value));
     // The end of the text, along the last-descendant chain: <br>s, blank text and the inline elements they leave empty go.
     function trimTail(root) {
         for (let guard = 0; guard < 1000; guard++) {
@@ -135,6 +136,8 @@
         const t = document.createElement('template');
         t.innerHTML = inlineClean(html);
         trimTail(t.content);
+        // The source writer's attribute rules, so what is shown is what publishes
+        t.content.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (!attrKept(n, a)) n.removeAttribute(a.name); }));
         const sel = CONTENT_RULES.interactive.join(','), hosted = !!(host && host.closest && host.closest('a, button'));
         [...t.content.querySelectorAll(sel)].forEach(n => { if (hosted || (n.parentElement && n.parentElement.closest(sel))) n.replaceWith(...n.childNodes); });
         t.content.querySelectorAll('a').forEach(a => { if (!a.textContent.trim() && !a.querySelector('img')) a.replaceWith(...a.childNodes); });
@@ -267,7 +270,7 @@
         c.querySelectorAll('[data-edit-handle], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
         if (!c.children.length) return true;
         c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
-        return inlineClean(c.innerHTML) === c.innerHTML;
+        return inlineClean(c.innerHTML) === c.innerHTML && [...c.querySelectorAll('*')].every(n => [...n.attributes].every(a => attrKept(n, a)));
     }
     // Text is required: a link around an image alone stays granular, so the image keeps its own identity.
     const wholeLeaf = (el) => LEAF_TAGS.has(el.tagName) && realChildren(el).length > 0 && !!el.textContent.trim() && plainFormatted(el);
