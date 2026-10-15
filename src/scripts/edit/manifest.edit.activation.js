@@ -54,7 +54,9 @@
         };
         walk(area, '');
     }
+    const warnedRendered = new Set();
     function armArea(area) {
+        if (area._edit.rendered && !warnedRendered.has(key(area))) { warnedRendered.add(key(area)); console.warn(`[edit] x-edit="${key(area)}" is inside content ${area._edit.rendered} renders: it edits on the page (and reaches onPublish), but mnfst-run cannot write it to a source file`); }
         uneditIn(null);
         const kind = classify(area);
         if (kind === 'static') markStatic(area);
@@ -371,35 +373,55 @@
             if (!r || !Array.isArray(r.results) || (Array.isArray(r.stale) && r.stale.length)) return null;
             const failed = new Set(r.results.filter(x => x && x.failed != null).map(x => x.failed));
             if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
-            const via = new Map();   // a region held back -> the failed region a move ties it to
+            tie(failed);
+            return patches.some(p => !failed.has(p.region)) ? failed : null;
+        };
+        // Grows a set of held regions by the regions moves tie to them (`via`: held -> the region it is tied to).
+        const tie = (held) => {
+            const via = new Map();
             for (let grew = true; grew;) {
                 grew = false;
                 log.slice(0, cursor).forEach(d => {
-                    if (d.kind !== 'st-move' || failed.has(d.from) === failed.has(d.to)) return;
-                    const [had, add] = failed.has(d.from) ? [d.from, d.to] : [d.to, d.from];
-                    failed.add(add); via.set(add, via.get(had) || had); grew = true;
+                    if (d.kind !== 'st-move' || held.has(d.from) === held.has(d.to)) return;
+                    const [had, add] = held.has(d.from) ? [d.from, d.to] : [d.to, d.from];
+                    held.add(add); via.set(add, via.get(had) || had); grew = true;
                 });
             }
-            failed.via = via;
-            return patches.some(p => !failed.has(p.region)) ? failed : null;
+            held.via = via;
+            return held;
         };
+        // An area inside generated content (x-markdown output and the like) edits on the page,
+        // but its markup is in no file mnfst-run can write: it is refused by name, not sent.
+        const renderedBy = (region) => { const a = areaByKey(region); return a && a._edit.rendered; };
+        const unwritable = (p) => (p.kind === 'static-tree' || (p.kind === 'component' && p.scope === 'instance')) && !!renderedBy(p.region);
         const send = () => {
             commitFocused(true);   // typing under way publishes with the rest (identities are re-derived from the page after)
             const patches = buildPatches();
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
             if (!patches.length) { takeHeldReload(); return Promise.resolve({ results: [] }); }   // nothing to send: a held reload goes now
             const post = (ps) => { inFlight++; return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patches: ps, base: baseFiles }) }).then(r => r.json()).catch(err => { settled(null); throw err; }); };
-            return post(patches).then(r => {
-                const out = leftOut(r, patches);
-                if (!out) { const o = done(r); settled(r, !!(opts && opts.rebase)); return o; }
+            const off = tie(new Set(patches.filter(unwritable).map(p => p.region)));
+            const offResult = (p) => ({ region: p.region, status: 'error', reason: renderedBy(p.region) && unwritable(p)
+                ? `x-edit="${p.region}" is inside content ${renderedBy(p.region)} renders, so mnfst-run can't write it to a source file`
+                : `not published: tied by a move to x-edit="${off.via.get(p.region)}", which mnfst-run can't write` });
+            const sendable = patches.filter(p => !off.has(p.region));
+            // The sent part's answer, merged with what was held back, as one result per patch.
+            const finish = (r, held, sent) => {
+                const keep = new Set([...off, ...(held || [])]);
+                const results = patches.map(p => off.has(p.region) ? offResult(p) : r.results[sent.indexOf(p)]);
+                const o = done(Object.assign({}, r, { results }), keep.size ? keep : undefined); settled(r, !!(opts && opts.rebase)); return o;
+            };
+            if (!sendable.length) { const o = done({ results: patches.map(offResult) }, off); return Promise.resolve(o); }
+            return post(sendable).then(r => {
+                const out = leftOut(r, sendable);
+                if (!out) return finish(r, null, sendable);
                 settled(r, false);
-                const rest = patches.filter(p => !out.has(p.region));
+                const rest = sendable.filter(p => !out.has(p.region));
                 return post(rest).then(r2 => {
-                    const results = patches.map((p, i) => out.has(p.region)
+                    const results = sendable.map((p, i) => out.has(p.region)
                         ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: `not published: tied by a move to x-edit="${out.via.get(p.region) || [...out].find(x => !out.via.has(x))}", which failed` })
                         : r2.results[rest.indexOf(p)]);
-                    const merged = Object.assign({}, r2, { results });
-                    const o = done(merged, out); settled(r2, !!(opts && opts.rebase)); return o;
+                    return finish(Object.assign({}, r2, { results }), out, sendable);
                 });
             });
         };
