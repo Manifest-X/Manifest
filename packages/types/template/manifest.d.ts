@@ -422,9 +422,53 @@ export interface ManifestRichText {
     markdown(): string;
     /** Read the content as sanitized HTML regardless of the storage format. */
     html(): string;
-    /** Insert a columns × rows table. */
+
+    // Inline tags: toggle on the selection, or arm for the next typed text
+    strong(): void; b(): void; em(): void; i(): void; s(): void; del(): void; code(): void;
+    bdi(): void; cite(): void; ins(): void; kbd(): void; mark(): void; q(): void; samp(): void;
+    small(): void; span(): void; sub(): void; sup(): void; u(): void; var(): void;
+    /** `title` attribute (html only). */
+    abbr(title?: string): void;
+    /** `title` attribute (html only). */
+    dfn(title?: string): void;
+    /** Direction, default 'rtl' (html only). */
+    bdo(dir?: 'ltr' | 'rtl' | 'auto'): void;
+    /** Machine-readable `value` (html only). */
+    data(value?: string): void;
+    /** `datetime` attribute (html only). */
+    time(datetime?: string): void;
+    /** Link the selection; '' unlinks. */
+    a(href?: string): void;
+    unlink(): void;
+    br(): void;
+    /** Break opportunity (html only). */
+    wbr(): void;
+    img(src: string, alt?: string): void;
+
+    // Block tags: convert the block (again returns to p)
+    p(): void; h1(): void; h2(): void; h3(): void; h4(): void; h5(): void; h6(): void;
+    blockquote(): void; pre(): void; address(): void;
+    ul(): void; ol(): void; li(): void; checklist(): void; hr(): void;
+    figure(): void; figcaption(): void; dl(): void; dt(): void; dd(): void;
+    /** Any block tag by name, e.g. block('h2'). */
+    block(tag: string): void;
+
+    /** Insert a columns × rows table (default 3 × 3). */
     table(columns?: number, rows?: number): void;
-    [command: string]: unknown;
+    'row-before'(): void; 'row-after'(): void; 'row-remove'(): void;
+    'column-before'(): void; 'column-after'(): void; 'column-remove'(): void;
+    'table-remove'(): void; 'table-header'(): void; merge(): void; split(): void;
+
+    indent(): void; outdent(): void;
+    align(value?: 'start' | 'center' | 'end' | 'justify' | string): void;
+    leading(value: string): void;
+    color(value: string): void;
+    background(value: string): void;
+    font(value: string): void;
+    size(value: string | number): void;
+    clear(): void;
+    undo(): void;
+    redo(): void;
 }
 
 /** Options for `ManifestRichText.attach()`. */

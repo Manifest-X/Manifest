@@ -32,7 +32,13 @@
 
     /* ---- HTML → Markdown ---- */
     const ENTITY = /&(?=#?[a-z0-9]+;)/gi;
-    const esc = (t) => t.replace(/([\\`*_[\]<>])/g, '\\$1').replace(ENTITY, '\\&');
+    const esc = (t) => t.replace(/([\\`*_~[\]<>])/g, '\\$1').replace(ENTITY, '\\&');
+    // Line starts that would parse as a heading, list or rule
+    const escLead = (text) => text.split('\n').map(l => l
+        .replace(/^(#{1,6})(?=\s|$)/, '\\$1')
+        .replace(/^([-+])(?=\s)/, '\\$1')
+        .replace(/^-(?=-{2,}\s*$)/, '\\-')
+        .replace(/^(\d+)\.(?=\s)/, '$1\\.')).join('\n');
     const mdUrl = (u) => u.replace(/[\s()<>]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')).replace(ENTITY, '\\&');
 
     function inline(node) {
@@ -56,7 +62,7 @@
         c.nodeName === 'BR' ? '\n' : c.nodeType === 3 ? c.nodeValue : preText(c)).join('');
 
     function block(node, depth) {
-        if (node.nodeType === 3) { const t = node.textContent.trim(); return t ? esc(t) : ''; }
+        if (node.nodeType === 3) { const t = node.textContent.trim(); return t ? escLead(esc(t)) : ''; }
         if (node.nodeType !== 1) return '';
         const tag = node.tagName;
         if (tag === 'HR') return '---';
@@ -75,7 +81,9 @@
                 return pad + bullet + own + (sub ? '\n' + sub : '');
             }).join('\n');
         }
-        return inline(node).trim();
+        // A container of blocks (dl, figure, a cell's paragraphs) keeps them apart
+        if ([...node.children].some(c => BLOCK.includes(c.tagName))) return blocks(node, depth);
+        return escLead(inline(node).trim());
     }
 
     function nestedStripped(li, nested) {
@@ -92,7 +100,11 @@
     }
 
     const toMarkdown = (root) => blocks(root, 0).replace(/\n{3,}/g, '\n\n').trim();
-    const inlineMarkdown = (root) => inline(root).replace(/ *\n */g, ' ').trim();
+    const inlineMarkdown = (root) => {
+        const flat = document.createElement('div');
+        flat.innerHTML = flattenLines(root.innerHTML, true);
+        return escLead(inline(flat).trim());
+    };
 
     /* ---- Tables in markdown ---- */
     // One line per row, cells joined by " · ".
@@ -124,6 +136,18 @@
         return t.innerHTML;
     }
 
+    // Html-only blocks become paragraphs for a markdown document
+    function markdownBlocks(html) {
+        const t = document.createElement('template');
+        t.innerHTML = html;
+        [...t.content.querySelectorAll('dt, dd, figcaption, address')].reverse().forEach(b => {
+            if ([...b.children].some(c => BLOCK.includes(c.tagName))) b.replaceWith(...b.childNodes);
+            else retagBlock(b, 'p');
+        });
+        [...t.content.querySelectorAll('dl, figure')].reverse().forEach(b => b.replaceWith(...b.childNodes));
+        return t.innerHTML;
+    }
+
     /* ---- Markdown → HTML ---- */
     const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
@@ -132,7 +156,7 @@
     function inlineHtml(s) {
         const held = [];
         return escHtml(s)
-            .replace(/\\(&lt;|&gt;|&amp;|[\\`*_~[\]])/g, (_, c) => HOLD + (held.push(c) - 1) + HOLD)
+            .replace(/\\(&lt;|&gt;|&amp;|[\\`*_~[\]#+.-])/g, (_, c) => HOLD + (held.push(c) - 1) + HOLD)
             .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
             .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
             .replace(/~~([^~]+)~~/g, '<s>$1</s>')
@@ -426,8 +450,28 @@
     }
 
     /* ---- Block tags ---- */
+    // A cell's loose content into a <p> inside it, so block commands nest rather than replace the cell
+    function innerBlock(cell) {
+        const off = offsetIn(cell), p = document.createElement('p');
+        while (cell.firstChild) p.appendChild(cell.firstChild);
+        cell.appendChild(p);
+        caretIn(p, off);
+        return p;
+    }
+
+    // The block a command may replace: never a cell, list item, term or container
+    function freeBlock() {
+        const b = blockEl(); if (!b) return null;
+        if (/^(UL|OL|DL|FIGURE|TABLE)$/.test(b.tagName)) return null;
+        if (/^(TD|TH)$/.test(b.tagName)) return innerBlock(b);
+        if (/^(LI|DT|DD)$/.test(b.tagName)) return liftItem(b);
+        return b;
+    }
+
     function setBlock(tag) {
         let b = blockEl(); if (!b) return;
+        if (/^(UL|OL|DL|FIGURE|TABLE)$/.test(b.tagName)) return;
+        if (/^(TD|TH)$/.test(b.tagName)) b = innerBlock(b);
         const want = (b.tagName === tag.toUpperCase() ? 'p' : tag).toLowerCase();
         if (b.tagName === want.toUpperCase()) return;
         // Out of the list first (outdenting nested items to the top), then retag
@@ -463,12 +507,12 @@
     function toggleFigure() {
         const existing = ancestor('figure');
         if (existing) {
-            const caption = existing.querySelector('figcaption');
+            const caption = existing.querySelector(':scope > figcaption');
             if (caption) caption.remove();
             existing.replaceWith(...existing.childNodes);
             return;
         }
-        const b = blockEl(); if (!b) return;
+        const b = freeBlock(); if (!b) return;
         const fig = document.createElement('figure');
         b.replaceWith(fig);
         fig.appendChild(b);
@@ -478,18 +522,28 @@
         caretIn(caption, 0);
     }
 
+    // One caption per figure: an existing one takes the caret instead
+    function setCaption() {
+        const fig = ancestor('figure'), b = blockEl(); if (!fig || !b) return;
+        const caption = fig.querySelector(':scope > figcaption');
+        if (caption && caption !== b && !caption.contains(b)) return caretIn(caption, caption.textContent.length);
+        if (b.parentElement === fig) setBlock('figcaption');
+    }
+
     function toggleDl() {
         const dl = ancestor('dl');
         if (dl) {
-            const b = blockEl(), off = b ? offsetIn(b) : 0;
+            const term = ancestor('dt, dd'), off = term ? offsetIn(term) : 0;
             let land = null;
-            [...dl.children].forEach(c => { const p = retagBlock(c, 'p'); if (c === b) land = p; });
+            [...dl.children].forEach(c => {
+                if ([...c.children].some(x => BLOCK.includes(x.tagName))) { if (c === term) land = c.firstElementChild; c.replaceWith(...c.childNodes); }
+                else { const p = retagBlock(c, 'p'); if (c === term) land = p; }
+            });
             dl.replaceWith(...dl.childNodes);
             if (land) caretIn(land, off);
             return;
         }
-        let b = blockEl(); if (!b) return;
-        if (b.tagName === 'LI') { liftItem(b); b = blockEl(); if (!b) return; }
+        const b = freeBlock(); if (!b) return;
         const list = document.createElement('dl'), dt = document.createElement('dt'), dd = document.createElement('dd');
         while (b.firstChild) dt.appendChild(b.firstChild);
         dd.appendChild(document.createElement('br'));
@@ -498,11 +552,13 @@
         caretIn(dd, 0);
     }
 
+    // Retags the term itself, never a block nested in one
     const setTerm = (tag) => () => {
-        const b = blockEl();
-        if (!b || b.tagName === 'DL' || !b.closest('dl') || b.tagName === tag.toUpperCase()) return;
-        retagKeep(b, tag);
+        const term = ancestor('dt, dd');
+        if (!term || term.tagName === tag.toUpperCase()) return;
+        retagKeep(term, tag);
     };
+    const termIs = (tag) => { const t = ancestor('dt, dd'); return !!t && t.tagName === tag; };
 
     /* ---- Lists, tables, indent ---- */
     const inList = () => !!ancestor('li');
@@ -963,8 +1019,7 @@
             caretIn(next.querySelector('li') || next, 0);
             return;
         }
-        let b = blockEl(); if (!b) return;
-        if (/^(DT|DD)$/.test(b.tagName)) b = liftItem(b);
+        const b = freeBlock(); if (!b) return;
         const off = offsetIn(b);
         const list = document.createElement(tag), item = document.createElement('li');
         while (b.firstChild) item.appendChild(b.firstChild);
@@ -977,8 +1032,7 @@
     function toggleItem() {
         const li = ancestor('li');
         if (li) return liftItem(li);
-        let b = blockEl(); if (!b) return;
-        if (/^(DT|DD)$/.test(b.tagName)) b = liftItem(b);
+        const b = freeBlock(); if (!b) return;
         const prev = b.previousElementSibling;
         if (!prev || !/^(UL|OL)$/.test(prev.tagName)) return toggleList('ul');
         const off = offsetIn(b), item = document.createElement('li');
@@ -1163,7 +1217,7 @@
     Object.entries(INLINE_TAGS).forEach(([tag, meta]) => {
         COMMANDS[tag] = {
             md: meta.md,
-            run: (v, area) => hasSelection() ? toggleInline(tag, null, attrsFor(tag, v)) : armPending(area, tag),
+            run: (v, area) => hasSelection() ? toggleInline(tag, null, attrsFor(tag, v)) : armPending(area, tag, attrsFor(tag, v)),
             active: (v, area) => selectionMarked(tag) || pendingHas(area, tag)
         };
     });
@@ -1175,7 +1229,7 @@
         unlink: { md: 1, run: () => { const a = ancestor('a'); if (a) a.replaceWith(...a.childNodes); }, active: () => false, enabled: () => !!ancestor('a') },
         br: { md: 1, run: () => insertHTML('<br>'), active: () => false },
         wbr: { run: () => insertVoid('wbr'), active: () => false },
-        img: { md: 1, run: (v) => insertImage(v), active: () => false },
+        img: { md: 1, args: 2, run: (v) => Array.isArray(v) ? insertImage(v[0], v[1]) : insertImage(v), active: () => false },
 
         ul: { md: 1, block: 1, run: () => toggleList('ul'), active: () => !!ancestor('ul') && !ancestor('ul').hasAttribute('data-checklist') },
         ol: { md: 1, block: 1, run: () => toggleList('ol'), active: () => !!ancestor('ol') },
@@ -1183,12 +1237,12 @@
         checklist: { md: 1, block: 1, run: toggleChecklist, active: () => !!ancestor('ul[data-checklist]') },
         hr: { md: 1, block: 1, run: () => insertHTML('<hr><p><br></p>'), active: () => false },
         figure: { block: 1, run: toggleFigure, active: () => !!ancestor('figure') },
-        figcaption: { block: 1, run: () => { const b = blockEl(); if (b && b.tagName !== 'FIGURE') setBlock('figcaption'); }, active: () => blockTag() === 'FIGCAPTION', enabled: () => !!ancestor('figure') },
+        figcaption: { block: 1, run: setCaption, active: () => !!ancestor('figcaption'), enabled: () => !!ancestor('figure') },
         dl: { block: 1, run: toggleDl, active: () => !!ancestor('dl') },
-        dt: { block: 1, run: setTerm('dt'), active: () => blockTag() === 'DT', enabled: () => !!ancestor('dl') },
-        dd: { block: 1, run: setTerm('dd'), active: () => blockTag() === 'DD', enabled: () => !!ancestor('dl') },
+        dt: { block: 1, run: setTerm('dt'), active: () => termIs('DT'), enabled: () => !!ancestor('dt, dd') },
+        dd: { block: 1, run: setTerm('dd'), active: () => termIs('DD'), enabled: () => !!ancestor('dt, dd') },
 
-        table: { block: 1, run: (v) => insertTable(v), active: () => false },
+        table: { block: 1, args: 2, run: (v) => insertTable(v), active: () => false },
         'row-before': { block: 1, run: () => addRow(-1), active: () => false, enabled: () => inTable() },
         'row-after': { block: 1, run: () => addRow(1), active: () => false, enabled: () => inTable() },
         'row-remove': { block: 1, run: removeRow, active: () => false, enabled: () => inTable() },
@@ -1230,11 +1284,11 @@
 
     /* ---- Pending marks ----
        An inline command at a collapsed caret arms the tag for the next typed text. */
-    function armPending(area, tag) {
+    function armPending(area, tag, attrs) {
         const r = range(); if (!r || !r.collapsed) return;
         const at = area._pending;
-        const tags = at && at.node === r.startContainer && at.offset === r.startOffset ? at.tags : new Set();
-        tags.has(tag) ? tags.delete(tag) : tags.add(tag);
+        const tags = at && at.node === r.startContainer && at.offset === r.startOffset ? at.tags : new Map();
+        tags.has(tag) ? tags.delete(tag) : tags.set(tag, attrs || null);
         area._pending = tags.size ? { tags, node: r.startContainer, offset: r.startOffset } : null;
     }
 
@@ -1252,10 +1306,9 @@
         span.setStart(node, start); span.setEnd(node, r.startOffset);
         span.deleteContents();
         let outer = null, inner = null;
-        at.tags.forEach(tag => {
+        at.tags.forEach((attrs, tag) => {
             const el = document.createElement(tag);
-            const meta = INLINE_TAGS[tag];
-            if (meta && meta.def) el.setAttribute(meta.attr, meta.def);
+            if (attrs) Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
             if (inner) inner.appendChild(el); else outer = el;
             inner = el;
         });
@@ -1543,7 +1596,7 @@
             caretIn(p, 0);
             return;
         }
-        const b = blockEl(); if (!b) return;
+        const b = blockEl(); if (!b || /^(TD|TH)$/.test(b.tagName)) return;
         const prev = b.previousElementSibling;
         if (!prev && /^(DT|DD)$/.test(b.tagName)) { liftItem(b); return; }
         if (!prev) { if (b.tagName !== 'P') retagBlock(b, 'p'); caretIn(blockEl() || b, 0); return; }
@@ -1565,6 +1618,8 @@
 
     function onEnter(area, autoformat) {
         let holder = ancestor('li') || blockEl() || ensureBlock(area);
+        // Paragraphs inside a cell, never siblings of it
+        if (/^(TD|TH)$/.test(holder.tagName)) holder = innerBlock(holder);
 
         // An empty last line leaves the code block (bounded to the area)
         const pre = holder.closest('pre');
@@ -1859,13 +1914,26 @@
         });
 
         // x-rich-text-menu: a popover shown over its area's selection
-        Alpine.directive('rich-text-menu', (el, _, { cleanup }) => selectionMenu(el, cleanup));
+        Alpine.directive('rich-text-menu', (el, _, { cleanup }) => { if (!el._rtMenu) selectionMenu(el, cleanup); });
 
         // $rich: the area this element sits in, else the one controls would resolve to
         Alpine.magic('rich', (el) => {
             const own = el.closest('[data-rich-text]');
             const a = own && areas.has(own) ? own : resolve(el);
             return a ? a._rt.api : idleApi();
+        });
+
+        adopt();
+    }
+
+    // Loaded after Alpine started: elements it already walked get their x-rich-text*
+    // attributes re-set, which Alpine handles as newly added directives
+    function adopt() {
+        document.querySelectorAll('*').forEach(el => {
+            if (!el._x_marker || el._rt || el._rtMenu || controls.has(el)) return;
+            [...el.attributes].forEach(a => {
+                if (a.name.startsWith('x-rich-text') && !a.name.startsWith('x-rich-text-for')) el.setAttribute(a.name, a.value);
+            });
         });
     }
 
@@ -1926,6 +1994,7 @@
 
     // popover="manual": an auto popover closes on the click that makes the selection
     function selectionMenu(el, cleanup) {
+        el._rtMenu = true;
         if (!el.hasAttribute('popover')) el.setAttribute('popover', 'manual');
         el.setAttribute('data-rich-text-menu', '');
         let shown = null, frame = 0;
@@ -1965,10 +2034,10 @@
     }
 
     function control(el, id, modifiers, expression, evaluate, cleanup) {
-        // `.h2`, `.align.center`: the next modifier is a static argument
+        if (controls.has(el)) return;
+        // `.align.center`, `.align.all.center`: the first other modifier after the command is its argument
         const all = modifiers.includes('all');
-        const next = modifiers[modifiers.indexOf(id) + 1];
-        const literal = next === 'all' ? undefined : next;
+        const literal = modifiers.slice(modifiers.indexOf(id) + 1).find(m => m !== 'all');
         const arg = () => literal !== undefined ? literal : (expression ? evaluate(expression) : undefined);
         el._rt = { id, arg, all };
         if (all) el.setAttribute('data-rich-text-all', '');
@@ -2027,6 +2096,7 @@
     }
 
     function areaDirective(el, modifiers, expression, { effect, evaluateLater, cleanup }) {
+        if (el._rt) return;
         const format = modifiers.includes('html') ? 'html' : modifiers.includes('plain') ? 'plain' : 'markdown';
         modifiers.filter(m => !MODES.has(m)).forEach(m => console.warn(`[Manifest Rich Text] unknown modifier: .${m}${suggest(m)}`));
 
@@ -2056,6 +2126,7 @@
         const ac = new AbortController();
         const on = (type, fn) => el.addEventListener(type, fn, { signal: ac.signal });
         const prior = ['contenteditable', 'role', 'aria-multiline'].map(n => [n, el.getAttribute(n)]);
+        const priorAll = Object.values(ALL_VARS).map(v => [v, el.style.getPropertyValue(v)]);
 
         el.setAttribute('data-rich-text', format);
         // Tells x-edit whether the value already has an owner
@@ -2067,7 +2138,7 @@
 
         const read = () => {
             if (format === 'plain') return single ? el.innerText.replace(/\s*\n\s*/g, ' ').trim() : el.innerText.replace(/\n{3,}/g, '\n\n').trim();
-            if (single) return format === 'html' ? sanitize(el.innerHTML, false, true).replace(/<br>/g, '') : inlineMarkdown(el);
+            if (single) return format === 'html' ? flattenLines(el.innerHTML, true) : inlineMarkdown(el);
             return format === 'html' ? sanitize(el.innerHTML, true, true) : toMarkdown(el);
         };
         const write = (v) => {
@@ -2080,8 +2151,22 @@
             ensureTrailingBlock(el);
         };
 
+        // Single-line insertion: clipboard or drop data flattened, at a range when given
+        const htmlText = (html) => { const t = document.createElement('template'); t.innerHTML = html || ''; return t.content.textContent; };
+        const flatClip = (html, text) => html ? flattenLines(flattenTables(html, false)) : sanitize(inlineHtml(flatText(text).trim()), false);
+        const multiline = (html, text) => {
+            if (!html) return /[\r\n]/.test(text || '');
+            const t = document.createElement('template'); t.innerHTML = html;
+            return !!t.content.querySelector(BLOCK_SEL + ',br,div');
+        };
+        const insertFlat = (html, at, text) => {
+            if (at) { const s = sel(); s.removeAllRanges(); s.addRange(at); }
+            if (format === 'plain') return insertPlain(el, flatText(text != null ? text : htmlText(html)).trim());
+            insertHTML(html);
+        };
+
         let writing = false;
-        const commit = () => { if (onChange) onChange(read()); };
+        const commit =() => { if (onChange) onChange(read()); };
         on('input', () => { if (!writing) commit(); });
 
         // Uncontrolled: the markup already there is the initial content
@@ -2099,6 +2184,13 @@
         // Empty flag for the placeholder; a wiped document restarts as a paragraph
         function settle() {
             if (single) {
+                // Backstop: whatever got a block or break in is flattened, caret kept
+                if (el.querySelector(BLOCK_SEL + ',br')) {
+                    const off = offsetIn(el), html = flattenLines(el.innerHTML, true);
+                    if (format === 'plain') { const t = document.createElement('template'); t.innerHTML = html; el.textContent = t.content.textContent; }
+                    else el.innerHTML = html;
+                    if (off != null && el.textContent.length) caretIn(el, off);
+                }
                 const empty = !el.textContent.trim() && !el.querySelector('img');
                 if (empty && el.firstChild && !el.textContent.length) el.replaceChildren();
                 el.toggleAttribute('data-rich-text-empty', empty);
@@ -2198,7 +2290,32 @@
                 return;
             }
             if (single && /^insert(Paragraph|LineBreak)$/.test(e.inputType || '')) { e.preventDefault(); enter(false); return; }
+            // Text carrying line breaks (autocorrect, IME, replacement) lands as one line
+            if (single && e.cancelable && /^insert(Text|ReplacementText|CompositionText)$/.test(e.inputType || '')) {
+                const d = e.data != null ? e.data : (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
+                if (/[\r\n]/.test(d)) {
+                    e.preventDefault();
+                    const tr = e.getTargetRanges ? e.getTargetRanges()[0] : null;
+                    let at = null;
+                    if (tr) { at = document.createRange(); at.setStart(tr.startContainer, tr.startOffset); at.setEnd(tr.endContainer, tr.endOffset); }
+                    insertFlat(escHtml(flatText(d).trim()), at, d);
+                    return;
+                }
+            }
             if (format === 'plain' && /^format/.test(e.inputType || '')) e.preventDefault();
+        });
+
+        // A multi-line drop is flattened at the drop point
+        on('drop', (e) => {
+            const dt = e.dataTransfer; if (!single || !dt) return;
+            const html = dt.getData('text/html'), text = dt.getData('text/plain');
+            if (!multiline(html, text)) return;
+            e.preventDefault();
+            const hit = caretAtPoint(e.clientX, e.clientY);
+            let at = null;
+            if (hit && el.contains(hit.node)) { at = document.createRange(); at.setStart(hit.node, hit.offset); at.collapse(true); }
+            el.focus();
+            insertFlat(flatClip(html, text), at, text || htmlText(html));
         });
 
         on('keydown', (e) => {
@@ -2266,8 +2383,8 @@
             const text = dt.getData('text/plain');
             if (format === 'plain') return insertPlain(el, single ? flatText(text).trim() : text);
             const html = dt.getData('text/html');
-            if (single) return insertHTML(html ? flattenLines(flattenTables(html, false)) : sanitize(inlineHtml(flatText(text).trim()), false));
-            insertHTML(html ? sanitize(format === 'markdown' ? flattenTables(html, true) : html, true)
+            if (single) return insertHTML(flatClip(html, text));
+            insertHTML(html ? (format === 'markdown' ? markdownBlocks(sanitize(flattenTables(html, true), true)) : sanitize(html, true))
                 : markdownHtml(text.replace(/([^\n])\n(?!\n)/g, '$1  \n')));
         });
 
@@ -2295,7 +2412,7 @@
             html: () => sanitize(el.innerHTML, !single, true)
         };
         // $rich.strong(), $rich.table(3, 2)
-        Object.keys(COMMANDS).forEach(id => { api[id] = (...args) => run(el, id, args.length > 1 ? args : args[0]); });
+        Object.keys(COMMANDS).forEach(id => { api[id] = (...args) => run(el, id, COMMANDS[id].args > 1 ? args : args[0]); });
 
         el._rt = { format, inline: single, api };
         areas.add(el);
@@ -2312,6 +2429,12 @@
             [...el.attributes].forEach(a => { if (a.name.startsWith('data-rich-text')) el.removeAttribute(a.name); });
             el.querySelectorAll('[data-rich-text-cell]').forEach(c => c.removeAttribute('data-rich-text-cell'));
             SELECTION_VARS.forEach(v => el.style.removeProperty(v));
+            priorAll.forEach(([v, was]) => { if (was) el.style.setProperty(v, was); else el.style.removeProperty(v); });
+            if (!areas.size) {
+                SELECTION_VARS.forEach(v => document.documentElement.style.removeProperty(v));
+                document.documentElement.removeAttribute('data-rich-text-selected');
+                if (document.documentElement.getAttribute('style') === '') document.documentElement.removeAttribute('style');
+            }
             if (el.getAttribute('style') === '') el.removeAttribute('style');
             ['_rt', '_history', '_range', '_pending', '_exit', '_selection'].forEach(k => { delete el[k]; });
             sync();

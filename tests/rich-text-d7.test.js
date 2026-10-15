@@ -254,10 +254,20 @@ describe('new block commands (html)', () => {
         const el = area('html', '<p>photo</p><p>after</p>', 1)
         api(el).run('figure')
         expect(el.querySelector('figure').innerHTML).toBe('<p>photo</p><figcaption><br></figcaption>')
+        el.querySelector('figcaption').remove()
         select(el.querySelector('figure p').firstChild, 1)
         expect(api(el).can('figcaption')).toBe(true)
         api(el).run('figcaption')
-        expect(el.querySelector('figure').innerHTML).toBe('<figcaption>photo</figcaption><figcaption><br></figcaption>')
+        expect(el.querySelector('figure').innerHTML).toBe('<figcaption>photo</figcaption>')
+    })
+
+    it('.figcaption never makes a second caption: the caret moves into the existing one', () => {
+        const el = area('html', '<figure><p>photo</p><figcaption>cap</figcaption></figure>')
+        select(el.querySelector('figure p').firstChild, 1)
+        api(el).run('figcaption')
+        expect(el.querySelectorAll('figcaption').length).toBe(1)
+        expect(el.querySelector('figure').innerHTML).toBe('<p>photo</p><figcaption>cap</figcaption>')
+        expect(el.querySelector('figcaption').contains(window.getSelection().getRangeAt(0).startContainer)).toBe(true)
     })
 
     it('.address retags the block', () => {
