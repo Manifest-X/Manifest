@@ -52,4 +52,15 @@ describe('router and editable text', () => {
         await wait(30)
         expect(location.pathname).toBe('/plain')
     })
+
+    it('a click an editor already handled (default prevented) is not routed', async () => {
+        history.replaceState(null, '', '/start')
+        const owner = (e) => { if (e.target.id === 'plain') e.preventDefault() }
+        window.addEventListener('click', owner, true)
+        try {
+            document.getElementById('plain').click()
+            await wait(30)
+            expect(location.pathname).toBe('/start')
+        } finally { window.removeEventListener('click', owner, true) }
+    })
 })

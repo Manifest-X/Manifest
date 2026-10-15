@@ -89,7 +89,7 @@
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { if (e._editPos) { e.style.removeProperty('position'); e._editPos = false; } });
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
         uneditIn(area);
-        [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; });
+        [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; e.removeAttribute('data-edit-piece-mode'); });
         area.querySelectorAll('[data-edit-piece]').forEach(unmarkPiece);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { e._sizeBound = false; });
         if (grabbed && area.contains(grabbed.item)) cancelGrab();
@@ -299,10 +299,8 @@
     // page stays and says so (edit:stale), so they can be published first.
     let ownWrites = null, inFlight = 0, held = [], resync = false, heldReload = null;
     const ours = (files) => !resync && !!ownWrites && Date.now() < ownWrites.until && files.length > 0 && files.every(f => f && ownWrites.files[f.rel] && ownWrites.files[f.rel] === f.hash);
-    // A reload is safe when every applied edit of a region on this page survives it (persisted), and
-    // no focused leaf holds typing not yet logged (a persisting one is committed first). Undone
-    // steps, and edits of regions not on this page, never hold it.
-    const onPage = (d) => [d.region, d.from, d.to].filter(r => r != null).every(r => !!areaByKey(r));
+    // A reload is safe when every applied edit survives it (persisted), and no focused leaf holds
+    // typing not yet logged (a persisting one is committed first). Undone steps never hold it.
     // Typing in a focused leaf, not yet logged (it is, on blur): committed now when `force` or its region persists
     function commitFocused(force) {
         const f = document.activeElement;
@@ -314,7 +312,8 @@
     }
     function reloadSafe() {
         if (!commitFocused(false)) return false;
-        return log.slice(0, cursor).every(d => d.kind === 'lock' || persisted.has(d) || !onPage(d));
+        // Unpersisted edits exist only for regions of this document (mounted or not): they hold it
+        return log.slice(0, cursor).every(d => d.kind === 'lock' || persisted.has(d));
     }
     // A held reload is taken as soon as nothing it would lose remains
     function takeHeldReload() { if (heldReload && reloadSafe()) { heldReload = null; location.reload(); } }

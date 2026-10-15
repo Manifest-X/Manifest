@@ -528,6 +528,7 @@ function installMpaStickyLocaleLinks() {
 function interceptLinkClicks() {
     // Use capture phase to intercept before other handlers
     document.addEventListener('click', (event) => {
+        if (event.defaultPrevented) return;             // an editor (or the page) owns this click
         const link = event.target.closest('a');
         if (!link) return;
 

@@ -2133,6 +2133,16 @@
     function listen() {
         if (listening) return;
         listening = true;
+        // A link clicked in a field is content: neither the router nor the browser follows it.
+        // A contenteditable=false island inside the field keeps its links. Window capture runs first.
+        window.addEventListener('click', (e) => {
+            const link = e.target && e.target.closest && e.target.closest('a[href]');
+            const field = link && link.closest('[data-rich-text]');
+            if (!field || !areas.has(field)) return;
+            const off = link.closest('[contenteditable="false"]');
+            if (off && field.contains(off)) return;
+            e.preventDefault();
+        }, true);
         // No inline computed styles; Enter makes <p>, not <div>
         try { document.execCommand('styleWithCSS', false, false); } catch { }
         try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { }
@@ -2530,7 +2540,8 @@
         // Links are content here, not navigation
         on('click', (e) => {
             const a = e.target && e.target.closest && e.target.closest('a');
-            if (a && el.contains(a)) e.preventDefault();
+            const island = a && a.closest('[contenteditable="false"]');
+            if (a && el.contains(a) && !(island && el.contains(island))) e.preventDefault();
         });
 
         on('focusin', () => { if (lastFocused && lastFocused !== el) release(lastFocused); lastFocused = el; el.setAttribute('data-rich-text-focused', ''); saveRange(el); sync(); });

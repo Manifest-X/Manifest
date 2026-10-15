@@ -721,6 +721,28 @@ describe('data rows that are themselves the field', () => {
     })
 })
 
+describe('links in active areas and fields are content', () => {
+    const click = (el) => { const e = new MouseEvent('click', { bubbles: true, cancelable: true }); el.dispatchEvent(e); return e.defaultPrevented }
+    it('a link click is never followed in an Edit area (a resting piece included) or a Rich Text field; islands keep theirs', async () => {
+        const root = await mount(`<div x-data><section x-edit="lk1"><p>See <a href="/a">the link</a> here</p><p>Two</p><div contenteditable="false"><a href="/b" id="isl">island</a></div></section>
+            <div x-rich-text.html id="f"><p>Go <a href="/c" id="l2">c</a></p><p contenteditable="false"><a href="/d" id="isl2">d</a></p></div><a href="/e" id="out">out</a></div>`)
+        await flush()
+        const p = root.querySelector('section p')
+        expect([p.hasAttribute('data-edit-piece'), !!p._editRt]).toEqual([true, true])
+        expect(click(root.querySelector('section a'))).toBe(true)
+        await enter(p); key(p, { key: 'Escape' }); await flush()
+        expect(p.getAttribute('contenteditable')).toBe('false')
+        expect(p.hasAttribute('data-edit-piece-mode')).toBe(true)
+        expect(click(root.querySelector('section a'))).toBe(true)                            // a resting piece: still content
+        expect(click(root.querySelector('#isl'))).toBe(false)                          // an authored island keeps its link
+        expect(click(root.querySelector('#l2'))).toBe(true)
+        expect(click(root.querySelector('#isl2'))).toBe(false)
+        expect(click(root.querySelector('#out'))).toBe(false)
+        p.blur(); await flush()
+        expect(p.hasAttribute('data-edit-piece-mode')).toBe(false)
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)

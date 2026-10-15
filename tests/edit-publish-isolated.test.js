@@ -139,16 +139,18 @@ describe('live reload around our own publishes', () => {
         store().stale = []
     })
 
-    it('undone steps, and edits of regions not on the page, never hold a reload back', async () => {
+    it('undone steps never hold a reload back; unpersisted edits do, even when their region is not mounted', async () => {
         const root = await mount(`<section x-edit="lr4"><p>One</p></section><section x-edit="lr5"><p>Two</p></section>`)
         editText(root.querySelector('[x-edit="lr4"] p'), 'Uno')
         await store().undo()
         expect(reloadEvent([{ rel: 'index.html', hash: 'ext1' }])).toBe(false)        // only an undone step: the reload goes
         await store().redo()
         expect(reloadEvent([{ rel: 'index.html', hash: 'ext2' }])).toBe(true)         // applied and unpersisted: held
-        root.querySelector('[x-edit="lr4"]').remove()                                 // its region leaves the page
+        root.querySelector('[x-edit="lr4"]').remove()                                 // its region leaves the page (x-if, a route)
         await flush()
-        expect(reloadEvent([{ rel: 'index.html', hash: 'ext3' }])).toBe(false)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        expect(reloadEvent([{ rel: 'index.html', hash: 'ext3' }])).toBe(true)          // still this document's unpublished edit: held
+        warn.mockRestore()
         expect(reload).not.toHaveBeenCalled()
         // Back on the page, published: nothing left pending
         await mount(`<section x-edit="lr4"><p>One</p></section>`)
@@ -419,5 +421,48 @@ describe('reloads, keyed regions and lasting conflicts', () => {
         expect(said).toMatch(/Copy typed text/)
         expect(log()).toEqual([])
         store().clearConflicts()
+    })
+
+    it('a swap that looks like two renames by position is a conflict, never a copy bound to the wrong element', async () => {
+        for (const dup of [false, true]) {
+            store().clearConflicts()
+            const region = dup ? 'sw2' : 'sw1'
+            const body = `<section x-edit.persist="${region}"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
+            writeFileSync(path.join(dir, 'index.html'), page(body))
+            let root = await mount(body)
+            const sec = root.querySelector('section'), P = (t) => [...sec.querySelectorAll('p')].find(p => p.textContent === t)
+            store().move(P('Gamma'), sec, P('Alpha'))
+            if (dup) { store().duplicate(P('Alpha')); await flush() }
+            const changed = body.replace('<p>Alpha</p><p>Beta</p>', '<p>Beta</p><p>Alpha changed</p>')
+            writeFileSync(path.join(dir, 'index.html'), page(changed))
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+            root = await reloadWith(changed)
+            warn.mockRestore()
+            expect([...root.querySelectorAll('p')].map(p => p.textContent)).toEqual(['Beta', 'Alpha changed', 'Gamma'])
+            const [c] = store().conflicts
+            expect(c).toMatchObject({ region, prop: 'structure', value: { changed: [{ was: 'P:Alpha', now: 'P:Beta' }, { was: 'P:Beta', now: 'P:Alpha changed' }], moved: ['P:Gamma'] } })
+            expect(c.value.copies.map(x => x.text)).toEqual(dup ? ['Alpha'] : [])
+            expect(log()).toEqual([])
+            expect((await store().publish()).results).toEqual([])
+            expect(regionSource()).toBe(changed)
+        }
+        store().clearConflicts()
+    })
+
+    it('an untyped copy of an element renamed in place follows its new source text, as the writer copies it', async () => {
+        const body = `<section x-edit.persist="cp1"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        let root = await mount(body)
+        const sec = root.querySelector('section'), P = (t) => [...sec.querySelectorAll('p')].find(p => p.textContent === t)
+        store().move(P('Gamma'), sec, P('Alpha'))
+        store().duplicate(P('Alpha')); await flush()
+        const changed = body.replace('<p>Alpha</p>', '<p>Alpha changed</p>')
+        writeFileSync(path.join(dir, 'index.html'), page(changed))
+        root = await reloadWith(changed)
+        expect([...root.querySelectorAll('p')].map(p => p.textContent)).toEqual(['Gamma', 'Alpha changed', 'Alpha changed', 'Beta'])
+        expect(store().conflicts).toEqual([])
+        const res = await store().publish()
+        expect(statuses(res), JSON.stringify(res)).toEqual(['written'])
+        expect(regionSource()).toBe(`<section x-edit.persist="cp1"><p>Gamma</p><p>Alpha changed</p><p>Alpha changed</p><p>Beta</p></section>`)
     })
 })

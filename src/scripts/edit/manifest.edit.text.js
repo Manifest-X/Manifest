@@ -7,6 +7,19 @@
             try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch { }
         });
     }
+    // A link clicked in an active area is content: neither the router nor the browser follows it,
+    // whatever the contenteditable state (a piece at rest is contenteditable=false). A
+    // contenteditable=false island that is not a resting piece keeps its links. Runs on window,
+    // capture, ahead of the router's document listener.
+    function onAreaLinkClick(e) {
+        const link = e.target && e.target.closest && e.target.closest('a[href]');
+        const area = link && regionOf(link);
+        if (!area || !isActive(area)) return;
+        const off = link.closest('[contenteditable="false"]');
+        if (off && area.contains(off) && !off.hasAttribute('data-edit-piece-mode')) return;
+        e.preventDefault();
+    }
+
     /* ---- Rich Text engine: every editable leaf is an inline Rich Text field ---- */
     const richLeaves = new Set();
     let rtMissing = false;
@@ -119,6 +132,7 @@
             if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (el._manifestComponent && el !== area) return;          // a component host: its markup is another file's
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
+            if (el.closest('[contenteditable="false"]:not([data-edit-piece-mode])')) return;   // an authored non-editable island
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
             bindLeaf(el, (v) => commitStaticNode(regionOf(el) || area, el, 'text', v ?? leafHTML(el)));   // live region: the element may have moved since arming
@@ -201,6 +215,7 @@
         if (!piece) return;
         if (piece.isContentEditable) {
             piece._pieceMode = true;
+            piece.setAttribute('data-edit-piece-mode', '');
             unedit(piece);                                              // a focused piece is not a text field
             piece.setAttribute('contenteditable', 'false');
             piece.addEventListener('focusout', () => exitPieceMode(piece), { once: true });
@@ -211,6 +226,7 @@
     function exitPieceMode(el, edit) {
         if (!el._pieceMode) return;
         el._pieceMode = false;
+        el.removeAttribute('data-edit-piece-mode');
         if (el.getAttribute('contenteditable') === 'false') { el.removeAttribute('contenteditable'); editable(el, el._editRtFormat || 'html'); }
         if (edit) { try { el.focus(); } catch { } selectAllIn(el); }
     }
