@@ -361,6 +361,8 @@ function installMpaStickyLocaleLinks() {
 
         const link = event.target.closest('a');
         if (!link || link.closest('[data-manifest-skip-locale-sticky]')) return;
+        const editable = link.closest('[contenteditable]');
+        if (link.isContentEditable || (editable && editable.getAttribute('contenteditable') !== 'false')) return;   // content in editable text
         if (link.hasAttribute('download')) return;
 
         const hrefAttr = link.getAttribute('href');
@@ -405,6 +407,11 @@ function interceptLinkClicks() {
     document.addEventListener('click', (event) => {
         const link = event.target.closest('a');
         if (!link) return;
+
+        // A link inside editable text (x-rich-text, x-edit page text) is content: the click
+        // places the caret, as the browser does natively, and never navigates
+        const host = link.closest('[contenteditable]');
+        if (link.isContentEditable || (host && host.getAttribute('contenteditable') !== 'false')) return;
 
         const href = link.getAttribute('href');
         if (!href || href.startsWith('mailto:') || href.startsWith('tel:')) return;
