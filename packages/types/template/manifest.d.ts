@@ -390,7 +390,9 @@ export interface ManifestEdit {
     stale: string[];
     /** Edits dropped because their element changed in the source before they were published
      *  (also an `edit:conflict` event on document, detail `{ conflicts }`). `element` is the
-     *  edited element's tag and opening text; `value` what the edit set. */
+     *  edited element's tag and opening text; `value` what the edit set. A region whose
+     *  restructured containers no longer hold what the edits started from loses all its
+     *  structural edits, reported once as `{ region, prop: 'structure', key: '' }`. */
     conflicts: Array<{ region: string; key: string; element: string; prop: string; value: unknown; before: unknown }>;
     /** Send every area's patches; on success the history is cleared (the source now holds it).
      *  `rebase: true` takes the current source as the base (writes over external changes). */

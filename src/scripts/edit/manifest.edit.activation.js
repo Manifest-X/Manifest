@@ -303,10 +303,17 @@
         publishing = next.catch(() => { });
         return next;
     }
+    // Once a rebase writes over HTML changed elsewhere, the page shows less than the file:
+    // its HTML hashes are not taken (a plain publish is stale until a reload), nor the
+    // fingerprints of keys with twins there (which may not be the elements this page shows).
+    let overNewer = false;
     function publishNow(opts) {
         const done = (r) => {
-            if (r && r.base && baseFiles) Object.assign(baseFiles, r.base);
-            if (r && r.ids && baseIds) baseIds = r.ids;
+            if (r && r.base && baseFiles) Object.entries(r.base).forEach(([f, h]) => { if (!overNewer || !/\.html?$/i.test(f)) baseFiles[f] = h; });
+            if (r && r.ids && baseIds) {
+                if (!overNewer) baseIds = r.ids;
+                else Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
+            }
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;
             if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
@@ -329,7 +336,11 @@
         const based = custom || (baseFiles && baseIds) ? Promise.resolve(null)
             : movedUnbased ? Promise.resolve('the source changed before this page could read its base from the dev server; reload to continue')
             : loadBase().then(() => baseFiles && baseIds ? null : 'the dev server\'s base (/__edit/base) could not be read, so nothing can be checked against the source; nothing was published');
-        return based.then(why => why ? refuse(why) : opts && opts.rebase ? loadBase(true).then(send) : send());
+        const rebaseSend = () => {
+            const was = Object.assign({}, baseFiles);
+            return loadBase(true).then(() => { if (Object.keys(baseFiles || {}).some(f => /\.html?$/i.test(f) && was[f] !== baseFiles[f])) overNewer = true; return send(); });
+        };
+        return based.then(why => why ? refuse(why) : opts && opts.rebase ? rebaseSend() : send());
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {

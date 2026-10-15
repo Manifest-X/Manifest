@@ -84,7 +84,7 @@ describe('live reload around our own publishes', () => {
         const p = root.querySelector('p')
         editText(p, 'Uno')
         let answer
-        window.fetch = vi.fn(() => new Promise(r => { answer = r }))
+        window.fetch = vi.fn((url) => String(url).includes('/__edit/base') ? Promise.resolve({ ok: true, json: async () => ({ files: { 'index.html': 'h0' }, ids: { 'index.html': {} } }) }) : new Promise(r => { answer = r }))
         const done = store().publish()
         await flush()
         expect(reloadEvent([{ rel: 'index.html', hash: 'h1' }])).toBe(true)          // in flight: held
@@ -109,7 +109,7 @@ describe('live reload around our own publishes', () => {
         const root = await mount(`<section x-edit="lr2"><p>One</p></section>`)
         editText(root.querySelector('p'), 'Uno')
         window.fetch = vi.fn(async (url) => String(url).includes('/__edit/base')
-            ? { ok: true, json: async () => ({ files: { 'index.html': 'b2' } }) }
+            ? { ok: true, json: async () => ({ files: { 'index.html': 'b2' }, ids: { 'index.html': {} } }) }
             : { json: async () => ({ results: [{ region: 'lr2', status: 'written', file: 'index.html' }], base: { 'index.html': 'h2' } }) })
         await store().publish({ rebase: true })
         await flush()
@@ -247,5 +247,32 @@ describe('edits whose element changed in the source', () => {
         expect(JSON.stringify(store().patches())).not.toMatch(/Beta edited|@cf@P:Beta/)
         store().onPublish = () => ({ results: [{ region: 'cf', status: 'written' }] })
         await store().publish()
+    })
+
+    it('a reorder naming an element that changed is dropped with it: nothing is left that the writer must refuse', async () => {
+        const body = `<section x-edit.persist="cf2"><p>Alpha</p><p>Beta text</p><p>Gamma</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        const root = await mount(body)
+        const [, beta] = root.querySelectorAll('p')
+        beta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }))
+        await flush()
+        expect(log().map(d => d.kind)).toEqual(['st-order'])
+        // An external change rewrites the moved paragraph, then the page reloads
+        const changed = body.replace('Beta text', 'Beta external')
+        writeFileSync(path.join(dir, 'index.html'), page(changed))
+        document.body.innerHTML = ''
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        new Function(EDIT_SRC)()
+        await flush()
+        const fresh = await mount(changed)
+        await new Promise(r => setTimeout(r, 600))
+        warn.mockRestore()
+        expect(store().conflicts).toEqual([{ region: 'cf2', key: '', element: '', prop: 'structure', value: null, before: null }])
+        expect(log()).toEqual([])
+        expect([...fresh.querySelectorAll('p')].map(p => p.textContent)).toEqual(['Alpha', 'Beta external', 'Gamma'])
+        store().onPublish = (patches) => post(patches)
+        const res = await store().publish()
+        expect(res.results).toEqual([])
+        expect(regionSource()).toBe(changed)
     })
 })

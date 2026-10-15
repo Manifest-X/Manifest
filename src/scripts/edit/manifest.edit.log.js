@@ -196,12 +196,28 @@
     // a warning) and dropped from the log. Checked against a freshly rendered source only.
     function surfaceConflicts(fresh) {
         const live = keyMap(staticAreas()), lost = [], regions = new Set(fresh.map(key));
-        const gone = (d) => d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && regions.has(d.region) && classify(areaByKey(d.region)) === 'static' && !live.has(d.path);
-        log.forEach((d, i) => { if (gone(d) && i < cursor) lost.push(d); });
+        const isStatic = (r) => regions.has(r) && !!areaByKey(r) && classify(areaByKey(r)) === 'static';
+        // Structure: a container the log restructured must still hold what the log started
+        // from; if not, every structural edit of that region goes (the writer refuses them).
+        const first = new Map(), broken = new Set();
+        const note = (region, parent, before) => { const k = JSON.stringify([region, parent]); if (!first.has(k) && isStatic(region)) first.set(k, [region, parent, before || []]); };
+        log.forEach(d => {
+            if (d.kind === 'st-order' || d.kind === 'st-children') note(d.region, d.parent, d.before);
+            if (d.kind === 'st-move') { note(d.from, d.fromParent, d.fromBefore); note(d.to, d.toParent, d.toBefore); }
+        });
+        first.forEach(([region, parent, before]) => {
+            const c = parent === '' ? areaByKey(region) : live.get(parent);
+            if (!c || staticKeys(c).join('\n') !== before.join('\n')) broken.add(region);
+        });
+        const structural = (d) => ((d.kind === 'st-order' || d.kind === 'st-children') && broken.has(d.region)) || (d.kind === 'st-move' && (broken.has(d.from) || broken.has(d.to)))
+            || (d.kind === 'st-node' && broken.has(d.region) && typeof d.path === 'string' && d.path[0] === '~');
+        const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && !live.has(d.path)) || structural(d);
+        log.forEach((d, i) => { if (gone(d) && i < cursor && d.kind === 'st-node' && d.path[0] === '@') lost.push(d); });
         if (!log.some(gone)) return [];
         const latest = new Map();
         lost.forEach(d => latest.set(d.path + '|' + d.prop, d));
         const found = [...latest.values()].map(d => ({ region: d.region, key: d.path, element: d.path.slice(d.path.indexOf('@', 1) + 1), prop: d.prop, value: d.value, before: d.before }));
+        broken.forEach(region => found.push({ region, key: '', element: '', prop: 'structure', value: null, before: null }));
         let c = 0;
         log = log.filter((d, i) => { const keep = !gone(d); if (keep && i < cursor) c++; return keep; });
         cursor = c; ver++;

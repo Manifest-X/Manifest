@@ -88,16 +88,21 @@ describe('fingerprints from the page', () => {
         await sleep(300)
     })
 
-    it('a unique element still merges; two publishes without a reload both write', async () => {
+    it('a unique element still merges; after that rebase, only a rebase publish writes until a reload', async () => {
         setSrc(src().replace('<p>Alpha</p>\n  <p>Beta</p>', '<p>Beta</p>\n  <p>Alpha</p>'))
         editText(section('un').querySelectorAll('p')[2], 'Gamma page')
         await flush()
         const r1 = await store().publish({ rebase: true })
         expect(r1.results.map(x => x.status)).toEqual(['written'])
+        // The page still shows Alpha first: a plain publish is stale until it reloads; a
+        // rebase one is checked against what it shows, and writes.
         editText(section('un').querySelectorAll('p')[2], 'Gamma again')
         await flush()
         const r2 = await store().publish()
-        expect(r2.results.map(x => x.status)).toEqual(['written'])
+        expect(r2.results.map(x => x.status)).toEqual(['error'])
+        expect(r2.stale).toEqual(['index.html'])
+        const r3 = await store().publish({ rebase: true })
+        expect(r3.results.map(x => x.status)).toEqual(['written'])
         expect(src()).toContain('<p>Beta</p>\n  <p>Alpha</p>\n  <p>Gamma again</p>')
     })
 
