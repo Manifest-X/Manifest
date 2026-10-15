@@ -328,6 +328,29 @@ describe('publish round trips', () => {
         expect(r.src).toBe(`<section x-edit="k5"><p>${shown}</p></section>`)
     })
 
+    it('comments inside text are kept through a text edit; one that cannot be kept leaves the element granular', async () => {
+        const body = `<section x-edit="k6"><p>Hello <!-- note --><em>world</em></p><p>Plain <!--x--> text</p><p>Bad <!-- a -- b --><em>it</em></p></section>`
+        const r = await roundTrip(body, async (root) => {
+            const [p1, p2, p3] = root.querySelectorAll('p')
+            expect(p1._editRt).toBeTruthy()
+            expect(p3._editRt).toBeFalsy()
+            expect(p3.querySelector('em')._editRt).toBeTruthy()
+            editText(p1, p1.innerHTML.replace('world', 'there') + '<br>')
+            editText(p2, p2.innerHTML.replace('text', 'words'))
+            editText(p3.querySelector('em'), 'ok')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<section x-edit="k6"><p>Hello <!-- note --><em>there</em></p><p>Plain <!--x--> words</p><p>Bad <!-- a -- b --><em>ok</em></p></section>`)
+    })
+
+    it('the writer keeps only comments that cannot close early', async () => {
+        const body = `<section x-edit="k7"><p>One</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        const res = await post([{ kind: 'static-tree', region: 'k7', tree: { key: '', children: [{ key: '@k7@P:One', at: '0', edits: { text: 'A <!-- ok --> <!-- bad --!><img src=x onerror=alert(1)> --> <!--->x-->B' } }] } }])
+        expect(res.results.map(r => r.status)).toEqual(['written'])
+        expect(regionSource()).toBe('<section x-edit="k7"><p>A <!-- ok -->  B</p></section>')
+    })
+
     it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
         const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
         const r = await roundTrip(body, async (root) => {

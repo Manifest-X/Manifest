@@ -116,21 +116,37 @@
     const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
     // Leaf text: Rich Text's allowlist; no interactive element inside another (or inside an
     // interactive leaf), no empty link; a trailing <br> shows nothing, so none is kept.
+    // Comments the writer keeps verbatim: nothing that could close one early or open another.
+    const keptComment = (d) => !/^-?>|--|<!-|-$/.test(d);
+    const commentsIn = (root) => { const w = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT), out = []; for (let n = w.nextNode(); n; n = w.nextNode()) out.push(n); return out; };
+    // A leaf's text delta keeps its comments, unless one cannot be kept: then it stays granular.
+    const commentsKept = (el) => commentsIn(el).every(c => keptComment(c.data));
     const attrKept = (n, a) => !attrRefusal(a.name, a.value, n.tagName) && !(a.name === 'style' && /expression|url\s*\(|javascript:|@import/i.test(a.value));
     // The end of the text, along the last-descendant chain: <br>s, blank text and the inline elements they leave empty go.
+    // Comments are kept and passed over.
     function trimTail(root) {
+        const last = (p) => { let n = p.lastChild; while (n && n.nodeType === 8) n = n.previousSibling; return n; };
         for (let guard = 0; guard < 1000; guard++) {
-            let n = root.lastChild;
-            while (n && n.nodeType === 1 && n.tagName !== 'BR' && n.lastChild) n = n.lastChild;
+            let n = last(root);
+            while (n && n.nodeType === 1 && n.tagName !== 'BR' && last(n)) n = last(n);
             if (!n || n === root) return;
-            const gone = n.nodeType === 3 ? !n.nodeValue.trim() : n.nodeType === 8 || n.tagName === 'BR' || (!n.firstChild && !/^(IMG|WBR)$/.test(n.tagName));
+            const gone = n.nodeType === 3 ? !n.nodeValue.trim() : n.tagName === 'BR' || (!last(n) && !/^(IMG|WBR)$/.test(n.tagName));
             if (!gone) return;
             n.remove();
         }
     }
     function leafClean(html, host) {
         const t = document.createElement('template');
-        t.innerHTML = inlineClean(html);
+        // Authored comments ride through the sanitizer as placeholders
+        t.innerHTML = String(html == null ? '' : html);
+        const kept = [];
+        commentsIn(t.content).forEach(c => { if (keptComment(c.data)) { c.replaceWith('\uE000' + kept.length + '\uE001'); kept.push(c.data); } else c.remove(); });
+        t.innerHTML = inlineClean(t.innerHTML);
+        if (kept.length) {
+            const w = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT), texts = [];
+            for (let n = w.nextNode(); n; n = w.nextNode()) if (n.nodeValue.includes('\uE000')) texts.push(n);
+            texts.forEach(n => n.replaceWith(...n.nodeValue.split(/(\uE000\d+\uE001)/).filter(Boolean).map(p => /^\uE000\d+\uE001$/.test(p) ? document.createComment(kept[+p.slice(1, -1)]) : document.createTextNode(p))));
+        }
         trimTail(t.content);
         // The source writer's attribute rules, so what is shown is what publishes
         t.content.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (!attrKept(n, a)) n.removeAttribute(a.name); }));
@@ -261,9 +277,10 @@
     // Rich Text's inline sanitizer keeps unchanged (Edit's own attributes aside); <br> included.
     const LEAF_TAGS = new Set([...TEXT_TAGS, 'LI', 'TD', 'TH']);
     function plainFormatted(el) {
-        if (!window.ManifestRichText) return false;
+        if (!window.ManifestRichText || !commentsKept(el)) return false;
         const c = el.cloneNode(true);
         c.querySelectorAll('[data-edit-handle], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
+        commentsIn(c).forEach(n => n.remove());
         if (!c.children.length) return true;
         c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
         return inlineClean(c.innerHTML) === c.innerHTML && [...c.querySelectorAll('*')].every(n => [...n.attributes].every(a => attrKept(n, a)));
