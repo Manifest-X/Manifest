@@ -1,7 +1,8 @@
 /* Manifest Edit */
 
 (function () {
-    const LS_KEY = 'mnfst-edit-log:' + location.pathname;
+    const lsKey = (path) => 'mnfst-edit-log:' + (path || location.pathname);
+    let lsPath = location.pathname;
     const SCHEMA = 8;
     const HISTORY_CAP = 400;
     const ALL_CAPS = ['text', 'move', 'size', 'data'];
@@ -16,8 +17,14 @@
     const persisted = new WeakSet();
 
     // Text an element holds in source: Alpine-rendered and generated content is left out.
+    // Plugin-rendered hosts: their children are produced at runtime, not authored.
+    const RENDERED = ['x-html', 'x-text', 'x-markdown', 'x-icon', 'x-svg', 'x-code', 'x-code-group', 'x-chart', 'x-anchors', 'x-carousel', 'x-color', 'x-colorpicker', 'x-combobox', 'x-date', 'x-defer', 'x-virtual', 'x-import', 'x-files', 'x-data-files'];
+    const isRendered = (el) => [...el.attributes].some(a => { const n = a.name.toLowerCase(); return RENDERED.some(r => n === r || n.startsWith(r + '.')); });
+    // Elements whose content is not markup: never text-edited.
+    const RAW_EDIT = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'TITLE', 'NOSCRIPT', 'TEMPLATE', 'XMP', 'IFRAME', 'NOEMBED', 'NOFRAMES']);
+    const listTpl = (area) => [...area.children].find(c => c.tagName === 'TEMPLATE' && c.hasAttribute('x-for')) || null;
     function sourceText(el) {
-        if (el.hasAttribute('x-text') || el.hasAttribute('x-html')) return '';
+        if (isRendered(el)) return '';
         let t = '';
         for (const n of el.childNodes) {
             if (n.nodeType === 3) t += n.textContent;
@@ -37,7 +44,8 @@
         for (let t = el.previousElementSibling; t; t = t.previousElementSibling) {
             if (t.tagName !== 'TEMPLATE') continue;
             if (t._x_currentIfEl === el) return true;
-            if (t._x_lookup && Object.values(t._x_lookup).includes(el)) return true;
+            const l = t._x_lookup;
+            if (l && (l instanceof Map ? [...l.values()] : Object.values(l)).includes(el)) return true;
         }
         return false;
     }
@@ -53,17 +61,18 @@
     }
     const loadState = () => {
         try {
-            const s = JSON.parse(localStorage.getItem(LS_KEY));
+            lsPath = location.pathname;
+            const s = JSON.parse(localStorage.getItem(lsKey(lsPath)));
             if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; log.forEach(d => persisted.add(d)); }
-            else if (s) localStorage.removeItem(LS_KEY);
+            else if (s) localStorage.removeItem(lsKey(lsPath));
         } catch { }
     };
-    const saveState = () => {
+    const saveState = (path = location.pathname) => {
         if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); }
         const done = log.slice(0, cursor).filter(d => persisted.has(d)), ahead = log.slice(cursor).filter(d => persisted.has(d));
         try {
-            if (!done.length && !ahead.length) localStorage.removeItem(LS_KEY);
-            else localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
+            if (!done.length && !ahead.length) localStorage.removeItem(lsKey(path));
+            else localStorage.setItem(lsKey(path), JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
         } catch { }
     };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -122,17 +131,20 @@
         if (e[0] === '#') { const c = /^#x/i.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return c >= 0 && c < 0x110000 ? String.fromCodePoint(c) : m; }
         const v = NAMED[e.toLowerCase()]; return v === undefined ? m : v;
     });
+    const LOADS = { script: ['src', 'type'], iframe: ['src', 'srcdoc'], embed: ['src', 'srcdoc'], object: ['src', 'srcdoc', 'data'], frame: ['src', 'srcdoc'], link: ['href', 'rel'], base: ['href', 'rel'], meta: ['http-equiv', 'content'] };
     const SVG_ANIM = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
     const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp|avif)[;,]/;
     function attrRefusal(name, value, tag) {
         const n = String(name || '').trim().toLowerCase(), t = String(tag || '').toLowerCase();
         if (!n || !/^[a-z_][\w:.-]*$/i.test(n)) return /^[@:]/.test(n) ? 'Alpine directive' : 'invalid name';
         if (n === 'text') return 'reserved name';
+        if (n === 'action' || n === 'formaction') return 'form target';
         if (n.startsWith('on')) return 'event handler attribute';
         if (n.startsWith('x-')) return 'Alpine directive';
         if (n.startsWith('data-edit-')) return 'plugin attribute';
         if (n === 'srcdoc') return 'inline document';
         if (SVG_ANIM.has(t) && ['attributename', 'to', 'values', 'from', 'by'].includes(n)) return 'SVG animation target';
+        if (LOADS[t] && LOADS[t].includes(n)) return 'loads or runs content';
         if (value == null) return null;
         for (const raw of [String(value), decodeEntities(value)]) {
             const v = raw.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase();
@@ -184,11 +196,11 @@
 
     /* ---- Regime classification ---- */
     function classify(area) {
-        if (area.querySelector('template[x-for]')) return 'data';
+        if (listTpl(area)) return 'data';
         if (area.matches('[data-component]') || area.querySelector('[data-component]')) return 'component';
         return 'static';
     }
-    function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
+    function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');
     const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
@@ -197,7 +209,7 @@
     function itemKey(el, area) {
         const explicit = el.getAttribute('data-key');
         if (explicit != null) return explicit;
-        const tpl = area.querySelector('template[x-for]'), expr = tpl && tpl._x_keyExpression;
+        const tpl = listTpl(area), expr = tpl && tpl._x_keyExpression;
         if (expr) { try { const v = window.Alpine.evaluate(el, expr); if (v != null) return String(v); } catch { } }
         if (!_keyWarned) { _keyWarned = true; console.warn('[edit] data area rows have no identity — add :key to the x-for or :data-key to the row, or the order cannot be stored'); }
         return null;
@@ -205,7 +217,7 @@
 
     /* ---- Structure: text elements are pieces, never containers ---- */
     const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
-    const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE']);
+    const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TITLE', 'XMP']);
     const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
     const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-text-edit') || ownText(el);
     function isContainer(el) {

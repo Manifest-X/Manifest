@@ -28,7 +28,7 @@
         if (isActive(area)) armArea(area);
     }
     function applyDataOrder(area, order) {
-        const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]');
+        const expr = dataSourceExpr(area), tpl = listTpl(area);
         try {
             const arr = window.Alpine.evaluate(tpl, expr); if (!Array.isArray(arr)) return;
             const byKey = new Map(arr.map(it => [String(it.id), it]));
@@ -139,7 +139,7 @@
     }
     function applySplice(d, undo) {
         const area = areaByKey(d.region); if (!area) return;
-        const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
+        const tpl = listTpl(area), expr = dataSourceExpr(area);
         if (!tpl || !expr) return;
         let arr; try { arr = window.Alpine.evaluate(tpl, expr); } catch { return; }
         if (!Array.isArray(arr)) return;
@@ -246,7 +246,8 @@
     // `opts.coalesce` folds a quick follow-up change to the same prop into the last delta.
     function commitStaticNode(area, el, prop, value, opts = {}) {
         const region = key(area), path = el.getAttribute('data-edit-key');
-        if (!path) return false;
+        if (!path || path[0] === '!') return false;
+        if (prop === 'text' && RAW_EDIT.has(el.tagName)) return false;
         if (prop === 'text') value = sanitizeFor(el, value);
         let before = opts.before;
         if (before === undefined) {
@@ -278,7 +279,7 @@
         areas().forEach(area => {
             if (classify(area) !== 'data') return;
             const source = dataSourceName(area), recs = st[source]; if (!recs) return;
-            const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
+            const tpl = listTpl(area), expr = dataSourceExpr(area);
             try { const arr = window.Alpine.evaluate(tpl, expr); if (Array.isArray(arr)) Object.entries(recs).forEach(([id, fields]) => { const rec = arr.find(r => String(r.id) === String(id)); if (rec) Object.entries(fields).forEach(([f, v]) => { if (rec[f] !== v) rec[f] = v; }); }); } catch { }
             if (isActive(area)) setTimeout(() => armDataValues(area), 0);
         });
@@ -335,12 +336,13 @@
         lockVer = ver;
         return lockMap;
     }
+    const lockStateNow = () => lockState();
     function identity(el, area) {
         const kind = classify(area);
         if (kind === 'static') return el.getAttribute('data-edit-key');
         if (el === area) return '';
         if (kind === 'component') return el._editPath != null ? 'path:' + el._editPath : null;
-        const list = area.querySelector('template[x-for]');
+        const list = listTpl(area);
         if (list && el.parentElement === list.parentElement) { const k = itemKey(el, area); return k == null ? null : 'row:' + k; }
         return null;
     }

@@ -53,6 +53,7 @@
         themeTouched.clear();
     }
     function commitTheme(scope, v, value, persist) {
+        if (!/^--[\w-]+$/.test(v || '')) { console.warn('[edit] x-edit.cssvar needs a custom property name (--name):', v); return; }
         const kk = tkey(scope, v); themeTouched.add(kk);
         themeTargetEl(scope).style.setProperty(v, value);
         const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe

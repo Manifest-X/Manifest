@@ -198,4 +198,64 @@ describe('publish round trips', () => {
         expect(res.results.map(x => x.status)).toEqual(['error', 'error'])
         expect(regionSource()).toBe(body)
     })
+
+    it('edits inside text elements publish: link text, an href in a paragraph, code in a list item', async () => {
+        const r = await roundTrip(`<section x-edit="t1"><p>Read <a href="/a">the guide</a> now.</p><ul><li>Run <code>npm i</code></li></ul></section>`, async (root) => {
+            const a = root.querySelector('a'), code = root.querySelector('code')
+            editText(a, 'the docs')
+            store().attr('href', '/docs', a)
+            editText(code, 'npm install')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<section x-edit="t1"><p>Read <a href="/docs">the docs</a> now.</p><ul><li>Run <code>npm install</code></li></ul></section>`)
+    })
+
+    it('plugin-rendered content is not source: not editable, not keyed, never blocks a publish', async () => {
+        const r = await roundTrip(`<section x-edit="t2"><div x-data="{ h: '<p>Rendered</p>' }" x-html="h"><p>Fallback</p></div><p>Static</p></section>`, async (root) => {
+            const rendered = root.querySelector('[x-html] p')
+            expect(rendered.hasAttribute('contenteditable')).toBe(false)
+            expect(rendered.hasAttribute('data-edit-key')).toBe(false)
+            editText(root.querySelector('section > p'), 'Static edited')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<section x-edit="t2"><div x-data="{ h: '<p>Rendered</p>' }" x-html="h"><p>Fallback</p></div><p>Static edited</p></section>`)
+    })
+
+    it('an area with a nested x-for list is static: its own text publishes; list rows and x-if output are not editable', async () => {
+        const body = `<section x-edit="t3" x-data="{ on: true, rows: [{ id: 1, t: 'R1' }] }"><template x-if="on"><p>Gen</p></template><p>Static A</p><ul><template x-for="r in rows" :key="r.id"><li x-text="r.t"></li></template><li>Static li</li></ul></section>`
+        const r = await roundTrip(body, async (root) => {
+            await flush()
+            const gen = [...root.querySelectorAll('p')].find(p => p.textContent === 'Gen')
+            const row = [...root.querySelectorAll('li')].find(l => l.textContent === 'R1')
+            expect(gen.hasAttribute('contenteditable')).toBe(false)
+            expect(row.hasAttribute('contenteditable')).toBe(false)
+            const li = [...root.querySelectorAll('li')].find(l => l.textContent === 'Static li')
+            expect(li.getAttribute('contenteditable')).toBe('true')
+            editText(li, 'Static li edited')
+            editText([...root.querySelectorAll('p')].find(p => p.textContent === 'Static A'), 'Static A edited')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(body.replace('Static li<', 'Static li edited<').replace('Static A<', 'Static A edited<'))
+    })
+
+    it('entity text keys match the server', async () => {
+        const r = await roundTrip(`<section x-edit="t4"><p>Caf&eacute; &mdash; one</p><p>Two</p></section>`, async (root) => {
+            editText(root.querySelector('p'), 'Edited')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<section x-edit="t4"><p>Edited</p><p>Two</p></section>`)
+    })
+
+    it('runtime locks survive a publish, by element', async () => {
+        const r = await roundTrip(`<section x-edit.persist="t5"><p>One</p><p>Two</p></section>`, async (root) => {
+            const one = root.querySelector('p')
+            store().lock(one, 'move')
+            editText(one, 'Uno')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        // roundTrip remounted from the written source; the lock was re-addressed to the new identity
+        const live = store().export().log.filter(d => d.kind === 'lock')
+        expect(live).toEqual([expect.objectContaining({ key: '@t5@P:Uno', actions: ['move'], value: true })])
+    })
 })
+

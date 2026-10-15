@@ -22,7 +22,7 @@
         if (log.some(d => d.kind === 'lock')) areas().forEach(rearm);
         refresh();
     }
-    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch { } if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
+    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = listTpl(area); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch { } if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
         Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
@@ -64,6 +64,8 @@
         document.addEventListener('keydown', onHistoryKey);
         document.addEventListener('contextmenu', onContextCapture, true);
         document.addEventListener('dropdown:context', onContextCapture, true);
+        // SPA navigation: the state so far is saved under the page it was made on.
+        window.addEventListener('manifest:route-change', () => { if (lsPath !== location.pathname) { saveState(lsPath); lsPath = location.pathname; } });
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

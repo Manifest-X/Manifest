@@ -13,7 +13,7 @@
         if (!area || node === area) return null;
         const kind = classify(area);
         if (kind === 'data') {
-            const tpl = area.querySelector('template[x-for]'), list = tpl && tpl.parentElement;
+            const tpl = listTpl(area), list = tpl && tpl.parentElement;
             for (let n = node; n && n !== area; n = n.parentElement) if (n.parentElement === list) return n;
             return null;
         }
@@ -56,7 +56,7 @@
 
     /* ---- Data regime: the array is the truth ---- */
     function dataOps(area) {
-        const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
+        const tpl = listTpl(area), expr = dataSourceExpr(area);
         if (!tpl || !expr) return null;
         try { const arr = window.Alpine.evaluate(tpl, expr); return Array.isArray(arr) ? arr : null; } catch { return null; }
     }
@@ -75,6 +75,8 @@
 
     /* ---- can() ---- */
     const ACTIONS = ['move', 'remove', 'duplicate', 'text', 'attrs', 'class', 'size', 'copy', 'cut', 'paste'];
+    // Static areas take only static pieces (they carry source identity); a list takes any.
+    const pasteFits = (area) => !!area && !!clipboard && (classify(area) !== 'static' || clipboard.kind === 'static');
     function pasteDest(el) {
         const block = el ? asPiece(el) : null;
         if (block) return accepts(block.parentElement) ? block.parentElement : null;
@@ -83,7 +85,7 @@
     }
     function canDo(action, el) {
         if (!ACTIONS.includes(action)) return false;
-        if (action === 'paste') return !!clipboard && !!pasteDest(el);
+        if (action === 'paste') { const d = clipboard && pasteDest(el); return !!d && pasteFits(regionOf(d)); }
         if (!el || el.nodeType !== 1) return false;
         const area = regionOf(el);
         if (!area || !isActive(area)) return false;
@@ -111,7 +113,7 @@
     function copyBlock(el) {
         const block = asPiece(el === undefined ? target : el); if (!block) return false;
         const area = blockArea(block); if (!area) return false;
-        clipboard = { html: blockHTML(block, true), ops: subtreeOps(block), source: key(area) };
+        clipboard = { html: blockHTML(block, true), ops: subtreeOps(block), source: key(area), kind: classify(area) };
         bump();
         return true;
     }
@@ -127,7 +129,7 @@
         const id = mint(), copies = {};
         [made, ...made.querySelectorAll('[data-edit-key]')].forEach(n => {
             const k = n.getAttribute('data-edit-key');
-            if (k[0] === '!') { n.setAttribute('data-edit-key', '!' + mint()); return; }
+            if (!k || k[0] === '!') { n.setAttribute('data-edit-key', '!' + mint()); return; }
             const ck = '~' + id + '~' + originOf(k);
             n.setAttribute('data-edit-key', ck);
             if (ops && ops[k]) copies[ck] = Object.assign({}, ops[k]);
@@ -213,6 +215,7 @@
         const container = pasteDest(el === undefined ? target : el); if (!container) return false;
         const block = asPiece(el === undefined ? target : el);
         const area = regionOf(container);
+        if (!pasteFits(area)) return false;
         if (classify(area) === 'data') {
             const arr = dataOps(area); if (!arr) return false;
             const at = block ? recordIndex(area, block) + 1 : arr.length;

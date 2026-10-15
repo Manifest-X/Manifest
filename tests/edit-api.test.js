@@ -459,6 +459,56 @@ describe('identity', () => {
     })
 })
 
+describe('source safety and scope', () => {
+    it('script-loading attributes are refused; raw-text elements are never contenteditable', async () => {
+        const root = await mount(`<section x-edit="${id('ld')}"><p>One</p><script type="text/plain">x</script><style>a{}</style><iframe src="/a"></iframe><link href="/a.css"><meta content="x"><form>f</form></section>`)
+        const $ = (s) => root.querySelector(s)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        expect([
+            store().attr('src', 'https://x.example/a.js', $('script')), store().attr('type', 'module', $('script')),
+            store().attr('src', 'https://x.example/', $('iframe')), store().attr('href', '/b.css', $('link')), store().attr('rel', 'import', $('link')),
+            store().attr('http-equiv', 'refresh', $('meta')), store().attr('action', '/x', $('form')), store().attr('formaction', '/x', $('p'))
+        ]).toEqual([false, false, false, false, false, false, false, false])
+        warn.mockRestore()
+        expect($('script').hasAttribute('contenteditable')).toBe(false)
+        expect($('style').hasAttribute('contenteditable')).toBe(false)
+        expect(store().can('text', $('script'))).toBe(false)
+    })
+
+    it('a cssvar control without a --name logs nothing (so it can never block a publish)', async () => {
+        const root = await mount(`<input x-edit.cssvar="badname" value="3">`)
+        const at = store().export().log.length
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        root.querySelector('input').dispatchEvent(new Event('change'))
+        warn.mockRestore()
+        expect(store().export().log.length).toBe(at)
+    })
+
+    it('a piece copied from a list cannot be pasted into a static area', async () => {
+        const root = await mount(`<div x-data="{ rows: [{ id: 'a', t: 'A' }] }"><ul x-edit="${id('dl')}"><template x-for="r in rows" :key="r.id"><li x-text="r.t"></li></template></ul><section x-edit="${id('st')}"><p>One</p></section></div>`)
+        await flush()
+        expect(store().copy(root.querySelector('li'))).toBe(true)
+        const p = root.querySelector('section p')
+        expect(store().can('paste', p)).toBe(false)
+        expect(store().paste(p)).toBe(false)
+        expect(root.querySelectorAll('section p').length).toBe(1)
+    })
+
+    it('the persisted log follows the page path; a route change saves the earlier page first', async () => {
+        const root = await mount(`<section x-edit.persist="${id('rp')}"><p>One</p></section>`)
+        const first = location.pathname
+        editText(root.querySelector('p'), 'Uno')
+        expect(localStorage.getItem('mnfst-edit-log:' + first)).toContain('Uno')
+        history.pushState({}, '', '/other-page')
+        window.dispatchEvent(new Event('manifest:route-change'))
+        expect(localStorage.getItem('mnfst-edit-log:' + first)).toContain('Uno')
+        editText(root.querySelector('p'), 'Eins')
+        expect(localStorage.getItem('mnfst-edit-log:/other-page')).toContain('Eins')
+        history.pushState({}, '', first)
+        window.dispatchEvent(new Event('manifest:route-change'))
+    })
+})
+
 describe('flow vs freeform after the drop', () => {
     async function board() {
         const root = await mount(`

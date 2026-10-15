@@ -25,7 +25,7 @@
         };
         const walk = (el, path) => {
             markEl(el, path);
-            if (el !== area && el.hasAttribute('data-text-edit')) return;
+            if (el !== area && (el.hasAttribute('data-text-edit') || isRendered(el))) return;
             let i = 0;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
@@ -40,7 +40,7 @@
         if (kind === 'static') markStatic(area);
         markPieces(area);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
-        if (kind === 'component') armComponent(area); else armText(area);
+        if (kind === 'component') armComponent(area); else if (kind === 'static') armText(area);
         if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
         if (!area._editBound) {
             area._editBound = true;
@@ -121,7 +121,7 @@
                 const n = { key: id };
                 const at = originAt.get(originOf(id)); if (at != null) n.at = at;
                 const e = editsFor(id); if (e) n.edits = e;
-                if (!(e && 'text' in e) && isContainer(el)) {
+                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-text-edit')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
                     if (id[0] === '~' || ss.touched.has(isRoot ? '#' + region : id) || kids.some(nontrivial)) n.children = kids;
                 }
@@ -177,9 +177,23 @@
     function rebase() {
         const mounted = (r) => r == null || !!areaByKey(r);
         const pending = (d) => (d.kind === 'st-move' ? [d.from, d.to] : [d.region]).some(r => !mounted(r));
+        // Runtime locks are app state, not source: carried over by element.
+        const locks = [];
+        const lockState = lockStateNow();
+        keyMap(staticAreas()).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
+        const nonStaticLocks = log.slice(0, cursor).filter(d => d.kind === 'lock' && !/^[~@]/.test(d.key) && !pending(d));
         let c = 0;
         log = log.filter((d, i) => { const keep = pending(d); if (keep && i < cursor) c++; return keep; });
         cursor = c; ver++;
+        const relock = () => {
+            const add = (d) => { log.splice(cursor, 0, d); cursor++; if (persistOf(d.region)) persisted.add(d); };
+            nonStaticLocks.forEach(add);
+            locks.forEach(([el, m]) => {
+                const a = regionOf(el), k = el.getAttribute('data-edit-key'); if (!a || !k) return;
+                [true, false].forEach(v => { const acts = [...m].filter(([, x]) => x === v).map(([act]) => act); if (acts.length) add({ kind: 'lock', region: key(a), key: k, actions: acts.length === LOCK_ACTIONS.length ? [] : acts, value: v }); });
+            });
+            ver++;
+        };
         saveState();
         originAt.clear();
         areas().forEach(a => {
@@ -190,7 +204,8 @@
             lastSnap[key(a)] = snapshot(a, kind);
         });
         rebaseTheme();
-        refresh();
+        relock();
+        saveState(); refresh();
     }
     const published = (r) => !(r && Array.isArray(r.results) && r.results.some(x => x && x.status === 'error'));
     function publish() {

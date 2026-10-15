@@ -12,7 +12,7 @@
     function collectPieces(area) {
         const kind = classify(area);
         if (kind === 'component') return [];
-        if (kind === 'data') { const tpl = area.querySelector('template[x-for]'); return tpl ? sortableChildren(tpl.parentElement) : []; }
+        if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
         const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; out.push(ch); if (isContainer(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
