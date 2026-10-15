@@ -36,7 +36,13 @@
 
     /* No injected grip: the row itself is the handle (grab cursor), while text
        inside stays a text surface (text cursor, below). Rows that are pure text
-       still reorder by keyboard. */
+       still reorder by keyboard (Alt/Option + arrows). */
+
+    /* Hover hint in the UI scope; quiet while a drag is in progress. */
+    :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable]):where(:hover):where(:not([data-edit-dragging], [data-edit-ghost], [data-edit-dragging-in] [data-edit-sortable])) {
+        outline: 1px solid color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
+        outline-offset: 3px;
+    }
 
     :where([data-edit-sortable], [data-edit-movable]):focus-visible {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
