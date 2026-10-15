@@ -60,7 +60,7 @@ import {
   existsSync, writeFileSync, unlinkSync,
   mkdirSync, readdirSync, renameSync, accessSync, chmodSync, realpathSync, constants as fsConstants,
 } from 'fs';
-import { join, extname, resolve, basename, sep, dirname, relative } from 'path';
+import { join, extname, resolve, basename, sep, dirname, relative, isAbsolute, posix } from 'path';
 import { exec }                          from 'child_process';
 import { tmpdir }                        from 'os';
 import { createHash }                    from 'crypto';
@@ -108,6 +108,7 @@ const LIVE_RELOAD_SCRIPT = `<script>
   var es = new EventSource('/__mnfst_sse__?tabId=' + encodeURIComponent(tabId));
   es.onmessage = function (e) {
     var d = JSON.parse(e.data);
+    if (d.rel) window.dispatchEvent(new CustomEvent('manifest:source-change', { detail: { file: d.rel, hash: d.hash } }));
     if (d.type === 'css') {
       document.querySelectorAll('link[rel="stylesheet"]').forEach(function (l) {
         var base = l.href.split('?')[0];
@@ -596,10 +597,12 @@ try {
     clearTimeout(debounce);
     debounce = setTimeout(() => {
       const ext = extname(filename).toLowerCase();
+      const rel = relKey(filename);
+      let hash = null; try { hash = fileHash(join(root, rel)); } catch { }
       if (ext === '.css') {
-        broadcast({ type: 'css', file: '/' + filename.replace(/\\/g, '/') });
+        broadcast({ type: 'css', file: '/' + rel, rel, hash });
       } else if (['.csv', '.json', '.yaml', '.yml', '.md'].includes(ext)) {
-        broadcast({ type: 'data' });
+        broadcast({ type: 'data', rel, hash });
       } else {
         broadcast({ type: 'reload' });
       }
@@ -650,6 +653,7 @@ function commitFiles(files) {
   const quiet = (until) => keys.forEach(k => quietPaths.set(k, until));
   quiet(Infinity);
   try {
+    for (const j of jobs) { const why = writeRefusal(j.file, 'any'); if (why) throw new Error(`${relKey(relative(root, j.file))} refused: ${why}`); }
     for (const j of jobs) {
       try { accessSync(existsSync(j.real) ? j.real : dirname(j.real), fsConstants.W_OK); accessSync(dirname(j.real), fsConstants.W_OK); }
       catch { throw new Error(`${basename(j.file)} is not writable`); }
@@ -679,28 +683,67 @@ function commitFiles(files) {
 }
 let READS = null;   // files a save batch read, for the base-version check
 const vread = (file) => { if (READS) READS.add(file); return VFS && VFS.has(file) ? VFS.get(file) : readFileSync(file, 'utf8'); };
-// Base versions: content hashes of the project's source files, so a publish can tell
-// whether a file changed since its page loaded.
-const BASE_EXT = new Set(['.html', '.css', '.json', '.csv', '.yaml', '.yml', '.md']);
-const fileHash = (file) => createHash('sha1').update(readFileSync(file)).digest('hex');
+// What the source writer may touch. Every target must have its kind's extension,
+// stay inside the project once symlinks are resolved, and never go through a hidden
+// (dot) segment or node_modules.
+const WRITE_EXT = { html: ['.html'], css: ['.css'], data: ['.json', '.csv', '.yaml', '.yml', '.md'] };
+WRITE_EXT.any = [...WRITE_EXT.html, ...WRITE_EXT.css, ...WRITE_EXT.data];
+let REAL_ROOT = null;
+const realRoot = () => REAL_ROOT || (REAL_ROOT = realpathSync(root));
+const hiddenSegment = (rel) => rel.split(/[\\/]/).some(seg => seg.startsWith('.') || seg === 'node_modules');
+const outside = (rel) => !rel || rel.startsWith('..') || isAbsolute(rel);
+function realTarget(file) {
+  try { return realpathSync(file); } catch { }
+  try { return join(realpathSync(dirname(file)), basename(file)); } catch { return null; }
+}
+function writeRefusal(file, kind) {
+  const exts = WRITE_EXT[kind] || WRITE_EXT.any, ext = extname(file).toLowerCase();
+  if (!exts.includes(ext)) return `${kind === 'any' ? 'the editor' : kind} writes only ${exts.join(' ')} files`;
+  const rel = relative(root, file);
+  if (outside(rel)) return 'outside the project';
+  if (hiddenSegment(rel)) return 'a hidden or node_modules path';
+  const real = realTarget(file);
+  if (!real) return 'its folder does not exist';
+  const rrel = relative(realRoot(), real);
+  if (outside(rrel)) return 'it resolves outside the project';
+  if (hiddenSegment(rrel)) return 'it resolves into a hidden or node_modules path';
+  if (!exts.includes(extname(real).toLowerCase())) return 'it resolves to another file type';
+  return null;
+}
+// Base versions: content hashes of the files publish can write, so a publish can tell
+// whether one changed since its page loaded. Cached by mtime+size.
+const hashCache = new Map();
+function fileHash(file) {
+  const st = statSync(file), c = hashCache.get(file);
+  if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) return c.hash;
+  const hash = createHash('sha1').update(readFileSync(file)).digest('hex');
+  hashCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, hash });
+  return hash;
+}
 function baseHashes() {
   const out = {}; let n = 0;
   const walk = (dir, depth) => {
     if (depth > 12 || n > 5000) return;
     let entries = []; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
-      if (e.name === 'node_modules' || e.name === '.git' || EDIT_TEMP.test(e.name)) continue;
+      if (e.name.startsWith('.') || e.name === 'node_modules' || EDIT_TEMP.test(e.name)) continue;
       const p = join(dir, e.name);
-      if (e.isDirectory()) walk(p, depth + 1);
-      else if (BASE_EXT.has(extname(e.name).toLowerCase())) { try { out[relKey(relative(root, p))] = fileHash(p); n++; } catch { } }
+      let real; try { real = realpathSync(p); } catch { continue; }
+      const rrel = relative(realRoot(), real);
+      if (outside(rrel) && real !== realRoot()) continue;
+      if (hiddenSegment(rrel)) continue;
+      let st; try { st = statSync(p); } catch { continue; }
+      if (st.isDirectory()) { if (e.isSymbolicLink()) continue; walk(p, depth + 1); }
+      else if (WRITE_EXT.any.includes(extname(e.name).toLowerCase())) { try { out[relKey(relative(root, p))] = fileHash(p); n++; } catch { } }
     }
   };
   walk(root, 0);
   return out;
 }
-const vwrite = (file, content) => { if (VFS) VFS.set(file, String(content)); else writeFileSync(file, content); };
+const vwrite = (file, content) => { if (!VFS) throw new Error('source writes happen only inside a save batch'); VFS.set(file, String(content)); };
 const vexists = (file) => (VFS && VFS.has(file)) || isFile(file);
 function reorderDataFile(file, order) {
+  const why = writeRefusal(file, 'data'); if (why) throw new Error(`refused: ${why}`);
   const ext = extname(file).toLowerCase();
   const text = vread(file);
   const ord = (order || []).map(String);
@@ -747,6 +790,7 @@ function writeDataValue(p, manifest) {
   const src = (manifest.data || {})[p.source], rel = typeof src === 'string' ? src : null;
   if (!rel) return { kind: 'data-val', source: p.source, status: 'skipped', reason: 'not a file source (cloud → use $x.$update)' };
   const file = resolveRel(rel); if (!file || !isFile(file)) return { kind: 'data-val', source: p.source, status: 'error', reason: `file not found: ${rel}` };
+  const refused = writeRefusal(file, 'data'); if (refused) return { kind: 'data-val', source: p.source, status: 'error', reason: `refused: ${refused}` };
   const ext = extname(file).toLowerCase(), text = vread(file);
   if (ext === '.json') {
     const data = JSON.parse(text); if (!Array.isArray(data)) return { kind: 'data-val', source: p.source, status: 'error', reason: 'JSON is not an array' };
@@ -1136,6 +1180,8 @@ function skeletonDiff(want, got) {
 
 // Rebuild every static area from the client's final trees, from the original file.
 function writeStaticTrees(file, patches) {
+  const refused = writeRefusal(file, 'html');
+  if (refused) return patches.map(p => ({ region: p.region, status: 'error', reason: `refused: ${refused}` }));
   const html = vread(file);
   const doc = parseHTML(html);
   const fail = (msg) => { const e = new Error(msg); e.edit = true; throw e; };
@@ -1324,6 +1370,7 @@ function themeValueRefusal(v) {
   const s = String(v == null ? '' : v);
   if (!s.trim()) return 'empty';
   if (/expression\s*\(/i.test(s)) return 'expression()';
+  if (/`|\$\(/.test(s)) return 'contains ` or $(';
   const stack = [];
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
@@ -1355,11 +1402,33 @@ function themeValueRefusal(v) {
   }
   return stack.length ? 'unbalanced brackets' : null;
 }
+// Stylesheets a theme edit may write: the default theme file, stylesheets index.html
+// links, and files it names in data-edit-theme-file (what the client sends).
+function themeTargets() {
+  const out = new Set([DEFAULT_THEME_FILE]);
+  let html = '';
+  try { html = readFileSync(join(root, 'index.html'), 'utf8'); } catch { return out; }   // read off-batch: not a base-checked input
+  const add = (href) => {
+    const h = String(href || '').trim().split(/[?#]/)[0];
+    if (!h || /^[a-z][\w+.-]*:|^\/\//i.test(h)) return;   // other origins and schemes
+    const rel = posix.normalize(h.replace(/^\/+/, ''));
+    if (!rel.startsWith('..')) out.add(rel);
+  };
+  for (const n of allElements(parseHTML(html))) {
+    if (n.implied) continue;
+    const open = openOf(html, n);
+    if (n.name === 'link' && /(^|\s)stylesheet(\s|$)/i.test(attrOf(open, 'rel') || '')) add(attrOf(open, 'href'));
+    const tf = attrOf(open, 'data-edit-theme-file'); if (tf != null) add(tf);
+  }
+  return out;
+}
 function writeThemeVar(p) {
   if (!/^--[\w-]+$/.test(p.var || '')) return { region: p.var, status: 'error', reason: 'bad var name' };
-  const rel = (p.file || DEFAULT_THEME_FILE).replace(/^\//, '');
+  const rel = posix.normalize(String(p.file || DEFAULT_THEME_FILE).replace(/^\/+/, ''));
+  if (!themeTargets().has(rel)) return { region: p.var, status: 'error', reason: `${rel} is not a stylesheet this page uses (link it, or name it in data-edit-theme-file)` };
   const file = safeResolve('/' + rel);
   if (!file) return { region: p.var, status: 'error', reason: `path outside root: ${rel}` };
+  const refused = writeRefusal(file, 'css'); if (refused) return { region: p.var, status: 'error', reason: `refused: ${refused}` };
   const why = themeValueRefusal(p.value);
   if (why) return { region: p.var, status: 'error', reason: `value refused (${why})` };
   const value = String(p.value).trim();
@@ -1398,6 +1467,7 @@ function writeComponentEdits(p, manifest) {
   if (!compRel) return { region: p.region, status: 'error', reason: `component '${p.component}' not registered` };
   const compFile = resolveRel(compRel);
   if (!compFile || !isFile(compFile)) return { region: p.region, status: 'error', reason: `component file not found: ${compRel}` };
+  const refused = writeRefusal(compFile, 'html'); if (refused) return { region: p.region, status: 'error', reason: `refused: ${refused}` };
   const indexFile = join(root, 'index.html'), instanceAttrs = {}, removeNames = new Set(), applied = [];
   for (const ed of (p.edits || [])) {
     const prop = ed.prop || 'text';
@@ -1460,6 +1530,7 @@ function writeComponentEdits(p, manifest) {
   return { region: p.region, status: 'written', scope: p.scope, file: basename(compFile), applied, instance: inst && inst.status };
 }
 function writeComponentInstance(file, key, overrides, removals) {
+  const refused = writeRefusal(file, 'html'); if (refused) return { region: key, status: 'error', reason: `refused: ${refused}` };
   let html = vread(file);
   const loc = locateEditEl(html, key);
   if (!loc) return { region: key, status: 'error', reason: `x-edit="${key}" not found in ${basename(file)}` };
@@ -1786,6 +1857,7 @@ const server = createServer((req, res) => {
               if (!rel) return { region: p.region, status: 'error', reason: `data source '${p.source}' is not a plain file path` };
               const file = resolveRel(rel);
               if (!file || !isFile(file)) return { region: p.region, status: 'error', reason: `file not found: ${rel}` };
+              const refused = writeRefusal(file, 'data'); if (refused) return { region: p.region, status: 'error', reason: `refused: ${refused}` };
               return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
             }
             if (p.kind === 'data-val') return writeDataValue(p, manifest);
@@ -1796,15 +1868,19 @@ const server = createServer((req, res) => {
         });
         const abort = (why) => results.map(r => r && r.status === 'error' ? r : Object.assign({}, r, { status: 'skipped', reason: why }));
         // Refuse the whole batch if a file it read changed since the page loaded.
-        const stale = base && [...READS, ...VFS.keys()].map(f => relKey(relative(root, f))).find(rel => rel in base && (() => { try { return fileHash(join(root, rel)) !== base[rel]; } catch { return true; } })());
-        if (stale) results = results.map(r => Object.assign({}, r, { status: 'error', reason: `source changed since this page loaded (${stale}); reload to continue` }));
+        // Structural rewrites (HTML) need the version the page loaded; CSS declarations and
+        // data records are written by key, so changes elsewhere in those files are fine.
+        const staleFiles = !base ? [] : [...new Set([...READS, ...VFS.keys()].map(f => relKey(relative(root, f))))]
+          .filter(rel => extname(rel).toLowerCase() === '.html' && rel in base && (() => { try { return fileHash(join(root, rel)) !== base[rel]; } catch { return true; } })());
+        if (staleFiles.length) results = results.map(r => Object.assign({}, r, { status: 'error', stale: staleFiles, reason: `source changed since this page loaded (${staleFiles.join(', ')}); reload, or publish again with rebase to write over it` }));
         else if (results.some(r => r && r.status === 'error')) results = abort('batch aborted: another patch failed; nothing was written');
         else {
           try { commitFiles(VFS); written = {}; for (const f of VFS.keys()) { const rel = relKey(relative(root, f)); try { written[rel] = fileHash(f); } catch { } } }
           catch (e) { results = results.map(r => Object.assign({}, r, { status: 'error', reason: `nothing written: ${e.message}` })); }
         }
       } finally { VFS = null; READS = null; }
-      reply(200, written ? { results, base: written } : { results });
+      const stale = results.find(r => r && r.stale);
+      reply(200, written ? { results, base: written } : stale ? { results, stale: stale.stale } : { results });
     } catch (e) {
       console.error('[mnfst-run] /__edit/save failed:', e);
       reply(500, { results: [], error: String(e && e.message || e) });
