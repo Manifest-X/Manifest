@@ -143,6 +143,42 @@ describe('typed and pending marks', () => {
         expect(el._rt.api.value.replace(/\u00a0/g, ' ')).toBe('Use `code` then more')
     })
 
+    // Chrome's sequence: beforeinput insertText; if not prevented, a typed U+0020 at a mark's edge
+    // goes into the mark's text, and a lone plain space after an inline collapses on the next key,
+    // the character landing in the mark
+    const chromeType = (el, ch) => {
+        const bi = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: ch })
+        el.dispatchEvent(bi)
+        if (bi.defaultPrevented) return
+        const r = window.getSelection().getRangeAt(0)
+        let t = r.startContainer, o = r.startOffset
+        const lastText = (n) => { let l = null; const w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT); for (let x = w.nextNode(); x; x = w.nextNode()) l = x; return l }
+        const before = t.nodeType === 3 ? (o === 0 ? t.previousSibling : null) : t.childNodes[o - 1]
+        if (before && before.nodeType === 1 && lastText(before)) { if (t.nodeType === 3 && !t.length) t.remove(); t = lastText(before); o = t.length }
+        else if (t.nodeType === 3 && t.nodeValue === ' ' && o === 1 && t.previousSibling && t.previousSibling.nodeType === 1 && ch !== ' ') { const m = lastText(t.previousSibling); t.remove(); t = m; o = m.length }
+        t.insertData(o, ch)
+        window.getSelection().collapse(t, o + ch.length)
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }))
+    }
+    it('typing a space and text after any converted mark, as Chrome sends the keys, lands outside the mark', () => {
+        const cases = [['Use `code', '`', 'code'], ['A **bold*', '*', 'strong'], ['An *em', '*', 'em'], ['A ~~del~', '~', 'del'], ['See [l](https://x.dev', ')', 'a']]
+        for (const [typed, closer, tag] of cases) {
+            document.body.innerHTML = ''
+            const root = mount(`<div x-rich-text id="m"></div>`)
+            const el = root.querySelector('#m')
+            focusin(el)
+            el.firstElementChild.textContent = typed
+            window.getSelection().collapse(el.firstElementChild.firstChild, typed.length)
+            chromeType(el, closer)
+            const mark = el.querySelector(tag)
+            expect(mark, typed).toBeTruthy()
+            for (const ch of ' then more') chromeType(el, ch)
+            expect(mark.textContent, typed).toBe({ code: 'code', strong: 'bold', em: 'em', del: 'del', a: 'l' }[tag])
+            expect(el.querySelector('p').lastChild.nodeValue, typed).toBe('\u00a0then more')
+            expect(el._rt.api.value.replace(/\u00a0/g, ' '), typed).toBe(typed + closer + ' then more')
+        }
+    })
+
     it('an armed mark wraps what is typed, a leading space included', () => {
         const root = mount(`<div x-rich-text.html id="h"><p>Hello world</p></div>`)
         const el = root.querySelector('#h'), t = el.querySelector('p').firstChild
