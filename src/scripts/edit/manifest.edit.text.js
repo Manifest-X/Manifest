@@ -87,7 +87,7 @@
         armRichText(area);
         // An area that is itself the text leaf.
         const nodes = [...area.querySelectorAll('*')];
-        if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
+        if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree

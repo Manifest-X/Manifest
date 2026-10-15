@@ -289,6 +289,33 @@ describe('publish round trips', () => {
         expect(res.results[0].status).toBe('written')
     })
 
+    it('an image-only link stays granular: the image keeps its identity and its src publishes', async () => {
+        const body = `<header x-edit="k3"><a href="/"><img src="/logo.png" alt="Logo"></a><p>Photo <img src="/p.png" alt="P"></p><img src="/third.png" alt=""></header>`
+        const r = await roundTrip(body, async (root) => {
+            const logo = root.querySelector('a img'), third = root.querySelector('header > img')
+            expect(root.querySelector('a')._editRt).toBeFalsy()
+            expect(store().can('attrs', logo)).toBe(true)
+            expect(store().attr('src', '/logo2.png', logo)).toBe(true)
+            expect(third.getAttribute('data-edit-key')).toBe('@k3@IMG:#3')   // the paragraph's image is counted between them
+            expect(store().attr('alt', 'Third', third)).toBe(true)
+            expect(store().attr('src', '/p2.png', root.querySelector('p img'))).toBe(true)
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<header x-edit="k3"><a href="/"><img src="/logo2.png" alt="Logo"></a><p>Photo <img src="/p2.png" alt="P"></p><img src="/third.png" alt="Third"></header>`)
+    })
+
+    it('an area that is itself a whole leaf attaches and publishes, and is one leaf after reload', async () => {
+        const body = `<h1 x-edit="k4">Hello <em>world</em></h1>`
+        const r = await roundTrip(body, async (root) => {
+            const h1 = root.querySelector('h1')
+            expect(h1._editRt).toBeTruthy()
+            editText(h1, 'Hello <em>there</em>')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(`<h1 x-edit="k4">Hello <em>there</em></h1>`)
+        expect(document.querySelector('h1')._editRt).toBeTruthy()
+    })
+
     it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
         const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
         const r = await roundTrip(body, async (root) => {

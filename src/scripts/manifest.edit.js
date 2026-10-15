@@ -254,7 +254,8 @@
         c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
         return inlineClean(c.innerHTML) === c.innerHTML;
     }
-    const wholeLeaf = (el) => LEAF_TAGS.has(el.tagName) && realChildren(el).length > 0 && plainFormatted(el);
+    // Text is required: a link around an image alone stays granular, so the image keeps its own identity.
+    const wholeLeaf = (el) => LEAF_TAGS.has(el.tagName) && realChildren(el).length > 0 && !!el.textContent.trim() && plainFormatted(el);
     // The text leaf an element sits inside (not the leaf itself), attached or resting as a focused piece.
     const leafHost = (el) => { for (let n = el && el.parentElement; n && n.nodeType === 1; n = n.parentElement) { if (n._editRtFormat) return n; if (n._edit) break; } return null; };
     function isContainer(el) {
@@ -1697,7 +1698,7 @@
         armRichText(area);
         // An area that is itself the text leaf.
         const nodes = [...area.querySelectorAll('*')];
-        if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
+        if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
             if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
