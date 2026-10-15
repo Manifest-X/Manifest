@@ -83,7 +83,16 @@
     /* ---- Activation: always-on by default; .gated waits for $edit.on() ---- */
     let estore, booted = false, armQueued = false;
     const isActive = (a) => !!a && !!a._edit && (!a._edit.gated || !!(estore && estore.active));
-    function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); booted = true; }
+    function armAll() {
+        let fresh = false;
+        areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; fresh = true; } });
+        // A region mounted again after boot (x-if, a deferred route) shows the edits the log still holds for it
+        if (booted && fresh) {
+            if (log.some(d => /^st-/.test(d.kind))) applyStaticState();
+            if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
+        }
+        armThemeControls(); refresh(); booted = true;
+    }
 
     // Regions rendered after boot (x-if, routes, lazy components) arm through the directive.
     function armLater() {

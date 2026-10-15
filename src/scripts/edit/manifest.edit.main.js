@@ -68,7 +68,7 @@
         document.addEventListener('contextmenu', onContextCapture, true);
         document.addEventListener('dropdown:context', onContextCapture, true);
         // SPA navigation: the state so far is saved under the page it was made on.
-        window.addEventListener('manifest:route-change', () => { if (lsPath !== location.pathname) { saveState(lsPath); lsPath = location.pathname; } });
+        window.addEventListener('manifest:route-change', () => { if (lsPath !== location.pathname) { lsPath = location.pathname; saveState(); } });
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);
