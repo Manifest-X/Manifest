@@ -139,10 +139,13 @@ describe('/__edit/save static-tree', () => {
         expect(out).toBe(src)
     })
 
-    it('falls back to the origin path when the content key differs from source', async () => {
-        const src = `<section x-edit="p"><span x-text="name">Fallback</span><p>Body</p></section>`
-        const { out } = await write(src, [tree('p', [n('p', 'P:Body'), { key: K('p', 'SPAN:Alice'), at: '0' }])])
-        expect(out).toBe(`<section x-edit="p"><p>Body</p><span x-text="name">Fallback</span></section>`)
+    it('takes the origin path only when tag and text agree (just the ordinal differs)', async () => {
+        const src = `<section x-edit="p"><p>Same</p><p>Body</p></section>`
+        const { out } = await write(src, [tree('p', [n('p', 'P:Body'), { key: K('p', 'P:Same#3'), at: '0' }])])
+        expect(out).toBe(`<section x-edit="p"><p>Body</p><p>Same</p></section>`)
+        const wrong = await write(src, [tree('p', [n('p', 'P:Same'), { key: K('p', 'P:Other'), at: '1' }])])
+        expect(wrong.results[0].status).toBe('error')                // a different element at that path is never taken
+        expect(wrong.out).toBe(src)
     })
 })
 
@@ -200,5 +203,85 @@ describe('/__edit/save attribute and text safety', () => {
         const src = `<section x-edit="g"><span data-edit-ghost=""></span><h1>Welcome</h1></section>`
         const { out } = await write(src, [tree('g', [n('g', 'H1:Welcome', { edits: { text: 'Hello' } })])])
         expect(out).toBe(`<section x-edit="g"><span data-edit-ghost=""></span><h1>Hello</h1></section>`)
+    })
+})
+
+describe('/__edit/save parsing as a browser does', () => {
+    it('raw-text elements and comments are opaque: "</div>" in a script or comment cannot close anything', async () => {
+        const src = `<section x-edit="r"><div><script>var s = "</div><p>";</script><p>One</p></div><!-- </section> --><p>Two</p></section>`
+        const { results, out } = await write(src, [tree('r', [n('r', 'P:Two'), n('r', 'DIV:var s = "</div><p>";One')])])
+        expect(results[0].status).toBe('written')
+        expect(out).toBe(`<section x-edit="r"><!-- </section> --><p>Two</p><div><script>var s = "</div><p>";</script><p>One</p></div></section>`)
+    })
+
+    it('decodes every named entity as the browser does, so keys match', async () => {
+        const src = `<section x-edit="e"><p>Caf&eacute; &mdash; &rightarrow; &copy 2024</p><p>Two</p></section>`
+        const { results, out } = await write(src, [tree('e', [n('e', 'P:Two'), n('e', 'P:Café — → © 2024', { edits: { text: 'Edited' } })])])
+        expect(results[0].status).toBe('written')
+        expect(out).toBe(`<section x-edit="e"><p>Two</p><p>Edited</p></section>`)
+    })
+
+    it('models implied <tbody> and implied end tags (li, p, dt/dd, td)', async () => {
+        const src = `<section x-edit="t"><table><tr><td>A<td>B</table><ul><li>One<li>Two</ul><p>Para<div>Block</div></section>`
+        const { results, out } = await write(src, [tree('t', [
+            n('t', 'TABLE:AB', { children: [n('t', 'TBODY:AB', { children: [n('t', 'TR:AB', { children: [n('t', 'TD:B'), n('t', 'TD:A', { edits: { text: 'A2' } })] })] })] }),
+            n('t', 'UL:OneTwo', { children: [n('t', 'LI:Two'), n('t', 'LI:One')] }),
+            n('t', 'P:Para'), n('t', 'DIV:Block')
+        ])])
+        expect(results[0].status).toBe('written')
+        // Rebuilt children with implied end tags get explicit ones; the implied tbody stays implied.
+        expect(out).toBe(`<section x-edit="t"><table><tr><td>B</td><td>A2</td></tr></table><ul><li>Two</li><li>One</li></ul><p>Para</p><div>Block</div></section>`)
+    })
+
+    it('a titling comment moves with its element; a blank line keeps it in place', async () => {
+        const src = `<section x-edit="c">
+    <!-- Header -->
+    <h1>Title</h1>
+    <!-- Section label -->
+
+    <p>Body</p>
+</section>`
+        const { out } = await write(src, [tree('c', [n('c', 'P:Body'), n('c', 'H1:Title')])])
+        expect(out).toBe(`<section x-edit="c">
+    <p>Body</p>
+    <!-- Section label -->
+
+    <!-- Header -->
+    <h1>Title</h1>
+</section>`)                                                        // the blank-line comment keeps its slot
+    })
+
+    it('refuses a removal whose container is kept as is', async () => {
+        const src = `<section x-edit="k"><div><p>Child</p></div><p>Two</p></section>`
+        const { results, out } = await write(src, [tree('k', [n('k', 'DIV:Child'), n('k', 'P:Two', { edits: { title: 'x' } })], { removed: [K('k', 'P:Child')] })])
+        expect(results[0].status).toBe('error')
+        expect(out).toBe(src)
+    })
+
+    it('refuses script-loading attributes and text edits on raw-text elements', async () => {
+        const cases = [
+            [`<script>x</script>`, 'SCRIPT:x', { src: 'https://evil.example/x.js' }], [`<script>x</script>`, 'SCRIPT:x', { type: 'module' }],
+            [`<script>x</script>`, 'SCRIPT:x', { text: 'alert(1)' }], [`<style>a{}</style>`, 'STYLE:a{}', { text: 'b{}' }],
+            [`<iframe src="/a"></iframe>`, 'IFRAME:', { src: 'https://evil.example/' }], [`<object>o</object>`, 'OBJECT:o', { data: '/x.swf' }],
+            [`<link href="/a.css">`, 'LINK:', { href: '/evil.css' }], [`<meta content="x">`, 'META:', { 'http-equiv': 'refresh' }],
+            [`<form>f</form>`, 'FORM:f', { action: 'https://evil.example/' }], [`<button>b</button>`, 'BUTTON:b', { formaction: '/x' }]
+        ]
+        for (const [el, k, edits] of cases) {
+            const src = `<section x-edit="s">${el}</section>`
+            const { results, out } = await write(src, [tree('s', [n('s', k, { edits })])])
+            expect(results[0].status, el + JSON.stringify(edits)).toBe('error')
+            expect(out).toBe(src)
+        }
+    })
+
+    it('all or nothing across kinds: a failing theme patch leaves the static rewrite unwritten', async () => {
+        const src = `<section x-edit="a"><p>One</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), src)
+        const { results } = await save([
+            tree('a', [n('a', 'P:One', { edits: { text: 'Uno' } })]),
+            { kind: 'theme', scope: null, var: 'not a var', value: 'red' }
+        ])
+        expect(results.map(r => r.status)).toEqual(['skipped', 'error'])
+        expect(file()).toBe(src)
     })
 })

@@ -9,6 +9,7 @@
   "files": [
     "bin",
     "serve.mjs",
+    "html-entities.json",
     "README.md"
   ],
   "publishConfig": {

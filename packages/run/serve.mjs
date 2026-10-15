@@ -610,9 +610,15 @@ function isFile(p) {
 // Reorder a data file's rows/items to match `order` (array of ids). CSV (tabular,
 // header with an `id` column) or JSON (array of {id}). Ids not in `order` keep their
 // relative order at the end. Returns true if written. Used by /__edit/save (spike).
+// Source writes go through an in-memory overlay during a save batch: every patch is
+// prepared against it, and the files are written only if all of them succeed.
+let VFS = null;
+const vread = (file) => VFS && VFS.has(file) ? VFS.get(file) : readFileSync(file, 'utf8');
+const vwrite = (file, content) => { if (VFS) VFS.set(file, String(content)); else writeFileSync(file, content); };
+const vexists = (file) => (VFS && VFS.has(file)) || isFile(file);
 function reorderDataFile(file, order) {
   const ext = extname(file).toLowerCase();
-  const text = readFileSync(file, 'utf8');
+  const text = vread(file);
   const ord = (order || []).map(String);
   if (ext === '.json') {
     const data = JSON.parse(text);
@@ -620,7 +626,7 @@ function reorderDataFile(file, order) {
     const byId = new Map(data.map(it => [String(it.id), it]));
     const next = ord.map(id => byId.get(id)).filter(Boolean);
     data.forEach(it => { if (!ord.includes(String(it.id))) next.push(it); });
-    writeFileSync(file, JSON.stringify(next, null, 2) + (text.endsWith('\n') ? '\n' : ''));
+    vwrite(file, JSON.stringify(next, null, 2) + (text.endsWith('\n') ? '\n' : ''));
     return true;
   }
   if (ext === '.csv') {
@@ -637,7 +643,7 @@ function reorderDataFile(file, order) {
     const byId = new Map(rows.map(r => [idOf(r), r]));
     const next = ord.map(id => byId.get(id)).filter(Boolean);
     rows.forEach(r => { if (!ord.includes(idOf(r))) next.push(r); });
-    writeFileSync(file, [header, ...next].join(eol) + (trailing ? eol : ''));
+    vwrite(file, [header, ...next].join(eol) + (trailing ? eol : ''));
     return true;
   }
   return false;
@@ -657,11 +663,11 @@ function writeDataValue(p, manifest) {
   const src = (manifest.data || {})[p.source], rel = typeof src === 'string' ? src : null;
   if (!rel) return { kind: 'data-val', source: p.source, status: 'skipped', reason: 'not a file source (cloud → use $x.$update)' };
   const file = safeResolve(rel); if (!file || !isFile(file)) return { kind: 'data-val', source: p.source, status: 'error', reason: `file not found: ${rel}` };
-  const ext = extname(file).toLowerCase(), text = readFileSync(file, 'utf8');
+  const ext = extname(file).toLowerCase(), text = vread(file);
   if (ext === '.json') {
     const data = JSON.parse(text); if (!Array.isArray(data)) return { kind: 'data-val', source: p.source, status: 'error', reason: 'JSON is not an array' };
     const rec = data.find(r => String(r.id) === String(p.id)); if (!rec) return { kind: 'data-val', source: p.source, status: 'error', reason: `id ${p.id} not found` };
-    rec[p.field] = p.value; writeFileSync(file, JSON.stringify(data, null, 2) + (text.endsWith('\n') ? '\n' : ''));
+    rec[p.field] = p.value; vwrite(file, JSON.stringify(data, null, 2) + (text.endsWith('\n') ? '\n' : ''));
     return { kind: 'data-val', source: p.source, id: p.id, field: p.field, status: 'written', file: basename(file) };
   }
   if (ext === '.csv') {
@@ -674,43 +680,42 @@ function writeDataValue(p, manifest) {
     let hit = false;
     const rows = lines.slice(1).map(line => { const cells = parseCsvLine(line); if (String(cells[idIdx]).trim() === String(p.id)) { cells[fIdx] = p.value; hit = true; return cells.map(csvCell).join(','); } return line; });
     if (!hit) return { kind: 'data-val', source: p.source, status: 'error', reason: `id ${p.id} not found` };
-    writeFileSync(file, [lines[0], ...rows].join(eol) + (trailing ? eol : ''));
+    vwrite(file, [lines[0], ...rows].join(eol) + (trailing ? eol : ''));
     return { kind: 'data-val', source: p.source, id: p.id, field: p.field, status: 'written', file: basename(file) };
   }
   return { kind: 'data-val', source: p.source, status: 'error', reason: `unsupported ext ${ext}` };
 }
 
-// --- Dependency-free HTML region editor ---
-// packages/run is zero-dep by design, so instead of pulling in an HTML parser we do a
-// small tag-aware scan: find the element carrying x-edit="<key>", depth-match its close,
-// and splice. Robust for authored Manifest source (well-formed); not a general parser.
+// --- Dependency-free HTML editor ---
+// packages/run is zero-dep by design, so the source writer carries its own small HTML
+// parser: tokenizer (raw-text elements, comments and attribute quoting as browsers read
+// them) plus the tree builder's implied end tags and implied <tbody>, which is what makes
+// its element tree match the DOM the client keyed.
 const escapeReg = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function tagEnd(html, from) {            // from = index of '<'; returns index of the unquoted '>'
-  let q = null;
-  for (let i = from + 1; i < html.length; i++) {
-    const ch = html[i];
-    if (q) { if (ch === q) q = null; }
-    else if (ch === '"' || ch === "'") q = ch;
-    else if (ch === '>') return i;
+// Index of the '>' that ends the tag opened at `from`, reading attributes as a browser does.
+function tagEnd(s, from) {
+  let i = from + 1;
+  while (i < s.length && !/[\s/>]/.test(s[i])) i++;
+  for (;;) {
+    while (i < s.length && /[\s/]/.test(s[i])) i++;
+    if (i >= s.length) return -1;
+    if (s[i] === '>') return i;
+    i++;
+    while (i < s.length && !/[\s/>=]/.test(s[i])) i++;
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (s[i] !== '=') continue;
+    i++;
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (s[i] === '"' || s[i] === "'") { const q = s.indexOf(s[i], i + 1); if (q < 0) return -1; i = q + 1; }
+    else while (i < s.length && !/[\s>]/.test(s[i])) i++;
   }
-  return -1;
-}
-function matchingClose(html, tag, from) {   // depth-match </tag> accounting for nested same-name tags
-  const re = new RegExp(`<(/?)${escapeReg(tag)}(?=[\\s/>])`, 'gi');
-  re.lastIndex = from;
-  let depth = 1, m;
-  while ((m = re.exec(html))) {
-    if (m[1] === '/') { depth--; if (depth === 0) { const gt = html.indexOf('>', m.index); return { start: m.index, end: gt + 1 }; } }
-    else { const ge = tagEnd(html, m.index); if (ge >= 0) { if (html[ge - 1] !== '/') depth++; re.lastIndex = ge; } }
-  }
-  return null;
 }
 
 // Opening-tag attribute scanner: attributes in order, with the exact span each occupies
 // (leading whitespace included), so edits replace or remove in place and quoted values
 // can never be mistaken for attributes.
 function scanTag(openTag) {
-  const m = /^<([a-zA-Z][\w:.-]*)/.exec(openTag); if (!m) return null;
+  const m = /^<([a-zA-Z][^\s/>]*)/.exec(openTag); if (!m) return null;
   const re = /(\s*)([^\s"'>\/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/y;
   const attrs = []; let i = m[0].length;
   for (;;) {
@@ -739,28 +744,147 @@ function setAttr(openTag, name, value) {
   return out;
 }
 const removeAttr = (openTag, name) => setAttr(openTag, name, null);
-const attrOf = (openTag, name) => { const t = scanTag(openTag); const a = t && t.attrs.find(x => x.lower === String(name).toLowerCase()); return a ? (a.value == null ? '' : decodeEntities(a.value)) : null; };
+const attrOf = (openTag, name) => { const t = scanTag(openTag); const a = t && t.attrs.find(x => x.lower === String(name).toLowerCase()); return a ? (a.value == null ? '' : decodeEntities(a.value, true)) : null; };
 const hasAttrNamed = (openTag, test) => { const t = scanTag(openTag); return !!t && t.attrs.some(a => test(a.lower)); };
 
-const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', tab: '\t', newline: '\n', colon: ':' };
-function decodeEntities(s) {
-  return String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);?/gi, (m, e) => {
-    if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) && n >= 0 && n < 0x110000 ? String.fromCodePoint(n) : m; }
-    const v = ENTITIES[e.toLowerCase()]; return v === undefined ? m : v;
+// Character references: the full WHATWG table (html-entities.json, generated by
+// scripts/gen-html-entities.mjs), legacy semicolon-less names, and numeric references
+// with the spec's replacements.
+let ENTITIES = null;
+const entityTable = () => ENTITIES || (ENTITIES = JSON.parse(readFileSync(new URL('./html-entities.json', import.meta.url), 'utf8')));
+const C1 = { 0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6, 0x89: 0x2030, 0x8A: 0x0160, 0x8B: 0x2039, 0x8C: 0x0152, 0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014, 0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A, 0x9C: 0x0153, 0x9E: 0x017E, 0x9F: 0x0178 };
+function decodeEntities(s, attr) {
+  const t = entityTable();
+  return String(s).replace(/&(#[xX][0-9a-fA-F]+;?|#[0-9]+;?|[A-Za-z][A-Za-z0-9]*;?)/g, (m, e, off, str) => {
+    if (e[0] === '#') {
+      let n = /^#[xX]/.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      if (!Number.isFinite(n) || n === 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF)) return '�';
+      return String.fromCodePoint(C1[n] || n);
+    }
+    if (e.endsWith(';') && t[e] !== undefined) return t[e];
+    const name = e.replace(/;$/, '');
+    for (let k = name.length; k > 1; k--) {
+      const p = name.slice(0, k);
+      if (t[p] === undefined) continue;
+      if (attr) { const next = k < name.length ? name[k] : (e.endsWith(';') ? ';' : str[off + m.length] || ''); if (/[A-Za-z0-9=]/.test(next)) return m; }
+      return t[p] + e.slice(k);
+    }
+    return m;
   });
 }
+
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr', 'keygen', 'frame']);
+const RAW_TEXT = new Set(['script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
+const RCDATA = new Set(['textarea', 'title']);
+const SCOPE = ['applet', 'caption', 'html', 'table', 'td', 'th', 'marquee', 'object', 'template', '#root'];
+const BUTTON_SCOPE = new Set([...SCOPE, 'button']);
+const LIST_STOP = new Set([...SCOPE, 'ol', 'ul']);
+const DL_STOP = new Set([...SCOPE, 'dl']);
+const CLOSES_P = new Set(['address', 'article', 'aside', 'blockquote', 'center', 'details', 'dialog', 'dir', 'div', 'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'section', 'search', 'summary', 'table', 'ul', 'li', 'dd', 'dt', 'listing', 'plaintext', 'xmp']);
+const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const set = (...a) => new Set(a);
+
+// Element tree of s[from, to). Nodes: { name, tag, tagStart, openEnd, innerStart, innerEnd,
+// closeEnd, void?, implied? (no tags in source), impliedEnd? (no end tag), children, content }.
+function parseHTML(s, from = 0, to = s.length) {
+  const root = { name: '#root', tag: '#root', tagStart: from, openEnd: from - 1, innerStart: from, innerEnd: to, closeEnd: to, children: [], content: [], parent: null };
+  const stack = [root];
+  const top = () => stack[stack.length - 1];
+  const close = (idx, at, end) => {
+    while (stack.length > idx) {
+      const el = stack.pop();
+      if (stack.length === idx && end) { el.innerEnd = end.start; el.closeEnd = end.end; }
+      else { el.innerEnd = at; el.closeEnd = at; el.impliedEnd = true; }
+    }
+  };
+  const find = (names, stops) => { for (let k = stack.length - 1; k > 0; k--) { const n = stack[k].name; if (names.has(n)) return k; if (stops && stops.has(n)) return -1; } return -1; };
+  const insert = (name, tag, start, openEnd, extra) => {
+    const el = Object.assign({ name, tag, tagStart: start, openEnd, innerStart: openEnd + 1, children: [], content: [], parent: top() }, extra);
+    top().children.push(el); top().content.push({ el });
+    return el;
+  };
+  const implied = (name, at) => stack.push(insert(name, name, at, at - 1, { implied: true }));
+  const text = (a, b, raw) => { if (b > a) top().content.push({ text: raw ? s.slice(a, b) : decodeEntities(s.slice(a, b)) }); };
+  const foreign = () => stack.some(n => n.name === 'svg' || n.name === 'math');
+  let i = from;
+  while (i < to) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0 || lt >= to) { text(i, to); break; }
+    text(i, lt);
+    if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); i = e < 0 || e + 3 > to ? to : e + 3; continue; }
+    const c = s[lt + 1];
+    if (c === '!' || c === '?') { const e = s.indexOf('>', lt); i = e < 0 || e >= to ? to : e + 1; continue; }
+    if (c === '/') {
+      const m = /^<\/([a-zA-Z][^\s/>]*)/.exec(s.slice(lt, lt + 80));
+      const e = s.indexOf('>', lt), end = e < 0 || e >= to ? to : e + 1;
+      if (m) { const k = find(set(m[1].toLowerCase())); if (k > 0) close(k, lt, { start: lt, end }); }
+      i = end; continue;
+    }
+    const m = /^<([a-zA-Z][^\s/>]*)/.exec(s.slice(lt, lt + 80));
+    if (!m) { text(lt, lt + 1); i = lt + 1; continue; }
+    const e = tagEnd(s, lt);
+    if (e < 0 || e >= to) { i = to; break; }
+    const tag = m[1], name = tag.toLowerCase(), inForeign = foreign();
+    if (!inForeign) {
+      if (CLOSES_P.has(name)) { const k = find(set('p'), BUTTON_SCOPE); if (k > 0) close(k, lt); }
+      if (HEADINGS.has(name) && HEADINGS.has(top().name)) close(stack.length - 1, lt);
+      if (name === 'li') { const k = find(set('li'), LIST_STOP); if (k > 0) close(k, lt); }
+      if (name === 'dd' || name === 'dt') { const k = find(set('dd', 'dt'), DL_STOP); if (k > 0) close(k, lt); }
+      if (name === 'option' || name === 'optgroup') { if (top().name === 'option') close(stack.length - 1, lt); if (name === 'optgroup' && top().name === 'optgroup') close(stack.length - 1, lt); }
+      if (name === 'td' || name === 'th') {
+        const k = find(set('td', 'th', 'tr', 'tbody', 'thead', 'tfoot', 'table'));
+        if (k > 0 && (stack[k].name === 'td' || stack[k].name === 'th')) close(k, lt);
+        if (top().name === 'table') implied('tbody', lt);
+        if (/^t(body|head|foot)$/.test(top().name)) implied('tr', lt);
+      }
+      if (name === 'tr') {
+        const k = find(set('tr', 'tbody', 'thead', 'tfoot', 'table'));
+        if (k > 0 && stack[k].name === 'tr') close(k, lt);
+        if (top().name === 'table') implied('tbody', lt);
+      }
+      if (name === 'tbody' || name === 'thead' || name === 'tfoot') { const k = find(set('tbody', 'thead', 'tfoot', 'table')); if (k > 0 && stack[k].name !== 'table') close(k, lt); }
+    }
+    const el = insert(name, tag, lt, e);
+    i = e + 1;
+    if (VOID_TAGS.has(name) || ((inForeign || name === 'svg' || name === 'math') && s[e - 1] === '/')) { el.void = true; el.innerEnd = el.closeEnd = e + 1; continue; }
+    stack.push(el);
+    if (!inForeign && (RAW_TEXT.has(name) || RCDATA.has(name))) {
+      const re = new RegExp(`</${escapeReg(name)}(?=[\\s/>])`, 'ig'); re.lastIndex = i;
+      const r = re.exec(s);
+      if (!r || r.index >= to) { text(i, to, RAW_TEXT.has(name)); i = to; break; }
+      text(i, r.index, RAW_TEXT.has(name));
+      const ce = s.indexOf('>', r.index);
+      close(stack.length - 1, r.index, { start: r.index, end: ce + 1 });
+      i = ce + 1;
+    }
+  }
+  close(1, to);
+  return root;
+}
+const openOf = (s, n) => n.implied ? '' : s.slice(n.tagStart, n.openEnd + 1);
+const isPluginNode = (s, n) => !n.implied && /\sdata-edit-(handle|ghost|grip)[\s=/>]/.test(openOf(s, n));
+const kidsOf = (s, n) => n.children.filter(k => !isPluginNode(s, k));
+function allElements(root) { const out = []; const walk = (n) => n.children.forEach(k => { out.push(k); walk(k); }); walk(root); return out; }
+// The element carrying x-edit*="<key>" as a real attribute.
+function locateEditEl(html, key, doc) {
+  doc = doc || parseHTML(html);
+  return allElements(doc).find(n => !n.implied && (scanTag(openOf(html, n)) || { attrs: [] }).attrs.some(a => /^x-edit(\.|$)/.test(a.lower) && a.value === key)) || null;
+}
+const escapeText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Attribute guardrails — the same rules the client applies, checked here on both the
 // raw and the entity-decoded value.
 const SVG_ANIM = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
 const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp|avif)[;,]/;
+const LOADS = { script: ['src', 'type'], iframe: ['src', 'srcdoc'], embed: ['src', 'srcdoc'], object: ['src', 'srcdoc', 'data'], frame: ['src', 'srcdoc'], link: ['href', 'rel'], base: ['href', 'rel'], meta: ['http-equiv', 'content'] };
 function attrRefusal(name, value, tag) {
   const n = String(name || '').trim().toLowerCase(), t = String(tag || '').toLowerCase();
   if (!n || !/^[a-z_][\w:.-]*$/i.test(n)) return 'invalid name';
-  if (n === 'text' || n === 'srcdoc' || n.startsWith('on') || n.startsWith('x-') || n.startsWith('data-edit-')) return 'refused name';
+  if (n === 'text' || n === 'srcdoc' || n === 'action' || n === 'formaction' || n.startsWith('on') || n.startsWith('x-') || n.startsWith('data-edit-')) return 'refused name';
+  if (LOADS[t] && LOADS[t].includes(n)) return 'loads or runs content';
   if (SVG_ANIM.has(t) && ['attributename', 'to', 'values', 'from', 'by'].includes(n)) return 'SVG animation target';
   if (value == null) return null;
-  for (const raw of [String(value), decodeEntities(value)]) {
+  for (const raw of [String(value), decodeEntities(value, true)]) {
     const v = raw.replace(/[\u0000- \u007f]/g, '').toLowerCase();
     if (/(^|[,(;'"=])(javascript|vbscript):/.test(v)) return 'script URL';
     const datas = v.match(/(^|[,(;'"=])data:[^,)]*/g) || [];
@@ -768,13 +892,15 @@ function attrRefusal(name, value, tag) {
   }
   return null;
 }
+// Elements whose content is not markup: never given text edits.
+const RAW_EDIT = new Set(['script', 'style', 'textarea', 'title', 'noscript', 'template', 'xmp', 'iframe', 'noembed', 'noframes']);
 
 // Text sanitizer for edited content: the client's allowlist (inline marks, plus the
 // rich editor's blocks), script-bearing elements dropped with their content, other
 // tags unwrapped, attributes allowlisted per tag.
 const SAN_OK = new Set(['b', 'i', 'em', 'strong', 'u', 's', 'del', 'ins', 'small', 'code', 'mark', 'sub', 'sup', 'br', 'span', 'a', 'kbd', 'samp', 'var', 'abbr', 'cite', 'q', 'dfn', 'time', 'img',
   'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'address', 'figure', 'figcaption', 'dl', 'dt', 'dd', 'ul', 'ol', 'li', 'hr', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'caption', 'colgroup', 'col', 'input']);
-const SAN_DROP = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'noscript', 'template', 'svg', 'math', 'textarea', 'title', 'select', 'frame', 'frameset', 'base', 'form', 'button']);
+const SAN_DROP = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'noscript', 'template', 'svg', 'math', 'textarea', 'title', 'select', 'frame', 'frameset', 'base', 'form', 'button', 'xmp', 'noembed', 'noframes', 'plaintext']);
 function textAttrOk(tag, n, v) {
   if (tag === 'a' && n === 'href') return !attrRefusal(n, v, tag);
   if (tag === 'img' && (n === 'alt' || n === 'src')) return !attrRefusal(n, v, tag);
@@ -791,21 +917,21 @@ function sanitizeHTML(html) {
     if (lt < 0) { out += s.slice(i); break; }
     out += s.slice(i, lt);
     if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); i = e < 0 ? s.length : e + 3; continue; }
-    const m = /^<(\/?)([a-zA-Z][\w:-]*)/.exec(s.slice(lt, lt + 80));
+    const m = /^<(\/?)([a-zA-Z][^\s/>]*)/.exec(s.slice(lt, lt + 80));
     if (!m) { out += '&lt;'; i = lt + 1; continue; }
-    const end = tagEnd(s, lt);
+    const end = m[1] ? s.indexOf('>', lt) : tagEnd(s, lt);
     if (end < 0) break;
     const name = m[2].toLowerCase(), closing = !!m[1];
     i = end + 1;
     if (SAN_DROP.has(name)) {
-      if (!closing && s[end - 1] !== '/') { const r = new RegExp(`</${escapeReg(name)}\\s*>`, 'ig'); r.lastIndex = i; const c = r.exec(s); i = c ? c.index + c[0].length : s.length; }
+      if (!closing && s[end - 1] !== '/') { const r = new RegExp(`</${escapeReg(name)}(?=[\\s/>])`, 'ig'); r.lastIndex = i; const c = r.exec(s); i = c ? s.indexOf('>', c.index) + 1 || s.length : s.length; }
       continue;
     }
     if (!SAN_OK.has(name)) continue;
     if (closing) { out += `</${name}>`; continue; }
     let tag = '<' + name;
     for (const a of scanTag(s.slice(lt, end + 1)).attrs) {
-      const v = a.value == null ? '' : decodeEntities(a.value);
+      const v = a.value == null ? '' : decodeEntities(a.value, true);
       if (textAttrOk(name, a.lower, v)) tag += a.lower === 'checked' ? ' checked' : ` ${a.lower}="${escAttr(v)}"`;
     }
     out += tag + '>';
@@ -813,82 +939,74 @@ function sanitizeHTML(html) {
   return out;
 }
 
-function locateEditEl(html, key) {          // element carrying an x-edit*="<key>" attribute
-  const re = new RegExp(`x-edit[.\\w-]*\\s*=\\s*(?:"${escapeReg(key)}"|'${escapeReg(key)}')`, 'g');
-  let m;
-  while ((m = re.exec(html))) {
-    const openStart = html.lastIndexOf('<', m.index); if (openStart < 0) continue;
-    const nameM = /^<([a-zA-Z][\w-]*)/.exec(html.slice(openStart)); if (!nameM) continue;
-    const openEnd = tagEnd(html, openStart); if (openEnd < 0 || openEnd < m.index) continue;
-    const t = scanTag(html.slice(openStart, openEnd + 1));
-    if (!t || !t.attrs.some(a => /^x-edit(\.|$)/.test(a.lower) && a.value === key)) continue;   // a real attribute, not text inside another value
-    const innerStart = openEnd + 1;
-    const cl = matchingClose(html, nameM[1], innerStart); if (!cl) return null;
-    return { tag: nameM[1], openStart, openEnd, innerStart, innerEnd: cl.start, closeEnd: cl.end };
-  }
-  return null;
-}
+// Plugin-rendered hosts: their children are produced at runtime, not authored.
+const RENDERED = ['x-html', 'x-text', 'x-markdown', 'x-icon', 'x-svg', 'x-code', 'x-code-group', 'x-chart', 'x-anchors', 'x-carousel', 'x-color', 'x-colorpicker', 'x-combobox', 'x-date', 'x-defer', 'x-virtual', 'x-import', 'x-files', 'x-data-files'];
+const isRenderedAttr = (a) => RENDERED.some(r => a === r || a.startsWith(r + '.'));
 
-// Structural navigation (dependency-free): element children of [from,to), skipping
-// comments, text and plugin-injected nodes.
-const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
-const escapeText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-function kidsIn(html, from, to) {
-  const out = []; let i = from;
-  while (i < to) {
-    const lt = html.indexOf('<', i); if (lt < 0 || lt >= to) break;
-    if (html.startsWith('<!--', lt)) { const e = html.indexOf('-->', lt); i = e < 0 ? to : e + 3; continue; }
-    if (html[lt + 1] === '/') { i = html.indexOf('>', lt) + 1; continue; }
-    const nameM = /^<([a-zA-Z][\w:-]*)/.exec(html.slice(lt, lt + 80)); if (!nameM) { i = lt + 1; continue; }
-    const tag = nameM[1], openEnd = tagEnd(html, lt); if (openEnd < 0) break;
-    const selfClose = html[openEnd - 1] === '/' || VOID_TAGS.has(tag.toLowerCase());
-    let innerStart = openEnd + 1, innerEnd = innerStart, closeEnd = openEnd + 1;
-    if (!selfClose) { const cl = matchingClose(html, tag, innerStart); if (!cl) break; innerEnd = cl.start; closeEnd = cl.end; }
-    i = closeEnd;
-    if (/\sdata-edit-(handle|ghost|grip)[\s=/>]/.test(html.slice(lt, openEnd + 1))) continue;
-    out.push({ tag, tagStart: lt, openEnd, innerStart, innerEnd, closeEnd, void: selfClose });
-  }
-  return out;
-}
-const childAt = (html, from, to, idx) => kidsIn(html, from, to)[idx] || null;
-
-// A static region parsed once from the ORIGINAL file: every element with the identity
-// the client derives — origin region + tag + first 24 chars of source text (Alpine-
-// bound content left out), ordinal per repeat, document order — and its path.
+// A static area's identities, mirroring the client: origin area + tag + the first 24
+// chars of source text (rendered content left out), ordinal per repeat, document order;
+// plus each element's path and the comment titling it (moves with it).
 const canonKey = (region, k) => '@' + encodeURIComponent(region) + '@' + k;
-function parseRegion(html, name) {
-  const loc = locateEditEl(html, name); if (!loc) return null;
-  const root = { tag: loc.tag, tagStart: loc.openStart, openEnd: loc.openEnd, innerStart: loc.innerStart, innerEnd: loc.innerEnd, closeEnd: loc.closeEnd, void: false, parent: null, path: '' };
-  const reg = { name, root, byKey: new Map(), byPath: new Map() };
-  const open = (n) => html.slice(n.tagStart, n.openEnd + 1);
-  const kidsOf = (n) => n.kids || (n.kids = n.void || /^template$/i.test(n.tag) ? [] : kidsIn(html, n.innerStart, n.innerEnd));
+function indexRegion(html, name, node) {
+  const reg = { name, root: node, byKey: new Map(), byPath: new Map() };
+  const open = (n) => openOf(html, n);
+  const rendered = (n) => !n.implied && hasAttrNamed(open(n), isRenderedAttr);
   const textOf = (n) => {
-    if (n.void || /^template$/i.test(n.tag) || hasAttrNamed(open(n), a => a === 'x-text' || a === 'x-html')) return '';
-    let t = '', at = n.innerStart;
-    for (const k of kidsOf(n)) { t += decodeEntities(html.slice(at, k.tagStart).replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, '')); t += textOf(k); at = k.closeEnd; }
-    return t + decodeEntities(html.slice(at, n.innerEnd).replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, ''));
+    if (n.void || n.name === 'template' || rendered(n)) return '';
+    let t = '';
+    for (const c of n.content) t += c.text != null ? c.text : (isPluginNode(html, c.el) || c.el.name === 'template' ? '' : textOf(c.el));
+    return t;
   };
+  const baseOf = (n) => n.name.toUpperCase() + ':' + textOf(n).replace(/\s+/g, ' ').trim().slice(0, 24);
   const seen = Object.create(null);
   const visit = (n) => {
-    const base = n.tag.toUpperCase() + ':' + textOf(n).replace(/\s+/g, ' ').trim().slice(0, 24);
+    const base = n.base = baseOf(n);
     const c = seen[base] = (seen[base] || 0) + 1;
     n.key = canonKey(name, c > 1 ? base + '#' + c : base);
     reg.byKey.set(n.key, n); reg.byPath.set(n.path, n);
-    if (hasAttrNamed(open(n), a => a.startsWith('x-text-edit'))) { n.kids = kidsOf(n); n.kids.forEach((k, i) => { k.parent = n; k.path = (n.path ? n.path + '.' : '') + i; }); return; }
-    kidsOf(n).forEach((k, i) => { k.parent = n; k.path = (n.path ? n.path + '.' : '') + i; visit(k); });
+    n.kids = kidsOf(html, n);
+    let floor = n.innerStart;
+    n.kids.forEach((k, i) => { k.path = (n.path ? n.path + '.' : '') + i; k.lead = leadOf(html, k, floor); floor = k.closeEnd; });
+    if (n.name === 'template' || rendered(n) || (!n.implied && hasAttrNamed(open(n), a => a.startsWith('x-text-edit')))) return;
+    n.kids.forEach(visit);
   };
-  visit(root);
+  node.path = '';
+  visit(node);
   return reg;
 }
+// A comment directly above an element (whitespace between, no blank line) titles it.
+function leadOf(html, n, floor) {
+  let lead = n.tagStart;
+  for (;;) {
+    const before = html.slice(floor, lead);
+    const m = /<!--(?:(?!-->)[\s\S])*-->([ \t]*\r?\n?[ \t]*)$/.exec(before);
+    if (!m || (m[1].match(/\n/g) || []).length > 1) return lead;
+    lead = floor + m.index;
+  }
+}
+// Element skeleton (tags only), for checking the written file parses as intended.
+const skeletonOf = (html, n) => n.name + (n.name === 'template' ? '()' : '(' + kidsOf(html, n).map(k => skeletonOf(html, k)).join(',') + ')');
+function checkNesting(n) {
+  let prev = n.innerStart;
+  for (const k of n.children) {
+    if (k.tagStart < prev || k.closeEnd > n.innerEnd || k.closeEnd < k.tagStart) return false;
+    prev = k.closeEnd;
+    if (!checkNesting(k)) return false;
+  }
+  return true;
+}
 
-// Rebuild every static region from the client's final trees. Everything is validated
-// and rendered from the original file before a single byte is written; any failure
-// writes nothing.
+// Rebuild every static area from the client's final trees, from the original file.
 function writeStaticTrees(file, patches) {
-  const html = readFileSync(file, 'utf8');
-  const regions = new Map();
-  const region = (name) => { if (!regions.has(name)) regions.set(name, parseRegion(html, name)); return regions.get(name); };
+  const html = vread(file);
+  const doc = parseHTML(html);
   const fail = (msg) => { const e = new Error(msg); e.edit = true; throw e; };
+  if (!checkNesting(doc)) return patches.map(p => ({ region: p.region, status: 'error', reason: 'source does not nest cleanly; not editing it' }));
+  const regions = new Map();
+  const region = (name) => {
+    if (!regions.has(name)) { const node = locateEditEl(html, name, doc); regions.set(name, node ? indexRegion(html, name, node) : null); }
+    return regions.get(name);
+  };
   const removed = new Set(patches.flatMap(p => p.removed || []));
   const placed = new Map(), rebuilt = new Set();
   const resolve = (k, at) => {
@@ -897,59 +1015,72 @@ function writeStaticTrees(file, patches) {
     const reg = region(decodeURIComponent(m[2]));
     if (!reg) fail(`x-edit="${decodeURIComponent(m[2])}" not found in ${basename(file)}`);
     let node = reg.byKey.get('@' + m[2] + '@' + m[3]);
-    if (!node && at != null) { const p = reg.byPath.get(String(at)); if (p && p.tag.toUpperCase() === m[3].split(':')[0]) node = p; }
+    // The path is a fallback only when tag and text agree, i.e. just the ordinal differs.
+    if (!node && at != null) { const p = reg.byPath.get(String(at)); if (p && p.base === m[3].replace(/#\d+$/, '')) node = p; }
     if (!node) fail(`element '${m[3]}' not found in x-edit="${reg.name}"`);
     return { node, copy: !!m[1] };
   };
   const indentOf = (n) => { const nl = html.lastIndexOf('\n', n.tagStart); const pre = html.slice(nl + 1, n.tagStart); return /^[ \t]*$/.test(pre) ? pre : ''; };
   const trailingWs = (s) => (/\s*$/.exec(s.replace(/<!--[\s\S]*?-->/g, '')) || [''])[0];
-  function renderAt(node, n, copy) {
-    let open = html.slice(node.tagStart, node.openEnd + 1);
+  const fragSkeleton = (frag) => { const d = parseHTML(frag); return kidsOf(frag, d).map(k => skeletonOf(frag, k)).join(','); };
+  // Returns [markup, skeleton].
+  function renderAt(node, n, copy, inRebuilt) {
+    let open = node.implied ? `<${node.name}>` : openOf(html, node);
     const e = n.edits || {};
+    let attrsEdited = false;
     for (const [prop, v] of Object.entries(e)) {
       if (prop === 'text') continue;
       const val = (prop === 'class' || prop === 'style') && (v === '' || v == null) ? null : v === false ? null : v === true ? '' : v;
-      const why = attrRefusal(prop, val, node.tag);
-      if (why) fail(`${prop} on ${node.tag}: ${why}`);
+      const why = attrRefusal(prop, val, node.name);
+      if (why) fail(`${prop} on ${node.name}: ${why}`);
       open = setAttr(open, prop, val == null ? null : String(val));
+      attrsEdited = true;
     }
-    if (node.void) return open;
-    let inner;
-    if ('text' in e) inner = sanitizeHTML(e.text);
-    else if (Array.isArray(n.children)) inner = rebuildInner(node, n.children, copy);
-    else inner = html.slice(node.innerStart, node.innerEnd);
-    return open + inner + html.slice(node.innerEnd, node.closeEnd);
+    if (node.implied && !attrsEdited) open = '';
+    if (node.void) return [open, node.name + '()'];
+    let inner, sk;
+    if ('text' in e) {
+      if (RAW_EDIT.has(node.name)) fail(`text edits are refused on <${node.name}>`);
+      inner = sanitizeHTML(e.text); sk = fragSkeleton(inner);
+    } else if (Array.isArray(n.children)) [inner, sk] = rebuildInner(node, n.children, copy);
+    else { inner = html.slice(node.innerStart, node.innerEnd); sk = kidsOf(html, node).map(k => skeletonOf(html, k)).join(','); }
+    let close = html.slice(node.innerEnd, node.closeEnd);
+    if ((node.implied && attrsEdited) || (node.impliedEnd && inRebuilt && !node.implied)) close = `</${node.name}>`;
+    return [open + inner + close, node.name + '(' + (node.name === 'template' ? '' : sk) + ')'];
   }
-  function renderNode(n) {
+  function renderNode(n, parentRebuilt) {
     if (!n || typeof n !== 'object') fail('malformed tree');
     const { node, copy } = resolve(n.key, n.at);
+    if (copy && [...regions.values()].some(r => r && r.root === node)) fail(`an area cannot be copied: ${n.key}`);
     if (!copy) {
       if (placed.has(node)) fail(`'${n.key}' placed twice`);
       if (removed.has(node.key)) fail(`'${n.key}' is both placed and removed`);
       placed.set(node, Array.isArray(n.children) ? 'rebuilt' : 'kept');
     }
-    return renderAt(node, n, copy);
+    const [markup, sk] = renderAt(node, n, copy, parentRebuilt);
+    return [html.slice(node.lead ?? node.tagStart, node.tagStart) + markup, sk];
   }
   function rebuildInner(node, children, copy) {
     if (!copy) rebuilt.add(node);
-    const kids = node.kids || [];
-    const rendered = children.map(renderNode);
+    const kids = node.kids || kidsOf(html, node);
+    const rendered = children.map(c => renderNode(c, true));
+    const sk = rendered.map(r => r[1]).join(',');
     const gaps = []; let prev = node.innerStart;
-    for (const k of kids) { gaps.push(html.slice(prev, k.tagStart)); prev = k.closeEnd; }
+    for (const k of kids) { const start = k.lead ?? k.tagStart; gaps.push(html.slice(prev, start)); prev = k.closeEnd; }
     gaps.push(html.slice(prev, node.innerEnd));
     if (!kids.length) {
-      if (!rendered.length) return gaps[0];
+      if (!rendered.length) return [gaps[0], sk];
       const ind = indentOf(node);
-      return rendered.map(r => '\n' + ind + '    ' + r).join('') + '\n' + ind;
+      return [rendered.map(r => '\n' + ind + '    ' + r[0]).join('') + '\n' + ind, sk];
     }
-    if (!rendered.length) return trailingWs(gaps[kids.length]) || '';
+    if (!rendered.length) return [trailingWs(gaps[kids.length]) || '', sk];
     const extra = trailingWs(kids.length > 1 ? gaps[kids.length - 1] : gaps[0]);
     let out = gaps[0];
-    rendered.forEach((r, i) => { if (i > 0) out += i < kids.length ? gaps[i] : extra; out += r; });
-    return out + gaps[kids.length];
+    rendered.forEach((r, i) => { if (i > 0) out += i < kids.length ? gaps[i] : extra; out += r[0]; });
+    return [out + gaps[kids.length], sk];
   }
 
-  const results = [], out = [];
+  const out = [];
   try {
     for (const p of patches) {
       const reg = region(p.region);
@@ -957,33 +1088,55 @@ function writeStaticTrees(file, patches) {
       const t = p.tree || {};
       if (!t.edits && !Array.isArray(t.children)) continue;
       placed.set(reg.root, Array.isArray(t.children) ? 'rebuilt' : 'kept');
-      out.push({ reg, text: renderAt(reg.root, t, false) });
+      const [markup, sk] = renderAt(reg.root, t, false, false);
+      out.push({ reg, text: markup, sk });
     }
     for (const r of rebuilt) for (const k of r.kids || []) if (!placed.has(k) && !removed.has(k.key)) fail(`'${k.key}' would be lost (not placed, not removed)`);
+    const roots = new Set([...regions.values()].filter(Boolean).map(r => r.root));
+    // Every placed element's source ancestors must be rebuilt (or removed), up to its area.
     for (const [node] of placed) {
+      if (roots.has(node)) continue;
       for (let a = node.parent; a; a = a.parent) {
         const how = placed.get(a);
-        if (how === 'rebuilt') continue;
+        if (how === 'rebuilt') { if (roots.has(a)) break; continue; }
         if (how) fail(`'${node.key}' would appear twice: its source container is kept as is`);
         if (removed.has(a.key)) break;
-        if (!a.parent) fail(`'${node.key}' moved, but its source area x-edit="${regionNameOf(a, regions)}" is not rebuilt`);
+        if (roots.has(a) || !a.parent || a.parent === doc) fail(`'${node.key}' moved, but its source area is not rebuilt`);
       }
+    }
+    // A removal needs its container rebuilt (or an ancestor removed), or it stays in the file.
+    for (const k of removed) {
+      const m = /^@([^@]*)@/.exec(k); if (!m) fail(`not a source element: ${k}`);
+      const reg = region(decodeURIComponent(m[1])); const node = reg && reg.byKey.get(k);
+      if (!node) fail(`removed element '${k}' not found`);
+      let ok = placed.get(node.parent) === 'rebuilt';
+      for (let a = node.parent; !ok && a && !roots.has(a); a = a.parent) if (removed.has(a.key)) ok = true;
+      if (!ok) fail(`'${k}' removed, but its container is kept as is`);
     }
   } catch (e) {
     if (!e.edit) throw e;
     return patches.map(p => ({ region: p.region, status: 'error', reason: e.message }));
   }
   let next = html;
-  out.sort((a, b) => b.reg.root.tagStart - a.reg.root.tagStart).forEach(({ reg, text }) => { next = next.slice(0, reg.root.tagStart) + text + next.slice(reg.root.closeEnd); });
-  if (next !== html) writeFileSync(file, next);
-  patches.forEach(p => results.push({ region: p.region, status: 'written', file: basename(file) }));
-  return results;
+  out.slice().sort((a, b) => b.reg.root.tagStart - a.reg.root.tagStart).forEach(({ reg, text }) => { next = next.slice(0, reg.root.tagStart) + text + next.slice(reg.root.closeEnd); });
+  // The written file must parse into exactly the structure that was rendered.
+  if (next !== html) {
+    const after = parseHTML(next);
+    for (const { reg, sk } of out) {
+      const node = locateEditEl(next, reg.name, after);
+      const got = node && skeletonOf(next, node), want = sk;
+      if (got !== want) return patches.map(p => ({ region: p.region, status: 'error', reason: `x-edit="${reg.name}" would not parse as rebuilt; nothing written` }));
+    }
+    vwrite(file, next);
+  }
+  return patches.map(p => ({ region: p.region, status: 'written', file: basename(file) }));
 }
-const regionNameOf = (rootNode, regions) => { for (const [n, r] of regions) if (r && r.root === rootNode) return n; return '?'; };
-function navigateToNode(html, path) {             // path indices are relative to the component's first top-level element ('' = the root itself)
-  let node = childAt(html, 0, html.length, 0); if (!node) return null;
+// Component files: the first top-level element, then paths through element children.
+function navigateToNode(html, path) {
+  const doc = parseHTML(html);
+  let node = kidsOf(html, doc)[0]; if (!node) return null;
   if (!path) return node;
-  for (const i of path.split('.').map(Number)) { node = childAt(html, node.innerStart, node.innerEnd, i); if (!node) return null; }
+  for (const i of path.split('.').map(Number)) { node = kidsOf(html, node)[i]; if (!node) return null; }
   return node;
 }
 function resolveComponentFile(manifest, name) {
@@ -1006,13 +1159,13 @@ function writeThemeVar(p) {
   const rel = (p.file || DEFAULT_THEME_FILE).replace(/^\//, '');
   const file = safeResolve('/' + rel);
   if (!file) return { region: p.var, status: 'error', reason: `path outside root: ${rel}` };
-  let css = isFile(file) ? readFileSync(file, 'utf8') : '';
+  let css = vexists(file) ? vread(file) : '';
   const decl = `${p.var}: ${p.value};`;
   const declRe = new RegExp(`(${escapeReg(p.var)}\\s*:)[^;]*;`);
   if (declRe.test(css)) css = css.replace(declRe, `$1 ${p.value};`);              // rewrite in place
   else if (/:root\s*[^{]*\{/.test(css)) css = css.replace(/(:root\s*[^{]*\{)/, `$1\n    ${decl}`);   // append into :root
   else css = `:root {\n    ${decl}\n}\n${css}`;                                    // create :root
-  writeFileSync(file, css);
+  vwrite(file, css);
   return { region: `${p.scope ? p.scope + ':' : ''}${p.var}`, status: 'written', file: rel };
 }
 const modParamIn = (openTag, attr) => { const v = attrOf(openTag, attr); const mm = v && v.match(/\$modify\(['"]([\w-]+)['"]\)/); return mm ? mm[1] : null; };
@@ -1034,7 +1187,7 @@ function writeComponentEdits(p, manifest) {
   const indexFile = join(root, 'index.html'), instanceAttrs = {}, removeNames = new Set(), applied = [];
   for (const ed of (p.edits || [])) {
     const prop = ed.prop || 'text';
-    let html = readFileSync(compFile, 'utf8');
+    let html = vread(compFile);
     const node = navigateToNode(html, ed.path);
     if (!node) { applied.push({ path: ed.path, status: 'not-found' }); continue; }
     let openTag = html.slice(node.tagStart, node.openEnd + 1);
@@ -1044,15 +1197,15 @@ function writeComponentEdits(p, manifest) {
       if (p.scope !== 'main') { applied.push({ path: ed.path, prop, status: 'skipped', reason: 'instance styles are not written' }); continue; }
       const why = attrRefusal('style', ed.value, node.tag);
       if (why) { applied.push({ path: ed.path, prop, status: 'error', reason: why }); continue; }
-      writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1));
+      vwrite(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1));
       applied.push({ path: ed.path, prop, status: 'main' });
       continue;
     }
     if (prop === 'class') {
       const param = modParamIn(openTag, ':class');
-      if (p.scope === 'main') { writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1)); applied.push({ path: ed.path, prop, status: 'main' }); }
+      if (p.scope === 'main') { vwrite(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1)); applied.push({ path: ed.path, prop, status: 'main' }); }
       else if (param) { instanceAttrs[param] = ed.value; applied.push({ path: ed.path, prop, status: 'instance', param }); }
-      else { const name = 'c_' + seg; writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, ':class', `$modify('${name}') ?? '${jsStr(classOf(openTag))}'`) + html.slice(node.openEnd + 1)); instanceAttrs[name] = ed.value; applied.push({ path: ed.path, prop, status: 'promoted', param: name }); }
+      else { const name = 'c_' + seg; vwrite(compFile, html.slice(0, node.tagStart) + setAttr(openTag, ':class', `$modify('${name}') ?? '${jsStr(classOf(openTag))}'`) + html.slice(node.openEnd + 1)); instanceAttrs[name] = ed.value; applied.push({ path: ed.path, prop, status: 'promoted', param: name }); }
       continue;
     }
 
@@ -1064,21 +1217,21 @@ function writeComponentEdits(p, manifest) {
       if (param) {
         const bound = attrOf(openTag, 'x-html') != null && modParamIn(openTag, 'x-html') ? 'x-html' : 'x-text';
         const expr = attrOf(openTag, bound).replace(/((?:\?\?|\|\|)\s*)(['"])(?:\\.|(?!\2)[^\\])*\2/, (_, op) => `${op}'${jsStr(value)}'`);
-        writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, bound, expr) + html.slice(node.openEnd + 1));
-      } else writeFileSync(compFile, html.slice(0, node.innerStart) + value + html.slice(node.innerEnd));
+        vwrite(compFile, html.slice(0, node.tagStart) + setAttr(openTag, bound, expr) + html.slice(node.openEnd + 1));
+      } else vwrite(compFile, html.slice(0, node.innerStart) + value + html.slice(node.innerEnd));
       applied.push({ path: ed.path, prop, status: 'main' });
     } else if (param) {
-      if (hasMarkup && attrOf(openTag, 'x-text') != null && attrOf(openTag, 'x-html') == null) { writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(setAttr(openTag, 'x-text', null), 'x-html', attrOf(openTag, 'x-text')) + html.slice(node.openEnd + 1)); }
+      if (hasMarkup && attrOf(openTag, 'x-text') != null && attrOf(openTag, 'x-html') == null) { vwrite(compFile, html.slice(0, node.tagStart) + setAttr(setAttr(openTag, 'x-text', null), 'x-html', attrOf(openTag, 'x-text')) + html.slice(node.openEnd + 1)); }
       instanceAttrs[param] = value; applied.push({ path: ed.path, prop, status: 'instance', param });
     } else {                                        // PROMOTE: x-html if rich, else x-text
       const name = 'p_' + seg, bind = hasMarkup ? 'x-html' : 'x-text';
       const orig = jsStr(html.slice(node.innerStart, node.innerEnd).trim());
-      writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, bind, `$modify('${name}') ?? '${orig}'`) + html.slice(node.openEnd + 1));
+      vwrite(compFile, html.slice(0, node.tagStart) + setAttr(openTag, bind, `$modify('${name}') ?? '${orig}'`) + html.slice(node.openEnd + 1));
       instanceAttrs[name] = value; applied.push({ path: ed.path, prop, status: 'promoted', param: name, bind });
     }
   }
   if (p.scope === 'instance' && (p.reverts || []).length) {
-    const html = readFileSync(compFile, 'utf8');
+    const html = vread(compFile);
     for (const rp of p.reverts) {
       if (rp === '*') { allModifyParams(html).forEach(n => removeNames.add(n)); applied.push({ path: '*', status: 'revert-all' }); continue; }
       const node = navigateToNode(html, rp); if (!node) continue;
@@ -1088,22 +1241,22 @@ function writeComponentEdits(p, manifest) {
     }
   }
   const inst = (Object.keys(instanceAttrs).length || removeNames.size) ? writeComponentInstance(indexFile, p.region, instanceAttrs, [...removeNames]) : null;
+  const failed = applied.find(x => x.status === 'error' || x.status === 'not-found') || (inst && inst.status === 'error' && inst);
+  if (failed) return { region: p.region, status: 'error', reason: failed.reason || `node ${failed.path} not found`, applied };
   return { region: p.region, status: 'written', scope: p.scope, file: basename(compFile), applied, instance: inst && inst.status };
 }
 function writeComponentInstance(file, key, overrides, removals) {
-  let html = readFileSync(file, 'utf8');
+  let html = vread(file);
   const loc = locateEditEl(html, key);
   if (!loc) return { region: key, status: 'error', reason: `x-edit="${key}" not found in ${basename(file)}` };
-  const inner = html.slice(loc.innerStart, loc.innerEnd);
-  const cm = /<x-[\w-]+/.exec(inner);   // first component instance in the region
+  const cm = allElements(loc).find(n => /^x-/.test(n.name) && !n.implied);   // first component instance in the region
   if (!cm) return { region: key, status: 'error', reason: 'no <x-*> instance in region' };
-  const instStart = loc.innerStart + cm.index, instEnd = tagEnd(html, instStart);
-  if (instEnd < 0) return { region: key, status: 'error', reason: 'malformed instance tag' };
+  const instStart = cm.tagStart, instEnd = cm.openEnd;
   let openTag = html.slice(instStart, instEnd + 1);
   for (const [k, v] of Object.entries(overrides || {})) { if (attrRefusal(k, null, 'x')) continue; openTag = setAttr(openTag, k, v == null ? null : String(v)); }
   for (const name of (removals || [])) openTag = removeAttr(openTag, name);
   html = html.slice(0, instStart) + openTag + html.slice(instEnd + 1);
-  writeFileSync(file, html);
+  vwrite(file, html);
   return { region: key, status: 'written', file: basename(file), applied: Object.keys(overrides || {}), removed: removals || [] };
 }
 
@@ -1388,30 +1541,39 @@ const server = createServer((req, res) => {
       if (!Array.isArray(patches)) patches = [patches];
       let manifest = {}; try { manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')); } catch {}
       const indexFile = join(root, 'index.html');
-      // Static regions first, all or nothing: if any fails, nothing in the batch is written.
-      const trees = patches.filter(p => p && p.kind === 'static-tree');
-      let treeResults = [];
-      try { treeResults = trees.length ? writeStaticTrees(indexFile, trees) : []; }
-      catch (e) { treeResults = trees.map(p => ({ region: p.region, status: 'error', reason: e.message })); }
-      const aborted = treeResults.some(r => r.status === 'error');
-      const results = patches.map(p => {
-        if (p && p.kind === 'static-tree') return treeResults[trees.indexOf(p)];
-        if (aborted) return { region: p && p.region, status: 'skipped', reason: 'batch aborted: a static region failed' };
-        try {
-          if (p.kind === 'data') {
-            const src = (manifest.data || {})[p.source];
-            const rel = typeof src === 'string' ? src : null;
-            if (!rel) return { region: p.region, status: 'error', reason: `data source '${p.source}' is not a plain file path` };
-            const file = safeResolve(rel);
-            if (!file || !isFile(file)) return { region: p.region, status: 'error', reason: `file not found: ${rel}` };
-            return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
-          }
-          if (p.kind === 'data-val') return writeDataValue(p, manifest);
-          if (p.kind === 'component') return writeComponentEdits(p, manifest);
-          if (p.kind === 'theme') return writeThemeVar(p);
-          return { region: p.region, status: 'skipped', reason: `unknown kind ${p.kind}` };
-        } catch (e) { return { region: p.region, status: 'error', reason: e.message }; }
-      });
+      // All or nothing: every patch is prepared against an in-memory overlay; files are
+      // written only if none of them failed.
+      VFS = new Map();
+      let results;
+      try {
+        const trees = patches.filter(p => p && p.kind === 'static-tree');
+        let treeResults = [];
+        try { treeResults = trees.length ? writeStaticTrees(indexFile, trees) : []; }
+        catch (e) { treeResults = trees.map(p => ({ region: p.region, status: 'error', reason: e.message })); }
+        results = patches.map(p => {
+          if (p && p.kind === 'static-tree') return treeResults[trees.indexOf(p)];
+          try {
+            if (!p || typeof p !== 'object') return { status: 'error', reason: 'malformed patch' };
+            if (p.kind === 'data') {
+              const src = (manifest.data || {})[p.source];
+              const rel = typeof src === 'string' ? src : null;
+              if (!rel) return { region: p.region, status: 'error', reason: `data source '${p.source}' is not a plain file path` };
+              const file = safeResolve(rel);
+              if (!file || !isFile(file)) return { region: p.region, status: 'error', reason: `file not found: ${rel}` };
+              return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
+            }
+            if (p.kind === 'data-val') return writeDataValue(p, manifest);
+            if (p.kind === 'component') return writeComponentEdits(p, manifest);
+            if (p.kind === 'theme') return writeThemeVar(p);
+            return { region: p.region, status: 'error', reason: `unknown kind ${p.kind}` };
+          } catch (e) { return { region: p && p.region, status: 'error', reason: e.message }; }
+        });
+        if (results.some(r => r && r.status === 'error')) {
+          results = results.map(r => r && r.status === 'error' ? r : Object.assign({}, r, { status: 'skipped', reason: 'batch aborted: another patch failed; nothing was written' }));
+        } else {
+          for (const [file, content] of VFS) writeFileSync(file, content);
+        }
+      } finally { VFS = null; }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ results }));
     });
