@@ -4,46 +4,23 @@
  * Edit text leaves run on the Rich Text engine (inline mode): attach/detach,
  * Cmd+B and $rich on page text, Enter and paste rules, the undo hand-off between
  * Rich Text's history (while focused) and Edit's (after blur), x-rich-text blocks
- * inside an area, and the source writer's inline allowlist.
+ * inside an area. The writer round trips are in edit-publish-isolated.test.js.
  */
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
-import { spawn } from 'child_process'
-import http from 'http'
-import path from 'path'
-import { fileURLToPath } from 'url'
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import Alpine from 'alpinejs'
 import { EDIT_SRC } from './helpers/edit-setup.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
 
 const flush = () => new Promise(r => setTimeout(r, 0))
 const frame = () => new Promise(r => setTimeout(r, 30))
 
-let dir, proc, port
-const page = (body) => `<!doctype html>\n<html>\n<body>\n${body}\n</body>\n</html>\n`
-
 beforeAll(async () => {
-    dir = mkdtempSync(path.join(tmpdir(), 'mnfst-edit-rich-'))
-    writeFileSync(path.join(dir, 'index.html'), page(''))
-    writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'rt' }))
-    const ask = 48000 + Math.floor(Math.random() * 4000)
-    proc = spawn(process.execPath, [SERVE, dir, '--edit', '--no-open', '--no-idle-shutdown', '--port', String(ask)], { stdio: ['ignore', 'pipe', 'pipe'] })
-    port = await new Promise((resolve, reject) => {
-        let out = ''
-        const t = setTimeout(() => reject(new Error('server did not start: ' + out)), 10000)
-        const scan = c => { out += c; const m = out.match(/running at http:\/\/localhost:(\d+)/); if (m) { clearTimeout(t); resolve(+m[1]) } }
-        proc.stdout.on('data', scan); proc.stderr.on('data', scan)
-    })
     window.Alpine = Alpine; globalThis.Alpine = Alpine
     new Function(EDIT_SRC)()
     Alpine.start()
     await new Promise(r => setTimeout(r, 500))
-}, 15000)
+})
 
-afterAll(() => { try { proc.kill() } catch { } try { rmSync(dir, { recursive: true, force: true }) } catch { } })
 afterEach(() => {
     store().off()
     store().onPublish = null
@@ -52,15 +29,6 @@ afterEach(() => {
     localStorage.clear()
 })
 
-function post(patches) {
-    const body = JSON.stringify(patches)
-    return new Promise((resolve, reject) => {
-        const req = http.request({ host: 'localhost', port, path: '/__edit/save', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Origin: `http://localhost:${port}` } }, res => {
-            let data = ''; res.on('data', c => data += c); res.on('end', () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
-        })
-        req.on('error', reject); req.end(body)
-    })
-}
 
 const store = () => Alpine.store('edit')
 const log = () => store().export().log
@@ -73,7 +41,6 @@ async function mount(html) {
     await flush(); await flush()
     return root
 }
-const regionSource = () => { const s = readFileSync(path.join(dir, 'index.html'), 'utf8'); return s.slice(s.indexOf('<body>') + 7, s.indexOf('</body>')).trim() }
 const key = (el, init) => { const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }); el.dispatchEvent(e); return e }
 function select(node, start, end) {
     const s = window.getSelection(), r = document.createRange()
@@ -878,42 +845,5 @@ describe('x-rich-text blocks inside an area', () => {
         expect(cursor()).toBe(at + 1)
         expect(log().at(-1).value).toContain('<h3>Para</h3>')
         expect(log().at(-1).value).toContain('<h2>Head</h2>')
-    })
-})
-
-describe('source writer allowlist', () => {
-    const INLINE = '<a href="/x">a</a> <abbr title="t">abbr</abbr> <b>b</b> <bdi>bdi</bdi> <bdo dir="rtl">bdo</bdo> <cite>cite</cite> <code>code</code> <data value="7">data</data> <del>del</del> <dfn title="d">dfn</dfn> <em>em</em> <i>i</i> <ins>ins</ins> <kbd>kbd</kbd> <mark>mark</mark> <q>q</q> <s>s</s> <samp>samp</samp> <small>small</small> <span>span</span> <strong>strong</strong> <sub>sub</sub> <sup>sup</sup> <time datetime="2026-10-15">time</time> <u>u</u> <var>var</var> x<wbr>y<br>z'
-
-    it('every inline tag Rich Text makes survives client sanitize, publish and the written source', async () => {
-        const body = `<section x-edit="f1"><p>One</p><p>Two</p></section>`
-        writeFileSync(path.join(dir, 'index.html'), page(body))
-        store().onPublish = (patches) => post(patches)
-        const root = await mount(body)
-        const p = root.querySelector('p')
-        await enter(p)
-        p.innerHTML = INLINE
-        await blur(p)
-        expect(log().at(-1).value).toBe(INLINE)
-        const res = await store().publish()
-        expect(res.results.map(r => r.status)).toEqual(['written'])
-        expect(regionSource()).toBe(`<section x-edit="f1"><p>${INLINE}</p><p>Two</p></section>`)
-    })
-
-    it('anything else is refused by the writer even when a client sends it', async () => {
-        const body = `<section x-edit="f2"><p>One</p></section>`
-        const send = (t) => post([{ kind: 'static-tree', region: 'f2', tree: { key: '', children: [{ key: '@f2@P:One', at: '0', edits: { text: t } }] } }])
-        writeFileSync(path.join(dir, 'index.html'), page(body))
-        const hostile = '<script>bad()</script><iframe src="//e"></iframe><div onclick="x()">d</div>'
-            + '<a href="javascript:alert(1)" onmouseover="x()">a</a><abbr title="ok" class="c" style="color: red">ab</abbr>'
-            + '<bdo dir="sideways">bd</bdo><data value="javascript:x" id="i">da</data><time datetime="1" title="no">t</time>'
-            + '<img src="x" onerror="alert(1)"><svg><script>bad()</script></svg><form action="/x">f</form><dfn data-x="1">df</dfn>'
-        const res = await send(hostile)
-        expect(res.results.map(r => r.status)).toEqual(['written'])
-        expect(regionSource()).toBe('<section x-edit="f2"><p>d<a>a</a><abbr title="ok" style="color: red">ab</abbr><bdo>bd</bdo><data>da</data><time datetime="1">t</time><img src="x"><dfn>df</dfn></p></section>')
-        // A block that cannot sit in the leaf: nothing is written
-        writeFileSync(path.join(dir, 'index.html'), page(body))
-        const block = await send('<h1>Big</h1>')
-        expect(block.results.map(r => r.status)).toEqual(['error'])
-        expect(regionSource()).toBe(body)
     })
 })
