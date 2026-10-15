@@ -379,6 +379,12 @@ describe('links never nest', () => {
         window.getSelection().removeAllRanges(); window.getSelection().addRange(r2); document.dispatchEvent(new Event('selectionchange'))
         p._editRt.unlink()
         expect(p.querySelector('a')).toBe(null)
+        // Unlinking part of a link keeps the rest linked
+        p.innerHTML = 'Go <a href="/x">Alpha</a> end'
+        const a = p.querySelector('a'), r3 = document.createRange(); r3.setStart(a.firstChild, 1); r3.setEnd(a.firstChild, 3)
+        window.getSelection().removeAllRanges(); window.getSelection().addRange(r3); document.dispatchEvent(new Event('selectionchange'))
+        p._editRt.unlink()
+        expect(p.innerHTML).toBe('Go <a href="/x">A</a>lp<a href="/x">ha</a> end')
     })
 
     it('leaf text never carries a nested or empty link, whatever reaches the DOM', async () => {
@@ -390,6 +396,69 @@ describe('links never nest', () => {
         const empty = document.createElement('a'); empty.setAttribute('href', '/c'); p.append(' ', empty)
         await blur(p)
         expect(log().at(-1).value).toBe('One <a href="/a">twx</a>')
+    })
+})
+
+describe('links: minors', () => {
+    const selectRange = (sc, so, ec, eo) => { const r = document.createRange(); r.setStart(sc, so); r.setEnd(ec, eo); window.getSelection().removeAllRanges(); window.getSelection().addRange(r); document.dispatchEvent(new Event('selectionchange')) }
+    it('a button leaf takes no link', async () => {
+        const root = await mount(`<section x-edit="lm1"><button>Buy <strong>now</strong></button></section>`)
+        const b = root.querySelector('button')
+        expect(b._editRt).toBeTruthy()
+        await enter(b)
+        select(b.firstChild, 0, 3)
+        expect(b._editRt.can('a')).toBe(false)
+        b._editRt.a('https://x.com')
+        expect(b.querySelector('a')).toBe(null)
+    })
+
+    it('a selection inside a link splits it; across formatting the links stay outermost and merge', async () => {
+        const root = await mount(`<section x-edit="lm2"><p>Go <a href="/x">Alpha <strong>Beta</strong></a> end</p><p>Go <a href="/x">Alpha <strong>Beta</strong></a> end</p></section>`)
+        const [p, q] = root.querySelectorAll('p')
+        await enter(p)
+        selectRange(p.querySelector('a').firstChild, 1, p.querySelector('a').firstChild, 4)
+        p._editRt.a('https://y.com')
+        expect(p.innerHTML).toBe('Go <a href="/x">A</a><a href="https://y.com">lph</a><a href="/x">a <strong>Beta</strong></a> end')
+        await blur(p)
+        await enter(q)
+        const a = q.querySelector('a')
+        selectRange(a.firstChild, 2, a.querySelector('strong').firstChild, 2)
+        q._editRt.a('https://y.com')
+        expect(q.innerHTML).toBe('Go <a href="/x">Al</a><a href="https://y.com">pha <strong>Be</strong></a><a href="/x"><strong>ta</strong></a> end')
+        await blur(q)
+    })
+})
+
+describe('hand-off respects data-edit-hotkeys="off"', () => {
+    it('no session is logged when Edit will not act on the key', async () => {
+        const root = await mount(`<section x-edit="ho1" data-edit-hotkeys="off"><p>One</p></section>`)
+        const p = root.querySelector('p'), size = log().length
+        await enter(p)
+        p.firstChild.nodeValue = 'Onex'; window.getSelection().collapse(p.firstChild, 4)
+        p.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'x' }))
+        key(p, { key: 'z', metaKey: true })
+        expect(p.innerHTML).toBe('One')
+        key(p, { key: 'z', metaKey: true })
+        expect(log().length).toBe(size)
+        await blur(p)
+        expect(log().length).toBe(size)
+    })
+})
+
+describe('publishes run one at a time', () => {
+    it('a second publish waits for the first and builds on its result', async () => {
+        const root = await mount(`<section x-edit="pb1"><p>One</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p); p.firstChild.nodeValue = 'Uno'; await blur(p)
+        const calls = []
+        let release
+        store().onPublish = (patches) => { calls.push(patches.length); return calls.length === 1 ? new Promise(r => { release = () => r({ results: [{ status: 'written' }] }) }) : { results: [] } }
+        const first = store().publish(), second = store().publish()
+        await flush(); await flush()
+        expect(calls).toEqual([1])
+        release()
+        await first; await second
+        expect(calls).toEqual([1, 0])                                     // rebased by the first: nothing left to send
     })
 })
 

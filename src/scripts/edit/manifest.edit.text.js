@@ -47,7 +47,8 @@
         const el = this, h = el._editRt, dir = historyDir(e);
         if (!h || !dir) return;
         if (h.can(dir)) { e.preventDefault(); e.stopImmediatePropagation(); h[dir](); return; }
-        if (dir === 'undo') handOff(el);
+        const region = regionOf(el);
+        if (dir === 'undo' && region && isActive(region) && !hotkeysOff(el)) handOff(el);   // only when Edit's history will act
         onHistoryKey(e);
         if (e.defaultPrevented) e.stopImmediatePropagation();
     }

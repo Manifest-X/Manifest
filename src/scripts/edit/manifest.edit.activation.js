@@ -252,7 +252,14 @@
         const pending = held; held = [];
         if (pending.some(f => !ours(f))) location.reload();
     }
+    // Publishes run one at a time: a second waits for the first, then builds on its result.
+    let publishing = Promise.resolve();
     function publish(opts) {
+        const next = publishing.then(() => publishNow(opts));
+        publishing = next.catch(() => { });
+        return next;
+    }
+    function publishNow(opts) {
         const done = (r) => {
             if (r && r.base && baseFiles) Object.assign(baseFiles, r.base);
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
