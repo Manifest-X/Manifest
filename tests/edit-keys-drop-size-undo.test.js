@@ -87,10 +87,26 @@ describe('reorderable text keeps Space/Enter; Alt+arrow moves rows', () => {
         expect(cursor - before).toBe(1)
         expect(log[cursor - 1].kind).toBe('st-order')
         expect(document.querySelector('[data-edit-live]').textContent).toBe('Moved to position 2 of 3')
-        key(alpha, { key: 'ArrowRight', altKey: true })
-        expect(texts(a)).toEqual(['Beta', 'Gamma', 'Alpha'])
         key(alpha, { key: 'ArrowUp', altKey: true })
-        key(alpha, { key: 'ArrowLeft', altKey: true })
+        expect(texts(a)).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('Alt+Left/Right in a text row stay native word-jump', async () => {
+        const root = await mount(`<section x-edit="k-word"><p>Alpha</p><p>Beta</p></section>`)
+        const a = root.querySelector('section'), alpha = a.querySelector('p')
+        const at = store().export().cursor
+        expect(key(alpha, { key: 'ArrowRight', altKey: true }).defaultPrevented).toBe(false)
+        expect(key(alpha.nextElementSibling, { key: 'ArrowLeft', altKey: true }).defaultPrevented).toBe(false)
+        expect(texts(a)).toEqual(['Alpha', 'Beta'])
+        expect(store().export().cursor).toBe(at)
+    })
+
+    it('Alt+Left/Right move a non-text row (horizontal rows)', async () => {
+        const root = await mount(`<section x-edit="k-horiz" style="display:flex"><div><p>Alpha</p></div><div><p>Beta</p></div><div><p>Gamma</p></div></section>`)
+        const a = root.querySelector('section'), row = a.querySelector('div')
+        expect(key(row, { key: 'ArrowRight', altKey: true }).defaultPrevented).toBe(true)
+        expect(texts(a)).toEqual(['Beta', 'Alpha', 'Gamma'])
+        key(row, { key: 'ArrowLeft', altKey: true })
         expect(texts(a)).toEqual(['Alpha', 'Beta', 'Gamma'])
     })
 
@@ -208,10 +224,30 @@ describe('resize limits', () => {
         expect(el.style.width).toBe('380px')       // (800 - 40) * 50%
     })
 
-    it('max-height 100% resolves against the parent height', async () => {
-        const { el, handle } = await sizable('height: 100px; max-height: 100%; min-height: 20px')
+    it('max-height 100% resolves against a definite (inline) parent height', async () => {
+        const { el, handle } = await sizable('height: 100px; max-height: 100%; min-height: 20px', 'height: 600px')
         dragHandle(handle('bottom'), 0, 900)
         expect(el.style.height).toBe('600px')
+    })
+
+    it('% max-height/min-height under an auto-height parent mean no limit / 0', async () => {
+        const { el, handle } = await sizable('height: 100px; max-height: 100%; min-height: 50%')
+        dragHandle(handle('bottom'), 0, 900)
+        expect(el.style.height).toBe('1000px')
+        dragHandle(handle('bottom'), 0, -990)
+        expect(el.style.height).toBe('10px')
+    })
+
+    it('reads the parent specified height through computedStyleMap when available', async () => {
+        const auto = await sizable('height: 100px; max-height: 100%')
+        auto.parent.computedStyleMap = () => ({ get: () => ({ toString: () => 'auto' }) })
+        dragHandle(auto.handle('bottom'), 0, 900)
+        expect(auto.el.style.height).toBe('1000px')
+        document.body.innerHTML = ''
+        const fixed = await sizable('height: 100px; max-height: 100%')
+        fixed.parent.computedStyleMap = () => ({ get: () => ({ toString: () => '600px' }) })
+        dragHandle(fixed.handle('bottom'), 0, 900)
+        expect(fixed.el.style.height).toBe('600px')
     })
 
     it('a min larger than a % max wins, as in CSS', async () => {

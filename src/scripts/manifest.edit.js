@@ -736,7 +736,7 @@
     /* ---- Drag: reorder (in-flow, pointer+keyboard) OR move (positioned) ----
        Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
        Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel;
-       Alt/Option+arrow moves the focused row one step, caret in its text or not.
+       Alt/Option+arrow moves the focused row one step; in text only Up/Down (Left/Right stay word-jump).
        CSS-var config:
          --edit-drop-reach        48px        how far outside a cross-region destination a drop still lands in it */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
@@ -921,7 +921,8 @@
         const item = this, area = item.closest('[data-edit-area]'); if (!isActive(area)) return;
         if (e._editRow) return;                            // the innermost row claims the key
         const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
-        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        const wordJump = inText(e) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
+        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !wordJump) {
             const home = item.parentElement && item.parentElement.closest('[data-edit-area]');   // the row's region, never the row itself
             if (!isActive(home)) return;
             e._editRow = true; e.preventDefault(); stepRow(item, home, dir); return;
@@ -1024,7 +1025,8 @@
         return pos.replace(/start/g, rtl ? 'right' : 'left').replace(/end/g, rtl ? 'left' : 'right');
     }
     // Containing-block size for % limits: the parent's content box in flow, the
-    // offsetParent's padding box when absolute, the viewport when fixed.
+    // offsetParent's padding box when absolute, the viewport when fixed. An
+    // auto-height parent has no definite height, so % height limits drop (null).
     function blockSize(el, dim) {
         const pos = getComputedStyle(el).position;
         if (pos === 'fixed') return dim === 'w' ? document.documentElement.clientWidth : document.documentElement.clientHeight;
@@ -1033,7 +1035,22 @@
         const ps = getComputedStyle(cb), w = dim === 'w';
         const box = w ? cb.clientWidth : cb.clientHeight;
         if (pos === 'absolute') return box;
+        if (!w && !definiteHeight(cb)) return null;
         return box - (parseFloat(w ? ps.paddingLeft : ps.paddingTop) || 0) - (parseFloat(w ? ps.paddingRight : ps.paddingBottom) || 0);
+    }
+    // Specified height via Typed OM; without it (Firefox) only an inline height counts.
+    function definiteHeight(el) {
+        for (let n = el, depth = 0; n && depth < 32; n = n.parentElement, depth++) {
+            if (n === document.documentElement) return true;               // % on the root resolves against the viewport
+            const pos = getComputedStyle(n).position;
+            if (pos === 'absolute' || pos === 'fixed') return true;
+            let h;
+            if (n.computedStyleMap) { try { h = String(n.computedStyleMap().get('height')).trim(); } catch { } }
+            if (h == null) h = (n.style && n.style.height || '').trim() || 'auto';
+            if (h === 'auto' || h === '') return false;
+            if (!h.endsWith('%')) return true;                           // a length (or calc) is definite
+        }
+        return false;
     }
     function limitPx(v, el, dim, none) {
         v = String(v || '').trim();

@@ -1,7 +1,7 @@
     /* ---- Drag: reorder (in-flow, pointer+keyboard) OR move (positioned) ----
        Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
        Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel;
-       Alt/Option+arrow moves the focused row one step, caret in its text or not.
+       Alt/Option+arrow moves the focused row one step; in text only Up/Down (Left/Right stay word-jump).
        CSS-var config:
          --edit-drop-reach        48px        how far outside a cross-region destination a drop still lands in it */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
@@ -186,7 +186,8 @@
         const item = this, area = item.closest('[data-edit-area]'); if (!isActive(area)) return;
         if (e._editRow) return;                            // the innermost row claims the key
         const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
-        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        const wordJump = inText(e) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
+        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !wordJump) {
             const home = item.parentElement && item.parentElement.closest('[data-edit-area]');   // the row's region, never the row itself
             if (!isActive(home)) return;
             e._editRow = true; e.preventDefault(); stepRow(item, home, dir); return;

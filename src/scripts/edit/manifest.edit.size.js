@@ -29,7 +29,8 @@
         return pos.replace(/start/g, rtl ? 'right' : 'left').replace(/end/g, rtl ? 'left' : 'right');
     }
     // Containing-block size for % limits: the parent's content box in flow, the
-    // offsetParent's padding box when absolute, the viewport when fixed.
+    // offsetParent's padding box when absolute, the viewport when fixed. An
+    // auto-height parent has no definite height, so % height limits drop (null).
     function blockSize(el, dim) {
         const pos = getComputedStyle(el).position;
         if (pos === 'fixed') return dim === 'w' ? document.documentElement.clientWidth : document.documentElement.clientHeight;
@@ -38,7 +39,22 @@
         const ps = getComputedStyle(cb), w = dim === 'w';
         const box = w ? cb.clientWidth : cb.clientHeight;
         if (pos === 'absolute') return box;
+        if (!w && !definiteHeight(cb)) return null;
         return box - (parseFloat(w ? ps.paddingLeft : ps.paddingTop) || 0) - (parseFloat(w ? ps.paddingRight : ps.paddingBottom) || 0);
+    }
+    // Specified height via Typed OM; without it (Firefox) only an inline height counts.
+    function definiteHeight(el) {
+        for (let n = el, depth = 0; n && depth < 32; n = n.parentElement, depth++) {
+            if (n === document.documentElement) return true;               // % on the root resolves against the viewport
+            const pos = getComputedStyle(n).position;
+            if (pos === 'absolute' || pos === 'fixed') return true;
+            let h;
+            if (n.computedStyleMap) { try { h = String(n.computedStyleMap().get('height')).trim(); } catch { } }
+            if (h == null) h = (n.style && n.style.height || '').trim() || 'auto';
+            if (h === 'auto' || h === '') return false;
+            if (!h.endsWith('%')) return true;                           // a length (or calc) is definite
+        }
+        return false;
     }
     function limitPx(v, el, dim, none) {
         v = String(v || '').trim();
