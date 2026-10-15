@@ -2945,6 +2945,34 @@
         outline-offset: 3px;
     }
 
+    /* Grip: drags a text piece; sits at its inline-start edge */
+    :where([data-edit-grip]) {
+        position: fixed;
+        z-index: 1001;
+        width: var(--edit-grip-size, 0.75rem);
+        height: calc(var(--edit-grip-size, 0.75rem) * 1.5);
+        translate: calc(-100% - var(--edit-grip-offset, 0.25rem)) 0;
+        border-radius: 3px;
+        color: var(--edit-accent, var(--color-brand-content));
+        background: radial-gradient(circle, currentColor 1px, transparent 1.5px) center / 6px 6px;
+        opacity: 0.6;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+
+        &:hover {
+            opacity: 1;
+        }
+    }
+
+    :where([data-edit-grip]:dir(rtl)) {
+        translate: var(--edit-grip-offset, 0.25rem) 0;
+    }
+
+    :where([data-edit-grip][hidden]) {
+        display: none;
+    }
+
     /* Lifted, following the pointer */
     :where([data-edit-dragging=""]) {
         z-index: 1000;

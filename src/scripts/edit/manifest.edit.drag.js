@@ -118,6 +118,75 @@
         startDrag(e, item, area);
     }
 
+    /* ---- Grip: text pieces, whose surface is for typing, drag from a handle at their inline-start edge ---- */
+    let grip = null, gripFor = null, gripHovered = null, gripFocused = null, gripListening = false;
+    const needsGrip = (p) => !!p && movable(p) && isTextEl(p) && capOf(p, 'text');
+    function gripPiece(node, area) {
+        for (let n = node; n && n.nodeType === 1 && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece')) return needsGrip(n) ? n : null;
+        return null;
+    }
+    function ensureGrip() {
+        if (grip && grip.isConnected) return grip;
+        grip = document.createElement('span');
+        grip.setAttribute('data-edit-grip', '');
+        grip.setAttribute('aria-hidden', 'true');
+        grip.hidden = true;
+        grip.addEventListener('pointerdown', onGripDown);
+        grip.addEventListener('pointerleave', (e) => gripLeave(e.relatedTarget));
+        document.body.appendChild(grip);
+        if (!gripListening) {
+            gripListening = true;
+            window.addEventListener('scroll', placeGrip, { capture: true, passive: true });
+            window.addEventListener('resize', placeGrip, { passive: true });
+        }
+        return grip;
+    }
+    function placeGrip() {
+        if (!gripFor || !grip) return;
+        if (!gripFor.isConnected) return hideGrip();
+        const r = gripFor.getBoundingClientRect(), rtl = getComputedStyle(gripFor).direction === 'rtl';
+        grip.dir = rtl ? 'rtl' : 'ltr';
+        grip.style.top = r.top + 'px';
+        grip.style.left = (rtl ? r.right : r.left) + 'px';
+    }
+    function showGrip(piece) {
+        const area = regionOf(piece);
+        if (dragged || !area || area._edit.bare || piece.closest('[data-edit-area="bare"]')) return hideGrip();
+        const g = ensureGrip();
+        gripFor = piece; placeGrip(); g.hidden = false;
+    }
+    function hideGrip() { gripFor = null; if (grip) grip.hidden = true; }
+    function gripOver(e, area) {
+        if (dragged) return;
+        const p = gripPiece(e.target, area);
+        gripHovered = p;
+        if (p) showGrip(p); else if (gripFocused) showGrip(gripFocused); else hideGrip();
+    }
+    function gripLeave(to) {
+        if (to && grip && (to === grip || (gripFor && gripFor.contains(to)))) return;
+        gripHovered = null;
+        if (gripFocused && gripFocused.isConnected) showGrip(gripFocused); else hideGrip();
+    }
+    function gripFocus(e, area) {
+        const p = gripPiece(e.target, area);
+        gripFocused = p;
+        if (p && !(gripHovered && gripHovered.isConnected)) showGrip(p);
+    }
+    function gripBlur(to) {
+        if (to && gripFocused && gripFocused.contains(to)) return;
+        gripFocused = null;
+        if (!(gripHovered && gripHovered.isConnected)) hideGrip();
+    }
+    function onGripDown(e) {
+        const piece = gripFor;
+        if (!piece || (e.pointerType === 'mouse' && e.button !== 0)) return;
+        const area = regionOf(piece);
+        if (!isActive(area) || !movable(piece)) return;
+        e.preventDefault(); e.stopPropagation();
+        hideGrip();
+        startDrag(e, piece, area);
+    }
+
     function startDrag(e, item, area) {
         const home = item.parentElement, homeNext = item.nextElementSibling;
         const dataList = classify(area) === 'data';
@@ -164,7 +233,7 @@
             px = ev.clientX; py = ev.clientY;
             if (!active) {
                 if (Math.hypot(px - sx, py - sy) < 5) return;
-                active = true; lift(ev); paint();
+                active = true; hideGrip(); lift(ev); paint();
             }
             ev.preventDefault();
             const drop = dropTarget(px, py, s);

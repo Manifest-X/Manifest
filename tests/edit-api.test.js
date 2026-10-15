@@ -329,6 +329,84 @@ describe('.move nesting', () => {
     })
 })
 
+describe('grip for text pieces', () => {
+    const gripEl = () => document.querySelector('[data-edit-grip]')
+    const over = (el) => el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+    const shown = () => !!gripEl() && !gripEl().hidden
+
+    it('hovering a text piece shows a grip at its inline-start edge, outside the area', async () => {
+        const root = await mount(`<section x-edit="${id('grip')}"><p>Alpha</p><p>Beta</p></section>`)
+        const area = root.querySelector('section'), [alpha] = area.querySelectorAll('p')
+        rect(alpha, 40, 100, 400, 130)
+        over(alpha)
+        expect(shown()).toBe(true)
+        expect(gripEl().parentElement).toBe(document.body)
+        expect(gripEl().style.left).toBe('40px')
+        expect(gripEl().style.top).toBe('100px')
+        expect(area.contains(gripEl())).toBe(false)
+    })
+
+    it('mouse and touch drags on the grip move the piece', async () => {
+        const root = await mount(`<section x-edit="${id('grip-d')}"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`)
+        const area = root.querySelector('section'), [alpha, beta, gamma] = area.querySelectorAll('p')
+        rect(alpha, 0, 0, 400, 50); rect(beta, 0, 50, 400, 100); rect(gamma, 0, 100, 400, 150)
+        for (const pointerType of ['mouse', 'touch']) {
+            over(alpha)
+            const g = gripEl()
+            document.elementFromPoint = () => gamma
+            g.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: -5, clientY: 10, button: 0, pointerType, pointerId: 7 }))
+            document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 100, clientY: 140, pointerType, pointerId: 7 }))
+            expect(gripEl().hidden).toBe(true)
+            document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 100, clientY: 140, pointerType, pointerId: 7 }))
+            expect(area.lastElementChild).toBe(alpha)
+            expect(last()).toMatchObject({ kind: 'st-order' })
+            area.insertBefore(alpha, area.firstElementChild)   // reset for the next pointer type
+        }
+    })
+
+    it('focusing a text piece shows the grip; blur hides it', async () => {
+        const root = await mount(`<section x-edit="${id('grip-f')}"><p>Alpha</p></section>`)
+        const p = root.querySelector('p')
+        p.focus()
+        expect(shown()).toBe(true)
+        p.blur()
+        expect(shown()).toBe(false)
+    })
+
+    it('non-text pieces get no grip and keep whole-element drag', async () => {
+        const root = await mount(`<section x-edit="${id('grip-n')}"><div><p>Card</p></div><div><p>Other</p></div></section>`)
+        const card = root.querySelector('div')
+        over(card)
+        expect(shown()).toBe(false)
+        over(card.querySelector('p'))                                  // the text inside is its own piece
+        expect(shown()).toBe(true)
+    })
+
+    it('.bare areas show no grip; move-only areas drag text whole', async () => {
+        const root = await mount(`
+            <section x-edit.bare="${id('grip-b')}"><p>Bare</p></section>
+            <section x-edit.move="${id('grip-m')}"><p>Moves</p></section>`)
+        const [bare, moves] = root.querySelectorAll('p')
+        over(bare)
+        expect(shown()).toBe(false)
+        over(moves)
+        expect(shown()).toBe(false)
+    })
+
+    it('the grip never reaches text, markup or patches', async () => {
+        const region = id('grip-p')
+        const root = await mount(`<section x-edit="${region}"><p>Alpha</p></section>`)
+        const p = root.querySelector('p')
+        over(p)
+        editText(p, 'Edited')
+        expect(store().copy(p)).toBe(true)
+        expect(JSON.stringify(store().patches())).not.toContain('data-edit-grip')
+        expect(JSON.stringify(store().export())).not.toContain('data-edit-grip')
+        expect(root.innerHTML).not.toContain('data-edit-grip')
+        expect(p.innerHTML).toBe('Edited')
+    })
+})
+
 describe('flow vs freeform after the drop', () => {
     async function board() {
         const root = await mount(`

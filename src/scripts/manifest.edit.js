@@ -137,7 +137,7 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
+    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');
     const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
     const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
     let _keyWarned = false;
@@ -684,7 +684,7 @@
         const c = el.cloneNode(true);
         const src = [el, ...el.querySelectorAll('*')], dst = [c, ...c.querySelectorAll('*')];
         dst.forEach((n, i) => { if (addedTab.has(src[i])) n.removeAttribute('tabindex'); });
-        c.querySelectorAll('[data-edit-handle], [data-edit-live], [data-edit-ghost]').forEach(n => n.remove());
+        c.querySelectorAll('[data-edit-handle], [data-edit-live], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
         [c, ...c.querySelectorAll('*')].forEach(n => {
             [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && !(keepKeys && a.name === 'data-edit-key')) n.removeAttribute(a.name); });
             n.removeAttribute('contenteditable');
@@ -985,6 +985,75 @@
         startDrag(e, item, area);
     }
 
+    /* ---- Grip: text pieces, whose surface is for typing, drag from a handle at their inline-start edge ---- */
+    let grip = null, gripFor = null, gripHovered = null, gripFocused = null, gripListening = false;
+    const needsGrip = (p) => !!p && movable(p) && isTextEl(p) && capOf(p, 'text');
+    function gripPiece(node, area) {
+        for (let n = node; n && n.nodeType === 1 && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece')) return needsGrip(n) ? n : null;
+        return null;
+    }
+    function ensureGrip() {
+        if (grip && grip.isConnected) return grip;
+        grip = document.createElement('span');
+        grip.setAttribute('data-edit-grip', '');
+        grip.setAttribute('aria-hidden', 'true');
+        grip.hidden = true;
+        grip.addEventListener('pointerdown', onGripDown);
+        grip.addEventListener('pointerleave', (e) => gripLeave(e.relatedTarget));
+        document.body.appendChild(grip);
+        if (!gripListening) {
+            gripListening = true;
+            window.addEventListener('scroll', placeGrip, { capture: true, passive: true });
+            window.addEventListener('resize', placeGrip, { passive: true });
+        }
+        return grip;
+    }
+    function placeGrip() {
+        if (!gripFor || !grip) return;
+        if (!gripFor.isConnected) return hideGrip();
+        const r = gripFor.getBoundingClientRect(), rtl = getComputedStyle(gripFor).direction === 'rtl';
+        grip.dir = rtl ? 'rtl' : 'ltr';
+        grip.style.top = r.top + 'px';
+        grip.style.left = (rtl ? r.right : r.left) + 'px';
+    }
+    function showGrip(piece) {
+        const area = regionOf(piece);
+        if (dragged || !area || area._edit.bare || piece.closest('[data-edit-area="bare"]')) return hideGrip();
+        const g = ensureGrip();
+        gripFor = piece; placeGrip(); g.hidden = false;
+    }
+    function hideGrip() { gripFor = null; if (grip) grip.hidden = true; }
+    function gripOver(e, area) {
+        if (dragged) return;
+        const p = gripPiece(e.target, area);
+        gripHovered = p;
+        if (p) showGrip(p); else if (gripFocused) showGrip(gripFocused); else hideGrip();
+    }
+    function gripLeave(to) {
+        if (to && grip && (to === grip || (gripFor && gripFor.contains(to)))) return;
+        gripHovered = null;
+        if (gripFocused && gripFocused.isConnected) showGrip(gripFocused); else hideGrip();
+    }
+    function gripFocus(e, area) {
+        const p = gripPiece(e.target, area);
+        gripFocused = p;
+        if (p && !(gripHovered && gripHovered.isConnected)) showGrip(p);
+    }
+    function gripBlur(to) {
+        if (to && gripFocused && gripFocused.contains(to)) return;
+        gripFocused = null;
+        if (!(gripHovered && gripHovered.isConnected)) hideGrip();
+    }
+    function onGripDown(e) {
+        const piece = gripFor;
+        if (!piece || (e.pointerType === 'mouse' && e.button !== 0)) return;
+        const area = regionOf(piece);
+        if (!isActive(area) || !movable(piece)) return;
+        e.preventDefault(); e.stopPropagation();
+        hideGrip();
+        startDrag(e, piece, area);
+    }
+
     function startDrag(e, item, area) {
         const home = item.parentElement, homeNext = item.nextElementSibling;
         const dataList = classify(area) === 'data';
@@ -1031,7 +1100,7 @@
             px = ev.clientX; py = ev.clientY;
             if (!active) {
                 if (Math.hypot(px - sx, py - sy) < 5) return;
-                active = true; lift(ev); paint();
+                active = true; hideGrip(); lift(ev); paint();
             }
             ev.preventDefault();
             const drop = dropTarget(px, py, s);
@@ -1678,6 +1747,10 @@
             area._editBound = true;
             area.addEventListener('pointerdown', onAreaPointerDown);
             area.addEventListener('keydown', (e) => { if (isActive(area)) onPieceKeydown(e, area); });
+            area.addEventListener('pointerover', (e) => { if (isActive(area)) gripOver(e, area); });
+            area.addEventListener('pointerleave', (e) => gripLeave(e.relatedTarget));
+            area.addEventListener('focusin', (e) => { if (isActive(area)) gripFocus(e, area); });
+            area.addEventListener('focusout', (e) => gripBlur(e.relatedTarget));
             // Native HTML5 drag would drop selected text into neighbouring leaves.
             area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
             area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });
@@ -1692,6 +1765,7 @@
         }
     }
     function disarmArea(area) {
+        if (gripFor && area.contains(gripFor)) hideGrip();
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
         [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; });
         area.querySelectorAll('[data-edit-piece]').forEach(unmarkPiece);
