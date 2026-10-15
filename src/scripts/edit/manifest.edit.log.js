@@ -292,9 +292,10 @@
         value = String(value);
         if (el && el._editRich) value = sanitizeFor(el, value);
         const before = el ? el._preEdit : undefined;
-        if (before === value) return;
+        if (before === value) return false;
         pushDelta({ kind: 'data-val', region: key(area), source, id, field, value, before });
         applyDataValues();
+        return true;
     }
 
     // Size and freeform placement write inline style; plugin-applied declarations stay out.

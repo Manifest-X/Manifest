@@ -1764,6 +1764,8 @@
         caretIn(next, 0);
     }
 
+    const MAC = /Mac|iPhone|iPad|iPod/.test((typeof navigator !== 'undefined' && (navigator.userAgentData && navigator.userAgentData.platform || navigator.platform)) || '');
+
     /* ---- History ----
        HTML snapshots plus caret offset; typing bursts coalesce into one step. */
     const HISTORY_CAP = 200;
@@ -2476,6 +2478,10 @@
             if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
                 e.preventDefault(); run(el, e.shiftKey ? 'redo' : 'undo'); return;
+            }
+            // Ctrl+Y redoes off the Mac (where it is yank)
+            if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'y' && !MAC) {
+                e.preventDefault(); run(el, 'redo'); return;
             }
             // No Cmd/Ctrl+K: that chord belongs to site search
             if (!(e.metaKey || e.ctrlKey)) return;

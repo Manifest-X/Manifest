@@ -232,8 +232,13 @@ describe('undo hand-off', () => {
         expect(h1._editRt.can('redo')).toBe(false)
         await blur(h1)
         expect(cursor()).toBe(base)
-        expect(log().length).toBe(size + 1)
+        // The italic session (undone in Rich Text) was kept as one undone Edit step after the bold
+        expect(log().length).toBe(size + 2)
         expect(store().canRedo).toBe(true)
+        key(document.body, { key: 'z', metaKey: true, shiftKey: true })
+        expect(h1.innerHTML).toBe('<strong>Title</strong>')
+        key(document.body, { key: 'z', metaKey: true, shiftKey: true })
+        expect(h1.innerHTML).toBe('<strong><em>Ti</em>tle</strong>')
     })
 
     it('Cmd+Z after typing undoes the typing only', async () => {
@@ -491,6 +496,84 @@ describe('line breaks in leaves', () => {
         expect(el._rt.api.can('br')).toBe(false)
         paste(el, { 'text/html': '<p>one</p><p>two</p>' })
         expect(el.innerHTML).toBe('A Bone two')
+    })
+})
+
+describe('history across the hand-off', () => {
+    const type = async (el, text, data) => { el.lastChild.nodeValue = text; window.getSelection().collapse(el.lastChild, text.length); el.dispatchEvent(new InputEvent('input', { bubbles: true, data })); await new Promise(r => setTimeout(r, 450)) }
+    const z = (el, shift) => key(el, { key: 'z', metaKey: true, shiftKey: !!shift })
+
+    it('typing undone past the session start becomes one Edit step: redo brings it all back', async () => {
+        const root = await mount(`<table x-edit="hh1"><tbody><tr><td>Cell <b>1</b></td><td>Cell 2</td></tr></tbody></table>`)
+        const [td1, td2] = root.querySelectorAll('td'), base = cursor(), size = log().length
+        await enter(td1); td1.lastChild.lastChild.nodeValue = '1X'; await blur(td1)
+        expect(cursor()).toBe(base + 1)
+        await enter(td2)
+        await type(td2, 'Cell 2ab', 'b')
+        await type(td2, 'Cell 2abcd', 'd')
+        z(td2); expect(td2.innerHTML).toBe('Cell 2ab'); expect(cursor()).toBe(base + 1)
+        z(td2); expect(td2.innerHTML).toBe('Cell 2'); expect(cursor()).toBe(base + 1)
+        expect(z(td2).defaultPrevented).toBe(true)                        // hand-off: the session is logged and undone, then Edit undoes td1
+        await flush()
+        expect(td1.innerHTML).toBe('Cell <b>1</b>')
+        expect(td2.innerHTML).toBe('Cell 2')
+        expect(cursor()).toBe(base)
+        expect(z(td2, true).defaultPrevented).toBe(true); await flush()
+        expect(td1.innerHTML).toBe('Cell <b>1X</b>')
+        expect(z(td2, true).defaultPrevented).toBe(true); await flush()
+        expect(td2.innerHTML).toBe('Cell 2abcd')
+        z(td2, true); await flush()
+        expect(td2.innerHTML).toBe('Cell 2abcd')
+        await blur(td2)
+        expect(cursor()).toBe(base + 2)
+        expect(log().length).toBe(size + 2)
+    })
+
+    it('a command undone past the start is kept the same way', async () => {
+        const root = await mount(`<section x-edit="hh2"><p>One</p><p>Two</p></section>`)
+        const [one, two] = root.querySelectorAll('p'), base = cursor()
+        await enter(one); one.firstChild.nodeValue = 'Uno'; await blur(one)
+        await enter(two); select(two.firstChild, 0, 3)
+        key(two, { key: 'b', metaKey: true })
+        expect(two.innerHTML).toBe('<strong>Two</strong>')
+        z(two); expect(two.innerHTML).toBe('Two')
+        z(two); await flush()
+        expect(one.innerHTML).toBe('One')
+        z(two, true); await flush(); expect(one.innerHTML).toBe('Uno')
+        z(two, true); await flush(); expect(two.innerHTML).toBe('<strong>Two</strong>')
+        await blur(two)
+        expect(cursor()).toBe(base + 2)
+    })
+
+    it('Ctrl+Y redoes the leaf\'s own step, not Edit\'s', async () => {
+        const root = await mount(`<section x-edit="hh3"><p>One</p><p>Two</p></section>`)
+        const [one, two] = root.querySelectorAll('p')
+        await enter(one); one.firstChild.nodeValue = 'Uno'; await blur(one)
+        key(document.body, { key: 'z', metaKey: true })
+        expect(one.innerHTML).toBe('One')
+        const at = cursor()
+        await enter(two)
+        await type(two, 'Twox', 'x')
+        z(two); expect(two.innerHTML).toBe('Two')
+        expect(key(two, { key: 'y', ctrlKey: true }).defaultPrevented).toBe(true)
+        expect(two.innerHTML).toBe('Twox')
+        expect(one.innerHTML).toBe('One')
+        expect(cursor()).toBe(at)
+    })
+})
+
+describe('standalone fields', () => {
+    it('Ctrl+Y redoes in an x-rich-text field off the Mac', async () => {
+        const root = await mount(`<div x-data><div x-rich-text.html id="st"><p>One</p></div></div>`)
+        const el = root.querySelector('#st'), p = el.querySelector('p')
+        el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+        p.firstChild.nodeValue = 'Onex'; window.getSelection().collapse(p.firstChild, 4)
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'x' }))
+        key(el, { key: 'z', metaKey: true })
+        expect(el.innerHTML).toBe('<p>One</p>')
+        const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '')
+        expect(key(el, { key: 'y', ctrlKey: true }).defaultPrevented).toBe(!mac)
+        expect(el.innerHTML).toBe(mac ? '<p>One</p>' : '<p>Onex</p>')
     })
 })
 
