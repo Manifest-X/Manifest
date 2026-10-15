@@ -128,6 +128,21 @@ describe('typed and pending marks', () => {
         expect(el._rt.api.value.replace(/\u00a0/g, ' ')).toBe('A **bold** then')
     })
 
+    it('a space typed after a converted code mark lands outside it too', () => {
+        const root = mount(`<div x-rich-text id="m"></div>`)
+        const el = root.querySelector('#m')
+        focusin(el)
+        el.firstElementChild.textContent = 'Use `code'
+        window.getSelection().collapse(el.firstElementChild.firstChild, 9)
+        typeAtCaret(el, '`')
+        expect(el.innerHTML).toBe('<p>Use <code>code</code></p>')
+        window.getSelection().collapse(el.querySelector('code').firstChild, 4)
+        typeAtCaret(el, '\u00a0', ' ')
+        typeAtCaret(el, 'then more')
+        expect(el.innerHTML).toBe('<p>Use <code>code</code>&nbsp;then more</p>')
+        expect(el._rt.api.value.replace(/\u00a0/g, ' ')).toBe('Use `code` then more')
+    })
+
     it('an armed mark wraps what is typed, a leading space included', () => {
         const root = mount(`<div x-rich-text.html id="h"><p>Hello world</p></div>`)
         const el = root.querySelector('#h'), t = el.querySelector('p').firstChild

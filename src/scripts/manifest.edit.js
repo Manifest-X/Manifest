@@ -1371,7 +1371,8 @@
 
     /* ---- Grip: text pieces, whose surface is for typing, drag from a handle at their inline-start edge ---- */
     let grip = null, gripFor = null, gripHovered = null, gripFocused = null, gripListening = false;
-    const needsGrip = (p) => !!p && movable(p) && isTextEl(p) && capOf(p, 'text');
+    // Text pieces, and rows that are themselves a data field (their surface is for typing too)
+    const needsGrip = (p) => !!p && movable(p) && ((isTextEl(p) && capOf(p, 'text')) || p._editField != null);
     function gripPiece(node, area) {
         for (let n = node; n && n.nodeType === 1 && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece')) return needsGrip(n) ? n : null;
         return null;

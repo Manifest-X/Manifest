@@ -388,12 +388,16 @@ export interface ManifestEdit {
      *  `edit:stale` event on document, detail `{ files }`), or a reload held back because it
      *  would lose unpublished edits. */
     stale: string[];
-    /** Edits dropped because their element changed in the source before they were published
-     *  (also an `edit:conflict` event on document, detail `{ conflicts }`). `element` is the
-     *  edited element's tag and opening text; `value` what the edit set. A region whose
-     *  restructured containers no longer hold what the edits started from loses all its
-     *  structural edits, reported once as `{ region, prop: 'structure', key: '' }`. */
-    conflicts: Array<{ region: string; key: string; element: string; prop: string; value: unknown; before: unknown }>;
+    /** Edits that could not be applied because the source changed under them (also an
+     *  `edit:conflict` event on document, detail `{ conflicts }`, and a console warning).
+     *  `element` names what was edited (tag and opening text, or the region for layout);
+     *  `value` what the edit held; `reason` says what happened in words.
+     *  - A text or attribute edit whose element changed: `prop` is the edited property.
+     *  - Layout (`prop: 'structure'`): kept when only unmoved children changed text in place;
+     *    dropped when a moved, added or removed child changed, with `value`
+     *    `{ changed: [{ was, now }], moved: [...], copies: [{ of, html, text }] }` so typed
+     *    content can be recovered. */
+    conflicts: Array<{ region: string; key: string; element: string; prop: string; value: unknown; before: unknown; reason: string }>;
     /** Empty `conflicts`. Those of `.persist` regions are kept across reloads until this is called. */
     clearConflicts(): void;
     /** Send every area's patches; on success the history is cleared (the source now holds it).

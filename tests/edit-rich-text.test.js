@@ -708,6 +708,19 @@ describe('grip', () => {
     })
 })
 
+describe('data rows that are themselves the field', () => {
+    it('get the grip in a .move.data region, and drag by it', async () => {
+        const root = await mount(`<div x-data="{ rows: [{ id: 1, n: 'One' }, { id: 2, n: 'Two' }] }"><ul x-edit.move.data="dr1"><template x-for="row in rows" :key="row.id"><li x-text="row.n"></li></template></ul><i id="o" x-text="rows.map(r => r.n).join()"></i></div>`)
+        await frame()
+        const li = root.querySelector('li')
+        expect(li._editRt).toBeTruthy()
+        expect(li.hasAttribute('data-edit-piece')).toBe(true)
+        li.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+        const g = document.querySelector('[data-edit-grip]')
+        expect(g && !g.hidden).toBe(true)
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)
