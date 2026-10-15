@@ -92,7 +92,7 @@
     }
     function writeStyle(el, v) {
         if (v == null || v === '') el.removeAttribute('style'); else if (el.getAttribute('style') !== v) el.setAttribute('style', v);
-        if (el._editPos && getComputedStyle(el).position === 'static') el.style.position = 'relative';
+        if (el._editPos && !el.style.position) el.style.position = 'relative';
     }
 
     /* ---- Safety ---- */

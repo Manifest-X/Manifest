@@ -128,13 +128,20 @@ describe('visuals and .bare', () => {
         expect(document.documentElement.hasAttribute('data-edit-active')).toBe(false)
     })
 
-    it('every visual rule excludes bare areas', () => {
+    it('every drawing rule excludes bare areas (outlines, shadows, min-heights)', () => {
         const visual = []
         postcss.parse(readFileSync(CSS, 'utf8')).walkRules(r => {
-            if (r.nodes.some(d => d.prop === 'outline' && !/2px/.test(d.value)) && !r.selector.includes('dragging="keyboard"') && !r.selector.includes('focus')) visual.push(r.selector)
+            if (r.parent.type === 'rule') return
+            if (r.nodes.some(d => d.type === 'decl' && ['outline', 'box-shadow', 'min-height'].includes(d.prop))) visual.push(r.selector)
         })
-        expect(visual.length).toBeGreaterThan(2)
+        expect(visual.length).toBeGreaterThan(6)
         visual.forEach(sel => expect(sel).toContain('bare'))
+    })
+
+    it('size handles take touch input', () => {
+        let rule
+        postcss.parse(readFileSync(CSS, 'utf8')).walkRules(r => { if (r.selector === ':where([data-edit-handle])') rule = r })
+        expect(rule.nodes.find(d => d.prop === 'touch-action').value).toBe('none')
     })
 })
 
@@ -581,14 +588,72 @@ describe('size variables', () => {
         expect(store().patches().some(p => p.kind === 'show')).toBe(false)
     })
 
-    it('close needs an assignable x-show expression', async () => {
+    it('close needs an assignable x-show: otherwise it warns once and leaves the size alone', async () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
-        const root = await mount(`<div x-data="{ hidden: false }"><aside x-show="!hidden" x-edit.size="${id('side2')}" style="width: 300px; --edit-size-close: 100px">Side</aside></div>`)
+        const root = await mount(`<div x-data="{ shut: false, k() { return 'a' }, p: { a: true } }"><aside x-show="!shut" x-edit.size="${id('side2')}" style="width: 300px; --edit-size-close: 100px">A</aside><aside x-show="p[k()]" x-edit.size="${id('side2b')}" style="width: 300px; --edit-size-close: 100px">B</aside></div>`)
+        const [a, b] = root.querySelectorAll('aside'), at = store().export().cursor
+        pull(a.querySelector('[data-edit-handle="right"]'), -250)
+        pull(a.querySelector('[data-edit-handle="right"]'), -250)
+        pull(b.querySelector('[data-edit-handle="right"]'), -250)
+        expect(warn.mock.calls.filter(c => String(c[0]).includes('assignable')).length).toBe(2)   // once per element
+        warn.mockRestore()
+        expect(a.getAttribute('style')).toContain('width: 300px')
+        expect(b.getAttribute('style')).toContain('width: 300px')
+        expect(Alpine.$data(root.firstElementChild).shut).toBe(false)
+        expect(store().export().cursor).toBe(at)
+    })
+
+    it('close with no min-width keeps the pre-drag size, so it reopens sensibly', async () => {
+        const root = await mount(`<div x-data="{ open: true }"><aside x-show="open" x-edit.size="${id('side5')}" style="width: 300px; --edit-size-close: 100px">Side</aside></div>`)
         const aside = root.querySelector('aside')
         pull(aside.querySelector('[data-edit-handle="right"]'), -250)
-        expect(warn.mock.calls.some(c => String(c[0]).includes('assignable'))).toBe(true)
-        warn.mockRestore()
-        expect(Alpine.$data(root.firstElementChild).hidden).toBe(false)
+        expect(Alpine.$data(root.firstElementChild).open).toBe(false)
+        expect(aside.getAttribute('style')).toContain('width: 300px')
+        expect(last()).toMatchObject({ kind: 'show', value: false })
+        expect(last().join).toBeUndefined()                            // no size change to join
+    })
+
+    it('an axis-specific none cancels the base value (snap, distance, close)', async () => {
+        const snapX = await box('width: 200px; --edit-size-snap-x: none', '--edit-size-snap: 300px')
+        pull(snapX.handle('right'), 37)
+        expect(snapX.el.style.width).toBe('237px')
+        const dist = await box('width: 200px; --edit-size-snap: 300px; --edit-size-snap-distance: 10px; --edit-size-snap-distance-x: none')
+        pull(dist.handle('right'), 37)
+        expect(dist.el.style.width).toBe('300px')                     // distance cancelled: always the nearest stop
+        const root = await mount(`<div x-data="{ open: true }" style="--edit-size-close: 100px"><aside x-show="open" x-edit.size="${id('side6')}" style="width: 300px; --edit-size-close-x: none">S</aside></div>`)
+        pull(root.querySelector('[data-edit-handle="right"]'), -250)
+        expect(Alpine.$data(root.firstElementChild).open).toBe(true)
+    })
+
+    it('the plugin-applied position never reaches the log or the source', async () => {
+        const region = id('pos')
+        const { el, handle } = await box('width: 200px')
+        expect(el.style.position).toBe('relative')
+        pull(handle('right'), 20)
+        expect(last()).toMatchObject({ kind: 'st-node', prop: 'style' })
+        expect(last().value).not.toContain('position')
+        expect(last().before).not.toContain('position')
+        await store().undo()
+        expect(el.style.position).toBe('relative')                    // handles stay anchored
+    })
+
+    it('a cancelled pointer restores the size and logs nothing', async () => {
+        const { el, handle } = await box('width: 200px')
+        const at = store().export().cursor
+        handle('right').dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 80, clientY: 0 }))
+        document.dispatchEvent(new Event('pointercancel'))
+        expect(el.style.width).toBe('200px')
+        expect(store().export().cursor).toBe(at)
+    })
+
+    it('keyboard bursts on two elements commit separately', async () => {
+        const a = await box('width: 200px'), b = await box('width: 200px')
+        const at = store().export().cursor
+        a.handle('right').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        b.handle('right').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        await new Promise(r => setTimeout(r, 400))
+        expect(store().export().cursor).toBe(at + 2)
     })
 
     it('no close variable: nothing hides', async () => {
@@ -620,6 +685,23 @@ describe('$edit.target / can / lock', () => {
         expect(store().remove()).toBe(true)
         expect(names(root.querySelector('section'))).toEqual(['One', 'Two'])
         expect(store().target).toBe(null)
+    })
+
+    it('can(): text only on editable leaves; attrs vs class', async () => {
+        const root = await mount(`<div x-data="{ n: 'x' }"><section x-edit="${id('cx')}"><div><p>Leaf</p></div><span x-text="n"></span></section></div>`)
+        const div = root.querySelector('section > div'), leaf = root.querySelector('p'), bound = root.querySelector('span')
+        expect(store().can('text', leaf)).toBe(true)
+        expect(store().can('text', div)).toBe(false)
+        expect(store().can('text', bound)).toBe(false)
+        expect(store().can('attrs', leaf)).toBe(true)
+        expect(store().can('class', leaf)).toBe(true)
+    })
+
+    it('a long-press menu (no contextmenu event) still sets $edit.target', async () => {
+        const root = await mount(`<section x-edit="${id('lp')}"><div><p>Card</p></div></section>`)
+        const p = root.querySelector('p')
+        p.dispatchEvent(new CustomEvent('dropdown:context', { bubbles: true }))
+        expect(store().target).toBe(p)
     })
 
     it('can() follows capabilities', async () => {

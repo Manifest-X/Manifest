@@ -2940,7 +2940,7 @@
         outline-offset: 3px;
     }
 
-    :where([data-edit-piece]):focus-visible {
+    :where([data-edit-piece]):focus-visible:where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
@@ -2977,11 +2977,14 @@
     :where([data-edit-dragging=""]) {
         z-index: 1000;
         cursor: grabbing;
+    }
+
+    :where([data-edit-dragging=""]):where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {
         box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
     }
 
     /* Grabbed from the keyboard */
-    :where([data-edit-dragging="keyboard"]) {
+    :where([data-edit-dragging="keyboard"]):where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {
         outline: 2px dashed var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
@@ -2992,6 +2995,10 @@
         pointer-events: none;
     }
 
+    :where([data-edit-area="bare"] [data-edit-ghost]) {
+        opacity: 0;
+    }
+
     /* The container the drop would land in */
     :where(:has(> [data-edit-ghost])):where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {
         outline: 1px dashed color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 55%, transparent);
@@ -2999,23 +3006,20 @@
     }
 
     /* Other areas a drag can land in; an empty one still has a surface */
-    :where([data-edit-drop-target]) {
-        min-height: 2.5rem;
-    }
-
     :where([data-edit-drop-target]):where(:not([data-edit-area="bare"])) {
+        min-height: 2.5rem;
         outline: 1px dashed color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 55%, transparent);
         outline-offset: 4px;
     }
 
     /* While dragging: empty containers can be dropped into, nothing else reacts */
+    :where([data-edit-area]:not([data-edit-area="bare"]):has([data-edit-dragging=""])) :where(:empty:not(img, input, br, hr, svg, video, canvas, iframe, textarea, [data-edit-ghost], [data-edit-handle], [data-edit-area="bare"], [data-edit-area="bare"] *)) {
+        min-height: 2.5rem;
+    }
+
     :where([data-edit-area]:has([data-edit-dragging=""])) {
         cursor: grabbing;
         user-select: none;
-
-        & :where(:empty:not(img, input, br, hr, svg, video, canvas, iframe, textarea, [data-edit-ghost], [data-edit-handle])) {
-            min-height: 2.5rem;
-        }
 
         & :where([data-edit-piece]:not([data-edit-dragging])) {
             cursor: grabbing;
@@ -3058,6 +3062,7 @@
         position: absolute;
         z-index: 100;
         background: transparent;
+        touch-action: none;
         --h: var(--edit-size-handle, 1rem);
 
         &::before {
@@ -3079,7 +3084,7 @@
         }
     }
 
-    :where([data-edit-handle]):focus-visible {
+    :where([data-edit-handle]):focus-visible:where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
     }
 
@@ -3148,6 +3153,11 @@
 
     [dir=rtl] :where([data-edit-handle="top-end"], [data-edit-handle="bottom-start"]) {
         cursor: nwse-resize;
+    }
+
+    /* Bare: handles keep their hit areas and cursors, draw nothing */
+    :where([data-edit-area="bare"] [data-edit-handle])::before {
+        content: none;
     }
 
     /* Pointer capture layer during a resize */

@@ -196,7 +196,7 @@
             homeBefore: dataList ? null : staticKeys(home),
             lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
         };
-        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style');
+        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style'), preOwn = ownStyle(item);
         s.grabX = e.clientX - start.left; s.grabY = e.clientY - start.top;
         const sx = e.clientX, sy = e.clientY;
         let active = false, frame = 0, px = sx, py = sy, last = null;
@@ -258,12 +258,12 @@
             if (dest !== home && (s.dataList || !accepts(dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
             if (isPositioned(item)) placeAt(item, px, py, s);
             else if (item.style.left || item.style.top) clearPlacement(item);
-            const styled = (item.getAttribute('style') || '') !== (preStyle || '');
+            const styled = ownStyle(item) !== preOwn;
             if (s.dataList) { finishReorder(area, home); announce('Dropped'); return; }
             let did = false;
             if (dest === home) did = commitOrder(area, home, s.homeBefore);
             else { commitMove(area, toArea, item, home, s.homeBefore, keysWithout(dest, item)); did = true; }
-            if (styled) commitStyle(regionOf(item), item, { before: preStyle || '', join: did });
+            if (styled) commitStyle(regionOf(item), item, { before: preOwn, join: did });
             announce(toArea !== area ? 'Moved to ' + key(toArea) : 'Dropped');
         };
         const onUp = () => settle(false);
@@ -372,7 +372,7 @@
     function nudge(e, el) {
         const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
         e.preventDefault();
-        if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';
+        if (!el._moveTimer) el._preStyle = ownStyle(el);
         const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
         const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
         const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);

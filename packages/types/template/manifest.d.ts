@@ -353,6 +353,7 @@ export interface ManifestCamera {
 
 /** Edit action names for `$edit.can()` and per-action locks. */
 export type ManifestEditAction = 'move' | 'remove' | 'duplicate' | 'text' | 'attrs' | 'size';
+/** `can()` also answers 'class' (the class list; component nodes allow only this) and copy/cut/paste. */
 
 /** Class controls on `$edit.classes`. `el` defaults to `$edit.target`. */
 export interface ManifestEditClasses {
@@ -374,6 +375,8 @@ export interface ManifestEdit {
     active: boolean;
     canUndo: boolean;
     canRedo: boolean;
+    /** Bumps on every change to the log or target; read it to make a binding re-evaluate. */
+    version: number;
     /** Set a handler to route patches somewhere other than the dev server. */
     onPublish: ((patches: unknown[], state: { log: unknown[]; cursor: number }) => unknown) | null;
     toggle(): void;
@@ -381,7 +384,7 @@ export interface ManifestEdit {
     off(): void;
     undo(): Promise<void>;
     redo(): Promise<void>;
-    /** Resolve the edit log into source patches and send them. */
+    /** Send every area's patches; on success the history is cleared (the source now holds it). */
     publish(): Promise<unknown>;
     /** The resolved source patches for every area, without sending them. */
     patches(): unknown[];
@@ -390,7 +393,7 @@ export interface ManifestEdit {
     /** The piece a right-click landed on (set before any menu opens), or assignable. */
     target: Element | null;
     /** Whether an action applies to `el` (default `$edit.target`): capability and locks. */
-    can(action: ManifestEditAction | 'copy' | 'cut' | 'paste', el?: Element | null): boolean;
+    can(action: ManifestEditAction | 'class' | 'copy' | 'cut' | 'paste', el?: Element | null): boolean;
     /** Lock `el` and its subtree for one action, or all when omitted. Logged. */
     lock(el?: Element | null, action?: ManifestEditAction): boolean;
     unlock(el?: Element | null, action?: ManifestEditAction): boolean;

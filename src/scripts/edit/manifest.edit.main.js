@@ -63,6 +63,7 @@
         setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
         document.addEventListener('contextmenu', onContextCapture, true);
+        document.addEventListener('dropdown:context', onContextCapture, true);
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

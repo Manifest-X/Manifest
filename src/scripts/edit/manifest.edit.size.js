@@ -67,7 +67,9 @@
         const axes = cssVar(el, '--edit-size', 'both');
         if (axes === 'none') return;
         if (el._sizeBound) return; el._sizeBound = true;
-        if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+        // Handles need a containing block; this position is the plugin's, never logged or published.
+        const pos = getComputedStyle(el).position;
+        if (!pos || pos === 'static') { el.style.position = 'relative'; el._editPos = true; }
         const edges = (cssVar(el, '--edit-size-edges', '') || defaultEdges(axes).join(' ')).split(/\s+/).filter(Boolean);
         edges.forEach(pos => {
             const phys = physical(pos, el);
@@ -79,14 +81,13 @@
             el.appendChild(h);
         });
     }
-    // Keyboard: arrows resize (Shift = larger step); a key burst commits once.
-    let _keyTimer;
+    // Keyboard: arrows resize (Shift = larger step); a key burst commits once per element.
     function keyResize(e, el, pos) {
         const map = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
         if (!map[e.key]) return;
         const area = regionOf(el); if (!isActive(area)) return;
         e.preventDefault(); e.stopPropagation();
-        if (!_keyTimer) el._preStyle = el.getAttribute('style') || '';
+        if (!el._keyTimer) el._preStyle = ownStyle(el);
         const [kx, ky] = map[e.key], step = e.shiftKey ? 32 : 8, cs = getComputedStyle(el);
         const right = pos.includes('right'), left = pos.includes('left'), top = pos.includes('top'), bottom = pos.includes('bottom');
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
@@ -94,9 +95,15 @@
         if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
         if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
         sizeEvent(el, false);
-        clearTimeout(_keyTimer); _keyTimer = setTimeout(() => { _keyTimer = null; commitStyle(regionOf(el), el); sizeEvent(el, true); }, 350);
+        clearTimeout(el._keyTimer); el._keyTimer = setTimeout(() => { el._keyTimer = null; commitStyle(regionOf(el), el); sizeEvent(el, true); }, 350);
     }
-    const axisVar = (el, base, axis) => cssVar(el, `${base}-${axis}`, '') || cssVar(el, base, '');
+    // An axis value wins; an explicit axis `none` cancels the base value too.
+    function axisVar(el, base, axis) {
+        const a = rawVar(el, `${base}-${axis}`);
+        if (a) return a === 'none' ? '' : a;
+        const b = rawVar(el, base);
+        return b === 'none' ? '' : b;
+    }
     function snapStops(el, axis, dim) {
         return axisVar(el, '--edit-size-snap', axis).split(/\s+/).filter(Boolean).map(s => toPx(s, el, dim)).filter(v => v != null);
     }
@@ -107,15 +114,20 @@
         return reach == null || d <= reach ? best : v;
     }
     const lengthVar = (el, base, axis, dim) => { const v = axisVar(el, base, axis); return v ? toPx(v, el, dim) : null; };
-    // Close rides x-show: only an assignable expression can be set false.
-    const ASSIGNABLE = /^\s*[A-Za-z_$][\w$]*(\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]+\])*\s*$/;
+    // Close rides x-show: only an identifier or member path (no calls) can be set false.
+    const ASSIGNABLE = /^\s*[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[\s*(?:'[^'\\]*'|"[^"\\]*"|\d+)\s*\])*\s*$/;
+    const warnedShow = new WeakSet();
+    function closable(el) {
+        const expr = el.getAttribute('x-show');
+        if (expr == null) return null;
+        if (ASSIGNABLE.test(expr)) return expr;
+        if (!warnedShow.has(el)) { warnedShow.add(el); console.warn('[edit] --edit-size-close needs an assignable x-show expression (e.g. x-show="open"); close is off here:', expr); }
+        return null;
+    }
     const showable = (v) => { try { return JSON.stringify(v) !== undefined ? JSON.parse(JSON.stringify(v)) : true; } catch { return true; } };
     function setShow(el, expr, value) { window.Alpine.evaluate(el, `${expr} = ${JSON.stringify(value)}`); }
     // Closing is logged with the size change, so one undo reopens it.
-    function closeVia(area, el, join) {
-        const expr = el.getAttribute('x-show');
-        if (expr == null) return false;
-        if (!ASSIGNABLE.test(expr)) { console.warn('[edit] --edit-size-close needs an assignable x-show expression (e.g. x-show="open"):', expr); return false; }
+    function closeVia(area, el, expr, join) {
         let before;
         try { before = showable(window.Alpine.evaluate(el, expr)); setShow(el, expr, false); } catch (err) { console.warn('[edit] could not close via x-show:', err); return false; }
         const id = identity(el, area);
@@ -124,8 +136,9 @@
     }
     function startSize(e, el, pos) {
         const area = regionOf(el);
-        if (!isActive(area) || e.button !== 0) return;
-        e.preventDefault(); e.stopPropagation(); el._preStyle = el.getAttribute('style') || '';
+        if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e.button > 0) return;
+        e.preventDefault(); e.stopPropagation();
+        const preStyle = el.getAttribute('style'); el._preStyle = ownStyle(el);
         const cs = getComputedStyle(el), rect = el.getBoundingClientRect();
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
         const baseW = parseFloat(cs.width) || rect.width, baseH = parseFloat(cs.height) || rect.height, sx = e.clientX, sy = e.clientY;
@@ -134,25 +147,39 @@
         const reachX = lengthVar(el, '--edit-size-snap-distance', 'x', 'w'), reachY = lengthVar(el, '--edit-size-snap-distance', 'y', 'h');
         const snapW = snapStops(el, 'x', 'w'), snapH = snapStops(el, 'y', 'h');
         const closeX = lengthVar(el, '--edit-size-close', 'x', 'w'), closeY = lengthVar(el, '--edit-size-close', 'y', 'h');
+        const showExpr = closeX != null || closeY != null ? closable(el) : null;
+        try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch { }
         showOverlay();
-        let lastW = baseW, lastH = baseH, rawW = baseW, rawH = baseH;
+        let rawW = baseW, rawH = baseH;
         const move = (ev) => {
             const dx = ev.clientX - sx, dy = ev.clientY - sy;
-            if (right || left) { rawW = baseW + (right ? dx : -dx); lastW = snapTo(clamp(rawW, minW, maxW), snapW, reachX); el.style.width = toUnit(lastW, wu, el, el.parentElement, 'w') + wu; }
-            if (top || bottom) { rawH = baseH + (bottom ? dy : -dy); lastH = snapTo(clamp(rawH, minH, maxH), snapH, reachY); el.style.height = toUnit(lastH, hu, el, el.parentElement, 'h') + hu; }
+            if (right || left) { rawW = baseW + (right ? dx : -dx); el.style.width = toUnit(snapTo(clamp(rawW, minW, maxW), snapW, reachX), wu, el, el.parentElement, 'w') + wu; }
+            if (top || bottom) { rawH = baseH + (bottom ? dy : -dy); el.style.height = toUnit(snapTo(clamp(rawH, minH, maxH), snapH, reachY), hu, el, el.parentElement, 'h') + hu; }
             sizeEvent(el, false);
         };
+        const end = () => {
+            document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', cancel);
+            hideOverlay();
+        };
+        const restore = () => { if (preStyle == null) el.removeAttribute('style'); else el.setAttribute('style', preStyle); };
+        const cancel = () => { end(); restore(); sizeEvent(el, true); };
         const up = () => {
-            document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay();
+            end();
             const shutX = (right || left) && closeX != null && rawW < closeX, shutY = (top || bottom) && closeY != null && rawH < closeY;
-            if ((shutX || shutY) && el.hasAttribute('x-show')) {
-                if (shutX) el.style.width = toUnit(minW, wu, el, el.parentElement, 'w') + wu;
-                if (shutY) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;
+            if ((shutX || shutY) && showExpr) {
+                // Closed at the minimum it can have; with none, at the size it had, so it reopens sensibly.
+                const atMin = (shutX ? minW : 0) > 0 || (shutY ? minH : 0) > 0;
+                restore();
+                if (atMin) {
+                    if (shutX && minW > 0) el.style.width = toUnit(minW, wu, el, el.parentElement, 'w') + wu;
+                    if (shutY && minH > 0) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;
+                }
                 const sized = commitStyle(area, el); sizeEvent(el, true);
-                closeVia(area, el, sized);
+                closeVia(area, el, showExpr, sized);
                 return;
             }
+            if (shutX || shutY) { restore(); sizeEvent(el, true); return; }   // close configured but not possible here: leave it as it was
             commitStyle(area, el); sizeEvent(el, true);
         };
-        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', up); document.addEventListener('pointercancel', cancel);
     }

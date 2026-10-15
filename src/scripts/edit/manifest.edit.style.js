@@ -41,7 +41,7 @@
         if (name === 'class') return setClass(t, v || '');
         if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
         if (t.kind === 'component') { console.warn('[edit] component nodes take class changes only'); return false; }
-        if (!t.el.hasAttribute('data-edit-key')) return false;
+        if (!/^[@~]/.test(t.el.getAttribute('data-edit-key') || '')) return false;
         if (bindingOf(t.el, name) != null) console.warn(`[edit] ${name} is bound on this element; the binding will override the edited value`);
         const before = t.el.getAttribute(name);
         if (before === v) return false;
@@ -59,7 +59,7 @@
             liveMainPropagate(t.area, t.el, 'class', t.el.getAttribute('class') || '');
             return commitComponentNode(t.area, t.el, 'class', value, before);
         }
-        if (!t.el.hasAttribute('data-edit-key')) return false;
+        if (!/^[@~]/.test(t.el.getAttribute('data-edit-key') || '')) return false;
         return commitStaticNode(t.area, t.el, 'class', value, { before, coalesce: true });
     }
     function editClasses(el, fn) {

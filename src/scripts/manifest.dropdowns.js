@@ -359,6 +359,8 @@ function initializeDropdownPlugin() {
                                     pressTimer = null;
                                     restoreCallout();
                                     el.__mnfstLongPressOpenedAt = Date.now();
+                                    // No contextmenu event on iOS: announce the press so composing plugins (x-edit) can track the target.
+                                    pressTarget.dispatchEvent(new CustomEvent('dropdown:context', { bubbles: true, detail: { x: startX, y: startY } }));
                                     openContextMenuAt(pressTarget, startX, startY);
                                 }, LONG_PRESS_MS);
                             });

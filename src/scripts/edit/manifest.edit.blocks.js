@@ -74,7 +74,7 @@
     }
 
     /* ---- can() ---- */
-    const ACTIONS = ['move', 'remove', 'duplicate', 'text', 'attrs', 'size', 'copy', 'cut', 'paste'];
+    const ACTIONS = ['move', 'remove', 'duplicate', 'text', 'attrs', 'class', 'size', 'copy', 'cut', 'paste'];
     function pasteDest(el) {
         const block = el ? asPiece(el) : null;
         if (block) return accepts(block.parentElement) ? block.parentElement : null;
@@ -89,10 +89,15 @@
         if (!area || !isActive(area)) return false;
         const kind = classify(area);
         if (action === 'size') return !!el._edit && el._edit.caps.has('size') && !lockedFor(el, 'size');
-        if (action === 'text') return capOf(el, 'text') && (kind !== 'data' || capOf(el, 'data'));
-        if (action === 'attrs') {
+        // Text: an editable leaf (or a rich-editor host), never a container or a bound element.
+        if (action === 'text') return capOf(el, 'text') && !el.hasAttribute('x-text') && !el.hasAttribute('x-html')
+            && (el.getAttribute('contenteditable') === 'true' || !!el._pieceMode || el.hasAttribute('data-text-edit') || (el._editField != null && capOf(el, 'data')));
+        // attrs: any attribute (static elements); class: the class list (static and component nodes).
+        if (action === 'attrs' || action === 'class') {
             if (kind === 'data' || lockedFor(el, 'attrs')) return false;
-            return kind === 'component' ? el._editPath != null : el.hasAttribute('data-edit-key');
+            if (kind === 'component') return action === 'class' && el._editPath != null;
+            const k = el.getAttribute('data-edit-key');
+            return !!k && k[0] !== '!';
         }
         if (kind === 'component') return false;
         const block = asPiece(el);
