@@ -1,0 +1,253 @@
+/* Manifest Rich Text */
+
+@layer base, components, utilities;
+
+@layer components {
+
+    :where([data-rich-text]) {
+        position: relative;
+        overflow-y: auto;
+        max-height: var(--rich-text-max-height, none);
+        outline: none;
+
+        /* Document-wide styles (.all controls, $rich.all) */
+        font-family: var(--rich-text-font, inherit);
+        font-size: var(--rich-text-size, inherit);
+        line-height: var(--rich-text-leading, inherit);
+        text-align: var(--rich-text-align, start);
+        color: var(--rich-text-color, inherit);
+
+        /* Placeholder overlays the first line */
+        &[data-rich-text-empty]::before {
+            content: attr(placeholder);
+            position: absolute;
+            inset-block-start: var(--rich-text-padding, 0.75rem);
+            inset-inline: var(--rich-text-padding, 0.75rem);
+            color: var(--color-content-subtle);
+            pointer-events: none;
+        }
+    }
+
+    /* .all background on an unstyled area */
+    :where([data-rich-text].unstyle[style*="--rich-text-background"]) {
+        background: var(--rich-text-background);
+    }
+
+    /* Unstyled: placeholder hugs the line */
+    :where([data-rich-text].unstyle)[data-rich-text-empty]::before {
+        inset-block-start: 0;
+        inset-inline: 0;
+    }
+
+    /* Field look; .unstyle drops it */
+    :where([data-rich-text]:not(.unstyle)) {
+        min-height: var(--rich-text-min-height, 8rem);
+        padding: var(--rich-text-padding, 0.75rem);
+        background: var(--rich-text-background, var(--color-surface-1));
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+
+        /* Held while a focus-taking control acts on the area */
+        &:focus,
+        &[data-rich-text-focused] {
+            border-color: var(--color-content-subtle);
+        }
+    }
+
+    /* Single-line (.inline) */
+    :where([data-rich-text-inline]:not(.unstyle)) {
+        min-height: var(--rich-text-min-height, auto);
+    }
+
+    /* ---- Selection menu (x-rich-text-menu) ---- */
+    :where([data-rich-text-menu]) {
+        position: fixed;
+        margin: 0;
+        inset: auto;
+        left: var(--rich-text-selection-center);
+        top: var(--rich-text-selection-y);
+        transform: translate(-50%, calc(-100% - 0.5rem));
+        gap: 0.25rem;
+        align-items: center;
+        padding: 0.25rem;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+    }
+
+    /* Display only while open */
+    :where([data-rich-text-menu]:popover-open) {
+        display: flex;
+    }
+
+    /* No Popover API: hidden */
+    @supports not selector(:popover-open) {
+        :where([data-rich-text-menu]) {
+            display: none;
+        }
+    }
+
+    /* ---- Controls ---- */
+    :where([data-rich-text-control]) {
+        &[data-rich-text-active] {
+            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
+            color: var(--color-content-stark);
+        }
+
+        & > svg {
+            width: 1rem;
+            height: 1rem;
+        }
+    }
+
+    /* Icon-only buttons */
+    :where(button[data-rich-text-control]:has(> svg:only-child)) {
+        padding: 0.35rem;
+        line-height: 0;
+    }
+
+    /* Disabled controls still catch the click, so the area keeps focus */
+    :where([data-rich-text-control][aria-disabled=true]) {
+        pointer-events: auto;
+    }
+
+    /* ---- Editable content ---- */
+    :where([data-rich-text]) {
+
+        & > * + * {
+            margin-block-start: 0.75em;
+        }
+
+        & :where(h1, h2, h3, h4, h5, h6) {
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        & h1 { font-size: 1.6em }
+        & h2 { font-size: 1.35em }
+        & h3 { font-size: 1.15em }
+
+        & :where(ul, ol) {
+            padding-inline-start: 1.5em;
+        }
+
+        & li {
+            list-style: revert;
+        }
+
+        & blockquote {
+            padding-inline-start: 0.85em;
+            border-inline-start: 2px solid var(--color-line);
+            color: var(--color-content-neutral);
+        }
+
+        & code {
+            padding: 0.1em 0.3em;
+            border-radius: 4px;
+            font-size: 0.9em;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+        }
+
+        & pre {
+            padding: 0.75em;
+            border-radius: var(--radius);
+            overflow-x: auto;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+
+            & code {
+                padding: 0;
+                background: none;
+            }
+        }
+
+        & a {
+            color: var(--color-brand-content);
+            text-decoration: underline;
+        }
+
+        & hr {
+            margin-block: 1em;
+        }
+
+        & img {
+            max-width: 100%;
+        }
+
+        & table {
+            width: 100%;
+            table-layout: fixed;
+
+            & :where(td, th) {
+                padding: 0.35em 0.5em;
+                border: 1px solid var(--color-line);
+                vertical-align: top;
+            }
+
+            & th {
+                font-weight: 600;
+                text-align: start;
+                background: var(--color-surface-2);
+            }
+        }
+
+        /* Cell block selection */
+        & :where(td, th)[data-rich-text-cell] {
+            background: color-mix(in oklch, var(--color-brand-content) 18%, transparent);
+        }
+
+        /* Table border resizing */
+        &[data-rich-text-border="x"] { cursor: col-resize }
+        &[data-rich-text-border="y"] { cursor: row-resize }
+        &[data-rich-text-resizing] { user-select: none }
+        &[data-rich-text-resizing="x"] { cursor: col-resize }
+        &[data-rich-text-resizing="y"] { cursor: row-resize }
+
+        /* Task lists */
+        & :where(ul[data-checklist]) {
+            padding-inline-start: 0.25em;
+            list-style: none;
+
+            & li {
+                display: flex;
+                align-items: baseline;
+                gap: 0.5em;
+                list-style: none;
+            }
+        }
+
+        & :where(dt) {
+            font-weight: 600;
+        }
+
+        & :where(dd) {
+            margin-inline-start: 1.5em;
+        }
+
+        & :where(kbd) {
+            padding: 0.1em 0.35em;
+            border: 1px solid var(--color-line);
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.85em;
+        }
+
+        & :where(mark) {
+            background: color-mix(in oklch, var(--color-brand-content) 25%, transparent);
+            color: inherit;
+        }
+
+        & :where(small) {
+            font-size: 0.8em;
+        }
+
+        & :where(figcaption) {
+            font-size: 0.8em;
+            color: var(--color-content-neutral);
+        }
+
+        & :where(abbr, dfn) {
+            text-decoration: underline dotted;
+        }
+    }
+}

@@ -37,7 +37,7 @@
         // both litter its content and let applyStaticState fight it for the same nodes.
         area.querySelectorAll('*').forEach(el => {
             if (el.hasAttribute('data-edit-handle')) return;
-            if (el.parentElement && el.parentElement.closest('[data-text-edit]')) return;
+            if (el.parentElement && el.parentElement.closest('[data-rich-text]')) return;
             markEl(el);
         });
         if (!area._baseOrder) area._baseOrder = staticKeys(area);

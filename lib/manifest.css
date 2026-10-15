@@ -3917,6 +3917,260 @@
     }
 }
 
+/* Manifest Rich Text */
+
+@layer base, components, utilities;
+
+@layer components {
+
+    :where([data-rich-text]) {
+        position: relative;
+        overflow-y: auto;
+        max-height: var(--rich-text-max-height, none);
+        outline: none;
+
+        /* Document-wide styles (.all controls, $rich.all) */
+        font-family: var(--rich-text-font, inherit);
+        font-size: var(--rich-text-size, inherit);
+        line-height: var(--rich-text-leading, inherit);
+        text-align: var(--rich-text-align, start);
+        color: var(--rich-text-color, inherit);
+
+        /* Placeholder overlays the first line */
+        &[data-rich-text-empty]::before {
+            content: attr(placeholder);
+            position: absolute;
+            inset-block-start: var(--rich-text-padding, 0.75rem);
+            inset-inline: var(--rich-text-padding, 0.75rem);
+            color: var(--color-content-subtle);
+            pointer-events: none;
+        }
+    }
+
+    /* .all background on an unstyled area */
+    :where([data-rich-text].unstyle[style*="--rich-text-background"]) {
+        background: var(--rich-text-background);
+    }
+
+    /* Unstyled: placeholder hugs the line */
+    :where([data-rich-text].unstyle)[data-rich-text-empty]::before {
+        inset-block-start: 0;
+        inset-inline: 0;
+    }
+
+    /* Field look; .unstyle drops it */
+    :where([data-rich-text]:not(.unstyle)) {
+        min-height: var(--rich-text-min-height, 8rem);
+        padding: var(--rich-text-padding, 0.75rem);
+        background: var(--rich-text-background, var(--color-surface-1));
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+
+        /* Held while a focus-taking control acts on the area */
+        &:focus,
+        &[data-rich-text-focused] {
+            border-color: var(--color-content-subtle);
+        }
+    }
+
+    /* Single-line (.inline) */
+    :where([data-rich-text-inline]:not(.unstyle)) {
+        min-height: var(--rich-text-min-height, auto);
+    }
+
+    /* ---- Selection menu (x-rich-text-menu) ---- */
+    :where([data-rich-text-menu]) {
+        position: fixed;
+        margin: 0;
+        inset: auto;
+        left: var(--rich-text-selection-center);
+        top: var(--rich-text-selection-y);
+        transform: translate(-50%, calc(-100% - 0.5rem));
+        gap: 0.25rem;
+        align-items: center;
+        padding: 0.25rem;
+        background: var(--color-surface-1);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+    }
+
+    /* Display only while open */
+    :where([data-rich-text-menu]:popover-open) {
+        display: flex;
+    }
+
+    /* No Popover API: hidden */
+    @supports not selector(:popover-open) {
+        :where([data-rich-text-menu]) {
+            display: none;
+        }
+    }
+
+    /* ---- Controls ---- */
+    :where([data-rich-text-control]) {
+        &[data-rich-text-active] {
+            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
+            color: var(--color-content-stark);
+        }
+
+        & > svg {
+            width: 1rem;
+            height: 1rem;
+        }
+    }
+
+    /* Icon-only buttons */
+    :where(button[data-rich-text-control]:has(> svg:only-child)) {
+        padding: 0.35rem;
+        line-height: 0;
+    }
+
+    /* Disabled controls still catch the click, so the area keeps focus */
+    :where([data-rich-text-control][aria-disabled=true]) {
+        pointer-events: auto;
+    }
+
+    /* ---- Editable content ---- */
+    :where([data-rich-text]) {
+
+        & > * + * {
+            margin-block-start: 0.75em;
+        }
+
+        & :where(h1, h2, h3, h4, h5, h6) {
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        & h1 { font-size: 1.6em }
+        & h2 { font-size: 1.35em }
+        & h3 { font-size: 1.15em }
+
+        & :where(ul, ol) {
+            padding-inline-start: 1.5em;
+        }
+
+        & li {
+            list-style: revert;
+        }
+
+        & blockquote {
+            padding-inline-start: 0.85em;
+            border-inline-start: 2px solid var(--color-line);
+            color: var(--color-content-neutral);
+        }
+
+        & code {
+            padding: 0.1em 0.3em;
+            border-radius: 4px;
+            font-size: 0.9em;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+        }
+
+        & pre {
+            padding: 0.75em;
+            border-radius: var(--radius);
+            overflow-x: auto;
+            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
+
+            & code {
+                padding: 0;
+                background: none;
+            }
+        }
+
+        & a {
+            color: var(--color-brand-content);
+            text-decoration: underline;
+        }
+
+        & hr {
+            margin-block: 1em;
+        }
+
+        & img {
+            max-width: 100%;
+        }
+
+        & table {
+            width: 100%;
+            table-layout: fixed;
+
+            & :where(td, th) {
+                padding: 0.35em 0.5em;
+                border: 1px solid var(--color-line);
+                vertical-align: top;
+            }
+
+            & th {
+                font-weight: 600;
+                text-align: start;
+                background: var(--color-surface-2);
+            }
+        }
+
+        /* Cell block selection */
+        & :where(td, th)[data-rich-text-cell] {
+            background: color-mix(in oklch, var(--color-brand-content) 18%, transparent);
+        }
+
+        /* Table border resizing */
+        &[data-rich-text-border="x"] { cursor: col-resize }
+        &[data-rich-text-border="y"] { cursor: row-resize }
+        &[data-rich-text-resizing] { user-select: none }
+        &[data-rich-text-resizing="x"] { cursor: col-resize }
+        &[data-rich-text-resizing="y"] { cursor: row-resize }
+
+        /* Task lists */
+        & :where(ul[data-checklist]) {
+            padding-inline-start: 0.25em;
+            list-style: none;
+
+            & li {
+                display: flex;
+                align-items: baseline;
+                gap: 0.5em;
+                list-style: none;
+            }
+        }
+
+        & :where(dt) {
+            font-weight: 600;
+        }
+
+        & :where(dd) {
+            margin-inline-start: 1.5em;
+        }
+
+        & :where(kbd) {
+            padding: 0.1em 0.35em;
+            border: 1px solid var(--color-line);
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.85em;
+        }
+
+        & :where(mark) {
+            background: color-mix(in oklch, var(--color-brand-content) 25%, transparent);
+            color: inherit;
+        }
+
+        & :where(small) {
+            font-size: 0.8em;
+        }
+
+        & :where(figcaption) {
+            font-size: 0.8em;
+            color: var(--color-content-neutral);
+        }
+
+        & :where(abbr, dfn) {
+            text-decoration: underline dotted;
+        }
+    }
+}
+
 /* Manifest Sidebars */
 
 @layer base, components, utilities;
@@ -4209,280 +4463,6 @@
             :where(tr, .grid-row) {
                 border-bottom: 0 none
             }
-        }
-    }
-}
-
-/* Manifest Text Edit */
-
-@layer base, components, utilities;
-
-/* Self-contained. The editable area is a field first — it borrows the tokens inputs
-   and textareas use, so it sits in a form without looking bolted on. Controls are
-   styled where they are, not by where they sit, because they can be anywhere. */
-
-@layer components {
-
-    :where([data-text-edit]) {
-        position: relative;
-        overflow-y: auto;
-        max-height: var(--text-edit-max-height, none);
-        outline: none;
-
-        /* Page-level styling — set by .page controls, read back by $text.page.
-           Presentation, so it lives here rather than inside the stored markup. */
-        font-family: var(--text-edit-font, inherit);
-        font-size: var(--text-edit-size, inherit);
-        line-height: var(--text-edit-leading, inherit);
-        text-align: var(--text-edit-align, start);
-        color: var(--text-edit-color, inherit);
-
-        /* Flagged from script: :empty never matches the <br> a contenteditable
-           keeps, and the tag holding it is not predictable after a wipe. The
-           placeholder OVERLAYS the first line (it is not a line of its own), so
-           the caret sits on top of it and nothing jumps when typing starts. */
-        &[data-text-edit-empty]::before {
-            content: attr(placeholder);
-            position: absolute;
-            inset-block-start: var(--text-edit-padding, 0.75rem);
-            inset-inline: var(--text-edit-padding, 0.75rem);
-            color: var(--color-content-subtle);
-            pointer-events: none;
-        }
-    }
-
-    /* A .page background applies to an unstyled area too. */
-    :where([data-text-edit].unstyle[style*="--text-edit-background"]) {
-        background: var(--text-edit-background);
-    }
-
-    /* An unstyled area has no field padding, so its placeholder hugs the line. */
-    :where([data-text-edit].unstyle)[data-text-edit-empty]::before {
-        inset-block-start: 0;
-        inset-inline: 0;
-    }
-
-    /* The FIELD look. `.unstyle` drops it so an area can sit seamlessly in a
-       page — a WYSIWYG document inherits its element's own type and colours;
-       everything above (caret custody, placeholder, commands) still works. */
-    :where([data-text-edit]:not(.unstyle)) {
-        min-height: var(--text-edit-min-height, 8rem);
-        padding: var(--text-edit-padding, 0.75rem);
-        background: var(--text-edit-background, var(--color-surface-1));
-        border: 1px solid var(--color-line);
-        border-radius: var(--radius);
-
-        /* Held while the area owns the editing session — a <select> or colour
-           control takes NATIVE focus by design, and the ring must not flicker
-           off while the writer is mid-command. */
-        &:focus,
-        &[data-text-edit-focused] {
-            border-color: var(--color-content-subtle);
-        }
-    }
-
-    /* ---- Selection menu (x-text-edit-menu) ----
-       Positioned by the --text-edit-selection-* variables the plugin writes to
-       :root, so the default needs no script; restyle or reposition freely. */
-    :where([data-text-edit-menu]) {
-        position: fixed;
-        margin: 0;
-        inset: auto;
-        left: var(--text-edit-selection-center);
-        top: var(--text-edit-selection-y);
-        transform: translate(-50%, calc(-100% - 0.5rem));
-        gap: 0.25rem;
-        align-items: center;
-        padding: 0.25rem;
-        background: var(--color-surface-1);
-        border: 1px solid var(--color-line);
-        border-radius: var(--radius);
-        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
-    }
-
-    /* display only while OPEN: an author display on the base rule would beat
-       the UA's closed-popover display:none, leaving the menu floating fixed
-       over the page before any selection exists. */
-    :where([data-text-edit-menu]:popover-open) {
-        display: flex;
-    }
-
-    /* Without the Popover API the attribute is inert and the menu would render
-       permanently fixed on the page — hide it there; the bubble is progressive
-       enhancement. (In supporting browsers a closed popover is hidden natively.) */
-    @supports not selector(:popover-open) {
-        :where([data-text-edit-menu]) {
-            display: none;
-        }
-    }
-
-    /* ---- Controls ----
-       A control is marked wherever it lives, so a toolbar is optional markup and
-       never a requirement. The reset already dims [aria-disabled=true]. */
-    :where([data-text-edit-control]) {
-        &[data-text-edit-active] {
-            background: color-mix(in oklch, var(--color-content-stark) 10%, transparent);
-            color: var(--color-content-stark);
-        }
-
-        & > svg {
-            width: 1rem;
-            height: 1rem;
-        }
-    }
-
-    /* Icon-only buttons; text buttons keep the house padding. */
-    :where(button[data-text-edit-control]:has(> svg:only-child)) {
-        padding: 0.35rem;
-        line-height: 0;
-    }
-
-    /* The reset drops pointer events on disabled elements; a click would fall
-       through and blur the area. The plugin ignores it instead. */
-    :where([data-text-edit-control][aria-disabled=true]) {
-        pointer-events: auto;
-    }
-
-    /* ---- Editable content ----
-       The editor authors real block elements, so style them as elements. Deliberately
-       lighter than the .prose class, which sets a reading measure this field can't use. */
-    :where([data-text-edit]) {
-
-        & > * + * {
-            margin-block-start: 0.75em;
-        }
-
-        & :where(h1, h2, h3, h4, h5, h6) {
-            font-weight: 600;
-            line-height: 1.25;
-        }
-
-        & h1 { font-size: 1.6em }
-        & h2 { font-size: 1.35em }
-        & h3 { font-size: 1.15em }
-
-        & :where(ul, ol) {
-            padding-inline-start: 1.5em;
-        }
-
-        & li {
-            list-style: revert;
-        }
-
-        & blockquote {
-            padding-inline-start: 0.85em;
-            border-inline-start: 2px solid var(--color-line);
-            color: var(--color-content-neutral);
-        }
-
-        & code {
-            padding: 0.1em 0.3em;
-            border-radius: 4px;
-            font-size: 0.9em;
-            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
-        }
-
-        & pre {
-            padding: 0.75em;
-            border-radius: var(--radius);
-            overflow-x: auto;
-            background: color-mix(in oklch, var(--color-content-stark) 8%, transparent);
-
-            & code {
-                padding: 0;
-                background: none;
-            }
-        }
-
-        & a {
-            color: var(--color-brand-content);
-            text-decoration: underline;
-        }
-
-        & hr {
-            margin-block: 1em;
-        }
-
-        & img {
-            max-width: 100%;
-        }
-
-        & table {
-            width: 100%;
-            table-layout: fixed;
-
-            & :where(td, th) {
-                padding: 0.35em 0.5em;
-                border: 1px solid var(--color-line);
-                vertical-align: top;
-            }
-
-            & th {
-                font-weight: 600;
-                text-align: start;
-                background: var(--color-surface-2);
-            }
-        }
-
-        /* A block selection across cells. The browser can only highlight text, so an
-           empty cell shows nothing — this is what makes a spreadsheet-style
-           selection visible. */
-        & :where(td, th)[data-text-edit-cell] {
-            background: color-mix(in oklch, var(--color-brand-content) 18%, transparent);
-        }
-
-        /* Borders read as grabbable only when the pointer is on one */
-        &[data-text-edit-border="x"] { cursor: col-resize }
-        &[data-text-edit-border="y"] { cursor: row-resize }
-        &[data-text-edit-resizing] { user-select: none }
-        &[data-text-edit-resizing="x"] { cursor: col-resize }
-        &[data-text-edit-resizing="y"] { cursor: row-resize }
-
-        /* Task lists — the checkbox replaces the marker */
-        & :where(ul[data-checklist]) {
-            padding-inline-start: 0.25em;
-            list-style: none;
-
-            & li {
-                display: flex;
-                align-items: baseline;
-                gap: 0.5em;
-                list-style: none;
-            }
-        }
-
-        & :where(dt) {
-            font-weight: 600;
-        }
-
-        & :where(dd) {
-            margin-inline-start: 1.5em;
-        }
-
-        & :where(kbd) {
-            padding: 0.1em 0.35em;
-            border: 1px solid var(--color-line);
-            border-radius: 4px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.85em;
-        }
-
-        & :where(mark) {
-            background: color-mix(in oklch, var(--color-brand-content) 25%, transparent);
-            color: inherit;
-        }
-
-        & :where(small) {
-            font-size: 0.8em;
-        }
-
-        & :where(figcaption) {
-            font-size: 0.8em;
-            color: var(--color-content-neutral);
-        }
-
-        & :where(abbr, dfn) {
-            text-decoration: underline dotted;
         }
     }
 }

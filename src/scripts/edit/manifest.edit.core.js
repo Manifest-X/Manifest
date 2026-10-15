@@ -62,8 +62,8 @@
     // An element owned by the rich editor carries block markup this plugin's own
     // allowlist would flatten, so let that plugin vet its own content. Everything
     // else keeps the conservative inline-only policy.
-    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
-        ? window.ManifestTextEdit.sanitize(html, true, true)
+    const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-rich-text') && window.ManifestRichText
+        ? window.ManifestRichText.sanitize(html, true, true)
         : sanitizeHTML(html);
 
     function sanitizeHTML(html) {

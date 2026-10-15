@@ -312,10 +312,10 @@ describe('undo/redo hotkeys', () => {
         expect(store().canRedo).toBe(true)
     })
 
-    it('leaves x-text-edit fields and ordinary inputs alone', async () => {
+    it('leaves x-rich-text fields and ordinary inputs alone', async () => {
         const { root } = await edited()
         const rich = document.createElement('div')
-        rich.setAttribute('data-text-edit', '')
+        rich.setAttribute('data-rich-text', '')
         root.querySelector('section').appendChild(rich)
         const input = document.createElement('input')
         document.body.appendChild(input)

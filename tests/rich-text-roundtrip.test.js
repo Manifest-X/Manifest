@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  *
- * x-text-edit stores markdown, so its two serializers have to be exact inverses over
+ * x-rich-text stores markdown, so its two serializers have to be exact inverses over
  * everything the toolbar can author. A drift here is silent: the editor still looks
  * right while the stored value quietly loses structure on every save.
  */
@@ -14,9 +14,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // The plugin registers on alpine:init and exports its serializers on the window.
 await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(
-    readFileSync(path.join(__dirname, '../src/scripts/manifest.text.edit.js'), 'utf8')
+    readFileSync(path.join(__dirname, '../src/scripts/manifest.rich.text.js'), 'utf8')
 ))
-const { toMarkdown, fromMarkdown, sanitize } = window.ManifestTextEdit
+const { toMarkdown, fromMarkdown, sanitize } = window.ManifestRichText
 
 const roundTrip = (md) => {
     const host = document.createElement('div')
@@ -24,7 +24,7 @@ const roundTrip = (md) => {
     return toMarkdown(host)
 }
 
-describe('x-text-edit markdown round trip', () => {
+describe('x-rich-text markdown round trip', () => {
     it.each([
         ['heading', '# Title'],
         ['inline marks', 'A **bold** and *italic* and ~~struck~~ and `code` line.'],
@@ -51,8 +51,8 @@ describe('x-text-edit markdown round trip', () => {
     })
 })
 
-describe('x-text-edit command surface', () => {
-    const commands = window.ManifestTextEdit.commands()
+describe('x-rich-text command surface', () => {
+    const commands = window.ManifestRichText.commands()
 
     it('names every command for the tag it produces', () => {
         // The whole point of the rename: no Manifest vocabulary to map onto HTML.
@@ -86,7 +86,7 @@ describe('x-text-edit command surface', () => {
     })
 })
 
-describe('x-text-edit code blocks', () => {
+describe('x-rich-text code blocks', () => {
     it('reads a <br> inside a <pre> as a line break', () => {
         // Chrome writes <br> into a <pre> rather than a newline. textContent alone
         // runs the lines together, which silently flattens every code block on save.
@@ -102,7 +102,7 @@ describe('x-text-edit code blocks', () => {
     })
 })
 
-describe('x-text-edit tables', () => {
+describe('x-rich-text tables', () => {
     it('keeps a merged cell merged', () => {
         // Without colspan/rowspan surviving, every merge comes apart on the next save
         // and the feature is decorative.
@@ -129,7 +129,7 @@ describe('x-text-edit tables', () => {
     })
 })
 
-describe('x-text-edit sanitize', () => {
+describe('x-rich-text sanitize', () => {
     it('unwraps tags outside the allowlist but keeps their text', () => {
         expect(sanitize('<div><script>alert(1)</script>hi</div>', false)).toBe('hi')
     })
@@ -158,7 +158,7 @@ describe('x-text-edit sanitize', () => {
     })
 })
 
-describe('x-text-edit parser hardening', () => {
+describe('x-rich-text parser hardening', () => {
     it('drops a javascript: link at parse time', () => {
         expect(fromMarkdown('[x](javascript:evil())')).not.toContain('javascript:')
     })
