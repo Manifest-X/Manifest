@@ -35,7 +35,7 @@
         const t = attrTarget(el); if (!t) return false;
         name = String(name || '').trim().toLowerCase();
         const v = value === true ? '' : (value === false || value == null) ? null : String(value);
-        const refused = attrRefusal(name, v);
+        const refused = attrRefusal(name, v, t.el.tagName);
         if (refused) { console.warn(`[edit] attribute refused (${refused}):`, name); return false; }
         if (lockedFor(t.el, 'attrs')) return false;
         if (name === 'class') return setClass(t, v || '');

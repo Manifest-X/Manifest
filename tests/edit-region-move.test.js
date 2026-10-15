@@ -1,9 +1,9 @@
 /**
  * @vitest-environment happy-dom
  *
- * Cross-region drag (x-edit.sort): a block lifted out of one static region and dropped
- * into another records ONE st-move delta, undoes in one step, replays from the
- * persisted log on reload, and projects a static-move source patch for publish.
+ * Cross-area move (x-edit.move): a piece lifted out of one static area and dropped
+ * into another records ONE st-move delta naming it by identity, undoes in one step,
+ * replays from the persisted log on reload, and publishes as each area's final tree.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
@@ -45,6 +45,11 @@ async function regions(suffix, mods = '') {
 }
 
 const texts = (el) => [...el.children].map(c => c.textContent)
+const K = (region, key) => '@' + region + '@' + key
+const LS = () => localStorage.getItem('mnfst-edit-log:' + location.pathname)
+const treeOf = (region) => { const p = store().patches().find(x => x.kind === 'static-tree' && x.region === region); return p && p.tree }
+const kidKeys = (node) => (node.children || []).map(c => c.key)
+const findNode = (node, key) => { if (!node) return null; if (node.key === key) return node; for (const c of node.children || []) { const f = findNode(c, key); if (f) return f } return null }
 
 afterEach(() => {
     store().off()
@@ -67,10 +72,9 @@ describe('x-edit cross-region move', () => {
         expect(d.kind).toBe('st-move')
         expect(d.from).toBe('from-m1')
         expect(d.to).toBe('to-m1')
-        expect(d.key).toBe('P:Alpha')
-        expect(d.toKey).toBe('P:Alpha')
-        expect(d.fromOrder).toEqual(['P:Beta'])
-        expect(d.toOrder).toEqual(['P:Gamma', 'P:Alpha'])
+        expect(d.key).toBe(K('from-m1', 'P:Alpha'))
+        expect(d.fromOrder).toEqual([K('from-m1', 'P:Beta')])
+        expect(d.toOrder).toEqual([K('to-m1', 'P:Gamma'), K('from-m1', 'P:Alpha')])
     })
 
     it('inserts before a reference sibling', async () => {
@@ -79,17 +83,16 @@ describe('x-edit cross-region move', () => {
         expect(texts(b)).toEqual(['Alpha', 'Gamma'])
     })
 
-    it('re-keys on arrival when the destination already holds the key', async () => {
+    it('keeps its identity on arrival, even beside a same-content twin', async () => {
         const root = mount(`
             <section x-edit.move="from-k"><p>Same</p></section>
             <section x-edit.move="to-k"><p>Same</p></section>`)
         await flush(); await flush()
         const [a, b] = root.querySelectorAll('section')
-        store().move(a.querySelector('p'), b)
-        const d = store().export().log.at(store().export().cursor - 1)
-        expect(d.key).toBe('P:Same')
-        expect(d.toKey).toBe('P:Same#2')
-        expect(b.lastElementChild.getAttribute('data-edit-key')).toBe('P:Same#2')
+        const moved = a.querySelector('p')
+        store().move(moved, b)
+        expect(store().export().log.at(-1).key).toBe(K('from-k', 'P:Same'))
+        expect([...b.children].map(c => c.getAttribute('data-edit-key'))).toEqual([K('to-k', 'P:Same'), K('from-k', 'P:Same')])
     })
 
     it('refuses a move into a data region, a locked region, or its own subtree', async () => {
@@ -138,7 +141,7 @@ describe('x-edit cross-region move', () => {
     it('replays a persisted move on reload', async () => {
         const first = await regions('r1', '.persist')
         store().move(first.a.querySelector('p'), first.b)
-        expect(localStorage.getItem('mnfst-edit-log')).toContain('st-move')
+        expect(LS()).toContain('st-move')
 
         document.body.innerHTML = ''
         new Function(SRC)()                           // fresh closure = reload; log restores from localStorage
@@ -149,16 +152,11 @@ describe('x-edit cross-region move', () => {
         expect(texts(fresh.b)).toEqual(['Gamma', 'Alpha'])
     })
 
-    it('projects a static-move source patch plus both regions\' folded orders', async () => {
+    it('publishes both areas\' final trees, naming the piece by identity', async () => {
         const { a, b } = await regions('p1')
         store().move(a.querySelector('p'), b)
-        const patches = store().patches()
-        const mv = patches.find(p => p.kind === 'static-move' && p.from === 'from-p1')
-        expect(mv).toMatchObject({ from: 'from-p1', to: 'to-p1', key: 'P:Alpha', toKey: 'P:Alpha', toOrder: ['P:Gamma', 'P:Alpha'] })
-        // Orders always travel (pre-move reorders are not in the move splice); the
-        // server skips a reorder that is already true of the file.
-        expect(patches.find(p => p.kind === 'static' && p.region === 'from-p1')).toMatchObject({ edits: [], order: ['P:Beta'] })
-        expect(patches.find(p => p.kind === 'static' && p.region === 'to-p1')).toMatchObject({ edits: [], order: ['P:Gamma', 'P:Alpha'] })
+        expect(kidKeys(treeOf('from-p1'))).toEqual([K('from-p1', 'P:Beta')])
+        expect(kidKeys(treeOf('to-p1'))).toEqual([K('to-p1', 'P:Gamma'), K('from-p1', 'P:Alpha')])
     })
 })
 
@@ -171,7 +169,6 @@ async function textRegions(suffix) {
     const [a, b] = root.querySelectorAll('section')
     return { root, a, b }
 }
-
 const editText = (el, value) => {
     el.dispatchEvent(new Event('focus'))
     el.innerHTML = value
@@ -186,9 +183,8 @@ describe('x-edit move + text edits (stale-region regressions)', () => {
         editText(alpha, 'Edited')
         const { log, cursor } = store().export()
         const d = log[cursor - 1]
-        expect(d).toMatchObject({ kind: 'st-node', region: 'to-d1', path: 'P:Alpha', prop: 'text', value: 'Edited' })
-        const st = store().patches().find(p => p.kind === 'static' && p.region === 'to-d1')
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Alpha', prop: 'text', value: 'Edited' }))
+        expect(d).toMatchObject({ kind: 'st-node', region: 'to-d1', path: K('from-d1', 'P:Alpha'), prop: 'text', value: 'Edited' })
+        expect(findNode(treeOf('to-d1'), K('from-d1', 'P:Alpha')).edits).toEqual({ text: 'Edited' })
         await store().undo()                              // the edit alone
         expect(alpha.innerHTML).toBe('Alpha')
         expect(alpha.parentElement).toBe(b)
@@ -199,15 +195,9 @@ describe('x-edit move + text edits (stale-region regressions)', () => {
         const alpha = a.querySelector('p')
         editText(alpha, 'Edited')
         store().move(alpha, b)
-        const { log, cursor } = store().export()
-        const mv = log[cursor - 1]
-        expect(mv.key).toBe('P:Alpha')
-        expect(mv.toKey).toBe('P:Edited')                 // re-derived from current content: what a fresh session sees
-        expect(mv.remap).toContainEqual(['from-d3', 'P:Alpha', 'to-d3', 'P:Edited'])
-        const patches = store().patches()
-        const st = patches.find(p => p.kind === 'static' && p.region === 'to-d3')
-        expect(st).toBeTruthy()
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Edited', prop: 'text', value: 'Edited', path: '1' }))
+        const mv = store().export().log.at(-1)
+        expect(mv.key).toBe(K('from-d3', 'P:Alpha'))
+        expect(findNode(treeOf('to-d3'), K('from-d3', 'P:Alpha')).edits).toEqual({ text: 'Edited' })
         await store().undo()                              // the move
         expect(texts(a)).toEqual(['Edited', 'Beta'])
         await store().undo()                              // the edit
@@ -228,35 +218,21 @@ describe('x-edit move + text edits (stale-region regressions)', () => {
         third.dispatchEvent(key('Enter'))                 // drop → st-order [Third, Card, Second]
         expect(texts(a)).toEqual(['Third', 'Card', 'Second'])
         store().move(a.children[1], b)                    // Card leaves; folded order === fromOrder
-        const st = store().patches().find(p => p.kind === 'static' && p.region === 'from-o1')
-        expect(st).toBeTruthy()
-        expect(st.order).toEqual(['P:Third', 'P:Second'])
+        expect(kidKeys(treeOf('from-o1'))).toEqual([K('from-o1', 'P:Third'), K('from-o1', 'P:Second')])
     })
 })
 
-describe('x-edit move key-collision mirroring', () => {
-    const twinRegions = async (suffix, toHtml) => {
+describe('x-edit move identity across reloads', () => {
+    const twinRegions = async (suffix) => {
         const root = mount(`
             <section x-edit.move.persist="from-${suffix}"><p data-m="arr">Same</p><p>Beta</p></section>
-            <section x-edit.move.persist="to-${suffix}">${toHtml || '<p data-m="nat">Same</p>'}</section>`)
+            <section x-edit.move.persist="to-${suffix}"><p data-m="nat">Same</p></section>`)
         await flush(); await flush()
         const [a, b] = root.querySelectorAll('section')
         return { root, a, b }
     }
 
-    it('re-keys POSITIONALLY on arrival: a twin dropped first takes the base key', async () => {
-        const { a, b } = await twinRegions('t1')
-        const arr = a.querySelector('[data-m="arr"]'), nat = b.querySelector('[data-m="nat"]')
-        store().move(arr, b, nat)                         // arrival lands BEFORE its same-key twin
-        expect(arr.getAttribute('data-edit-key')).toBe('P:Same')
-        expect(nat.getAttribute('data-edit-key')).toBe('P:Same#2')
-        const d = store().export().log.at(store().export().cursor - 1)
-        expect(d.toKey).toBe('P:Same')
-        expect(d.toOrder).toEqual(['P:Same', 'P:Same#2'])
-        expect(d.remap).toContainEqual(['to-t1', 'P:Same', 'to-t1', 'P:Same#2'])   // the shifted twin travels on the delta
-    })
-
-    it('replays a collision move with element identity preserved (unsaved source)', async () => {
+    it('replays a move beside a twin with element identity preserved', async () => {
         const first = await twinRegions('t2')
         store().move(first.a.querySelector('[data-m="arr"]'), first.b, first.b.querySelector('[data-m="nat"]'))
 
@@ -267,26 +243,7 @@ describe('x-edit move key-collision mirroring', () => {
         await new Promise(r => setTimeout(r, 500))
         const kids = [...fresh.b.children]
         expect(kids.map(c => c.getAttribute('data-m'))).toEqual(['arr', 'nat'])
-        expect(kids.map(c => c.getAttribute('data-edit-key'))).toEqual(['P:Same', 'P:Same#2'])
-    })
-
-    it('replays idempotently against the WRITTEN source (post-save reload)', async () => {
-        const first = await twinRegions('t3')
-        store().move(first.a.querySelector('[data-m="arr"]'), first.b, first.b.querySelector('[data-m="nat"]'))
-
-        document.body.innerHTML = ''
-        new Function(SRC)()
-        await flush()
-        // What the source writer produced: arrival already spliced before the twin.
-        const root = mount(`
-            <section x-edit.move.persist="from-t3"><p>Beta</p></section>
-            <section x-edit.move.persist="to-t3"><p data-m="arr">Same</p><p data-m="nat">Same</p></section>`)
-        await flush(); await flush()
-        await new Promise(r => setTimeout(r, 500))
-        const [, b] = root.querySelectorAll('section')
-        const kids = [...b.children]
-        expect(kids.map(c => c.getAttribute('data-m'))).toEqual(['arr', 'nat'])   // no twin swap
-        expect(kids.map(c => c.getAttribute('data-edit-key'))).toEqual(['P:Same', 'P:Same#2'])
+        expect(kids.map(c => c.getAttribute('data-edit-key'))).toEqual([K('from-t2', 'P:Same'), K('to-t2', 'P:Same')])
     })
 })
 
@@ -377,61 +334,56 @@ describe('x-edit nested areas', () => {
     })
 })
 
-describe('x-edit publish paths vs the file the server will reach', () => {
-    it('an edit after a sibling DELETE addresses the unmodified file order', async () => {
+describe('x-edit publish trees address elements by identity', () => {
+    it('a delete lists the removed element; a later edit names its target', async () => {
         const root = mount(`<section x-edit.move.text="del-e1"><p>Alpha</p><p>Beta</p></section>`)
         await flush(); await flush()
-        const area = root.querySelector('section')
-        const [alpha, beta] = area.querySelectorAll('p')
+        const [alpha, beta] = root.querySelectorAll('p')
         expect(store().remove(alpha)).toBe(true)
         editText(beta, 'Edited')
-        const st = store().patches().find(p => p.kind === 'static' && p.region === 'del-e1')
-        expect(st).toBeTruthy()
-        // The server skips the short order, so the file keeps Alpha at 0 — Beta is 1.
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Beta', prop: 'text', value: 'Edited', path: '1' }))
+        const p = store().patches().find(x => x.kind === 'static-tree' && x.region === 'del-e1')
+        expect(p.removed).toEqual([K('del-e1', 'P:Alpha')])
+        expect(p.tree.children).toEqual([{ key: K('del-e1', 'P:Beta'), at: '1', edits: { text: 'Edited' } }])
     })
 
-    it('cut-then-edit addresses the unmodified file order too', async () => {
+    it('cut-then-edit too', async () => {
         const root = mount(`<section x-edit.move.text="cut-e1"><p>Alpha</p><p>Beta</p></section>`)
         await flush(); await flush()
-        const area = root.querySelector('section')
-        const [alpha, beta] = area.querySelectorAll('p')
+        const [alpha, beta] = root.querySelectorAll('p')
         expect(store().cut(alpha)).toBe(true)
         editText(beta, 'Edited')
-        const st = store().patches().find(p => p.kind === 'static' && p.region === 'cut-e1')
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Beta', prop: 'text', value: 'Edited', path: '1' }))
+        const p = store().patches().find(x => x.kind === 'static-tree' && x.region === 'cut-e1')
+        expect(p.removed).toEqual([K('cut-e1', 'P:Alpha')])
+        expect(findNode(p.tree, K('cut-e1', 'P:Beta')).edits).toEqual({ text: 'Edited' })
     })
 
-    it('edit-then-reorder still publishes at the post-order position (order applies)', async () => {
+    it('edit-then-reorder: the final order and the edit on the same node', async () => {
         const root = mount(`<section x-edit.move.text="ord-e1"><p>Alpha</p><p>Beta</p></section>`)
         await flush(); await flush()
-        const area = root.querySelector('section')
-        const alpha = area.querySelector('p')
+        const alpha = root.querySelector('p')
         editText(alpha, 'Edited')
-        alpha.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }))   // text row: Alt+arrow → st-order [Beta, Alpha]
-        const st = store().patches().find(p => p.kind === 'static' && p.region === 'ord-e1')
-        expect(st.order).toEqual(['P:Beta', 'P:Alpha'])
-        // Same-length order IS applied by the server, so the current position is right.
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Alpha', prop: 'text', value: 'Edited', path: '1' }))
+        alpha.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }))
+        const t = treeOf('ord-e1')
+        expect(kidKeys(t)).toEqual([K('ord-e1', 'P:Beta'), K('ord-e1', 'P:Alpha')])
+        expect(t.children[1].edits).toEqual({ text: 'Edited' })
     })
 })
 
 describe('x-edit plugin-node indexing (handles/ghosts never count)', () => {
-    it('undo of a reorder keeps real children ahead of injected size handles, and paths skip them', async () => {
+    it('undo of a reorder keeps real children ahead of injected size handles; trees skip them', async () => {
         const root = mount(`<section x-edit.move.text.size="sz1"><p>One</p><p>Two</p></section>`)
         await flush(); await flush()
         const area = root.querySelector('section')
         expect([...area.children].filter(c => c.hasAttribute('data-edit-handle')).length).toBeGreaterThan(0)
         const two = [...area.querySelectorAll('p')].find(p => p.textContent === 'Two')
-        two.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }))   // st-order [Two, One]
+        two.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }))
         expect([...area.children].filter(c => c.tagName === 'P').map(c => c.textContent)).toEqual(['Two', 'One'])
-        await store().undo()                              // applyStaticState reorder branch
-        expect(area.firstElementChild.tagName).toBe('P')  // not a handle span
+        await store().undo()
+        expect(area.firstElementChild.tagName).toBe('P')
         expect([...area.children].filter(c => c.tagName === 'P').map(c => c.textContent)).toEqual(['One', 'Two'])
-        const one = area.querySelector('p')
-        editText(one, 'Edited')
-        const st = store().patches().find(p => p.kind === 'static' && p.region === 'sz1')
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:One', prop: 'text', value: 'Edited', path: '0' }))
+        editText(area.querySelector('p'), 'Edited')
+        expect(kidKeys(treeOf('sz1'))).toEqual([K('sz1', 'P:One'), K('sz1', 'P:Two')])
+        expect(findNode(treeOf('sz1'), K('sz1', 'P:One')).edits).toEqual({ text: 'Edited' })
     })
 })
 

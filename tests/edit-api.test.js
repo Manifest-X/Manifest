@@ -30,6 +30,10 @@ beforeAll(async () => {
 
 const store = () => Alpine.store('edit')
 const last = () => { const { log, cursor } = store().export(); return log[cursor - 1] }
+const LS = () => JSON.parse(localStorage.getItem('mnfst-edit-log:' + location.pathname))
+const K = (region, key) => '@' + region + '@' + key
+const treeOf = (region) => { const p = store().patches().find(x => x.kind === 'static-tree' && x.region === region); return p && p.tree }
+const findNode = (node, key) => { if (!node) return null; if (node.key === key) return node; for (const c of node.children || []) { const f = findNode(c, key); if (f) return f } return null }
 
 async function mount(html) {
     const root = document.createElement('div')
@@ -154,9 +158,9 @@ describe('.persist', () => {
             <section x-edit.persist="keep-p"><p>Beta</p></section>`)
         const [a, b] = root.querySelectorAll('p')
         editText(a, 'Edited A')
-        expect(localStorage.getItem('mnfst-edit-log')).toBeNull()
+        expect(LS()).toBeNull()
         editText(b, 'Edited B')
-        const saved = JSON.parse(localStorage.getItem('mnfst-edit-log'))
+        const saved = LS()
         expect(saved.log.map(d => d.region)).toEqual(['keep-p'])
         expect(saved.cursor).toBe(1)
     })
@@ -186,8 +190,7 @@ describe('patches cover every area', () => {
         const region = id('plain')
         const root = await mount(`<section x-edit="${region}"><p>Alpha</p></section>`)
         editText(root.querySelector('p'), 'Edited')
-        const st = store().patches().find(p => p.kind === 'static' && p.region === region)
-        expect(st.edits).toContainEqual(expect.objectContaining({ key: 'P:Alpha', prop: 'text', value: 'Edited' }))
+        expect(findNode(treeOf(region), K(region, 'P:Alpha')).edits).toEqual({ text: 'Edited' })
     })
 
     it('every edit stays in memory', async () => {
@@ -310,13 +313,12 @@ describe('.move nesting', () => {
     })
 
     it('publishes nesting as a static-move with container keys plus nested orders', async () => {
-        const { region, card, loose, inside } = await page()
+        const { region, card, loose, inside, empty } = await page()
         store().move(loose, card)
         key(loose, { key: 'ArrowUp', altKey: true })                   // reorder inside the card
-        const patches = store().patches()
-        expect(patches.find(p => p.kind === 'static-move' && p.from === region)).toMatchObject({ to: region, toParent: card.getAttribute('data-edit-key'), key: 'P:Loose' })
-        const st = patches.find(p => p.kind === 'static' && p.region === region)
-        expect(st.orders[card.getAttribute('data-edit-key')]).toEqual(['P:Loose', inside.getAttribute('data-edit-key')])
+        const t = treeOf(region)
+        expect(t.children.map(c => c.key)).toEqual([card, empty].map(e => e.getAttribute('data-edit-key')))
+        expect(t.children[0].children.map(c => c.key)).toEqual([K(region, 'P:Loose'), inside.getAttribute('data-edit-key')])
     })
 
     it('.data lists reorder within their own list only', async () => {
@@ -404,6 +406,49 @@ describe('grip for text pieces', () => {
         expect(JSON.stringify(store().export())).not.toContain('data-edit-grip')
         expect(root.innerHTML).not.toContain('data-edit-grip')
         expect(p.innerHTML).toBe('Edited')
+    })
+})
+
+describe('identity', () => {
+    it('duplicating a twin mints a unique key; undo/redo keep the copy', async () => {
+        const region = id('twin')
+        const root = await mount(`<section x-edit="${region}"><p>Same</p><p>Same</p><p>Other</p></section>`)
+        const area = root.querySelector('section')
+        const keys = () => [...area.children].map(c => c.getAttribute('data-edit-key'))
+        store().duplicate(area.querySelector('p'))
+        const after = keys()
+        expect(new Set(after).size).toBe(4)
+        expect(after[1]).toMatch(new RegExp('^~[a-z0-9]+~' + K(region, 'P:Same').replace(/[$^@]/g, '\\$&') + '$'))
+        await store().undo()
+        expect(keys()).toEqual([K(region, 'P:Same'), K(region, 'P:Same#2'), K(region, 'P:Other')])
+        await store().redo()
+        expect(keys()).toEqual(after)
+        expect(names(area)).toEqual(['Same', 'Same', 'Same', 'Other'])
+    })
+
+    it('a lock follows its element across areas', async () => {
+        const root = await mount(`
+            <section x-edit="${id('la')}"><p>One</p><p>Two</p></section>
+            <section x-edit="lb-x"><p>Three</p></section>`)
+        const one = root.querySelector('p'), b = root.querySelectorAll('section')[1]
+        store().lock(one, 'remove')
+        expect(store().move(one, b)).toBe(true)
+        expect(one.parentElement).toBe(b)
+        expect(store().can('remove', one)).toBe(false)
+        expect(store().can('remove', b.querySelector('p'))).toBe(true)
+        await store().undo()
+        expect(store().can('remove', one)).toBe(false)
+    })
+
+    it('x-text and x-if output stay out of identity, so keys match the source', async () => {
+        const region = id('src')
+        const root = await mount(`<div x-data="{ name: 'Alice', on: true }"><section x-edit="${region}"><template x-if="on"><p>Same</p></template><p>Same</p><div><span x-text="name"></span><p>Static</p></div></section></div>`)
+        await flush()
+        const ps = root.querySelectorAll('section > p')
+        const generated = ps[0], authored = ps[1]
+        expect(generated.hasAttribute('data-edit-key')).toBe(false)
+        expect(authored.getAttribute('data-edit-key')).toBe(K(region, 'P:Same'))
+        expect(root.querySelector('section > div').getAttribute('data-edit-key')).toBe(K(region, 'DIV:Static'))
     })
 })
 
@@ -532,7 +577,7 @@ describe('size variables', () => {
     it('a close is not persisted or published', async () => {
         const root = await mount(`<div x-data="{ open: true }"><aside x-show="open" x-edit.size.persist="side-p" style="width: 300px; --edit-size-close: 100px">Side</aside></div>`)
         pull(root.querySelector('[data-edit-handle="right"]'), -250)
-        expect(JSON.parse(localStorage.getItem('mnfst-edit-log')).log.some(d => d.kind === 'show')).toBe(false)
+        expect(LS().log.some(d => d.kind === 'show')).toBe(false)
         expect(store().patches().some(p => p.kind === 'show')).toBe(false)
     })
 
@@ -615,11 +660,11 @@ describe('$edit.target / can / lock', () => {
         const root = await mount(`<section x-edit.persist="lock-rt"><p>One</p><p>Two</p></section>`)
         const one = root.querySelector('p')
         expect(store().lock(one, 'move')).toBe(true)
-        expect(last()).toMatchObject({ kind: 'lock', region: 'lock-rt', key: 'P:One', actions: ['move'], value: true })
+        expect(last()).toMatchObject({ kind: 'lock', region: 'lock-rt', key: K('lock-rt', 'P:One'), actions: ['move'], value: true })
         expect(store().can('move', one)).toBe(false)
         expect(one.hasAttribute('data-edit-piece')).toBe(false)
         expect(store().can('text', one)).toBe(true)
-        expect(localStorage.getItem('mnfst-edit-log')).toContain('"lock"')
+        expect(JSON.stringify(LS())).toContain('"lock"')
         await store().undo()
         expect(store().can('move', one)).toBe(true)
         expect(one.hasAttribute('data-edit-piece')).toBe(true)
@@ -655,8 +700,7 @@ describe('$edit.classes and $edit.attr', () => {
         expect(p.className).toBe('a')
         expect(store().classes.toggle('a', p)).toBe(true)
         expect(p.hasAttribute('class')).toBe(false)
-        const st = store().patches().find(x => x.kind === 'static' && x.region === region)
-        expect(st.edits).toContainEqual(expect.objectContaining({ prop: 'class', value: '' }))
+        expect(findNode(treeOf(region), K(region, 'P:One')).edits).toEqual({ class: null })
     })
 
     it('consecutive changes to the same attribute coalesce into one undo step', async () => {
@@ -704,6 +748,31 @@ describe('$edit.classes and $edit.attr', () => {
         expect(store().attr('href', 'https://example.com', a)).toBe(true)
     })
 
+    it('guardrails: script/data schemes in any value, data images only on img/source, SVG animation targets', async () => {
+        const root = await mount(`<section x-edit="${id('gr2')}"><p>Text</p><img src="/a.png"><object>o</object><iframe></iframe><svg><set></set></svg></section>`)
+        const p = root.querySelector('p'), img = root.querySelector('img'), obj = root.querySelector('object'), ifr = root.querySelector('iframe'), set = root.querySelector('set')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        expect(store().attr('data', 'data:text/html,<script>x</script>', obj)).toBe(false)
+        expect(store().attr('src', 'data:image/svg+xml,<svg onload=x>', ifr)).toBe(false)
+        expect(store().attr('src', 'data:image/svg+xml;base64,AAAA', img)).toBe(false)
+        expect(store().attr('title', 'data:text/plain,x', p)).toBe(false)
+        expect(store().attr('title', 'java\tscript:x', p)).toBe(false)
+        expect(store().attr('title', '&#106;avascript:x', p)).toBe(false)
+        expect(store().attr('style', 'background:url(javascript:x)', p)).toBe(false)
+        expect(store().attr('attributeName', 'href', set)).toBe(false)
+        expect(store().attr('to', 'x', set)).toBe(false)
+        warn.mockRestore()
+        expect(store().attr('srcset', 'data:image/webp;base64,AAAA 1x', img)).toBe(true)
+        expect(store().attr('title', 'Learn javascript: the basics', p)).toBe(true)
+    })
+
+    it('text is sanitized with the URL policy: control chars and data: in hrefs are dropped', async () => {
+        const root = await mount(`<section x-edit="${id('san')}"><p>Hello</p></section>`)
+        const p = root.querySelector('p')
+        editText(p, 'Hi <a href="java&#9;script:alert(1)">x</a> <a href="&#1;javascript:alert(2)">y</a> <a href="data:text/html,z">z</a> <a href="https://ok.test">ok</a>')
+        expect(last().value).toBe('Hi <a>x</a> <a>y</a> <a>z</a> <a href="https://ok.test">ok</a>')
+    })
+
     it(':class bound: only the static class is edited; the binding keeps its classes', async () => {
         const root = await mount(`<div x-data="{ on: true }"><section x-edit="${id('bc')}"><p class="base" :class="on && 'live'">One</p></section></div>`)
         const p = root.querySelector('p')
@@ -732,7 +801,6 @@ describe('$edit.classes and $edit.attr', () => {
         const region = id('pub')
         const root = await mount(`<section x-edit="${region}"><p>One</p></section>`)
         store().attr('aria-label', 'First', root.querySelector('p'))
-        const st = store().patches().find(x => x.kind === 'static' && x.region === region)
-        expect(st.edits).toContainEqual({ path: '0', key: 'P:One', prop: 'aria-label', value: 'First' })
+        expect(treeOf(region)).toEqual({ key: K(region, 'SECTION:One'), children: [{ key: K(region, 'P:One'), at: '0', edits: { 'aria-label': 'First' } }] })
     })
 })

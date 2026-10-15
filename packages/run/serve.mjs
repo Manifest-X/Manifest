@@ -680,7 +680,7 @@ function writeDataValue(p, manifest) {
   return { kind: 'data-val', source: p.source, status: 'error', reason: `unsupported ext ${ext}` };
 }
 
-// --- Dependency-free HTML region editor (spike) ---
+// --- Dependency-free HTML region editor ---
 // packages/run is zero-dep by design, so instead of pulling in an HTML parser we do a
 // small tag-aware scan: find the element carrying x-edit="<key>", depth-match its close,
 // and splice. Robust for authored Manifest source (well-formed); not a general parser.
@@ -705,250 +705,281 @@ function matchingClose(html, tag, from) {   // depth-match </tag> accounting for
   }
   return null;
 }
-function locateEditEl(html, key) {          // element whose x-edit*-named attr value === key
-  const m = new RegExp(`x-edit[.\\w-]*\\s*=\\s*(?:"${escapeReg(key)}"|'${escapeReg(key)}')`).exec(html);
-  if (!m) return null;
-  const openStart = html.lastIndexOf('<', m.index); if (openStart < 0) return null;
-  const nameM = /^<([a-zA-Z][\w-]*)/.exec(html.slice(openStart)); if (!nameM) return null;
-  const openEnd = tagEnd(html, openStart); if (openEnd < 0) return null;
-  const innerStart = openEnd + 1;
-  const cl = matchingClose(html, nameM[1], innerStart); if (!cl) return null;
-  return { tag: nameM[1], openStart, openEnd, innerStart, innerEnd: cl.start };
-}
-function setAttr(openTag, name, value) {    // replace or insert an attribute in an opening-tag string
-  const val = `"${String(value).replace(/"/g, '&quot;')}"`;
-  const re = new RegExp(`(\\s${escapeReg(name)}\\s*=\\s*)(?:"[^"]*"|'[^']*')`);
-  if (re.test(openTag)) return openTag.replace(re, `$1${val}`);
-  return openTag.replace(/\s*\/?>$/, m => ` ${name}=${val}${m}`);
-}
-// Static per-node ops + reorder — surgical source edits (no whole-innerHTML replacement).
-function navInRegion(html, loc, path) {
-  let node = { innerStart: loc.innerStart, innerEnd: loc.innerEnd };
-  for (const i of path.split('.').map(Number)) { node = childAt(html, node.innerStart, node.innerEnd, i); if (!node) return null; }
-  return node;
-}
-function serverStaticKey(html, child) {   // mirror the client's staticKey (tag + first 24 text chars)
-  const text = html.slice(child.innerStart, child.innerEnd).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
-  return child.tag.toUpperCase() + ':' + text;
-}
-// Attribute edits from the client pass the same guardrails again here.
-function safeAttrEdit(name, value) {
-  const n = String(name || '').toLowerCase();
-  if (!/^[a-z_][\w:.-]*$/.test(n) || n === 'text' || n === 'srcdoc' || n.startsWith('on') || n.startsWith('x-') || n.startsWith('data-edit-')) return false;
-  if (value != null && ['href', 'src', 'action', 'formaction', 'xlink:href'].includes(n)) {
-    const v = String(value).replace(/[\u0000-\u0020]/g, '').toLowerCase();
-    if (/^(javascript|vbscript):/.test(v)) return false;
-    if (v.startsWith('data:') && !(n === 'src' && v.startsWith('data:image/'))) return false;
+
+// Opening-tag attribute scanner: attributes in order, with the exact span each occupies
+// (leading whitespace included), so edits replace or remove in place and quoted values
+// can never be mistaken for attributes.
+function scanTag(openTag) {
+  const m = /^<([a-zA-Z][\w:.-]*)/.exec(openTag); if (!m) return null;
+  const re = /(\s*)([^\s"'>\/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/y;
+  const attrs = []; let i = m[0].length;
+  for (;;) {
+    while (i < openTag.length && /[\s/]/.test(openTag[i]) && openTag.slice(i, i + 2) !== '/>') i++;
+    if (i >= openTag.length || openTag[i] === '>' || openTag.slice(i, i + 2) === '/>') break;
+    let j = i; while (j > m[0].length && /\s/.test(openTag[j - 1])) j--;
+    re.lastIndex = i;
+    const a = re.exec(openTag); if (!a || !a[0]) break;
+    let v = a[3] === undefined ? null : a[3];
+    if (v != null && /^["']/.test(v)) v = v.slice(1, -1);
+    attrs.push({ name: a[2], lower: a[2].toLowerCase(), value: v, start: j, end: re.lastIndex });
+    i = re.lastIndex;
   }
-  return true;
+  while (i > m[0].length && /\s/.test(openTag[i - 1])) i--;
+  return { tag: m[1], attrs, end: i };
 }
-// Remove one attribute (valued or bare), scanning attributes in order so quoted values never match.
-function dropAttr(openTag, name) {
-  const m = /^<[a-zA-Z][\w-]*/.exec(openTag); if (!m) return openTag;
-  const re = /\s+([^\s"'>\/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/y;
-  re.lastIndex = m[0].length;
-  let a;
-  while ((a = re.exec(openTag))) if (a[1].toLowerCase() === String(name).toLowerCase()) return openTag.slice(0, a.index) + openTag.slice(a.index + a[0].length);
-  return openTag;
-}
-// Every element of a region in document order with the client's area-wide keys
-// (tag + first 24 text chars, ordinal per repeat), root first — mirrors markStatic.
-function regionIndex(html, loc) {
-  const out = [], seen = Object.create(null);
-  const keyOf = (tag, a, b) => {
-    const base = tag.toUpperCase() + ':' + html.slice(a, b).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
-    const n = seen[base] = (seen[base] || 0) + 1;
-    return n > 1 ? base + '#' + n : base;
-  };
-  const root = { tag: loc.tag, tagStart: loc.openStart, openEnd: loc.openEnd, innerStart: loc.innerStart, innerEnd: loc.innerEnd, parent: null };
-  root.key = keyOf(loc.tag, loc.innerStart, loc.innerEnd);
-  out.push(root);
-  const walk = (node) => {
-    if (/^template$/i.test(node.tag) || /\sx-text-edit[\s=>.]/.test(html.slice(node.tagStart, node.openEnd + 1))) return;
-    let n = 0, c;
-    while ((c = childAt(html, node.innerStart, node.innerEnd, n++))) {
-      c.parent = node; c.key = keyOf(c.tag, c.innerStart, c.innerEnd);
-      out.push(c); walk(c);
-    }
-  };
-  walk(root);
+const escAttr = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+// Set (null removes) one attribute; repeats of the name collapse into the first.
+function setAttr(openTag, name, value) {
+  const t = scanTag(openTag); if (!t) return openTag;
+  const lower = String(name).toLowerCase(), hits = t.attrs.filter(a => a.lower === lower);
+  const put = value == null ? '' : ` ${name}="${escAttr(value)}"`;
+  if (!hits.length) return value == null ? openTag : openTag.slice(0, t.end) + put + openTag.slice(t.end);
+  let out = openTag;
+  for (let i = hits.length - 1; i >= 0; i--) out = out.slice(0, hits[i].start) + (i === 0 ? put : '') + out.slice(hits[i].end);
   return out;
 }
-function nestedContainer(html, key, parentKey) {
-  const loc = locateEditEl(html, key); if (!loc) return null;
-  const idx = regionIndex(html, loc);
-  const c = parentKey ? idx.find(n => n.key === parentKey) : idx[0];
-  return c ? { loc, idx, c, kids: idx.filter(n => n.parent === c) } : null;
+const removeAttr = (openTag, name) => setAttr(openTag, name, null);
+const attrOf = (openTag, name) => { const t = scanTag(openTag); const a = t && t.attrs.find(x => x.lower === String(name).toLowerCase()); return a ? (a.value == null ? '' : decodeEntities(a.value)) : null; };
+const hasAttrNamed = (openTag, test) => { const t = scanTag(openTag); return !!t && t.attrs.some(a => test(a.lower)); };
+
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', tab: '\t', newline: '\n', colon: ':' };
+function decodeEntities(s) {
+  return String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);?/gi, (m, e) => {
+    if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) && n >= 0 && n < 0x110000 ? String.fromCodePoint(n) : m; }
+    const v = ENTITIES[e.toLowerCase()]; return v === undefined ? m : v;
+  });
 }
-function writeNestedOrders(file, key, orders) {
-  let reordered = false;
-  for (const [parentKey, order] of Object.entries(orders || {})) {
-    const html = readFileSync(file, 'utf8');
-    const hit = nestedContainer(html, key, parentKey); if (!hit) continue;
-    const { kids } = hit, byKey = {};
-    kids.forEach(k => { byKey[k.key] = k; });
-    const seq = (order || []).map(k => byKey[k]).filter(Boolean);
-    if (seq.length !== kids.length || !seq.length || seq.every((k, i) => k === kids[i])) continue;
-    const reassembled = seq.map(k => html.slice(k.tagStart, k.closeEnd));
-    let out = html.slice(0, kids[0].tagStart);
-    for (let i = 0; i < kids.length; i++) {
-      out += reassembled[i];
-      out += html.slice(kids[i].closeEnd, i + 1 < kids.length ? kids[i + 1].tagStart : kids[i].closeEnd);
-    }
-    out += html.slice(kids[kids.length - 1].closeEnd);
-    writeFileSync(file, out); reordered = true;
-  }
-  return reordered;
-}
-function writeStaticOps(file, key, edits, order, aliases, orders) {
-  // Order FIRST: keys match on authored content (edits haven't rewritten it yet) and
-  // edit paths are current DOM positions, valid only once the file order matches.
-  let reordered = false;
-  if (order && order.length) {
-    let html = readFileSync(file, 'utf8'); const loc = locateEditEl(html, key);
-    if (loc) {
-      const kids = []; let n = 0, c;
-      while ((c = childAt(html, loc.innerStart, loc.innerEnd, n++))) kids.push(c);
-      const keys = dedupedKeys(html, kids);               // ordinal-deduped, mirroring the client
-      // A block edited BEFORE its move carries a live key derived from the EDITED text;
-      // the file holds the authored text, so file keys can't resolve it and the whole
-      // order would be skipped. writeStaticMove recorded (live toKey → inserted slice):
-      // bind those entries to their exact inserted child, then key the remaining kids
-      // counting the live base the client's rekey counted (twins keep their ordinals).
-      const bound = new Map();
-      for (const a of (aliases || [])) {
-        if (!order.includes(a.key) || keys.includes(a.key)) continue;   // unedited arrival: file keys already match
-        const kid = kids.find(k => !bound.has(k) && html.slice(k.tagStart, k.closeEnd) === a.slice);
-        if (kid) bound.set(kid, a.key);
-      }
-      const byKey = {};
-      if (bound.size) {
-        const seen = Object.create(null);
-        kids.forEach(k => {
-          const live = bound.get(k), base = live ? ((/^([\s\S]*)#\d+$/.exec(live) || [, live])[1]) : serverStaticKey(html, k);   // ordinal = last #digits suffix, matching the client
-          const d = seen[base] = (seen[base] || 0) + 1;
-          byKey[live || (d > 1 ? base + '#' + d : base)] = k;
-        });
-      } else kids.forEach((k, i) => { byKey[keys[i]] = k; });
-      const seq = order.map(k => byKey[k]).filter(Boolean);
-      if (seq.length === kids.length && seq.length && seq.some((k, i) => k !== kids[i])) {   // skip when already in order
-        const reassembled = seq.map(k => html.slice(k.tagStart, k.closeEnd)).join('\n          ');
-        html = html.slice(0, kids[0].tagStart) + reassembled + html.slice(kids[kids.length - 1].closeEnd);
-        writeFileSync(file, html); reordered = true;
-      }
-    }
-  }
-  if (orders && writeNestedOrders(file, key, orders)) reordered = true;
-  for (const ed of (edits || [])) {                      // re-read+re-locate each (offsets shift after writes)
-    let html = readFileSync(file, 'utf8');
-    const loc = locateEditEl(html, key); if (!loc) return { region: key, status: 'error', reason: `x-edit="${key}" not found in ${basename(file)}` };
-    const node = ed.path === '' ? { tagStart: loc.openStart, openEnd: loc.openEnd, innerStart: loc.innerStart, innerEnd: loc.innerEnd } : navInRegion(html, loc, ed.path);
-    if (!node) continue;
-    const openTag = html.slice(node.tagStart, node.openEnd + 1);
-    if (ed.prop === 'text') html = html.slice(0, node.innerStart) + ed.value + html.slice(node.innerEnd);
-    else if (ed.prop === 'class') html = html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value) + html.slice(node.openEnd + 1);
-    else if (ed.prop === 'style') html = html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value) + html.slice(node.openEnd + 1);
-    else if (safeAttrEdit(ed.prop, ed.value)) html = html.slice(0, node.tagStart) + (ed.value == null ? dropAttr(openTag, ed.prop) : setAttr(openTag, ed.prop, ed.value)) + html.slice(node.openEnd + 1);
-    writeFileSync(file, html);
-  }
-  return { region: key, status: 'written', file: basename(file), edits: (edits || []).length, reordered };
-}
-// Cross-region move: lift a child's authored markup out of one x-edit region and
-// splice it into another (same file). Keys mirror the client's staticKeys (ordinal-deduped).
-function regionChildren(html, loc) {
-  const kids = []; let n = 0, c;
-  while ((c = childAt(html, loc.innerStart, loc.innerEnd, n++))) kids.push(c);
-  return kids;
-}
-function dedupedKeys(html, kids) {
-  const seen = Object.create(null);
-  return kids.map(k => { const base = serverStaticKey(html, k); const n = seen[base] = (seen[base] || 0) + 1; return n > 1 ? base + '#' + n : base; });
-}
-// A move with a container key on either side: lift the child from its container and
-// splice it into the destination container, placed positionally by toOrder.
-function writeNestedMove(file, p) {
-  let html = readFileSync(file, 'utf8');
-  if (!locateEditEl(html, p.from)) return { region: p.from, status: 'error', reason: `x-edit="${p.from}" not found in ${basename(file)}` };
-  if (!locateEditEl(html, p.to)) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found in ${basename(file)}` };
-  const src = nestedContainer(html, p.from, p.fromParent);
-  if (!src) return { region: p.from, status: 'error', reason: `container '${p.fromParent}' not found in region '${p.from}'` };
-  const child = src.kids.find(k => k.key === p.key);
-  if (!child) return { region: p.from, status: 'error', reason: `child '${p.key}' not found in region '${p.from}'` };
-  const slice = html.slice(child.tagStart, child.closeEnd);
-  let remStart = child.tagStart;
-  const pre = html.slice(0, remStart), nl = pre.lastIndexOf('\n');
-  if (nl >= 0 && /^[ \t]*$/.test(pre.slice(nl + 1))) remStart = nl;
-  const lifted = html.slice(0, remStart) + html.slice(child.closeEnd);
-  const dst = nestedContainer(lifted, p.to, p.toParent);
-  if (!dst) return { region: p.to, status: 'error', reason: `container '${p.toParent}' not found in region '${p.to}'` };
-  const at = (p.toOrder || []).indexOf(p.toKey);
-  let insertAt = dst.c.innerEnd;
-  if (at >= 0 && at < dst.kids.length) insertAt = dst.kids[at].tagStart;
-  const head = lifted.slice(0, insertAt), hnl = head.lastIndexOf('\n');
-  const indent = hnl >= 0 && /^[ \t]*$/.test(head.slice(hnl + 1)) ? head.slice(hnl + 1) : '';
-  writeFileSync(file, head + slice + (insertAt === dst.c.innerEnd ? '' : '\n' + indent) + lifted.slice(insertAt));
-  return { region: p.from === p.to ? p.from : `${p.from} → ${p.to}`, status: 'written', file: basename(file), key: p.key };
-}
-function writeStaticMove(file, p, aliases) {
-  if (p.fromParent || p.toParent || p.from === p.to) return writeNestedMove(file, p);
-  let html = readFileSync(file, 'utf8');
-  const fromLoc = locateEditEl(html, p.from);
-  if (!fromLoc) return { region: p.from, status: 'error', reason: `x-edit="${p.from}" not found in ${basename(file)}` };
-  if (!locateEditEl(html, p.to)) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found in ${basename(file)}` };
-  const kids = regionChildren(html, fromLoc);
-  const i = dedupedKeys(html, kids).indexOf(p.key);
-  if (i < 0) return { region: p.from, status: 'error', reason: `child '${p.key}' not found in region '${p.from}'` };
-  const child = kids[i], slice = html.slice(child.tagStart, child.closeEnd);
-  let remStart = child.tagStart;
-  const pre = html.slice(0, remStart), nl = pre.lastIndexOf('\n');
-  if (nl >= 0 && /^[ \t]*$/.test(pre.slice(nl + 1))) remStart = nl;   // take the indent + newline with it
-  html = html.slice(0, remStart) + html.slice(child.closeEnd);
-  const toLoc = locateEditEl(html, p.to);                             // re-locate: offsets shifted
-  if (!toLoc) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found after removal` };
-  const toKids = regionChildren(html, toLoc);
-  // Positional placement: toOrder minus the arrival is the destination's children, so
-  // the arrival's index in toOrder is where it goes — robust against ordinal re-keys
-  // (a collision renames the twin, so key matching would miss). Any residual order
-  // drift is settled by the region's own order patch, which follows the move.
-  const at = (p.toOrder || []).indexOf(p.toKey);
-  let insertAt = toLoc.innerEnd;                                      // default: end of region
-  if (at >= 0 && at < toKids.length) insertAt = toKids[at].tagStart;
-  const head = html.slice(0, insertAt), hnl = head.lastIndexOf('\n');
-  const indent = hnl >= 0 && /^[ \t]*$/.test(head.slice(hnl + 1)) ? head.slice(hnl + 1) : '';
-  writeFileSync(file, head + slice + '\n' + indent + html.slice(insertAt));
-  if (aliases) (aliases[p.to] = aliases[p.to] || []).push({ key: p.toKey, slice });   // the region's order patch may address this child by its LIVE key
-  return { region: `${p.from} → ${p.to}`, status: 'written', file: basename(file), key: p.key };
-}
-function writeStaticRegion(file, key, innerHTML, style) {
-  let html = readFileSync(file, 'utf8');
-  const loc = locateEditEl(html, key);
-  if (!loc) return { region: key, status: 'error', reason: `x-edit="${key}" not found in ${basename(file)}` };
-  let openTag = html.slice(loc.openStart, loc.openEnd + 1);
-  if (style) openTag = setAttr(openTag, 'style', style);
-  html = html.slice(0, loc.openStart) + openTag + '\n' + (innerHTML || '') + '\n' + html.slice(loc.innerEnd);
-  writeFileSync(file, html);
-  return { region: key, status: 'written', file: basename(file) };
-}
-// Structural navigation for component-file edits (dependency-free).
-const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
-const escapeText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-function childAt(html, from, to, idx) {           // nth element child within [from,to), skipping comments/text
-  let i = from, count = 0;
-  while (i < to) {
-    const lt = html.indexOf('<', i); if (lt < 0 || lt >= to) return null;
-    if (html.startsWith('<!--', lt)) { const e = html.indexOf('-->', lt); i = e < 0 ? to : e + 3; continue; }
-    if (html[lt + 1] === '/') { i = html.indexOf('>', lt) + 1; continue; }
-    const nameM = /^<([a-zA-Z][\w-]*)/.exec(html.slice(lt)); if (!nameM) { i = lt + 1; continue; }
-    const tag = nameM[1], openEnd = tagEnd(html, lt); if (openEnd < 0) return null;
-    const selfClose = html[openEnd - 1] === '/' || VOID_TAGS.has(tag.toLowerCase());
-    let innerStart = openEnd + 1, innerEnd = innerStart, closeEnd = openEnd + 1;
-    if (!selfClose) { const cl = matchingClose(html, tag, innerStart); if (!cl) return null; innerEnd = cl.start; closeEnd = cl.end; }
-    if (/\sdata-edit-(handle|ghost|grip)[\s=/>]/.test(html.slice(lt, openEnd + 1))) { i = closeEnd; continue; }   // plugin-injected, not an authored child (mirrors the client's realChildren)
-    if (count === idx) return { tag, tagStart: lt, openEnd, innerStart, innerEnd, closeEnd };
-    count++; i = closeEnd;
+
+// Attribute guardrails — the same rules the client applies, checked here on both the
+// raw and the entity-decoded value.
+const SVG_ANIM = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
+const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp|avif)[;,]/;
+function attrRefusal(name, value, tag) {
+  const n = String(name || '').trim().toLowerCase(), t = String(tag || '').toLowerCase();
+  if (!n || !/^[a-z_][\w:.-]*$/i.test(n)) return 'invalid name';
+  if (n === 'text' || n === 'srcdoc' || n.startsWith('on') || n.startsWith('x-') || n.startsWith('data-edit-')) return 'refused name';
+  if (SVG_ANIM.has(t) && ['attributename', 'to', 'values', 'from', 'by'].includes(n)) return 'SVG animation target';
+  if (value == null) return null;
+  for (const raw of [String(value), decodeEntities(value)]) {
+    const v = raw.replace(/[\u0000- \u007f]/g, '').toLowerCase();
+    if (/(^|[,(;'"=])(javascript|vbscript):/.test(v)) return 'script URL';
+    const datas = v.match(/(^|[,(;'"=])data:[^,)]*/g) || [];
+    if (datas.length && !((t === 'img' || t === 'source') && (n === 'src' || n === 'srcset') && datas.every(d => DATA_IMAGE.test(d.replace(/^[,(;'"=]/, ''))))) return 'data URL';
   }
   return null;
 }
+
+// Text sanitizer for edited content: the client's allowlist (inline marks, plus the
+// rich editor's blocks), script-bearing elements dropped with their content, other
+// tags unwrapped, attributes allowlisted per tag.
+const SAN_OK = new Set(['b', 'i', 'em', 'strong', 'u', 's', 'del', 'ins', 'small', 'code', 'mark', 'sub', 'sup', 'br', 'span', 'a', 'kbd', 'samp', 'var', 'abbr', 'cite', 'q', 'dfn', 'time', 'img',
+  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'address', 'figure', 'figcaption', 'dl', 'dt', 'dd', 'ul', 'ol', 'li', 'hr', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'caption', 'colgroup', 'col', 'input']);
+const SAN_DROP = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'noscript', 'template', 'svg', 'math', 'textarea', 'title', 'select', 'frame', 'frameset', 'base', 'form', 'button']);
+function textAttrOk(tag, n, v) {
+  if (tag === 'a' && n === 'href') return !attrRefusal(n, v, tag);
+  if (tag === 'img' && (n === 'alt' || n === 'src')) return !attrRefusal(n, v, tag);
+  if (tag === 'input') return n === 'type' ? /^checkbox$/i.test(v) : n === 'checked';
+  if ((tag === 'td' || tag === 'th') && (n === 'colspan' || n === 'rowspan')) return /^[1-9]\d{0,2}$/.test(v);
+  if (n === 'style') return !/expression|url\s*\(|javascript:|@import/i.test(v) && !attrRefusal(n, v, tag);
+  return false;
+}
+function sanitizeHTML(html) {
+  const s = String(html == null ? '' : html);
+  let out = '', i = 0;
+  while (i < s.length) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) { out += s.slice(i); break; }
+    out += s.slice(i, lt);
+    if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); i = e < 0 ? s.length : e + 3; continue; }
+    const m = /^<(\/?)([a-zA-Z][\w:-]*)/.exec(s.slice(lt, lt + 80));
+    if (!m) { out += '&lt;'; i = lt + 1; continue; }
+    const end = tagEnd(s, lt);
+    if (end < 0) break;
+    const name = m[2].toLowerCase(), closing = !!m[1];
+    i = end + 1;
+    if (SAN_DROP.has(name)) {
+      if (!closing && s[end - 1] !== '/') { const r = new RegExp(`</${escapeReg(name)}\\s*>`, 'ig'); r.lastIndex = i; const c = r.exec(s); i = c ? c.index + c[0].length : s.length; }
+      continue;
+    }
+    if (!SAN_OK.has(name)) continue;
+    if (closing) { out += `</${name}>`; continue; }
+    let tag = '<' + name;
+    for (const a of scanTag(s.slice(lt, end + 1)).attrs) {
+      const v = a.value == null ? '' : decodeEntities(a.value);
+      if (textAttrOk(name, a.lower, v)) tag += a.lower === 'checked' ? ' checked' : ` ${a.lower}="${escAttr(v)}"`;
+    }
+    out += tag + '>';
+  }
+  return out;
+}
+
+function locateEditEl(html, key) {          // element carrying an x-edit*="<key>" attribute
+  const re = new RegExp(`x-edit[.\\w-]*\\s*=\\s*(?:"${escapeReg(key)}"|'${escapeReg(key)}')`, 'g');
+  let m;
+  while ((m = re.exec(html))) {
+    const openStart = html.lastIndexOf('<', m.index); if (openStart < 0) continue;
+    const nameM = /^<([a-zA-Z][\w-]*)/.exec(html.slice(openStart)); if (!nameM) continue;
+    const openEnd = tagEnd(html, openStart); if (openEnd < 0 || openEnd < m.index) continue;
+    const t = scanTag(html.slice(openStart, openEnd + 1));
+    if (!t || !t.attrs.some(a => /^x-edit(\.|$)/.test(a.lower) && a.value === key)) continue;   // a real attribute, not text inside another value
+    const innerStart = openEnd + 1;
+    const cl = matchingClose(html, nameM[1], innerStart); if (!cl) return null;
+    return { tag: nameM[1], openStart, openEnd, innerStart, innerEnd: cl.start, closeEnd: cl.end };
+  }
+  return null;
+}
+
+// Structural navigation (dependency-free): element children of [from,to), skipping
+// comments, text and plugin-injected nodes.
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+const escapeText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function kidsIn(html, from, to) {
+  const out = []; let i = from;
+  while (i < to) {
+    const lt = html.indexOf('<', i); if (lt < 0 || lt >= to) break;
+    if (html.startsWith('<!--', lt)) { const e = html.indexOf('-->', lt); i = e < 0 ? to : e + 3; continue; }
+    if (html[lt + 1] === '/') { i = html.indexOf('>', lt) + 1; continue; }
+    const nameM = /^<([a-zA-Z][\w:-]*)/.exec(html.slice(lt, lt + 80)); if (!nameM) { i = lt + 1; continue; }
+    const tag = nameM[1], openEnd = tagEnd(html, lt); if (openEnd < 0) break;
+    const selfClose = html[openEnd - 1] === '/' || VOID_TAGS.has(tag.toLowerCase());
+    let innerStart = openEnd + 1, innerEnd = innerStart, closeEnd = openEnd + 1;
+    if (!selfClose) { const cl = matchingClose(html, tag, innerStart); if (!cl) break; innerEnd = cl.start; closeEnd = cl.end; }
+    i = closeEnd;
+    if (/\sdata-edit-(handle|ghost|grip)[\s=/>]/.test(html.slice(lt, openEnd + 1))) continue;
+    out.push({ tag, tagStart: lt, openEnd, innerStart, innerEnd, closeEnd, void: selfClose });
+  }
+  return out;
+}
+const childAt = (html, from, to, idx) => kidsIn(html, from, to)[idx] || null;
+
+// A static region parsed once from the ORIGINAL file: every element with the identity
+// the client derives — origin region + tag + first 24 chars of source text (Alpine-
+// bound content left out), ordinal per repeat, document order — and its path.
+const canonKey = (region, k) => '@' + encodeURIComponent(region) + '@' + k;
+function parseRegion(html, name) {
+  const loc = locateEditEl(html, name); if (!loc) return null;
+  const root = { tag: loc.tag, tagStart: loc.openStart, openEnd: loc.openEnd, innerStart: loc.innerStart, innerEnd: loc.innerEnd, closeEnd: loc.closeEnd, void: false, parent: null, path: '' };
+  const reg = { name, root, byKey: new Map(), byPath: new Map() };
+  const open = (n) => html.slice(n.tagStart, n.openEnd + 1);
+  const kidsOf = (n) => n.kids || (n.kids = n.void || /^template$/i.test(n.tag) ? [] : kidsIn(html, n.innerStart, n.innerEnd));
+  const textOf = (n) => {
+    if (n.void || /^template$/i.test(n.tag) || hasAttrNamed(open(n), a => a === 'x-text' || a === 'x-html')) return '';
+    let t = '', at = n.innerStart;
+    for (const k of kidsOf(n)) { t += decodeEntities(html.slice(at, k.tagStart).replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, '')); t += textOf(k); at = k.closeEnd; }
+    return t + decodeEntities(html.slice(at, n.innerEnd).replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, ''));
+  };
+  const seen = Object.create(null);
+  const visit = (n) => {
+    const base = n.tag.toUpperCase() + ':' + textOf(n).replace(/\s+/g, ' ').trim().slice(0, 24);
+    const c = seen[base] = (seen[base] || 0) + 1;
+    n.key = canonKey(name, c > 1 ? base + '#' + c : base);
+    reg.byKey.set(n.key, n); reg.byPath.set(n.path, n);
+    if (hasAttrNamed(open(n), a => a.startsWith('x-text-edit'))) { n.kids = kidsOf(n); n.kids.forEach((k, i) => { k.parent = n; k.path = (n.path ? n.path + '.' : '') + i; }); return; }
+    kidsOf(n).forEach((k, i) => { k.parent = n; k.path = (n.path ? n.path + '.' : '') + i; visit(k); });
+  };
+  visit(root);
+  return reg;
+}
+
+// Rebuild every static region from the client's final trees. Everything is validated
+// and rendered from the original file before a single byte is written; any failure
+// writes nothing.
+function writeStaticTrees(file, patches) {
+  const html = readFileSync(file, 'utf8');
+  const regions = new Map();
+  const region = (name) => { if (!regions.has(name)) regions.set(name, parseRegion(html, name)); return regions.get(name); };
+  const fail = (msg) => { const e = new Error(msg); e.edit = true; throw e; };
+  const removed = new Set(patches.flatMap(p => p.removed || []));
+  const placed = new Map(), rebuilt = new Set();
+  const resolve = (k, at) => {
+    const m = /^(?:~([a-z0-9]+)~)?@([^@]*)@([\s\S]*)$/.exec(String(k || ''));
+    if (!m) fail(`not a source element: ${k}`);
+    const reg = region(decodeURIComponent(m[2]));
+    if (!reg) fail(`x-edit="${decodeURIComponent(m[2])}" not found in ${basename(file)}`);
+    let node = reg.byKey.get('@' + m[2] + '@' + m[3]);
+    if (!node && at != null) { const p = reg.byPath.get(String(at)); if (p && p.tag.toUpperCase() === m[3].split(':')[0]) node = p; }
+    if (!node) fail(`element '${m[3]}' not found in x-edit="${reg.name}"`);
+    return { node, copy: !!m[1] };
+  };
+  const indentOf = (n) => { const nl = html.lastIndexOf('\n', n.tagStart); const pre = html.slice(nl + 1, n.tagStart); return /^[ \t]*$/.test(pre) ? pre : ''; };
+  const trailingWs = (s) => (/\s*$/.exec(s.replace(/<!--[\s\S]*?-->/g, '')) || [''])[0];
+  function renderAt(node, n, copy) {
+    let open = html.slice(node.tagStart, node.openEnd + 1);
+    const e = n.edits || {};
+    for (const [prop, v] of Object.entries(e)) {
+      if (prop === 'text') continue;
+      const val = (prop === 'class' || prop === 'style') && (v === '' || v == null) ? null : v === false ? null : v === true ? '' : v;
+      const why = attrRefusal(prop, val, node.tag);
+      if (why) fail(`${prop} on ${node.tag}: ${why}`);
+      open = setAttr(open, prop, val == null ? null : String(val));
+    }
+    if (node.void) return open;
+    let inner;
+    if ('text' in e) inner = sanitizeHTML(e.text);
+    else if (Array.isArray(n.children)) inner = rebuildInner(node, n.children, copy);
+    else inner = html.slice(node.innerStart, node.innerEnd);
+    return open + inner + html.slice(node.innerEnd, node.closeEnd);
+  }
+  function renderNode(n) {
+    if (!n || typeof n !== 'object') fail('malformed tree');
+    const { node, copy } = resolve(n.key, n.at);
+    if (!copy) {
+      if (placed.has(node)) fail(`'${n.key}' placed twice`);
+      if (removed.has(node.key)) fail(`'${n.key}' is both placed and removed`);
+      placed.set(node, Array.isArray(n.children) ? 'rebuilt' : 'kept');
+    }
+    return renderAt(node, n, copy);
+  }
+  function rebuildInner(node, children, copy) {
+    if (!copy) rebuilt.add(node);
+    const kids = node.kids || [];
+    const rendered = children.map(renderNode);
+    const gaps = []; let prev = node.innerStart;
+    for (const k of kids) { gaps.push(html.slice(prev, k.tagStart)); prev = k.closeEnd; }
+    gaps.push(html.slice(prev, node.innerEnd));
+    if (!kids.length) {
+      if (!rendered.length) return gaps[0];
+      const ind = indentOf(node);
+      return rendered.map(r => '\n' + ind + '    ' + r).join('') + '\n' + ind;
+    }
+    if (!rendered.length) return trailingWs(gaps[kids.length]) || '';
+    const extra = trailingWs(kids.length > 1 ? gaps[kids.length - 1] : gaps[0]);
+    let out = gaps[0];
+    rendered.forEach((r, i) => { if (i > 0) out += i < kids.length ? gaps[i] : extra; out += r; });
+    return out + gaps[kids.length];
+  }
+
+  const results = [], out = [];
+  try {
+    for (const p of patches) {
+      const reg = region(p.region);
+      if (!reg) fail(`x-edit="${p.region}" not found in ${basename(file)}`);
+      const t = p.tree || {};
+      if (!t.edits && !Array.isArray(t.children)) continue;
+      placed.set(reg.root, Array.isArray(t.children) ? 'rebuilt' : 'kept');
+      out.push({ reg, text: renderAt(reg.root, t, false) });
+    }
+    for (const r of rebuilt) for (const k of r.kids || []) if (!placed.has(k) && !removed.has(k.key)) fail(`'${k.key}' would be lost (not placed, not removed)`);
+    for (const [node] of placed) {
+      for (let a = node.parent; a; a = a.parent) {
+        const how = placed.get(a);
+        if (how === 'rebuilt') continue;
+        if (how) fail(`'${node.key}' would appear twice: its source container is kept as is`);
+        if (removed.has(a.key)) break;
+        if (!a.parent) fail(`'${node.key}' moved, but its source area x-edit="${regionNameOf(a, regions)}" is not rebuilt`);
+      }
+    }
+  } catch (e) {
+    if (!e.edit) throw e;
+    return patches.map(p => ({ region: p.region, status: 'error', reason: e.message }));
+  }
+  let next = html;
+  out.sort((a, b) => b.reg.root.tagStart - a.reg.root.tagStart).forEach(({ reg, text }) => { next = next.slice(0, reg.root.tagStart) + text + next.slice(reg.root.closeEnd); });
+  if (next !== html) writeFileSync(file, next);
+  patches.forEach(p => results.push({ region: p.region, status: 'written', file: basename(file) }));
+  return results;
+}
+const regionNameOf = (rootNode, regions) => { for (const [n, r] of regions) if (r && r.root === rootNode) return n; return '?'; };
 function navigateToNode(html, path) {             // path indices are relative to the component's first top-level element ('' = the root itself)
   let node = childAt(html, 0, html.length, 0); if (!node) return null;
   if (!path) return node;
@@ -984,10 +1015,11 @@ function writeThemeVar(p) {
   writeFileSync(file, css);
   return { region: `${p.scope ? p.scope + ':' : ''}${p.var}`, status: 'written', file: rel };
 }
-const modParamIn = (openTag, attr) => { const m = openTag.match(new RegExp(escapeReg(attr) + `\\s*=\\s*("[^"]*"|'[^']*')`)); if (!m) return null; const mm = m[1].slice(1, -1).match(/\$modify\(['"]([\w-]+)['"]\)/); return mm ? mm[1] : null; };
+const modParamIn = (openTag, attr) => { const v = attrOf(openTag, attr); const mm = v && v.match(/\$modify\(['"]([\w-]+)['"]\)/); return mm ? mm[1] : null; };
+// A value placed inside a single-quoted JS string in an Alpine expression.
+const jsStr = (v) => String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, '\\n').replace(/\u2028|\u2029/g, '');
 const allModifyParams = (html) => { const s = new Set(); let m; const re = /\$modify\(['"]([\w-]+)['"]\)/g; while ((m = re.exec(html))) s.add(m[1]); return [...s]; };
-const removeAttr = (openTag, name) => openTag.replace(new RegExp(`\\s${escapeReg(name)}\\s*=\\s*(?:"[^"]*"|'[^']*')`, 'g'), '');
-const classOf = (openTag) => { const m = openTag.match(/\sclass\s*=\s*("[^"]*"|'[^']*')/); return m ? m[1].slice(1, -1) : ''; };
+const classOf = (openTag) => attrOf(openTag, 'class') || '';
 
 // Component edits, per node (structural path), per prop (text|class), routed by scope.
 //   main     → edit the component source literal/class (affects every instance)
@@ -1008,29 +1040,41 @@ function writeComponentEdits(p, manifest) {
     let openTag = html.slice(node.tagStart, node.openEnd + 1);
     const seg = ed.path === '' ? 'root' : ed.path.replace(/\./g, '_');
 
+    if (prop === 'style') {
+      if (p.scope !== 'main') { applied.push({ path: ed.path, prop, status: 'skipped', reason: 'instance styles are not written' }); continue; }
+      const why = attrRefusal('style', ed.value, node.tag);
+      if (why) { applied.push({ path: ed.path, prop, status: 'error', reason: why }); continue; }
+      writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1));
+      applied.push({ path: ed.path, prop, status: 'main' });
+      continue;
+    }
     if (prop === 'class') {
       const param = modParamIn(openTag, ':class');
-      if (p.scope === 'main') { writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value) + html.slice(node.openEnd + 1)); applied.push({ path: ed.path, prop, status: 'main' }); }
+      if (p.scope === 'main') { writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1)); applied.push({ path: ed.path, prop, status: 'main' }); }
       else if (param) { instanceAttrs[param] = ed.value; applied.push({ path: ed.path, prop, status: 'instance', param }); }
-      else { const name = 'c_' + seg; writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, ':class', `$modify('${name}') ?? '${classOf(openTag).replace(/'/g, "\\'")}'`) + html.slice(node.openEnd + 1)); instanceAttrs[name] = ed.value; applied.push({ path: ed.path, prop, status: 'promoted', param: name }); }
+      else { const name = 'c_' + seg; writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, ':class', `$modify('${name}') ?? '${jsStr(classOf(openTag))}'`) + html.slice(node.openEnd + 1)); instanceAttrs[name] = ed.value; applied.push({ path: ed.path, prop, status: 'promoted', param: name }); }
       continue;
     }
 
-    // text — value is innerHTML; may contain nested elements (<i>/<br>), bound via x-html.
-    const hasMarkup = /<[a-z!\/][\s\S]*>/i.test(ed.value);
+    // text — value is innerHTML, sanitized like the client's; bound via x-html when it has markup.
+    const value = sanitizeHTML(ed.value);
+    const hasMarkup = /<[a-z!\/][\s\S]*>/i.test(value);
     const param = modParamIn(openTag, 'x-html') || modParamIn(openTag, 'x-text');
     if (p.scope === 'main') {
-      if (param) writeFileSync(compFile, html.slice(0, node.tagStart) + openTag.replace(/((?:\?\?|\|\|)\s*)(['"]).*?\2/, `$1'${ed.value.replace(/'/g, "\\'")}'`) + html.slice(node.openEnd + 1));
-      else writeFileSync(compFile, html.slice(0, node.innerStart) + ed.value + html.slice(node.innerEnd));   // raw HTML literal
+      if (param) {
+        const bound = attrOf(openTag, 'x-html') != null && modParamIn(openTag, 'x-html') ? 'x-html' : 'x-text';
+        const expr = attrOf(openTag, bound).replace(/((?:\?\?|\|\|)\s*)(['"])(?:\\.|(?!\2)[^\\])*\2/, (_, op) => `${op}'${jsStr(value)}'`);
+        writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, bound, expr) + html.slice(node.openEnd + 1));
+      } else writeFileSync(compFile, html.slice(0, node.innerStart) + value + html.slice(node.innerEnd));
       applied.push({ path: ed.path, prop, status: 'main' });
     } else if (param) {
-      if (hasMarkup && /\sx-text\s*=/.test(openTag) && !/\sx-html\s*=/.test(openTag)) { writeFileSync(compFile, html.slice(0, node.tagStart) + openTag.replace(/\sx-text(\s*=)/, ' x-html$1') + html.slice(node.openEnd + 1)); }
-      instanceAttrs[param] = ed.value; applied.push({ path: ed.path, prop, status: 'instance', param });
+      if (hasMarkup && attrOf(openTag, 'x-text') != null && attrOf(openTag, 'x-html') == null) { writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(setAttr(openTag, 'x-text', null), 'x-html', attrOf(openTag, 'x-text')) + html.slice(node.openEnd + 1)); }
+      instanceAttrs[param] = value; applied.push({ path: ed.path, prop, status: 'instance', param });
     } else {                                        // PROMOTE: x-html if rich, else x-text
       const name = 'p_' + seg, bind = hasMarkup ? 'x-html' : 'x-text';
-      const orig = html.slice(node.innerStart, node.innerEnd).trim().replace(/'/g, "\\'");
+      const orig = jsStr(html.slice(node.innerStart, node.innerEnd).trim());
       writeFileSync(compFile, html.slice(0, node.tagStart) + setAttr(openTag, bind, `$modify('${name}') ?? '${orig}'`) + html.slice(node.openEnd + 1));
-      instanceAttrs[name] = ed.value; applied.push({ path: ed.path, prop, status: 'promoted', param: name, bind });
+      instanceAttrs[name] = value; applied.push({ path: ed.path, prop, status: 'promoted', param: name, bind });
     }
   }
   if (p.scope === 'instance' && (p.reverts || []).length) {
@@ -1056,7 +1100,7 @@ function writeComponentInstance(file, key, overrides, removals) {
   const instStart = loc.innerStart + cm.index, instEnd = tagEnd(html, instStart);
   if (instEnd < 0) return { region: key, status: 'error', reason: 'malformed instance tag' };
   let openTag = html.slice(instStart, instEnd + 1);
-  for (const [k, v] of Object.entries(overrides || {})) openTag = setAttr(openTag, k, v);
+  for (const [k, v] of Object.entries(overrides || {})) { if (attrRefusal(k, null, 'x')) continue; openTag = setAttr(openTag, k, v == null ? null : String(v)); }
   for (const name of (removals || [])) openTag = removeAttr(openTag, name);
   html = html.slice(0, instStart) + openTag + html.slice(instEnd + 1);
   writeFileSync(file, html);
@@ -1344,8 +1388,15 @@ const server = createServer((req, res) => {
       if (!Array.isArray(patches)) patches = [patches];
       let manifest = {}; try { manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')); } catch {}
       const indexFile = join(root, 'index.html');
-      const moveAliases = {};   // region → [{key: live toKey, slice}] from this batch's moves
+      // Static regions first, all or nothing: if any fails, nothing in the batch is written.
+      const trees = patches.filter(p => p && p.kind === 'static-tree');
+      let treeResults = [];
+      try { treeResults = trees.length ? writeStaticTrees(indexFile, trees) : []; }
+      catch (e) { treeResults = trees.map(p => ({ region: p.region, status: 'error', reason: e.message })); }
+      const aborted = treeResults.some(r => r.status === 'error');
       const results = patches.map(p => {
+        if (p && p.kind === 'static-tree') return treeResults[trees.indexOf(p)];
+        if (aborted) return { region: p && p.region, status: 'skipped', reason: 'batch aborted: a static region failed' };
         try {
           if (p.kind === 'data') {
             const src = (manifest.data || {})[p.source];
@@ -1356,8 +1407,6 @@ const server = createServer((req, res) => {
             return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
           }
           if (p.kind === 'data-val') return writeDataValue(p, manifest);
-          if (p.kind === 'static') return writeStaticOps(indexFile, p.region, p.edits, p.order, moveAliases[p.region], p.orders);
-          if (p.kind === 'static-move') return writeStaticMove(indexFile, p, moveAliases);
           if (p.kind === 'component') return writeComponentEdits(p, manifest);
           if (p.kind === 'theme') return writeThemeVar(p);
           return { region: p.region, status: 'skipped', reason: `unknown kind ${p.kind}` };

@@ -48,6 +48,10 @@
         });
         cssvarControls.forEach(syncCssVarInput);
     }
+    function rebaseTheme() {
+        Object.keys(themeBaseline).forEach(kk => { const sep = kk.indexOf('|'); themeBaseline[kk] = themeTargetEl(kk.slice(0, sep) || null).style.getPropertyValue(kk.slice(sep + 1)); });
+        themeTouched.clear();
+    }
     function commitTheme(scope, v, value, persist) {
         const kk = tkey(scope, v); themeTouched.add(kk);
         themeTargetEl(scope).style.setProperty(v, value);

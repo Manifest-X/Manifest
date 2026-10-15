@@ -15,15 +15,6 @@
         if (!log.length) return;
         pruneLoaded();
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        // Converge live keys to a replayed move's renames, unless the source already holds the move.
-        for (let i = 0; i < cursor; i++) {
-            const d = log[i];
-            if (d.kind !== 'st-move' || !d.remap || !d.remap.length) continue;
-            const ta = areaByKey(d.to); if (!ta) continue;
-            const tc = d.toParent ? keyMap(ta).get(d.toParent) : ta;
-            if (!tc || eq(staticKeys(tc), d.toOrder)) continue;
-            applyMoveKeys(d, false);
-        }
         if (log.some(d => /^st-/.test(d.kind))) applyStaticState();
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }

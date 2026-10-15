@@ -1,7 +1,8 @@
 /**
- * B-side of a cross-region move: /__edit/save `static-move` lifts the AUTHORED child
- * markup out of one x-edit region in index.html and splices it into another, placed
- * by the client's toOrder. Runs the real server (--edit) against a temp project.
+ * Source writer for static areas: /__edit/save `static-tree` rebuilds each region
+ * from the client's final tree of identities, reusing the original markup of every
+ * node it keeps. Feeds source + patches to the real server (--edit) and compares the
+ * written file against the expected source.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn } from 'node:child_process'
@@ -13,26 +14,12 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
 
-const INDEX = `<!doctype html>
-<html>
-<body>
-    <section x-edit="hero">
-        <h1>Welcome</h1>
-        <p>Intro copy</p>
-    </section>
-    <section x-edit="footer">
-        <p>Fine print</p>
-    </section>
-</body>
-</html>
-`
-
 let dir, proc, port
 
 beforeAll(async () => {
-    dir = mkdtempSync(path.join(tmpdir(), 'mnfst-edit-move-'))
-    writeFileSync(path.join(dir, 'index.html'), INDEX)
-    writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'move-test' }))
+    dir = mkdtempSync(path.join(tmpdir(), 'mnfst-edit-tree-'))
+    writeFileSync(path.join(dir, 'index.html'), '')
+    writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'tree-test' }))
     const ask = 49000 + Math.floor(Math.random() * 5000)
     proc = spawn(process.execPath, [SERVE, dir, '--edit', '--no-open', '--no-idle-shutdown', '--port', String(ask)], { stdio: ['ignore', 'pipe', 'pipe'] })
     port = await new Promise((resolve, reject) => {
@@ -55,262 +42,163 @@ const save = (patches) => fetch(`http://localhost:${port}/__edit/save`, {
     body: JSON.stringify(patches)
 }).then(r => r.json())
 
-describe('/__edit/save static-move', () => {
-    it('errors cleanly when the child key is missing (source untouched)', async () => {
-        const { results } = await save([{ kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Nope', toKey: 'P:Nope', toOrder: [] }])
+const K = (region, key) => '@' + encodeURIComponent(region) + '@' + key
+const file = () => readFileSync(path.join(dir, 'index.html'), 'utf8')
+async function write(src, patches) {
+    writeFileSync(path.join(dir, 'index.html'), src)
+    const { results } = await save(patches)
+    return { results, out: file() }
+}
+
+const NEST = `<section x-edit="u">
+    <div>
+        <p>One</p>
+        <p>Two</p>
+        <p>Three</p>
+    </div>
+    <p>Four</p>
+</section>
+`
+const tree = (region, children, extra = {}) => ({ kind: 'static-tree', region, tree: { key: '', children }, ...extra })
+const n = (region, key, more = {}) => ({ key: K(region, key), ...more })
+
+describe('/__edit/save static-tree', () => {
+    it('unnest twice + edit: every node keeps its own markup', async () => {
+        const { results, out } = await write(NEST, [tree('u', [
+            n('u', 'DIV:One Two Three', { children: [n('u', 'P:Three')] }),
+            n('u', 'P:One'),
+            n('u', 'P:Two', { edits: { text: 'Two edited' } }),
+            n('u', 'P:Four')
+        ])])
+        expect(results.map(r => r.status)).toEqual(['written'])
+        expect(out).toBe(`<section x-edit="u">
+    <div>
+        <p>Three</p>
+    </div>
+    <p>One</p>
+    <p>Two edited</p>
+    <p>Four</p>
+</section>
+`)
+    })
+
+    it('nest into a container keeps indentation; an unchanged tree writes nothing', async () => {
+        const { out } = await write(NEST, [tree('u', [n('u', 'DIV:One Two Three', { children: [n('u', 'P:Four'), n('u', 'P:One'), n('u', 'P:Two'), n('u', 'P:Three')] })])])
+        expect(out).toBe(`<section x-edit="u">
+    <div>
+        <p>Four</p>
+        <p>One</p>
+        <p>Two</p>
+        <p>Three</p>
+    </div>
+</section>
+`)
+        const same = await write(NEST, [tree('u', [n('u', 'DIV:One Two Three', { children: [n('u', 'P:One'), n('u', 'P:Two'), n('u', 'P:Three')] }), n('u', 'P:Four')])])
+        expect(same.out).toBe(NEST)
+    })
+
+    it('twins are told apart by ordinal', async () => {
+        const src = `<section x-edit="t"><div class="a"><p>Same</p></div><div class="b"><p>Same</p></div></section>`
+        const { out } = await write(src, [tree('t', [
+            n('t', 'DIV:Same', { children: [n('t', 'P:Same#2')] }),
+            n('t', 'DIV:Same#2', { children: [n('t', 'P:Same', { edits: { text: 'First' } })] })
+        ])])
+        expect(out).toBe(`<section x-edit="t"><div class="a"><p>Same</p></div><div class="b"><p>First</p></div></section>`)
+    })
+
+    it('moves across areas, reusing the source markup', async () => {
+        const src = `<section x-edit="a"><p data-x="1">One</p><p>Two</p></section>\n<section x-edit="b"><p>Three</p></section>`
+        const { out } = await write(src, [
+            tree('a', [n('a', 'P:Two')]),
+            tree('b', [n('b', 'P:Three'), n('a', 'P:One')])
+        ])
+        expect(out).toBe(`<section x-edit="a"><p>Two</p></section>\n<section x-edit="b"><p>Three</p><p data-x="1">One</p></section>`)
+    })
+
+    it('copies render from their source; removed nodes drop', async () => {
+        const src = `<section x-edit="c"><p class="k">Keep</p><p>Gone</p></section>`
+        const { out } = await write(src, [tree('c', [
+            n('c', 'P:Keep'),
+            { key: '~abc~' + K('c', 'P:Keep'), edits: { text: 'Copy' } }
+        ], { removed: [K('c', 'P:Gone')] })])
+        expect(out).toBe(`<section x-edit="c"><p class="k">Keep</p><p class="k">Copy</p></section>`)
+    })
+
+    it('refuses to lose a node that is neither placed nor removed; writes nothing', async () => {
+        const src = `<section x-edit="l"><p>One</p><p>Two</p></section>`
+        const { results, out } = await write(src, [tree('l', [n('l', 'P:One')])])
         expect(results[0].status).toBe('error')
-        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(INDEX)
+        expect(results[0].reason).toContain('would be lost')
+        expect(out).toBe(src)
     })
 
-    it('applies the region ORDER before edits, so edit paths are final positions', async () => {
-        // Pre-move text edit travels as a destination edit; its path assumes the
-        // region's final order, so the server must reorder first.
-        writeFileSync(path.join(dir, 'index.html'), INDEX)
-        const { results } = await save([
-            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Intro copy', toKey: 'P:Intro copy', toOrder: ['P:Intro copy', 'P:Fine print'] },
-            { kind: 'static', region: 'footer', order: ['P:Fine print', 'P:Intro copy'], edits: [{ path: '1', key: 'P:Intro copy', prop: 'text', value: 'Edited copy' }] }
-        ])
-        expect(results.map(r => r.status)).toEqual(['written', 'written'])
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const footer = html.slice(html.indexOf('"footer"'))
-        expect(footer).toContain('<p>Edited copy</p>')
-        expect(footer).toContain('<p>Fine print</p>')
-        expect(footer).not.toContain('Intro copy')
-        expect(footer.indexOf('Fine print')).toBeLessThan(footer.indexOf('Edited copy'))
+    it('refuses a move whose source area is not rebuilt (would duplicate)', async () => {
+        const src = `<section x-edit="a"><p>One</p></section><section x-edit="b"><p>Two</p></section>`
+        const { results, out } = await write(src, [tree('b', [n('b', 'P:Two'), n('a', 'P:One')])])
+        expect(results[0].status).toBe('error')
+        expect(out).toBe(src)
     })
 
-    it('a pre-move reorder of the source region lands via its order patch', async () => {
-        const idx = INDEX.replace('<h1>Welcome</h1>\n        <p>Intro copy</p>',
-            '<p>Card</p>\n        <p>Second</p>\n        <p>Third</p>')
-        writeFileSync(path.join(dir, 'index.html'), idx)
-        const { results } = await save([
-            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Card', toKey: 'P:Card', toOrder: ['P:Card', 'P:Fine print'] },
-            { kind: 'static', region: 'hero', order: ['P:Third', 'P:Second'], edits: [] }
-        ])
-        expect(results.map(r => r.status)).toEqual(['written', 'written'])
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const hero = html.slice(html.indexOf('"hero"'), html.indexOf('"footer"'))
-        expect(hero.indexOf('Third')).toBeGreaterThan(0)
-        expect(hero.indexOf('Third')).toBeLessThan(hero.indexOf('Second'))
-        expect(hero).not.toContain('Card')
-    })
-
-    it('skips an order that is already true of the file (byte-stable)', async () => {
-        writeFileSync(path.join(dir, 'index.html'), INDEX)
-        const { results } = await save([
-            { kind: 'static', region: 'hero', order: ['P:Welcome... wait', 'nope'], edits: [] }
-        ])
-        expect(results[0].status).toBe('written')         // unknown keys: reorder skipped, file untouched
-        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(INDEX)
-        const { results: r2 } = await save([
-            { kind: 'static', region: 'hero', order: ['H1:Welcome', 'P:Intro copy'], edits: [] }
-        ])
-        expect(r2[0].reordered).toBe(false)
-        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(INDEX)
-    })
-
-    it('places a colliding arrival POSITIONALLY, mirroring fresh-session keys', async () => {
-        const idx = `<!doctype html>
-<html>
-<body>
-    <section x-edit="hero">
-        <p data-m="arr">Same</p>
-    </section>
-    <section x-edit="footer">
-        <p data-m="nat">Same</p>
-    </section>
-</body>
-</html>
-`
-        writeFileSync(path.join(dir, 'index.html'), idx)
-        // The arrival landed BEFORE its twin: positionally it takes the base key and
-        // the native twin becomes #2 — the file order must put arr first so a fresh
-        // session derives the same keys the client recorded.
-        const { results } = await save([{
-            kind: 'static-move', from: 'hero', to: 'footer',
-            key: 'P:Same', toKey: 'P:Same', toOrder: ['P:Same', 'P:Same#2']
-        }])
-        expect(results[0].status).toBe('written')
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const footer = html.slice(html.indexOf('"footer"'))
-        expect(footer.indexOf('data-m="arr"')).toBeGreaterThan(0)
-        expect(footer.indexOf('data-m="arr"')).toBeLessThan(footer.indexOf('data-m="nat"'))
-    })
-
-    it('delete-then-edit: a baseline-order path hits the right element while the short order is skipped', async () => {
-        // The client deleted <h1> (st-children) — the server can't apply the short
-        // order, so the edit's path addresses the UNMODIFIED file: Intro copy is 1.
-        writeFileSync(path.join(dir, 'index.html'), INDEX)
-        const { results } = await save([
-            { kind: 'static', region: 'hero', order: ['P:Intro copy'], edits: [{ path: '1', key: 'P:Intro copy', prop: 'text', value: 'Edited copy' }] }
-        ])
-        expect(results[0].status).toBe('written')
-        expect(results[0].reordered).toBe(false)
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const hero = html.slice(html.indexOf('"hero"'), html.indexOf('"footer"'))
-        expect(hero).toContain('<h1>Welcome</h1>')
-        expect(hero).toContain('<p>Edited copy</p>')
-        expect(hero).not.toContain('Intro copy')
-    })
-
-    it('path navigation skips plugin-injected nodes, mirroring the client', async () => {
-        const idx = INDEX.replace('<h1>Welcome</h1>', '<span data-edit-ghost=""></span>\n        <h1>Welcome</h1>')
-        writeFileSync(path.join(dir, 'index.html'), idx)
-        const { results } = await save([
-            { kind: 'static', region: 'hero', edits: [{ path: '0', key: 'H1:Welcome', prop: 'text', value: 'Hello' }] }
-        ])
-        expect(results[0].status).toBe('written')
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        expect(html).toContain('<h1>Hello</h1>')                       // path 0 = first AUTHORED child
-        expect(html).toContain('<span data-edit-ghost=""></span>')     // the stray ghost is untouched
-    })
-
-    it('a PRE-move text edit does not poison the destination order patch (repro A)', async () => {
-        // Client: edit Alpha → move Alpha to footer → reorder footer (Delta above
-        // Gamma). The arrival's live key re-derived from EDITED text (P:EditedAlpha)
-        // while the file holds the authored text — the order patch must still apply.
-        const idx = INDEX.replace('<p>Intro copy</p>', '<p>Alpha</p>')
-            .replace('<p>Fine print</p>', '<p>Gamma</p>\n        <p>Delta</p>')
-        writeFileSync(path.join(dir, 'index.html'), idx)
-        const { results } = await save([
-            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Alpha', toKey: 'P:EditedAlpha', toOrder: ['P:Gamma', 'P:Delta', 'P:EditedAlpha'] },
-            { kind: 'static', region: 'footer', order: ['P:Delta', 'P:Gamma', 'P:EditedAlpha'], edits: [{ path: '2', key: 'P:EditedAlpha', prop: 'text', value: 'EditedAlpha' }] }
-        ])
-        expect(results.map(r => r.status)).toEqual(['written', 'written'])
-        expect(results[1].reordered).toBe(true)           // the destination order patch APPLIED
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const footer = html.slice(html.indexOf('"footer"'))
-        expect(footer).toContain('<p>EditedAlpha</p>')
-        expect(footer.indexOf('<p>Delta</p>')).toBeLessThan(footer.indexOf('<p>Gamma</p>'))
-        expect(footer.indexOf('<p>Gamma</p>')).toBeLessThan(footer.indexOf('<p>EditedAlpha</p>'))
-    })
-
-    it('a PRE-move edit plus a POST-reorder edit both land on the right elements (repro B)', async () => {
-        // Same as repro A plus an edit of Gamma AFTER the reorder: its path (1) is a
-        // final position — if the order patch is skipped, path 1 is Delta and the
-        // edit destroys Delta's content.
-        const idx = INDEX.replace('<p>Intro copy</p>', '<p>Alpha</p>')
-            .replace('<p>Fine print</p>', '<p>Gamma</p>\n        <p>Delta</p>')
-        writeFileSync(path.join(dir, 'index.html'), idx)
-        const { results } = await save([
-            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Alpha', toKey: 'P:EditedAlpha', toOrder: ['P:Gamma', 'P:Delta', 'P:EditedAlpha'] },
-            { kind: 'static', region: 'footer', order: ['P:Delta', 'P:Gamma', 'P:EditedAlpha'], edits: [
-                { path: '2', key: 'P:EditedAlpha', prop: 'text', value: 'EditedAlpha' },
-                { path: '1', key: 'P:Gamma', prop: 'text', value: 'EditedGamma' }
-            ] }
-        ])
-        expect(results.map(r => r.status)).toEqual(['written', 'written'])
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const footer = html.slice(html.indexOf('"footer"'))
-        expect(footer).toContain('<p>Delta</p>')          // Delta's content survived
-        expect(footer).toContain('<p>EditedGamma</p>')
-        expect(footer).toContain('<p>EditedAlpha</p>')
-        expect(footer).not.toContain('<p>Gamma</p>')
-        expect(footer.indexOf('<p>Delta</p>')).toBeLessThan(footer.indexOf('<p>EditedGamma</p>'))
-        expect(footer.indexOf('<p>EditedGamma</p>')).toBeLessThan(footer.indexOf('<p>EditedAlpha</p>'))
-    })
-
-    it('a PRE-move-edited arrival still resolves next to an authored twin (ordinal dedup)', async () => {
-        // Destination holds an authored twin of the arrival's AUTHORED text. The twin
-        // keeps its live key P:Same; the edited arrival must bind to the inserted
-        // child, not steal the twin's key.
-        const idx = `<!doctype html>
-<html>
-<body>
-    <section x-edit="hero">
-        <p data-m="arr">Same</p>
-    </section>
-    <section x-edit="footer">
-        <p data-m="nat">Same</p>
-    </section>
-</body>
-</html>
-`
-        writeFileSync(path.join(dir, 'index.html'), idx)
-        const { results } = await save([
-            { kind: 'static-move', from: 'hero', to: 'footer', key: 'P:Same', toKey: 'P:Edited', toOrder: ['P:Same', 'P:Edited'] },
-            { kind: 'static', region: 'footer', order: ['P:Edited', 'P:Same'], edits: [{ path: '0', key: 'P:Edited', prop: 'text', value: 'Edited' }] }
-        ])
-        expect(results.map(r => r.status)).toEqual(['written', 'written'])
-        expect(results[1].reordered).toBe(true)
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const footer = html.slice(html.indexOf('"footer"'))
-        expect(footer).toContain('<p data-m="arr">Edited</p>')
-        expect(footer).toContain('<p data-m="nat">Same</p>')
-        expect(footer.indexOf('data-m="arr"')).toBeLessThan(footer.indexOf('data-m="nat"'))
-    })
-
-    it('moves the authored markup between regions, placed by toOrder', async () => {
-        writeFileSync(path.join(dir, 'index.html'), INDEX)
-        const { results } = await save([{
-            kind: 'static-move', from: 'hero', to: 'footer',
-            key: 'P:Intro copy', toKey: 'P:Intro copy',
-            toOrder: ['P:Intro copy', 'P:Fine print']
-        }])
-        expect(results[0].status).toBe('written')
-        const html = readFileSync(path.join(dir, 'index.html'), 'utf8')
-        const hero = html.slice(html.indexOf('"hero"'), html.indexOf('"footer"'))
-        expect(hero).toContain('Welcome')
-        expect(hero).not.toContain('Intro copy')
-        const footer = html.slice(html.indexOf('"footer"'))
-        expect(footer).toContain('<p>Intro copy</p>')
-        expect(footer.indexOf('Intro copy')).toBeLessThan(footer.indexOf('Fine print'))
+    it('falls back to the origin path when the content key differs from source', async () => {
+        const src = `<section x-edit="p"><span x-text="name">Fallback</span><p>Body</p></section>`
+        const { out } = await write(src, [tree('p', [n('p', 'P:Body'), { key: K('p', 'SPAN:Alice'), at: '0' }])])
+        expect(out).toBe(`<section x-edit="p"><p>Body</p><span x-text="name">Fallback</span></section>`)
     })
 })
 
-describe('/__edit/save nesting and attributes', () => {
-    const NEST = `<!doctype html>
-<html>
-<body>
-    <section x-edit="page">
-        <div>
-            <h3>Card</h3>
-        </div>
-        <p>Loose</p>
-    </section>
-</body>
-</html>
-`
-    const region = () => { const h = readFileSync(path.join(dir, 'index.html'), 'utf8'); return h.slice(h.indexOf('"page"'), h.indexOf('</section>')) }
+describe('/__edit/save attribute and text safety', () => {
+    const one = (edits, tag = 'p', inner = 'One') => write(`<section x-edit="s"><${tag} title=old hidden hidden>${inner}</${tag}></section>`,
+        [tree('s', [n('s', `${tag.toUpperCase()}:${inner}`, { edits })])])
 
-    it('nests a piece into a container inside the same region', async () => {
-        writeFileSync(path.join(dir, 'index.html'), NEST)
-        const { results } = await save([{ kind: 'static-move', from: 'page', to: 'page', toParent: 'DIV:Card', key: 'P:Loose', toKey: 'P:Loose', toOrder: ['H3:Card', 'P:Loose'] }])
-        expect(results[0].status).toBe('written')
-        const r = region()
-        expect(r.indexOf('<p>Loose</p>')).toBeGreaterThan(r.indexOf('<h3>Card</h3>'))
-        expect(r.indexOf('<p>Loose</p>')).toBeLessThan(r.indexOf('</div>'))
+    it('escapes & " < so a value can never leave its attribute or decode into a scheme', async () => {
+        const { out } = await one({ title: 'a &amp; b" onclick="y<' })
+        expect(out).toContain('title="a &amp;amp; b&quot; onclick=&quot;y&lt;"')
+        const ent = await one({ href: '&#106;avascript:alert(1)' }, 'a')
+        expect(ent.results[0].status).toBe('error')                  // checked entity-decoded too
     })
 
-    it('un-nests a piece out of its container', async () => {
-        writeFileSync(path.join(dir, 'index.html'), NEST)
-        const { results } = await save([{ kind: 'static-move', from: 'page', to: 'page', fromParent: 'DIV:Card', key: 'H3:Card', toKey: 'H3:Card', toOrder: ['DIV:', 'H3:Card', 'P:Loose'] }])
-        expect(results[0].status).toBe('written')
-        const r = region()
-        expect(r.indexOf('<h3>Card</h3>')).toBeGreaterThan(r.indexOf('</div>'))
-        expect(r.indexOf('<h3>Card</h3>')).toBeLessThan(r.indexOf('<p>Loose</p>'))
+    it('replaces unquoted values in place, removes every duplicate of a boolean', async () => {
+        const { out } = await one({ title: 'new', hidden: null })
+        expect(out).toBe(`<section x-edit="s"><p title="new">One</p></section>`)
     })
 
-    it('reorders a nested container by its key', async () => {
-        writeFileSync(path.join(dir, 'index.html'), NEST.replace('<h3>Card</h3>', '<h3>Card</h3>\n            <p>Body</p>'))
-        const { results } = await save([{ kind: 'static', region: 'page', edits: [], orders: { 'DIV:Card Body': ['P:Body', 'H3:Card'] } }])
-        expect(results[0].reordered).toBe(true)
-        const r = region()
-        expect(r.indexOf('<p>Body</p>')).toBeLessThan(r.indexOf('<h3>Card</h3>'))
+    it('never matches attribute-like text inside another value', async () => {
+        const src = `<section x-edit="s"><h2 x-init="title = 'Hello'">Heading</h2></section>`
+        const { out } = await write(src, [tree('s', [n('s', 'H2:Heading', { edits: { title: 'x onmouseover=alert(1) y' } })])])
+        expect(out).toBe(`<section x-edit="s"><h2 x-init="title = 'Hello'" title="x onmouseover=alert(1) y">Heading</h2></section>`)
     })
 
-    it('writes and removes plain attributes, and refuses unsafe ones', async () => {
-        writeFileSync(path.join(dir, 'index.html'), NEST.replace('<p>Loose</p>', '<p hidden title="x">Loose</p>'))
-        const { results } = await save([{ kind: 'static', region: 'page', edits: [
-            { path: '1', key: 'P:Loose', prop: 'hidden', value: null },
-            { path: '1', key: 'P:Loose', prop: 'aria-label', value: 'Loose copy' },
-            { path: '1', key: 'P:Loose', prop: 'onclick', value: 'alert(1)' },
-            { path: '0', key: 'DIV:Card', prop: 'href', value: 'javascript:alert(1)' }
-        ] }])
-        expect(results[0].status).toBe('written')
-        const r = region()
-        expect(r).toContain('<p title="x" aria-label="Loose copy">Loose</p>')
-        expect(r).not.toContain('onclick')
-        expect(r).not.toContain('javascript:')
+    it('style/class null or empty remove the attribute instead of writing "null"', async () => {
+        const src = `<section x-edit="s"><p style="color: red" class="a">One</p></section>`
+        const { out } = await write(src, [tree('s', [n('s', 'P:One', { edits: { style: null, class: '' } })])])
+        expect(out).toBe(`<section x-edit="s"><p>One</p></section>`)
+    })
+
+    it('guardrails refuse the batch: script and data schemes, handlers, SVG animation targets', async () => {
+        const bad = [
+            [{ href: 'java\tscript:alert(1)' }, 'a'], [{ href: '&#106;avascript:x' }, 'a'], [{ title: 'data:text/html,x' }, 'p'],
+            [{ data: 'data:text/html,<script>x</script>' }, 'object'], [{ src: 'data:image/svg+xml,<svg onload=x>' }, 'iframe'],
+            [{ src: 'data:image/svg+xml;base64,AAAA' }, 'img'], [{ onclick: 'x' }, 'p'], [{ 'x-on:click': 'x' }, 'p'],
+            [{ attributeName: 'href' }, 'set'], [{ style: 'background:url(javascript:x)' }, 'p']
+        ]
+        for (const [edits, tag] of bad) {
+            const src = `<section x-edit="s"><${tag}>One</${tag}></section>`
+            const { results, out } = await write(src, [tree('s', [n('s', `${tag.toUpperCase()}:One`, { edits })])])
+            expect(results[0].status, JSON.stringify(edits)).toBe('error')
+            expect(out).toBe(src)
+        }
+        const ok = await write(`<section x-edit="s"><img src="/a.png"></section>`, [tree('s', [n('s', 'IMG:', { edits: { src: 'data:image/png;base64,AAAA' } })])])
+        expect(ok.results[0].status).toBe('written')
+    })
+
+    it('sanitizes text on the server with the client allowlist', async () => {
+        const { out } = await one({ text: 'Hi <a href="java&#9;script:alert(1)">x</a> <a href="https://ok.test" onclick="y">ok</a><script>alert(2)</script><img src=x onerror=alert(3)><b>bold</b>' })
+        expect(out).toBe(`<section x-edit="s"><p title=old hidden hidden>Hi <a>x</a> <a href="https://ok.test">ok</a><img src="x"><b>bold</b></p></section>`)
+    })
+
+    it('path navigation skips plugin-injected nodes, mirroring the client', async () => {
+        const src = `<section x-edit="g"><span data-edit-ghost=""></span><h1>Welcome</h1></section>`
+        const { out } = await write(src, [tree('g', [n('g', 'H1:Welcome', { edits: { text: 'Hello' } })])])
+        expect(out).toBe(`<section x-edit="g"><span data-edit-ghost=""></span><h1>Hello</h1></section>`)
     })
 })

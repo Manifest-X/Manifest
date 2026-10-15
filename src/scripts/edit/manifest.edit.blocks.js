@@ -106,16 +106,35 @@
     function copyBlock(el) {
         const block = asPiece(el === undefined ? target : el); if (!block) return false;
         const area = blockArea(block); if (!area) return false;
-        clipboard = { html: blockHTML(block), source: key(area) };
+        clipboard = { html: blockHTML(block, true), ops: subtreeOps(block), source: key(area) };
         bump();
         return true;
     }
 
-    function insertStatic(area, container, made, after) {
+    // The edits a subtree carries now, keyed by identity, for a copy to start from.
+    function subtreeOps(el) {
+        const ss = staticState(), ops = {};
+        [el, ...el.querySelectorAll('[data-edit-key]')].forEach(n => { const k = n.getAttribute('data-edit-key'); if (k && ss.node[k]) ops[k] = Object.assign({}, ss.node[k]); });
+        return ops;
+    }
+    // A copy gets fresh identities that still name the source element it copies.
+    function stampCopy(made, ops) {
+        const id = mint(), copies = {};
+        [made, ...made.querySelectorAll('[data-edit-key]')].forEach(n => {
+            const k = n.getAttribute('data-edit-key');
+            if (k[0] === '!') { n.setAttribute('data-edit-key', '!' + mint()); return; }
+            const ck = '~' + id + '~' + originOf(k);
+            n.setAttribute('data-edit-key', ck);
+            if (ops && ops[k]) copies[ck] = Object.assign({}, ops[k]);
+        });
+        return copies;
+    }
+    function insertStatic(area, container, made, after, ops) {
         const before = staticKeys(container);
+        const copies = stampCopy(made, ops);
         if (after) after.after(made); else container.appendChild(made);
         markStatic(area); armArea(area);
-        commitStructure(area, container, before, { [made.getAttribute('data-edit-key')]: blockHTML(made) });
+        commitStructure(area, container, before, { [made.getAttribute('data-edit-key')]: blockHTML(made, true) }, copies);
     }
 
     function duplicateBlock(el) {
@@ -130,9 +149,9 @@
             commitSplice(area, i + 1, copy, 'insert');
             return true;
         }
-        const made = materialize(blockHTML(block));
+        const made = materialize(blockHTML(block, true));
         if (!made) return false;
-        insertStatic(area, block.parentElement, made, block);
+        insertStatic(area, block.parentElement, made, block, subtreeOps(block));
         return true;
     }
 
@@ -200,7 +219,7 @@
         }
         if (classify(area) !== 'static') return false;
         const made = materialize(clipboard.html); if (!made) return false;
-        insertStatic(area, container, made, block && block.parentElement === container ? block : null);
+        insertStatic(area, container, made, block && block.parentElement === container ? block : null, clipboard.ops);
         return true;
     }
 

@@ -1,7 +1,7 @@
 /* Manifest Edit */
 
 (function () {
-    const LS_KEY = 'mnfst-edit-log';
+    const LS_KEY = 'mnfst-edit-log:' + location.pathname;
     const SCHEMA = 8;
     const HISTORY_CAP = 400;
     const ALL_CAPS = ['text', 'move', 'size', 'data'];
@@ -15,7 +15,32 @@
     const lastSnap = {};
     const persisted = new WeakSet();
 
-    const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    // Text an element holds in source: Alpine-rendered and generated content is left out.
+    function sourceText(el) {
+        if (el.hasAttribute('x-text') || el.hasAttribute('x-html')) return '';
+        let t = '';
+        for (const n of el.childNodes) {
+            if (n.nodeType === 3) t += n.textContent;
+            else if (n.nodeType === 1 && !pluginNode(n) && n.tagName !== 'TEMPLATE' && !isGenerated(n)) t += sourceText(n);
+        }
+        return t;
+    }
+    const staticKey = (el) => el.tagName.toUpperCase() + ':' + sourceText(el).replace(/\s+/g, ' ').trim().slice(0, 24);
+    // Identity: "@region@KEY" for source elements (origin area + content key),
+    // "~id~@region@KEY" for a copy of one, "!id" for content that is not in source.
+    const canonKey = (region, k) => '@' + encodeURIComponent(region) + '@' + k;
+    const originOf = (k) => k && k[0] === '~' ? k.slice(k.indexOf('~', 1) + 1) : k;
+    let mintN = 0;
+    const mint = () => Date.now().toString(36) + (++mintN).toString(36) + Math.random().toString(36).slice(2, 6);
+    // Elements Alpine renders from a template (x-if / x-for clones) are not source.
+    function isGenerated(el) {
+        for (let t = el.previousElementSibling; t; t = t.previousElementSibling) {
+            if (t.tagName !== 'TEMPLATE') continue;
+            if (t._x_currentIfEl === el) return true;
+            if (t._x_lookup && Object.values(t._x_lookup).includes(el)) return true;
+        }
+        return false;
+    }
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
@@ -42,13 +67,32 @@
         } catch { }
     };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-    // Inherited custom properties, read through the cascade; `none` cancels an inherited value.
-    function cssVar(el, name, fallback) {
+    // Nearest value of a custom property, `none` included ('' when unset).
+    function rawVar(el, name) {
         for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
             const v = getComputedStyle(n).getPropertyValue(name).trim();
-            if (v) return v === 'none' && name !== '--edit-size' ? (fallback ?? '') : v;
+            if (v) return v;
         }
-        return fallback ?? '';
+        return '';
+    }
+    // Inherited custom properties; `none` cancels an inherited value.
+    function cssVar(el, name, fallback) {
+        const v = rawVar(el, name);
+        if (!v) return fallback ?? '';
+        return v === 'none' && name !== '--edit-size' ? (fallback ?? '') : v;
+    }
+    // Inline style minus declarations the plugin applied itself.
+    function ownStyle(el) {
+        const s = el.getAttribute('style') || '';
+        if (!el._editPos) return s;
+        const d = document.createElement('div');
+        d.setAttribute('style', s);
+        d.style.removeProperty('position');
+        return d.getAttribute('style') || '';
+    }
+    function writeStyle(el, v) {
+        if (v == null || v === '') el.removeAttribute('style'); else if (el.getAttribute('style') !== v) el.setAttribute('style', v);
+        if (el._editPos && getComputedStyle(el).position === 'static') el.style.position = 'relative';
     }
 
     /* ---- Safety ---- */
@@ -64,27 +108,40 @@
             if (c.nodeType === 8) return c.remove();
             if (c.nodeType !== 1) return;
             if (!SAFE_TAGS.has(c.tagName)) { c.replaceWith(document.createTextNode(c.textContent)); return; }
-            [...c.attributes].forEach(a => { const n = a.name.toLowerCase(); if (!(c.tagName === 'A' && n === 'href' && !/^\s*javascript:/i.test(a.value))) c.removeAttribute(a.name); });
+            [...c.attributes].forEach(a => { const n = a.name.toLowerCase(); if (!(c.tagName === 'A' && n === 'href' && !attrRefusal('href', a.value, 'A'))) c.removeAttribute(a.name); });
             walk(c);
         });
         walk(t.content);
         return t.innerHTML;
     }
 
-    // Attribute guardrails: refused names and URL schemes. Returns a reason, or null when safe.
-    const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href']);
-    function attrRefusal(name, value) {
-        const n = String(name || '').trim().toLowerCase();
-        if (!n || !/^[a-z_:][\w:.-]*$/i.test(n) && !/^[@:]/.test(n)) return 'invalid name';
+    // Attribute guardrails. Returns a reason, or null when safe. A script scheme is
+    // refused in any value; data: only as a raster image on img/source src/srcset.
+    const NAMED = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0', tab: '\t', newline: '\n', colon: ':' };
+    const decodeEntities = (s) => String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);?/gi, (m, e) => {
+        if (e[0] === '#') { const c = /^#x/i.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return c >= 0 && c < 0x110000 ? String.fromCodePoint(c) : m; }
+        const v = NAMED[e.toLowerCase()]; return v === undefined ? m : v;
+    });
+    const SVG_ANIM = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
+    const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp|avif)[;,]/;
+    function attrRefusal(name, value, tag) {
+        const n = String(name || '').trim().toLowerCase(), t = String(tag || '').toLowerCase();
+        if (!n || !/^[a-z_][\w:.-]*$/i.test(n)) return /^[@:]/.test(n) ? 'Alpine directive' : 'invalid name';
         if (n === 'text') return 'reserved name';
         if (n.startsWith('on')) return 'event handler attribute';
-        if (n.startsWith('x-') || n.startsWith('@') || n.startsWith(':')) return 'Alpine directive';
+        if (n.startsWith('x-')) return 'Alpine directive';
         if (n.startsWith('data-edit-')) return 'plugin attribute';
         if (n === 'srcdoc') return 'inline document';
-        if (value != null && URL_ATTRS.has(n)) {
-            const v = String(value).replace(/[\u0000- ]/g, '').toLowerCase();
-            if (/^(javascript|vbscript):/.test(v)) return 'script URL';
-            if (v.startsWith('data:') && !(n === 'src' && v.startsWith('data:image/'))) return 'data URL';
+        if (SVG_ANIM.has(t) && ['attributename', 'to', 'values', 'from', 'by'].includes(n)) return 'SVG animation target';
+        if (value == null) return null;
+        for (const raw of [String(value), decodeEntities(value)]) {
+            const v = raw.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase();
+            if (/(^|[,(;'"=])(javascript|vbscript):/.test(v)) return 'script URL';
+            const datas = v.match(/(^|[,(;'"=])data:[^,)]*/g) || [];
+            if (datas.length) {
+                const imageOk = (t === 'img' || t === 'source') && (n === 'src' || n === 'srcset');
+                if (!imageOk || !datas.every(d => DATA_IMAGE.test(d.replace(/^[,(;'"=]/, '')))) return 'data URL';
+            }
         }
         return null;
     }

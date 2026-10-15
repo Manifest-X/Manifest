@@ -1,32 +1,39 @@
     /* ---- Arm / disarm ---- */
-    // Content-derived keys, assigned once per element and never recomputed, so a text
-    // edit keeps the address and a reload of the same source derives the same keys.
+    // Identity is assigned once, on the first mark, from what the source holds: the
+    // origin area plus a content key (ordinal per repeat), and the element's path.
+    // Later arrivals that are not copies get a non-source id and never publish.
+    const originAt = new Map();
     function markStatic(area) {
+        const region = key(area), first = !area._marked;
+        area._marked = true;
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const seen = Object.create(null);
-        const markEl = (el) => {
+        const markEl = (el, path) => {
             let k = el.getAttribute('data-edit-key');
-            if (k) {
-                const m = /^([\s\S]*)#(\d+)$/.exec(k);
-                const base = m ? m[1] : k, n = m ? m[2] : undefined;
-                seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
-            } else {
-                const base = staticKey(el);
-                const n = seen[base] = (seen[base] || 0) + 1;
-                k = n > 1 ? base + '#' + n : base;
+            if (!k) {
+                if (first) {
+                    const base = staticKey(el);
+                    const n = seen[base] = (seen[base] || 0) + 1;
+                    k = canonKey(region, n > 1 ? base + '#' + n : base);
+                    originAt.set(k, path);
+                } else k = '!' + mint();
                 el.setAttribute('data-edit-key', k);
             }
             if (!(k in area._baseClass)) area._baseClass[k] = readClass(el);
-            if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
+            if (!(k in area._baseStyle)) area._baseStyle[k] = ownStyle(el);
             if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
-        markEl(area);
-        area.querySelectorAll('*').forEach(el => {
-            if (pluginNode(el) || el.closest('[data-edit-ghost]')) return;
-            if (el.parentElement && el.parentElement.closest('[data-text-edit]')) return;
-            markEl(el);
-        });
-        if (!area._baseOrder) area._baseOrder = staticKeys(area);
+        const walk = (el, path) => {
+            markEl(el, path);
+            if (el !== area && el.hasAttribute('data-text-edit')) return;
+            let i = 0;
+            for (const c of el.children) {
+                if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
+                walk(c, path === '' ? String(i) : path + '.' + i);
+                i++;
+            }
+        };
+        walk(area, '');
     }
     function armArea(area) {
         const kind = classify(area);
@@ -58,6 +65,7 @@
     }
     function disarmArea(area) {
         if (gripFor && area.contains(gripFor)) hideGrip();
+        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { if (e._editPos) { e.style.removeProperty('position'); e._editPos = false; } });
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
         [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; });
         area.querySelectorAll('[data-edit-piece]').forEach(unmarkPiece);
@@ -88,46 +96,69 @@
         refresh();
     }
 
-    /* ---- Source patches: every area ---- */
-    function buildPatches() {
-        const patches = Object.entries(fold()).map(([k, v]) => patchFor(k, v.kind, v.snap));
-        const toEdits = (paths, area, fileOrder) => {
-            const e = [];
-            Object.entries(paths).forEach(([k, props]) => {
-                const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
-                let path = el ? pathOf(el, area) : k;
-                if (area && !el) return;
-                // A pending structural change can't reach the file: address the unmodified file order.
-                if (el && el !== area && fileOrder) {
-                    let block = el; while (block.parentElement && block.parentElement !== area) block = block.parentElement;
-                    const fi = fileOrder.indexOf(block.getAttribute('data-edit-key'));
-                    if (fi < 0) return;
-                    const segs = path.split('.'); segs[0] = String(fi); path = segs.join('.');
-                }
-                Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
-            });
-            return e;
+    /* ---- Source patches: every area ----
+       A static area publishes its FINAL structure as a tree of identities. Each node
+       names a source element (key, plus its origin path as a fallback), carries its
+       own edits, and lists children only where structure changed beneath it; a node
+       without children keeps its source markup. Copies name the element they copy.
+       Removed source elements are listed so the writer can tell them from omissions. */
+    const treeKids = (el) => realChildren(el).filter(c => !isGenerated(c));
+    function staticTrees(ss) {
+        const out = [];
+        const editsFor = (id) => {
+            const ops = ss.node[id]; if (!ops) return null;
+            const e = {};
+            Object.entries(ops).forEach(([prop, v]) => { e[prop] = (prop === 'class' || prop === 'style') && v === '' ? null : v; });
+            return Object.keys(e).length ? e : null;
         };
+        const nontrivial = (n) => n.edits || n.children || n.key[0] === '~';
+        const live = keyMap(staticAreas());
+        staticAreas().forEach(area => {
+            const region = key(area);
+            const build = (el, isRoot) => {
+                const id = el.getAttribute('data-edit-key');
+                if (!id || id[0] === '!') return null;
+                const n = { key: id };
+                const at = originAt.get(originOf(id)); if (at != null) n.at = at;
+                const e = editsFor(id); if (e) n.edits = e;
+                if (!(e && 'text' in e) && isContainer(el)) {
+                    const kids = treeKids(el).map(c => build(c)).filter(Boolean);
+                    if (id[0] === '~' || ss.touched.has(isRoot ? '#' + region : id) || kids.some(nontrivial)) n.children = kids;
+                }
+                return n;
+            };
+            const tree = build(area, true);
+            if (!tree || !(tree.edits || tree.children)) return;
+            delete tree.at;
+            out.push({ kind: 'static-tree', region, tree });
+        });
+        // Removed: named by a structural delta's `before`, absent from every current order.
+        const placedKeys = new Set();
+        new Set([...Object.keys(ss.orderBase), ...Object.keys(ss.order)]).forEach(r => {
+            Object.values(Object.assign({}, ss.orderBase[r] || {}, ss.order[r] || {})).forEach(ks => ks.forEach(k => placedKeys.add(k)));
+        });
+        const removed = new Set();
         for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind !== 'st-move') continue;
-            const p = { kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder };
-            if (d.fromParent) p.fromParent = d.fromParent;
-            if (d.toParent) p.toParent = d.toParent;
-            patches.push(p);
+            if (d.kind === 'st-children') d.before.forEach(k => { if (k && k[0] === '@' && !placedKeys.has(k) && !live.has(k)) removed.add(k); });
         }
-        const ss = staticState();
-        new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
-            const area = areaByKey(region);
-            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region && !d.parent);
-            const edits = toEdits(ss.node[region] || {}, area, structural ? (area && area._baseOrder) || [] : null);
-            const orders = ss.order[region] || {};
-            const order = orders[''] || null;
-            const nested = Object.fromEntries(Object.entries(orders).filter(([p]) => p));
-            const patch = { kind: 'static', region, edits, order };
-            if (Object.keys(nested).length) patch.orders = nested;
-            if (edits.length || order || patch.orders) patches.push(patch);
+        const regionOfKey = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));
+        removed.forEach(k => {
+            const r = regionOfKey(k);
+            let p = out.find(x => x.region === r);
+            if (!p) { if (!areaByKey(r)) return; p = { kind: 'static-tree', region: r, tree: { key: '' } }; out.push(p); }
+            (p.removed = p.removed || []).push(k);
         });
+        return out;
+    }
+    function buildPatches() {
+        const patches = Object.entries(fold()).map(([k, v]) => patchFor(k, v.kind, v.snap));
+        staticTrees(staticState()).forEach(p => patches.push(p));
+        const toEdits = (paths) => {
+            const e = [];
+            Object.entries(paths).forEach(([path, props]) => Object.entries(props).forEach(([prop, value]) => e.push({ path, key: path, prop, value })));
+            return e;
+        };
         const dv = dataValueState();
         Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));
         const { main, inst, reverts } = componentState();
@@ -140,11 +171,34 @@
         themePatches().forEach(p => patches.push(p));
         return patches;
     }
+    // The source now holds every published edit: history starts again from here, and
+    // identities are re-derived from the page as a fresh load of that source would.
+    // Deltas for areas not on the page were not published; they stay.
+    function rebase() {
+        const mounted = (r) => r == null || !!areaByKey(r);
+        const pending = (d) => (d.kind === 'st-move' ? [d.from, d.to] : [d.region]).some(r => !mounted(r));
+        let c = 0;
+        log = log.filter((d, i) => { const keep = pending(d); if (keep && i < cursor) c++; return keep; });
+        cursor = c; ver++;
+        saveState();
+        originAt.clear();
+        areas().forEach(a => {
+            const kind = classify(a);
+            a._baseText = {}; a._baseClass = {}; a._baseStyle = {};
+            if (kind === 'static') { [a, ...a.querySelectorAll('[data-edit-key]')].forEach(n => n.removeAttribute('data-edit-key')); a._marked = false; markStatic(a); }
+            if (kind === 'component' && a._armed) armComponent(a);
+            lastSnap[key(a)] = snapshot(a, kind);
+        });
+        rebaseTheme();
+        refresh();
+    }
+    const published = (r) => !(r && Array.isArray(r.results) && r.results.some(x => x && x.status === 'error'));
     function publish() {
         const patches = buildPatches();
-        if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor }));
+        const done = (r) => { if (published(r)) rebase(); return r; };
+        if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
         if (!patches.length) return Promise.resolve({ results: [] });
-        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json());
+        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json()).then(done);
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {
