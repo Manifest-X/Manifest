@@ -1155,7 +1155,37 @@ function indexRegion(html, name, node) {
   };
   node.path = '';
   visit(node);
+  // Fingerprint: the opening tag and own text; where the key has twins, also their
+  // number and the element's ancestors (tag and key), so a reordered twin cannot match.
+  const count = Object.create(null);
+  for (const n of reg.byKey.values()) count[n.base] = (count[n.base] || 0) + 1;
+  for (const n of reg.byKey.values()) {
+    if (n === node) continue;
+    let own = open(n);
+    for (const c of n.content) if (c.text != null) own += '\0' + c.text.replace(/\s+/g, ' ').trim();
+    n.fp = fpHash(own);
+    if (count[n.base] > 1) {
+      let ctx = String(count[n.base]);
+      for (let a = n.parent; a && a !== node; a = a.parent) ctx += '\0' + open(a) + '\0' + a.base;
+      n.fp += '.' + fpHash(ctx);
+    }
+  }
   return reg;
+}
+const fpHash = (s) => createHash('sha1').update(s).digest('hex').slice(0, 12);
+// Fingerprints of every static element in index.html's areas, by key.
+function sourceIds(file) {
+  const out = {};
+  let html; try { html = readFileSync(file, 'utf8'); } catch { return out; }
+  const doc = parseHTML(html);
+  if (checkNesting(doc)) return out;
+  for (const n of allElements(doc)) {
+    if (n.implied) continue;
+    const a = (scanTag(openOf(html, n)) || { attrs: [] }).attrs.find(x => /^x-edit(\.|$)/.test(x.lower));
+    if (!a || !a.value) continue;
+    for (const [k, m] of indexRegion(html, a.value, n).byKey) if (m.fp) out[k] = m.fp;
+  }
+  return out;
 }
 // A comment directly above an element (whitespace between, no blank line) titles it.
 // A comment that opens its container titles the section, not the first child.
@@ -1207,7 +1237,9 @@ function writeStaticTrees(file, patches) {
   const placed = new Map(), rebuilt = new Set(), renderedUnder = new Map();
   // `kids` (the node's listed children) lets a container whose text changed (its children
   // reordered elsewhere) be found by path: its listed children must all sit in it.
-  const resolve = (k, at, kids) => {
+  // A node the page sent with a fingerprint must still match it in the source.
+  const resolve = (t) => {
+    const { key: k, at, children: kids, fp } = t || {};
     const m = /^(?:~([a-z0-9]+)~)?@([^@]*)@([\s\S]*)$/.exec(String(k || ''));
     if (!m) fail(`not a source element: ${k}`);
     const reg = region(decodeURIComponent(m[2]));
@@ -1218,9 +1250,13 @@ function writeStaticTrees(file, patches) {
       const p = reg.byPath.get(String(at));
       if (p && p.base === m[3].replace(/#\d+$/, '')) node = p;
       else if (p && p.name.toUpperCase() === m[3].split(':')[0] && Array.isArray(kids) && kids.some(c => !/^~/.test(c.key))
-        && kids.every(c => { if (/^~/.test(c.key)) return true; try { return resolve(c.key, c.at, c.children).node.parent === p; } catch { return false; } })) node = p;
+        && kids.every(c => { if (/^~/.test(c.key)) return true; try { return resolve(c).node.parent === p; } catch { return false; } })) node = p;
     }
-    if (!node) fail(`element '${m[3]}' not found in x-edit="${reg.name}"`);
+    if (!node) fail(`element '${m[3]}' not found in x-edit="${reg.name}": it changed or was removed since this page loaded; reload to continue`);
+    if (typeof fp === 'string' && node !== reg.root && fp !== node.fp) {
+      if (fp.includes('.') || String(node.fp).includes('.')) fail(`identical elements '${m[3].replace(/#\d+$/, '')}' were reordered or changed since this page loaded; reload to continue`);
+      fail(`'${m[3]}' changed or moved since this page loaded; reload to continue`);
+    }
     return { node, copy: !!m[1] };
   };
   const indentOf = (n) => { const nl = html.lastIndexOf('\n', n.tagStart); const pre = html.slice(nl + 1, n.tagStart); return /^[ \t]*$/.test(pre) ? pre : ''; };
@@ -1262,7 +1298,7 @@ function writeStaticTrees(file, patches) {
   }
   function renderNode(n, parentRebuilt, anc) {
     if (!n || typeof n !== 'object') fail('malformed tree');
-    const { node, copy } = resolve(n.key, n.at, n.children);
+    const { node, copy } = resolve(n);
     if (copy && [...regions.values()].some(r => r && r.root === node)) fail(`an area cannot be copied: ${n.key}`);
     if (!copy) {
       if (placed.has(node)) fail(`'${n.key}' placed twice`);
@@ -1277,7 +1313,7 @@ function writeStaticTrees(file, patches) {
   // subtree (template contents included — an x-if can render them here); text edits by
   // what they parse to.
   function finalSubtree(n, out = new Set()) {
-    const { node } = resolve(n.key, n.at, n.children);
+    const { node } = resolve(n);
     out.add(node.name);
     if (n.edits && 'text' in n.edits) { const f = sanitizeHTML(n.edits.text); allElements(parseHTML(f)).forEach(k => out.add(k.name)); }
     else if (Array.isArray(n.children)) n.children.forEach(c => finalSubtree(c, out));
@@ -1290,7 +1326,7 @@ function writeStaticTrees(file, patches) {
     const kids = node.kids || kidsOf(html, node);
     const want = new Map();
     for (const c of listed) {
-      const { node: k, copy } = resolve(c.key, c.at, c.children);
+      const { node: k, copy } = resolve(c);
       if (copy || k.parent !== node) fail(`'${c.key}' is no longer in its <${node.name}> (the source changed since this page loaded); reload to continue`);
       want.set(k, c);
     }
@@ -1314,15 +1350,15 @@ function writeStaticTrees(file, patches) {
       const changed = () => fail(`<${node.name}> ${node.key ? `'${node.key}' ` : ''}changed since this page loaded; reload to continue`);
       const current = kids.filter(k => k.name !== 'template');
       if (base.length !== current.length) changed();
-      base.forEach((b, i) => { let r; try { r = resolve(b.key, b.at); } catch { changed(); } if (r.node !== current[i]) changed(); });
+      base.forEach((b, i) => { let r; try { r = resolve(b); } catch (e) { if (/reordered or changed/.test(e.message)) throw e; changed(); } if (r.node !== current[i]) changed(); });
     }
     for (const c of children) {
-      const { node: child } = resolve(c.key, c.at, c.children);
+      const { node: child } = resolve(c);
       if (child.parent === node && !/^~/.test(c.key)) continue;    // authored placement is left as written
       const why = contentRefusal(child.name, node.name, anc, finalSubtree(c));
       if (why) fail(`<${child.name}> cannot go into <${node.name}>: ${why}`);
     }
-    children.forEach(c => { const r = resolve(c.key, c.at, c.children); if (!r.copy) renderedUnder.set(r.node, node); });
+    children.forEach(c => { const r = resolve(c); if (!r.copy) renderedUnder.set(r.node, node); });
     const rendered = children.map(c => renderNode(c, true, anc));
     const sk = rendered.map(r => r[1]).join(',');
     const gaps = []; let prev = node.innerStart;
@@ -1878,7 +1914,7 @@ const server = createServer((req, res) => {
     if (!EDIT_ENABLED) { res.writeHead(404); res.end(); return; }
     if (listenPort && req.headers.origin && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ files: baseHashes() }));
+    res.end(JSON.stringify({ files: baseHashes(), ids: sourceIds(join(root, 'index.html')) }));
     return;
   }
 
@@ -1939,7 +1975,7 @@ const server = createServer((req, res) => {
         }
       } finally { VFS = null; READS = null; }
       const stale = results.find(r => r && r.stale);
-      reply(200, written ? { results, base: written } : stale ? { results, stale: stale.stale } : { results });
+      reply(200, written ? { results, base: written, ids: sourceIds(indexFile) } : stale ? { results, stale: stale.stale } : { results });
     } catch (e) {
       console.error('[mnfst-run] /__edit/save failed:', e);
       reply(500, { results: [], error: String(e && e.message || e) });

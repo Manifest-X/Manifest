@@ -470,6 +470,76 @@ describe('/__edit/save parsing as a browser does', () => {
     })
 })
 
+describe('/__edit/save element fingerprints', () => {
+    const ids = () => fetch(`http://localhost:${port}/__edit/base`).then(r => r.json()).then(j => j.ids)
+    // Every node carries the fingerprint the page loaded with, as the client sends it.
+    const withFp = (t, map) => { if (map[t.key]) t.fp = map[t.key]; (t.children || []).forEach(c => withFp(c, map)); (t.base || []).forEach(b => withFp(b, map)); return t }
+    // A root without a base is only a path to its edits, as the client sends it.
+    const send = (patches, map) => save(patches.map(p => ({ ...p, tree: { ...(p.tree.base ? {} : { path: true }), ...p.tree, children: p.tree.children.map(c => withFp(c, map)) } })))
+    const page = (body) => writeFileSync(path.join(dir, 'index.html'), body)
+
+    it('twins swapped elsewhere: an edit to one is refused, not written into the other', async () => {
+        const src = `<section x-edit="f1">\n  <div class="card red"><p>Same</p></div>\n  <div class="card blue"><p>Same</p></div>\n</section>`
+        page(src); const map = await ids()
+        const swapped = src.replace(/(<div class="card red">.*<\/div>)\n  (<div class="card blue">.*<\/div>)/, '$2\n  $1')
+        page(swapped)
+        const { results } = await send([tree('f1', [n('f1', 'DIV:Same#2', { at: '1', path: true, children: [n('f1', 'P:Same#2', { at: '1.0', edits: { text: 'Blue page' } })] })])], map)
+        expect(results[0].status).toBe('error')
+        expect(results[0].reason).toContain(`identical elements`)
+        expect(file()).toBe(swapped)
+    })
+
+    it('twin lists swapped elsewhere: the list item edit is refused', async () => {
+        const src = `<section x-edit="f2">\n  <ul class="first"><li>Item</li></ul>\n  <ul class="second"><li>Item</li></ul>\n</section>`
+        page(src); const map = await ids()
+        const swapped = src.replace('<ul class="first"><li>Item</li></ul>\n  <ul class="second"><li>Item</li></ul>', '<ul class="second"><li>Item</li></ul>\n  <ul class="first"><li>Item</li></ul>')
+        page(swapped)
+        const { results } = await send([tree('f2', [n('f2', 'UL:Item#2', { at: '1', path: true, children: [n('f2', 'LI:Item#2', { at: '1.0', edits: { text: 'Second page' } })] })])], map)
+        expect(results[0].status).toBe('error')
+        expect(results[0].reason).toContain(`identical elements`)
+        expect(file()).toBe(swapped)
+    })
+
+    it('the path fallback does not bind another container that took the old place', async () => {
+        const src = `<section x-edit="f3">\n  <div class="A"><p>Xray</p><p>Zulu</p></div>\n  <div class="B"><p>Whiskey</p></div>\n</section>`
+        page(src); const map = await ids()
+        const moved = `<section x-edit="f3">\n  <div class="B"><p>Xray</p><p>Whiskey</p></div>\n  <div class="A"><p>Zulu</p></div>\n</section>`
+        page(moved)
+        const { results } = await send([tree('f3', [n('f3', 'DIV:XrayZulu', { at: '0', path: true, edits: { title: 'page-title' }, children: [n('f3', 'P:Xray', { at: '0.0', edits: { text: 'Xray page' } })] })])], map)
+        expect(results[0].status).toBe('error')
+        expect(results[0].reason).toContain(`changed or moved since this page loaded`)
+        expect(file()).toBe(moved)
+    })
+
+    it('a restructured container whose twins swapped is refused', async () => {
+        const src = `<ul x-edit="f4">\n  <li class="a">Item</li>\n  <li class="b">Item</li>\n  <li>Last</li>\n</ul>`
+        page(src); const map = await ids()
+        const swapped = src.replace('<li class="a">Item</li>\n  <li class="b">Item</li>', '<li class="b">Item</li>\n  <li class="a">Item</li>')
+        page(swapped)
+        const base = ['LI:Item', 'LI:Item#2', 'LI:Last'].map((k, i) => n('f4', k, { at: String(i) }))
+        const { results } = await send([tree('f4', [n('f4', 'LI:Last', { at: '2' }), n('f4', 'LI:Item', { at: '0' }), n('f4', 'LI:Item#2', { at: '1' })], { tree: { key: '', base: base.map(b => withFp(b, map)), children: [n('f4', 'LI:Last', { at: '2' }), n('f4', 'LI:Item', { at: '0' }), n('f4', 'LI:Item#2', { at: '1' })] } })], map)
+        expect(results[0].status).toBe('error')
+        expect(results[0].reason).toContain(`identical elements`)
+        expect(file()).toBe(swapped)
+    })
+
+    it('unique elements still merge over external changes elsewhere; ids come back for the next publish', async () => {
+        const src = `<section x-edit="f5">\n  <p>Alpha</p>\n  <p>Beta</p>\n  <p>Gamma</p>\n</section>`
+        page(src); const map = await ids()
+        page(src.replace('<p>Alpha</p>\n  <p>Beta</p>', '<p>Beta</p>\n  <p>Alpha</p>'))
+        const first = await send([tree('f5', [n('f5', 'P:Gamma', { at: '2', edits: { text: 'Gamma page' } })])], map)
+        expect(first.results[0].status).toBe('written')
+        expect(first.ids[K('f5', 'P:Gamma page')]).toBeTruthy()
+        // A second publish without a reload uses the ids the first returned.
+        const second = await send([tree('f5', [n('f5', 'P:Gamma page', { at: '2', edits: { text: 'Gamma again' } })])], first.ids)
+        expect(second.results[0].status).toBe('written')
+        expect(file()).toContain('<p>Beta</p>\n  <p>Alpha</p>\n  <p>Gamma again</p>')
+        // A stale fingerprint for the same key is refused.
+        const third = await send([tree('f5', [n('f5', 'P:Beta', { at: '0', edits: { text: 'B' } })])], { [K('f5', 'P:Beta')]: 'ffffffffffff' })
+        expect(third.results[0].status).toBe('error')
+    })
+})
+
 describe('startup sweep', () => {
     it('removes orphaned source-writer temps when the server starts with --edit', async () => {
         const d = mkdtempSync(path.join(tmpdir(), 'mnfst-edit-sweep-'))
