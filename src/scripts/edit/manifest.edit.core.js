@@ -296,12 +296,21 @@
         if ((area.matches('[data-component]') && !sourceComponent(area)) || cmpRoot(area)) return 'component';
         return 'static';
     }
-    // An instance the area overrides by path: a route component with no x-edit region of its own.
-    const cmpRoot = (area) => [...area.querySelectorAll('[data-component]')].find(r => regionOf(r) === area && !r.querySelector('[data-edit-area]'));
+    // An instance the area overrides by path: the one component the area wraps, with no
+    // x-edit region of its own. Among other content, a component is a host piece instead.
+    const cmpRoot = (area) => {
+        const kids = realChildren(area).filter(k => k.tagName !== 'TEMPLATE'), r = kids[0];
+        return kids.length === 1 && r.matches('[data-component]') && !r._edit && !r.querySelector('[data-edit-area]') ? r : null;
+    };
     function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');
-    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
+    // A component's roots past its first follow that first one (its <x-name> host) everywhere.
+    const groupOf = (el) => el && el._manifestHost && el._manifestHost.roots && el._manifestHost.roots[0] === el ? el._manifestHost.roots.slice() : [el];
+    const extraRoot = (x) => !!x._manifestHost && !!x._manifestHost.roots && x._manifestHost.roots[0] !== x;
+    const isHostEl = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-edit-host');
+    const idOf = (el) => el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
+    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x) && !extraRoot(x));
     const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
     let _keyWarned = false;
     function itemKey(el, area) {
@@ -359,7 +368,7 @@
         return out;
     }
     const startOf = (el) => el ? leadNodes(el)[0] || el : null;
-    function moveWith(el, place) { const lead = leadNodes(el); place(el); if (lead.length) el.before(...lead); }
+    function moveWith(el, place) { const lead = leadNodes(el), rest = groupOf(el).slice(1); place(el); if (lead.length) el.before(...lead); if (rest.length) el.after(...rest); }
 
     /* ---- HTML content model ----
        Drops the parser would re-nest, foster-parent or drop. Mirrors CONTENT_RULES in
@@ -401,7 +410,9 @@
         // Template contents count: an x-if can render them right here (the server counts them too).
         const sub = new Set();
         const add = (root) => [root, ...root.querySelectorAll('*')].forEach(n => { if (n.nodeType !== 1) return; sub.add(n.tagName.toLowerCase()); if (n.tagName === 'TEMPLATE' && n.content) [...n.content.children].forEach(add); });
-        add(piece);
+        groupOf(piece).forEach(add);
+        // A component never goes inside its own markup
+        if (piece._manifestComponent) for (let a = container; a; a = a.parentElement) if (a._manifestComponent === piece._manifestComponent) return false;
         return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
     }
 

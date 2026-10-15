@@ -300,12 +300,21 @@
         if ((area.matches('[data-component]') && !sourceComponent(area)) || cmpRoot(area)) return 'component';
         return 'static';
     }
-    // An instance the area overrides by path: a route component with no x-edit region of its own.
-    const cmpRoot = (area) => [...area.querySelectorAll('[data-component]')].find(r => regionOf(r) === area && !r.querySelector('[data-edit-area]'));
+    // An instance the area overrides by path: the one component the area wraps, with no
+    // x-edit region of its own. Among other content, a component is a host piece instead.
+    const cmpRoot = (area) => {
+        const kids = realChildren(area).filter(k => k.tagName !== 'TEMPLATE'), r = kids[0];
+        return kids.length === 1 && r.matches('[data-component]') && !r._edit && !r.querySelector('[data-edit-area]') ? r : null;
+    };
     function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');
-    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
+    // A component's roots past its first follow that first one (its <x-name> host) everywhere.
+    const groupOf = (el) => el && el._manifestHost && el._manifestHost.roots && el._manifestHost.roots[0] === el ? el._manifestHost.roots.slice() : [el];
+    const extraRoot = (x) => !!x._manifestHost && !!x._manifestHost.roots && x._manifestHost.roots[0] !== x;
+    const isHostEl = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-edit-host');
+    const idOf = (el) => el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
+    const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x) && !extraRoot(x));
     const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
     let _keyWarned = false;
     function itemKey(el, area) {
@@ -363,7 +372,7 @@
         return out;
     }
     const startOf = (el) => el ? leadNodes(el)[0] || el : null;
-    function moveWith(el, place) { const lead = leadNodes(el); place(el); if (lead.length) el.before(...lead); }
+    function moveWith(el, place) { const lead = leadNodes(el), rest = groupOf(el).slice(1); place(el); if (lead.length) el.before(...lead); if (rest.length) el.after(...rest); }
 
     /* ---- HTML content model ----
        Drops the parser would re-nest, foster-parent or drop. Mirrors CONTENT_RULES in
@@ -405,7 +414,9 @@
         // Template contents count: an x-if can render them right here (the server counts them too).
         const sub = new Set();
         const add = (root) => [root, ...root.querySelectorAll('*')].forEach(n => { if (n.nodeType !== 1) return; sub.add(n.tagName.toLowerCase()); if (n.tagName === 'TEMPLATE' && n.content) [...n.content.children].forEach(add); });
-        add(piece);
+        groupOf(piece).forEach(add);
+        // A component never goes inside its own markup
+        if (piece._manifestComponent) for (let a = container; a; a = a.parentElement) if (a._manifestComponent === piece._manifestComponent) return false;
         return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
     }
 
@@ -594,7 +605,7 @@
         const t = document.createElement('template');
         t.innerHTML = markup.trim();
         const el = t.content.firstElementChild;
-        if (el && k) el.setAttribute('data-edit-key', k);
+        if (el && k) el.setAttribute(/^[^@]*@[^@]*@X-[\w-]+:/.test(originOf(k)) ? 'data-edit-host' : 'data-edit-key', k);
         return el;
     };
     const staticAreas = () => areas().filter(a => classify(a) === 'static' && !sharedKey(a));
@@ -795,13 +806,12 @@
                 const c = parent ? byId.get(parent) : areaByKey(region);
                 if (!c || !c.isConnected) continue;
                 entries.splice(i--, 1); progress = true;
-                const kids = sortableChildren(c);
-                // A component host's other roots go with its first
-                const group = (el) => { const g = [el]; if (el._manifestHost) for (let n = el.nextElementSibling; n && n._manifestHost === el._manifestHost; n = n.nextElementSibling) g.push(n); return g; };
-                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c)).flatMap(el => el.hasAttribute('data-edit-host') ? group(el) : [el]);
-                const idOf = (el) => el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
+                let kids = sortableChildren(c);
+                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c));
                 const stay = kids.filter(el => !next.includes(el) && !claimed.has(idOf(el)) && !html[idOf(el)]);
-                const target = [...next, ...stay];
+                // A component host's other roots go with its first
+                const target = [...next, ...stay].flatMap(groupOf);
+                kids = kids.flatMap(groupOf);
                 if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
                 const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
                 const leads = new Map(target.map(el => [el, el.isConnected ? leadNodes(el) : el._editLead || []]));
@@ -897,7 +907,7 @@
     // delta names both containers' orders, within an area or across areas.
     function commitMove(fromArea, toArea, item, fromContainer, fromBefore, toBefore, opts = {}) {
         const toContainer = item.parentElement;
-        const d = { kind: 'st-move', from: key(fromArea), to: key(toArea), fromParent: parentKey(fromContainer, fromArea), toParent: parentKey(toContainer, toArea), key: item.getAttribute('data-edit-key'), fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore };
+        const d = { kind: 'st-move', from: key(fromArea), to: key(toArea), fromParent: parentKey(fromContainer, fromArea), toParent: parentKey(toContainer, toArea), key: idOf(item), fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore };
         if (opts.join) d.join = true;
         pushDelta(d);
         resetAreas();
@@ -934,23 +944,31 @@
         return null;
     }
     const actionOf = (cap) => cap === 'data' ? 'text' : cap === 'class' ? 'attrs' : cap;
+    // A component host's lock is keyed by its host key and covers its group and what is in it.
+    const hostOf = (n) => isHostEl(n) ? n : extraRoot(n) ? n._manifestHost.roots[0] : null;
     function lockedFor(node, cap) {
         const action = actionOf(cap);
-        const region = regionOf(node);
+        const h0 = node && node.nodeType === 1 && hostOf(node);
+        if (h0) node = h0;
+        let region = h0 ? blockArea(h0) : regionOf(node);
         const locks = lockState();
         for (let n = node; n && n.nodeType === 1; n = n.parentElement) {
             let v;
-            if (region && locks.size) { const id = identity(n, region); const m = id != null && locks.get(lockSlot(key(region), id)); if (m && m.has(action)) v = m.get(action); }
+            const h = hostOf(n);
+            if (h && locks.size) { const m = locks.get(h.getAttribute('data-edit-host')); if (m && m.has(action)) v = m.get(action); }
+            if (v === undefined && region && locks.size && !(h && n === h0)) { const id = identity(n, region); const m = id != null && locks.get(lockSlot(key(region), id)); if (m && m.has(action)) v = m.get(action); }
             if (v === undefined && n._editLock) v = n._editLock.has('*') || n._editLock.has(action);
             if (v) return true;
-            if (n === region) break;
+            if (n === region) { if (h && n !== h0) { region = blockArea(n); if (region) continue; } break; }
         }
         return false;
     }
     function setLock(el, action, value) {
         if (!el || el.nodeType !== 1) return false;
-        const area = regionOf(el); if (!area) return false;
+        const h = hostOf(el);
+        const area = h ? blockArea(h) : regionOf(el); if (!area) return false;
         if (action != null && !LOCK_ACTIONS.includes(action)) { console.warn('[edit] unknown lock action:', action); return false; }
+        if (h) { pushDelta({ kind: 'lock', region: key(area), key: h.getAttribute('data-edit-host'), actions: action ? [action] : [], value: !!value }); rearm(area); if (h._edit) rearm(h); return true; }
         const id = identity(el, area);
         if (id == null) { console.warn('[edit] this element has no stable identity to lock'); return false; }
         pushDelta({ kind: 'lock', region: key(area), key: id, actions: action ? [action] : [], value: !!value });
@@ -1017,6 +1035,8 @@
     function pieceOf(node) {
         if (node && node.nodeType !== 1) node = node.parentElement;
         const area = regionOf(node);
+        // A component host is one piece of the area around it, whatever inside it was hit.
+        if (isHostEl(node) && blockArea(node) && classify(blockArea(node)) === 'static') return node;
         if (!area || node === area) return null;
         const kind = classify(area);
         if (kind === 'data') {
@@ -1028,6 +1048,9 @@
             for (let n = node; n && n !== area; n = n.parentElement) if (n._editPath != null) return n;
             return null;
         }
+        let host = null;
+        for (let n = node; n && n !== area; n = n.parentElement) if (isHostEl(n) || extraRoot(n)) host = isHostEl(n) ? n : n._manifestHost.roots[0];
+        if (host) return host;
         for (let n = node; n && n !== area; n = n.parentElement) {
             if (pluginNode(n)) return null;
             if (isContainer(n.parentElement)) return n;
@@ -1039,7 +1062,7 @@
     const blockArea = (el) => el && regionOf(el.parentElement);
     const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
     // A piece can be dragged when its container moves and nothing up to the region locks it.
-    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el)) !== 'component';
+    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el.parentElement)) !== 'component';
     function accepts(c) {
         if (!c || c.nodeType !== 1) return false;
         const area = regionOf(c);
@@ -1095,6 +1118,13 @@
         if (!ACTIONS.includes(action)) return false;
         if (action === 'paste') { const d = clipboard && pasteDest(el); return !!d && pasteFits(regionOf(d)); }
         if (!el || el.nodeType !== 1) return false;
+        // A component host moves, duplicates and goes as a piece of the area around it
+        if (isHostEl(el) && (action === 'move' || action === 'duplicate' || action === 'remove')) {
+            const outer = blockArea(el);
+            if (!outer || !isActive(outer)) return false;
+            if (action === 'move') return movable(el);
+            return capOf(el.parentElement, 'move') && !lockedFor(el, action);
+        }
         const area = regionOf(el);
         if (!area || !isActive(area)) return false;
         const kind = classify(area);
@@ -1115,7 +1145,7 @@
         if (kind === 'component') return false;
         const block = asPiece(el);
         if (!block) return false;
-        if (action === 'copy') return true;
+        if (action === 'copy' || action === 'cut') return !isHostEl(block);
         if (action === 'move') return movable(block);
         const lockAs = action === 'duplicate' ? 'duplicate' : 'remove';
         return capOf(block.parentElement, 'move') && !lockedFor(block, lockAs);
@@ -1167,9 +1197,23 @@
             commitSplice(area, i + 1, copy, 'insert');
             return true;
         }
+        if (isHostEl(block)) return duplicateHost(area, block);
         const made = materialize(blockHTML(block, true));
         if (!made) return false;
         insertStatic(area, block.parentElement, made, block, subtreeOps(block));
+        return true;
+    }
+    // A new instance of the component: its host copied in the source; on the page, its roots.
+    function duplicateHost(area, block) {
+        const container = block.parentElement, before = staticKeys(container), roots = groupOf(block);
+        const made = roots.map(r => materialize(blockHTML(r)));
+        if (made.some(m => !m)) return false;
+        const host = { roots: made }, k = '~' + mint() + '~' + originOf(idOf(block));
+        made.forEach(m => { m._manifestComponent = block._manifestComponent; m._manifestHost = host; m.removeAttribute('data-component'); });
+        made[0].setAttribute('data-edit-host', k);
+        roots[roots.length - 1].after(...made);
+        markStatic(area); armArea(area);
+        commitStructure(area, container, before, { [k]: made[0].outerHTML });
         return true;
     }
 
@@ -1186,9 +1230,10 @@
             return true;
         }
         const container = block.parentElement, before = staticKeys(container);
-        const gone = block.getAttribute('data-edit-key'), markup = blockHTML(block, true);
+        const gone = idOf(block), markup = isHostEl(block) ? block.outerHTML : blockHTML(block, true);
         block._editLead = leadNodes(block);
         block._editLead.forEach(n => n.remove());
+        groupOf(block).slice(1).forEach(n => n.remove());
         block.remove();
         detached.set(gone, block);
         if (target === block || (target && block.contains(target))) setTarget(null);
@@ -1202,7 +1247,7 @@
     function moveBlock(el, dest, ref) {
         const block = asPiece(el == null ? target : el);
         if (!block || !movable(block)) return false;
-        const from = regionOf(block);
+        const from = blockArea(block);
         const container = typeof dest === 'string' ? areaByKey(dest) : dest;
         if (!container || container.nodeType !== 1 || container === block || block.contains(container)) return false;
         const to = regionOf(container);
@@ -1217,7 +1262,7 @@
             return true;
         }
         if (classify(from) !== 'static' || classify(to) !== 'static') return false;
-        if (from !== to && isRegionBlock(block)) return false;
+        if (from !== to && isRegionBlock(block) && !isHostEl(block)) return false;
         const fromBefore = staticKeys(fromContainer), toBefore = staticKeys(container);
         moveWith(block, b => container.insertBefore(b, ref ? startOf(ref) : null));
         if (container === fromContainer) return commitOrder(from, container, fromBefore);
@@ -1284,14 +1329,14 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]') || ch._manifestComponent) return; out.push(ch); if (isContainer(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
     function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
     function markPieces(area) {
         const want = new Set(collectPieces(area).filter(movable));
-        area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el)) unmarkPiece(el); });
+        area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el) && regionOf(el.parentElement) === area) unmarkPiece(el); });
         want.forEach(el => {
             el.setAttribute('data-edit-piece', '');
             if (!el.hasAttribute('tabindex')) { el.tabIndex = 0; addedTab.add(el); }
@@ -1303,7 +1348,7 @@
     function beside(el, x, y, parent) {
         const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
         const lead = horiz ? x < r.left + r.width / 2 : y < r.top + r.height / 2;
-        let ref = lead ? el : el.nextElementSibling;
+        let ref = lead ? el : groupOf(el).pop().nextElementSibling;
         while (ref && (ref === dragged || ref.hasAttribute('data-edit-dragging'))) ref = ref.nextElementSibling;
         return { container: parent, ref };
     }
@@ -1319,7 +1364,8 @@
     // Another area under the pointer, else the nearest within reach.
     function dropArea(x, y, origin) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
-        const hitArea = hit && regionOf(hit);
+        let hitArea = hit && regionOf(hit);
+        if (hitArea && hitArea !== origin && origin.contains(hitArea)) hitArea = origin;   // a component region inside: its host is one piece here
         if (hitArea && dropValid(hitArea)) return hitArea;
         const cands = [origin, ...document.querySelectorAll('[data-edit-drop-target]')].filter((a, i, all) => dropValid(a) && all.indexOf(a) === i);
         const inside = (r, pad) => x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
@@ -1345,10 +1391,14 @@
         if (!region) return null;
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
         if (hit && hit !== region && region.contains(hit)) {
-            for (let el = hit; el && el !== region; el = el.parentElement) {
+            // Inside a component host: the host is what is hit (its markup is another file's)
+            let from = hit;
+            for (let n = hit; n && n !== region; n = n.parentElement) if (isHostEl(n) || extraRoot(n)) from = isHostEl(n) ? n : n._manifestHost.roots[0];
+            for (let el = from; el && el !== region; el = el.parentElement) {
                 if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
+                if (isHostEl(el)) { if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent); continue; }
                 if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) {
                     if (s.ghost && s.ghost.parentElement !== el) s.nested = { el, rect: el.getBoundingClientRect(), horiz: flowAxis(parent) === 'x' };
                     return { container: el, ref: afterElement(el, x, y) };
@@ -1469,11 +1519,11 @@
     }
 
     function startDrag(e, item, area) {
-        const home = item.parentElement, homeNext = item.nextElementSibling;
+        const home = item.parentElement, homeNext = groupOf(item).pop().nextElementSibling, rest = groupOf(item).slice(1);
         const dataList = classify(area) === 'data';
         const s = {
             item, area, home, dataList, ghost: null,
-            crossOK: !dataList && classify(area) === 'static' && !isRegionBlock(item),
+            crossOK: !dataList && classify(area) === 'static' && (isHostEl(item) || !isRegionBlock(item)),
             homeBefore: dataList ? null : staticKeys(home),
             lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
         };
@@ -1531,10 +1581,10 @@
             if (!active) return;
             document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
             item.removeAttribute('data-edit-dragging');
-            if (cancelled) s.ghost.remove(); else { s.ghost.replaceWith(item); if (lead.length) item.before(...lead); }
+            if (cancelled) s.ghost.remove(); else { s.ghost.replaceWith(item); if (lead.length) item.before(...lead); if (rest.length) item.after(...rest); }
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             s.ghost = null; dragged = null;
-            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, startOf(homeNext)); else home.appendChild(item); if (lead.length) item.before(...lead); };
+            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, startOf(homeNext)); else home.appendChild(item); if (lead.length) item.before(...lead); if (rest.length) item.after(...rest); };
             if (cancelled) { back(); announce('Cancelled'); return; }
             const dest = item.parentElement, toArea = regionOf(dest);
             if (dest !== home && (s.dataList || !accepts(dest) || !fits(item, dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
@@ -1582,7 +1632,7 @@
         if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item) && !e.altKey && !e.metaKey && !e.ctrlKey) {
             e._editRow = true; e.preventDefault();
             if (grabbed && grabbed.item === item) { dropGrab(); refocus(item); announce('Dropped'); }
-            else { if (grabbed) cancelGrab(); grabbed = { item, area: regionOf(item), container: item.parentElement, next: item.nextElementSibling, before: classify(regionOf(item)) === 'data' ? null : staticKeys(item.parentElement) }; item.setAttribute('data-edit-dragging', 'keyboard'); announce('Grabbed — arrow keys to move, Enter to drop'); }
+            else { if (grabbed) cancelGrab(); grabbed = { item, area: blockArea(item), container: item.parentElement, next: groupOf(item).pop().nextElementSibling, before: classify(blockArea(item)) === 'data' ? null : staticKeys(item.parentElement) }; item.setAttribute('data-edit-dragging', 'keyboard'); announce('Grabbed — arrow keys to move, Enter to drop'); }
             return;
         }
         if (grabbed && grabbed.item === item) {
@@ -1591,7 +1641,7 @@
             e._editRow = true; e.preventDefault();
             const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + step;
             if (j < 0 || j >= sibs.length) return;
-            moveWith(item, it => { if (step > 0) sibs[j].after(it); else startOf(sibs[j]).before(it); });
+            moveWith(item, it => { if (step > 0) groupOf(sibs[j]).pop().after(it); else startOf(sibs[j]).before(it); });
             refocus(item); announce(`Position ${j + 1} of ${sibs.length}`);
             return;
         }
@@ -1609,16 +1659,16 @@
     }
     // One step, committed at once. Neighbours move round the piece, so focus and caret survive.
     function stepRow(item, dir) {
-        const area = regionOf(item), container = item.parentElement;
+        const area = blockArea(item), container = item.parentElement;
         const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + dir;
         if (i < 0 || j < 0 || j >= sibs.length) { announce(`Position ${i + 1} of ${sibs.length}`); return; }
         const before = classify(area) === 'data' ? null : staticKeys(container);
         const other = sibs[j], between = [];
         for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
         // Neighbours move round the piece, each with its titling comment.
-        const block = (n) => [...leadNodes(n), n];
-        if (dir > 0) { const at = startOf(item); [other, ...between].forEach(n => at.before(...block(n))); }
-        else { let after = item; [...between.slice().reverse(), other].forEach(n => { after.after(...block(n)); after = n; }); }
+        const block = (n) => [...leadNodes(n), ...groupOf(n)];
+        if (dir > 0) { const at = startOf(item); [other, ...between].filter(n => !extraRoot(n)).forEach(n => at.before(...block(n))); }
+        else { let after = groupOf(item).pop(); [...between.slice().reverse(), other].filter(n => !extraRoot(n)).forEach(n => { after.after(...block(n)); after = groupOf(n).pop(); }); }
         const focused = document.activeElement, sel = window.getSelection && window.getSelection();
         const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
         if (before) commitOrder(area, container, before); else finishReorder(area, container);
@@ -1630,11 +1680,11 @@
     }
     const describe = (el) => el === regionOf(el) ? key(el) : el.tagName.toLowerCase();
     function nestInto(item) {
-        const area = regionOf(item);
+        const area = blockArea(item);
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         let prev = item.previousElementSibling;
-        while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE')) prev = prev.previousElementSibling;
-        if (!prev || !accepts(prev) || !fits(item, prev)) { announce('Nothing to nest into'); return false; }
+        while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE' || extraRoot(prev))) prev = prev.previousElementSibling;
+        if (!prev || isHostEl(prev) || !accepts(prev) || !fits(item, prev)) { announce('Nothing to nest into'); return false; }
         const from = item.parentElement, fb = staticKeys(from), tb = staticKeys(prev);
         moveWith(item, it => prev.appendChild(it));
         commitMove(area, area, item, from, fb, tb);
@@ -1642,13 +1692,13 @@
         return true;
     }
     function unnest(item) {
-        const area = regionOf(item), from = item.parentElement;
+        const area = blockArea(item), from = item.parentElement;
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         const out = from && from !== area ? from.parentElement : null;
         if (!out || !(out === area || area.contains(out)) || !accepts(out)) { announce('Already at the top level'); return false; }
         if (!fits(item, out)) { announce('Cannot move out here'); return false; }
         const fb = staticKeys(from), tb = staticKeys(out);
-        moveWith(item, it => from.after(it));
+        moveWith(item, it => groupOf(from).pop().after(it));
         commitMove(area, area, item, from, fb, tb);
         refocus(item); announce('Moved out to ' + describe(out));
         return true;
@@ -2354,24 +2404,23 @@
             markEl(el, path);
             if (el !== area && opaque(el)) return;
             if (el._editRt || ((first || el._editRtFormat) && wholeLeaf(el) && capOf(el, 'text') && !isRendered(el))) { if (first) count(el); return; }
-            let i = 0, prevHost = null;
+            let i = 0;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
                 const p = path === '' ? String(i) : path + '.' + i;
                 // Another component's markup is one opaque element here, its <x-name> host
                 // (data-edit-host; its first root stands for it, the rest follow it)
                 if (c._manifestComponent) {
-                    const same = !!c._manifestHost && c._manifestHost === prevHost;
-                    prevHost = c._manifestHost || null;
-                    if (same) continue;
+                    if (extraRoot(c)) continue;
                     if (!c.hasAttribute('data-edit-host')) {
-                        let k = '!' + mint();
-                        if (first) { const b = 'X-' + c._manifestComponent.toUpperCase() + ':', n = seen[b] = (seen[b] || 0) + 1; k = canonKey(region, n > 1 ? b + '#' + n : b); originAt.set(k, p); }
+                        // Marked while still a placeholder: the components plugin carried its key over
+                        const carried = c.getAttribute('data-edit-key'), own = canonKey(region, 'X-' + c._manifestComponent.toUpperCase() + ':');
+                        let k = carried && (carried === own || carried.startsWith(own + '#')) ? carried : '!' + mint();
+                        if (first && k[0] === '!') { const b = 'X-' + c._manifestComponent.toUpperCase() + ':', n = seen[b] = (seen[b] || 0) + 1; k = canonKey(region, n > 1 ? b + '#' + n : b); originAt.set(k, p); }
                         c.setAttribute('data-edit-host', k);
                     }
                     i++; continue;
                 }
-                prevHost = null;
                 walk(c, p);
                 i++;
             }
@@ -2474,7 +2523,8 @@
         const nontrivial = (n) => n.edits || n.children || n.key[0] === '~';
         const live = keyMap(staticAreas());
         staticAreas().forEach(area => {
-            const region = key(area), comp = sourceComponent(area), ids = baseIds && baseIds[sourceFile(area)];
+            const region = key(area), comp = sourceComponent(area);
+            const ids = new Proxy({}, { get: (_, k) => { const o = originOf(String(k)), a = areaByKey(decodeURIComponent(o.slice(1, o.indexOf('@', 1)))); const m = baseIds && a && baseIds[sourceFile(a)]; return m ? m[o] : undefined; } });
             // The children a restructured container had when the page loaded (the server refuses
             // the rewrite if the source no longer has them).
             const baseOf = (parent) => {
@@ -2553,7 +2603,7 @@
         // Runtime locks are app state, not source: carried over by element.
         const locks = [];
         const lockState = lockStateNow();
-        keyMap(staticAreas().filter(a => !(keep && keep.has(key(a))))).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m)]); });
+        keyMap(staticAreas().filter(a => !(keep && keep.has(key(a))))).forEach((el, k) => { const m = lockState.get(k); if (m && m.size) locks.push([el, new Map(m), k === el.getAttribute('data-edit-host')]); });
         const nonStaticLocks = log.slice(0, cursor).filter(d => d.kind === 'lock' && !/^[~@]/.test(d.key) && !pending(d));
         let c = 0;
         log = log.filter((d, i) => { const keep = pending(d); if (keep && i < cursor) c++; return keep; });
@@ -2561,8 +2611,8 @@
         const relock = () => {
             const add = (d) => { log.splice(cursor, 0, d); cursor++; if (persistOf(d.region)) persisted.add(d); };
             nonStaticLocks.forEach(add);
-            locks.forEach(([el, m]) => {
-                const a = regionOf(el), k = el.getAttribute('data-edit-key'); if (!a || !k) return;
+            locks.forEach(([el, m, host]) => {
+                const a = host ? blockArea(el) : regionOf(el), k = el.getAttribute(host ? 'data-edit-host' : 'data-edit-key'); if (!a || !k) return;
                 [true, false].forEach(v => { const acts = [...m].filter(([, x]) => x === v).map(([act]) => act); if (acts.length) add({ kind: 'lock', region: key(a), key: k, actions: acts.length === LOCK_ACTIONS.length ? [] : acts, value: v }); });
             });
             ver++;

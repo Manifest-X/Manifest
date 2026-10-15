@@ -411,7 +411,8 @@ export interface ManifestEdit {
     target: Element | null;
     /** Whether an action applies to `el` (default `$edit.target`): capability and locks. */
     can(action: ManifestEditAction | 'class' | 'copy' | 'cut' | 'paste', el?: Element | null): boolean;
-    /** Lock `el` and its subtree for one action, or all when omitted. Logged. */
+    /** Lock `el` and its subtree for one action, or all when omitted. Logged. A component host
+     *  (see `block`) locks by its host key, for all its roots and what is in them. */
     lock(el?: Element | null, action?: ManifestEditAction): boolean;
     unlock(el?: Element | null, action?: ManifestEditAction): boolean;
     copy(el?: Element): boolean;
@@ -425,12 +426,17 @@ export interface ManifestEdit {
     nest(el?: Element): boolean;
     /** Move a piece out of its container, after it. */
     unnest(el?: Element): boolean;
-    /** The piece containing a node, or null. */
+    /** The piece containing a node, or null. In a static area a component instance is one
+     *  piece, its host (its first rendered root; the rest follow it): it moves, duplicates
+     *  (a new instance) and is removed as one, and its markup is not edited from here. */
     block(node: Element): Element | null;
     /** Set an attribute: a string sets it, `true` sets it empty, `null`/`false` removes it. */
     attr(name: string, value: string | boolean | null, el?: Element): boolean;
     classes: ManifestEditClasses;
-    /** Component scope of the target's area: read with no value, set 'instance' or 'main'. */
+    /** Component scope of the target's area: read with no value, set 'instance' or 'main'.
+     *  Instance overrides apply to an area that wraps exactly one component with no x-edit region
+     *  of its own; a component among other content is a host piece of a static area instead, and
+     *  a component's own region is edited in its own file. */
     scope(value?: 'instance' | 'main', el?: Element): 'instance' | 'main' | null | boolean;
     /** Revert a component element's instance overrides (the area element reverts all). */
     revert(el?: Element): boolean;

@@ -194,7 +194,7 @@ window.ManifestComponentsProcessor = {
         };
         topLevelElements.forEach(processElementProps);
         // Apply attributes from placeholder to root elements
-        const host = {};
+        const host = { roots: topLevelElements };
         topLevelElements.forEach(rootElement => {
             Array.from(element.attributes).forEach(attr => {
                 if (attr.name === 'class') {

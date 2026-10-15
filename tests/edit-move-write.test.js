@@ -510,6 +510,39 @@ describe('/__edit/save static areas in component files', () => {
     })
 })
 
+describe('/__edit/save component hosts', () => {
+    const comp = (rel, text) => { mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); writeFileSync(path.join(dir, rel), text) }
+    const st = (region, children, base, extra = {}) => ({ kind: 'static-tree', region, ...extra, tree: { key: '', children, base } })
+
+    it('a host counts as what its component renders: a block root never goes into a <p>, an inline one does', async () => {
+        comp('components/card.html', `<div class="card"><h3>Card</h3></div>\n`)
+        comp('components/badge.html', `<span class="badge">B</span>\n`)
+        for (const [tag, ok] of [['card', false], ['badge', true]]) {
+            const src = `<section x-edit="hc"><p><span>x</span></p><x-${tag} size="s"></x-${tag}></section>`
+            writeFileSync(path.join(dir, 'index.html'), src)
+            const H = 'X-' + tag.toUpperCase() + ':'
+            const { results, out } = await (async () => {
+                const r = await save([st('hc', [n('hc', 'P:x', { at: '0', base: [n('hc', 'SPAN:x', { at: '0.0' })], children: [n('hc', 'SPAN:x', { at: '0.0' }), n('hc', H, { at: '1' })] })], [n('hc', 'P:x', { at: '0' }), n('hc', H, { at: '1' })])])
+                return { results: r.results, out: file() }
+            })()
+            if (ok) { expect(results[0].status, JSON.stringify(results)).toBe('written'); expect(out).toBe(`<section x-edit="hc"><p><span>x</span><x-badge size="s"></x-badge></p></section>`) }
+            else { expect(results[0].reason).toContain('inline content'); expect(out).toBe(src) }
+        }
+    })
+
+    it('a component never goes into its own file', async () => {
+        comp('components/promo.html', `<div x-edit="pr2"><p>P</p></div>\n`)
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="ix"><h1>T</h1><x-promo></x-promo></section>`)
+        const r = await save([
+            st('ix', [n('ix', 'H1:T', { at: '0' })], [n('ix', 'H1:T', { at: '0' }), n('ix', 'X-PROMO:', { at: '1' })]),
+            st('pr2', [n('pr2', 'P:P', { at: '0' }), n('ix', 'X-PROMO:', { at: '1' })], [n('pr2', 'P:P', { at: '0' })], { component: 'promo' })
+        ])
+        expect(r.results.map(x => x.status)).toContain('error')
+        expect(JSON.stringify(r.results)).toContain('its own component file')
+        expect(readFileSync(path.join(dir, 'components/promo.html'), 'utf8')).toBe(`<div x-edit="pr2"><p>P</p></div>\n`)
+    })
+})
+
 describe('/__edit/save element fingerprints', () => {
     const ids = () => fetch(`http://localhost:${port}/__edit/base`).then(r => r.json()).then(j => j.ids['index.html'])
     // Every node carries the fingerprint the page loaded with, as the client sends it.

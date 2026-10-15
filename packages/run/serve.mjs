@@ -1231,10 +1231,42 @@ function skeletonDiff(want, got) {
   return `expected …${ctx(want)}… got …${ctx(got || '')}…`;
 }
 
-// Rebuild every static area from the client's final trees, from the original file.
-function writeStaticTrees(file, patches) {
+// Rebuild every static area from the client's final trees, from the original files: one
+// writer per file; an element moved between files is rendered by its own file's writer.
+// All files render, then all are checked, then all are written (or none).
+function writeStaticTrees(groups, manifest) {
+  const writers = [], byRegion = new Map(), early = new Map();
+  for (const [file, patches] of groups) {
+    const w = staticWriter(file, patches, (name) => byRegion.get(name) || null, manifest || {});
+    if (w.refusal) { patches.forEach(p => early.set(p, { region: p.region, status: 'error', reason: w.refusal })); continue; }
+    writers.push(w); patches.forEach(p => byRegion.set(p.region, w));
+  }
+  const all = groups.flatMap(([, ps]) => ps), results = new Map(early);
+  if (early.size) { all.forEach(p => { if (!results.has(p)) results.set(p, { region: p.region, status: 'skipped', reason: 'batch aborted: another patch failed; nothing was written' }); }); return results; }
+  try {
+    writers.forEach(w => w.render());
+    writers.forEach(w => w.check());
+  } catch (e) {
+    if (!e.edit) throw e;
+    if (!all.some(p => p.region === e.region)) e.region = null;
+    all.forEach(p => results.set(p, e.region == null || p.region === e.region ? { region: p.region, status: 'error', reason: e.message, ...(e.region != null ? { failed: e.region } : {}) }
+      : { region: p.region, status: 'skipped', reason: `not written: x-edit="${e.region}" failed; nothing was written` }));
+    return results;
+  }
+  const texts = [];
+  for (const w of writers) {
+    const r = w.assemble();
+    if (r.error) { all.forEach(p => results.set(p, { region: p.region, status: 'error', reason: r.error })); return results; }
+    texts.push([w, r.next]);
+  }
+  for (const [w, next] of texts) if (next !== null) vwrite(w.file, next);
+  writers.forEach(w => w.patches.forEach(p => results.set(p, { region: p.region, status: 'written', file: basename(w.file) })));
+  return results;
+}
+function staticWriter(file, patches, foreign, manifest) {
+  const self = { file, patches };
   const refused = writeRefusal(file, 'html');
-  if (refused) return patches.map(p => ({ region: p.region, status: 'error', reason: `refused: ${refused}` }));
+  if (refused) return { refusal: `refused: ${refused}` };
   const html = vread(file);
   const doc = parseHTML(html);
   // A failure names the area it is in, so the page can publish the others without it.
@@ -1242,7 +1274,20 @@ function writeStaticTrees(file, patches) {
   const regionOfKey = (k) => { const m = /^(?:~[a-z0-9]+~)?@([^@]*)@/.exec(String(k || '')); return m ? decodeURIComponent(m[1]) : current; };
   const fail = (msg, region) => { const e = new Error(msg); e.edit = true; e.region = region === undefined ? current : region; throw e; };
   const bad = checkNesting(doc);
-  if (bad) return patches.map(p => ({ region: p.region, status: 'error', reason: `source does not nest cleanly at <${bad.name}> (offset ${bad.tagStart}); not editing it` }));
+  if (bad) return { refusal: `source does not nest cleanly at <${bad.name}> (offset ${bad.tagStart}); not editing it` };
+  // A component's <x-name> host counts as what the component renders: its first root's tag, and every tag in it.
+  const hosts = new Map();
+  const hostOf = (tag) => {
+    if (!/^x-/.test(tag)) return null;
+    if (!hosts.has(tag)) {
+      let info = null;
+      const rel = resolveComponentFile(manifest, tag.slice(2));
+      if (rel) { try { const f = resolveRel(rel), t = f && readFileSync(f, 'utf8'), d = t && parseHTML(t), top = d && kidsOf(t, d); if (top && top.length) info = { tag: top[0].name, tags: new Set(allElements(d).map(k => k.name)) }; } catch { } }
+      hosts.set(tag, info);
+    }
+    return hosts.get(tag);
+  };
+  const ownComponent = /^components\//.test(relKey(relative(root, file))) || basename(file) !== 'index.html' ? 'x-' + basename(file, '.html') : null;
   const regions = new Map();
   const region = (name) => {
     if (!regions.has(name)) { const node = locateEditEl(html, name, doc); regions.set(name, node ? indexRegion(html, name, node) : null); }
@@ -1258,6 +1303,7 @@ function writeStaticTrees(file, patches) {
     const m = /^(?:~([a-z0-9]+)~)?@([^@]*)@([\s\S]*)$/.exec(String(k || ''));
     if (!m) fail(`not a source element: ${k}`);
     const reg = region(decodeURIComponent(m[2]));
+    if (!reg) { const w = foreign(decodeURIComponent(m[2])); if (w && w !== self) return Object.assign(w.resolve(t), { w }); }
     if (!reg) fail(`x-edit="${decodeURIComponent(m[2])}" not found in ${basename(file)}`);
     let node = reg.byKey.get('@' + m[2] + '@' + m[3]);
     // The path is a fallback only when tag and text agree, i.e. just the ordinal differs.
@@ -1317,7 +1363,11 @@ function writeStaticTrees(file, patches) {
   }
   function renderNode(n, parentRebuilt, anc) {
     if (!n || typeof n !== 'object') fail('malformed tree');
-    const { node, copy } = resolve(n);
+    const { node, copy, w } = resolve(n);
+    if (w) { const was = current; try { return w.renderNode(n, parentRebuilt, anc, regionOfKey(n.key)); } finally { current = was; } }
+    return renderHere(n, parentRebuilt, anc, node, copy);
+  }
+  function renderHere(n, parentRebuilt, anc, node, copy) {
     if (copy && [...regions.values()].some(r => r && r.root === node)) fail(`an area cannot be copied: ${n.key}`);
     if (!copy) {
       if (placed.has(node)) fail(`'${n.key}' placed twice`);
@@ -1333,10 +1383,11 @@ function writeStaticTrees(file, patches) {
   // what they parse to.
   function finalSubtree(n, out = new Set()) {
     const { node } = resolve(n);
-    out.add(node.name);
+    const add = (name) => { out.add(name); const h = hostOf(name); if (h) h.tags.forEach(t => out.add(t)); };
+    add(node.name);
     if (n.edits && 'text' in n.edits) { const f = sanitizeHTML(n.edits.text); allElements(parseHTML(f)).forEach(k => out.add(k.name)); }
     else if (Array.isArray(n.children)) n.children.forEach(c => finalSubtree(c, out));
-    else allElements(node).forEach(k => out.add(k.name));
+    else allElements(node).forEach(k => add(k.name));
     return out;
   }
   // A container listed only as a path to edits: its current children, in the source's
@@ -1374,10 +1425,13 @@ function writeStaticTrees(file, patches) {
     for (const c of children) {
       const { node: child } = resolve(c);
       if (child.parent === node && !/^~/.test(c.key)) continue;    // authored placement is left as written
-      const why = contentRefusal(child.name, node.name, anc, finalSubtree(c));
+      const sub = finalSubtree(c);
+      if (ownComponent && sub.has(ownComponent)) fail(`<${ownComponent}> cannot go into its own component file`);
+      const h = hostOf(child.name);
+      const why = contentRefusal(h ? h.tag : child.name, node.name, anc, sub);
       if (why) fail(`<${child.name}> cannot go into <${node.name}>: ${why}`);
     }
-    children.forEach(c => { const r = resolve(c); if (!r.copy) renderedUnder.set(r.node, node); });
+    children.forEach(c => { const r = resolve(c); if (!r.copy) (r.w ? r.w.renderedUnder : renderedUnder).set(r.node, node); });
     const rendered = children.map(c => renderNode(c, true, anc));
     const sk = rendered.map(r => r[1]).join(',');
     const gaps = []; let prev = node.innerStart;
@@ -1396,7 +1450,11 @@ function writeStaticTrees(file, patches) {
   }
 
   const out = [];
-  try {
+  self.resolve = resolve;
+  self.renderedUnder = renderedUnder;
+  // An element of this file placed by another file's tree.
+  self.renderNode = (n, parentRebuilt, anc, region) => { current = region; const r = resolve(n); return renderHere(n, parentRebuilt, anc, r.node, r.copy); };
+  self.render = () => {
     for (const p of patches) {
       current = p.region;
       const reg = region(p.region);
@@ -1408,6 +1466,8 @@ function writeStaticTrees(file, patches) {
       const [markup, sk] = renderAt(reg.root, t, false, false, rootAnc);
       out.push({ reg, text: markup, sk });
     }
+  };
+  self.check = () => {
     for (const r of rebuilt) for (const k of r.kids || []) if (!placed.has(k) && !removed.has(k.key)) fail(`'${k.key}' would be lost (not placed, not removed)`, regionOfKey(k.key));
     const roots = new Set([...regions.values()].filter(Boolean).map(r => r.root));
     // Every placed element's source ancestors must be rebuilt (or removed), up to its area.
@@ -1432,25 +1492,21 @@ function writeStaticTrees(file, patches) {
       for (let a = node.parent; !ok && a && !roots.has(a); a = a.parent) if (removed.has(a.key)) ok = true;
       if (!ok) fail(`'${k}' removed, but its container is kept as is`);
     }
-  } catch (e) {
-    if (!e.edit) throw e;
-    if (!patches.some(p => p.region === e.region)) e.region = null;
-    return patches.map(p => e.region == null || p.region === e.region ? { region: p.region, status: 'error', reason: e.message, ...(e.region != null ? { failed: e.region } : {}) }
-      : { region: p.region, status: 'skipped', reason: `not written: x-edit="${e.region}" failed; nothing was written` });
-  }
-  let next = html;
-  out.slice().sort((a, b) => b.reg.root.tagStart - a.reg.root.tagStart).forEach(({ reg, text }) => { next = next.slice(0, reg.root.tagStart) + text + next.slice(reg.root.closeEnd); });
+  };
   // The written file must parse into exactly the structure that was rendered.
-  if (next !== html) {
+  self.assemble = () => {
+    let next = html;
+    out.slice().sort((a, b) => b.reg.root.tagStart - a.reg.root.tagStart).forEach(({ reg, text }) => { next = next.slice(0, reg.root.tagStart) + text + next.slice(reg.root.closeEnd); });
+    if (next === html) return { next: null };
     const after = parseHTML(next);
     for (const { reg, sk } of out) {
       const node = locateEditEl(next, reg.name, after);
       const got = node && skeletonOf(next, node), want = sk;
-      if (got !== want) return patches.map(p => ({ region: p.region, status: 'error', reason: `x-edit="${reg.name}" would not parse as rebuilt (${skeletonDiff(want, got)}); nothing written` }));
+      if (got !== want) return { error: `x-edit="${reg.name}" would not parse as rebuilt (${skeletonDiff(want, got)}); nothing written` };
     }
-    vwrite(file, next);
-  }
-  return patches.map(p => ({ region: p.region, status: 'written', file: basename(file) }));
+    return { next };
+  };
+  return self;
 }
 // Component files: the first top-level element, then paths through element children.
 function navigateToNode(html, path) {
@@ -1976,11 +2032,9 @@ const server = createServer((req, res) => {
           if (!byFile.has(file)) byFile.set(file, []);
           byFile.get(file).push(p);
         }
-        for (const [file, group] of byFile) {
-          let rs;
-          try { rs = writeStaticTrees(file, group); }
-          catch (e) { rs = group.map(p => ({ region: p.region, status: 'error', reason: e.message })); }
-          group.forEach((p, i) => treeResults.set(p, rs[i]));
+        if (byFile.size) {
+          try { writeStaticTrees([...byFile], manifest).forEach((r, p) => treeResults.set(p, r)); }
+          catch (e) { [...byFile.values()].flat().forEach(p => treeResults.set(p, { region: p.region, status: 'error', reason: e.message })); }
         }
         results = patches.map(p => {
           if (p && p.kind === 'static-tree') return treeResults.get(p);

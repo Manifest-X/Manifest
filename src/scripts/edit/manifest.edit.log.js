@@ -165,7 +165,7 @@
         const t = document.createElement('template');
         t.innerHTML = markup.trim();
         const el = t.content.firstElementChild;
-        if (el && k) el.setAttribute('data-edit-key', k);
+        if (el && k) el.setAttribute(/^[^@]*@[^@]*@X-[\w-]+:/.test(originOf(k)) ? 'data-edit-host' : 'data-edit-key', k);
         return el;
     };
     const staticAreas = () => areas().filter(a => classify(a) === 'static' && !sharedKey(a));
@@ -366,13 +366,12 @@
                 const c = parent ? byId.get(parent) : areaByKey(region);
                 if (!c || !c.isConnected) continue;
                 entries.splice(i--, 1); progress = true;
-                const kids = sortableChildren(c);
-                // A component host's other roots go with its first
-                const group = (el) => { const g = [el]; if (el._manifestHost) for (let n = el.nextElementSibling; n && n._manifestHost === el._manifestHost; n = n.nextElementSibling) g.push(n); return g; };
-                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c)).flatMap(el => el.hasAttribute('data-edit-host') ? group(el) : [el]);
-                const idOf = (el) => el.getAttribute('data-edit-host') || el.getAttribute('data-edit-key');
+                let kids = sortableChildren(c);
+                const next = keys.map(get).filter(el => el && el !== c && !el.contains(c));
                 const stay = kids.filter(el => !next.includes(el) && !claimed.has(idOf(el)) && !html[idOf(el)]);
-                const target = [...next, ...stay];
+                // A component host's other roots go with its first
+                const target = [...next, ...stay].flatMap(groupOf);
+                kids = kids.flatMap(groupOf);
                 if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
                 const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
                 const leads = new Map(target.map(el => [el, el.isConnected ? leadNodes(el) : el._editLead || []]));
@@ -468,7 +467,7 @@
     // delta names both containers' orders, within an area or across areas.
     function commitMove(fromArea, toArea, item, fromContainer, fromBefore, toBefore, opts = {}) {
         const toContainer = item.parentElement;
-        const d = { kind: 'st-move', from: key(fromArea), to: key(toArea), fromParent: parentKey(fromContainer, fromArea), toParent: parentKey(toContainer, toArea), key: item.getAttribute('data-edit-key'), fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore };
+        const d = { kind: 'st-move', from: key(fromArea), to: key(toArea), fromParent: parentKey(fromContainer, fromArea), toParent: parentKey(toContainer, toArea), key: idOf(item), fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore };
         if (opts.join) d.join = true;
         pushDelta(d);
         resetAreas();
@@ -505,23 +504,31 @@
         return null;
     }
     const actionOf = (cap) => cap === 'data' ? 'text' : cap === 'class' ? 'attrs' : cap;
+    // A component host's lock is keyed by its host key and covers its group and what is in it.
+    const hostOf = (n) => isHostEl(n) ? n : extraRoot(n) ? n._manifestHost.roots[0] : null;
     function lockedFor(node, cap) {
         const action = actionOf(cap);
-        const region = regionOf(node);
+        const h0 = node && node.nodeType === 1 && hostOf(node);
+        if (h0) node = h0;
+        let region = h0 ? blockArea(h0) : regionOf(node);
         const locks = lockState();
         for (let n = node; n && n.nodeType === 1; n = n.parentElement) {
             let v;
-            if (region && locks.size) { const id = identity(n, region); const m = id != null && locks.get(lockSlot(key(region), id)); if (m && m.has(action)) v = m.get(action); }
+            const h = hostOf(n);
+            if (h && locks.size) { const m = locks.get(h.getAttribute('data-edit-host')); if (m && m.has(action)) v = m.get(action); }
+            if (v === undefined && region && locks.size && !(h && n === h0)) { const id = identity(n, region); const m = id != null && locks.get(lockSlot(key(region), id)); if (m && m.has(action)) v = m.get(action); }
             if (v === undefined && n._editLock) v = n._editLock.has('*') || n._editLock.has(action);
             if (v) return true;
-            if (n === region) break;
+            if (n === region) { if (h && n !== h0) { region = blockArea(n); if (region) continue; } break; }
         }
         return false;
     }
     function setLock(el, action, value) {
         if (!el || el.nodeType !== 1) return false;
-        const area = regionOf(el); if (!area) return false;
+        const h = hostOf(el);
+        const area = h ? blockArea(h) : regionOf(el); if (!area) return false;
         if (action != null && !LOCK_ACTIONS.includes(action)) { console.warn('[edit] unknown lock action:', action); return false; }
+        if (h) { pushDelta({ kind: 'lock', region: key(area), key: h.getAttribute('data-edit-host'), actions: action ? [action] : [], value: !!value }); rearm(area); if (h._edit) rearm(h); return true; }
         const id = identity(el, area);
         if (id == null) { console.warn('[edit] this element has no stable identity to lock'); return false; }
         pushDelta({ kind: 'lock', region: key(area), key: id, actions: action ? [action] : [], value: !!value });
