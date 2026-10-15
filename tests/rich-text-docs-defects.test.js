@@ -293,3 +293,21 @@ describe('paste over a selection across blocks', () => {
         expect(el.innerHTML).toBe('<p>One</p><p> loose <strong>bold</strong></p>')
     })
 })
+
+describe('authored empty blocks', () => {
+    it('spacers and an empty figure survive load and unrelated edits, bound or not', async () => {
+        const root = mount(`<div x-rich-text.html id="a"><p>One</p><p></p><p>Two</p><figure></figure><p>Three</p></div><div x-rich-text.html="doc" id="d"></div>`, `{ doc: '<p>A</p><p></p><p>B</p>' }`)
+        await tick()
+        const a = root.querySelector('#a'), d = root.querySelector('#d')
+        expect(a.innerHTML).toBe('<p>One</p><p></p><p>Two</p><figure></figure><p>Three</p>')
+        expect(d.innerHTML).toBe('<p>A</p><p></p><p>B</p>')
+        focusin(d); const t = d.querySelector('p').firstChild; t.nodeValue = 'Ax'; select(t, 2)
+        d.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'x' }))
+        await tick()
+        expect(d.innerHTML).toBe('<p>Ax</p><p></p><p>B</p>')
+        expect(Alpine.$data(root).doc).toBe('<p>Ax</p><p></p><p>B</p>')
+        focusin(a); const u = a.querySelector('p').firstChild; u.nodeValue = 'One!'; select(u, 4)
+        a.dispatchEvent(new InputEvent('input', { bubbles: true, data: '!' }))
+        expect(a.innerHTML).toBe('<p>One!</p><p></p><p>Two</p><figure></figure><p>Three</p>')
+    })
+})
