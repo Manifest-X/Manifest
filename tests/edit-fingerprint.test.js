@@ -8,6 +8,7 @@ import { writeFileSync, readFileSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { spawn } from 'child_process'
 import http from 'http'
+import { createHash } from 'crypto'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -98,5 +99,24 @@ describe('fingerprints from the page', () => {
         const r2 = await store().publish()
         expect(r2.results.map(x => x.status)).toEqual(['written'])
         expect(src()).toContain('<p>Beta</p>\n  <p>Alpha</p>\n  <p>Gamma again</p>')
+    })
+
+    it('an external HTML change whose live reload is cancelled still refuses a plain publish', async () => {
+        setSrc(src().replace('<p>Beta</p>', '<p>Beta external</p>'))
+        const hash = createHash('sha1').update(readFileSync(path.join(dir, 'index.html'))).digest('hex')
+        // What the dev server's live-reload script dispatches; a listener cancels the reload.
+        const cancel = (e) => e.preventDefault()
+        window.addEventListener('manifest:live-reload', cancel)
+        window.dispatchEvent(new CustomEvent('manifest:source-change', { detail: { file: 'index.html', hash } }))
+        const reload = new CustomEvent('manifest:live-reload', { cancelable: true, detail: { files: [{ rel: 'index.html', hash }] } })
+        window.dispatchEvent(reload)
+        window.removeEventListener('manifest:live-reload', cancel)
+        expect(reload.defaultPrevented).toBe(true)
+        editText(section('un').querySelectorAll('p')[0], 'Beta page')
+        await flush()
+        const r = await store().publish()
+        expect(r.results[0].status).toBe('error')
+        expect(r.stale).toEqual(['index.html'])
+        expect(src()).toContain('<p>Beta external</p>')
     })
 })
