@@ -562,6 +562,18 @@ describe('history across the hand-off', () => {
     })
 })
 
+describe('drops', () => {
+    it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
+        const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)
+        const h1 = root.querySelector('h1'), at = cursor()
+        const drop = (data) => { const ev = new Event('drop', { bubbles: true, cancelable: true }); Object.defineProperty(ev, 'dataTransfer', { value: { getData: (t) => data[t] || '' } }); h1.dispatchEvent(ev); return ev }
+        expect(drop({ 'text/html': '<p>dropped</p><p>two</p>', 'text/plain': 'dropped\ntwo' }).defaultPrevented).toBe(true)
+        expect(drop({ 'text/plain': 'one line' }).defaultPrevented).toBe(true)
+        expect(h1.innerHTML).toBe('Hello <strong>world</strong>')
+        expect(cursor()).toBe(at)
+    })
+})
+
 describe('standalone fields', () => {
     it('Ctrl+Y redoes in an x-rich-text field off the Mac', async () => {
         const root = await mount(`<div x-data><div x-rich-text.html id="st"><p>One</p></div></div>`)
