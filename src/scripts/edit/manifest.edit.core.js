@@ -237,8 +237,8 @@
         return inlineClean(c.innerHTML) === c.innerHTML;
     }
     const wholeLeaf = (el) => LEAF_TAGS.has(el.tagName) && realChildren(el).length > 0 && plainFormatted(el);
-    // The Rich Text leaf an element sits inside (not the leaf itself).
-    const leafHost = (el) => { const h = el && el.parentElement && el.parentElement.closest('[data-edit-text]'); return h && h._editRt ? h : null; };
+    // The text leaf an element sits inside (not the leaf itself), attached or resting as a focused piece.
+    const leafHost = (el) => { for (let n = el && el.parentElement; n && n.nodeType === 1; n = n.parentElement) { if (n._editRtFormat) return n; if (n._edit) break; } return null; };
     function isContainer(el) {
         if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
         return !isTextEl(el);

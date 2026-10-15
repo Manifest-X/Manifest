@@ -302,6 +302,35 @@ describe('whole leaves', () => {
     })
 })
 
+describe('a leaf resting as a focused piece', () => {
+    it('Escape, then $edit.attr on its link, then undo and redo: one leaf, no keys inside, piece mode kept', async () => {
+        const root = await mount(`<section x-edit="pm1"><p>Read <a href="/x">guide</a> now</p><p>Other</p></section>`)
+        const p = root.querySelector('p'), at = cursor()
+        await enter(p)
+        p.firstChild.nodeValue = 'Please read '
+        p.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'd' }))
+        key(p, { key: 'Escape' })
+        await flush()
+        expect(document.activeElement).toBe(p)
+        expect(p._pieceMode).toBe(true)
+        expect(cursor()).toBe(at + 1)
+        expect(store().attr('href', '/docs', p.querySelector('a'))).toBe(true)
+        expect(cursor()).toBe(at + 2)
+        expect(key(p, { key: 'z', metaKey: true }).defaultPrevented).toBe(true)
+        await flush(); await flush()
+        expect(p.innerHTML).toBe('Please read <a href="/x">guide</a> now')
+        expect(p.getAttribute('contenteditable')).toBe('false')                 // still a piece, not re-attached under it
+        expect(key(p, { key: 'z', metaKey: true }).defaultPrevented).toBe(true)
+        await flush(); await flush()
+        expect(p.innerHTML).toBe('Read <a href="/x">guide</a> now')
+        expect(key(p, { key: 'z', metaKey: true, shiftKey: true }).defaultPrevented).toBe(true)
+        expect(key(p, { key: 'z', metaKey: true, shiftKey: true }).defaultPrevented).toBe(true)
+        await flush(); await flush()
+        expect(p.innerHTML).toBe('Please read <a href="/docs">guide</a> now')
+        expect(cursor()).toBe(at + 2)
+    })
+})
+
 describe('line breaks in leaves', () => {
     it('an address is one leaf: its <br>s stay, Shift+Enter adds one, Enter is swallowed', async () => {
         const root = await mount(`<section x-edit="br1"><p>1 Main St<br>Springfield</p></section>`)

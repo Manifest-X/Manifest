@@ -19,7 +19,7 @@
     // Edit's own listeners are bound before this, so they run ahead of Rich Text's.
     function editable(el, format) {
         el._editRtFormat = format;
-        if (el._editRt) return;
+        if (el._editRt || el._pieceMode) return;                         // a focused piece re-attaches when it leaves piece mode
         const RT = rtEngine();
         el._editRtPrior = ['role', 'aria-multiline'].map(a => [a, el.getAttribute(a)]);
         const h = RT && RT.attach(el, { mode: 'inline', breaks: true, format, onChange: () => { } });
