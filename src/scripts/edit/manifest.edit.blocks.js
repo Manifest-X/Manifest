@@ -179,7 +179,10 @@
         }
         const container = block.parentElement, before = staticKeys(container);
         const gone = block.getAttribute('data-edit-key'), markup = blockHTML(block, true);
+        block._editLead = leadNodes(block);
+        block._editLead.forEach(n => n.remove());
         block.remove();
+        detached.set(gone, block);
         if (target === block || (target && block.contains(target))) setTarget(null);
         commitStructure(area, container, before, { [gone]: markup });
         return true;
@@ -198,16 +201,17 @@
         if (!from || !to || !isActive(from) || !isActive(to) || !accepts(container)) return false;
         if (ref && ref.parentElement !== container) ref = null;
         const fromContainer = block.parentElement;
+        if (!fits(block, container)) return false;
         if (classify(from) === 'data') {
             if (container !== fromContainer) return false;
-            container.insertBefore(block, ref);
+            moveWith(block, b => container.insertBefore(b, ref ? startOf(ref) : null));
             finishReorder(from, container);
             return true;
         }
         if (classify(from) !== 'static' || classify(to) !== 'static') return false;
         if (from !== to && isRegionBlock(block)) return false;
         const fromBefore = staticKeys(fromContainer), toBefore = staticKeys(container);
-        container.insertBefore(block, ref);
+        moveWith(block, b => container.insertBefore(b, ref ? startOf(ref) : null));
         if (container === fromContainer) return commitOrder(from, container, fromBefore);
         commitMove(from, to, block, fromContainer, fromBefore, toBefore);
         return true;
@@ -229,7 +233,7 @@
             return true;
         }
         if (classify(area) !== 'static') return false;
-        const made = materialize(clipboard.html); if (!made) return false;
+        const made = materialize(clipboard.html); if (!made || !fits(made, container)) return false;
         insertStatic(area, container, made, block && block.parentElement === container ? block : null, clipboard.ops);
         return true;
     }

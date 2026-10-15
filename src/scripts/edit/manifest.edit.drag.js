@@ -74,12 +74,12 @@
                 if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
-                if (isContainer(el) && accepts(el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
-                if (accepts(parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
+                if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
+                if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
             }
         }
         if (!s.crossOK && (!hit || !region.contains(hit))) { const c = s.ghost.parentElement; return { container: c, ref: afterElement(c, x, y) }; }
-        return accepts(region) ? { container: region, ref: afterElement(region, x, y) } : null;
+        return accepts(region) && fits(s.item, region) ? { container: region, ref: afterElement(region, x, y) } : null;
     }
     // Reading-order insertion: the first sibling past the pointer.
     function afterElement(c, x, y) {
@@ -196,7 +196,7 @@
             homeBefore: dataList ? null : staticKeys(home),
             lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
         };
-        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style'), preOwn = ownStyle(item);
+        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style'), preOwn = ownStyle(item), lead = leadNodes(item);
         s.grabX = e.clientX - start.left; s.grabY = e.clientY - start.top;
         const sx = e.clientX, sy = e.clientY;
         let active = false, frame = 0, px = sx, py = sy, last = null;
@@ -224,7 +224,7 @@
             const g = s.ghost, { container, ref } = drop;
             const same = last && last.container === container && last.ref === ref;
             last = drop;
-            if (!same) container.insertBefore(g, ref && ref.parentElement === container ? ref : null);
+            if (!same) container.insertBefore(g, ref && ref.parentElement === container ? startOf(ref) : null);
             if (isPositioned(g)) {
                 if (!same) { if (container === home && item.parentElement === home) home.insertBefore(g, item); else if (g.nextElementSibling) container.appendChild(g); }
                 placeAt(g, px, py, s);
@@ -250,13 +250,13 @@
             if (!active) return;
             document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
             item.removeAttribute('data-edit-dragging');
-            if (cancelled) s.ghost.remove(); else s.ghost.replaceWith(item);
+            if (cancelled) s.ghost.remove(); else { s.ghost.replaceWith(item); if (lead.length) item.before(...lead); }
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             s.ghost = null; dragged = null;
-            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, homeNext); else home.appendChild(item); };
+            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, startOf(homeNext)); else home.appendChild(item); if (lead.length) item.before(...lead); };
             if (cancelled) { back(); announce('Cancelled'); return; }
             const dest = item.parentElement, toArea = regionOf(dest);
-            if (dest !== home && (s.dataList || !accepts(dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
+            if (dest !== home && (s.dataList || !accepts(dest) || !fits(item, dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
             if (isPositioned(item)) placeAt(item, px, py, s);
             else if (item.style.left || item.style.top) clearPlacement(item);
             const styled = ownStyle(item) !== preOwn;
@@ -310,7 +310,7 @@
             e._editRow = true; e.preventDefault();
             const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + step;
             if (j < 0 || j >= sibs.length) return;
-            if (step > 0) sibs[j].after(item); else sibs[j].before(item);
+            moveWith(item, it => { if (step > 0) sibs[j].after(it); else startOf(sibs[j]).before(it); });
             refocus(item); announce(`Position ${j + 1} of ${sibs.length}`);
             return;
         }
@@ -324,7 +324,7 @@
     function cancelGrab() {
         const g = grabbed; grabbed = null; if (!g) return;
         g.item.removeAttribute('data-edit-dragging');
-        if (g.next && g.next.parentElement === g.container) g.container.insertBefore(g.item, g.next); else g.container.appendChild(g.item);
+        moveWith(g.item, it => { if (g.next && g.next.parentElement === g.container) g.container.insertBefore(it, startOf(g.next)); else g.container.appendChild(it); });
     }
     // One step, committed at once. Neighbours move round the piece, so focus and caret survive.
     function stepRow(item, dir) {
@@ -334,8 +334,10 @@
         const before = classify(area) === 'data' ? null : staticKeys(container);
         const other = sibs[j], between = [];
         for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
-        if (dir > 0) { item.before(other); between.forEach(n => item.before(n)); }
-        else { item.after(other); between.forEach(n => item.after(n)); }
+        // Neighbours move round the piece, each with its titling comment.
+        const block = (n) => [...leadNodes(n), n];
+        if (dir > 0) { const at = startOf(item); [other, ...between].forEach(n => at.before(...block(n))); }
+        else { let after = item; [...between.slice().reverse(), other].forEach(n => { after.after(...block(n)); after = n; }); }
         const focused = document.activeElement, sel = window.getSelection && window.getSelection();
         const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
         if (before) commitOrder(area, container, before); else finishReorder(area, container);
@@ -351,9 +353,9 @@
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         let prev = item.previousElementSibling;
         while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE')) prev = prev.previousElementSibling;
-        if (!prev || !accepts(prev)) { announce('Nothing to nest into'); return false; }
+        if (!prev || !accepts(prev) || !fits(item, prev)) { announce('Nothing to nest into'); return false; }
         const from = item.parentElement, fb = staticKeys(from), tb = staticKeys(prev);
-        prev.appendChild(item);
+        moveWith(item, it => prev.appendChild(it));
         commitMove(area, area, item, from, fb, tb);
         refocus(item); announce('Nested in ' + describe(prev));
         return true;
@@ -363,8 +365,9 @@
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         const out = from && from !== area ? from.parentElement : null;
         if (!out || !(out === area || area.contains(out)) || !accepts(out)) { announce('Already at the top level'); return false; }
+        if (!fits(item, out)) { announce('Cannot move out here'); return false; }
         const fb = staticKeys(from), tb = staticKeys(out);
-        from.after(item);
+        moveWith(item, it => from.after(it));
         commitMove(area, area, item, from, fb, tb);
         refocus(item); announce('Moved out to ' + describe(out));
         return true;

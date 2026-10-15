@@ -248,6 +248,72 @@
         return !isTextEl(el);
     }
 
+    /* ---- Titling comments ----
+       A comment directly above an element (whitespace between, at most one newline)
+       titles it and moves with it, unless it opens its container. Mirrors the source
+       writer's leadOf (packages/run/serve.mjs). */
+    function leadNodes(el) {
+        const out = [];
+        let n = el.previousSibling;
+        for (;;) {
+            let ws = null;
+            if (n && n.nodeType === 3) { if (!/^[ \t]*(\r?\n)?[ \t]*$/.test(n.textContent)) break; ws = n; n = n.previousSibling; }
+            if (!n || n.nodeType !== 8) break;
+            let p = n.previousSibling;
+            while (p && p.nodeType === 3 && !p.textContent.trim()) p = p.previousSibling;
+            if (!p) break;
+            out.unshift(n, ...(ws ? [ws] : []));
+            n = n.previousSibling;
+        }
+        return out;
+    }
+    const startOf = (el) => el ? leadNodes(el)[0] || el : null;
+    function moveWith(el, place) { const lead = leadNodes(el); place(el); if (lead.length) el.before(...lead); }
+
+    /* ---- HTML content model ----
+       Drops the parser would re-nest, foster-parent or drop. Mirrors CONTENT_RULES in
+       the source writer (packages/run/serve.mjs). */
+    const CONTENT_RULES = {
+        only: {
+            table: ['caption', 'colgroup', 'thead', 'tbody', 'tfoot', 'script', 'template', 'style'],
+            thead: ['tr', 'script', 'template'], tbody: ['tr', 'script', 'template'], tfoot: ['tr', 'script', 'template'],
+            tr: ['td', 'th', 'script', 'template'], colgroup: ['col', 'template'],
+            ul: ['li', 'script', 'template'], ol: ['li', 'script', 'template'], menu: ['li', 'script', 'template'],
+            dl: ['dt', 'dd', 'div', 'script', 'template'],
+            select: ['option', 'optgroup', 'hr', 'script', 'template'], datalist: ['option', 'script', 'template'], optgroup: ['option', 'script', 'template']
+        },
+        parent: {
+            tr: ['thead', 'tbody', 'tfoot'], td: ['tr'], th: ['tr'], caption: ['table'], colgroup: ['table'], col: ['colgroup'],
+            thead: ['table'], tbody: ['table'], tfoot: ['table'], li: ['ul', 'ol', 'menu'], dt: ['dl', 'div'], dd: ['dl', 'div'],
+            option: ['select', 'datalist', 'optgroup'], optgroup: ['select']
+        },
+        interactive: ['a', 'button', 'input', 'select', 'textarea', 'details', 'label', 'iframe', 'embed', 'object', 'audio', 'video', 'keygen'],
+        phrasingOnly: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre'],
+        block: ['address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div', 'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'search', 'section', 'table', 'ul', 'li', 'dd', 'dt']
+    };
+    function contentRefusal(child, parent, ancestors, subtree) {
+        const R = CONTENT_RULES;
+        if (R.only[parent] && !R.only[parent].includes(child)) return `<${parent}> takes only ${R.only[parent].filter(t => t !== 'script' && t !== 'template' && t !== 'style').join(', ')}`;
+        if (R.parent[child] && !R.parent[child].includes(parent)) return `<${child}> belongs in ${R.parent[child].join(' or ')}`;
+        if ((child === 'dt' || child === 'dd') && parent === 'div' && ancestors[1] !== 'dl') return `<${child}> belongs in a dl`;
+        if (subtree.has('form') && ancestors.includes('form')) return 'a form cannot contain a form';
+        if ((ancestors.includes('a') || ancestors.includes('button')) && R.interactive.some(t => subtree.has(t))) return 'interactive content cannot go inside a link or button';
+        if (R.phrasingOnly.includes(parent) && R.block.some(t => subtree.has(t))) return `<${parent}> takes only inline content`;
+        return null;
+    }
+    // Whether `piece` may be placed in `container` without the parser changing it.
+    function fits(piece, container) {
+        if (!piece || !container) return false;
+        if (piece.parentElement === container) return true;
+        const anc = [];
+        for (let a = container; a && a.nodeType === 1; a = a.parentElement) anc.push(a.tagName.toLowerCase());
+        // Template contents count: an x-if can render them right here (the server counts them too).
+        const sub = new Set();
+        const add = (root) => [root, ...root.querySelectorAll('*')].forEach(n => { if (n.nodeType !== 1) return; sub.add(n.tagName.toLowerCase()); if (n.tagName === 'TEMPLATE' && n.content) [...n.content.children].forEach(add); });
+        add(piece);
+        return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
+    }
+
     /* ---- Units ---- */
     const unitOf = (v) => { const m = String(v || '').match(/[a-z%]+$/i); return m ? m[0] : null; };
     function toUnit(px, unit, el, basisEl, dim) {
@@ -437,6 +503,8 @@
         return el;
     };
     const staticAreas = () => areas().filter(a => classify(a) === 'static');
+    // Removed elements, kept so undo puts back the same element (listeners, titling comment).
+    const detached = new Map();
     function keyMap(roots) {
         const m = new Map();
         roots.forEach(area => [area, ...area.querySelectorAll('[data-edit-key]')].forEach(el => {
@@ -473,6 +541,7 @@
         const touchedAreas = new Set();
         const get = (k) => {
             let el = byId.get(k);
+            if (!el && detached.has(k)) { el = detached.get(k); detached.delete(k); byId.set(k, el); }
             if (!el && html[k]) {
                 el = materialize(html[k], k);
                 if (el) { byId.set(k, el); el.querySelectorAll('[data-edit-key]').forEach(n => { const nk = n.getAttribute('data-edit-key'); if (!byId.has(nk)) byId.set(nk, n); }); }
@@ -493,8 +562,9 @@
                 const target = [...next, ...stay];
                 if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
                 const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
-                kids.forEach(el => { if (!target.includes(el)) el.remove(); });
-                target.forEach(el => { const from = regionOf(el); if (from) touchedAreas.add(from); c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null); });
+                const leads = new Map(target.map(el => [el, el.isConnected ? leadNodes(el) : el._editLead || []]));
+                kids.forEach(el => { if (target.includes(el)) return; el._editLead = leadNodes(el); el._editLead.forEach(n => n.remove()); el.remove(); const k = el.getAttribute('data-edit-key'); if (k) detached.set(k, el); });
+                target.forEach(el => { const from = regionOf(el); if (from) touchedAreas.add(from); c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null); const l = leads.get(el); if (l.length) el.before(...l); });
                 const a = regionOf(c); if (a) touchedAreas.add(a);
             }
         }
@@ -867,7 +937,10 @@
         }
         const container = block.parentElement, before = staticKeys(container);
         const gone = block.getAttribute('data-edit-key'), markup = blockHTML(block, true);
+        block._editLead = leadNodes(block);
+        block._editLead.forEach(n => n.remove());
         block.remove();
+        detached.set(gone, block);
         if (target === block || (target && block.contains(target))) setTarget(null);
         commitStructure(area, container, before, { [gone]: markup });
         return true;
@@ -886,16 +959,17 @@
         if (!from || !to || !isActive(from) || !isActive(to) || !accepts(container)) return false;
         if (ref && ref.parentElement !== container) ref = null;
         const fromContainer = block.parentElement;
+        if (!fits(block, container)) return false;
         if (classify(from) === 'data') {
             if (container !== fromContainer) return false;
-            container.insertBefore(block, ref);
+            moveWith(block, b => container.insertBefore(b, ref ? startOf(ref) : null));
             finishReorder(from, container);
             return true;
         }
         if (classify(from) !== 'static' || classify(to) !== 'static') return false;
         if (from !== to && isRegionBlock(block)) return false;
         const fromBefore = staticKeys(fromContainer), toBefore = staticKeys(container);
-        container.insertBefore(block, ref);
+        moveWith(block, b => container.insertBefore(b, ref ? startOf(ref) : null));
         if (container === fromContainer) return commitOrder(from, container, fromBefore);
         commitMove(from, to, block, fromContainer, fromBefore, toBefore);
         return true;
@@ -917,7 +991,7 @@
             return true;
         }
         if (classify(area) !== 'static') return false;
-        const made = materialize(clipboard.html); if (!made) return false;
+        const made = materialize(clipboard.html); if (!made || !fits(made, container)) return false;
         insertStatic(area, container, made, block && block.parentElement === container ? block : null, clipboard.ops);
         return true;
     }
@@ -1020,12 +1094,12 @@
                 if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
-                if (isContainer(el) && accepts(el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
-                if (accepts(parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
+                if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
+                if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
             }
         }
         if (!s.crossOK && (!hit || !region.contains(hit))) { const c = s.ghost.parentElement; return { container: c, ref: afterElement(c, x, y) }; }
-        return accepts(region) ? { container: region, ref: afterElement(region, x, y) } : null;
+        return accepts(region) && fits(s.item, region) ? { container: region, ref: afterElement(region, x, y) } : null;
     }
     // Reading-order insertion: the first sibling past the pointer.
     function afterElement(c, x, y) {
@@ -1142,7 +1216,7 @@
             homeBefore: dataList ? null : staticKeys(home),
             lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
         };
-        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style'), preOwn = ownStyle(item);
+        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style'), preOwn = ownStyle(item), lead = leadNodes(item);
         s.grabX = e.clientX - start.left; s.grabY = e.clientY - start.top;
         const sx = e.clientX, sy = e.clientY;
         let active = false, frame = 0, px = sx, py = sy, last = null;
@@ -1170,7 +1244,7 @@
             const g = s.ghost, { container, ref } = drop;
             const same = last && last.container === container && last.ref === ref;
             last = drop;
-            if (!same) container.insertBefore(g, ref && ref.parentElement === container ? ref : null);
+            if (!same) container.insertBefore(g, ref && ref.parentElement === container ? startOf(ref) : null);
             if (isPositioned(g)) {
                 if (!same) { if (container === home && item.parentElement === home) home.insertBefore(g, item); else if (g.nextElementSibling) container.appendChild(g); }
                 placeAt(g, px, py, s);
@@ -1196,13 +1270,13 @@
             if (!active) return;
             document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
             item.removeAttribute('data-edit-dragging');
-            if (cancelled) s.ghost.remove(); else s.ghost.replaceWith(item);
+            if (cancelled) s.ghost.remove(); else { s.ghost.replaceWith(item); if (lead.length) item.before(...lead); }
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             s.ghost = null; dragged = null;
-            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, homeNext); else home.appendChild(item); };
+            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, startOf(homeNext)); else home.appendChild(item); if (lead.length) item.before(...lead); };
             if (cancelled) { back(); announce('Cancelled'); return; }
             const dest = item.parentElement, toArea = regionOf(dest);
-            if (dest !== home && (s.dataList || !accepts(dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
+            if (dest !== home && (s.dataList || !accepts(dest) || !fits(item, dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
             if (isPositioned(item)) placeAt(item, px, py, s);
             else if (item.style.left || item.style.top) clearPlacement(item);
             const styled = ownStyle(item) !== preOwn;
@@ -1256,7 +1330,7 @@
             e._editRow = true; e.preventDefault();
             const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + step;
             if (j < 0 || j >= sibs.length) return;
-            if (step > 0) sibs[j].after(item); else sibs[j].before(item);
+            moveWith(item, it => { if (step > 0) sibs[j].after(it); else startOf(sibs[j]).before(it); });
             refocus(item); announce(`Position ${j + 1} of ${sibs.length}`);
             return;
         }
@@ -1270,7 +1344,7 @@
     function cancelGrab() {
         const g = grabbed; grabbed = null; if (!g) return;
         g.item.removeAttribute('data-edit-dragging');
-        if (g.next && g.next.parentElement === g.container) g.container.insertBefore(g.item, g.next); else g.container.appendChild(g.item);
+        moveWith(g.item, it => { if (g.next && g.next.parentElement === g.container) g.container.insertBefore(it, startOf(g.next)); else g.container.appendChild(it); });
     }
     // One step, committed at once. Neighbours move round the piece, so focus and caret survive.
     function stepRow(item, dir) {
@@ -1280,8 +1354,10 @@
         const before = classify(area) === 'data' ? null : staticKeys(container);
         const other = sibs[j], between = [];
         for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
-        if (dir > 0) { item.before(other); between.forEach(n => item.before(n)); }
-        else { item.after(other); between.forEach(n => item.after(n)); }
+        // Neighbours move round the piece, each with its titling comment.
+        const block = (n) => [...leadNodes(n), n];
+        if (dir > 0) { const at = startOf(item); [other, ...between].forEach(n => at.before(...block(n))); }
+        else { let after = item; [...between.slice().reverse(), other].forEach(n => { after.after(...block(n)); after = n; }); }
         const focused = document.activeElement, sel = window.getSelection && window.getSelection();
         const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
         if (before) commitOrder(area, container, before); else finishReorder(area, container);
@@ -1297,9 +1373,9 @@
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         let prev = item.previousElementSibling;
         while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE')) prev = prev.previousElementSibling;
-        if (!prev || !accepts(prev)) { announce('Nothing to nest into'); return false; }
+        if (!prev || !accepts(prev) || !fits(item, prev)) { announce('Nothing to nest into'); return false; }
         const from = item.parentElement, fb = staticKeys(from), tb = staticKeys(prev);
-        prev.appendChild(item);
+        moveWith(item, it => prev.appendChild(it));
         commitMove(area, area, item, from, fb, tb);
         refocus(item); announce('Nested in ' + describe(prev));
         return true;
@@ -1309,8 +1385,9 @@
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         const out = from && from !== area ? from.parentElement : null;
         if (!out || !(out === area || area.contains(out)) || !accepts(out)) { announce('Already at the top level'); return false; }
+        if (!fits(item, out)) { announce('Cannot move out here'); return false; }
         const fb = staticKeys(from), tb = staticKeys(out);
-        from.after(item);
+        moveWith(item, it => from.after(it));
         commitMove(area, area, item, from, fb, tb);
         refocus(item); announce('Moved out to ' + describe(out));
         return true;
@@ -1875,8 +1952,48 @@
         Object.keys(themeBaseline).forEach(kk => { const sep = kk.indexOf('|'); themeBaseline[kk] = themeTargetEl(kk.slice(0, sep) || null).style.getPropertyValue(kk.slice(sep + 1)); });
         themeTouched.clear();
     }
+    // A custom-property value must stay inside its declaration (same tokenizer as the
+    // source writer): strings and url(...) are opaque; script schemes in url() and
+    // expression() are refused anywhere; data: urls only as images.
+    function themeValueRefusal(v) {
+        const s = String(v == null ? '' : v);
+        if (!s.trim()) return 'empty';
+        if (/expression\s*\(/i.test(s)) return 'expression()';
+        const stack = [];
+        for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+            if (ch === '"' || ch === "'") {
+                let j = i + 1;
+                for (; j < s.length && s[j] !== ch; j++) { if (s[j] === '\\') j++; else if (s[j] === '\n') return 'unbalanced quotes'; }
+                if (j >= s.length) return 'unbalanced quotes';
+                i = j; continue;
+            }
+            if (/^url\(/i.test(s.slice(i, i + 4)) && !/[\w-]/.test(s[i - 1] || '')) {
+                let j = i + 4, q = null, body = '';
+                for (; j < s.length; j++) {
+                    const c = s[j];
+                    if (q) { if (c === '\\') { body += s[++j] || ''; continue; } if (c === q) { q = null; continue; } body += c; continue; }
+                    if (c === '"' || c === "'") { q = c; continue; }
+                    if (c === ')') break;
+                    body += c;
+                }
+                if (j >= s.length) return 'unterminated url()';
+                const u = body.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase();
+                if (/^(javascript|vbscript):/.test(u)) return 'script URL';
+                if (u.startsWith('data:') && !u.startsWith('data:image/')) return 'data URL';
+                i = j; continue;
+            }
+            if (ch === ';' || ch === '{' || ch === '}') return `contains ${ch}`;
+            if (s.startsWith('/*', i) || s.startsWith('<!--', i) || s.startsWith('</', i)) return 'contains a comment or markup';
+            if (ch === '(' || ch === '[') stack.push(ch);
+            else if (ch === ')' || ch === ']') { if (stack.pop() !== (ch === ')' ? '(' : '[')) return 'unbalanced brackets'; }
+        }
+        return stack.length ? 'unbalanced brackets' : null;
+    }
     function commitTheme(scope, v, value, persist) {
         if (!/^--[\w-]+$/.test(v || '')) { console.warn('[edit] x-edit.cssvar needs a custom property name (--name):', v); return; }
+        const why = themeValueRefusal(value);
+        if (why) { console.warn(`[edit] theme value refused (${why}):`, value); return; }
         const kk = tkey(scope, v); themeTouched.add(kk);
         themeTargetEl(scope).style.setProperty(v, value);
         const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe
@@ -2106,12 +2223,20 @@
         saveState(); refresh();
     }
     const published = (r) => !(r && Array.isArray(r.results) && r.results.some(x => x && x.status === 'error'));
+    // Source file hashes as the page loaded them (mnfst-run --edit); a publish carries them
+    // so the server can refuse when a file changed underneath this page.
+    let baseFiles = null;
+    function loadBase() {
+        if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return;
+        fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.files) baseFiles = j.files; }).catch(() => { });
+    }
     function publish() {
         const patches = buildPatches();
-        const done = (r) => { if (published(r)) rebase(); return r; };
+        const done = (r) => { if (r && r.base && baseFiles) Object.assign(baseFiles, r.base); if (published(r)) rebase(); return r; };
         if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
         if (!patches.length) return Promise.resolve({ results: [] });
-        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json()).then(done);
+        const body = baseFiles ? { patches, base: baseFiles } : patches;
+        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).then(done);
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {
@@ -2231,6 +2356,7 @@
         estore = Alpine.store('edit');
         Alpine.magic('edit', () => Alpine.store('edit'));
         loadState();
+        loadBase();
         setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
         document.addEventListener('contextmenu', onContextCapture, true);

@@ -510,17 +510,105 @@ describe('source safety and scope', () => {
     })
 })
 
+describe('content model and titling comments', () => {
+    it('refuses moves the HTML parser would undo', async () => {
+        const root = await mount(`<section x-edit="${id('cm')}"><table><tbody><tr><td>x</td></tr></tbody></table><ul><li>i</li></ul><form><div><p>in</p></div></form><form><p>f</p></form><a href="/x"><div><p>c</p></div></a><button>b</button><div class="box"><p>d</p></div></section>`)
+        const $ = (s) => root.querySelector(s)
+        expect(store().move($('section > ul + form + form, form + form'), $('form div'))).toBe(false)   // form in form
+        expect(store().move($('ul'), $('tbody'))).toBe(false)                                           // non-row into tbody
+        expect(store().move($('tr'), $('.box'))).toBe(false)                                            // row outside its table
+        expect(store().move($('li'), $('.box'))).toBe(false)                                            // li outside a list
+        expect(store().move($('button'), $('a div'))).toBe(false)                                       // interactive inside a link
+        expect(store().move($('ul'), $('.box'))).toBe(true)                                             // a list into a div: fine
+    })
+
+    it('keyboard nest refuses a container that cannot take the piece', async () => {
+        const root = await mount(`<section x-edit="${id('kn')}"><ul><li>i</li></ul><div class="d">x</div></section>`)
+        const d = root.querySelector('.d')
+        d.setAttribute('contenteditable', 'false')
+        key(d, { key: 'ArrowRight', altKey: true })
+        expect(d.parentElement.tagName).toBe('SECTION')
+        expect(document.querySelector('[data-edit-live]').textContent).toBe('Nothing to nest into')
+    })
+
+    it('a titling comment moves with its element in every path; an opening comment stays', async () => {
+        const root = await mount(`<section x-edit="${id('tc')}"><!-- Section --><p>A</p>
+<!-- Bee -->
+<p>B</p><div class="box"><span>s</span></div></section>`)
+        const area = root.querySelector('section'), [a, b] = area.querySelectorAll('section > p'), box = area.querySelector('.box')
+        const seq = () => [...area.childNodes].filter(n => n.nodeType !== 3).map(n => n.nodeType === 8 ? '#' + n.textContent.trim() : n.tagName.toLowerCase() + (n.textContent ? ':' + n.textContent.replace(/\s+/g, '') : ''))
+        expect(seq()).toEqual(['#Section', 'p:A', '#Bee', 'p:B', 'div:s'])
+        key(b, { key: 'ArrowUp', altKey: true })                                                         // stepRow
+        expect(seq()).toEqual(['#Section', '#Bee', 'p:B', 'p:A', 'div:s'])
+        await store().undo()
+        expect(seq()).toEqual(['#Section', 'p:A', '#Bee', 'p:B', 'div:s'])
+        store().move(b, box)                                                                             // moveBlock
+        expect(seq()).toEqual(['#Section', 'p:A', 'div:sB'])
+        expect([...box.childNodes].filter(n => n.nodeType === 8).map(n => n.textContent.trim())).toEqual(['Bee'])
+        await store().undo()
+        expect(seq()).toEqual(['#Section', 'p:A', '#Bee', 'p:B', 'div:s'])
+        store().remove(b)
+        expect(seq()).toEqual(['#Section', 'p:A', 'div:s'])
+        await store().undo()
+        expect(seq()).toEqual(['#Section', 'p:A', '#Bee', 'p:B', 'div:s'])
+        expect(area.querySelectorAll('section > p')[1]).toBe(b)                                          // the same element came back
+    })
+
+    it('template contents count: a piece whose x-if can render a link cannot go into a link', async () => {
+        const root = await mount(`<section x-edit="${id('tpl')}"><a href="/card"><div class="in"><span>card</span></div></a><div class="p"><template x-if="false"><a href="/x">x</a></template></div></section>`)
+        expect(store().move(root.querySelector('.p'), root.querySelector('.in'))).toBe(false)
+    })
+
+    it('a duplicate does not copy its titling comment', async () => {
+        const root = await mount(`<section x-edit="${id('dc')}"><p>Zero</p><!-- Card --><p>One</p></section>`)
+        const area = root.querySelector('section')
+        store().duplicate(area.querySelectorAll('p')[1])
+        expect([...area.childNodes].filter(n => n.nodeType === 8).length).toBe(1)
+    })
+
+    it('theme values: strings and data images pass; breakouts, script urls and expression() do not', async () => {
+        const root = await mount(`<input x-edit.cssvar="--brand-y" value="red">`)
+        const input = root.querySelector('input')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        const tryValue = (v) => { const at = store().export().cursor; input.value = v; input.dispatchEvent(new Event('change')); return store().export().cursor > at; }
+        expect(['url(data:image/png;base64,AAAA)', '"a; b {c}"', 'calc(1px + 2px)'].map(tryValue)).toEqual([true, true, true])
+        expect(['red; }', 'url(javascript:alert(1))', 'expression(alert(1))', 'url(data:text/html,x)', 'a </style>', '"open', '(a]'].map(tryValue)).toEqual([false, false, false, false, false, false, false])
+        warn.mockRestore()
+    })
+
+    it('theme values that would leave their declaration are refused', async () => {
+        const root = await mount(`<input x-edit.cssvar="--brand-x" value="red">`)
+        const input = root.querySelector('input'), at = store().export().cursor
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        input.value = 'red; } body { x: 1'
+        input.dispatchEvent(new Event('change'))
+        warn.mockRestore()
+        expect(store().export().cursor).toBe(at)
+        input.value = 'rgb(1 2 3)'
+        input.dispatchEvent(new Event('change'))
+        expect(store().export().cursor).toBe(at + 1)
+    })
+})
+
+describe('entity table', () => {
+    it('is the full WHATWG list', () => {
+        const t = JSON.parse(readFileSync(path.join(__dirname, '../packages/run/html-entities.json'), 'utf8'))
+        expect(Object.keys(t).length).toBe(2231)
+        expect([t['amp;'], t['eacute'], t['mdash;'], t['NotEqualTilde;']]).toEqual(['&', '\u00e9', '\u2014', '\u2242\u0338'])
+    })
+})
+
 describe('flow vs freeform after the drop', () => {
     async function board() {
         const root = await mount(`
             <style>.canvas > * { position: absolute; }</style>
             <section x-edit.move="${id('board')}">
-                <ul class="list"><li data-n="one">One</li><li data-n="two">Two</li></ul>
+                <div class="list"><div data-n="one">One</div><div data-n="two">Two</div></div>
                 <div class="canvas"><div data-n="note" style="left: 10%; top: 20px">Note</div></div>
             </section>`)
         const area = root.querySelector('section'), list = area.querySelector('.list'), canvas = area.querySelector('.canvas')
         rect(area, 0, 0, 800, 800); rect(list, 0, 0, 800, 100); rect(canvas, 100, 200, 500, 600)
-        list.querySelectorAll('li').forEach((li, i) => rect(li, 0, i * 50, 800, i * 50 + 50))
+        list.querySelectorAll(':scope > div').forEach((li, i) => rect(li, 0, i * 50, 800, i * 50 + 50))
         return { area, list, canvas, note: canvas.firstElementChild, one: list.firstElementChild }
     }
 

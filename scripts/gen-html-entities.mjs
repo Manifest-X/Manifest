@@ -3,11 +3,16 @@
 // name as written after "&": "amp;" and the legacy semicolon-less "amp".
 // Run: node scripts/gen-html-entities.mjs
 import { createRequire } from 'module'
-import { writeFileSync } from 'fs'
+import { writeFileSync, readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import path from 'path'
 
 const require = createRequire(import.meta.url)
+// Pinned in devDependencies; refuse any other copy (its trie layout is internal).
+const PINNED = '4.5.0'
+const decodePath = require.resolve('entities/lib/decode.js')
+const version = JSON.parse(readFileSync(path.join(path.dirname(decodePath), '..', 'package.json'), 'utf8')).version
+if (version !== PINNED) throw new Error(`entities ${version} resolved; this generator is pinned to ${PINNED}`)
 const E = require('entities/lib/decode.js')
 const tree = E.htmlDecodeTree, VL = E.BinTrieFlags.VALUE_LENGTH
 const chars = []
@@ -27,6 +32,9 @@ for (const n of names.sort()) {
     table[n] = v
 }
 if (Object.keys(table).length !== 2231) throw new Error('entity table looks incomplete: ' + Object.keys(table).length)
+// Spot checks against the WHATWG table.
+const expect = { 'amp;': '&', 'AMP': '&', 'eacute;': '\u00e9', 'mdash;': '\u2014', 'rightarrow;': '\u2192', 'NotEqualTilde;': '\u2242\u0338', 'nbsp': '\u00a0', 'fjlig;': 'fj' }
+for (const [k, v] of Object.entries(expect)) if (table[k] !== v) throw new Error(`entity ${k} decoded to ${JSON.stringify(table[k])}`)
 const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '../packages/run/html-entities.json')
 writeFileSync(out, JSON.stringify(table) + '\n')
 console.log('wrote', Object.keys(table).length, 'entities to', out)

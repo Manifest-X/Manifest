@@ -213,12 +213,20 @@
         saveState(); refresh();
     }
     const published = (r) => !(r && Array.isArray(r.results) && r.results.some(x => x && x.status === 'error'));
+    // Source file hashes as the page loaded them (mnfst-run --edit); a publish carries them
+    // so the server can refuse when a file changed underneath this page.
+    let baseFiles = null;
+    function loadBase() {
+        if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return;
+        fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.files) baseFiles = j.files; }).catch(() => { });
+    }
     function publish() {
         const patches = buildPatches();
-        const done = (r) => { if (published(r)) rebase(); return r; };
+        const done = (r) => { if (r && r.base && baseFiles) Object.assign(baseFiles, r.base); if (published(r)) rebase(); return r; };
         if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
         if (!patches.length) return Promise.resolve({ results: [] });
-        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json()).then(done);
+        const body = baseFiles ? { patches, base: baseFiles } : patches;
+        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).then(done);
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {
