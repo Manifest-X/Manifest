@@ -1609,7 +1609,7 @@
     <menu popover id="canvas-menu" class="p-1 col" style="min-width: 12rem"
           x-data @toggle="if (!$event.newState || $event.newState === 'closed') $edit.target = null">
       <button class="ghost sm trailing" :disabled="!$edit.can('duplicate')" @click="$edit.duplicate(); $el.closest('menu').hidePopover()"><span x-icon="lucide:copy-plus"></span>Duplicate</button>
-      <button class="ghost sm trailing" :disabled="!$edit.can('attrs')" @click="$edit.classes.toggle('shadow-lg'); $el.closest('menu').hidePopover()"><span x-icon="lucide:layers"></span>Toggle shadow</button>
+      <button class="ghost sm trailing" :disabled="!$edit.can('class')" @click="$edit.classes.toggle('shadow-lg'); $el.closest('menu').hidePopover()"><span x-icon="lucide:layers"></span>Toggle shadow</button>
       <button class="ghost sm trailing" :disabled="!$edit.can('attrs')" @click="$edit.attr('hidden', true); $el.closest('menu').hidePopover()"><span x-icon="lucide:eye-off"></span>Hide</button>
       <button class="ghost sm trailing" x-show="$edit.target" @click="$edit.can('move') ? $edit.lock($edit.target, 'move') : $edit.unlock($edit.target, 'move'); $el.closest('menu').hidePopover()"><span x-icon="lucide:lock"></span><span x-text="$edit.can('move') ? 'Lock position' : 'Unlock position'"></span></button>
       <template x-if="$edit.scope() !== null">
