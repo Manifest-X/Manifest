@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -214,6 +214,13 @@ describe('/__edit/save parsing as a browser does', () => {
         expect(out).toBe(`<section x-edit="r"><!-- </section> --><p>Two</p><div><script>var s = "</div><p>";</script><p>One</p></div></section>`)
     })
 
+    it('reads abrupt comments, --!>, CDATA in SVG, </br> and a stray </p> as browsers do', async () => {
+        const src = `<section x-edit="q"><div><!--><p>x</p>--><p>y</p></div><div><!-- a --!><p>z</p></div><p>t<svg><text><![CDATA[<p>x</p> a > b]]></text></svg>u</p><div>a</br>b</p></div><p>last</p></section>`
+        const { results, out } = await write(src, [tree('q', [n('q', 'P:last'), n('q', 'DIV:x-->y'), n('q', 'DIV:z'), n('q', 'P:t<p>x</p> a > bu'), n('q', 'DIV:ab')])])
+        expect(results[0].status, JSON.stringify(results)).toBe('written')
+        expect(out).toBe(`<section x-edit="q"><p>last</p><div><!--><p>x</p>--><p>y</p></div><div><!-- a --!><p>z</p></div><p>t<svg><text><![CDATA[<p>x</p> a > b]]></text></svg>u</p><div>a</br>b</p></div></section>`)
+    })
+
     it('decodes every named entity as the browser does, so keys match', async () => {
         const src = `<section x-edit="e"><p>Caf&eacute; &mdash; &rightarrow; &copy 2024</p><p>Two</p></section>`
         const { results, out } = await write(src, [tree('e', [n('e', 'P:Two'), n('e', 'P:Café — → © 2024', { edits: { text: 'Edited' } })])])
@@ -235,20 +242,35 @@ describe('/__edit/save parsing as a browser does', () => {
 
     it('a titling comment moves with its element; a blank line keeps it in place', async () => {
         const src = `<section x-edit="c">
+    <p>Intro</p>
     <!-- Header -->
     <h1>Title</h1>
     <!-- Section label -->
 
     <p>Body</p>
 </section>`
-        const { out } = await write(src, [tree('c', [n('c', 'P:Body'), n('c', 'H1:Title')])])
+        const { out } = await write(src, [tree('c', [n('c', 'P:Intro'), n('c', 'P:Body'), n('c', 'H1:Title')])])
         expect(out).toBe(`<section x-edit="c">
+    <p>Intro</p>
     <p>Body</p>
     <!-- Section label -->
 
     <!-- Header -->
     <h1>Title</h1>
-</section>`)                                                        // the blank-line comment keeps its slot
+</section>`)
+    })
+
+    it('a comment that opens its container titles the section, not the first child', async () => {
+        const src = `<section x-edit="o"><!-- Section --><p>A</p><p>B</p></section>`
+        const { out } = await write(src, [tree('o', [n('o', 'P:B'), n('o', 'P:A')])])
+        expect(out).toBe(`<section x-edit="o"><!-- Section --><p>B</p><p>A</p></section>`)
+    })
+
+    it('rebuilt empty containers use the file\'s line endings', async () => {
+        const src = `<section x-edit="l">\r\n  <div class="box"></div>\r\n  <p>Mover</p>\r\n</section>`
+        const { out } = await write(src, [tree('l', [n('l', 'DIV:Mover', { at: '0', children: [n('l', 'P:Mover')] })])].map(p => (p.tree.children[0].key = K('l', 'DIV:'), p)))
+        expect(out).toBe(`<section x-edit="l">\r\n  <div class="box">\r\n      <p>Mover</p>\r\n  </div>\r\n</section>`)
+        expect(out.replace(/\r\n/g, '')).not.toContain('\n')
     })
 
     it('refuses a removal whose container is kept as is', async () => {
@@ -284,4 +306,70 @@ describe('/__edit/save parsing as a browser does', () => {
         expect(results.map(r => r.status)).toEqual(['skipped', 'error'])
         expect(file()).toBe(src)
     })
+
+    it('refuses drops that break the HTML content model, naming the rule', async () => {
+        const cases = [
+            [`<table><tbody><tr><td>x</td></tr></tbody></table><p>z</p>`, [{ k: 'TABLE:x', c: [{ k: 'TBODY:x', c: [{ k: 'TR:x' }, { k: 'P:z' }] }] }], 'takes only tr'],
+            [`<table><tbody><tr><td>x</td></tr></tbody></table><div><p>d</p></div>`, [{ k: 'TABLE:x', c: [{ k: 'TBODY:x', c: [] }] }, { k: 'DIV:d', c: [{ k: 'P:d' }, { k: 'TR:x' }] }], 'belongs in'],
+            [`<form><div><p>in</p></div></form><form><p>f2</p></form>`, [{ k: 'FORM:in', c: [{ k: 'DIV:in', c: [{ k: 'P:in' }, { k: 'FORM:f2' }] }] }], 'form cannot contain a form'],
+            [`<a href="/x"><div><p>c</p></div></a><button>b</button>`, [{ k: 'A:c', c: [{ k: 'DIV:c', c: [{ k: 'P:c' }, { k: 'BUTTON:b' }] }] }], 'interactive'],
+            [`<ul><li>i</li></ul><div><p>d</p></div>`, [{ k: 'UL:i', c: [] }, { k: 'DIV:d', c: [{ k: 'P:d' }, { k: 'LI:i' }] }], 'belongs in ul'],
+            [`<p>para</p><div>block</div>`, [{ k: 'P:para', c: [{ k: 'DIV:block' }] }], 'inline content']
+        ]
+        const build = (nodes) => nodes.map(x => ({ key: K('m', x.k), ...(x.c ? { children: build(x.c) } : {}) }))
+        for (const [inner, nodes, why] of cases) {
+            const src = `<section x-edit="m">${inner}</section>`
+            const { results, out } = await write(src, [tree('m', build(nodes))])
+            expect(results[0].status, inner).toBe('error')
+            expect(results[0].reason).toContain(why)
+            expect(out).toBe(src)
+        }
+    })
+
+    it('theme values cannot leave their declaration; $ patterns are literal', async () => {
+        const css = `:root {\n    --brand: blue;\n}\n`
+        const themeFile = path.join(dir, 'styles/core/manifest.theme.css')
+        mkdirSync(path.dirname(themeFile), { recursive: true })
+        for (const bad of ['red; } body { color: red } :root { --x: 1', 'a{b', 'x /* c */', 'url(a', '"open']) {
+            writeFileSync(themeFile, css)
+            const { results } = await save([{ kind: 'theme', scope: null, var: '--brand', value: bad }])
+            expect(results[0].status, bad).toBe('error')
+            expect(readFileSync(themeFile, 'utf8')).toBe(css)
+        }
+        writeFileSync(themeFile, css)
+        await save([{ kind: 'theme', scope: null, var: '--brand', value: "'$& $` $1'" }])
+        expect(readFileSync(themeFile, 'utf8')).toBe(`:root {\n    --brand: '$& $\` $1';\n}\n`)
+    })
+
+    it('component patches resolve listed and convention components', async () => {
+        mkdirSync(path.join(dir, 'components'), { recursive: true })
+        const comp = `<div class="card"><h3>Card title</h3></div>\n`
+        for (const listed of [true, false]) {
+            writeFileSync(path.join(dir, 'components/card.html'), comp)
+            writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(listed ? { components: ['components/card.html'] } : { name: 'x' }))
+            writeFileSync(path.join(dir, 'index.html'), `<section x-edit="a"><p>One</p></section>`)
+            const { results } = await save([{ kind: 'component', scope: 'main', component: 'card', edits: [{ path: '0', prop: 'text', value: 'Edited title' }] }])
+            expect(results[0].status, String(listed)).toBe('written')
+            expect(readFileSync(path.join(dir, 'components/card.html'), 'utf8')).toBe(`<div class="card"><h3>Edited title</h3></div>\n`)
+        }
+        writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'tree-test' }))
+    })
+
+    it('an unwritable file fails the batch cleanly: nothing written, a response sent, the server alive', async () => {
+        const themeFile = path.join(dir, 'styles/core/manifest.theme.css')
+        mkdirSync(path.dirname(themeFile), { recursive: true })
+        const css = `:root {\n    --brand: blue;\n}\n`, src = `<section x-edit="a"><p>One</p></section>`
+        writeFileSync(themeFile, css); writeFileSync(path.join(dir, 'index.html'), src)
+        chmodSync(themeFile, 0o444)
+        try {
+            const { results } = await save([tree('a', [n('a', 'P:One', { edits: { text: 'Uno' } })]), { kind: 'theme', scope: null, var: '--brand', value: 'red' }])
+            expect(results.every(r => r.status === 'error')).toBe(true)
+            expect(results[0].reason).toContain('not writable')
+            expect(file()).toBe(src)
+            expect(readFileSync(themeFile, 'utf8')).toBe(css)
+        } finally { chmodSync(themeFile, 0o644) }
+        const alive = await fetch(`http://localhost:${port}/manifest.json`).then(r => r.status)
+        expect(alive).toBe(200)
+    })
 })
+

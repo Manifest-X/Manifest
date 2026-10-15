@@ -58,9 +58,9 @@ import { connect as tlsConnect } from 'tls';
 import {
   readFileSync, statSync, watch,
   existsSync, writeFileSync, unlinkSync,
-  mkdirSync, readdirSync,
+  mkdirSync, readdirSync, renameSync, accessSync, chmodSync, constants as fsConstants,
 } from 'fs';
-import { join, extname, resolve, basename, sep } from 'path';
+import { join, extname, resolve, basename, sep, dirname } from 'path';
 import { exec }                          from 'child_process';
 import { tmpdir }                        from 'os';
 import { createHash }                    from 'crypto';
@@ -613,6 +613,33 @@ function isFile(p) {
 // Source writes go through an in-memory overlay during a save batch: every patch is
 // prepared against it, and the files are written only if all of them succeed.
 let VFS = null;
+// Write a batch atomically: every file is checked writable, staged as a temp file in its
+// own directory (mode kept), then renamed over the original; any failure restores the
+// files already replaced and removes the temps.
+function commitFiles(files) {
+  const jobs = [...files].map(([file, content]) => ({ file, content }));
+  for (const j of jobs) {
+    try { accessSync(existsSync(j.file) ? j.file : dirname(j.file), fsConstants.W_OK); }
+    catch { throw new Error(`${basename(j.file)} is not writable`); }
+  }
+  const tag = `.mnfst-edit-${process.pid}-${Date.now()}`;
+  const cleanup = () => jobs.forEach(j => { if (j.tmp) try { unlinkSync(j.tmp); } catch { } });
+  try {
+    for (const j of jobs) {
+      j.tmp = j.file + tag;
+      writeFileSync(j.tmp, j.content);
+      if (existsSync(j.file)) { j.orig = readFileSync(j.file); try { chmodSync(j.tmp, statSync(j.file).mode); } catch { } }
+    }
+  } catch (e) { cleanup(); throw e; }
+  const done = [];
+  try {
+    for (const j of jobs) { renameSync(j.tmp, j.file); j.tmp = null; done.push(j); }
+  } catch (e) {
+    for (const j of done) { try { if (j.orig == null) unlinkSync(j.file); else writeFileSync(j.file, j.orig); } catch { } }
+    cleanup();
+    throw e;
+  }
+}
 const vread = (file) => VFS && VFS.has(file) ? VFS.get(file) : readFileSync(file, 'utf8');
 const vwrite = (file, content) => { if (VFS) VFS.set(file, String(content)); else writeFileSync(file, content); };
 const vexists = (file) => (VFS && VFS.has(file)) || isFile(file);
@@ -662,7 +689,7 @@ const csvCell = (v) => /[",\n]/.test(v) ? '"' + String(v).replace(/"/g, '""') + 
 function writeDataValue(p, manifest) {
   const src = (manifest.data || {})[p.source], rel = typeof src === 'string' ? src : null;
   if (!rel) return { kind: 'data-val', source: p.source, status: 'skipped', reason: 'not a file source (cloud → use $x.$update)' };
-  const file = safeResolve(rel); if (!file || !isFile(file)) return { kind: 'data-val', source: p.source, status: 'error', reason: `file not found: ${rel}` };
+  const file = resolveRel(rel); if (!file || !isFile(file)) return { kind: 'data-val', source: p.source, status: 'error', reason: `file not found: ${rel}` };
   const ext = extname(file).toLowerCase(), text = vread(file);
   if (ext === '.json') {
     const data = JSON.parse(text); if (!Array.isArray(data)) return { kind: 'data-val', source: p.source, status: 'error', reason: 'JSON is not an array' };
@@ -811,13 +838,25 @@ function parseHTML(s, from = 0, to = s.length) {
     const lt = s.indexOf('<', i);
     if (lt < 0 || lt >= to) { text(i, to); break; }
     text(i, lt);
-    if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); i = e < 0 || e + 3 > to ? to : e + 3; continue; }
+    if (s.startsWith('<!--', lt)) {
+      // Comments end at --> or --!>; <!--> and <!---> are complete (empty) comments.
+      if (s.startsWith('<!-->', lt)) { i = lt + 5; continue; }
+      if (s.startsWith('<!--->', lt)) { i = lt + 6; continue; }
+      const re = /--!?>/g; re.lastIndex = lt + 4; const e = re.exec(s);
+      i = !e || e.index + e[0].length > to ? to : e.index + e[0].length; continue;
+    }
     const c = s[lt + 1];
+    if (s.startsWith('<![CDATA[', lt) && foreign()) { const e = s.indexOf(']]>', lt + 9); const end = e < 0 || e >= to ? to : e; text(lt + 9, end, true); i = Math.min(to, end + 3); continue; }
     if (c === '!' || c === '?') { const e = s.indexOf('>', lt); i = e < 0 || e >= to ? to : e + 1; continue; }
     if (c === '/') {
       const m = /^<\/([a-zA-Z][^\s/>]*)/.exec(s.slice(lt, lt + 80));
       const e = s.indexOf('>', lt), end = e < 0 || e >= to ? to : e + 1;
-      if (m) { const k = find(set(m[1].toLowerCase())); if (k > 0) close(k, lt, { start: lt, end }); }
+      if (m) {
+        const name = m[1].toLowerCase(), k = find(set(name));
+        if (name === 'br' && !foreign()) insert('br', 'br', lt, end - 1, { void: true, implied: true, innerEnd: end, closeEnd: end });   // </br> is a <br>
+        else if (name === 'p' && find(set('p'), BUTTON_SCOPE) < 0 && !foreign()) insert('p', 'p', lt, lt - 1, { implied: true, innerEnd: lt, closeEnd: end });   // stray </p> makes an empty <p>
+        else if (k > 0) close(k, lt, { start: lt, end });
+      }
       i = end; continue;
     }
     const m = /^<([a-zA-Z][^\s/>]*)/.exec(s.slice(lt, lt + 80));
@@ -890,6 +929,38 @@ function attrRefusal(name, value, tag) {
     const datas = v.match(/(^|[,(;'"=])data:[^,)]*/g) || [];
     if (datas.length && !((t === 'img' || t === 'source') && (n === 'src' || n === 'srcset') && datas.every(d => DATA_IMAGE.test(d.replace(/^[,(;'"=]/, ''))))) return 'data URL';
   }
+  return null;
+}
+// HTML content model: drops the parser would re-nest, foster-parent or drop. Mirrors
+// the client's CONTENT_RULES (manifest.edit.core.js).
+const CONTENT_RULES = {
+  only: {   // parent → the only children it takes
+    table: ['caption', 'colgroup', 'thead', 'tbody', 'tfoot', 'script', 'template', 'style'],
+    thead: ['tr', 'script', 'template'], tbody: ['tr', 'script', 'template'], tfoot: ['tr', 'script', 'template'],
+    tr: ['td', 'th', 'script', 'template'], colgroup: ['col', 'template'],
+    ul: ['li', 'script', 'template'], ol: ['li', 'script', 'template'], menu: ['li', 'script', 'template'],
+    dl: ['dt', 'dd', 'div', 'script', 'template'],
+    select: ['option', 'optgroup', 'hr', 'script', 'template'], datalist: ['option', 'script', 'template'], optgroup: ['option', 'script', 'template']
+  },
+  parent: {   // child → the parents it needs
+    tr: ['thead', 'tbody', 'tfoot'], td: ['tr'], th: ['tr'], caption: ['table'], colgroup: ['table'], col: ['colgroup'],
+    thead: ['table'], tbody: ['table'], tfoot: ['table'], li: ['ul', 'ol', 'menu'], dt: ['dl', 'div'], dd: ['dl', 'div'],
+    option: ['select', 'datalist', 'optgroup'], optgroup: ['select']
+  },
+  interactive: ['a', 'button', 'input', 'select', 'textarea', 'details', 'label', 'iframe', 'embed', 'object', 'audio', 'video', 'keygen'],
+  phrasingOnly: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre'],
+  block: ['address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div', 'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'search', 'section', 'table', 'ul', 'li', 'dd', 'dt']
+};
+// Reason a <child> (with its subtree's tag names) cannot be placed in <parent> (whose
+// ancestor tag names are given, nearest first), or null.
+function contentRefusal(child, parent, ancestors, subtree) {
+  const R = CONTENT_RULES;
+  if (R.only[parent] && !R.only[parent].includes(child)) return `<${parent}> takes only ${R.only[parent].filter(t => t !== 'script' && t !== 'template' && t !== 'style').join(', ')}`;
+  if (R.parent[child] && !R.parent[child].includes(parent)) return `<${child}> belongs in ${R.parent[child].join(' or ')}`;
+  if ((child === 'dt' || child === 'dd') && parent === 'div' && ancestors[1] !== 'dl') return `<${child}> belongs in a dl`;
+  if (subtree.has('form') && ancestors.includes('form')) return 'a form cannot contain a form';
+  if ((ancestors.includes('a') || ancestors.includes('button')) && R.interactive.some(t => subtree.has(t))) return 'interactive content cannot go inside a link or button';
+  if (R.phrasingOnly.includes(parent) && R.block.some(t => subtree.has(t))) return `<${parent}> takes only inline content`;
   return null;
 }
 // Elements whose content is not markup: never given text edits.
@@ -966,7 +1037,7 @@ function indexRegion(html, name, node) {
     reg.byKey.set(n.key, n); reg.byPath.set(n.path, n);
     n.kids = kidsOf(html, n);
     let floor = n.innerStart;
-    n.kids.forEach((k, i) => { k.path = (n.path ? n.path + '.' : '') + i; k.lead = leadOf(html, k, floor); floor = k.closeEnd; });
+    n.kids.forEach((k, i) => { k.path = (n.path ? n.path + '.' : '') + i; k.lead = leadOf(html, k, floor, i === 0); floor = k.closeEnd; });
     if (n.name === 'template' || rendered(n) || (!n.implied && hasAttrNamed(open(n), a => a.startsWith('x-text-edit')))) return;
     n.kids.forEach(visit);
   };
@@ -975,25 +1046,35 @@ function indexRegion(html, name, node) {
   return reg;
 }
 // A comment directly above an element (whitespace between, no blank line) titles it.
-function leadOf(html, n, floor) {
+// A comment that opens its container titles the section, not the first child.
+function leadOf(html, n, floor, first) {
   let lead = n.tagStart;
   for (;;) {
     const before = html.slice(floor, lead);
     const m = /<!--(?:(?!-->)[\s\S])*-->([ \t]*\r?\n?[ \t]*)$/.exec(before);
     if (!m || (m[1].match(/\n/g) || []).length > 1) return lead;
+    if (first && !before.slice(0, m.index).trim()) return lead;
     lead = floor + m.index;
   }
 }
 // Element skeleton (tags only), for checking the written file parses as intended.
 const skeletonOf = (html, n) => n.name + (n.name === 'template' ? '()' : '(' + kidsOf(html, n).map(k => skeletonOf(html, k)).join(',') + ')');
+// Returns the first element whose range does not nest in its parent, or null.
 function checkNesting(n) {
   let prev = n.innerStart;
   for (const k of n.children) {
-    if (k.tagStart < prev || k.closeEnd > n.innerEnd || k.closeEnd < k.tagStart) return false;
+    if (k.tagStart < prev || k.closeEnd > n.innerEnd || k.closeEnd < k.tagStart) return k;
     prev = k.closeEnd;
-    if (!checkNesting(k)) return false;
+    const bad = checkNesting(k);
+    if (bad) return bad;
   }
-  return true;
+  return null;
+}
+// Where two skeletons first differ, as "<tag> ... (expected …, got …)".
+function skeletonDiff(want, got) {
+  let i = 0; while (i < want.length && want[i] === got[i]) i++;
+  const ctx = (s) => s.slice(Math.max(0, i - 40), i + 40);
+  return `expected …${ctx(want)}… got …${ctx(got || '')}…`;
 }
 
 // Rebuild every static area from the client's final trees, from the original file.
@@ -1001,7 +1082,8 @@ function writeStaticTrees(file, patches) {
   const html = vread(file);
   const doc = parseHTML(html);
   const fail = (msg) => { const e = new Error(msg); e.edit = true; throw e; };
-  if (!checkNesting(doc)) return patches.map(p => ({ region: p.region, status: 'error', reason: 'source does not nest cleanly; not editing it' }));
+  const bad = checkNesting(doc);
+  if (bad) return patches.map(p => ({ region: p.region, status: 'error', reason: `source does not nest cleanly at <${bad.name}> (offset ${bad.tagStart}); not editing it` }));
   const regions = new Map();
   const region = (name) => {
     if (!regions.has(name)) { const node = locateEditEl(html, name, doc); regions.set(name, node ? indexRegion(html, name, node) : null); }
@@ -1021,6 +1103,7 @@ function writeStaticTrees(file, patches) {
     return { node, copy: !!m[1] };
   };
   const indentOf = (n) => { const nl = html.lastIndexOf('\n', n.tagStart); const pre = html.slice(nl + 1, n.tagStart); return /^[ \t]*$/.test(pre) ? pre : ''; };
+  const EOL = html.includes('\r\n') ? '\r\n' : '\n';
   const trailingWs = (s) => (/\s*$/.exec(s.replace(/<!--[\s\S]*?-->/g, '')) || [''])[0];
   const fragSkeleton = (frag) => { const d = parseHTML(frag); return kidsOf(frag, d).map(k => skeletonOf(frag, k)).join(','); };
   // Returns [markup, skeleton].
@@ -1037,7 +1120,7 @@ function writeStaticTrees(file, patches) {
       attrsEdited = true;
     }
     if (node.implied && !attrsEdited) open = '';
-    if (node.void) return [open, node.name + '()'];
+    if (node.void) return [node.implied && !attrsEdited ? html.slice(node.tagStart, node.closeEnd) : open, node.name + '()'];
     let inner, sk;
     if ('text' in e) {
       if (RAW_EDIT.has(node.name)) fail(`text edits are refused on <${node.name}>`);
@@ -1060,9 +1143,18 @@ function writeStaticTrees(file, patches) {
     const [markup, sk] = renderAt(node, n, copy, parentRebuilt);
     return [html.slice(node.lead ?? node.tagStart, node.tagStart) + markup, sk];
   }
+  // Source ancestors of a node (for content-model checks on what moves in).
+  const ancestorNames = (n) => { const out = []; for (let a = n; a && a !== doc; a = a.parent) out.push(a.name); return out; };
+  const subtreeNames = (n) => { const out = new Set([n.name]); allElements(n).forEach(k => out.add(k.name)); return out; };
   function rebuildInner(node, children, copy) {
     if (!copy) rebuilt.add(node);
     const kids = node.kids || kidsOf(html, node);
+    for (const c of children) {
+      const { node: child } = resolve(c.key, c.at);
+      if (child.parent === node && !/^~/.test(c.key)) continue;    // authored placement is left as written
+      const why = contentRefusal(child.name, node.name, ancestorNames(node), subtreeNames(child));
+      if (why) fail(`<${child.name}> cannot go into <${node.name}>: ${why}`);
+    }
     const rendered = children.map(c => renderNode(c, true));
     const sk = rendered.map(r => r[1]).join(',');
     const gaps = []; let prev = node.innerStart;
@@ -1071,7 +1163,7 @@ function writeStaticTrees(file, patches) {
     if (!kids.length) {
       if (!rendered.length) return [gaps[0], sk];
       const ind = indentOf(node);
-      return [rendered.map(r => '\n' + ind + '    ' + r[0]).join('') + '\n' + ind, sk];
+      return [rendered.map(r => EOL + ind + '    ' + r[0]).join('') + EOL + ind, sk];
     }
     if (!rendered.length) return [trailingWs(gaps[kids.length]) || '', sk];
     const extra = trailingWs(kids.length > 1 ? gaps[kids.length - 1] : gaps[0]);
@@ -1125,7 +1217,7 @@ function writeStaticTrees(file, patches) {
     for (const { reg, sk } of out) {
       const node = locateEditEl(next, reg.name, after);
       const got = node && skeletonOf(next, node), want = sk;
-      if (got !== want) return patches.map(p => ({ region: p.region, status: 'error', reason: `x-edit="${reg.name}" would not parse as rebuilt; nothing written` }));
+      if (got !== want) return patches.map(p => ({ region: p.region, status: 'error', reason: `x-edit="${reg.name}" would not parse as rebuilt (${skeletonDiff(want, got)}); nothing written` }));
     }
     vwrite(file, next);
   }
@@ -1139,6 +1231,8 @@ function navigateToNode(html, path) {
   for (const i of path.split('.').map(Number)) { node = kidsOf(html, node)[i]; if (!node) return null; }
   return node;
 }
+// A project-relative path from manifest.json ("components/x.html", "/data/a.csv").
+const resolveRel = (rel) => safeResolve('/' + String(rel).replace(/^\/+/, ''));
 function resolveComponentFile(manifest, name) {
   const all = [...(manifest.preloadedComponents || []), ...(manifest.components || [])];
   const listed = all.find(p => String(p).split('/').pop().replace('.html', '') === name);
@@ -1154,17 +1248,37 @@ function resolveComponentFile(manifest, name) {
 // standard theme file. Surgical — rewrites the existing declaration in place, else
 // appends into the first :root{} block, else creates one.
 const DEFAULT_THEME_FILE = 'styles/core/manifest.theme.css';
+// A custom-property value must stay inside its declaration.
+function themeValueRefusal(v) {
+  const s = String(v == null ? '' : v);
+  if (!s.trim()) return 'empty';
+  if (/[;{}<]|\/\*|\*\//.test(s)) return 'contains ; { } < or a comment';
+  const stack = [], pairs = { ')': '(', ']': '[' };
+  let q = null;
+  for (const ch of s) {
+    if (q) { if (ch === q) q = null; continue; }
+    if (ch === '"' || ch === "'") q = ch;
+    else if (ch === '(' || ch === '[') stack.push(ch);
+    else if (pairs[ch]) { if (stack.pop() !== pairs[ch]) return 'unbalanced brackets'; }
+  }
+  if (q) return 'unbalanced quotes';
+  if (stack.length) return 'unbalanced brackets';
+  return null;
+}
 function writeThemeVar(p) {
   if (!/^--[\w-]+$/.test(p.var || '')) return { region: p.var, status: 'error', reason: 'bad var name' };
   const rel = (p.file || DEFAULT_THEME_FILE).replace(/^\//, '');
   const file = safeResolve('/' + rel);
   if (!file) return { region: p.var, status: 'error', reason: `path outside root: ${rel}` };
+  const why = themeValueRefusal(p.value);
+  if (why) return { region: p.var, status: 'error', reason: `value refused (${why})` };
+  const value = String(p.value).trim();
   let css = vexists(file) ? vread(file) : '';
-  const decl = `${p.var}: ${p.value};`;
+  const decl = `${p.var}: ${value};`;
   const declRe = new RegExp(`(${escapeReg(p.var)}\\s*:)[^;]*;`);
-  if (declRe.test(css)) css = css.replace(declRe, `$1 ${p.value};`);              // rewrite in place
-  else if (/:root\s*[^{]*\{/.test(css)) css = css.replace(/(:root\s*[^{]*\{)/, `$1\n    ${decl}`);   // append into :root
-  else css = `:root {\n    ${decl}\n}\n${css}`;                                    // create :root
+  if (declRe.test(css)) css = css.replace(declRe, (_, head) => `${head} ${value};`);
+  else if (/:root\s*[^{]*\{/.test(css)) css = css.replace(/(:root\s*[^{]*\{)/, (m) => `${m}\n    ${decl}`);
+  else css = `:root {\n    ${decl}\n}\n${css}`;
   vwrite(file, css);
   return { region: `${p.scope ? p.scope + ':' : ''}${p.var}`, status: 'written', file: rel };
 }
@@ -1182,7 +1296,7 @@ const classOf = (openTag) => attrOf(openTag, 'class') || '';
 function writeComponentEdits(p, manifest) {
   const compRel = resolveComponentFile(manifest, p.component);
   if (!compRel) return { region: p.region, status: 'error', reason: `component '${p.component}' not registered` };
-  const compFile = safeResolve(compRel);
+  const compFile = resolveRel(compRel);
   if (!compFile || !isFile(compFile)) return { region: p.region, status: 'error', reason: `component file not found: ${compRel}` };
   const indexFile = join(root, 'index.html'), instanceAttrs = {}, removeNames = new Set(), applied = [];
   for (const ed of (p.edits || [])) {
@@ -1536,7 +1650,8 @@ const server = createServer((req, res) => {
     if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
     let raw = '';
     req.on('data', c => { raw += c; if (raw.length > 1e6) req.destroy(); });
-    req.on('end', () => {
+    const reply = (code, body) => { if (res.headersSent) { try { res.end(); } catch { } return; } res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    req.on('end', () => { try {
       let patches; try { patches = JSON.parse(raw); } catch { res.writeHead(400); res.end('bad json'); return; }
       if (!Array.isArray(patches)) patches = [patches];
       let manifest = {}; try { manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')); } catch {}
@@ -1558,7 +1673,7 @@ const server = createServer((req, res) => {
               const src = (manifest.data || {})[p.source];
               const rel = typeof src === 'string' ? src : null;
               if (!rel) return { region: p.region, status: 'error', reason: `data source '${p.source}' is not a plain file path` };
-              const file = safeResolve(rel);
+              const file = resolveRel(rel);
               if (!file || !isFile(file)) return { region: p.region, status: 'error', reason: `file not found: ${rel}` };
               return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
             }
@@ -1568,15 +1683,18 @@ const server = createServer((req, res) => {
             return { region: p.region, status: 'error', reason: `unknown kind ${p.kind}` };
           } catch (e) { return { region: p && p.region, status: 'error', reason: e.message }; }
         });
-        if (results.some(r => r && r.status === 'error')) {
-          results = results.map(r => r && r.status === 'error' ? r : Object.assign({}, r, { status: 'skipped', reason: 'batch aborted: another patch failed; nothing was written' }));
-        } else {
-          for (const [file, content] of VFS) writeFileSync(file, content);
+        const abort = (why) => results.map(r => r && r.status === 'error' ? r : Object.assign({}, r, { status: 'skipped', reason: why }));
+        if (results.some(r => r && r.status === 'error')) results = abort('batch aborted: another patch failed; nothing was written');
+        else {
+          try { commitFiles(VFS); }
+          catch (e) { results = results.map(r => Object.assign({}, r, { status: 'error', reason: `nothing written: ${e.message}` })); }
         }
       } finally { VFS = null; }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ results }));
-    });
+      reply(200, { results });
+    } catch (e) {
+      console.error('[mnfst-run] /__edit/save failed:', e);
+      reply(500, { results: [], error: String(e && e.message || e) });
+    } });
     return;
   }
 
