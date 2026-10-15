@@ -262,6 +262,18 @@ describe('publish round trips', () => {
         expect(p.innerHTML).toBe('1 Main St<br>Springfield<br>USA')
     })
 
+    it('an authored x-rich-text heading is opaque to keys, as the writer sees it', async () => {
+        const body = `<section x-edit="k1"><h2 x-rich-text.inline.html>Notes <strong>dup</strong></h2><strong id="s1">dup</strong><strong id="s2">dup</strong><p><strong>dup</strong></p></section>`
+        const r = await roundTrip(body, async (root) => {
+            expect(root.querySelector('#s1').getAttribute('data-edit-key')).toBe('@k1@STRONG:dup')
+            expect(root.querySelector('#s2').getAttribute('data-edit-key')).toBe('@k1@STRONG:dup#2')
+            editText(root.querySelector('#s2'), 'two')
+            editText(root.querySelector('p'), '<strong>dup</strong> three')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(body.replace('<strong id="s2">dup<', '<strong id="s2">two<').replace('<p><strong>dup</strong></p>', '<p><strong>dup</strong> three</p>'))
+    })
+
     it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
         const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
         const r = await roundTrip(body, async (root) => {
