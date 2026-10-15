@@ -6,7 +6,7 @@
  *   2. Cross-region drop lands within reach of a region (or inside its column).
  *   3. Resize resolves %/none min/max limits instead of reading "100%" as 100px.
  *   4. Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z and Ctrl+Y drive Edit's history.
- *   5. Sortable rows get a hover outline in the UI scope.
+ *   5. Pieces get a hover outline unless the area is bare.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
@@ -62,18 +62,18 @@ describe('reorderable text keeps Space/Enter; Alt+arrow moves rows', () => {
     it('Space and Enter in a text row reach the text instead of grabbing', async () => {
         const root = await mount(`<section x-edit="k-space"><p>Alpha</p><p>Beta</p></section>`)
         const p = root.querySelector('p')
-        expect(p.hasAttribute('data-edit-sortable')).toBe(true)
+        expect(p.hasAttribute('data-edit-piece')).toBe(true)
         expect(p.getAttribute('contenteditable')).toBe('true')
         expect(key(p, { key: ' ' }).defaultPrevented).toBe(false)
         expect(key(p, { key: 'Enter' }).defaultPrevented).toBe(false)
-        expect(p.hasAttribute('data-edit-grabbed')).toBe(false)
+        expect(p.hasAttribute('data-edit-dragging')).toBe(false)
     })
 
     it('Space still grabs a row that is not itself text', async () => {
         const root = await mount(`<section x-edit="k-grab"><div><p>Alpha</p></div><div><p>Beta</p></div></section>`)
         const row = root.querySelector('section > div')
         expect(key(row, { key: ' ' }).defaultPrevented).toBe(true)
-        expect(row.hasAttribute('data-edit-grabbed')).toBe(true)
+        expect(row.getAttribute('data-edit-dragging')).toBe('keyboard')
         key(row, { key: 'Escape' })
     })
 
@@ -101,13 +101,19 @@ describe('reorderable text keeps Space/Enter; Alt+arrow moves rows', () => {
         expect(store().export().cursor).toBe(at)
     })
 
-    it('Alt+Left/Right move a non-text row (horizontal rows)', async () => {
-        const root = await mount(`<section x-edit="k-horiz" style="display:flex"><div><p>Alpha</p></div><div><p>Beta</p></div><div><p>Gamma</p></div></section>`)
-        const a = root.querySelector('section'), row = a.querySelector('div')
-        expect(key(row, { key: 'ArrowRight', altKey: true }).defaultPrevented).toBe(true)
-        expect(texts(a)).toEqual(['Beta', 'Alpha', 'Gamma'])
-        key(row, { key: 'ArrowLeft', altKey: true })
-        expect(texts(a)).toEqual(['Alpha', 'Beta', 'Gamma'])
+    it('Alt+Right nests a piece into the container before it; Alt+Left moves it back out', async () => {
+        const root = await mount(`<section x-edit="k-nest"><div><p>Alpha</p></div><div><p>Beta</p></div></section>`)
+        const a = root.querySelector('section'), [first, second] = a.querySelectorAll('div')
+        expect(key(second, { key: 'ArrowRight', altKey: true }).defaultPrevented).toBe(true)
+        expect(second.parentElement).toBe(first)
+        expect(texts(a)).toEqual(['AlphaBeta'])
+        expect(store().export().log.at(-1)).toMatchObject({ kind: 'st-move', from: 'k-nest', to: 'k-nest', fromParent: '', toParent: first.getAttribute('data-edit-key') })
+        key(second, { key: 'ArrowLeft', altKey: true })
+        expect(second.parentElement).toBe(a)
+        expect(second.previousElementSibling).toBe(first)
+        key(second, { key: 'ArrowLeft', altKey: true })
+        expect(second.parentElement).toBe(a)
+        expect(document.querySelector('[data-edit-live]').textContent).toBe('Already at the top level')
     })
 
     it('Alt+arrow keeps the row in the DOM, skips locked siblings, and stops at the ends', async () => {
@@ -137,8 +143,8 @@ describe('reorderable text keeps Space/Enter; Alt+arrow moves rows', () => {
 describe('cross-region drop reach', () => {
     async function columns(suffix, reach) {
         const root = await mount(`
-            <div class="col-a"><section x-edit.authoring.sort="from-${suffix}"><p>Alpha</p><p>Beta</p></section></div>
-            <div class="col-b"><section x-edit.authoring.sort="to-${suffix}"${reach ? ` style="--edit-drop-reach: ${reach}"` : ''}><p>Gamma</p></section></div>`)
+            <div class="col-a"><section x-edit.move="from-${suffix}"><p>Alpha</p><p>Beta</p></section></div>
+            <div class="col-b"><section x-edit.move="to-${suffix}"${reach ? ` style="--edit-drop-reach: ${reach}"` : ''}><p>Gamma</p></section></div>`)
         const [colA, colB] = root.querySelectorAll('div')
         const [a, b] = root.querySelectorAll('section')
         rect(colA, 0, 0, 200, 600); rect(a, 0, 0, 200, 100)
@@ -339,18 +345,17 @@ describe('undo/redo hotkeys', () => {
     })
 })
 
-describe('sortable row hover', () => {
-    it('draws an accent outline on hover in the UI scope, not while dragging or on the ghost', () => {
+describe('piece hover', () => {
+    it('draws an accent outline on hover, off in bare areas, while dragging and on the ghost', () => {
         const rules = []
         postcss.parse(readFileSync(CSS, 'utf8')).walkRules(r => {
-            if (r.selector.includes('[data-edit-sortable]') && r.selector.includes(':hover')) rules.push(r)
+            if (r.selector.includes('[data-edit-piece]') && r.selector.includes(':hover')) rules.push(r)
         })
         expect(rules.length).toBe(1)
         const [rule] = rules
-        expect(rule.selector).toContain('[data-edit-ui]')
-        expect(rule.selector).toMatch(/:not\([^)]*\[data-edit-dragging\]/)
+        expect(rule.selector).toContain('[data-edit-area="bare"]')
+        expect(rule.selector).toContain('[data-edit-dragging]')
         expect(rule.selector).toContain('[data-edit-ghost]')
-        expect(rule.selector).toContain('[data-edit-dragging-in]')
         const outline = rule.nodes.find(d => d.prop === 'outline')
         expect(outline && outline.value).toContain('--edit-accent')
     })

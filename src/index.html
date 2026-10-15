@@ -184,16 +184,15 @@
       width: 100%;
     }
 
+    .stage > * {
+      position: absolute;
+    }
+
     .canvas {
       flex: 1 1 auto;
       min-width: 0;
     }
 
-    .canvas [data-edit-armed] {
-      margin-block-start: 1.25rem;
-    }
-
-    /* clearance for the armed-area label */
   </style>
 
 </head>
@@ -223,20 +222,15 @@
       { id: 't4', label: 'Wrap and label' },
       { id: 't5', label: 'Load the van' }
     ]
-  }" @edit:context="
-      $event.preventDefault();
-      const m = document.getElementById('block-menu');
-      m.style.left = $event.detail.x + 'px'; m.style.top = $event.detail.y + 'px';
-      m.showPopover();
-    ">
+  }">
 
     <div class="col gap-1">
       <h1 class="h3">Sortable</h1>
-      <span class="caption text-content-subtle">x-edit.sort.data — one attribute. No chrome unless you ask for it; the array reorders under it. Drag one and watch the translucent stand-in.</span>
+      <span class="caption text-content-subtle">x-edit.move.data — one attribute; the array reorders under it. Drag one and watch the translucent stand-in.</span>
     </div>
 
     <!-- Data regime: the x-for array is the source of truth -->
-    <ul class="col gap-2 unstyle" x-edit.sort.data="tasks">
+    <ul class="col gap-2 unstyle" x-edit.move.data="tasks" x-dropdown.context="block-menu">
       <template x-for="task in tasks" :key="task.id">
         <li class="row items-center gap-3 p-3 bg-surface-1 border border-line rounded">
           <span x-icon="lucide:grip-vertical" class="text-content-subtle"></span>
@@ -252,8 +246,8 @@
 
     <!-- Static regime: no data source at all, just markup -->
     <div class="col gap-1">
-      <strong class="small">Static list <span class="caption text-content-subtle">· x-edit.sort, no x-for</span></strong>
-      <div class="row-wrap gap-2" x-edit.sort="chips">
+      <strong class="small">Static list <span class="caption text-content-subtle">· x-edit.move, no x-for</span></strong>
+      <div class="row-wrap gap-2" x-edit.move="chips" x-dropdown.context="block-menu">
         <span class="p-2 px-3 bg-surface-2 rounded">Roses</span>
         <span class="p-2 px-3 bg-surface-2 rounded">Peonies</span>
         <span class="p-2 px-3 bg-surface-2 rounded">Eucalyptus</span>
@@ -263,7 +257,7 @@
 
     <span class="caption text-content-subtle">Drag, or focus an item and press Space then the arrow keys. Right-click a row for block actions; ⌘D duplicates, Delete removes, ⌘C/⌘X/⌘V copy, cut and paste.</span>
 
-    <!-- Block menu: the plugin reports the block and the pointer, we draw the menu -->
+    <!-- Block menu: x-dropdown.context opens it; $edit.target is the right-clicked piece -->
     <menu popover id="block-menu" class="p-1 col" style="min-width: 11rem"
           x-data @toggle="if (!$event.newState || $event.newState === 'closed') $edit.target = null">
       <button class="ghost sm trailing" :disabled="!$edit.can('duplicate')"
@@ -1468,6 +1462,13 @@
         <span class="caption text-content-subtle">Canvas is editable in every regime. This panel edits CSS variables.</span>
       </div>
 
+      <div class="row gap-2">
+        <button class="ghost sm" :disabled="!$edit.canUndo" @click="$edit.undo()"><span x-icon="lucide:undo-2"></span>Undo</button>
+        <button class="ghost sm" :disabled="!$edit.canRedo" @click="$edit.redo()"><span x-icon="lucide:redo-2"></span>Redo</button>
+        <button class="brand sm" x-data="{ label: 'Publish' }" x-text="label"
+                @click="label = 'Publishing…'; $edit.publish().then(r => label = 'Wrote ' + (r.results || []).filter(x => x.status === 'written').length).catch(() => label = 'Failed').finally(() => setTimeout(() => label = 'Publish', 2800))"></button>
+      </div>
+
       <!-- Scoped theme: x-edit.cssvar="site:--var" writes onto the canvas element only -->
       <div class="group">
         <h2>Canvas theme <span class="caption text-content-subtle">(scoped)</span></h2>
@@ -1533,20 +1534,20 @@
     </div>
 
     <!-- Canvas — a partially built webpage; pure theme scope "site" (cascade target, not an area) -->
-    <main class="canvas bg-page col gap-6" x-edit.theme="site" data-edit-ui data-edit-theme-file="test/themes/site.css" style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
+    <main class="canvas bg-page col gap-6" x-edit.theme="site" x-dropdown.context="canvas-menu" data-edit-theme-file="test/themes/site.css" style="--color-page: #f7f4ff; --color-surface-1: #ffffff; --color-surface-2: #efe9ff; --color-brand-content: #7c3aed; --color-content-stark: #1f1a2e; --color-content-neutral: #4b4361; --radius: 0.75rem; padding: 2rem; border-radius: var(--radius); min-height: 40rem;">
 
       <!-- Static text -->
       <!-- x-text-edit inside an x-edit region: the rich editor owns the element,
            x-edit captures what it produces as an ordinary text delta -->
-      <header class="col gap-2" x-edit.sort.text.style.size.authoring="hero">
+      <header class="col gap-2" x-edit.move.text.size.persist="hero">
         <div x-text-edit.html class="h2" style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><h1>Bloom &amp; Bramble</h1></div>
         <div x-text-edit.html style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><p>Seasonal arrangements, <strong>delivered weekly</strong>. Select any text for the bubble menu, or use the panel.</p></div>
       </header>
 
       <!-- Static sort + text + style -->
       <section class="col gap-2">
-        <small class="caption" style="color: var(--color-content-neutral);">Features · drag to reorder · click text · right-click for classes · 3rd is locked</small>
-        <div class="row-wrap gap-3" x-edit.sort.text.style.size.authoring="features">
+        <small class="caption" style="color: var(--color-content-neutral);">Features · drag to reorder or into another card · click text · right-click for actions · 3rd is locked</small>
+        <div class="row-wrap gap-3" x-edit.move.text.size.persist="features">
           <div class="col gap-1 p-4 bg-surface-1" style="border-radius: var(--radius); min-width: 150px;">
             <div x-text-edit.html.minimal style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><strong>Fresh daily</strong></div>
             <div x-text-edit.html.minimal class="small" style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none">Cut this morning.</div>
@@ -1555,7 +1556,7 @@
             <div x-text-edit.html.minimal style="color: var(--color-content-stark); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none"><strong>Local growers</strong></div>
             <div x-text-edit.html.minimal class="small" style="color: var(--color-content-neutral); --text-edit-min-height: 0; --text-edit-padding: 0; border: 0; background: none">Within 50 miles.</div>
           </div>
-          <div class="col gap-1 p-4 bg-surface-1" x-edit.lock="" style="border-radius: var(--radius); min-width: 150px;">
+          <div class="col gap-1 p-4 bg-surface-1" x-edit.lock style="border-radius: var(--radius); min-width: 150px;">
             <strong style="color: var(--color-content-stark);">Guaranteed</strong><span class="small" style="color: var(--color-content-neutral);">x-edit.lock — read-only.</span>
           </div>
         </div>
@@ -1564,7 +1565,7 @@
       <!-- Data sort + value editing -->
       <section class="col gap-2">
         <small class="caption" style="color: var(--color-content-neutral);">Catalog · drag to reorder · edit names (writes products.csv; price read-only)</small>
-        <div class="row-wrap gap-3" x-edit.sort.data.size.authoring="catalog">
+        <div class="row-wrap gap-3" x-edit.move.data.size="catalog">
           <template x-for="p in $x.products" :key="p.id">
             <div class="col gap-1 p-4 bg-surface-1" :data-key="p.id" style="border-radius: var(--radius); min-width: 150px;">
               <!-- The rich editor bound straight to the data field: the record holds
@@ -1578,31 +1579,48 @@
 
       <!-- Component (instance / main) -->
       <section class="col gap-2">
-        <small class="caption" style="color: var(--color-content-neutral);">Promos · two &lt;x-promo-card&gt; · right-click for scope (this / all) + classes</small>
+        <small class="caption" style="color: var(--color-content-neutral);">Promos · two &lt;x-promo-card&gt; · right-click for scope (this / all) and revert</small>
         <div class="row-wrap gap-3">
-          <div x-edit.text.size.authoring="promoA"><x-promo-card headline="Spring sale" body="20% off all bouquets."></x-promo-card></div>
-          <div x-edit.text.size.authoring="promoB"><x-promo-card headline="Weddings" body="Book a consultation."></x-promo-card></div>
+          <div x-edit.text.size="promoA"><x-promo-card headline="Spring sale" body="20% off all bouquets."></x-promo-card></div>
+          <div x-edit.text.size="promoB"><x-promo-card headline="Weddings" body="Book a consultation."></x-promo-card></div>
         </div>
       </section>
 
       <!-- Size (handles + snap) -->
       <section class="col gap-2">
         <small class="caption" style="color: var(--color-content-neutral);">Size · drag edges/corners (rem-preserving, snaps at 12/18rem); arrow keys resize</small>
-        <div class="center p-2 bg-surface-2" x-edit.size.authoring="hero-image" style="width: 18rem; height: 7rem; border-radius: var(--radius); --edit-size: both; --edit-size-snap: 12rem 18rem; --edit-size-snap-distance: 1rem;">
+        <div class="center p-2 bg-surface-2" x-edit.size.persist="hero-image" style="width: 18rem; height: 7rem; border-radius: var(--radius); --edit-size: both; --edit-size-snap: 12rem 18rem; --edit-size-snap-distance: 1rem;">
           <span class="small" style="color: var(--color-content-neutral);">Hero image placeholder</span>
         </div>
       </section>
 
       <!-- Move (positioned children) -->
       <section class="col gap-2">
-        <small class="caption" style="color: var(--color-content-neutral);">Layout stage · drag the chips (position:absolute → move, rem-preserving)</small>
-        <div x-edit.sort.authoring="stage" style="position: relative; height: 140px; border-radius: var(--radius); background: var(--color-surface-2);">
-          <div class="p-2 center" style="position: absolute; left: 1rem; top: 1rem; border-radius: var(--radius); background: var(--color-brand-content); color: #fff;">Logo</div>
-          <div class="p-2 center" style="position: absolute; left: 11rem; top: 4.5rem; border-radius: var(--radius); background: var(--color-content-stark); color: #fff;">CTA</div>
+        <small class="caption" style="color: var(--color-content-neutral);">Layout stage · absolute chips land where dropped (rem-preserving); drag one into the features row and back</small>
+        <div class="stage" x-edit.move.persist="stage" style="position: relative; height: 140px; border-radius: var(--radius); background: var(--color-surface-2);">
+          <div class="p-2 center" style="left: 1rem; top: 1rem; border-radius: var(--radius); background: var(--color-brand-content); color: #fff;">Logo</div>
+          <div class="p-2 center" style="left: 11rem; top: 4.5rem; border-radius: var(--radius); background: var(--color-content-stark); color: #fff;">CTA</div>
         </div>
       </section>
 
     </main>
+
+    <!-- Canvas menu: x-dropdown.context opens it; every button acts on $edit.target -->
+    <menu popover id="canvas-menu" class="p-1 col" style="min-width: 12rem"
+          x-data @toggle="if (!$event.newState || $event.newState === 'closed') $edit.target = null">
+      <button class="ghost sm trailing" :disabled="!$edit.can('duplicate')" @click="$edit.duplicate(); $el.closest('menu').hidePopover()"><span x-icon="lucide:copy-plus"></span>Duplicate</button>
+      <button class="ghost sm trailing" :disabled="!$edit.can('attrs')" @click="$edit.classes.toggle('shadow-lg'); $el.closest('menu').hidePopover()"><span x-icon="lucide:layers"></span>Toggle shadow</button>
+      <button class="ghost sm trailing" :disabled="!$edit.can('attrs')" @click="$edit.attr('hidden', true); $el.closest('menu').hidePopover()"><span x-icon="lucide:eye-off"></span>Hide</button>
+      <button class="ghost sm trailing" x-show="$edit.target" @click="$edit.can('move') ? $edit.lock($edit.target, 'move') : $edit.unlock($edit.target, 'move'); $el.closest('menu').hidePopover()"><span x-icon="lucide:lock"></span><span x-text="$edit.can('move') ? 'Lock position' : 'Unlock position'"></span></button>
+      <template x-if="$edit.scope() !== null">
+        <div class="col">
+          <button class="ghost sm trailing" @click="$edit.scope($edit.scope() === 'main' ? 'instance' : 'main')"><span x-icon="lucide:component"></span><span x-text="$edit.scope() === 'main' ? 'Editing all instances' : 'Editing this instance'"></span></button>
+          <button class="ghost sm trailing" @click="$edit.revert(); $el.closest('menu').hidePopover()"><span x-icon="lucide:rotate-ccw"></span>Revert element</button>
+        </div>
+      </template>
+      <hr class="divider">
+      <button class="ghost sm negative trailing" :disabled="!$edit.can('remove')" @click="$edit.remove(); $el.closest('menu').hidePopover()"><span x-icon="lucide:trash-2"></span>Delete</button>
+    </menu>
 
   </div>
 

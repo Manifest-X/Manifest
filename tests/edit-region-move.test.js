@@ -35,10 +35,10 @@ function mount(html) {
 }
 
 // Two sibling static regions, sort-only (no contenteditable in the way of pointerdown).
-async function regions(suffix) {
+async function regions(suffix, mods = '') {
     const root = mount(`
-        <section x-edit.authoring.sort="from-${suffix}"><p>Alpha</p><p>Beta</p></section>
-        <section x-edit.authoring.sort="to-${suffix}"><p>Gamma</p></section>`)
+        <section x-edit.move${mods}="from-${suffix}"><p>Alpha</p><p>Beta</p></section>
+        <section x-edit.move${mods}="to-${suffix}"><p>Gamma</p></section>`)
     await flush(); await flush()
     const [a, b] = root.querySelectorAll('section')
     return { root, a, b }
@@ -81,8 +81,8 @@ describe('x-edit cross-region move', () => {
 
     it('re-keys on arrival when the destination already holds the key', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="from-k"><p>Same</p></section>
-            <section x-edit.authoring.sort="to-k"><p>Same</p></section>`)
+            <section x-edit.move="from-k"><p>Same</p></section>
+            <section x-edit.move="to-k"><p>Same</p></section>`)
         await flush(); await flush()
         const [a, b] = root.querySelectorAll('section')
         store().move(a.querySelector('p'), b)
@@ -94,7 +94,7 @@ describe('x-edit cross-region move', () => {
 
     it('refuses a move into a data region, a locked region, or its own subtree', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="from-r"><div><p>Block</p></div></section>
+            <section x-edit.move="from-r"><div><p>Block</p></div></section>
             <section x-edit="data-r"><template x-for="i in [1]"><p x-text="i"></p></template></section>
             <section x-edit.lock="lock-r"><p>Locked</p></section>`)
         await flush(); await flush()
@@ -116,8 +116,8 @@ describe('x-edit cross-region move', () => {
         document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 41, clientY: 41 }))
         document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
         expect(alpha.parentElement).toBe(b)
-        expect(a.hasAttribute('data-edit-dragging-in')).toBe(false)
-        expect(b.hasAttribute('data-edit-dragging-in')).toBe(false)
+        expect(document.querySelector('[data-edit-dragging]')).toBeNull()
+        expect(document.querySelector('[data-edit-drop-target]')).toBeNull()
         const { log, cursor } = store().export()
         expect(log[cursor - 1].kind).toBe('st-move')
         expect(log[cursor - 1].from).toBe('from-drag')
@@ -136,14 +136,14 @@ describe('x-edit cross-region move', () => {
     })
 
     it('replays a persisted move on reload', async () => {
-        const first = await regions('r1')
+        const first = await regions('r1', '.persist')
         store().move(first.a.querySelector('p'), first.b)
         expect(localStorage.getItem('mnfst-edit-log')).toContain('st-move')
 
         document.body.innerHTML = ''
         new Function(SRC)()                           // fresh closure = reload; log restores from localStorage
         await flush()                                 // init runs on its own setTimeout
-        const fresh = await regions('r1')
+        const fresh = await regions('r1', '.persist')
         await new Promise(r => setTimeout(r, 500))    // boot pass: armAll + restore
         expect(texts(fresh.a)).toEqual(['Beta'])
         expect(texts(fresh.b)).toEqual(['Gamma', 'Alpha'])
@@ -153,7 +153,7 @@ describe('x-edit cross-region move', () => {
         const { a, b } = await regions('p1')
         store().move(a.querySelector('p'), b)
         const patches = store().patches()
-        const mv = patches.find(p => p.kind === 'static-move')
+        const mv = patches.find(p => p.kind === 'static-move' && p.from === 'from-p1')
         expect(mv).toMatchObject({ from: 'from-p1', to: 'to-p1', key: 'P:Alpha', toKey: 'P:Alpha', toOrder: ['P:Gamma', 'P:Alpha'] })
         // Orders always travel (pre-move reorders are not in the move splice); the
         // server skips a reorder that is already true of the file.
@@ -165,8 +165,8 @@ describe('x-edit cross-region move', () => {
 // Regions with text caps, for edit-vs-move interplay.
 async function textRegions(suffix) {
     const root = mount(`
-        <section x-edit.authoring.sort.text="from-${suffix}"><p>Alpha</p><p>Beta</p></section>
-        <section x-edit.authoring.sort.text="to-${suffix}"><p>Gamma</p></section>`)
+        <section x-edit.move.text="from-${suffix}"><p>Alpha</p><p>Beta</p></section>
+        <section x-edit.move.text="to-${suffix}"><p>Gamma</p></section>`)
     await flush(); await flush()
     const [a, b] = root.querySelectorAll('section')
     return { root, a, b }
@@ -216,8 +216,8 @@ describe('x-edit move + text edits (stale-region regressions)', () => {
 
     it('a REAL pre-move reorder still publishes as an order patch (no suppression)', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="from-o1"><p>Card</p><p>Second</p><p>Third</p></section>
-            <section x-edit.authoring.sort="to-o1"><p>Dest</p></section>`)
+            <section x-edit.move="from-o1"><p>Card</p><p>Second</p><p>Third</p></section>
+            <section x-edit.move="to-o1"><p>Dest</p></section>`)
         await flush(); await flush()
         const [a, b] = root.querySelectorAll('section')
         const third = a.children[2]
@@ -237,8 +237,8 @@ describe('x-edit move + text edits (stale-region regressions)', () => {
 describe('x-edit move key-collision mirroring', () => {
     const twinRegions = async (suffix, toHtml) => {
         const root = mount(`
-            <section x-edit.authoring.sort="from-${suffix}"><p data-m="arr">Same</p><p>Beta</p></section>
-            <section x-edit.authoring.sort="to-${suffix}">${toHtml || '<p data-m="nat">Same</p>'}</section>`)
+            <section x-edit.move.persist="from-${suffix}"><p data-m="arr">Same</p><p>Beta</p></section>
+            <section x-edit.move.persist="to-${suffix}">${toHtml || '<p data-m="nat">Same</p>'}</section>`)
         await flush(); await flush()
         const [a, b] = root.querySelectorAll('section')
         return { root, a, b }
@@ -279,8 +279,8 @@ describe('x-edit move key-collision mirroring', () => {
         await flush()
         // What the source writer produced: arrival already spliced before the twin.
         const root = mount(`
-            <section x-edit.authoring.sort="from-t3"><p>Beta</p></section>
-            <section x-edit.authoring.sort="to-t3"><p data-m="arr">Same</p><p data-m="nat">Same</p></section>`)
+            <section x-edit.move.persist="from-t3"><p>Beta</p></section>
+            <section x-edit.move.persist="to-t3"><p data-m="arr">Same</p><p data-m="nat">Same</p></section>`)
         await flush(); await flush()
         await new Promise(r => setTimeout(r, 500))
         const [, b] = root.querySelectorAll('section')
@@ -290,16 +290,16 @@ describe('x-edit move key-collision mirroring', () => {
     })
 })
 
-describe('x-edit move of a region-block (refused)', () => {
-    it('refuses $edit.move and can() for a block that is itself an x-edit region', async () => {
+describe('x-edit nested areas', () => {
+    it('refuses a cross-region $edit.move for a piece that is itself an x-edit area', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="outer-n1"><div x-edit.sort="inner-n1"><p>One</p></div><p>Two</p></section>
-            <section x-edit.authoring.sort="dest-n1"><p>Three</p></section>`)
+            <section x-edit.move="outer-n1"><div x-edit.move="inner-n1"><p>One</p></div><p>Two</p></section>
+            <section x-edit.move="dest-n1"><p>Three</p></section>`)
         await flush(); await flush()
         const [outer, dest] = root.querySelectorAll('section')
         const inner = outer.firstElementChild
         const before = store().export().log.length
-        expect(store().can('move', inner)).toBe(false)
+        expect(store().can('move', inner)).toBe(true)      // it still moves within its own region
         expect(store().move(inner, dest)).toBe(false)
         expect(inner.parentElement).toBe(outer)
         expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
@@ -307,8 +307,8 @@ describe('x-edit move of a region-block (refused)', () => {
 
     it('pointer-dragging a region-block never commits a cross-region move', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="outer-n2"><div x-edit.sort="inner-n2"><p>One</p></div><p>Two</p></section>
-            <section x-edit.authoring.sort="dest-n2"><p>Three</p></section>`)
+            <section x-edit.move="outer-n2"><div x-edit.move="inner-n2"><p>One</p></div><p>Two</p></section>
+            <section x-edit.move="dest-n2"><p>Three</p></section>`)
         await flush(); await flush()
         const [outer, dest] = root.querySelectorAll('section')
         const inner = outer.firstElementChild
@@ -322,43 +322,44 @@ describe('x-edit move of a region-block (refused)', () => {
         expect(store().export().log.slice(before).some(d => d.kind === 'st-move')).toBe(false)
     })
 
-    it('a drag INSIDE a nested region never disturbs the region-block (one drag per gesture)', async () => {
+    it('a piece inside a nested area drags out to another region; the nested area stays', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="outer-n3"><div x-edit.sort="inner-n3"><p>Inner</p></div><p>Top</p></section>
-            <section x-edit.authoring.sort="dest-n3"><p>Dest</p></section>`)
+            <section x-edit.move="outer-n3"><div x-edit.move="inner-n3"><p>Inner</p></div><p>Top</p></section>
+            <section x-edit.move="dest-n3"><p>Dest</p></section>`)
         await flush(); await flush()
         const [outer, dest] = root.querySelectorAll('section')
         const innerDiv = outer.firstElementChild
         const innerP = innerDiv.querySelector('p')
-        const before = store().export().log.length
         document.elementFromPoint = () => dest.querySelector('p')
         innerP.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
         document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 40, clientY: 40 }))
         document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 41, clientY: 41 }))
         document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
-        expect(innerDiv.parentElement).toBe(outer)        // the region-block never leaves
-        expect(innerP.parentElement).toBe(innerDiv)       // the inner item never crosses out
-        expect(store().export().log.length).toBe(before)  // no st-move, no bogus st-order
+        expect(innerDiv.parentElement).toBe(outer)
+        expect(innerP.parentElement).toBe(dest)
+        const d = store().export().log.at(-1)
+        expect(d).toMatchObject({ kind: 'st-move', from: 'outer-n3', to: 'dest-n3', fromParent: innerDiv.getAttribute('data-edit-key'), toParent: '' })
         expect(document.querySelector('[data-edit-ghost]')).toBeNull()
-        await store().undo(); await store().undo()        // must not delete the region-block
+        await store().undo()
+        expect(innerDiv.querySelector('p').textContent).toBe('Inner')
         expect(outer.contains(innerDiv)).toBe(true)
+        expect([...dest.children].map(c => c.textContent)).toEqual(['Dest'])
     })
 
-    it('refuses $edit.move when either endpoint region is nested (not top-level)', async () => {
+    it('a nested area is a container of its region: move() nests into it and out of it', async () => {
         const root = mount(`
-            <section x-edit.authoring.sort="outer-m4"><div x-edit.sort="inner-m4"><p>One</p></div><p>Top</p></section>
-            <section x-edit.authoring.sort="dest-m4"><p>Three</p></section>`)
+            <section x-edit.move="outer-m4"><div x-edit.move="inner-m4"><p>One</p></div><p>Top</p></section>
+            <section x-edit.move="dest-m4"><p>Three</p></section>`)
         await flush(); await flush()
         const [outer, dest] = root.querySelectorAll('section')
         const inner = outer.firstElementChild
         const innerP = inner.querySelector('p')
         const top = outer.children[1]
-        const before = store().export().log.length
-        expect(store().move(top, inner)).toBe(false)      // destination nested
-        expect(top.parentElement).toBe(outer)
-        expect(store().move(innerP, dest)).toBe(false)    // origin nested
-        expect(innerP.parentElement).toBe(inner)
-        expect(store().export().log.length).toBe(before)  // nothing logged either way
+        expect(store().move(top, inner)).toBe(true)
+        expect(top.parentElement).toBe(inner)
+        expect(store().export().log.at(-1)).toMatchObject({ kind: 'st-move', from: 'outer-m4', to: 'outer-m4', toParent: inner.getAttribute('data-edit-key'), fromParent: '' })
+        expect(store().move(innerP, dest)).toBe(true)
+        expect(innerP.parentElement).toBe(dest)
     })
 
     it('cancels a drop into a region locked mid-drag', async () => {
@@ -378,7 +379,7 @@ describe('x-edit move of a region-block (refused)', () => {
 
 describe('x-edit publish paths vs the file the server will reach', () => {
     it('an edit after a sibling DELETE addresses the unmodified file order', async () => {
-        const root = mount(`<section x-edit.authoring.sort.text="del-e1"><p>Alpha</p><p>Beta</p></section>`)
+        const root = mount(`<section x-edit.move.text="del-e1"><p>Alpha</p><p>Beta</p></section>`)
         await flush(); await flush()
         const area = root.querySelector('section')
         const [alpha, beta] = area.querySelectorAll('p')
@@ -391,7 +392,7 @@ describe('x-edit publish paths vs the file the server will reach', () => {
     })
 
     it('cut-then-edit addresses the unmodified file order too', async () => {
-        const root = mount(`<section x-edit.authoring.sort.text="cut-e1"><p>Alpha</p><p>Beta</p></section>`)
+        const root = mount(`<section x-edit.move.text="cut-e1"><p>Alpha</p><p>Beta</p></section>`)
         await flush(); await flush()
         const area = root.querySelector('section')
         const [alpha, beta] = area.querySelectorAll('p')
@@ -402,7 +403,7 @@ describe('x-edit publish paths vs the file the server will reach', () => {
     })
 
     it('edit-then-reorder still publishes at the post-order position (order applies)', async () => {
-        const root = mount(`<section x-edit.authoring.sort.text="ord-e1"><p>Alpha</p><p>Beta</p></section>`)
+        const root = mount(`<section x-edit.move.text="ord-e1"><p>Alpha</p><p>Beta</p></section>`)
         await flush(); await flush()
         const area = root.querySelector('section')
         const alpha = area.querySelector('p')
@@ -417,7 +418,7 @@ describe('x-edit publish paths vs the file the server will reach', () => {
 
 describe('x-edit plugin-node indexing (handles/ghosts never count)', () => {
     it('undo of a reorder keeps real children ahead of injected size handles, and paths skip them', async () => {
-        const root = mount(`<section x-edit.authoring.sort.text.size="sz1"><p>One</p><p>Two</p></section>`)
+        const root = mount(`<section x-edit.move.text.size="sz1"><p>One</p><p>Two</p></section>`)
         await flush(); await flush()
         const area = root.querySelector('section')
         expect([...area.children].filter(c => c.hasAttribute('data-edit-handle')).length).toBeGreaterThan(0)
@@ -436,7 +437,7 @@ describe('x-edit plugin-node indexing (handles/ghosts never count)', () => {
 
 describe('x-edit copy/cut of a region element', () => {
     it('returns false instead of throwing (a region is a container, not a block)', async () => {
-        const root = mount(`<section x-edit.authoring.sort="solo-c1"><p>Only</p></section>`)
+        const root = mount(`<section x-edit.move="solo-c1"><p>Only</p></section>`)
         await flush(); await flush()
         const area = root.querySelector('section')
         expect(store().copy(area)).toBe(false)

@@ -1,10 +1,5 @@
-    /* ---- Theme regime: edit CSS custom properties (x-edit.cssvar) ----
-       Not DOM-element editing. A variable set on :root is global; set on an x-edit
-       theme scope's element it cascades to that subtree ONLY (sandboxed theme), so the
-       same var name can live at both levels without collision. Controls are inputs that
-       declare their target as "scope:--var" (area/scope key) or bare "--var" (global).
-       Live = setProperty (var()-referencing utilities update for free); persisted as
-       {kind:'theme', scope, var, value}. Net-new variables are a later step. */
+    /* ---- Theme: CSS custom properties (x-edit.cssvar="--var" or "scope:--var") ----
+       Global on :root, or sandboxed to an x-edit.theme scope's subtree. */
     const cssvarControls = new Set();
     const themeBaseline = {};            // "scope|var" → original inline value ('' if none) — for revert-to-baseline
     const themeTouched = new Set();      // every scope|var ever applied
@@ -12,10 +7,11 @@
     const themeTargetEl = (scope) => (scope && themeScopes[scope]) || document.documentElement;
     const cvValue = (el) => el.value + (el.dataset.unit || '');   // data-unit lets a range/number drive a unit'd var
 
-    function registerCssVar(el, expression) {
+    function registerCssVar(el, expression, modifiers) {
         const spec = (expression || '').trim();
-        const m = spec.match(/^([\w-]+)\s*:\s*(--[\w-]+)$/);   // "scope:--var" vs bare "--var" (global)
+        const m = spec.match(/^([\w-]+)\s*:\s*(--[\w-]+)$/);
         el._cssvar = m ? { scope: m[1], var: m[2] } : { scope: null, var: spec };
+        el._cssvar.persist = !!(modifiers && modifiers.includes('persist'));
         cssvarControls.add(el);
     }
     function syncCssVarInput(el) {
@@ -32,7 +28,7 @@
         syncCssVarInput(el);
         if (el._cvBound) return; el._cvBound = true;
         el.addEventListener('input', () => themeTargetEl(cv.scope).style.setProperty(cv.var, cvValue(el)));   // live, no log
-        el.addEventListener('change', () => commitTheme(cv.scope, cv.var, cvValue(el)));                       // commit
+        el.addEventListener('change', () => commitTheme(cv.scope, cv.var, cvValue(el), cv.persist || (s => !!s && !!(s._editPersist || (s._edit && s._edit.persist)))(cv.scope && themeScopes[cv.scope])));
     }
     function armThemeControls() { cssvarControls.forEach(armCssVar); }
 
@@ -41,8 +37,7 @@
         for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'theme') s[tkey(d.scope, d.var)] = d; }
         return s;
     }
-    // Re-derive every touched var from the log: state value if present, else the captured
-    // baseline (setProperty to restore an authored inline value; removeProperty if none).
+    // Re-derive every touched var from the log, else its captured baseline.
     function applyThemeState() {
         const st = themeState();
         new Set([...themeTouched, ...Object.keys(st)]).forEach(kk => {
@@ -53,14 +48,13 @@
         });
         cssvarControls.forEach(syncCssVarInput);
     }
-    function commitTheme(scope, v, value) {
+    function commitTheme(scope, v, value, persist) {
         const kk = tkey(scope, v); themeTouched.add(kk);
         themeTargetEl(scope).style.setProperty(v, value);
         const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe
-        log.splice(cursor); log.push({ kind: 'theme', scope: scope || null, var: v, value }); cursor = log.length; saveState(); refresh();
+        pushDelta({ kind: 'theme', scope: scope || null, var: v, value }, !!persist);
     }
-    // B-side: each theme var → its scope's target CSS file (data-edit-theme-file on the
-    // scope element); global vars carry no file → the server falls back to the theme file.
+    // Each var → its scope's data-edit-theme-file, else the server's theme file.
     function themePatches() {
         return Object.values(themeState()).map(d => {
             const el = d.scope ? themeScopes[d.scope] : null;

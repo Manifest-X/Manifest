@@ -1,170 +1,129 @@
-    /* ---- Arm / disarm an area for its regime + caps ---- */
-    // Static nodes are addressed by a content-derived key, not by their position
-    // among siblings. Position was stable while the tree was, but adding, removing or
-    // duplicating a block shifts every address after it — so an edit recorded before
-    // a structural change replayed onto the wrong element afterwards.
-    //
-    // The key is derived once, from what the element held when the area was first
-    // armed, and never recomputed for an element that already has one. That is what
-    // makes it survive both kinds of change: a later text edit does not move the
-    // address, and a reload derives the same key again because the source it loads is
-    // the same source the key was first taken from.
+    /* ---- Arm / disarm ---- */
+    // Content-derived keys, assigned once per element and never recomputed, so a text
+    // edit keeps the address and a reload of the same source derives the same keys.
     function markStatic(area) {
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const seen = Object.create(null);
         const markEl = (el) => {
             let k = el.getAttribute('data-edit-key');
             if (k) {
-                // Keep the tally in step so a new element never claims an ordinal
-                // an existing one already holds.
-                // The ordinal is the LAST #digits suffix — authored text may contain '#'.
                 const m = /^([\s\S]*)#(\d+)$/.exec(k);
                 const base = m ? m[1] : k, n = m ? m[2] : undefined;
                 seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
             } else {
-                const base = el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+                const base = staticKey(el);
                 const n = seen[base] = (seen[base] || 0) + 1;
                 k = n > 1 ? base + '#' + n : base;
                 el.setAttribute('data-edit-key', k);
             }
-            el.setAttribute('data-edit-path', pathOf(el, area));   // still what the source writer navigates by
-            if (!(k in area._baseClass)) area._baseClass[k] = el.getAttribute('class') || '';
+            if (!(k in area._baseClass)) area._baseClass[k] = readClass(el);
             if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
             if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
         markEl(area);
-        // Stop at a rich editor: its internals are its own, and marking them would
-        // both litter its content and let applyStaticState fight it for the same nodes.
         area.querySelectorAll('*').forEach(el => {
-            if (el.hasAttribute('data-edit-handle')) return;
+            if (pluginNode(el) || el.closest('[data-edit-ghost]')) return;
             if (el.parentElement && el.parentElement.closest('[data-text-edit]')) return;
             markEl(el);
         });
         if (!area._baseOrder) area._baseOrder = staticKeys(area);
-        if (!(key(area) in lastOrder)) lastOrder[key(area)] = area._baseOrder;
     }
     function armArea(area) {
         const kind = classify(area);
-        area.setAttribute('data-edit-armed', '');
-        // Chrome is opt-in: a sortable list should look like a list, not like a page
-        // being edited. The attributes are all CSS asks for — what is shown, and
-        // whether it is shown at all, is decided in the stylesheet.
-        area.toggleAttribute('data-edit-authoring', !!area._edit.authoring);
-        // .authoring regions get the UI scope by default; anything else opts in
-        // by putting data-edit-ui on the region or an ancestor. Only remove what
-        // the plugin itself added, never an author's attribute.
-        if (area._edit.authoring && !area.hasAttribute('data-edit-ui')) { area.setAttribute('data-edit-ui', ''); area._uiByPlugin = true; }
-        area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
         if (kind === 'static') markStatic(area);
-        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
+        markPieces(area);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
-        if (!area._dndBound) {
-            area._dndBound = true;
-            // Native HTML5 drag (a text selection, an image, a link) must never
-            // start inside a region: it drops SELECTED TEXT into neighbouring
-            // editable leaves, silently merging elements. All region dragging is
-            // pointer-based.
-            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
-            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });   // nothing drops INTO a region either (an OS image drop would merge into a leaf)
-        }
-        if (!area._ctxBound) {
-            area._ctxBound = true;
-            // One binding for the whole area: report the block, and fall back to the
-            // built-in authoring menu only if the project did not take the event.
-            area.addEventListener('contextmenu', (e) => {
-                if (!isActive(area)) return;
-                const builtIn = () => classify(area) === 'component' ? openComponentMenu(e, area) : openClassMenu(area, e);
-                if (onBlockContext(e, builtIn)) return;
-                if (!area._edit.authoring) return;
-                e.preventDefault();
-                builtIn();
-            });
-        }
         if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
+        if (!area._editBound) {
+            area._editBound = true;
+            area.addEventListener('pointerdown', onAreaPointerDown);
+            area.addEventListener('keydown', (e) => { if (isActive(area)) onPieceKeydown(e, area); });
+            // Native HTML5 drag would drop selected text into neighbouring leaves.
+            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });
+        }
+        if (!area._editObserver) {
+            area._editObserver = new MutationObserver((recs) => {
+                if (dragged || area._rearmQueued || recs.every(r => r.target.isContentEditable)) return;
+                area._rearmQueued = true;
+                queueMicrotask(() => { area._rearmQueued = false; if (area._armed && isActive(area) && !dragged) armArea(area); });
+            });
+            area._editObserver.observe(area, { childList: true, subtree: true });
+        }
     }
     function disarmArea(area) {
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
-        area.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
-        area.querySelectorAll('[data-edit-sortable]').forEach(e => { ['data-edit-sortable', 'data-edit-grabbed', 'data-edit-dragging', 'tabindex', 'role', 'draggable'].forEach(a => e.removeAttribute(a)); e._dragBound = false; });
-        [area, ...area.querySelectorAll('[data-edit-sizable],[data-edit-movable]')].forEach(e => { e.removeAttribute('data-edit-sizable'); e.removeAttribute('data-edit-movable'); e._sizeBound = false; });
-        area.removeAttribute('data-edit-armed'); area.removeAttribute('data-edit-label');
-        if (area._uiByPlugin) { area.removeAttribute('data-edit-ui'); area._uiByPlugin = false; }
+        [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; });
+        area.querySelectorAll('[data-edit-piece]').forEach(unmarkPiece);
+        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { e._sizeBound = false; });
+        if (grabbed && area.contains(grabbed.item)) cancelGrab();
     }
 
-    /* ---- Activation: per-area, always-on by default (.gated needs $edit.on()) ---- */
+    /* ---- Activation: always-on by default; .gated waits for $edit.on() ---- */
     let estore, booted = false, armQueued = false;
-    const isActive = (a) => !!a && (!a._edit.gated || (estore && estore.active));
-    const anyActive = () => areas().some(isActive);
+    const isActive = (a) => !!a && !!a._edit && (!a._edit.gated || !!(estore && estore.active));
     function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); booted = true; }
 
-    /* ---- Late regions: arm when Alpine initialises them, release when it destroys them ---- */
-    // Arming ran once at boot, so anything rendered later — x-if, a route change, a lazy
-    // component, x-markdown output — stayed inert. Every one of those paths goes through
-    // Alpine.initTree, so the x-edit directive itself is the hook; no observer needed.
-    // Deferred one microtask so the tree Alpine is walking is complete before baselines
-    // are captured, and batched so a burst of regions costs one pass.
+    // Regions rendered after boot (x-if, routes, lazy components) arm through the directive.
     function armLater() {
-        if (!booted || armQueued) return;   // the boot pass still owns start-up ordering
+        if (!booted || armQueued) return;
         armQueued = true;
         queueMicrotask(() => { armQueued = false; armAll(); });
     }
-    // Runs from Alpine's directive cleanup (x-if/x-for teardown, or its own mutation
-    // observer), so a removed region drops its observers and its registry slot.
     function releaseEdit(el) {
         Object.keys(themeScopes).forEach(k => { if (themeScopes[k] === el) delete themeScopes[k]; });
         cssvarControls.delete(el);
         if (!editEls.has(el)) return;
         if (el._armed) { disarmArea(el); el._armed = false; }
-        [el, ...el.querySelectorAll('*')].forEach(n => { if (n._sortObserver) { n._sortObserver.disconnect(); n._sortObserver = null; } });
-        editEls.delete(el); delete el._edit;
+        if (el._editObserver) { el._editObserver.disconnect(); el._editObserver = null; }
+        editEls.delete(el); delete el._edit; resetAreas();
         el.removeAttribute('data-edit-area');
+        if (target && (target === el || el.contains(target))) setTarget(null);
         refresh();
     }
-    // Build B-side source patches from the edit set (storage-agnostic; overlay
-    // already auto-persists to localStorage on commit).
+
+    /* ---- Source patches: every area ---- */
     function buildPatches() {
-        const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
+        const patches = Object.entries(fold()).map(([k, v]) => patchFor(k, v.kind, v.snap));
         const toEdits = (paths, area, fileOrder) => {
             const e = [];
             Object.entries(paths).forEach(([k, props]) => {
-                // Keys address across a session; the source writer navigates by
-                // position, so resolve to where the element actually sits now (the
-                // server applies order before edits, so current position is the
-                // right one). A deleted element has nothing to write.
                 const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
                 let path = el ? pathOf(el, area) : k;
                 if (area && !el) return;
-                // RULE: paths must be valid against the file state the server will reach —
-                // a pending st-children change can't be applied there (a short order is
-                // skipped), so address by the block's position in the UNMODIFIED file.
+                // A pending structural change can't reach the file: address the unmodified file order.
                 if (el && el !== area && fileOrder) {
                     let block = el; while (block.parentElement && block.parentElement !== area) block = block.parentElement;
                     const fi = fileOrder.indexOf(block.getAttribute('data-edit-key'));
-                    if (fi < 0) return;                          // block not in the file (added this session) — nothing to address
+                    if (fi < 0) return;
                     const segs = path.split('.'); segs[0] = String(fi); path = segs.join('.');
                 }
                 Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
             });
             return e;
         };
-        for (let i = 0; i < cursor; i++) {   // cross-region moves travel in log order, ahead of per-region ops
+        for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind !== 'st-move' || !authoringRegion(d.from) || !authoringRegion(d.to)) continue;
-            patches.push({ kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder });
+            if (d.kind !== 'st-move') continue;
+            const p = { kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder };
+            if (d.fromParent) p.fromParent = d.fromParent;
+            if (d.toParent) p.toParent = d.toParent;
+            patches.push(p);
         }
-        const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
+        const ss = staticState();
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
-            if (!authoringRegion(region)) return;
             const area = areaByKey(region);
-            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region);
+            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region && !d.parent);
             const edits = toEdits(ss.node[region] || {}, area, structural ? (area && area._baseOrder) || [] : null);
-            // A moved region always gets its folded order (pre-move reorders are NOT
-            // in the move splice); the server skips a reorder that is already true.
-            const order = ss.order[region] || null;
-            if (edits.length || order) patches.push({ kind: 'static', region, edits, order });
+            const orders = ss.order[region] || {};
+            const order = orders[''] || null;
+            const nested = Object.fromEntries(Object.entries(orders).filter(([p]) => p));
+            const patch = { kind: 'static', region, edits, order };
+            if (Object.keys(nested).length) patch.orders = nested;
+            if (edits.length || order || patch.orders) patches.push(patch);
         });
-        const dv = dataValueState();   // data-value edits → field writes (local file / cloud $update)
+        const dv = dataValueState();
         Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));
         const { main, inst, reverts } = componentState();
         Object.entries(main).forEach(([component, paths]) => { const edits = toEdits(paths); if (edits.length) patches.push({ kind: 'component', scope: 'main', component, edits }); });
@@ -173,24 +132,18 @@
             const edits = toEdits(inst[region] || {}), rv = [...(reverts[region] || [])];
             if (edits.length || rv.length) patches.push({ kind: 'component', scope: 'instance', component: componentName(area), region, edits, reverts: rv });
         });
-        themePatches().forEach(p => patches.push(p));   // theme: CSS-var value writes (scoped → its file; global → theme file)
+        themePatches().forEach(p => patches.push(p));
         return patches;
     }
     function publish() {
         const patches = buildPatches();
         if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor }));
         if (!patches.length) return Promise.resolve({ results: [] });
-        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json());   // default: local dev-server source writer (authoring)
+        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json());
     }
     function on() { if (estore) estore.active = true; armAll(); }
-    function off() { if (estore) estore.active = false; areas().forEach(a => { if (a._edit.gated && a._armed) { disarmArea(a); a._armed = false; } }); closeMenu(); refresh(); }
-    // Runtime lock — meta, not content: applied immediately, not logged. Locks
-    // the target and its subtree (descendants without their own x-edit inherit).
-    function setLock(el, val) {
-        if (!el) return;
-        if (!el._edit) { el._edit = { key: `lock-${++autoN}`, caps: new Set(), lock: val, gated: false }; el.setAttribute('data-edit-area', ''); editEls.add(el); }
-        else { el._edit.lock = val; if (val) el._edit.caps = new Set(); }
-        if (val) { el.querySelectorAll('[data-edit-handle]').forEach(h => h.remove()); el.removeAttribute('draggable'); el.removeAttribute('contenteditable'); el.removeAttribute('data-edit-sizable'); el._sizeBound = false; el.querySelectorAll('[draggable],[contenteditable]').forEach(n => { n.removeAttribute('draggable'); n.removeAttribute('contenteditable'); }); }
-        const area = areas().find(a => a === el || a.contains(el));
-        if (area && isActive(area)) armArea(area);
+    function off() {
+        if (estore) estore.active = false;
+        areas().forEach(a => { if (a._edit.gated && a._armed) { disarmArea(a); a._armed = false; } });
+        refresh();
     }

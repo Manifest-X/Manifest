@@ -731,7 +731,76 @@ function serverStaticKey(html, child) {   // mirror the client's staticKey (tag 
   const text = html.slice(child.innerStart, child.innerEnd).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
   return child.tag.toUpperCase() + ':' + text;
 }
-function writeStaticOps(file, key, edits, order, aliases) {
+// Attribute edits from the client pass the same guardrails again here.
+function safeAttrEdit(name, value) {
+  const n = String(name || '').toLowerCase();
+  if (!/^[a-z_][\w:.-]*$/.test(n) || n === 'text' || n === 'srcdoc' || n.startsWith('on') || n.startsWith('x-') || n.startsWith('data-edit-')) return false;
+  if (value != null && ['href', 'src', 'action', 'formaction', 'xlink:href'].includes(n)) {
+    const v = String(value).replace(/[\u0000-\u0020]/g, '').toLowerCase();
+    if (/^(javascript|vbscript):/.test(v)) return false;
+    if (v.startsWith('data:') && !(n === 'src' && v.startsWith('data:image/'))) return false;
+  }
+  return true;
+}
+// Remove one attribute (valued or bare), scanning attributes in order so quoted values never match.
+function dropAttr(openTag, name) {
+  const m = /^<[a-zA-Z][\w-]*/.exec(openTag); if (!m) return openTag;
+  const re = /\s+([^\s"'>\/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/y;
+  re.lastIndex = m[0].length;
+  let a;
+  while ((a = re.exec(openTag))) if (a[1].toLowerCase() === String(name).toLowerCase()) return openTag.slice(0, a.index) + openTag.slice(a.index + a[0].length);
+  return openTag;
+}
+// Every element of a region in document order with the client's area-wide keys
+// (tag + first 24 text chars, ordinal per repeat), root first — mirrors markStatic.
+function regionIndex(html, loc) {
+  const out = [], seen = Object.create(null);
+  const keyOf = (tag, a, b) => {
+    const base = tag.toUpperCase() + ':' + html.slice(a, b).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    const n = seen[base] = (seen[base] || 0) + 1;
+    return n > 1 ? base + '#' + n : base;
+  };
+  const root = { tag: loc.tag, tagStart: loc.openStart, openEnd: loc.openEnd, innerStart: loc.innerStart, innerEnd: loc.innerEnd, parent: null };
+  root.key = keyOf(loc.tag, loc.innerStart, loc.innerEnd);
+  out.push(root);
+  const walk = (node) => {
+    if (/^template$/i.test(node.tag) || /\sx-text-edit[\s=>.]/.test(html.slice(node.tagStart, node.openEnd + 1))) return;
+    let n = 0, c;
+    while ((c = childAt(html, node.innerStart, node.innerEnd, n++))) {
+      c.parent = node; c.key = keyOf(c.tag, c.innerStart, c.innerEnd);
+      out.push(c); walk(c);
+    }
+  };
+  walk(root);
+  return out;
+}
+function nestedContainer(html, key, parentKey) {
+  const loc = locateEditEl(html, key); if (!loc) return null;
+  const idx = regionIndex(html, loc);
+  const c = parentKey ? idx.find(n => n.key === parentKey) : idx[0];
+  return c ? { loc, idx, c, kids: idx.filter(n => n.parent === c) } : null;
+}
+function writeNestedOrders(file, key, orders) {
+  let reordered = false;
+  for (const [parentKey, order] of Object.entries(orders || {})) {
+    const html = readFileSync(file, 'utf8');
+    const hit = nestedContainer(html, key, parentKey); if (!hit) continue;
+    const { kids } = hit, byKey = {};
+    kids.forEach(k => { byKey[k.key] = k; });
+    const seq = (order || []).map(k => byKey[k]).filter(Boolean);
+    if (seq.length !== kids.length || !seq.length || seq.every((k, i) => k === kids[i])) continue;
+    const reassembled = seq.map(k => html.slice(k.tagStart, k.closeEnd));
+    let out = html.slice(0, kids[0].tagStart);
+    for (let i = 0; i < kids.length; i++) {
+      out += reassembled[i];
+      out += html.slice(kids[i].closeEnd, i + 1 < kids.length ? kids[i + 1].tagStart : kids[i].closeEnd);
+    }
+    out += html.slice(kids[kids.length - 1].closeEnd);
+    writeFileSync(file, out); reordered = true;
+  }
+  return reordered;
+}
+function writeStaticOps(file, key, edits, order, aliases, orders) {
   // Order FIRST: keys match on authored content (edits haven't rewritten it yet) and
   // edit paths are current DOM positions, valid only once the file order matches.
   let reordered = false;
@@ -769,6 +838,7 @@ function writeStaticOps(file, key, edits, order, aliases) {
       }
     }
   }
+  if (orders && writeNestedOrders(file, key, orders)) reordered = true;
   for (const ed of (edits || [])) {                      // re-read+re-locate each (offsets shift after writes)
     let html = readFileSync(file, 'utf8');
     const loc = locateEditEl(html, key); if (!loc) return { region: key, status: 'error', reason: `x-edit="${key}" not found in ${basename(file)}` };
@@ -778,6 +848,7 @@ function writeStaticOps(file, key, edits, order, aliases) {
     if (ed.prop === 'text') html = html.slice(0, node.innerStart) + ed.value + html.slice(node.innerEnd);
     else if (ed.prop === 'class') html = html.slice(0, node.tagStart) + setAttr(openTag, 'class', ed.value) + html.slice(node.openEnd + 1);
     else if (ed.prop === 'style') html = html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value) + html.slice(node.openEnd + 1);
+    else if (safeAttrEdit(ed.prop, ed.value)) html = html.slice(0, node.tagStart) + (ed.value == null ? dropAttr(openTag, ed.prop) : setAttr(openTag, ed.prop, ed.value)) + html.slice(node.openEnd + 1);
     writeFileSync(file, html);
   }
   return { region: key, status: 'written', file: basename(file), edits: (edits || []).length, reordered };
@@ -793,7 +864,33 @@ function dedupedKeys(html, kids) {
   const seen = Object.create(null);
   return kids.map(k => { const base = serverStaticKey(html, k); const n = seen[base] = (seen[base] || 0) + 1; return n > 1 ? base + '#' + n : base; });
 }
+// A move with a container key on either side: lift the child from its container and
+// splice it into the destination container, placed positionally by toOrder.
+function writeNestedMove(file, p) {
+  let html = readFileSync(file, 'utf8');
+  if (!locateEditEl(html, p.from)) return { region: p.from, status: 'error', reason: `x-edit="${p.from}" not found in ${basename(file)}` };
+  if (!locateEditEl(html, p.to)) return { region: p.to, status: 'error', reason: `x-edit="${p.to}" not found in ${basename(file)}` };
+  const src = nestedContainer(html, p.from, p.fromParent);
+  if (!src) return { region: p.from, status: 'error', reason: `container '${p.fromParent}' not found in region '${p.from}'` };
+  const child = src.kids.find(k => k.key === p.key);
+  if (!child) return { region: p.from, status: 'error', reason: `child '${p.key}' not found in region '${p.from}'` };
+  const slice = html.slice(child.tagStart, child.closeEnd);
+  let remStart = child.tagStart;
+  const pre = html.slice(0, remStart), nl = pre.lastIndexOf('\n');
+  if (nl >= 0 && /^[ \t]*$/.test(pre.slice(nl + 1))) remStart = nl;
+  const lifted = html.slice(0, remStart) + html.slice(child.closeEnd);
+  const dst = nestedContainer(lifted, p.to, p.toParent);
+  if (!dst) return { region: p.to, status: 'error', reason: `container '${p.toParent}' not found in region '${p.to}'` };
+  const at = (p.toOrder || []).indexOf(p.toKey);
+  let insertAt = dst.c.innerEnd;
+  if (at >= 0 && at < dst.kids.length) insertAt = dst.kids[at].tagStart;
+  const head = lifted.slice(0, insertAt), hnl = head.lastIndexOf('\n');
+  const indent = hnl >= 0 && /^[ \t]*$/.test(head.slice(hnl + 1)) ? head.slice(hnl + 1) : '';
+  writeFileSync(file, head + slice + (insertAt === dst.c.innerEnd ? '' : '\n' + indent) + lifted.slice(insertAt));
+  return { region: p.from === p.to ? p.from : `${p.from} → ${p.to}`, status: 'written', file: basename(file), key: p.key };
+}
 function writeStaticMove(file, p, aliases) {
+  if (p.fromParent || p.toParent || p.from === p.to) return writeNestedMove(file, p);
   let html = readFileSync(file, 'utf8');
   const fromLoc = locateEditEl(html, p.from);
   if (!fromLoc) return { region: p.from, status: 'error', reason: `x-edit="${p.from}" not found in ${basename(file)}` };
@@ -1259,7 +1356,7 @@ const server = createServer((req, res) => {
             return { region: p.region, status: reorderDataFile(file, p.order) ? 'written' : 'noop', file: rel };
           }
           if (p.kind === 'data-val') return writeDataValue(p, manifest);
-          if (p.kind === 'static') return writeStaticOps(indexFile, p.region, p.edits, p.order, moveAliases[p.region]);
+          if (p.kind === 'static') return writeStaticOps(indexFile, p.region, p.edits, p.order, moveAliases[p.region], p.orders);
           if (p.kind === 'static-move') return writeStaticMove(indexFile, p, moveAliases);
           if (p.kind === 'component') return writeComponentEdits(p, manifest);
           if (p.kind === 'theme') return writeThemeVar(p);

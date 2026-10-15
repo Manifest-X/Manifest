@@ -2,35 +2,24 @@
 
 (function () {
 
-/* Manifest Edit — SPIKE.
-
-   Compiled from src/scripts/edit/*.js into src/scripts/manifest.edit.js by build.mjs
-   (order matters). These subscripts are FRAGMENTS of a single IIFE: core.js opens it,
-   main.js closes it. Everything stays in one private closure — no globals, no E.* churn.
-   Each fragment is grouped by concern; references resolve at runtime once all parts load.
-
-   x-edit marks an editable AREA (or single target). Always-on by default; .gated requires
-   $edit.on(). Capabilities via modifiers: .sort .text .style .size (default sort+text+style);
-   .lock opts a subtree out. Fine config (size axes/snap/collapse) reads --edit-* CSS vars.
-   Three regimes: static HTML · data mutation · component override. Append-only typed-delta
-   log is the spine; A overlay + B source patch are projections. */
+/* Manifest Edit */
 
 (function () {
     const LS_KEY = 'mnfst-edit-log';
-    const SCHEMA = 7;                  // overlay schema version — bump when the delta shape changes
-    const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
-    const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
+    const SCHEMA = 8;
+    const HISTORY_CAP = 400;
+    const ALL_CAPS = ['text', 'move', 'size', 'data'];
+    const DEFAULT_CAPS = ['text', 'move'];
+    const LOCK_ACTIONS = ['move', 'remove', 'duplicate', 'text', 'attrs', 'size'];
+    const RETIRED = { sort: '.move', authoring: 'nothing (visuals are on by default; use .bare to hide them, .persist to keep edits)', style: '$edit.classes / $edit.attr', none: '.lock' };
+    const COALESCE_MS = 1000;
     let dragged = null, autoN = 0;
 
     let log = [], cursor = 0;
-    const lastSnap = {}, lastOrder = {};
-    // Content-derived key for a static sortable child — stable across reorder AND reload
-    // (same content → same key), so reorder can be stored as a tiny key permutation.
+    const lastSnap = {};
+    const persisted = new WeakSet();
+
     const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-    // The SAME identity markStatic assigned, not a fresh derivation. Recomputing from
-    // current content would drift the moment text is edited, and the child order
-    // recorded before that edit would then fail to find the element it named.
-    // Two identical siblings are told apart by the ordinal markStatic gave them.
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
@@ -41,31 +30,34 @@
             return n > 1 ? base + '#' + n : base;
         });
     }
-    const loadState = () => { try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; } else if (s) localStorage.removeItem(LS_KEY); } catch {} };
-    // Only an .authoring area is a page being edited. Everywhere else the plugin is
-    // behaviour — a sortable list, a resizable panel — and the app owns the state, so
-    // those deltas neither travel to the source nor survive in the overlay. They stay
-    // in the in-memory log, so undo still works for the session.
-    const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
-    const persistable = (d) => d.kind !== 'data-splice' && (d.kind === 'st-move'
-        ? authoringRegion(d.from) && authoringRegion(d.to)
-        : (d.region == null || authoringRegion(d.region)));
-
-    const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
+    const loadState = () => {
+        try {
+            const s = JSON.parse(localStorage.getItem(LS_KEY));
+            if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; log.forEach(d => persisted.add(d)); }
+            else if (s) localStorage.removeItem(LS_KEY);
+        } catch { }
+    };
+    const saveState = () => {
+        if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); }
+        const done = log.slice(0, cursor).filter(d => persisted.has(d)), ahead = log.slice(cursor).filter(d => persisted.has(d));
+        try {
+            if (!done.length && !ahead.length) localStorage.removeItem(LS_KEY);
+            else localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
+        } catch { }
+    };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-    const cssVar = (el, name, fallback) => { const v = getComputedStyle(el).getPropertyValue(name).trim(); return v || fallback; };
+    // Inherited custom properties, read through the cascade; `none` cancels an inherited value.
+    function cssVar(el, name, fallback) {
+        for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+            const v = getComputedStyle(n).getPropertyValue(name).trim();
+            if (v) return v === 'none' && name !== '--edit-size' ? (fallback ?? '') : v;
+        }
+        return fallback ?? '';
+    }
 
-    /* ---- Safety helpers ---- */
-    // Structural signature for a node at a path — guards against the source structure
-    // drifting under a stored delta (apply only if the node still matches).
+    /* ---- Safety ---- */
     const nodeSig = (el) => el ? el.tagName.toLowerCase() : '';
-    // Sanitize contentEditable / replayed HTML: allowlist inline tags, strip everything
-    // else (attributes, scripts, comments, javascript: hrefs). Critical once overlays can
-    // come from other users (cloud). Unknown tags are unwrapped to their text.
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
-    // An element owned by the rich editor carries block markup this plugin's own
-    // allowlist would flatten, so let that plugin vet its own content. Everything
-    // else keeps the conservative inline-only policy.
     const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
         ? window.ManifestTextEdit.sanitize(html, true, true)
         : sanitizeHTML(html);
@@ -73,9 +65,9 @@
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
         const walk = (node) => [...node.childNodes].forEach(c => {
-            if (c.nodeType === 8) return c.remove();                         // comments
+            if (c.nodeType === 8) return c.remove();
             if (c.nodeType !== 1) return;
-            if (!SAFE_TAGS.has(c.tagName)) { c.replaceWith(document.createTextNode(c.textContent)); return; }   // unwrap unknown tag
+            if (!SAFE_TAGS.has(c.tagName)) { c.replaceWith(document.createTextNode(c.textContent)); return; }
             [...c.attributes].forEach(a => { const n = a.name.toLowerCase(); if (!(c.tagName === 'A' && n === 'href' && !/^\s*javascript:/i.test(a.value))) c.removeAttribute(a.name); });
             walk(c);
         });
@@ -83,34 +75,59 @@
         return t.innerHTML;
     }
 
+    // Attribute guardrails: refused names and URL schemes. Returns a reason, or null when safe.
+    const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href']);
+    function attrRefusal(name, value) {
+        const n = String(name || '').trim().toLowerCase();
+        if (!n || !/^[a-z_:][\w:.-]*$/i.test(n) && !/^[@:]/.test(n)) return 'invalid name';
+        if (n === 'text') return 'reserved name';
+        if (n.startsWith('on')) return 'event handler attribute';
+        if (n.startsWith('x-') || n.startsWith('@') || n.startsWith(':')) return 'Alpine directive';
+        if (n.startsWith('data-edit-')) return 'plugin attribute';
+        if (n === 'srcdoc') return 'inline document';
+        if (value != null && URL_ATTRS.has(n)) {
+            const v = String(value).replace(/[\u0000- ]/g, '').toLowerCase();
+            if (/^(javascript|vbscript):/.test(v)) return 'script URL';
+            if (v.startsWith('data:') && !(n === 'src' && v.startsWith('data:image/'))) return 'data URL';
+        }
+        return null;
+    }
+
     /* ---- x-edit registry ---- */
     const editEls = new Set();
-    const themeScopes = {};            // scope key → element (CSS-var cascade target for x-edit.cssvar)
+    const themeScopes = {};
+    const warnedRetired = new Set();
     function registerEdit(el, modifiers, expression) {
-        if (modifiers.includes('cssvar')) return registerCssVar(el, expression);   // theme control, not an area
+        if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
+        modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
+        if (modifiers.includes('lock')) {
+            const actions = modifiers.filter(m => LOCK_ACTIONS.includes(m));
+            el._editLock = new Set(actions.length ? actions : ['*']);
+            return;
+        }
         const caps = new Set(ALL_CAPS.filter(c => modifiers.includes(c)));
-        const lock = modifiers.includes('lock') || modifiers.includes('none');
-        const theme = modifiers.includes('theme');   // theme scope: vars set here cascade to this subtree only
+        const theme = modifiers.includes('theme');
         const k = (expression || '').trim() || `area-${++autoN}`;
         if (theme) themeScopes[k] = el;
-        if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
-        if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
-        if ((expression || '').trim() && [...editEls].some(e => e !== el && e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);   // re-init of the same element is not a duplicate
-        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, authoring: modifiers.includes('authoring') };
-        el.setAttribute('data-edit-area', '');
-        editEls.add(el);
+        if (theme && !caps.size) { if (modifiers.includes('persist')) el._editPersist = true; return; }
+        if (!caps.size) DEFAULT_CAPS.forEach(c => caps.add(c));
+        if ((expression || '').trim() && [...editEls].some(e => e !== el && e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
+        const bare = modifiers.includes('bare');
+        el._edit = { key: k, caps, gated: modifiers.includes('gated'), theme, persist: modifiers.includes('persist'), bare };
+        el.setAttribute('data-edit-area', bare ? 'bare' : '');
+        editEls.add(el); resetAreas();
     }
-    const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
+    let areasCache = null;
+    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; }));
+    const resetAreas = () => { areasCache = null; };
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
-    const topArea = (a) => !!a && areas().includes(a);   // only top-level regions can be move endpoints (nested ones can't persist)
-    // The top-level region an element belongs to NOW — resolved at commit time, not
-    // arm time, so a block moved to another region commits against its new home.
-    const regionOf = (el) => areas().find(a => a === el || a.contains(el));
+    const topArea = (a) => !!a && areas().includes(a);
+    const regionOf = (el) => el && areas().find(a => a === el || a.contains(el));
     const key = (area) => area._edit.key;
     function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
-    const capOf = (node, cap) => { const i = editInfo(node); return !!i && !i.lock && i.caps.has(cap); };
-    const locked = (node) => { const i = editInfo(node); return !!i && i.lock; };
-    const ownsCap = (el, cap) => !!el._edit && !el._edit.lock && el._edit.caps.has(cap);
+    const capOf = (node, cap) => { const i = editInfo(node); return !!i && i.caps.has(cap) && !lockedFor(node, cap); };
+    const ownsCap = (el, cap) => !!el._edit && el._edit.caps.has(cap) && !lockedFor(el, cap);
+    const persistOf = (region) => { const a = region != null && areaByKey(region); return !!(a && a._edit.persist); };
 
     /* ---- Regime classification ---- */
     function classify(area) {
@@ -120,13 +137,9 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    // Plugin-injected nodes (size handles, drag ghosts) are not authored children —
-    // keys and paths skip them on client AND server (serve.mjs childAt mirrors this).
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
     const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
     const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
-    // Identity of a row in a data area. `data-key` is the explicit form; without it,
-    // fall back to the x-for's own :key so a plain list needs no extra attribute.
     let _keyWarned = false;
     function itemKey(el, area) {
         const explicit = el.getAttribute('data-key');
@@ -136,15 +149,23 @@
         if (!_keyWarned) { _keyWarned = true; console.warn('[edit] data area rows have no identity — add :key to the x-for or :data-key to the row, or the order cannot be stored'); }
         return null;
     }
-    const STRUCT_ATTRS = new Set(['class', 'style', 'data-component', 'data-edit-area', 'data-edit-field', 'data-edit-sizable', 'data-edit-movable', 'draggable', 'contenteditable', 'x-text', 'x-html', 'id']);
-    const componentParams = (area) => { const r = area.querySelector('[data-component]') || area; return [...r.attributes].filter(a => !STRUCT_ATTRS.has(a.name) && a.value.trim()); };
 
-    /* ---- Unit helpers (shared by move + size) ---- */
+    /* ---- Structure: text elements are pieces, never containers ---- */
+    const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
+    const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE']);
+    const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-text-edit') || ownText(el);
+    function isContainer(el) {
+        if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
+        return !isTextEl(el);
+    }
+
+    /* ---- Units ---- */
     const unitOf = (v) => { const m = String(v || '').match(/[a-z%]+$/i); return m ? m[0] : null; };
     function toUnit(px, unit, el, basisEl, dim) {
         if (unit === 'rem') return +(px / parseFloat(getComputedStyle(document.documentElement).fontSize)).toFixed(2);
         if (unit === 'em') return +(px / parseFloat(getComputedStyle(el).fontSize)).toFixed(2);
-        if (unit === '%') { const b = (basisEl || el.parentElement).getBoundingClientRect(); return +(px / (dim === 'w' ? b.width : b.height) * 100).toFixed(2); }
+        if (unit === '%') { const b = (basisEl || el.parentElement).getBoundingClientRect(); const d = dim === 'w' ? b.width : b.height; return d ? +(px / d * 100).toFixed(2) : 0; }
         return Math.round(px);
     }
     function toPx(str, el, dim) {
@@ -157,26 +178,33 @@
     const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 
-    /* ---- Snapshots (static/data are area-snapshotted; component uses per-node deltas) ---- */
-    const REVERT = '\u2205revert';   // sentinel; must not collide with a real class/text value
+    /* ---- Log ---- */
+    const REVERT = '∅revert';
+    let ver = 0;
+    const stamps = new WeakMap();
+
+    // Append a delta at the cursor. `join` undoes it together with the delta before it.
+    function pushDelta(d, persist) {
+        log.splice(cursor);
+        log.push(d); cursor = log.length; ver++;
+        if (persist === undefined) persist = deltaPersists(d);
+        if (persist) persisted.add(d);
+        saveState(); refresh();
+        return d;
+    }
+    function deltaPersists(d) {
+        if (d.kind === 'data-splice') return false;
+        if (d.kind === 'st-move') return persistOf(d.from) && persistOf(d.to);
+        return d.region != null && persistOf(d.region);
+    }
+
     function snapshot(area, kind) {
         if (kind === 'data') return { source: dataSourceName(area), order: sortableChildren(area).map(c => itemKey(c, area)) };
-        return {};   // static & component use per-node typed deltas, not area snapshots
-    }
-    function cleanStaticHTML(area) {
-        const c = area.cloneNode(true);
-        c.querySelectorAll('[data-edit-handle], [data-edit-live]').forEach(n => n.remove());
-        [c, ...c.querySelectorAll('*')].forEach(el => {
-            [...el.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) el.removeAttribute(a.name); });
-            ['draggable', 'contenteditable', 'tabindex', 'role', 'aria-label'].forEach(a => el.removeAttribute(a));
-            if (!el.getAttribute('class')) el.removeAttribute('class');
-        });
-        return c.innerHTML.trim().replace(/\n\s*\n/g, '\n');
+        return {};
     }
     async function applySnap(area, kind, snap) {
         if (!area || !snap) return;
-        if (kind === 'static') { area.innerHTML = snap.html; if (snap.style != null) area.setAttribute('style', snap.style); }
-        else if (kind === 'data') applyDataOrder(area, snap.order);
+        if (kind === 'data') applyDataOrder(area, snap.order);
         if (isActive(area)) armArea(area);
     }
     function applyDataOrder(area, order) {
@@ -187,12 +215,10 @@
             const next = order.map(k => byKey.get(String(k))).filter(Boolean);
             arr.forEach(it => { if (!order.map(String).includes(String(it.id))) next.push(it); });
             arr.splice(0, arr.length, ...next);
-        } catch {}
+        } catch { }
     }
 
-    /* ---- Component edits: per-node deltas, scoped instance vs main ----
-       cmp-main applies to EVERY instance of the component; cmp-inst to one region.
-       prop is 'text' or 'class'; REVERT (prop '*') clears a node's instance overrides. */
+    /* ---- Component edits: cmp-main (every instance) / cmp-inst (one region) ---- */
     function componentState() {
         const main = {}, inst = {}, reverts = {}, sigs = {};
         for (let i = 0; i < cursor; i++) {
@@ -213,93 +239,95 @@
         }
         return { main, inst, reverts, sigs };
     }
+    const componentNodes = (root) => [root, ...root.querySelectorAll('*')].filter(el => el._editPath != null);
     function applyComponentState() {
         const { main, inst, sigs } = componentState();
-        document.querySelectorAll('[data-edit-area]').forEach(area => {
-            if (!area._edit || classify(area) !== 'component') return;
+        areas().forEach(area => {
+            if (classify(area) !== 'component') return;
             const comp = componentName(area), region = key(area), root = area.querySelector('[data-component]'); if (!root) return;
-            [root, ...root.querySelectorAll('[data-edit-path]')].forEach(el => {   // include the root (path '') — edits on the parent
-                const p = el.getAttribute('data-edit-path');
+            componentNodes(root).forEach(el => {
+                const p = el._editPath;
                 const expect = sigs[comp + '|' + p];
                 if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale node (structure changed):', comp, p); return; }
                 const iv = (inst[region] && inst[region][p]) || {}, mv = (main[comp] && main[comp][p]) || {};
                 const base = area._baseText || {}, baseC = area._baseClass || {}, baseS = area._baseStyle || {};
                 const pick = (prop, fallback) => iv[prop] !== undefined ? iv[prop] : (mv[prop] !== undefined ? mv[prop] : fallback);
                 const text = pick('text', base[p]), cls = pick('class', baseC[p]), sty = pick('style', baseS[p]);
-                if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }   // sanitize on apply (cloud overlays)
-                if (cls !== undefined && el.getAttribute('class') !== cls) el.setAttribute('class', cls);
+                if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }
+                if (cls !== undefined) writeClass(el, cls);
                 if (sty !== undefined && el.getAttribute('style') !== sty) { if (sty === '') el.removeAttribute('style'); else el.setAttribute('style', sty); }
             });
         });
     }
-    function commitComponentNode(area, el, prop, value) {
-        const path = el.getAttribute('data-edit-path'), scope = area._editScope || 'instance', component = componentName(area), region = key(area);
-        if (prop === 'text') value = sanitizeFor(el, value);   // sanitize contentEditable on capture
-        const before = prop === 'text' ? el._preEdit : prop === 'style' ? el._preStyle : el._preClass;
-        if (before === value) return;
-        log.splice(cursor);
+    function commitComponentNode(area, el, prop, value, before) {
+        const path = el._editPath, scope = area._editScope || 'instance', component = componentName(area), region = key(area);
+        if (path == null) return false;
+        if (prop === 'text') value = sanitizeFor(el, value);
+        if (before === undefined) before = prop === 'text' ? el._preEdit : prop === 'style' ? el._preStyle : el._preClass;
+        if (before === value) return false;
         const sig = nodeSig(el);
-        log.push(scope === 'main' ? { kind: 'cmp-main', component, path, prop, value, before, sig } : { kind: 'cmp-inst', component, region, path, prop, value, before, sig });
-        cursor = log.length; saveState(); applyComponentState(); refresh();
+        pushDelta(scope === 'main' ? { kind: 'cmp-main', component, path, prop, value, before, sig, region } : { kind: 'cmp-inst', component, region, path, prop, value, before, sig });
+        applyComponentState();
+        return true;
     }
-    function revertNode(area, el) { log.splice(cursor); log.push({ kind: 'cmp-inst', component: componentName(area), region: key(area), path: el.getAttribute('data-edit-path'), prop: '*', value: REVERT }); cursor = log.length; saveState(); applyComponentState(); refresh(); }
-    function revertAll(area) { log.splice(cursor); log.push({ kind: 'cmp-inst', component: componentName(area), region: key(area), path: '*', prop: '*', value: REVERT }); cursor = log.length; saveState(); applyComponentState(); refresh(); }
+    function revertNode(area, el) { pushDelta({ kind: 'cmp-inst', component: componentName(area), region: key(area), path: el._editPath, prop: '*', value: REVERT }); applyComponentState(); }
+    function revertAll(area) { pushDelta({ kind: 'cmp-inst', component: componentName(area), region: key(area), path: '*', prop: '*', value: REVERT }); applyComponentState(); }
 
-    /* ---- Static editing: per-node typed deltas (text/class/style) + reorder permutation.
-       No whole-HTML snapshots — storage is O(edits), addresses not trees. ---- */
-    // Ops fold up to the cursor; baselines come from the WHOLE log — the `before`
-    // on the first delta that touched a prop is its authored value. That pairing is
-    // what makes undo total: a prop with no surviving op is restored to baseline
-    // instead of being left holding the edit. (applyThemeState works the same way.)
+    /* ---- Static: per-node typed deltas + per-container child orders ----
+       Orders are keyed region → container key ('' = the region root). Baselines come
+       from the whole log: the first delta that touched a prop or container carries it. */
+    const hasRemaps = () => log.some(d => d.kind === 'st-move' && d.remap && d.remap.length);
+    // Translate a key valid at log time `s` to the current cursor, through move renames.
+    function renameAt(region, k, s) {
+        if (s < cursor) {
+            for (let j = s; j < cursor; j++) { const d = log[j]; if (d.kind !== 'st-move' || !d.remap) continue; const hit = d.remap.find(r => r[0] === region && r[1] === k); if (hit) { region = hit[2]; k = hit[3]; } }
+        } else {
+            for (let j = s - 1; j >= cursor; j--) { const d = log[j]; if (d.kind !== 'st-move' || !d.remap) continue; const hit = d.remap.find(r => r[2] === region && r[3] === k); if (hit) { region = hit[0]; k = hit[1]; } }
+        }
+        return [region, k];
+    }
     function staticState() {
-        const node = {}, order = {}, sigs = {}, base = {}, html = {};
-        // An applied move re-addresses every EARLIER delta it carried along (its remap:
-        // the moved keys plus any twins whose ordinal shifted), so ops and baselines
-        // land on the element's current region/key instead of its pre-move address.
-        const moves = [];
-        for (let i = 0; i < cursor; i++) if (log[i].kind === 'st-move' && log[i].remap) moves.push({ i, remap: log[i].remap });
-        const addr = (i, region, path) => {
-            for (const m of moves) {
-                if (m.i <= i) continue;
-                const hit = m.remap.find(r => r[0] === region && r[1] === path);
-                if (hit) { region = hit[2]; path = hit[3]; }
-            }
-            return [region, path];
+        const node = {}, order = {}, orderBase = {}, sigs = {}, base = {}, html = {};
+        const remaps = hasRemaps();
+        const at = (region, k, s) => remaps ? renameAt(region, k, s) : [region, k];
+        const setOrder = (o, region, parent, keys, s, first) => {
+            if (!keys) return;
+            const [r, p] = parent ? at(region, parent, s) : [region, ''];
+            if (r !== region) return;
+            const m = o[r] = o[r] || {};
+            if (first && p in m) return;
+            m[p] = remaps ? keys.map(k => at(region, k, s)).filter(([rr]) => rr === region).map(([, kk]) => kk) : keys.slice();
         };
         for (let i = 0; i < log.length; i++) {
             const d = log[i];
-            if (d.kind === 'st-children' && d.html) Object.assign(html[d.region] = html[d.region] || {}, d.html);
-            if (d.kind === 'st-move' && d.html) { (html[d.from] = html[d.from] || {})[d.key] = d.html; (html[d.to] = html[d.to] || {})[d.toKey] = d.html; }   // both sides can rebuild it
-            if (d.kind !== 'st-node') continue;
-            const [region, path] = addr(i, d.region, d.path);
-            const bk = region + '|' + path;
-            const b = base[bk] = base[bk] || {};
-            if (!(d.prop in b)) b[d.prop] = d.before;
-            if (d.sig) sigs[bk] = d.sig;
+            if (d.kind === 'st-children') { if (d.html) Object.assign(html[d.region] = html[d.region] || {}, d.html); setOrder(orderBase, d.region, d.parent, d.before, i, true); }
+            else if (d.kind === 'st-order') setOrder(orderBase, d.region, d.parent, d.before, i, true);
+            else if (d.kind === 'st-move') {
+                if (d.html) { (html[d.from] = html[d.from] || {})[d.key] = d.html; (html[d.to] = html[d.to] || {})[d.toKey] = d.html; }
+                setOrder(orderBase, d.from, d.fromParent, d.fromBefore, i, true);
+                setOrder(orderBase, d.to, d.toParent, d.toBefore, i, true);
+            } else if (d.kind === 'st-node') {
+                const [region, path] = at(d.region, d.path, i);
+                const bk = region + '|' + path;
+                const b = base[bk] = base[bk] || {};
+                if (!(d.prop in b)) b[d.prop] = d.before;
+                if (d.sig) sigs[bk] = d.sig;
+            }
         }
         for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind === 'st-node') { const [region, path] = addr(i, d.region, d.path); (node[region] = node[region] || {}); (node[region][path] = node[region][path] || {})[d.prop] = d.value; }
-            else if (d.kind === 'st-order' || d.kind === 'st-children') order[d.region] = d.order;
-            else if (d.kind === 'st-move') { order[d.from] = d.fromOrder; order[d.to] = d.toOrder; }
+            if (d.kind === 'st-node') { const [region, path] = at(d.region, d.path, i + 1); (node[region] = node[region] || {}); (node[region][path] = node[region][path] || {})[d.prop] = d.value; }
+            else if (d.kind === 'st-order' || d.kind === 'st-children') setOrder(order, d.region, d.parent, d.order, i + 1);
+            else if (d.kind === 'st-move') { setOrder(order, d.from, d.fromParent, d.fromOrder, i + 1); setOrder(order, d.to, d.toParent, d.toOrder, i + 1); }
         }
-        // The markup for anything added or removed comes from the WHOLE log, the same
-        // way baselines do — undoing a delete has to be able to rebuild the element,
-        // and the delta that knows its markup is no longer applied.
-        return { node, order, sigs, base, html };
+        return { node, order, orderBase, sigs, base, html };
     }
 
-    // A data area's own deltas carry only the id order, which can restore a sequence
-    // but cannot resurrect a record — so adding and removing rows record the record
-    // itself. In-session history only: what the array should hold is the app's to
-    // persist, so these never travel to the source.
+    // Data rows: adding/removing records the record itself. In-session only.
     function commitSplice(area, index, record, op) {
-        log.splice(cursor);
-        log.push({ kind: 'data-splice', region: key(area), source: dataSourceName(area), index, op, record: JSON.parse(JSON.stringify(record)) });
-        cursor = log.length; saveState(); refresh();
+        pushDelta({ kind: 'data-splice', region: key(area), source: dataSourceName(area), index, op, record: JSON.parse(JSON.stringify(record)) });
         setTimeout(() => { lastSnap[key(area)] = snapshot(area, classify(area)); }, 0);
     }
-
     function applySplice(d, undo) {
         const area = areaByKey(d.region); if (!area) return;
         const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
@@ -312,19 +340,14 @@
         setTimeout(() => { lastSnap[d.region] = snapshot(area, classify(area)); }, 0);
     }
 
-    // Structural change to a container's children: duplicate, delete, paste. Stored
-    // as the resulting key order plus the markup of whatever the log introduced or
-    // took away, so it stays proportional to the edit rather than snapshotting.
-    function commitStructure(area, markup) {
-        const region = key(area), order = staticKeys(area), before = lastOrder[region] || area._baseOrder || order;
+    const parentKey = (container, area) => container === area ? '' : (container.getAttribute('data-edit-key') || '');
+
+    // Duplicate, delete, paste: the container's resulting order plus the markup the log introduced or took away.
+    function commitStructure(area, container, before, markup) {
+        const order = staticKeys(container);
         if (eq(before, order) && !Object.keys(markup || {}).length) return;
-        log.splice(cursor);
-        log.push({ kind: 'st-children', region, order, before, html: markup || {} });
-        cursor = log.length; lastOrder[region] = order; saveState(); refresh();
+        pushDelta({ kind: 'st-children', region: key(area), parent: parentKey(container, area), order, before, html: markup || {} });
     }
-    // Rebuilt markup carries no identity — blockHTML strips it so a duplicate cannot
-    // inherit its original's. Stamp the key we are rebuilding it for, or the element
-    // comes back nameless and the next fold drops it again.
     const materialize = (markup, k) => {
         if (!markup) return null;
         const t = document.createElement('template');
@@ -333,52 +356,101 @@
         if (el && k) el.setAttribute('data-edit-key', k);
         return el;
     };
+    function keyMap(area) {
+        const m = new Map();
+        [area, ...area.querySelectorAll('[data-edit-key]')].forEach(el => {
+            if (el.closest('[data-edit-ghost]')) return;
+            const k = el.getAttribute('data-edit-key');
+            if (k != null && !m.has(k)) m.set(k, el);
+        });
+        return m;
+    }
+
+    function applyStaticProp(el, prop, v) {
+        if (v === undefined) return;
+        if (prop === 'text') { const safe = sanitizeFor(el, v); if (el.innerHTML !== safe) el.innerHTML = safe; return; }
+        if (attrRefusal(prop, v)) return;
+        if (prop === 'class') return writeClass(el, v);
+        if (v === null || (v === '' && prop === 'style')) { el.removeAttribute(prop); return; }
+        if (el.getAttribute(prop) !== v) el.setAttribute(prop, v);
+    }
 
     function applyStaticState() {
-        const { node, order, sigs, base, html } = staticState();
-        document.querySelectorAll('[data-edit-area]').forEach(area => {
-            if (!area._edit || classify(area) !== 'static') return;
+        const { node, order, orderBase, sigs, base, html } = staticState();
+        areas().forEach(area => {
+            if (classify(area) !== 'static') return;
             const region = key(area);
-            [area, ...area.querySelectorAll('[data-edit-key]')].forEach(el => {
-                const p = el.getAttribute('data-edit-key'), bk = region + '|' + p;
+            const byKey = keyMap(area), markup = html[region] || {};
+            const want = Object.assign({}, orderBase[region] || {}, order[region] || {});
+            const claimed = new Set();
+            Object.values(want).forEach(ks => ks.forEach(k => claimed.add(k)));
+            let rebuilt = false;
+            const get = (k) => {
+                let el = byKey.get(k);
+                if (!el && markup[k]) {
+                    el = materialize(markup[k], k);
+                    if (el) { byKey.set(k, el); el.querySelectorAll('[data-edit-key]').forEach(n => { const nk = n.getAttribute('data-edit-key'); if (!byKey.has(nk)) byKey.set(nk, n); }); rebuilt = true; }
+                }
+                return el;
+            };
+            const pending = Object.entries(want);
+            let progress = true;
+            while (pending.length && progress) {
+                progress = false;
+                for (let i = 0; i < pending.length; i++) {
+                    const [parent, keys] = pending[i];
+                    const c = parent ? byKey.get(parent) : area;
+                    if (!c) continue;
+                    pending.splice(i--, 1); progress = true;
+                    const kids = sortableChildren(c);
+                    const next = keys.map(get).filter(el => el && el !== c && !el.contains(c));
+                    const stay = kids.filter(el => !next.includes(el) && !claimed.has(el.getAttribute('data-edit-key')) && !markup[el.getAttribute('data-edit-key')]);
+                    const target = [...next, ...stay];
+                    if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
+                    const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
+                    kids.forEach(el => { if (!target.includes(el)) el.remove(); });
+                    target.forEach(el => c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null));
+                    rebuilt = true;
+                }
+            }
+            const live = rebuilt ? keyMap(area) : byKey;
+            live.forEach((el, p) => {
+                const bk = region + '|' + p;
                 const ops = (node[region] || {})[p], baseline = base[bk];
                 if (!ops && !baseline) return;
                 const expect = sigs[bk]; if (expect && nodeSig(el) !== expect) { console.warn('[edit] skip stale static node', region, p); return; }
-                const eff = (prop) => ops && ops[prop] !== undefined ? ops[prop] : baseline && baseline[prop];
-                const setAttr = (name, v) => { if (v === undefined) return; if (v === '') el.removeAttribute(name); else if (el.getAttribute(name) !== v) el.setAttribute(name, v); };
-                const text = eff('text'); if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }
-                setAttr('class', eff('class'));
-                setAttr('style', eff('style'));
+                const props = new Set([...Object.keys(ops || {}), ...Object.keys(baseline || {})]);
+                props.forEach(prop => applyStaticProp(el, prop, ops && ops[prop] !== undefined ? ops[prop] : baseline && baseline[prop]));
             });
-            const want = order[region] || area._baseOrder;
-            if (want) {
-                const by = {}, kids = sortableChildren(area), keys = staticKeys(area);
-                kids.forEach((el, i) => { by[keys[i]] = el; });
-                const markup = html[region] || {};
-                const next = want.map(kk => by[kk] || materialize(markup[kk], kk)).filter(Boolean);
-                // Reinsert at the managed range — never scramble real children past plugin handles.
-                const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(area.children).find(pluginNode) || null;
-                kids.forEach(el => { if (!next.includes(el)) el.remove(); });
-                next.forEach(el => area.insertBefore(el, anchor));
-            }
+            if (rebuilt) { markStatic(area); if (area._armed && isActive(area)) armArea(area); }
         });
     }
-    function commitStaticNode(area, el, prop, value) {
+
+    // One delta per committed change. `opts.before` overrides the captured baseline;
+    // `opts.coalesce` folds a quick follow-up change to the same prop into the last delta.
+    function commitStaticNode(area, el, prop, value, opts = {}) {
         const region = key(area), path = el.getAttribute('data-edit-key');
-        if (!path) return;                          // not an addressable node
+        if (!path) return false;
         if (prop === 'text') value = sanitizeFor(el, value);
-        // _pre* comes from the focus/open listener; when an edit arrives without
-        // one (programmatic focus, scripted writes), the arm-time baseline keeps
-        // `before` truthful so undo can still reach the original.
-        const fallback = prop === 'text' ? area._baseText && area._baseText[path] : prop === 'class' ? area._baseClass && area._baseClass[path] : area._baseStyle && area._baseStyle[path];
-        const pre = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : el._preStyle;
-        const before = pre !== undefined ? pre : fallback;
-        if (before === value) return;
-        log.splice(cursor); log.push({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }); cursor = log.length; saveState(); refresh();
+        let before = opts.before;
+        if (before === undefined) {
+            const fallback = prop === 'text' ? area._baseText && area._baseText[path] : prop === 'class' ? area._baseClass && area._baseClass[path] : prop === 'style' ? area._baseStyle && area._baseStyle[path] : el.getAttribute(prop);
+            const pre = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : prop === 'style' ? el._preStyle : undefined;
+            before = pre !== undefined ? pre : fallback;
+        }
+        if (before === value) return false;
+        const last = log[cursor - 1];
+        if (opts.coalesce && last && cursor === log.length && last.kind === 'st-node' && last.region === region && last.path === path && last.prop === prop && Date.now() - (stamps.get(last) || 0) < COALESCE_MS) {
+            if (last.before === value) { log.pop(); cursor--; } else { last.value = value; stamps.set(last, Date.now()); }
+            ver++; saveState(); refresh();
+            return true;
+        }
+        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, opts.join ? { join: true } : {}));
+        if (opts.coalesce) stamps.set(d, Date.now());
+        return true;
     }
-    /* ---- Data VALUE editing (opt-in .values): edit $x record fields. Not an HTML edit —
-       it mutates the data source. A-side: mutate the in-memory $x array (reactive).
-       B-side: local file cell write (dev server); cloud → $x.<source>.$update(id,{field}). ---- */
+
+    /* ---- Data values (.data): edit $x record fields ---- */
     function dataValueState() {
         const s = {};
         for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'data-val') ((s[d.source] = s[d.source] || {})[d.id] = s[d.source][d.id] || {})[d.field] = d.value; }
@@ -390,52 +462,46 @@
             if (classify(area) !== 'data') return;
             const source = dataSourceName(area), recs = st[source]; if (!recs) return;
             const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
-            try { const arr = window.Alpine.evaluate(tpl, expr); if (Array.isArray(arr)) Object.entries(recs).forEach(([id, fields]) => { const rec = arr.find(r => String(r.id) === String(id)); if (rec) Object.entries(fields).forEach(([f, v]) => { if (rec[f] !== v) rec[f] = v; }); }); } catch {}
-            if (isActive(area)) setTimeout(() => armDataValues(area), 0);   // re-arm clones Alpine re-rendered
+            try { const arr = window.Alpine.evaluate(tpl, expr); if (Array.isArray(arr)) Object.entries(recs).forEach(([id, fields]) => { const rec = arr.find(r => String(r.id) === String(id)); if (rec) Object.entries(fields).forEach(([f, v]) => { if (rec[f] !== v) rec[f] = v; }); }); } catch { }
+            if (isActive(area)) setTimeout(() => armDataValues(area), 0);
         });
     }
     function commitDataValue(area, source, id, field, value, el) {
         value = String(value);
-        if (el && el.hasAttribute('data-edit-rich')) value = sanitizeFor(el, value);
+        if (el && el._editRich) value = sanitizeFor(el, value);
         const before = el ? el._preEdit : undefined;
         if (before === value) return;
-        log.splice(cursor); log.push({ kind: 'data-val', source, id, field, value, before }); cursor = log.length; saveState();
-        applyDataValues(); refresh();
+        pushDelta({ kind: 'data-val', region: key(area), source, id, field, value, before });
+        applyDataValues();
     }
 
-    // size/move write an element's inline style → static: per-node style op; data: n/a.
-    // Size/move land here. The data regime has nowhere to put per-row geometry —
-    // the data source holds values, not layout — so it stays transient there.
-    function commitStyle(area, el) {
+    // Size and freeform placement write inline style.
+    function commitStyle(area, el, opts) {
         const v = el.getAttribute('style') || '', kind = classify(area);
-        if (kind === 'component') commitComponentNode(area, el, 'style', v);
-        else if (kind === 'static') commitStaticNode(area, el, 'style', v);
+        if (kind === 'component') return commitComponentNode(area, el, 'style', v);
+        if (kind === 'static') return commitStaticNode(area, el, 'style', v, opts);
+        return false;
     }
-    function commitStaticOrder(area) {
-        const region = key(area), order = staticKeys(area), before = lastOrder[region] || order;
-        if (eq(before, order)) return;
-        log.splice(cursor); log.push({ kind: 'st-order', region, order, before }); cursor = log.length; lastOrder[region] = order; saveState(); refresh();
+    function commitOrder(area, container, before) {
+        const order = staticKeys(container);
+        if (eq(before, order)) return false;
+        pushDelta({ kind: 'st-order', region: key(area), parent: parentKey(container, area), order, before });
+        return true;
     }
-    // Positional re-key of a region: give every element the key a FRESH session would
-    // derive (markStatic document order, ordinals by position among same-base keys).
-    // That is what keeps client, server, and reload addressing the same elements after
-    // a move shifts membership. Returns the renames as [oldKey, newKey] pairs.
+    // Positional re-key of a region, as a fresh session would derive it. Returns [old, new] renames.
     function rekeyRegion(area) {
         const seen = Object.create(null), changes = [];
         for (const el of [area, ...area.querySelectorAll('*')]) {
             if (el.hasAttribute('data-edit-handle') || el.hasAttribute('data-edit-ghost')) continue;
             if (el.parentElement && el.parentElement.closest('[data-text-edit]')) continue;
             const cur = el.getAttribute('data-edit-key');
-            const base = cur ? ((/^([\s\S]*)#\d+$/.exec(cur) || [, cur])[1]) : staticKey(el);   // ordinal = last #digits suffix
+            const base = cur ? ((/^([\s\S]*)#\d+$/.exec(cur) || [, cur])[1]) : staticKey(el);
             const n = seen[base] = (seen[base] || 0) + 1;
             const k = n > 1 ? base + '#' + n : base;
             if (cur !== k) { el.setAttribute('data-edit-key', k); if (cur) changes.push([cur, k]); }
         }
         return changes;
     }
-    // Replay/undo/redo of a move's key renames. Resolve-then-set so swapped ordinals
-    // never collide mid-application; the moved element itself (region change) is
-    // handled by applyStaticState's materialization, not here.
     function applyMoveKeys(d, invert) {
         if (!d.remap) return;
         const jobs = [];
@@ -448,130 +514,189 @@
         }
         jobs.forEach(([el, k]) => el.setAttribute('data-edit-key', k));
     }
-    // Cross-region move (static → static): one delta carries both region orders, so a
-    // single undo puts the block back. The item must already sit in its new parent.
-    // Both regions are re-keyed positionally and every rename travels on the delta
-    // (remap), so earlier deltas on the moved block — and on ordinal-shifted twins —
-    // keep addressing the right elements.
-    function commitMove(fromArea, toArea, item) {
-        const from = key(fromArea), to = key(toArea), fromKey = item.getAttribute('data-edit-key') || staticKey(item);
-        const descOld = [...item.querySelectorAll('[data-edit-key]')].map(n => [n, n.getAttribute('data-edit-key')]);
-        item.removeAttribute('data-edit-key');
-        item.querySelectorAll('[data-edit-key]').forEach(n => n.removeAttribute('data-edit-key'));   // arrival re-keys in the new region
-        const fromPairs = rekeyRegion(fromArea).map(([o, n]) => [from, o, from, n]);
-        const toPairs = rekeyRegion(toArea).map(([o, n]) => [to, o, to, n]);
-        const toKey = item.getAttribute('data-edit-key');
-        const remap = [[from, fromKey, to, toKey]];
-        descOld.forEach(([n, o]) => { const nk = n.getAttribute('data-edit-key'); if (nk) remap.push([from, o, to, nk]); });
-        remap.push(...fromPairs, ...toPairs);
-        const html = blockHTML(item);
-        log.splice(cursor);
-        log.push({ kind: 'st-move', from, to, key: fromKey, toKey, fromOrder: staticKeys(fromArea), toOrder: staticKeys(toArea), html, remap });
-        cursor = log.length;
-        lastOrder[from] = staticKeys(fromArea); lastOrder[to] = staticKeys(toArea);
-        markStatic(fromArea); armArea(toArea);   // paths shift on both sides; the arrival needs baselines + affordances
-        saveState(); refresh();
+    // A piece that already sits in its new container. Same region: identity is kept.
+    // Across regions: both regions are re-keyed positionally and the renames ride the delta.
+    function commitMove(fromArea, toArea, item, fromContainer, fromBefore, toBefore, opts = {}) {
+        const from = key(fromArea), to = key(toArea), toContainer = item.parentElement;
+        const fromParent = parentKey(fromContainer, fromArea);
+        const fromKey = item.getAttribute('data-edit-key') || staticKey(item);
+        let toKey = fromKey, remap = [];
+        if (from !== to) {
+            const descOld = [...item.querySelectorAll('[data-edit-key]')].map(n => [n, n.getAttribute('data-edit-key')]);
+            item.removeAttribute('data-edit-key');
+            item.querySelectorAll('[data-edit-key]').forEach(n => n.removeAttribute('data-edit-key'));
+            const fromPairs = rekeyRegion(fromArea).map(([o, n]) => [from, o, from, n]);
+            const toPairs = rekeyRegion(toArea).map(([o, n]) => [to, o, to, n]);
+            toKey = item.getAttribute('data-edit-key');
+            remap = [[from, fromKey, to, toKey]];
+            descOld.forEach(([n, o]) => { const nk = n.getAttribute('data-edit-key'); if (nk) remap.push([from, o, to, nk]); });
+            remap.push(...fromPairs, ...toPairs);
+        }
+        const d = { kind: 'st-move', from, to, fromParent, toParent: parentKey(toContainer, toArea), key: fromKey, toKey, fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore, html: blockHTML(item, true), remap };
+        if (opts.join) d.join = true;
+        pushDelta(d);
+        resetAreas();
+        markStatic(fromArea);
+        if (toArea !== fromArea) armArea(toArea); else if (isActive(fromArea)) armArea(fromArea);
+        return d;
     }
 
-    /* ---- Commit / undo / redo (data area snapshots) ---- */
+    /* ---- Locks: runtime per-action locks, logged ---- */
+    let lockVer = -1, lockMap = new Map();
+    function lockState() {
+        if (lockVer === ver) return lockMap;
+        lockMap = new Map();
+        for (let i = 0; i < cursor; i++) {
+            const d = log[i]; if (d.kind !== 'lock') continue;
+            const r = lockMap.get(d.region) || new Map(); lockMap.set(d.region, r);
+            const m = r.get(d.key) || new Map(); r.set(d.key, m);
+            (d.actions && d.actions.length ? d.actions : LOCK_ACTIONS).forEach(a => m.set(a, d.value));
+        }
+        lockVer = ver;
+        return lockMap;
+    }
+    function identity(el, area) {
+        if (el === area) return '';
+        const kind = classify(area);
+        if (kind === 'static') return el.getAttribute('data-edit-key');
+        if (kind === 'component') return el._editPath != null ? 'path:' + el._editPath : null;
+        const list = area.querySelector('template[x-for]');
+        if (list && el.parentElement === list.parentElement) { const k = itemKey(el, area); return k == null ? null : 'row:' + k; }
+        return null;
+    }
+    const actionOf = (cap) => cap === 'data' ? 'text' : cap;
+    function lockedFor(node, cap) {
+        const action = actionOf(cap);
+        const region = regionOf(node);
+        const rl = region && lockState().get(key(region));
+        for (let n = node; n && n.nodeType === 1; n = n.parentElement) {
+            let v;
+            if (rl && rl.size) { const id = identity(n, region); const m = id != null && rl.get(id); if (m && m.has(action)) v = m.get(action); }
+            if (v === undefined && n._editLock) v = n._editLock.has('*') || n._editLock.has(action);
+            if (v) return true;
+            if (n === region) break;
+        }
+        return false;
+    }
+    function setLock(el, action, value) {
+        if (!el || el.nodeType !== 1) return false;
+        const area = regionOf(el); if (!area) return false;
+        if (action != null && !LOCK_ACTIONS.includes(action)) { console.warn('[edit] unknown lock action:', action); return false; }
+        const id = identity(el, area);
+        if (id == null) { console.warn('[edit] this element has no stable identity to lock'); return false; }
+        pushDelta({ kind: 'lock', region: key(area), key: id, actions: action ? [action] : [], value: !!value });
+        rearm(area);
+        return true;
+    }
+    function rearm(area) { if (area && area._armed) { disarmArea(area); if (isActive(area)) armArea(area); } }
+
+    /* ---- Data area snapshots ---- */
     function commit(area) {
         if (!area) return;
         const k = key(area), kind = classify(area), after = snapshot(area, kind), before = lastSnap[k];
         if (before && eq(before, after)) return;
-        log.splice(cursor); log.push({ region: k, kind, before: before ?? after, after });
-        cursor = log.length; lastSnap[k] = after; saveState(); refresh();
+        pushDelta({ region: k, kind, before: before ?? after, after });
+        lastSnap[k] = after;
     }
-    const dispatchApply = (d) => { if (d.kind === 'cmp-main' || d.kind === 'cmp-inst') applyComponentState(); else if (d.kind === 'data-val') applyDataValues(); else if (d.kind === 'theme') applyThemeState(); else applyStaticState(); };
-    async function undo() {
-        if (cursor === 0) return; const d = log[--cursor];
-        if (d.kind === 'st-move') applyMoveKeys(d, true);   // ordinal renames roll back before state re-applies
-        if (d.kind === 'data-splice') applySplice(d, true);
-        else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.before); lastSnap[d.region] = d.before; }
+    const dispatchApply = (d) => {
+        if (d.kind === 'cmp-main' || d.kind === 'cmp-inst') applyComponentState();
+        else if (d.kind === 'data-val') applyDataValues();
+        else if (d.kind === 'theme') applyThemeState();
+        else if (d.kind === 'lock') rearm(areaByKey(d.region));
+        else applyStaticState();
+    };
+    // Returns a promise only when a data snapshot must settle, so undo stays synchronous otherwise.
+    function step(d, back) {
+        if (d.kind === 'st-move') applyMoveKeys(d, back);
+        if (d.kind === 'data-splice') applySplice(d, back);
+        else if (d.kind === 'data') { const snap = back ? d.before : d.after; lastSnap[d.region] = snap; return applySnap(areaByKey(d.region), d.kind, snap); }
         else dispatchApply(d);
+        return null;
+    }
+    async function undo() {
+        if (cursor === 0) return;
+        let d;
+        do { d = log[--cursor]; ver++; const p = step(d, true); if (p) await p; } while (d.join && cursor > 0);
         rebaseFocused(); saveState(); refresh();
     }
     async function redo() {
-        if (cursor >= log.length) return; const d = log[cursor++];
-        if (d.kind === 'st-move') applyMoveKeys(d, false);
-        if (d.kind === 'data-splice') applySplice(d, false);
-        else if (d.kind === 'data') { await applySnap(areaByKey(d.region), d.kind, d.after); lastSnap[d.region] = d.after; }
-        else dispatchApply(d);
+        if (cursor >= log.length) return;
+        do { const d = log[cursor++]; ver++; const p = step(d, false); if (p) await p; } while (cursor < log.length && log[cursor].join);
         rebaseFocused(); saveState(); refresh();
     }
 
-    /* ---- Projections (static/data); component projections come from componentState() ---- */
-    function fold() { const s = {}; for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'static' || d.kind === 'data') s[d.region] = { kind: d.kind, snap: d.after }; } return s; }
-    function patchFor(r, kind, snap) {
-        if (kind === 'static') return { region: r, kind, op: 'writeHTML', target: `[x-edit="${r}"]`, html: snap.html, style: snap.style, note: 'static/style/size/move fold into the source HTML.' };
-        return { region: r, kind, op: 'reorderData', source: snap.source, order: snap.order, note: `data mutation: $x.${snap.source}.$update(id,{order}).` };
-    }
+    /* ---- Projections ---- */
+    function fold() { const s = {}; for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'data') s[d.region] = { kind: d.kind, snap: d.after }; } return s; }
+    const patchFor = (r, kind, snap) => ({ region: r, kind, op: 'reorderData', source: snap.source, order: snap.order });
 
 
-    /* ---- Block operations: copy, cut, paste, duplicate, delete ----
-       Structural edits on a sortable child. The plugin performs them and logs them;
-       it renders no menu, because what a context menu looks like belongs to the
-       project. What it offers instead is enough to build one: an `edit:context`
-       event carrying the block and where the pointer was, $edit.target for the block
-       in play, and $edit.can(op) so a menu can disable what would not apply. */
-    let clipboard = null;                       // { html, source } — the plugin's own, not the OS clipboard
-    let target = null;                          // the block a menu is acting on
+    /* ---- Pieces and block operations ---- */
+    let clipboard = null;
+    let target = null;
 
-    // A menu binds :disabled to can(), so what can() depends on has to be trackable.
-    // The target and the clipboard are plain values, so changes to them are announced
-    // through a counter on the store, which is reactive.
-    const bump = () => { if (estore) estore.targetVersion = (estore.targetVersion || 0) + 1; };
+    const bump = () => { if (estore) estore.version = (estore.version || 0) + 1; };
     const setTarget = (el) => { target = el; bump(); };
 
-    // The addressable block for a node: the sortable child that contains it, or —
-    // where the region is not sortable at all — the outermost element inside the area
-    // that contains it. Deleting a heading should not require the region to have been
-    // declared reorderable.
-    function blockOf(node) {
-        const area = node && node.closest && node.closest('[data-edit-area]');
-        if (!area) return null;
-        const sortable = node.closest('[data-edit-sortable]');
-        if (sortable && sortable.closest('[data-edit-area]') === area) return sortable;
-        let el = node;
-        while (el && el.parentElement && el.parentElement !== area) el = el.parentElement;
-        return el && el.parentElement === area ? el : null;
+    // The innermost structural piece holding a node: a child of a container (static),
+    // a row of the list (data), or a path-addressed node (component).
+    function pieceOf(node) {
+        if (node && node.nodeType !== 1) node = node.parentElement;
+        const area = regionOf(node);
+        if (!area || node === area) return null;
+        const kind = classify(area);
+        if (kind === 'data') {
+            const tpl = area.querySelector('template[x-for]'), list = tpl && tpl.parentElement;
+            for (let n = node; n && n !== area; n = n.parentElement) if (n.parentElement === list) return n;
+            return null;
+        }
+        if (kind === 'component') {
+            for (let n = node; n && n !== area; n = n.parentElement) if (n._editPath != null) return n;
+            return null;
+        }
+        for (let n = node; n && n !== area; n = n.parentElement) {
+            if (pluginNode(n)) return null;
+            if (isContainer(n.parentElement)) return n;
+        }
+        return null;
+    }
+    const isPiece = (el) => !!el && el.nodeType === 1 && pieceOf(el) === el;
+    const asPiece = (el) => isPiece(el) ? el : pieceOf(el);
+    const blockArea = (el) => el && regionOf(el.parentElement);
+    const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
+    // A piece can be dragged when its container moves and nothing up to the region locks it.
+    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el)) !== 'component';
+    function accepts(c) {
+        if (!c || c.nodeType !== 1) return false;
+        const area = regionOf(c);
+        if (!area || !isActive(area) || !isContainer(c)) return false;
+        return capOf(c, 'move');
     }
 
-    // The region a block BELONGS TO — from the parent, so a block that is itself an
-    // x-edit region resolves to its outer region, never to itself.
-    const blockArea = (el) => el && el.parentElement && el.parentElement.closest('[data-edit-area]');
-    // A block that is itself an x-edit region owns its own delta addressing; moving
-    // it across regions is refused (reordering it within its parent still works).
-    const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
-
-    // Markup without the plugin's own affordances, so a duplicate re-arms cleanly
-    // rather than inheriting half-initialised state from its original.
-    function blockHTML(el) {
+    // Markup without plugin affordances. `keepKeys` keeps identity so undo restores it.
+    function blockHTML(el, keepKeys) {
         const c = el.cloneNode(true);
+        const src = [el, ...el.querySelectorAll('*')], dst = [c, ...c.querySelectorAll('*')];
+        dst.forEach((n, i) => { if (addedTab.has(src[i])) n.removeAttribute('tabindex'); });
         c.querySelectorAll('[data-edit-handle], [data-edit-live], [data-edit-ghost]').forEach(n => n.remove());
         [c, ...c.querySelectorAll('*')].forEach(n => {
-            [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); });
-            ['contenteditable', 'draggable', 'tabindex', 'role', 'aria-label'].forEach(a => n.removeAttribute(a));
+            [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && !(keepKeys && a.name === 'data-edit-key')) n.removeAttribute(a.name); });
+            n.removeAttribute('contenteditable');
+            n.removeAttribute('draggable');
         });
         return c.outerHTML;
     }
 
-    /* ---- Data regime: the array is the truth, so operate on it ---- */
+    /* ---- Data regime: the array is the truth ---- */
     function dataOps(area) {
         const tpl = area.querySelector('template[x-for]'), expr = dataSourceExpr(area);
         if (!tpl || !expr) return null;
-        try {
-            const arr = window.Alpine.evaluate(tpl, expr);
-            return Array.isArray(arr) ? arr : null;
-        } catch { return null; }
+        try { const arr = window.Alpine.evaluate(tpl, expr); return Array.isArray(arr) ? arr : null; } catch { return null; }
     }
-
     const recordIndex = (area, el) => {
         const arr = dataOps(area); if (!arr) return -1;
         const k = itemKey(el, area);
         return arr.findIndex(it => String(it && it.id != null ? it.id : it) === String(k));
     };
-
-    // A copy needs its own identity or the list has two rows claiming one key.
     function freshId(arr, id) {
         const taken = new Set(arr.map(it => String(it && it.id)));
         if (!taken.has(String(id))) return String(id);
@@ -580,29 +705,53 @@
         return next;
     }
 
-    /* ---- Operations ---- */
-    function canDo(op, el) {
-        const block = el || target;
-        if (op === 'paste') return !!clipboard && !!(block ? blockArea(block) : areas().find(isActive));
-        if (!block || locked(block)) return false;
-        if (op === 'move' && isRegionBlock(block)) return false;
-        const area = blockArea(block);
+    /* ---- can() ---- */
+    const ACTIONS = ['move', 'remove', 'duplicate', 'text', 'attrs', 'size', 'copy', 'cut', 'paste'];
+    function pasteDest(el) {
+        const block = el ? asPiece(el) : null;
+        if (block) return accepts(block.parentElement) ? block.parentElement : null;
+        const area = areas().find(a => isActive(a) && accepts(a));
+        return area || null;
+    }
+    function canDo(action, el) {
+        if (!ACTIONS.includes(action)) return false;
+        if (action === 'paste') return !!clipboard && !!pasteDest(el);
+        if (!el || el.nodeType !== 1) return false;
+        const area = regionOf(el);
         if (!area || !isActive(area)) return false;
-        if (classify(area) === 'component') return false;          // instances are overridden, not restructured
-        return true;
+        const kind = classify(area);
+        if (action === 'size') return !!el._edit && el._edit.caps.has('size') && !lockedFor(el, 'size');
+        if (action === 'text') return capOf(el, 'text') && (kind !== 'data' || capOf(el, 'data'));
+        if (action === 'attrs') {
+            if (kind === 'data' || lockedFor(el, 'attrs')) return false;
+            return kind === 'component' ? el._editPath != null : el.hasAttribute('data-edit-key');
+        }
+        if (kind === 'component') return false;
+        const block = asPiece(el);
+        if (!block) return false;
+        if (action === 'copy') return true;
+        if (action === 'move') return movable(block);
+        const lockAs = action === 'duplicate' ? 'duplicate' : 'remove';
+        return capOf(block.parentElement, 'move') && !lockedFor(block, lockAs);
     }
 
     function copyBlock(el) {
-        const block = el || target; if (!block) return false;
-        const area = blockArea(block);
-        if (!area) return false;                    // a whole region is a container, not a copyable block
+        const block = asPiece(el === undefined ? target : el); if (!block) return false;
+        const area = blockArea(block); if (!area) return false;
         clipboard = { html: blockHTML(block), source: key(area) };
         bump();
         return true;
     }
 
+    function insertStatic(area, container, made, after) {
+        const before = staticKeys(container);
+        if (after) after.after(made); else container.appendChild(made);
+        markStatic(area); armArea(area);
+        commitStructure(area, container, before, { [made.getAttribute('data-edit-key')]: blockHTML(made) });
+    }
+
     function duplicateBlock(el) {
-        const block = el || target; if (!canDo('duplicate', block)) return false;
+        const block = asPiece(el === undefined ? target : el); if (!canDo('duplicate', block)) return false;
         const area = blockArea(block);
         if (classify(area) === 'data') {
             const arr = dataOps(area), i = recordIndex(area, block);
@@ -615,14 +764,12 @@
         }
         const made = materialize(blockHTML(block));
         if (!made) return false;
-        block.after(made);
-        armArea(area);                                             // the copy needs its own affordances
-        commitStructure(area, { [staticKeys(area)[sortableChildren(area).indexOf(made)]]: blockHTML(made) });
+        insertStatic(area, block.parentElement, made, block);
         return true;
     }
 
     function removeBlock(el) {
-        const block = el || target; if (!canDo('remove', block)) return false;
+        const block = asPiece(el === undefined ? target : el); if (!canDo('remove', block)) return false;
         const area = blockArea(block);
         if (classify(area) === 'data') {
             const arr = dataOps(area), i = recordIndex(area, block);
@@ -630,40 +777,50 @@
             const gone = arr[i];
             arr.splice(i, 1);
             commitSplice(area, i, gone, 'remove');
+            if (target === block) setTarget(null);
             return true;
         }
-        const keys = staticKeys(area), gone = keys[sortableChildren(area).indexOf(block)];
-        const markup = blockHTML(block);
+        const container = block.parentElement, before = staticKeys(container);
+        const gone = block.getAttribute('data-edit-key'), markup = blockHTML(block, true);
         block.remove();
-        if (target === block) setTarget(null);
-        commitStructure(area, { [gone]: markup });                 // keep the markup so undo can rebuild it
+        if (target === block || (target && block.contains(target))) setTarget(null);
+        commitStructure(area, container, before, { [gone]: markup });
         return true;
     }
 
-    const cutBlock = (el) => copyBlock(el) && removeBlock(el);
+    const cutBlock = (el) => { const b = asPiece(el === undefined ? target : el); return canDo('remove', b) && copyBlock(b) && removeBlock(b); };
 
-    // Programmatic cross-region move (what a pointer drag commits): insert the block
-    // into `dest` (area element or x-edit key) before `ref`, or at the end.
+    // Programmatic move: into `dest` (container element or x-edit key) before `ref`, or at the end.
     function moveBlock(el, dest, ref) {
-        const block = el ? blockOf(el) || el : target; if (!block || locked(block) || isRegionBlock(block)) return false;
-        const from = blockArea(block);
-        const to = typeof dest === 'string' ? areaByKey(dest) : dest;
-        if (!from || !to || to === from || !to._edit) return false;
-        if (!topArea(from) || !topArea(to)) return false;   // a nested region can't persist a move — refuse, never drop it silently
-        if (!isActive(from) || !isActive(to) || locked(to)) return false;
-        if (classify(from) !== 'static' || classify(to) !== 'static' || !capOf(to, 'sort')) return false;
-        if (block === to || block.contains(to)) return false;
-        if (ref && ref.parentElement !== to) ref = null;
-        if (ref) to.insertBefore(block, ref); else to.appendChild(block);
-        commitMove(from, to, block);
+        const block = asPiece(el == null ? target : el);
+        if (!block || !movable(block)) return false;
+        const from = regionOf(block);
+        const container = typeof dest === 'string' ? areaByKey(dest) : dest;
+        if (!container || container.nodeType !== 1 || container === block || block.contains(container)) return false;
+        const to = regionOf(container);
+        if (!from || !to || !isActive(from) || !isActive(to) || !accepts(container)) return false;
+        if (ref && ref.parentElement !== container) ref = null;
+        const fromContainer = block.parentElement;
+        if (classify(from) === 'data') {
+            if (container !== fromContainer) return false;
+            container.insertBefore(block, ref);
+            finishReorder(from, container);
+            return true;
+        }
+        if (classify(from) !== 'static' || classify(to) !== 'static') return false;
+        if (from !== to && isRegionBlock(block)) return false;
+        const fromBefore = staticKeys(fromContainer), toBefore = staticKeys(container);
+        container.insertBefore(block, ref);
+        if (container === fromContainer) return commitOrder(from, container, fromBefore);
+        commitMove(from, to, block, fromContainer, fromBefore, toBefore);
         return true;
     }
 
     function pasteBlock(el) {
         if (!clipboard) return false;
-        const block = el || target;
-        const area = blockArea(block) || areas().find(isActive);
-        if (!area || !isActive(area)) return false;
+        const container = pasteDest(el === undefined ? target : el); if (!container) return false;
+        const block = asPiece(el === undefined ? target : el);
+        const area = regionOf(container);
         if (classify(area) === 'data') {
             const arr = dataOps(area); if (!arr) return false;
             const at = block ? recordIndex(area, block) + 1 : arr.length;
@@ -673,218 +830,87 @@
             commitSplice(area, at, record, 'insert');
             return true;
         }
+        if (classify(area) !== 'static') return false;
         const made = materialize(clipboard.html); if (!made) return false;
-        if (block) block.after(made); else area.appendChild(made);
-        armArea(area);
-        commitStructure(area, { [staticKeys(area)[sortableChildren(area).indexOf(made)]]: blockHTML(made) });
+        insertStatic(area, container, made, block && block.parentElement === container ? block : null);
         return true;
     }
 
-    /* ---- Wiring ----
-       Hotkeys ride the focused block, which reorder already gives a tabindex. They
-       stay out of the way of text: nothing fires while a caret is in a field, so
-       Cmd+C inside a paragraph still copies the words. */
+    /* ---- Block hotkeys (outside text) ---- */
     const inText = (e) => e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
-
-    function onBlockKey(e) {
-        if (inText(e)) return;
-        const block = blockOf(e.target); if (!block) return;
-        const area = blockArea(block); if (!isActive(area)) return;
-        const meta = e.metaKey || e.ctrlKey;
-        let done = false;
-        if (meta && e.key.toLowerCase() === 'c') done = copyBlock(block);
-        else if (meta && e.key.toLowerCase() === 'x') done = cutBlock(block);
-        else if (meta && e.key.toLowerCase() === 'v') done = pasteBlock(block);
-        else if (meta && e.key.toLowerCase() === 'd') done = duplicateBlock(block);
-        else if (!meta && (e.key === 'Delete' || e.key === 'Backspace')) done = removeBlock(block);
-        if (done) { e.preventDefault(); e.stopPropagation(); }
+    function onBlockKey(e, block) {
+        if (inText(e)) return false;
+        const meta = e.metaKey || e.ctrlKey, k = (e.key || '').toLowerCase();
+        if (meta && k === 'c') return copyBlock(block);
+        if (meta && k === 'x') return cutBlock(block);
+        if (meta && k === 'v') return pasteBlock(block);
+        if (meta && k === 'd') return duplicateBlock(block);
+        if (!meta && (e.key === 'Delete' || e.key === 'Backspace')) return removeBlock(block);
+        return false;
     }
 
-    /* ---- Right-click ----
-       The event waits for the pointer to come up. A popover opened while the button
-       is still down is closed again by the release that follows it — the browser's
-       light dismiss decides on pointerup, and by then the menu was not yet open when
-       the press was recorded. Firing after the release is the only way a menu opened
-       in the handler survives. The context-menu key sends no release, so a short
-       timer covers it. */
-    let pendingContext = null;
-
-    function onBlockContext(e, builtIn) {
-        const area = blockArea(e.target);
-        if (!area || !isActive(area)) return false;
-        const block = blockOf(e.target);
-        if (!block) return false;                                  // off-block: leave the native menu alone
-        setTarget(block);
-        e.preventDefault();
-
-        const fire = () => {
-            clearTimeout(pendingContext); pendingContext = null;
-            document.removeEventListener('pointerup', fire, true);
-            const detail = { target: block, area, x: e.clientX, y: e.clientY, can: (op) => canDo(op, block) };
-            const ev = new CustomEvent('edit:context', { bubbles: true, cancelable: true, detail });
-            if (area.dispatchEvent(ev) && builtIn) builtIn();       // nobody took it
-        };
-        document.addEventListener('pointerup', fire, true);
-        pendingContext = setTimeout(fire, 300);
-        return true;
+    // Right-click records the piece under the pointer before any menu opens.
+    function onContextCapture(e) {
+        const area = regionOf(e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement);
+        if (!area || !isActive(area)) return;
+        setTarget(pieceOf(e.target));
     }
-
-    const blockTarget = () => target;
-    const setBlockTarget = (el) => setTarget(el && el.nodeType === 1 ? blockOf(el) || el : null);
+    const setBlockTarget = (el) => setTarget(el && el.nodeType === 1 ? asPiece(el) || el : null);
 
 
-    /* ---- Drag: reorder (in-flow, pointer+keyboard) OR move (positioned) ----
-       Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
-       Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel;
-       Alt/Option+arrow moves the focused row one step; in text only Up/Down (Left/Right stay word-jump).
-       CSS-var config:
-         --edit-drop-reach        48px        how far outside a cross-region destination a drop still lands in it */
+    /* ---- Move: one pointer engine for reorder, nest, un-nest and cross-area moves ----
+       Keyboard: Alt+Up/Down steps among siblings, Alt+Right nests into the previous
+       container, Alt+Left moves out one level. Space/Enter grabs, arrows move, Enter drops.
+       After a drop, CSS decides: in flow the piece takes DOM order; absolutely positioned
+       it lands at the drop point.
+         --edit-drop-reach   48px   how far outside another area a drop still lands in it */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
+    const addedTab = new WeakSet();
     let grabbed = null, liveRegion;
     function announce(msg) { if (!liveRegion || !liveRegion.isConnected) { liveRegion = document.createElement('div'); liveRegion.setAttribute('data-edit-live', ''); liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
 
-    function makeSortable(container) {
-        sortableChildren(container).forEach(child => {
-            if (locked(child)) return;
-            if (isPositioned(child)) { if (!child._dragBound) { child._dragBound = true; makeMovable(child); } return; }
-            child.setAttribute('data-edit-sortable', ''); child.tabIndex = 0; child.setAttribute('role', 'listitem');
-            if (child._dragBound) return; child._dragBound = true;
-            child.addEventListener('pointerdown', onPointerDown);
-            child.addEventListener('keydown', onItemKeydown);
-            child.addEventListener('keydown', onBlockKey);
+    function collectPieces(area) {
+        const kind = classify(area);
+        if (kind === 'component') return [];
+        if (kind === 'data') { const tpl = area.querySelector('template[x-for]'); return tpl ? sortableChildren(tpl.parentElement) : []; }
+        const out = [];
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; out.push(ch); if (isContainer(ch)) walk(ch); });
+        if (isContainer(area)) walk(area);
+        return out;
+    }
+    function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
+    function markPieces(area) {
+        const want = new Set(collectPieces(area).filter(movable));
+        area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el)) unmarkPiece(el); });
+        want.forEach(el => {
+            el.setAttribute('data-edit-piece', '');
+            if (!el.hasAttribute('tabindex')) { el.tabIndex = 0; addedTab.add(el); }
         });
-        container.setAttribute('role', 'list');
-        // x-for rows and any other late arrivals are not sortable unless we notice
-        // them — arming only ever ran once, so a list that grows loses its handles.
-        if (!container._sortObserver) {
-            container._sortObserver = new MutationObserver(() => {
-                if (dragged) return;                        // never re-arm mid-drag
-                if (isActive(container.closest('[data-edit-area]'))) makeSortable(container);
-            });
-            container._sortObserver.observe(container, { childList: true });
-        }
     }
-    function onPointerDown(e) {
-        const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
-        if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
-        if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
-        if (e._editDrag) return; e._editDrag = true;   // one drag per gesture — the innermost sortable item claims it
-        const container = item.parentElement;
-        const crossOK = classify(area) === 'static' && !isRegionBlock(item) && topArea(area);   // cross-region: top-level static → static only; a region-block only reorders in place
-        let hovered = container;
-        const homeNext = item.nextElementSibling;          // where to put it back if cancelled
-        const start = item.getBoundingClientRect();
-        const preStyle = item.getAttribute('style');
-        const grabX = e.clientX - start.left, grabY = e.clientY - start.top;
-        const sx = e.clientX, sy = e.clientY;
-        let active = false, frame = 0, px = sx, py = sy, ghost = null;
 
-        // The item leaves the flow and a stand-in takes its slot, so the gap that
-        // opens is a real element the author can style — by default a translucent
-        // copy of what is being dragged, showing exactly where it would land.
-        const lift = (ev) => {
-            // Valid cross-region destinations announce themselves for the whole
-            // drag: a dashed target outline, and a min-height (via CSS) so an
-            // EMPTY region has a surface to drop onto at all.
-            if (crossOK) areas().forEach(a => {
-                if (a !== area && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) a.setAttribute('data-edit-drop-target', '');
-            });
-            ghost = item.cloneNode(true);
-            ghost.setAttribute('data-edit-ghost', '');
-            ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
-            ghost.removeAttribute('id');
-            ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
-            [ghost, ...ghost.querySelectorAll('*')].forEach(n => {
-                [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && a.name !== 'data-edit-ghost') n.removeAttribute(a.name); });
-                n.removeAttribute('contenteditable'); n.removeAttribute('tabindex'); n.removeAttribute('draggable');
-            });
-            item.before(ghost);
-            item.style.position = 'fixed';
-            item.style.width = start.width + 'px';
-            item.style.height = start.height + 'px';
-            item.style.margin = '0';
-            item.style.pointerEvents = 'none';
-            item.setAttribute('data-edit-dragging', '');
-            area.setAttribute('data-edit-dragging-in', '');
-            dragged = ghost;
-            try { item.setPointerCapture(ev.pointerId); } catch { }
-        };
-
-        const paint = () => {
-            frame = 0;
-            item.style.left = (px - grabX) + 'px';
-            item.style.top = (py - grabY) + 'px';
-        };
-
-        const onMove = (ev) => {
-            px = ev.clientX; py = ev.clientY;
-            if (!active) {
-                if (Math.hypot(px - sx, py - sy) < 5) return;   // threshold so taps/clicks still work
-                active = true; lift(ev); paint();
-            }
-            ev.preventDefault();
-            const over = (crossOK && dropArea(px, py, area)) || ghost.parentElement;   // cross-region drop search
-            if (over !== hovered) {
-                if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
-                hovered = over;
-                if (hovered !== container) hovered.setAttribute('data-edit-dragging-in', '');
-            }
-            reorderOver(over, px, py);
-            if (!frame) frame = requestAnimationFrame(paint);
-        };
-
-        const settle = (cancelled) => {
-            document.removeEventListener('pointermove', onMove);
-            document.removeEventListener('pointerup', onUp);
-            document.removeEventListener('pointercancel', onCancel);
-            document.removeEventListener('keydown', onKey, true);
-            if (frame) cancelAnimationFrame(frame);
-            if (!active) return;
-            if (cancelled) {
-                ghost.remove();
-                if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item);
-            } else ghost.replaceWith(item);
-            if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
-            item.removeAttribute('data-edit-dragging');
-            area.removeAttribute('data-edit-dragging-in');
-            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
-            if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
-            ghost = null; dragged = null;
-            if (cancelled) { announce('Cancelled'); return; }
-            const dest = item.parentElement;
-            if (crossOK && dest !== container && dest._edit) {
-                // Re-validate at drop: a region locked or deactivated mid-drag
-                // (reached through the ghost fallback) must not take the block.
-                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort') && topArea(dest)) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
-                else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
-            }
-            else finishReorder(area);
-        };
-        const onUp = () => settle(false);
-        // Escape puts it back, the way every drag is expected to be escapable. A
-        // cancelled pointer (OS gesture, alert, pen out of range) also reverts —
-        // otherwise the item wedges position:fixed with drop targets still lit.
-        const onCancel = () => settle(true);
-        const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
-        document.addEventListener('pointermove', onMove);
-        document.addEventListener('pointerup', onUp);
-        document.addEventListener('pointercancel', onCancel);
-        document.addEventListener('keydown', onKey, true);
+    const flowAxis = (c) => { const cs = getComputedStyle(c); return /grid/.test(cs.display) || (/flex/.test(cs.display) && !String(cs.flexDirection || '').startsWith('column')) ? 'x' : 'y'; };
+    // Beside a hovered piece: before it when the pointer is in its leading half.
+    function beside(el, x, y, parent) {
+        const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
+        const lead = horiz ? x < r.left + r.width / 2 : y < r.top + r.height / 2;
+        let ref = lead ? el : el.nextElementSibling;
+        while (ref && (ref === dragged || ref.hasAttribute('data-edit-dragging'))) ref = ref.nextElementSibling;
+        return { container: parent, ref };
     }
-    function reorderOver(container, x, y) {
-        if (!dragged) return;
-        const ref = afterElement(container, x, y);
-        if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
-        if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    // Middle band of a container nests; its edges insert before/after it.
+    function inMiddle(el, x, y, parent) {
+        const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
+        const lo = horiz ? r.left : r.top, size = horiz ? r.width : r.height, p = horiz ? x : y;
+        if (!size) return true;
+        const edge = Math.min(size * 0.25, 24);
+        return p >= lo + edge && p <= lo + size - edge;
     }
-    // Cross-region drop target: the innermost valid region under the pointer, else
-    // the nearest valid one within reach — regions are often shorter than their column.
-    const dropValid = (a) => !!a && !!a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a);
+    const dropValid = (a) => !!a && !!a._edit && accepts(a) && classify(a) === 'static' && topArea(a);
+    // Another area under the pointer, else the nearest within reach.
     function dropArea(x, y, origin) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
-        for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
-            if (dropValid(a)) return a;
-        }
+        const hitArea = hit && regionOf(hit);
+        if (hitArea && dropValid(hitArea)) return hitArea;
         const cands = [origin, ...document.querySelectorAll('[data-edit-drop-target]')].filter((a, i, all) => dropValid(a) && all.indexOf(a) === i);
         const inside = (r, pad) => x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
         let best = null, bestD = Infinity;
@@ -892,127 +918,277 @@
             const r = a.getBoundingClientRect();
             const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
             const reach = toPx(cssVar(a, '--edit-drop-reach', ''), a, 'w') ?? 48;
-            // The block wrapping the region (its column) counts as its surface, unless it wraps another candidate too.
             const p = a.parentElement;
             const column = p && p !== document.body && p !== document.documentElement && !cands.some(o => o !== a && p.contains(o)) && inside(p.getBoundingClientRect(), 0);
             if ((inside(r, reach) || column) && d < bestD) { best = a; bestD = d; }
         }
         return best;
     }
-    function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
-    // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.
-    // The FIRST sibling past the pointer, not the nearest — nearest can pick an
-    // element further down the list and makes the drop point jump around. Taking the
-    // first is also self-stabilising: once the item lands, that sibling's midpoint is
-    // behind the pointer, so it does not immediately swap back.
+    function dropTarget(x, y, s) {
+        if (s.dataList) return { container: s.home, ref: afterElement(s.home, x, y) };
+        const region = s.crossOK ? dropArea(x, y, s.area) : s.area;
+        if (!region) return null;
+        const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        if (hit && hit !== region && region.contains(hit)) {
+            for (let el = hit; el && el !== region; el = el.parentElement) {
+                if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
+                const parent = el.parentElement;
+                if (!isContainer(parent)) continue;
+                if (isContainer(el) && accepts(el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
+                if (accepts(parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
+            }
+        }
+        if (!s.crossOK && (!hit || !region.contains(hit))) { const c = s.ghost.parentElement; return { container: c, ref: afterElement(c, x, y) }; }
+        return accepts(region) ? { container: region, ref: afterElement(region, x, y) } : null;
+    }
+    // Reading-order insertion: the first sibling past the pointer.
     function afterElement(c, x, y) {
         for (const el of sortableChildren(c)) {
-            if (el === dragged || locked(el) || el.hasAttribute('data-edit-dragging')) continue;
+            if (el === dragged || el.hasAttribute('data-edit-dragging') || lockedFor(el, 'move')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
             const sameRow = Math.abs(cy - y) <= b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
         }
         return null;
     }
-    // Keyboard reorder: grab → arrows move among siblings → drop. Space/Enter belong
-    // to text and controls inside the row; Alt+arrow moves the row directly.
+    // Drop point in the piece's own units, relative to its offset parent.
+    function placeAt(el, x, y, s) {
+        const op = el.offsetParent || el.parentElement, r = op.getBoundingClientRect();
+        let left = x - s.grabX - r.left - (op.clientLeft || 0) + (op.scrollLeft || 0);
+        let top = y - s.grabY - r.top - (op.clientTop || 0) + (op.scrollTop || 0);
+        const maxL = op.clientWidth - el.offsetWidth, maxT = op.clientHeight - el.offsetHeight;
+        left = maxL > 0 ? clamp(left, 0, maxL) : Math.max(0, left);
+        top = maxT > 0 ? clamp(top, 0, maxT) : Math.max(0, top);
+        el.style.left = toUnit(left, s.lu, el, op, 'w') + s.lu;
+        el.style.top = toUnit(top, s.tu, el, op, 'h') + s.tu;
+    }
+    const clearPlacement = (el) => { el.style.removeProperty('left'); el.style.removeProperty('top'); if (!el.getAttribute('style')) el.removeAttribute('style'); };
+    const keysWithout = (c, item) => staticKeys(c).filter((k, i) => sortableChildren(c)[i] !== item);
+
+    function onAreaPointerDown(e) {
+        const area = this;
+        if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e._editDrag) return;
+        const t = e.target;
+        if (!t || t.nodeType !== 1 || t.isContentEditable || t.hasAttribute('data-edit-handle')) return;
+        if (t._pieceMode) { exitPieceMode(t); return; }
+        let item = null;
+        for (let n = t; n && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece') && movable(n)) { item = n; break; }
+        if (!item) return;
+        e._editDrag = true;
+        startDrag(e, item, area);
+    }
+
+    function startDrag(e, item, area) {
+        const home = item.parentElement, homeNext = item.nextElementSibling;
+        const dataList = classify(area) === 'data';
+        const s = {
+            item, area, home, dataList, ghost: null,
+            crossOK: !dataList && classify(area) === 'static' && !isRegionBlock(item),
+            homeBefore: dataList ? null : staticKeys(home),
+            lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
+        };
+        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style');
+        s.grabX = e.clientX - start.left; s.grabY = e.clientY - start.top;
+        const sx = e.clientX, sy = e.clientY;
+        let active = false, frame = 0, px = sx, py = sy, last = null;
+
+        const lift = (ev) => {
+            if (s.crossOK) areas().forEach(a => { if (a !== area && dropValid(a)) a.setAttribute('data-edit-drop-target', ''); });
+            const ghost = s.ghost = item.cloneNode(true);
+            ghost.setAttribute('data-edit-ghost', '');
+            ghost.setAttribute('x-ignore', '');
+            ghost.removeAttribute('id');
+            ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+            [ghost, ...ghost.querySelectorAll('*')].forEach(n => {
+                [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && a.name !== 'data-edit-ghost') n.removeAttribute(a.name); });
+                n.removeAttribute('contenteditable'); n.removeAttribute('tabindex'); n.removeAttribute('draggable');
+            });
+            item.before(ghost);
+            Object.assign(item.style, { position: 'fixed', width: start.width + 'px', height: start.height + 'px', margin: '0', pointerEvents: 'none' });
+            item.setAttribute('data-edit-dragging', '');
+            dragged = ghost;
+            try { item.setPointerCapture(ev.pointerId); } catch { }
+        };
+        const paint = () => { frame = 0; item.style.left = (px - s.grabX) + 'px'; item.style.top = (py - s.grabY) + 'px'; };
+        const placeGhost = (drop) => {
+            const g = s.ghost, { container, ref } = drop;
+            const same = last && last.container === container && last.ref === ref;
+            last = drop;
+            if (!same) container.insertBefore(g, ref && ref.parentElement === container ? ref : null);
+            if (isPositioned(g)) {
+                if (!same) { if (container === home && item.parentElement === home) home.insertBefore(g, item); else if (g.nextElementSibling) container.appendChild(g); }
+                placeAt(g, px, py, s);
+            } else if (g.style.left || g.style.top) clearPlacement(g);
+        };
+        const onMove = (ev) => {
+            px = ev.clientX; py = ev.clientY;
+            if (!active) {
+                if (Math.hypot(px - sx, py - sy) < 5) return;
+                active = true; lift(ev); paint();
+            }
+            ev.preventDefault();
+            const drop = dropTarget(px, py, s);
+            if (drop) placeGhost(drop);
+            if (!frame) frame = requestAnimationFrame(paint);
+        };
+        const settle = (cancelled) => {
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onCancel);
+            document.removeEventListener('keydown', onKey, true);
+            if (frame) cancelAnimationFrame(frame);
+            if (!active) return;
+            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
+            item.removeAttribute('data-edit-dragging');
+            if (cancelled) s.ghost.remove(); else s.ghost.replaceWith(item);
+            if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
+            s.ghost = null; dragged = null;
+            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, homeNext); else home.appendChild(item); };
+            if (cancelled) { back(); announce('Cancelled'); return; }
+            const dest = item.parentElement, toArea = regionOf(dest);
+            if (dest !== home && (s.dataList || !accepts(dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
+            if (isPositioned(item)) placeAt(item, px, py, s);
+            else if (item.style.left || item.style.top) clearPlacement(item);
+            const styled = (item.getAttribute('style') || '') !== (preStyle || '');
+            if (s.dataList) { finishReorder(area, home); announce('Dropped'); return; }
+            let did = false;
+            if (dest === home) did = commitOrder(area, home, s.homeBefore);
+            else { commitMove(area, toArea, item, home, s.homeBefore, keysWithout(dest, item)); did = true; }
+            if (styled) commitStyle(regionOf(item), item, { before: preStyle || '', join: did });
+            announce(toArea !== area ? 'Moved to ' + key(toArea) : 'Dropped');
+        };
+        const onUp = () => settle(false);
+        const onCancel = () => settle(true);
+        const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
+        document.addEventListener('keydown', onKey, true);
+    }
+
+    function finishReorder(area, container) {
+        if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(container).map(c => itemKey(c, area))); commit(area); return true; }
+        return false;
+    }
+
+    /* ---- Keyboard ---- */
     const ownControl = (e, item) => e.target !== item && !!e.target.closest && item.contains(e.target.closest('a[href], button, summary, [role="button"], [role="link"]'));
-    function onItemKeydown(e) {
-        const item = this, area = item.closest('[data-edit-area]'); if (!isActive(area)) return;
-        if (e._editRow) return;                            // the innermost row claims the key
-        const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
-        const wordJump = inText(e) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
-        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !wordJump) {
-            const home = item.parentElement && item.parentElement.closest('[data-edit-area]');   // the row's region, never the row itself
-            if (!isActive(home)) return;
-            e._editRow = true; e.preventDefault(); stepRow(item, home, dir); return;
-        }
-        if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item)) {
-            e._editRow = true;
-            e.preventDefault();
-            if (grabbed === item) { grabbed = null; item.removeAttribute('data-edit-grabbed'); finishReorder(area); item.focus(); announce('Dropped'); }
-            else { if (grabbed) grabbed.removeAttribute('data-edit-grabbed'); grabbed = item; item.setAttribute('data-edit-grabbed', ''); announce('Grabbed — arrow keys to move, Enter to drop'); }
+    const siblingsOf = (item) => sortableChildren(item.parentElement).filter(c => c === item || !lockedFor(c, 'move'));
+    function refocus(el) { if (document.activeElement !== el) try { el.focus(); } catch { } }
+
+    function onPieceKeydown(e, area) {
+        if (e._editRow) return;
+        const t = e.target;
+        if (t._pieceMode && e.key === 'Enter') { e._editRow = true; e.preventDefault(); exitPieceMode(t, true); return; }
+        let item = null;
+        for (let n = t; n && n !== area; n = n.parentElement) if (n.hasAttribute && n.hasAttribute('data-edit-piece') && movable(n)) { item = n; break; }
+        if (!grabbed) { const b = asPiece(t); if (b && onBlockKey(e, b)) { e._editRow = true; e.preventDefault(); e.stopPropagation(); return; } }
+        if (!item) return;
+        const dir = { ArrowUp: -1, ArrowDown: 1 }[e.key], side = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+        const plainAlt = e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+        if (plainAlt && dir != null && !(grabbed && grabbed.item === item)) { e._editRow = true; e.preventDefault(); stepRow(item, dir); return; }
+        if (plainAlt && side != null && !inText(e)) { e._editRow = true; e.preventDefault(); if (side > 0) nestInto(item); else unnest(item); return; }
+        if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item) && !e.altKey && !e.metaKey && !e.ctrlKey) {
+            e._editRow = true; e.preventDefault();
+            if (grabbed && grabbed.item === item) { dropGrab(); refocus(item); announce('Dropped'); }
+            else { if (grabbed) cancelGrab(); grabbed = { item, area: regionOf(item), container: item.parentElement, next: item.nextElementSibling, before: classify(regionOf(item)) === 'data' ? null : staticKeys(item.parentElement) }; item.setAttribute('data-edit-dragging', 'keyboard'); announce('Grabbed — arrow keys to move, Enter to drop'); }
             return;
         }
-        if (grabbed !== item) return;
-        if (e.key === 'Escape') { e.preventDefault(); grabbed = null; item.removeAttribute('data-edit-grabbed'); item.focus(); announce('Cancelled'); return; }
-        if (dir == null) return;
-        e._editRow = true;
-        e.preventDefault();
-        const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
-        if (j < 0 || j >= sibs.length) return;
-        if (dir > 0) sibs[j].after(item); else sibs[j].before(item);
-        item.focus(); announce(`Position ${j + 1} of ${sibs.length}`);
+        if (grabbed && grabbed.item === item) {
+            if (e.key === 'Escape') { e._editRow = true; e.preventDefault(); cancelGrab(); refocus(item); announce('Cancelled'); return; }
+            const step = dir ?? side; if (step == null) return;
+            e._editRow = true; e.preventDefault();
+            const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + step;
+            if (j < 0 || j >= sibs.length) return;
+            if (step > 0) sibs[j].after(item); else sibs[j].before(item);
+            refocus(item); announce(`Position ${j + 1} of ${sibs.length}`);
+            return;
+        }
+        if (t === item && !inText(e) && !e.altKey && !e.metaKey && !e.ctrlKey && (dir != null || side != null) && isPositioned(item)) { e._editRow = true; nudge(e, item); }
     }
-    // One step, committed at once. The row itself never leaves the DOM — its
-    // neighbours move round it — so focus and the caret in its text survive.
-    function stepRow(item, area, dir) {
-        const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
+    function dropGrab() {
+        const g = grabbed; grabbed = null; if (!g) return;
+        g.item.removeAttribute('data-edit-dragging');
+        if (g.before) commitOrder(g.area, g.container, g.before); else finishReorder(g.area, g.container);
+    }
+    function cancelGrab() {
+        const g = grabbed; grabbed = null; if (!g) return;
+        g.item.removeAttribute('data-edit-dragging');
+        if (g.next && g.next.parentElement === g.container) g.container.insertBefore(g.item, g.next); else g.container.appendChild(g.item);
+    }
+    // One step, committed at once. Neighbours move round the piece, so focus and caret survive.
+    function stepRow(item, dir) {
+        const area = regionOf(item), container = item.parentElement;
+        const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + dir;
         if (i < 0 || j < 0 || j >= sibs.length) { announce(`Position ${i + 1} of ${sibs.length}`); return; }
+        const before = classify(area) === 'data' ? null : staticKeys(container);
         const other = sibs[j], between = [];
         for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
         if (dir > 0) { item.before(other); between.forEach(n => item.before(n)); }
         else { item.after(other); between.forEach(n => item.after(n)); }
         const focused = document.activeElement, sel = window.getSelection && window.getSelection();
         const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-        finishReorder(area);
+        if (before) commitOrder(area, container, before); else finishReorder(area, container);
         if (focused && focused.isConnected && document.activeElement !== focused) {
             focused.focus();
             if (range) try { sel.removeAllRanges(); sel.addRange(range); } catch { }
         }
         announce(`Moved to position ${j + 1} of ${sibs.length}`);
     }
-    // Move mode: positioned elements → pointer-drag left/top (touch-capable) + keyboard nudge, unit-preserving.
-    function makeMovable(el) {
-        el.setAttribute('data-edit-movable', ''); el.tabIndex = 0; el.setAttribute('role', 'application'); el.setAttribute('aria-label', 'Draggable; arrow keys to move');
-        el.addEventListener('pointerdown', (e) => {
-            const area = el.closest('[data-edit-area]');
-            if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;
-            e.preventDefault(); el._preStyle = el.getAttribute('style') || '';
-            const cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
-            const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            const baseL = parseFloat(cs.left) || 0, baseT = parseFloat(cs.top) || 0, sx = e.clientX, sy = e.clientY;
-            const ov = showOverlay();
-            // Clamped to the containing block: a freeform card must not leave its canvas.
-            const maxL = () => Math.max(0, parent.clientWidth - el.offsetWidth), maxT = () => Math.max(0, parent.clientHeight - el.offsetHeight);
-            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(Math.min(maxL(), Math.max(0, baseL + (ev.clientX - sx))), lu, el, parent, 'w') + lu; el.style.top = toUnit(Math.min(maxT(), Math.max(0, baseT + (ev.clientY - sy))), tu, el, parent, 'h') + tu; };
-            const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov); commitStyle(area, el); };
-            document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
-        });
-        el.addEventListener('keydown', (e) => {
-            const area = el.closest('[data-edit-area]'); if (!isActive(area)) return;
-            const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
-            e.preventDefault();
-            if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
-            const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
-            const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
-            if (d[0]) el.style.left = toUnit(Math.min(maxL, Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step)), lu, el, parent, 'w') + lu;
-            if (d[1]) el.style.top = toUnit(Math.min(maxT, Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step)), tu, el, parent, 'h') + tu;
-            clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(area, el); }, 350);
-        });
+    const describe = (el) => el === regionOf(el) ? key(el) : el.tagName.toLowerCase();
+    function nestInto(item) {
+        const area = regionOf(item);
+        if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
+        let prev = item.previousElementSibling;
+        while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE')) prev = prev.previousElementSibling;
+        if (!prev || !accepts(prev)) { announce('Nothing to nest into'); return false; }
+        const from = item.parentElement, fb = staticKeys(from), tb = staticKeys(prev);
+        prev.appendChild(item);
+        commitMove(area, area, item, from, fb, tb);
+        refocus(item); announce('Nested in ' + describe(prev));
+        return true;
+    }
+    function unnest(item) {
+        const area = regionOf(item), from = item.parentElement;
+        if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
+        const out = from && from !== area ? from.parentElement : null;
+        if (!out || !(out === area || area.contains(out)) || !accepts(out)) { announce('Already at the top level'); return false; }
+        const fb = staticKeys(from), tb = staticKeys(out);
+        from.after(item);
+        commitMove(area, area, item, from, fb, tb);
+        refocus(item); announce('Moved out to ' + describe(out));
+        return true;
+    }
+    // Arrow nudge for a focused, absolutely positioned piece; a key burst commits once.
+    function nudge(e, el) {
+        const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
+        e.preventDefault();
+        if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';
+        const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
+        const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
+        const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
+        const nl = Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step), nt = Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step);
+        if (d[0]) el.style.left = toUnit(maxL ? Math.min(maxL, nl) : nl, lu, el, parent, 'w') + lu;
+        if (d[1]) el.style.top = toUnit(maxT ? Math.min(maxT, nt) : nt, tu, el, parent, 'h') + tu;
+        clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(regionOf(el), el); }, 350);
     }
 
 
-    /* ---- Size: drag handles → unit-preserving width/height (folded-in resize) ----
-       CSS-var config (cascades by selector, keeps the directive tight):
-         --edit-size              both | x | y | none           which axes (default both)
-         --edit-size-edges        e.g. "right bottom-right"      explicit handle list (logical start/end ok)
-         --edit-size-handle       1rem                           handle hit area
-         --edit-size-snap         12rem 24rem                    snap stops (both axes)
-         --edit-size-snap-x/-y    per-axis stop overrides
-         --edit-size-snap-distance  1rem                         magnet tolerance (NOT a grid step)
-         --edit-size-snap-distance-x/-y  per-axis tolerance
-         --edit-size-collapse-x/-y  120px                        collapse below this → [data-edit-collapsed] + 'edit:collapse' event
-       (min/max come from the element's native min-/max-width/height; % against the containing block.) */
+    /* ---- Size: edge handles → unit-preserving width/height ----
+         --edit-size                 both | x | y | none   axes (default both)
+         --edit-size-edges           "right bottom-right"  handle list (logical start/end ok)
+         --edit-size-handle          1rem                  handle hit area
+         --edit-size-snap(-x/-y)     12rem 24rem           snap stops; unset = no snapping
+         --edit-size-snap-distance(-x/-y)  1rem            magnet reach; unset = always the nearest stop
+         --edit-size-close(-x/-y)    4rem                  below this, an x-show element closes
+       `none` on any --edit-size-* cancels an inherited value. Min/max come from native min-/max-width/height. */
     let overlayEl;
-    // Fires while dragging (done:false) and once on commit (done:true), so consumers
-    // that must re-measure — charts, virtual lists — can track the drag and settle.
+    // edit:size fires while dragging (done:false) and once on commit (done:true).
     function sizeEvent(el, done) {
         const r = el.getBoundingClientRect();
         el.dispatchEvent(new CustomEvent('edit:size', {
             bubbles: true,
-            detail: { width: r.width, height: r.height, css: { width: el.style.width, height: el.style.height }, collapsed: el.hasAttribute('data-edit-collapsed'), done }
+            detail: { width: r.width, height: r.height, css: { width: el.style.width, height: el.style.height }, done }
         }));
     }
     function showOverlay() { if (!overlayEl) { overlayEl = document.createElement('div'); overlayEl.setAttribute('data-edit-overlay', ''); document.body.appendChild(overlayEl); } overlayEl.style.display = 'block'; return overlayEl; }
@@ -1024,9 +1200,7 @@
         const rtl = isRTL(el);
         return pos.replace(/start/g, rtl ? 'right' : 'left').replace(/end/g, rtl ? 'left' : 'right');
     }
-    // Containing-block size for % limits: the parent's content box in flow, the
-    // offsetParent's padding box when absolute, the viewport when fixed. An
-    // auto-height parent has no definite height, so % height limits drop (null).
+    // Containing-block size for % limits (null when the height is not definite).
     function blockSize(el, dim) {
         const pos = getComputedStyle(el).position;
         if (pos === 'fixed') return dim === 'w' ? document.documentElement.clientWidth : document.documentElement.clientHeight;
@@ -1069,30 +1243,26 @@
         const axes = cssVar(el, '--edit-size', 'both');
         if (axes === 'none') return;
         if (el._sizeBound) return; el._sizeBound = true;
-        el.setAttribute('data-edit-sizable', '');
-        // Anchor guard: handles are positioned against this element, so it must establish a
-        // containing block. The CSS sets position:relative via :where() (overridable); if an
-        // author's CSS won and left it static, set it here so handles never detach.
         if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
-        const edges = (cssVar(el, '--edit-size-edges', '').trim() || defaultEdges(axes).join(' ')).split(/\s+/).filter(Boolean);
+        const edges = (cssVar(el, '--edit-size-edges', '') || defaultEdges(axes).join(' ')).split(/\s+/).filter(Boolean);
         edges.forEach(pos => {
-            const phys = physical(pos, el);                  // keep logical class for CSS; resolve to physical for behavior
+            const phys = physical(pos, el);
             const h = document.createElement('span');
-            h.setAttribute('data-edit-handle', pos);      // logical value drives the CSS; `phys` drives behaviour
+            h.setAttribute('data-edit-handle', pos);
             h.tabIndex = 0; h.setAttribute('role', 'slider'); h.setAttribute('aria-label', `Resize ${pos}`);
             h.addEventListener('pointerdown', (e) => startSize(e, el, phys));
             h.addEventListener('keydown', (e) => keyResize(e, el, phys));
             el.appendChild(h);
         });
     }
-    // Keyboard a11y: focus a handle, arrow keys resize (Shift = larger step), debounced commit.
+    // Keyboard: arrows resize (Shift = larger step); a key burst commits once.
     let _keyTimer;
     function keyResize(e, el, pos) {
         const map = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
         if (!map[e.key]) return;
-        const area = el.closest('[data-edit-area]'); if (!isActive(area)) return;
-        e.preventDefault();
-        if (!_keyTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
+        const area = regionOf(el); if (!isActive(area)) return;
+        e.preventDefault(); e.stopPropagation();
+        if (!_keyTimer) el._preStyle = el.getAttribute('style') || '';
         const [kx, ky] = map[e.key], step = e.shiftKey ? 32 : 8, cs = getComputedStyle(el);
         const right = pos.includes('right'), left = pos.includes('left'), top = pos.includes('top'), bottom = pos.includes('bottom');
         const wu = unitOf(el.style.width) || 'px', hu = unitOf(el.style.height) || 'px';
@@ -1100,14 +1270,29 @@
         if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
         if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
         sizeEvent(el, false);
-        clearTimeout(_keyTimer); _keyTimer = setTimeout(() => { _keyTimer = null; commitStyle(area, el); sizeEvent(el, true); }, 350);   // coalesce key bursts into one delta
+        clearTimeout(_keyTimer); _keyTimer = setTimeout(() => { _keyTimer = null; commitStyle(regionOf(el), el); sizeEvent(el, true); }, 350);
     }
-    function snapStops(el, axisVar, dim) {
-        const list = cssVar(el, axisVar, '') || cssVar(el, '--edit-size-snap', '');
-        return list.split(/\s+/).filter(Boolean).map(s => toPx(s, el, dim)).filter(v => v != null);
+    const axisVar = (el, base, axis) => cssVar(el, `${base}-${axis}`, '') || cssVar(el, base, '');
+    function snapStops(el, axis, dim) {
+        return axisVar(el, '--edit-size-snap', axis).split(/\s+/).filter(Boolean).map(s => toPx(s, el, dim)).filter(v => v != null);
+    }
+    function snapTo(v, stops, reach) {
+        if (!stops.length) return v;
+        let best = v, d = Infinity;
+        for (const p of stops) { const dd = Math.abs(v - p); if (dd < d) { d = dd; best = p; } }
+        return reach == null || d <= reach ? best : v;
+    }
+    const lengthVar = (el, base, axis, dim) => { const v = axisVar(el, base, axis); return v ? toPx(v, el, dim) : null; };
+    // Close rides x-show: only an assignable expression can be set false.
+    const ASSIGNABLE = /^\s*[A-Za-z_$][\w$]*(\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]+\])*\s*$/;
+    function closeVia(el) {
+        const expr = el.getAttribute('x-show');
+        if (expr == null) return false;
+        if (!ASSIGNABLE.test(expr)) { console.warn('[edit] --edit-size-close needs an assignable x-show expression (e.g. x-show="open"):', expr); return false; }
+        try { window.Alpine.evaluate(el, `${expr} = false`); return true; } catch (err) { console.warn('[edit] could not close via x-show:', err); return false; }
     }
     function startSize(e, el, pos) {
-        const area = el.closest('[data-edit-area]');
+        const area = regionOf(el);
         if (!isActive(area) || e.button !== 0) return;
         e.preventDefault(); e.stopPropagation(); el._preStyle = el.getAttribute('style') || '';
         const cs = getComputedStyle(el), rect = el.getBoundingClientRect();
@@ -1115,25 +1300,27 @@
         const baseW = parseFloat(cs.width) || rect.width, baseH = parseFloat(cs.height) || rect.height, sx = e.clientX, sy = e.clientY;
         const { minW, maxW, minH, maxH } = limits(el, cs);
         const right = pos.includes('right'), left = pos.includes('left'), bottom = pos.includes('bottom'), top = pos.includes('top');
-        const tolX = toPx(cssVar(el, '--edit-size-snap-distance-x', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'w') || 0;
-        const tolY = toPx(cssVar(el, '--edit-size-snap-distance-y', '') || cssVar(el, '--edit-size-snap-distance', '0'), el, 'h') || 0;
-        const snapW = snapStops(el, '--edit-size-snap-x', 'w'), snapH = snapStops(el, '--edit-size-snap-y', 'h');
-        const collapseX = toPx(cssVar(el, '--edit-size-collapse-x', ''), el, 'w');
-        const collapseY = toPx(cssVar(el, '--edit-size-collapse-y', ''), el, 'h');
-        const snap = (v, pts, tol) => { if (!tol) return v; for (const p of pts) if (Math.abs(v - p) <= tol) return p; return v; };
-        const ov = showOverlay();
-        let lastW = baseW, lastH = baseH;
+        const reachX = lengthVar(el, '--edit-size-snap-distance', 'x', 'w'), reachY = lengthVar(el, '--edit-size-snap-distance', 'y', 'h');
+        const snapW = snapStops(el, 'x', 'w'), snapH = snapStops(el, 'y', 'h');
+        const closeX = lengthVar(el, '--edit-size-close', 'x', 'w'), closeY = lengthVar(el, '--edit-size-close', 'y', 'h');
+        showOverlay();
+        let lastW = baseW, lastH = baseH, rawW = baseW, rawH = baseH;
         const move = (ev) => {
             const dx = ev.clientX - sx, dy = ev.clientY - sy;
-            if (right || left) { lastW = snap(clamp(baseW + (right ? dx : -dx), minW, maxW), snapW, tolX); el.style.width = toUnit(lastW, wu, el, el.parentElement, 'w') + wu; }
-            if (top || bottom) { lastH = snap(clamp(baseH + (bottom ? dy : -dy), minH, maxH), snapH, tolY); el.style.height = toUnit(lastH, hu, el, el.parentElement, 'h') + hu; }
-            const collapsed = (collapseX != null && lastW < collapseX) || (collapseY != null && lastH < collapseY);
-            el.toggleAttribute('data-edit-collapsed', collapsed);
+            if (right || left) { rawW = baseW + (right ? dx : -dx); lastW = snapTo(clamp(rawW, minW, maxW), snapW, reachX); el.style.width = toUnit(lastW, wu, el, el.parentElement, 'w') + wu; }
+            if (top || bottom) { rawH = baseH + (bottom ? dy : -dy); lastH = snapTo(clamp(rawH, minH, maxH), snapH, reachY); el.style.height = toUnit(lastH, hu, el, el.parentElement, 'h') + hu; }
             sizeEvent(el, false);
         };
         const up = () => {
-            document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov);
-            if (el.hasAttribute('data-edit-collapsed')) el.dispatchEvent(new CustomEvent('edit:collapse', { bubbles: true }));
+            document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay();
+            const shutX = (right || left) && closeX != null && rawW < closeX, shutY = (top || bottom) && closeY != null && rawH < closeY;
+            if ((shutX || shutY) && el.hasAttribute('x-show')) {
+                if (shutX) el.style.width = toUnit(minW, wu, el, el.parentElement, 'w') + wu;
+                if (shutY) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;
+                commitStyle(area, el); sizeEvent(el, true);
+                closeVia(el);
+                return;
+            }
             commitStyle(area, el); sizeEvent(el, true);
         };
         document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
@@ -1141,9 +1328,7 @@
 
 
     /* ---- Inline text editing ---- */
-    // Focusing a text leaf selects its content, so the common case — replace the
-    // text — is one click and type. Deferred a frame so it wins over the click's
-    // own caret placement; a second click still collapses to a caret for fine edits.
+    // Focus selects the leaf's content; deferred a frame to win over the click's caret.
     function selectAllIn(el) {
         requestAnimationFrame(() => {
             if (dragged || grabbed) return;              // reordering, not editing
@@ -1157,7 +1342,7 @@
     // delta, so a rich field inside a page-editing region publishes like any other.
     function armRichText(area) {
         area.querySelectorAll('[data-text-edit]:not([data-text-edit-bound])').forEach(el => {
-            if (!capOf(el, 'text') || locked(el)) return;
+            if (!capOf(el, 'text')) return;
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
             el.addEventListener('blur', () => {
@@ -1168,11 +1353,10 @@
         });
     }
 
-    // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
+    // Static: literal leaves only.
     function armText(area) {
         armRichText(area);
-        // A region whose root IS the text — <p x-edit.text="note">…</p> — has no
-        // descendant leaves; the area itself is the editable leaf.
+        // An area that is itself the text leaf.
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
@@ -1182,16 +1366,12 @@
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
             el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
-            el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); } });   // Escape finishes the edit, like the rich editor
+            el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.isContentEditable) { e.preventDefault(); e.stopPropagation(); leaveText(el); } });
             el.addEventListener('blur', () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
         });
     }
 
-    /* ---- DATA value editing (opt-in .data): make $x-bound leaves in an x-for list editable,
-       but ONLY when the binding is a SIMPLE field ref of the loop var (p.name) — computed
-       expressions (e.g. '$' + p.price) stay read-only. Edit → data mutation, not HTML.
-       (Scope today: x-for list item fields. Direct $x.a.b bindings outside a list are a
-       natural extension — different addressing {source,path} + key-value write-back.) ---- */
+    /* ---- Data values (.data): x-for fields bound to a plain `item.field` are editable ---- */
     function armDataValues(area) {
         const tpl = area.querySelector('template[x-for]'); if (!tpl) return;
         const lv = (tpl.getAttribute('x-for').match(/^\s*([\w$]+)\s+in\b/) || [])[1]; if (!lv) return;
@@ -1204,14 +1384,9 @@
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
                 const m = expr.match(fieldRe); if (!m) return;
                 const field = m[1];
-                el.setAttribute('data-edit-field', field);
-                // A field bound with x-html can hold markup, so it is styleable like
-                // any other text — the value simply carries the tags. Bound with
-                // x-text it cannot, and offering the controls there would write
-                // markup the binding renders as literal characters. The author's
-                // choice of binding is the whole distinction.
-                el.toggleAttribute('data-edit-rich', rich);
-                // The rich editor owns the caret where it is present.
+                el._editField = field;
+                // x-html fields hold markup; x-text fields are plain.
+                el._editRich = rich;
                 if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
@@ -1222,42 +1397,35 @@
         });
     }
 
-    /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
-       instance for the scope (this instance vs all) + per-element classes + revert. ---- */
+    /* ---- Components: nodes addressed by structural path; scope via $edit.scope ---- */
     const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
-    // Paths index authored children only (realChildren): plugin-injected nodes never count.
     function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
     function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
-    // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
-    // skip the source element (don't fight the caret) and skip any instance that has its
-    // OWN committed override for this node/prop (instance overrides always win).
+    // 'main' scope: mirror live to other instances without their own override.
     function liveMainPropagate(area, sourceEl, prop, value) {
         if ((area._editScope || 'instance') !== 'main') return;
-        const comp = componentName(area), path = sourceEl.getAttribute('data-edit-path'), { inst } = componentState();
-        document.querySelectorAll('[data-edit-area]').forEach(a => {
-            if (!a._edit || classify(a) !== 'component' || componentName(a) !== comp) return;
+        const comp = componentName(area), path = sourceEl._editPath, { inst } = componentState();
+        areas().forEach(a => {
+            if (classify(a) !== 'component' || componentName(a) !== comp) return;
             const root = a.querySelector('[data-component]'); if (!root) return;
             const el = path === '' ? root : nodeByPath(root, path); if (!el || el === sourceEl) return;
             const iv = (inst[key(a)] && inst[key(a)][path]) || {}; if (iv[prop] !== undefined) return;   // override wins
-            if (prop === 'class') { if (el.getAttribute('class') !== value) el.setAttribute('class', value); }
+            if (prop === 'class') writeClass(el, value);
             else if (el.innerHTML !== value) el.innerHTML = value;
         });
     }
     function armComponent(area) {
         const root = area.querySelector('[data-component]'); if (!root) return;
-        if (!area._editScope) { area._editScope = 'instance'; area.setAttribute('data-edit-scope', 'instance'); }
+        if (!area._editScope) area._editScope = 'instance';
         area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {};
-        // Mark the root AND every element with a path → all are class-editable (incl. the parent).
-        const markClass = (el) => { const p = pathOf(el, root); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
+        const markClass = (el) => { const p = pathOf(el, root); el._editPath = p; if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
         markClass(root);
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
-        // Text leaves also become contenteditable. Capture innerHTML (not textContent) so
-        // nested inline elements like <i>/<br> the user adds are preserved.
         armRichText(area);
-        root.querySelectorAll('[data-edit-path]').forEach(el => {
+        componentNodes(root).forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
             if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
-            const p = el.getAttribute('data-edit-path');
+            const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
@@ -1266,88 +1434,132 @@
             el.addEventListener('blur', () => commitComponentNode(area, el, 'text', el.innerHTML.trim()));
         });
     }
-    let cmpMenu;
-    function openComponentMenu(e, area) {
-        if (!isActive(area)) return; e.preventDefault(); e.stopPropagation();
-        const target = e.target.closest('[data-edit-path]');
-        if (!cmpMenu) {
-            cmpMenu = document.createElement('div'); cmpMenu.setAttribute('data-edit-menu', ''); cmpMenu.setAttribute('popover', 'manual');
-            cmpMenu.addEventListener('pointerdown', ev => ev.stopPropagation());
-            document.body.appendChild(cmpMenu);
-            document.addEventListener('pointerdown', () => { if (cmpMenu && cmpMenu.matches(':popover-open')) cmpMenu.hidePopover(); });
+    // Escape leaves text with the piece focused, so Alt+arrows move it.
+    function leaveText(el) {
+        el.blur();
+        const piece = [el, ...ancestorsIn(el)].find(n => n.hasAttribute && n.hasAttribute('data-edit-piece'));
+        if (!piece) return;
+        if (piece.isContentEditable) {
+            piece._pieceMode = true;
+            piece.setAttribute('contenteditable', 'false');
+            piece.addEventListener('focusout', () => exitPieceMode(piece), { once: true });
         }
-        if (target) target._preClass = target.getAttribute('class') || '';
-        const cur = area._editScope || 'instance';
-        cmpMenu.innerHTML =
-            `<small>Scope · ${componentName(area)}</small>`
-            + `<div class="row"><button class="ghost sm" data-s="instance">${cur === 'instance' ? '✓ ' : ''}This instance</button><button class="ghost sm" data-s="main">${cur === 'main' ? '✓ ' : ''}All</button></div>`
-            + (target ? `<small>Classes · ${target.tagName.toLowerCase()} · live</small><input type="text" spellcheck="false" data-cls>` : '')
-            + `<div class="row">${target ? '<button class="ghost sm" data-a="revert">Revert element</button>' : ''}<button class="ghost sm" data-a="revertall">Revert all</button></div>`;
-        cmpMenu.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { area._editScope = b.getAttribute('data-s'); area.setAttribute('data-edit-scope', area._editScope); area.setAttribute('data-edit-label', `${key(area)} · component · ${area._editScope}`); openComponentMenu(e, area); });
-        const cls = cmpMenu.querySelector('[data-cls]');
-        if (cls && target) {
-            cls.value = target.getAttribute('class') || '';
-            cls.addEventListener('input', () => { target.setAttribute('class', cls.value); liveMainPropagate(area, target, 'class', cls.value); });
-            cls.addEventListener('change', () => commitComponentNode(area, target, 'class', cls.value));
-            cls.addEventListener('keydown', ev => { if (ev.key === 'Enter') cls.blur(); });
+        try { piece.focus(); } catch { }
+    }
+    const ancestorsIn = (el) => { const out = [], area = regionOf(el); for (let n = el.parentElement; n && n !== area; n = n.parentElement) out.push(n); return out; };
+    function exitPieceMode(el, edit) {
+        if (!el._pieceMode) return;
+        el._pieceMode = false;
+        if (el.getAttribute('contenteditable') === 'false') el.setAttribute('contenteditable', 'true');
+        if (edit) { try { el.focus(); } catch { } selectAllIn(el); }
+    }
+
+
+    /* ---- Attributes and classes (API only; any area) ----
+       Each change is one logged delta. With a :class binding, only the static
+       class attribute is edited; the binding keeps merging its own classes. */
+    const bindingOf = (el, name) => el.getAttribute(':' + name) ?? el.getAttribute('x-bind:' + name);
+    function boundClasses(el) {
+        const expr = bindingOf(el, 'class'); if (expr == null) return [];
+        let v; try { v = window.Alpine.evaluate(el, expr); } catch { return []; }
+        const out = [];
+        const add = (x) => String(x).split(/\s+/).filter(Boolean).forEach(c => out.push(c));
+        if (typeof v === 'string') add(v);
+        else if (Array.isArray(v)) v.flat(Infinity).filter(Boolean).forEach(add);
+        else if (v && typeof v === 'object') Object.entries(v).forEach(([k, on]) => { if (on) add(k); });
+        return out;
+    }
+    const splitClasses = (s) => String(s || '').split(/\s+/).filter(Boolean);
+    function readClass(el) {
+        const bound = new Set(boundClasses(el));
+        return splitClasses(el.getAttribute('class')).filter(c => !bound.has(c)).join(' ');
+    }
+    function writeClass(el, value) {
+        const bound = boundClasses(el);
+        const next = [...new Set([...splitClasses(value), ...bound])].join(' ');
+        if (!next) { if (el.hasAttribute('class')) el.removeAttribute('class'); return; }
+        if (el.getAttribute('class') !== next) el.setAttribute('class', next);
+    }
+
+    function attrTarget(el) {
+        if (el == null) el = target;
+        if (!el || el.nodeType !== 1) return null;
+        const area = regionOf(el);
+        if (!area || !isActive(area)) return null;
+        return { el, area, kind: classify(area) };
+    }
+    function setAttr(name, value, el) {
+        const t = attrTarget(el); if (!t) return false;
+        name = String(name || '').trim().toLowerCase();
+        const v = value === true ? '' : (value === false || value == null) ? null : String(value);
+        const refused = attrRefusal(name, v);
+        if (refused) { console.warn(`[edit] attribute refused (${refused}):`, name); return false; }
+        if (lockedFor(t.el, 'attrs')) return false;
+        if (name === 'class') return setClass(t, v || '');
+        if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
+        if (t.kind === 'component') { console.warn('[edit] component nodes take class changes only'); return false; }
+        if (!t.el.hasAttribute('data-edit-key')) return false;
+        if (bindingOf(t.el, name) != null) console.warn(`[edit] ${name} is bound on this element; the binding will override the edited value`);
+        const before = t.el.getAttribute(name);
+        if (before === v) return false;
+        if (v === null) t.el.removeAttribute(name); else t.el.setAttribute(name, v);
+        return commitStaticNode(t.area, t.el, name, v, { before, coalesce: true });
+    }
+    function setClass(t, value) {
+        if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
+        const before = readClass(t.el);
+        value = splitClasses(value).join(' ');
+        if (before === value) return false;
+        writeClass(t.el, value);
+        if (t.kind === 'component') {
+            if (t.el._editPath == null) return false;
+            liveMainPropagate(t.area, t.el, 'class', t.el.getAttribute('class') || '');
+            return commitComponentNode(t.area, t.el, 'class', value, before);
         }
-        const hide = () => { if (cmpMenu.matches(':popover-open')) cmpMenu.hidePopover(); };
-        const rv = cmpMenu.querySelector('[data-a="revert"]'); if (rv) rv.onclick = () => { revertNode(area, target); hide(); };
-        cmpMenu.querySelector('[data-a="revertall"]').onclick = () => { revertAll(area); hide(); };
-        cmpMenu.style.left = Math.min(e.clientX, innerWidth - 240) + 'px'; cmpMenu.style.top = Math.min(e.clientY, innerHeight - 180) + 'px';
-        if (!cmpMenu.matches(':popover-open')) { try { cmpMenu.showPopover(); } catch { } }
-        if (cls) setTimeout(() => cls.focus(), 0);
+        if (!t.el.hasAttribute('data-edit-key')) return false;
+        return commitStaticNode(t.area, t.el, 'class', value, { before, coalesce: true });
+    }
+    function editClasses(el, fn) {
+        const t = attrTarget(el); if (!t) return false;
+        if (lockedFor(t.el, 'attrs')) return false;
+        const list = splitClasses(readClass(t.el));
+        const next = fn(list);
+        return next ? setClass(t, next.join(' ')) : false;
+    }
+    const classesApi = {
+        add(cls, el) { const add = splitClasses(cls); return editClasses(el, l => [...l, ...add.filter(c => !l.includes(c))]); },
+        remove(cls, el) { const rm = new Set(splitClasses(cls)); return editClasses(el, l => l.filter(c => !rm.has(c))); },
+        toggle(cls, el, force) {
+            const t = attrTarget(el); if (!t) return false;
+            const names = splitClasses(cls), on = force ?? !names.every(c => t.el.classList.contains(c));
+            return on ? classesApi.add(cls, t.el) : classesApi.remove(cls, t.el);
+        },
+        set(value, el) { const t = attrTarget(el); return !!t && !lockedFor(t.el, 'attrs') && setClass(t, value || ''); },
+        has(cls, el) { void (estore && estore.version); const t = el == null ? target : el; return !!t && t.nodeType === 1 && splitClasses(cls).every(c => t.classList.contains(c)); },
+        list(el) { void (estore && estore.version); const t = el == null ? target : el; return t && t.nodeType === 1 ? splitClasses(readClass(t)) : []; }
+    };
+
+    /* ---- Component scope and revert ---- */
+    const componentAreaOf = (el) => { const a = el && regionOf(el); return a && classify(a) === 'component' ? a : null; };
+    function scopeOf(el) { const a = componentAreaOf(el == null ? target : el); return a ? a._editScope || 'instance' : null; }
+    function setScope(value, el) {
+        const a = componentAreaOf(el == null ? target : el);
+        if (!a || (value !== 'instance' && value !== 'main')) return false;
+        a._editScope = value; bump();
+        return true;
+    }
+    function revert(el) {
+        if (el == null) el = target;
+        const a = componentAreaOf(el); if (!a) return false;
+        if (el === a) revertAll(a);
+        else if (el._editPath != null) revertNode(a, el);
+        else return false;
+        return true;
     }
 
 
-    /* ---- Style: right-click → live utility-class input (no Apply; commit on close) ---- */
-    let menu;
-    function closeMenu() {
-        if (!menu || !menu.matches(':popover-open')) return;
-        if (menu._dirty && menu._target) { commitStaticNode(menu._target.closest('[data-edit-area]'), menu._target, 'class', menu._target.getAttribute('class') || ''); menu._dirty = false; }
-        try { menu.hidePopover(); } catch { } menu._target = null;
-    }
-    function ensureMenu() {
-        if (menu) return menu;
-        // A real popover: the top layer is above every stacking context, so the menu
-        // cannot be painted over by a resize handle or anything else with a z-index.
-        menu = document.createElement('div'); menu.setAttribute('data-edit-menu', ''); menu.setAttribute('popover', 'manual');
-        menu.innerHTML = '<small>Classes <span data-tag></span> · live</small><input type="text" spellcheck="false"><div class="row"><button class="ghost sm" data-a="close">Done</button></div>';
-        menu.addEventListener('pointerdown', e => e.stopPropagation());
-        const input = menu.querySelector('input');
-        input.addEventListener('input', () => { if (menu._target) { menu._target.setAttribute('class', input.value); menu._dirty = true; } });
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') closeMenu(); });
-        menu.querySelector('[data-a="close"]').addEventListener('click', closeMenu);
-        document.body.appendChild(menu);
-        document.addEventListener('pointerdown', closeMenu);
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
-        return menu;
-    }
-    function openMenu(el, x, y) {
-        const m = ensureMenu(); m._target = el; m._dirty = false; el._preClass = el.getAttribute('class') || '';
-        m.querySelector('[data-tag]').textContent = '· ' + el.tagName.toLowerCase();
-        const input = m.querySelector('input'); input.value = el.getAttribute('class') || '';
-        m.style.left = Math.min(x, innerWidth - 280) + 'px'; m.style.top = Math.min(y, innerHeight - 130) + 'px';
-        if (!m.matches(':popover-open')) { try { m.showPopover(); } catch { } }
-        setTimeout(() => { input.focus(); input.select(); }, 0);
-    }
-    // The class menu is authoring chrome, so it only opens where chrome was asked for.
-    function openClassMenu(area, e) {
-        if (!area._edit.authoring) return;
-        let t = e.target;
-        while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.hasAttribute('data-edit-handle'))) t = t.parentElement;
-        if (!t || !capOf(t, 'style') || locked(t)) return;
-        openMenu(t, e.clientX, e.clientY);
-    }
-
-
-    /* ---- Theme regime: edit CSS custom properties (x-edit.cssvar) ----
-       Not DOM-element editing. A variable set on :root is global; set on an x-edit
-       theme scope's element it cascades to that subtree ONLY (sandboxed theme), so the
-       same var name can live at both levels without collision. Controls are inputs that
-       declare their target as "scope:--var" (area/scope key) or bare "--var" (global).
-       Live = setProperty (var()-referencing utilities update for free); persisted as
-       {kind:'theme', scope, var, value}. Net-new variables are a later step. */
+    /* ---- Theme: CSS custom properties (x-edit.cssvar="--var" or "scope:--var") ----
+       Global on :root, or sandboxed to an x-edit.theme scope's subtree. */
     const cssvarControls = new Set();
     const themeBaseline = {};            // "scope|var" → original inline value ('' if none) — for revert-to-baseline
     const themeTouched = new Set();      // every scope|var ever applied
@@ -1355,10 +1567,11 @@
     const themeTargetEl = (scope) => (scope && themeScopes[scope]) || document.documentElement;
     const cvValue = (el) => el.value + (el.dataset.unit || '');   // data-unit lets a range/number drive a unit'd var
 
-    function registerCssVar(el, expression) {
+    function registerCssVar(el, expression, modifiers) {
         const spec = (expression || '').trim();
-        const m = spec.match(/^([\w-]+)\s*:\s*(--[\w-]+)$/);   // "scope:--var" vs bare "--var" (global)
+        const m = spec.match(/^([\w-]+)\s*:\s*(--[\w-]+)$/);
         el._cssvar = m ? { scope: m[1], var: m[2] } : { scope: null, var: spec };
+        el._cssvar.persist = !!(modifiers && modifiers.includes('persist'));
         cssvarControls.add(el);
     }
     function syncCssVarInput(el) {
@@ -1375,7 +1588,7 @@
         syncCssVarInput(el);
         if (el._cvBound) return; el._cvBound = true;
         el.addEventListener('input', () => themeTargetEl(cv.scope).style.setProperty(cv.var, cvValue(el)));   // live, no log
-        el.addEventListener('change', () => commitTheme(cv.scope, cv.var, cvValue(el)));                       // commit
+        el.addEventListener('change', () => commitTheme(cv.scope, cv.var, cvValue(el), cv.persist || (s => !!s && !!(s._editPersist || (s._edit && s._edit.persist)))(cv.scope && themeScopes[cv.scope])));
     }
     function armThemeControls() { cssvarControls.forEach(armCssVar); }
 
@@ -1384,8 +1597,7 @@
         for (let i = 0; i < cursor; i++) { const d = log[i]; if (d.kind === 'theme') s[tkey(d.scope, d.var)] = d; }
         return s;
     }
-    // Re-derive every touched var from the log: state value if present, else the captured
-    // baseline (setProperty to restore an authored inline value; removeProperty if none).
+    // Re-derive every touched var from the log, else its captured baseline.
     function applyThemeState() {
         const st = themeState();
         new Set([...themeTouched, ...Object.keys(st)]).forEach(kk => {
@@ -1396,14 +1608,13 @@
         });
         cssvarControls.forEach(syncCssVarInput);
     }
-    function commitTheme(scope, v, value) {
+    function commitTheme(scope, v, value, persist) {
         const kk = tkey(scope, v); themeTouched.add(kk);
         themeTargetEl(scope).style.setProperty(v, value);
         const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe
-        log.splice(cursor); log.push({ kind: 'theme', scope: scope || null, var: v, value }); cursor = log.length; saveState(); refresh();
+        pushDelta({ kind: 'theme', scope: scope || null, var: v, value }, !!persist);
     }
-    // B-side: each theme var → its scope's target CSS file (data-edit-theme-file on the
-    // scope element); global vars carry no file → the server falls back to the theme file.
+    // Each var → its scope's data-edit-theme-file, else the server's theme file.
     function themePatches() {
         return Object.values(themeState()).map(d => {
             const el = d.scope ? themeScopes[d.scope] : null;
@@ -1412,173 +1623,132 @@
     }
 
 
-    /* ---- Arm / disarm an area for its regime + caps ---- */
-    // Static nodes are addressed by a content-derived key, not by their position
-    // among siblings. Position was stable while the tree was, but adding, removing or
-    // duplicating a block shifts every address after it — so an edit recorded before
-    // a structural change replayed onto the wrong element afterwards.
-    //
-    // The key is derived once, from what the element held when the area was first
-    // armed, and never recomputed for an element that already has one. That is what
-    // makes it survive both kinds of change: a later text edit does not move the
-    // address, and a reload derives the same key again because the source it loads is
-    // the same source the key was first taken from.
+    /* ---- Arm / disarm ---- */
+    // Content-derived keys, assigned once per element and never recomputed, so a text
+    // edit keeps the address and a reload of the same source derives the same keys.
     function markStatic(area) {
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
         const seen = Object.create(null);
         const markEl = (el) => {
             let k = el.getAttribute('data-edit-key');
             if (k) {
-                // Keep the tally in step so a new element never claims an ordinal
-                // an existing one already holds.
-                // The ordinal is the LAST #digits suffix — authored text may contain '#'.
                 const m = /^([\s\S]*)#(\d+)$/.exec(k);
                 const base = m ? m[1] : k, n = m ? m[2] : undefined;
                 seen[base] = Math.max(seen[base] || 0, n ? +n : 1);
             } else {
-                const base = el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+                const base = staticKey(el);
                 const n = seen[base] = (seen[base] || 0) + 1;
                 k = n > 1 ? base + '#' + n : base;
                 el.setAttribute('data-edit-key', k);
             }
-            el.setAttribute('data-edit-path', pathOf(el, area));   // still what the source writer navigates by
-            if (!(k in area._baseClass)) area._baseClass[k] = el.getAttribute('class') || '';
+            if (!(k in area._baseClass)) area._baseClass[k] = readClass(el);
             if (!(k in area._baseStyle)) area._baseStyle[k] = el.getAttribute('style') || '';
             if (!(k in area._baseText) && !el.children.length) area._baseText[k] = el.innerHTML.trim();
         };
         markEl(area);
-        // Stop at a rich editor: its internals are its own, and marking them would
-        // both litter its content and let applyStaticState fight it for the same nodes.
         area.querySelectorAll('*').forEach(el => {
-            if (el.hasAttribute('data-edit-handle')) return;
+            if (pluginNode(el) || el.closest('[data-edit-ghost]')) return;
             if (el.parentElement && el.parentElement.closest('[data-text-edit]')) return;
             markEl(el);
         });
         if (!area._baseOrder) area._baseOrder = staticKeys(area);
-        if (!(key(area) in lastOrder)) lastOrder[key(area)] = area._baseOrder;
     }
     function armArea(area) {
         const kind = classify(area);
-        area.setAttribute('data-edit-armed', '');
-        // Chrome is opt-in: a sortable list should look like a list, not like a page
-        // being edited. The attributes are all CSS asks for — what is shown, and
-        // whether it is shown at all, is decided in the stylesheet.
-        area.toggleAttribute('data-edit-authoring', !!area._edit.authoring);
-        // .authoring regions get the UI scope by default; anything else opts in
-        // by putting data-edit-ui on the region or an ancestor. Only remove what
-        // the plugin itself added, never an author's attribute.
-        if (area._edit.authoring && !area.hasAttribute('data-edit-ui')) { area.setAttribute('data-edit-ui', ''); area._uiByPlugin = true; }
-        area.setAttribute('data-edit-label', kind === 'component' ? `${key(area)} · component · ${area._editScope || 'instance'}` : `${key(area)} · ${kind}`);
         if (kind === 'static') markStatic(area);
-        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (capOf(c, 'sort') && !locked(c)) makeSortable(c); });
+        markPieces(area);
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(c => { if (ownsCap(c, 'size')) armSize(c); });
         if (kind === 'component') armComponent(area); else armText(area);
-        if (!area._dndBound) {
-            area._dndBound = true;
-            // Native HTML5 drag (a text selection, an image, a link) must never
-            // start inside a region: it drops SELECTED TEXT into neighbouring
-            // editable leaves, silently merging elements. All region dragging is
-            // pointer-based.
-            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
-            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });   // nothing drops INTO a region either (an OS image drop would merge into a leaf)
-        }
-        if (!area._ctxBound) {
-            area._ctxBound = true;
-            // One binding for the whole area: report the block, and fall back to the
-            // built-in authoring menu only if the project did not take the event.
-            area.addEventListener('contextmenu', (e) => {
-                if (!isActive(area)) return;
-                const builtIn = () => classify(area) === 'component' ? openComponentMenu(e, area) : openClassMenu(area, e);
-                if (onBlockContext(e, builtIn)) return;
-                if (!area._edit.authoring) return;
-                e.preventDefault();
-                builtIn();
-            });
-        }
         if (kind === 'data' && capOf(area, 'data')) armDataValues(area);
+        if (!area._editBound) {
+            area._editBound = true;
+            area.addEventListener('pointerdown', onAreaPointerDown);
+            area.addEventListener('keydown', (e) => { if (isActive(area)) onPieceKeydown(e, area); });
+            // Native HTML5 drag would drop selected text into neighbouring leaves.
+            area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
+            area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });
+        }
+        if (!area._editObserver) {
+            area._editObserver = new MutationObserver((recs) => {
+                if (dragged || area._rearmQueued || recs.every(r => r.target.isContentEditable)) return;
+                area._rearmQueued = true;
+                queueMicrotask(() => { area._rearmQueued = false; if (area._armed && isActive(area) && !dragged) armArea(area); });
+            });
+            area._editObserver.observe(area, { childList: true, subtree: true });
+        }
     }
     function disarmArea(area) {
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
-        area.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
-        area.querySelectorAll('[data-edit-sortable]').forEach(e => { ['data-edit-sortable', 'data-edit-grabbed', 'data-edit-dragging', 'tabindex', 'role', 'draggable'].forEach(a => e.removeAttribute(a)); e._dragBound = false; });
-        [area, ...area.querySelectorAll('[data-edit-sizable],[data-edit-movable]')].forEach(e => { e.removeAttribute('data-edit-sizable'); e.removeAttribute('data-edit-movable'); e._sizeBound = false; });
-        area.removeAttribute('data-edit-armed'); area.removeAttribute('data-edit-label');
-        if (area._uiByPlugin) { area.removeAttribute('data-edit-ui'); area._uiByPlugin = false; }
+        [area, ...area.querySelectorAll('[contenteditable]')].forEach(e => { if (e.hasAttribute('contenteditable')) e.removeAttribute('contenteditable'); e._pieceMode = false; });
+        area.querySelectorAll('[data-edit-piece]').forEach(unmarkPiece);
+        [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { e._sizeBound = false; });
+        if (grabbed && area.contains(grabbed.item)) cancelGrab();
     }
 
-    /* ---- Activation: per-area, always-on by default (.gated needs $edit.on()) ---- */
+    /* ---- Activation: always-on by default; .gated waits for $edit.on() ---- */
     let estore, booted = false, armQueued = false;
-    const isActive = (a) => !!a && (!a._edit.gated || (estore && estore.active));
-    const anyActive = () => areas().some(isActive);
+    const isActive = (a) => !!a && !!a._edit && (!a._edit.gated || !!(estore && estore.active));
     function armAll() { areas().forEach(a => { if (isActive(a) && !a._armed) { lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } }); armThemeControls(); refresh(); booted = true; }
 
-    /* ---- Late regions: arm when Alpine initialises them, release when it destroys them ---- */
-    // Arming ran once at boot, so anything rendered later — x-if, a route change, a lazy
-    // component, x-markdown output — stayed inert. Every one of those paths goes through
-    // Alpine.initTree, so the x-edit directive itself is the hook; no observer needed.
-    // Deferred one microtask so the tree Alpine is walking is complete before baselines
-    // are captured, and batched so a burst of regions costs one pass.
+    // Regions rendered after boot (x-if, routes, lazy components) arm through the directive.
     function armLater() {
-        if (!booted || armQueued) return;   // the boot pass still owns start-up ordering
+        if (!booted || armQueued) return;
         armQueued = true;
         queueMicrotask(() => { armQueued = false; armAll(); });
     }
-    // Runs from Alpine's directive cleanup (x-if/x-for teardown, or its own mutation
-    // observer), so a removed region drops its observers and its registry slot.
     function releaseEdit(el) {
         Object.keys(themeScopes).forEach(k => { if (themeScopes[k] === el) delete themeScopes[k]; });
         cssvarControls.delete(el);
         if (!editEls.has(el)) return;
         if (el._armed) { disarmArea(el); el._armed = false; }
-        [el, ...el.querySelectorAll('*')].forEach(n => { if (n._sortObserver) { n._sortObserver.disconnect(); n._sortObserver = null; } });
-        editEls.delete(el); delete el._edit;
+        if (el._editObserver) { el._editObserver.disconnect(); el._editObserver = null; }
+        editEls.delete(el); delete el._edit; resetAreas();
         el.removeAttribute('data-edit-area');
+        if (target && (target === el || el.contains(target))) setTarget(null);
         refresh();
     }
-    // Build B-side source patches from the edit set (storage-agnostic; overlay
-    // already auto-persists to localStorage on commit).
+
+    /* ---- Source patches: every area ---- */
     function buildPatches() {
-        const patches = Object.entries(fold()).filter(([k]) => authoringRegion(k)).map(([k, v]) => patchFor(k, v.kind, v.snap));   // data
+        const patches = Object.entries(fold()).map(([k, v]) => patchFor(k, v.kind, v.snap));
         const toEdits = (paths, area, fileOrder) => {
             const e = [];
             Object.entries(paths).forEach(([k, props]) => {
-                // Keys address across a session; the source writer navigates by
-                // position, so resolve to where the element actually sits now (the
-                // server applies order before edits, so current position is the
-                // right one). A deleted element has nothing to write.
                 const el = area && (area.getAttribute('data-edit-key') === k ? area : area.querySelector(`[data-edit-key="${CSS.escape(k)}"]`));
                 let path = el ? pathOf(el, area) : k;
                 if (area && !el) return;
-                // RULE: paths must be valid against the file state the server will reach —
-                // a pending st-children change can't be applied there (a short order is
-                // skipped), so address by the block's position in the UNMODIFIED file.
+                // A pending structural change can't reach the file: address the unmodified file order.
                 if (el && el !== area && fileOrder) {
                     let block = el; while (block.parentElement && block.parentElement !== area) block = block.parentElement;
                     const fi = fileOrder.indexOf(block.getAttribute('data-edit-key'));
-                    if (fi < 0) return;                          // block not in the file (added this session) — nothing to address
+                    if (fi < 0) return;
                     const segs = path.split('.'); segs[0] = String(fi); path = segs.join('.');
                 }
                 Object.entries(props).forEach(([prop, value]) => e.push({ path, key: k, prop, value }));
             });
             return e;
         };
-        for (let i = 0; i < cursor; i++) {   // cross-region moves travel in log order, ahead of per-region ops
+        for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind !== 'st-move' || !authoringRegion(d.from) || !authoringRegion(d.to)) continue;
-            patches.push({ kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder });
+            if (d.kind !== 'st-move') continue;
+            const p = { kind: 'static-move', from: d.from, to: d.to, key: d.key, toKey: d.toKey, toOrder: d.toOrder };
+            if (d.fromParent) p.fromParent = d.fromParent;
+            if (d.toParent) p.toParent = d.toParent;
+            patches.push(p);
         }
-        const ss = staticState();   // static: per-node ops + reorder permutation (no whole HTML)
+        const ss = staticState();
         new Set([...Object.keys(ss.node), ...Object.keys(ss.order)]).forEach(region => {
-            if (!authoringRegion(region)) return;
             const area = areaByKey(region);
-            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region);
+            const structural = log.slice(0, cursor).some(d => d.kind === 'st-children' && d.region === region && !d.parent);
             const edits = toEdits(ss.node[region] || {}, area, structural ? (area && area._baseOrder) || [] : null);
-            // A moved region always gets its folded order (pre-move reorders are NOT
-            // in the move splice); the server skips a reorder that is already true.
-            const order = ss.order[region] || null;
-            if (edits.length || order) patches.push({ kind: 'static', region, edits, order });
+            const orders = ss.order[region] || {};
+            const order = orders[''] || null;
+            const nested = Object.fromEntries(Object.entries(orders).filter(([p]) => p));
+            const patch = { kind: 'static', region, edits, order };
+            if (Object.keys(nested).length) patch.orders = nested;
+            if (edits.length || order || patch.orders) patches.push(patch);
         });
-        const dv = dataValueState();   // data-value edits → field writes (local file / cloud $update)
+        const dv = dataValueState();
         Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));
         const { main, inst, reverts } = componentState();
         Object.entries(main).forEach(([component, paths]) => { const edits = toEdits(paths); if (edits.length) patches.push({ kind: 'component', scope: 'main', component, edits }); });
@@ -1587,72 +1757,37 @@
             const edits = toEdits(inst[region] || {}), rv = [...(reverts[region] || [])];
             if (edits.length || rv.length) patches.push({ kind: 'component', scope: 'instance', component: componentName(area), region, edits, reverts: rv });
         });
-        themePatches().forEach(p => patches.push(p));   // theme: CSS-var value writes (scoped → its file; global → theme file)
+        themePatches().forEach(p => patches.push(p));
         return patches;
     }
     function publish() {
         const patches = buildPatches();
         if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor }));
         if (!patches.length) return Promise.resolve({ results: [] });
-        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json());   // default: local dev-server source writer (authoring)
+        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patches) }).then(r => r.json());
     }
     function on() { if (estore) estore.active = true; armAll(); }
-    function off() { if (estore) estore.active = false; areas().forEach(a => { if (a._edit.gated && a._armed) { disarmArea(a); a._armed = false; } }); closeMenu(); refresh(); }
-    // Runtime lock — meta, not content: applied immediately, not logged. Locks
-    // the target and its subtree (descendants without their own x-edit inherit).
-    function setLock(el, val) {
-        if (!el) return;
-        if (!el._edit) { el._edit = { key: `lock-${++autoN}`, caps: new Set(), lock: val, gated: false }; el.setAttribute('data-edit-area', ''); editEls.add(el); }
-        else { el._edit.lock = val; if (val) el._edit.caps = new Set(); }
-        if (val) { el.querySelectorAll('[data-edit-handle]').forEach(h => h.remove()); el.removeAttribute('draggable'); el.removeAttribute('contenteditable'); el.removeAttribute('data-edit-sizable'); el._sizeBound = false; el.querySelectorAll('[draggable],[contenteditable]').forEach(n => { n.removeAttribute('draggable'); n.removeAttribute('contenteditable'); }); }
-        const area = areas().find(a => a === el || a.contains(el));
-        if (area && isActive(area)) armArea(area);
+    function off() {
+        if (estore) estore.active = false;
+        areas().forEach(a => { if (a._edit.gated && a._armed) { disarmArea(a); a._armed = false; } });
+        refresh();
     }
 
 
-    /* ---- Authoring chrome: floating toolbar (undo/redo/publish/reset). A convenience
-       over the $edit magic — built on first use and shown only where there is
-       something to edit, so it never sits on a route with no editable area. ---- */
-    let bar;
-    function buildUI() {
-        if (bar) return bar;
-        bar = document.createElement('div'); bar.setAttribute('data-edit-toolbar', '');
-        bar.innerHTML = '<button class="ghost" data-a="undo">↶ Undo</button><button class="ghost" data-a="redo">↷ Redo</button><button class="brand" data-a="publish">Publish</button><button class="ghost" data-a="reset">Reset</button>';
-        bar.addEventListener('click', e => {
-            const btn = e.target.closest('button'); if (!btn) return; const a = btn.getAttribute('data-a');
-            if (a === 'undo') undo(); if (a === 'redo') redo(); if (a === 'reset') { localStorage.removeItem(LS_KEY); location.reload(); }
-            if (a === 'publish') {
-                const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Publishing…';
-                publish().then(r => { const rs = r.results || []; const w = rs.filter(x => x.status === 'written').length, sk = rs.filter(x => x.status === 'skipped').length; btn.textContent = `Wrote ${w}${sk ? ` · ${sk} skipped` : ''}`; })
-                    .catch(() => btn.textContent = 'Failed').finally(() => { btn.disabled = false; setTimeout(() => btn.textContent = orig, 2800); });
-            }
-        });
-        document.body.appendChild(bar);
-        return bar;
-    }
-    // An area hidden by the router is still in the DOM, so ask the layout, not the tree.
-    const onScreen = (el) => el.checkVisibility ? el.checkVisibility() : !!el.offsetParent;
     function refresh() {
-        if (estore) { estore.canUndo = cursor > 0; estore.canRedo = cursor < log.length; }
-        // Script decides presence — it is the only thing that knows which route is on
-        // screen. The stylesheet decides whether it is seen.
-        const authoring = areas().some(a => a._edit.authoring && isActive(a) && onScreen(a));
-        document.documentElement.toggleAttribute('data-edit-active', authoring);
-        if (!authoring) return;
-        buildUI();
-        bar.querySelector('[data-a="undo"]').disabled = cursor === 0;
-        bar.querySelector('[data-a="redo"]').disabled = cursor >= log.length;
+        if (!estore) return;
+        estore.canUndo = cursor > 0;
+        estore.canRedo = cursor < log.length;
+        estore.version = (estore.version || 0) + 1;
     }
 
     /* ---- Undo/redo hotkeys: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y ----
        On wherever a region is active; data-edit-hotkeys="off" on a region or any
        ancestor opts it out. Text that is still being typed keeps the browser's own
        undo until it commits on blur; fields and x-text-edit keep theirs always. */
-    const leafText = (el) => el.hasAttribute('data-edit-field') && !el.hasAttribute('data-edit-rich') ? el.textContent : el.innerHTML.trim();
+    const leafText = (el) => el._editField && !el._editRich ? el.textContent : el.innerHTML.trim();
     const hotkeysOff = (el) => !!el.closest('[data-edit-hotkeys="off"]');
-    // A leaf the user was typing in commits on blur against its focus-time value;
-    // after history rewrites it under the caret, that value must follow (again
-    // once Alpine has re-rendered a data field).
+    // A focused leaf's baseline follows history rewrites under the caret.
     function rebaseFocused() {
         const el = document.activeElement;
         if (!el || el._preEdit === undefined || !el.isContentEditable) return;
@@ -1681,61 +1816,80 @@
     }
 
 
-    /* ---- Restore persisted edits + boot (registers x-edit directive + $edit magic) ---- */
+    /* ---- Restore persisted edits + boot ---- */
+    // Deltas for areas that no longer persist are dropped before replay.
+    function pruneLoaded() {
+        const stale = (d) => {
+            const regions = d.kind === 'st-move' ? [d.from, d.to] : d.region != null ? [d.region] : [];
+            return regions.some(r => { const a = areaByKey(r); return a && !a._edit.persist; });
+        };
+        if (!log.some(stale)) return;
+        let c = 0;
+        const kept = log.filter((d, i) => { const keep = !stale(d); if (keep && i < cursor) c++; return keep; });
+        log = kept; cursor = c; ver++;
+        saveState();
+    }
     function restore() {
         if (!log.length) return;
+        pruneLoaded();
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        // A replayed move must first converge live keys to the recorded ones (ordinal
-        // renames from collisions). Skipped when the source already holds the move
-        // (post-save reload): fresh derivation then matches the recorded order.
+        // Converge live keys to a replayed move's renames, unless the source already holds the move.
         for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind !== 'st-move' || !d.remap) continue;
-            const ta = areaByKey(d.to);
-            if (!ta || eq(staticKeys(ta), d.toOrder)) continue;
+            if (d.kind !== 'st-move' || !d.remap || !d.remap.length) continue;
+            const ta = areaByKey(d.to); if (!ta) continue;
+            const tc = d.toParent ? keyMap(ta).get(d.toParent) : ta;
+            if (!tc || eq(staticKeys(tc), d.toOrder)) continue;
             applyMoveKeys(d, false);
         }
-        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order' || d.kind === 'st-move')) applyStaticState();
+        if (log.some(d => /^st-/.test(d.kind))) applyStaticState();
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
         if (log.some(d => d.kind === 'theme')) applyThemeState();
+        if (log.some(d => d.kind === 'lock')) areas().forEach(rearm);
+        refresh();
     }
-    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch {} if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
+    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch { } if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
         Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
             registerEdit(el, modifiers, expression);
-            armLater();                        // a region rendered after boot arms itself
-            cleanup(() => releaseEdit(el));    // ...and lets go when Alpine tears it down
+            armLater();
+            cleanup(() => releaseEdit(el));
         });
         Alpine.store('edit', {
-            active: false, canUndo: false, canRedo: false,
-            onPublish: null,                                 // author sets a fn(patches, {log,cursor}) → route to cloud/custom
+            active: false, canUndo: false, canRedo: false, version: 0,
+            onPublish: null,
             toggle() { this.active ? off() : on(); }, on() { on(); }, off() { off(); },
-            undo() { undo(); }, redo() { redo(); }, lock(el) { setLock(el, true); }, unlock(el) { setLock(el, false); },
+            undo() { return undo(); }, redo() { return redo(); },
             publish() { return publish(); },
-            // Block operations. Called with no element they act on the block the last
-            // right-click reported, which is what a context menu wants.
-            targetVersion: 0,                                // trackable: see blocks.js
-            get target() { void this.targetVersion; return blockTarget(); },
+            patches() { return buildPatches(); },
+            export() { return JSON.parse(JSON.stringify({ log, cursor })); },
+            get target() { void this.version; return target; },
             set target(el) { setBlockTarget(el); },
-            can(op, el) { void this.targetVersion; return canDo(op, el); },
+            can(action, el) { void this.version; return canDo(action, el === undefined ? target : el); },
+            lock(el, action) { return setLock(el === undefined ? target : el, action, true); },
+            unlock(el, action) { return setLock(el === undefined ? target : el, action, false); },
             copy(el) { return copyBlock(el); },
             cut(el) { return cutBlock(el); },
             paste(el) { return pasteBlock(el); },
             duplicate(el) { return duplicateBlock(el); },
             remove(el) { return removeBlock(el); },
             move(el, dest, before) { return moveBlock(el, dest, before); },
-            block(node) { return blockOf(node); },
-            patches() { return buildPatches(); },            // resolved B-side source patches
-            export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)
+            nest(el) { const p = asPiece(el === undefined ? target : el); return !!p && movable(p) && nestInto(p); },
+            unnest(el) { const p = asPiece(el === undefined ? target : el); return !!p && movable(p) && unnest(p); },
+            block(node) { return pieceOf(node); },
+            attr(name, value, el) { return setAttr(name, value, el); },
+            classes: classesApi,
+            scope(value, el) { void this.version; return value === undefined ? scopeOf(el) : setScope(value, el); },
+            revert(el) { return revert(el); }
         });
         estore = Alpine.store('edit');
         Alpine.magic('edit', () => Alpine.store('edit'));
         loadState();
-        setTimeout(() => { armAll(); restore(); }, 450);   // arm (captures baselines) THEN re-apply persisted edits
-        window.addEventListener('manifest:route-change', () => setTimeout(refresh, 0));   // chrome follows the route
+        setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
+        document.addEventListener('contextmenu', onContextCapture, true);
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

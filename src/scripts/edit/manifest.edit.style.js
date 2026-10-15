@@ -1,39 +1,101 @@
-    /* ---- Style: right-click → live utility-class input (no Apply; commit on close) ---- */
-    let menu;
-    function closeMenu() {
-        if (!menu || !menu.matches(':popover-open')) return;
-        if (menu._dirty && menu._target) { commitStaticNode(menu._target.closest('[data-edit-area]'), menu._target, 'class', menu._target.getAttribute('class') || ''); menu._dirty = false; }
-        try { menu.hidePopover(); } catch { } menu._target = null;
+    /* ---- Attributes and classes (API only; any area) ----
+       Each change is one logged delta. With a :class binding, only the static
+       class attribute is edited; the binding keeps merging its own classes. */
+    const bindingOf = (el, name) => el.getAttribute(':' + name) ?? el.getAttribute('x-bind:' + name);
+    function boundClasses(el) {
+        const expr = bindingOf(el, 'class'); if (expr == null) return [];
+        let v; try { v = window.Alpine.evaluate(el, expr); } catch { return []; }
+        const out = [];
+        const add = (x) => String(x).split(/\s+/).filter(Boolean).forEach(c => out.push(c));
+        if (typeof v === 'string') add(v);
+        else if (Array.isArray(v)) v.flat(Infinity).filter(Boolean).forEach(add);
+        else if (v && typeof v === 'object') Object.entries(v).forEach(([k, on]) => { if (on) add(k); });
+        return out;
     }
-    function ensureMenu() {
-        if (menu) return menu;
-        // A real popover: the top layer is above every stacking context, so the menu
-        // cannot be painted over by a resize handle or anything else with a z-index.
-        menu = document.createElement('div'); menu.setAttribute('data-edit-menu', ''); menu.setAttribute('popover', 'manual');
-        menu.innerHTML = '<small>Classes <span data-tag></span> · live</small><input type="text" spellcheck="false"><div class="row"><button class="ghost sm" data-a="close">Done</button></div>';
-        menu.addEventListener('pointerdown', e => e.stopPropagation());
-        const input = menu.querySelector('input');
-        input.addEventListener('input', () => { if (menu._target) { menu._target.setAttribute('class', input.value); menu._dirty = true; } });
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') closeMenu(); });
-        menu.querySelector('[data-a="close"]').addEventListener('click', closeMenu);
-        document.body.appendChild(menu);
-        document.addEventListener('pointerdown', closeMenu);
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
-        return menu;
+    const splitClasses = (s) => String(s || '').split(/\s+/).filter(Boolean);
+    function readClass(el) {
+        const bound = new Set(boundClasses(el));
+        return splitClasses(el.getAttribute('class')).filter(c => !bound.has(c)).join(' ');
     }
-    function openMenu(el, x, y) {
-        const m = ensureMenu(); m._target = el; m._dirty = false; el._preClass = el.getAttribute('class') || '';
-        m.querySelector('[data-tag]').textContent = '· ' + el.tagName.toLowerCase();
-        const input = m.querySelector('input'); input.value = el.getAttribute('class') || '';
-        m.style.left = Math.min(x, innerWidth - 280) + 'px'; m.style.top = Math.min(y, innerHeight - 130) + 'px';
-        if (!m.matches(':popover-open')) { try { m.showPopover(); } catch { } }
-        setTimeout(() => { input.focus(); input.select(); }, 0);
+    function writeClass(el, value) {
+        const bound = boundClasses(el);
+        const next = [...new Set([...splitClasses(value), ...bound])].join(' ');
+        if (!next) { if (el.hasAttribute('class')) el.removeAttribute('class'); return; }
+        if (el.getAttribute('class') !== next) el.setAttribute('class', next);
     }
-    // The class menu is authoring chrome, so it only opens where chrome was asked for.
-    function openClassMenu(area, e) {
-        if (!area._edit.authoring) return;
-        let t = e.target;
-        while (t && t !== area.parentElement && !(capOf(t, 'style') && !locked(t) && !t.hasAttribute('data-edit-handle'))) t = t.parentElement;
-        if (!t || !capOf(t, 'style') || locked(t)) return;
-        openMenu(t, e.clientX, e.clientY);
+
+    function attrTarget(el) {
+        if (el == null) el = target;
+        if (!el || el.nodeType !== 1) return null;
+        const area = regionOf(el);
+        if (!area || !isActive(area)) return null;
+        return { el, area, kind: classify(area) };
+    }
+    function setAttr(name, value, el) {
+        const t = attrTarget(el); if (!t) return false;
+        name = String(name || '').trim().toLowerCase();
+        const v = value === true ? '' : (value === false || value == null) ? null : String(value);
+        const refused = attrRefusal(name, v);
+        if (refused) { console.warn(`[edit] attribute refused (${refused}):`, name); return false; }
+        if (lockedFor(t.el, 'attrs')) return false;
+        if (name === 'class') return setClass(t, v || '');
+        if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
+        if (t.kind === 'component') { console.warn('[edit] component nodes take class changes only'); return false; }
+        if (!t.el.hasAttribute('data-edit-key')) return false;
+        if (bindingOf(t.el, name) != null) console.warn(`[edit] ${name} is bound on this element; the binding will override the edited value`);
+        const before = t.el.getAttribute(name);
+        if (before === v) return false;
+        if (v === null) t.el.removeAttribute(name); else t.el.setAttribute(name, v);
+        return commitStaticNode(t.area, t.el, name, v, { before, coalesce: true });
+    }
+    function setClass(t, value) {
+        if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
+        const before = readClass(t.el);
+        value = splitClasses(value).join(' ');
+        if (before === value) return false;
+        writeClass(t.el, value);
+        if (t.kind === 'component') {
+            if (t.el._editPath == null) return false;
+            liveMainPropagate(t.area, t.el, 'class', t.el.getAttribute('class') || '');
+            return commitComponentNode(t.area, t.el, 'class', value, before);
+        }
+        if (!t.el.hasAttribute('data-edit-key')) return false;
+        return commitStaticNode(t.area, t.el, 'class', value, { before, coalesce: true });
+    }
+    function editClasses(el, fn) {
+        const t = attrTarget(el); if (!t) return false;
+        if (lockedFor(t.el, 'attrs')) return false;
+        const list = splitClasses(readClass(t.el));
+        const next = fn(list);
+        return next ? setClass(t, next.join(' ')) : false;
+    }
+    const classesApi = {
+        add(cls, el) { const add = splitClasses(cls); return editClasses(el, l => [...l, ...add.filter(c => !l.includes(c))]); },
+        remove(cls, el) { const rm = new Set(splitClasses(cls)); return editClasses(el, l => l.filter(c => !rm.has(c))); },
+        toggle(cls, el, force) {
+            const t = attrTarget(el); if (!t) return false;
+            const names = splitClasses(cls), on = force ?? !names.every(c => t.el.classList.contains(c));
+            return on ? classesApi.add(cls, t.el) : classesApi.remove(cls, t.el);
+        },
+        set(value, el) { const t = attrTarget(el); return !!t && !lockedFor(t.el, 'attrs') && setClass(t, value || ''); },
+        has(cls, el) { void (estore && estore.version); const t = el == null ? target : el; return !!t && t.nodeType === 1 && splitClasses(cls).every(c => t.classList.contains(c)); },
+        list(el) { void (estore && estore.version); const t = el == null ? target : el; return t && t.nodeType === 1 ? splitClasses(readClass(t)) : []; }
+    };
+
+    /* ---- Component scope and revert ---- */
+    const componentAreaOf = (el) => { const a = el && regionOf(el); return a && classify(a) === 'component' ? a : null; };
+    function scopeOf(el) { const a = componentAreaOf(el == null ? target : el); return a ? a._editScope || 'instance' : null; }
+    function setScope(value, el) {
+        const a = componentAreaOf(el == null ? target : el);
+        if (!a || (value !== 'instance' && value !== 'main')) return false;
+        a._editScope = value; bump();
+        return true;
+    }
+    function revert(el) {
+        if (el == null) el = target;
+        const a = componentAreaOf(el); if (!a) return false;
+        if (el === a) revertAll(a);
+        else if (el._editPath != null) revertNode(a, el);
+        else return false;
+        return true;
     }

@@ -1,32 +1,21 @@
-/* Manifest Edit — SPIKE.
-
-   Compiled from src/scripts/edit/*.js into src/scripts/manifest.edit.js by build.mjs
-   (order matters). These subscripts are FRAGMENTS of a single IIFE: core.js opens it,
-   main.js closes it. Everything stays in one private closure — no globals, no E.* churn.
-   Each fragment is grouped by concern; references resolve at runtime once all parts load.
-
-   x-edit marks an editable AREA (or single target). Always-on by default; .gated requires
-   $edit.on(). Capabilities via modifiers: .sort .text .style .size (default sort+text+style);
-   .lock opts a subtree out. Fine config (size axes/snap/collapse) reads --edit-* CSS vars.
-   Three regimes: static HTML · data mutation · component override. Append-only typed-delta
-   log is the spine; A overlay + B source patch are projections. */
+/* Manifest Edit */
 
 (function () {
     const LS_KEY = 'mnfst-edit-log';
-    const SCHEMA = 7;                  // overlay schema version — bump when the delta shape changes
-    const HISTORY_CAP = 400;           // cap the append-only log so long sessions don't grow unbounded
-    const ALL_CAPS = ['sort', 'text', 'style', 'size', 'data'];   // 'data' = edit $x field values (opt-in)
+    const SCHEMA = 8;
+    const HISTORY_CAP = 400;
+    const ALL_CAPS = ['text', 'move', 'size', 'data'];
+    const DEFAULT_CAPS = ['text', 'move'];
+    const LOCK_ACTIONS = ['move', 'remove', 'duplicate', 'text', 'attrs', 'size'];
+    const RETIRED = { sort: '.move', authoring: 'nothing (visuals are on by default; use .bare to hide them, .persist to keep edits)', style: '$edit.classes / $edit.attr', none: '.lock' };
+    const COALESCE_MS = 1000;
     let dragged = null, autoN = 0;
 
     let log = [], cursor = 0;
-    const lastSnap = {}, lastOrder = {};
-    // Content-derived key for a static sortable child — stable across reorder AND reload
-    // (same content → same key), so reorder can be stored as a tiny key permutation.
+    const lastSnap = {};
+    const persisted = new WeakSet();
+
     const staticKey = (el) => el.tagName + ':' + (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-    // The SAME identity markStatic assigned, not a fresh derivation. Recomputing from
-    // current content would drift the moment text is edited, and the child order
-    // recorded before that edit would then fail to find the element it named.
-    // Two identical siblings are told apart by the ordinal markStatic gave them.
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {
@@ -37,31 +26,34 @@
             return n > 1 ? base + '#' + n : base;
         });
     }
-    const loadState = () => { try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; } else if (s) localStorage.removeItem(LS_KEY); } catch {} };
-    // Only an .authoring area is a page being edited. Everywhere else the plugin is
-    // behaviour — a sortable list, a resizable panel — and the app owns the state, so
-    // those deltas neither travel to the source nor survive in the overlay. They stay
-    // in the in-memory log, so undo still works for the session.
-    const authoringRegion = (r) => { const a = r != null && areaByKey(r); return !!(a && a._edit.authoring); };
-    const persistable = (d) => d.kind !== 'data-splice' && (d.kind === 'st-move'
-        ? authoringRegion(d.from) && authoringRegion(d.to)
-        : (d.region == null || authoringRegion(d.region)));
-
-    const saveState = () => { if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); } const keep = log.filter(persistable); localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: keep, cursor: Math.min(cursor, keep.length) })); };
+    const loadState = () => {
+        try {
+            const s = JSON.parse(localStorage.getItem(LS_KEY));
+            if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; log.forEach(d => persisted.add(d)); }
+            else if (s) localStorage.removeItem(LS_KEY);
+        } catch { }
+    };
+    const saveState = () => {
+        if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); }
+        const done = log.slice(0, cursor).filter(d => persisted.has(d)), ahead = log.slice(cursor).filter(d => persisted.has(d));
+        try {
+            if (!done.length && !ahead.length) localStorage.removeItem(LS_KEY);
+            else localStorage.setItem(LS_KEY, JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
+        } catch { }
+    };
     const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-    const cssVar = (el, name, fallback) => { const v = getComputedStyle(el).getPropertyValue(name).trim(); return v || fallback; };
+    // Inherited custom properties, read through the cascade; `none` cancels an inherited value.
+    function cssVar(el, name, fallback) {
+        for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+            const v = getComputedStyle(n).getPropertyValue(name).trim();
+            if (v) return v === 'none' && name !== '--edit-size' ? (fallback ?? '') : v;
+        }
+        return fallback ?? '';
+    }
 
-    /* ---- Safety helpers ---- */
-    // Structural signature for a node at a path — guards against the source structure
-    // drifting under a stored delta (apply only if the node still matches).
+    /* ---- Safety ---- */
     const nodeSig = (el) => el ? el.tagName.toLowerCase() : '';
-    // Sanitize contentEditable / replayed HTML: allowlist inline tags, strip everything
-    // else (attributes, scripts, comments, javascript: hrefs). Critical once overlays can
-    // come from other users (cloud). Unknown tags are unwrapped to their text.
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
-    // An element owned by the rich editor carries block markup this plugin's own
-    // allowlist would flatten, so let that plugin vet its own content. Everything
-    // else keeps the conservative inline-only policy.
     const sanitizeFor = (el, html) => el && el.hasAttribute && el.hasAttribute('data-text-edit') && window.ManifestTextEdit
         ? window.ManifestTextEdit.sanitize(html, true, true)
         : sanitizeHTML(html);
@@ -69,9 +61,9 @@
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
         const walk = (node) => [...node.childNodes].forEach(c => {
-            if (c.nodeType === 8) return c.remove();                         // comments
+            if (c.nodeType === 8) return c.remove();
             if (c.nodeType !== 1) return;
-            if (!SAFE_TAGS.has(c.tagName)) { c.replaceWith(document.createTextNode(c.textContent)); return; }   // unwrap unknown tag
+            if (!SAFE_TAGS.has(c.tagName)) { c.replaceWith(document.createTextNode(c.textContent)); return; }
             [...c.attributes].forEach(a => { const n = a.name.toLowerCase(); if (!(c.tagName === 'A' && n === 'href' && !/^\s*javascript:/i.test(a.value))) c.removeAttribute(a.name); });
             walk(c);
         });
@@ -79,34 +71,59 @@
         return t.innerHTML;
     }
 
+    // Attribute guardrails: refused names and URL schemes. Returns a reason, or null when safe.
+    const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href']);
+    function attrRefusal(name, value) {
+        const n = String(name || '').trim().toLowerCase();
+        if (!n || !/^[a-z_:][\w:.-]*$/i.test(n) && !/^[@:]/.test(n)) return 'invalid name';
+        if (n === 'text') return 'reserved name';
+        if (n.startsWith('on')) return 'event handler attribute';
+        if (n.startsWith('x-') || n.startsWith('@') || n.startsWith(':')) return 'Alpine directive';
+        if (n.startsWith('data-edit-')) return 'plugin attribute';
+        if (n === 'srcdoc') return 'inline document';
+        if (value != null && URL_ATTRS.has(n)) {
+            const v = String(value).replace(/[\u0000- ]/g, '').toLowerCase();
+            if (/^(javascript|vbscript):/.test(v)) return 'script URL';
+            if (v.startsWith('data:') && !(n === 'src' && v.startsWith('data:image/'))) return 'data URL';
+        }
+        return null;
+    }
+
     /* ---- x-edit registry ---- */
     const editEls = new Set();
-    const themeScopes = {};            // scope key → element (CSS-var cascade target for x-edit.cssvar)
+    const themeScopes = {};
+    const warnedRetired = new Set();
     function registerEdit(el, modifiers, expression) {
-        if (modifiers.includes('cssvar')) return registerCssVar(el, expression);   // theme control, not an area
+        if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
+        modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
+        if (modifiers.includes('lock')) {
+            const actions = modifiers.filter(m => LOCK_ACTIONS.includes(m));
+            el._editLock = new Set(actions.length ? actions : ['*']);
+            return;
+        }
         const caps = new Set(ALL_CAPS.filter(c => modifiers.includes(c)));
-        const lock = modifiers.includes('lock') || modifiers.includes('none');
-        const theme = modifiers.includes('theme');   // theme scope: vars set here cascade to this subtree only
+        const theme = modifiers.includes('theme');
         const k = (expression || '').trim() || `area-${++autoN}`;
         if (theme) themeScopes[k] = el;
-        if (theme && !caps.size && !lock) return;   // pure theme scope — a cascade target, NOT an editable area (so it doesn't swallow nested areas)
-        if (!caps.size && !lock) ['sort', 'text', 'style'].forEach(c => caps.add(c));   // size is opt-in
-        if ((expression || '').trim() && [...editEls].some(e => e !== el && e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);   // re-init of the same element is not a duplicate
-        el._edit = { key: k, caps, lock, gated: modifiers.includes('gated'), theme, authoring: modifiers.includes('authoring') };
-        el.setAttribute('data-edit-area', '');
-        editEls.add(el);
+        if (theme && !caps.size) { if (modifiers.includes('persist')) el._editPersist = true; return; }
+        if (!caps.size) DEFAULT_CAPS.forEach(c => caps.add(c));
+        if ((expression || '').trim() && [...editEls].some(e => e !== el && e._edit && e._edit.key === k)) console.warn('[edit] duplicate x-edit key (deltas will mis-route):', k);
+        const bare = modifiers.includes('bare');
+        el._edit = { key: k, caps, gated: modifiers.includes('gated'), theme, persist: modifiers.includes('persist'), bare };
+        el.setAttribute('data-edit-area', bare ? 'bare' : '');
+        editEls.add(el); resetAreas();
     }
-    const areas = () => [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; });
+    let areasCache = null;
+    const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; }));
+    const resetAreas = () => { areasCache = null; };
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
-    const topArea = (a) => !!a && areas().includes(a);   // only top-level regions can be move endpoints (nested ones can't persist)
-    // The top-level region an element belongs to NOW — resolved at commit time, not
-    // arm time, so a block moved to another region commits against its new home.
-    const regionOf = (el) => areas().find(a => a === el || a.contains(el));
+    const topArea = (a) => !!a && areas().includes(a);
+    const regionOf = (el) => el && areas().find(a => a === el || a.contains(el));
     const key = (area) => area._edit.key;
     function editInfo(node) { for (let n = node; n; n = n.parentElement) if (n._edit) return n._edit; return null; }
-    const capOf = (node, cap) => { const i = editInfo(node); return !!i && !i.lock && i.caps.has(cap); };
-    const locked = (node) => { const i = editInfo(node); return !!i && i.lock; };
-    const ownsCap = (el, cap) => !!el._edit && !el._edit.lock && el._edit.caps.has(cap);
+    const capOf = (node, cap) => { const i = editInfo(node); return !!i && i.caps.has(cap) && !lockedFor(node, cap); };
+    const ownsCap = (el, cap) => !!el._edit && el._edit.caps.has(cap) && !lockedFor(el, cap);
+    const persistOf = (region) => { const a = region != null && areaByKey(region); return !!(a && a._edit.persist); };
 
     /* ---- Regime classification ---- */
     function classify(area) {
@@ -116,13 +133,9 @@
     }
     function dataSourceExpr(area) { const t = area.querySelector('template[x-for]'); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    // Plugin-injected nodes (size handles, drag ghosts) are not authored children —
-    // keys and paths skip them on client AND server (serve.mjs childAt mirrors this).
     const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
     const realChildren = (el) => Array.from(el.children).filter(x => !pluginNode(x));
     const sortableChildren = (c) => realChildren(c).filter(x => x.tagName !== 'TEMPLATE');
-    // Identity of a row in a data area. `data-key` is the explicit form; without it,
-    // fall back to the x-for's own :key so a plain list needs no extra attribute.
     let _keyWarned = false;
     function itemKey(el, area) {
         const explicit = el.getAttribute('data-key');
@@ -132,15 +145,23 @@
         if (!_keyWarned) { _keyWarned = true; console.warn('[edit] data area rows have no identity — add :key to the x-for or :data-key to the row, or the order cannot be stored'); }
         return null;
     }
-    const STRUCT_ATTRS = new Set(['class', 'style', 'data-component', 'data-edit-area', 'data-edit-field', 'data-edit-sizable', 'data-edit-movable', 'draggable', 'contenteditable', 'x-text', 'x-html', 'id']);
-    const componentParams = (area) => { const r = area.querySelector('[data-component]') || area; return [...r.attributes].filter(a => !STRUCT_ATTRS.has(a.name) && a.value.trim()); };
 
-    /* ---- Unit helpers (shared by move + size) ---- */
+    /* ---- Structure: text elements are pieces, never containers ---- */
+    const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
+    const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE']);
+    const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-text-edit') || ownText(el);
+    function isContainer(el) {
+        if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
+        return !isTextEl(el);
+    }
+
+    /* ---- Units ---- */
     const unitOf = (v) => { const m = String(v || '').match(/[a-z%]+$/i); return m ? m[0] : null; };
     function toUnit(px, unit, el, basisEl, dim) {
         if (unit === 'rem') return +(px / parseFloat(getComputedStyle(document.documentElement).fontSize)).toFixed(2);
         if (unit === 'em') return +(px / parseFloat(getComputedStyle(el).fontSize)).toFixed(2);
-        if (unit === '%') { const b = (basisEl || el.parentElement).getBoundingClientRect(); return +(px / (dim === 'w' ? b.width : b.height) * 100).toFixed(2); }
+        if (unit === '%') { const b = (basisEl || el.parentElement).getBoundingClientRect(); const d = dim === 'w' ? b.width : b.height; return d ? +(px / d * 100).toFixed(2) : 0; }
         return Math.round(px);
     }
     function toPx(str, el, dim) {

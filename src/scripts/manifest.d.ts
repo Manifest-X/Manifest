@@ -351,10 +351,26 @@ export interface ManifestCamera {
     pick(opts?: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Element editor (`x-edit`) — opt-in plugin. Sortable lists and resizable elements
- *  by default; add `.authoring` where a region is a page being edited. */
+/** Edit action names for `$edit.can()` and per-action locks. */
+export type ManifestEditAction = 'move' | 'remove' | 'duplicate' | 'text' | 'attrs' | 'size';
+
+/** Class controls on `$edit.classes`. `el` defaults to `$edit.target`. */
+export interface ManifestEditClasses {
+    add(cls: string, el?: Element): boolean;
+    remove(cls: string, el?: Element): boolean;
+    toggle(cls: string, el?: Element, force?: boolean): boolean;
+    has(cls: string, el?: Element): boolean;
+    /** Replace the static class list. */
+    set(value: string, el?: Element): boolean;
+    /** The static classes (bound :class classes excluded). */
+    list(el?: Element): string[];
+}
+
+/** Element editor (`x-edit`) — opt-in plugin. Modifiers: `.text` `.move` `.size`
+ *  `.data` (default text + move), `.lock[.action]`, `.gated`, `.persist`, `.bare`,
+ *  `.theme`, `.cssvar`. Every edit is logged; actions default to `$edit.target`. */
 export interface ManifestEdit {
-    /** True while a `.gated` area is editable. */
+    /** True while `.gated` areas are editable. */
     active: boolean;
     canUndo: boolean;
     canRedo: boolean;
@@ -363,31 +379,41 @@ export interface ManifestEdit {
     toggle(): void;
     on(): void;
     off(): void;
-    undo(): void;
-    redo(): void;
-    /** Lock an element and its subtree out of editing (runtime, not logged). */
-    lock(el: Element): void;
-    unlock(el: Element): void;
+    undo(): Promise<void>;
+    redo(): Promise<void>;
     /** Resolve the edit log into source patches and send them. */
     publish(): Promise<unknown>;
-    /** The resolved source patches, without sending them. */
+    /** The resolved source patches for every area, without sending them. */
     patches(): unknown[];
     /** The raw delta log — persist it yourself to move edits between devices. */
     export(): { log: unknown[]; cursor: number };
-    /** The block a context menu is acting on — set by the last right-click, or
-     *  assignable. Block operations default to it when called with no element. */
+    /** The piece a right-click landed on (set before any menu opens), or assignable. */
     target: Element | null;
-    /** Whether an operation applies right now: copy, cut, paste, duplicate, remove. */
-    can(op: string, el?: Element): boolean;
+    /** Whether an action applies to `el` (default `$edit.target`): capability and locks. */
+    can(action: ManifestEditAction | 'copy' | 'cut' | 'paste', el?: Element | null): boolean;
+    /** Lock `el` and its subtree for one action, or all when omitted. Logged. */
+    lock(el?: Element | null, action?: ManifestEditAction): boolean;
+    unlock(el?: Element | null, action?: ManifestEditAction): boolean;
     copy(el?: Element): boolean;
     cut(el?: Element): boolean;
     paste(el?: Element): boolean;
     duplicate(el?: Element): boolean;
     remove(el?: Element): boolean;
-    /** Move a block into another static region (area element or x-edit key), before `ref` or at the end. */
+    /** Move a piece into a container (element or area key), before `before` or at the end. */
     move(el: Element | null, dest: Element | string, before?: Element | null): boolean;
-    /** The addressable block containing a node, or null. */
+    /** Nest a piece into the container before it. */
+    nest(el?: Element): boolean;
+    /** Move a piece out of its container, after it. */
+    unnest(el?: Element): boolean;
+    /** The piece containing a node, or null. */
     block(node: Element): Element | null;
+    /** Set an attribute: a string sets it, `true` sets it empty, `null`/`false` removes it. */
+    attr(name: string, value: string | boolean | null, el?: Element): boolean;
+    classes: ManifestEditClasses;
+    /** Component scope of the target's area: read with no value, set 'instance' or 'main'. */
+    scope(value?: 'instance' | 'main', el?: Element): 'instance' | 'main' | null | boolean;
+    /** Revert a component element's instance overrides (the area element reverts all). */
+    revert(el?: Element): boolean;
 }
 
 /** Text editor (`x-text-edit`) — the area this element sits in, or the last focused one. */

@@ -59,18 +59,18 @@ describe('x-edit late regions', () => {
         await f.render(true)
 
         expect(f.region).toBeTruthy()
-        expect(f.region.hasAttribute('data-edit-armed')).toBe(true)
+        expect(!!f.region._armed).toBe(true)
         expect(f.region.querySelector('p').getAttribute('contenteditable')).toBe('true')
     })
 
     it('arms a region rendered while editing is off on the next on()', async () => {
         const f = gated('late-off')
         await f.render(true)
-        expect(f.region.hasAttribute('data-edit-armed')).toBe(false)
+        expect(!!f.region._armed).toBe(false)
 
         store().on()
         await flush()
-        expect(f.region.hasAttribute('data-edit-armed')).toBe(true)
+        expect(!!f.region._armed).toBe(true)
     })
 
     it('releases a removed region: observers, registry slot and markup', async () => {
@@ -78,14 +78,14 @@ describe('x-edit late regions', () => {
         store().on()
         await f.render(true)
         const region = f.region
-        expect(region._sortObserver).toBeTruthy()   // arming watches the list for late rows
+        expect(region._editObserver).toBeTruthy()   // arming watches the list for late rows
 
         await f.render(false)
-        expect(region._sortObserver).toBe(null)
+        expect(region._editObserver).toBe(null)
         expect(region._edit).toBeUndefined()
         expect(region._armed).toBe(false)
         expect(region.hasAttribute('data-edit-area')).toBe(false)
-        expect(region.hasAttribute('data-edit-armed')).toBe(false)
+        expect(!!region._armed).toBe(false)
     })
 
     it('does not treat a re-rendered region as a duplicate key', async () => {
@@ -98,6 +98,6 @@ describe('x-edit late regions', () => {
         await f.render(true)
         expect(warn.mock.calls.filter(c => String(c[0]).includes('duplicate x-edit key'))).toEqual([])
         warn.mockRestore()
-        expect(f.region.hasAttribute('data-edit-armed')).toBe(true)
+        expect(!!f.region._armed).toBe(true)
     })
 })

@@ -16,11 +16,11 @@ const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
 const INDEX = `<!doctype html>
 <html>
 <body>
-    <section x-edit.authoring="hero">
+    <section x-edit="hero">
         <h1>Welcome</h1>
         <p>Intro copy</p>
     </section>
-    <section x-edit.authoring="footer">
+    <section x-edit="footer">
         <p>Fine print</p>
     </section>
 </body>
@@ -113,10 +113,10 @@ describe('/__edit/save static-move', () => {
         const idx = `<!doctype html>
 <html>
 <body>
-    <section x-edit.authoring="hero">
+    <section x-edit="hero">
         <p data-m="arr">Same</p>
     </section>
-    <section x-edit.authoring="footer">
+    <section x-edit="footer">
         <p data-m="nat">Same</p>
     </section>
 </body>
@@ -217,10 +217,10 @@ describe('/__edit/save static-move', () => {
         const idx = `<!doctype html>
 <html>
 <body>
-    <section x-edit.authoring="hero">
+    <section x-edit="hero">
         <p data-m="arr">Same</p>
     </section>
-    <section x-edit.authoring="footer">
+    <section x-edit="footer">
         <p data-m="nat">Same</p>
     </section>
 </body>
@@ -255,5 +255,62 @@ describe('/__edit/save static-move', () => {
         const footer = html.slice(html.indexOf('"footer"'))
         expect(footer).toContain('<p>Intro copy</p>')
         expect(footer.indexOf('Intro copy')).toBeLessThan(footer.indexOf('Fine print'))
+    })
+})
+
+describe('/__edit/save nesting and attributes', () => {
+    const NEST = `<!doctype html>
+<html>
+<body>
+    <section x-edit="page">
+        <div>
+            <h3>Card</h3>
+        </div>
+        <p>Loose</p>
+    </section>
+</body>
+</html>
+`
+    const region = () => { const h = readFileSync(path.join(dir, 'index.html'), 'utf8'); return h.slice(h.indexOf('"page"'), h.indexOf('</section>')) }
+
+    it('nests a piece into a container inside the same region', async () => {
+        writeFileSync(path.join(dir, 'index.html'), NEST)
+        const { results } = await save([{ kind: 'static-move', from: 'page', to: 'page', toParent: 'DIV:Card', key: 'P:Loose', toKey: 'P:Loose', toOrder: ['H3:Card', 'P:Loose'] }])
+        expect(results[0].status).toBe('written')
+        const r = region()
+        expect(r.indexOf('<p>Loose</p>')).toBeGreaterThan(r.indexOf('<h3>Card</h3>'))
+        expect(r.indexOf('<p>Loose</p>')).toBeLessThan(r.indexOf('</div>'))
+    })
+
+    it('un-nests a piece out of its container', async () => {
+        writeFileSync(path.join(dir, 'index.html'), NEST)
+        const { results } = await save([{ kind: 'static-move', from: 'page', to: 'page', fromParent: 'DIV:Card', key: 'H3:Card', toKey: 'H3:Card', toOrder: ['DIV:', 'H3:Card', 'P:Loose'] }])
+        expect(results[0].status).toBe('written')
+        const r = region()
+        expect(r.indexOf('<h3>Card</h3>')).toBeGreaterThan(r.indexOf('</div>'))
+        expect(r.indexOf('<h3>Card</h3>')).toBeLessThan(r.indexOf('<p>Loose</p>'))
+    })
+
+    it('reorders a nested container by its key', async () => {
+        writeFileSync(path.join(dir, 'index.html'), NEST.replace('<h3>Card</h3>', '<h3>Card</h3>\n            <p>Body</p>'))
+        const { results } = await save([{ kind: 'static', region: 'page', edits: [], orders: { 'DIV:Card Body': ['P:Body', 'H3:Card'] } }])
+        expect(results[0].reordered).toBe(true)
+        const r = region()
+        expect(r.indexOf('<p>Body</p>')).toBeLessThan(r.indexOf('<h3>Card</h3>'))
+    })
+
+    it('writes and removes plain attributes, and refuses unsafe ones', async () => {
+        writeFileSync(path.join(dir, 'index.html'), NEST.replace('<p>Loose</p>', '<p hidden title="x">Loose</p>'))
+        const { results } = await save([{ kind: 'static', region: 'page', edits: [
+            { path: '1', key: 'P:Loose', prop: 'hidden', value: null },
+            { path: '1', key: 'P:Loose', prop: 'aria-label', value: 'Loose copy' },
+            { path: '1', key: 'P:Loose', prop: 'onclick', value: 'alert(1)' },
+            { path: '0', key: 'DIV:Card', prop: 'href', value: 'javascript:alert(1)' }
+        ] }])
+        expect(results[0].status).toBe('written')
+        const r = region()
+        expect(r).toContain('<p title="x" aria-label="Loose copy">Loose</p>')
+        expect(r).not.toContain('onclick')
+        expect(r).not.toContain('javascript:')
     })
 })

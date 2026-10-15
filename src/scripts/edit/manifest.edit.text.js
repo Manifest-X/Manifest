@@ -1,7 +1,5 @@
     /* ---- Inline text editing ---- */
-    // Focusing a text leaf selects its content, so the common case — replace the
-    // text — is one click and type. Deferred a frame so it wins over the click's
-    // own caret placement; a second click still collapses to a caret for fine edits.
+    // Focus selects the leaf's content; deferred a frame to win over the click's caret.
     function selectAllIn(el) {
         requestAnimationFrame(() => {
             if (dragged || grabbed) return;              // reordering, not editing
@@ -15,7 +13,7 @@
     // delta, so a rich field inside a page-editing region publishes like any other.
     function armRichText(area) {
         area.querySelectorAll('[data-text-edit]:not([data-text-edit-bound])').forEach(el => {
-            if (!capOf(el, 'text') || locked(el)) return;
+            if (!capOf(el, 'text')) return;
             if (el._richBound) return; el._richBound = true;
             el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
             el.addEventListener('blur', () => {
@@ -26,11 +24,10 @@
         });
     }
 
-    // STATIC: literal leaves only (skip bound nodes; those belong to data/component).
+    // Static: literal leaves only.
     function armText(area) {
         armRichText(area);
-        // A region whose root IS the text — <p x-edit.text="note">…</p> — has no
-        // descendant leaves; the area itself is the editable leaf.
+        // An area that is itself the text leaf.
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
@@ -40,16 +37,12 @@
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
             el.addEventListener('focus', () => { el._preEdit = el.innerHTML.trim(); selectAllIn(el); });
-            el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); } });   // Escape finishes the edit, like the rich editor
+            el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.isContentEditable) { e.preventDefault(); e.stopPropagation(); leaveText(el); } });
             el.addEventListener('blur', () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
         });
     }
 
-    /* ---- DATA value editing (opt-in .data): make $x-bound leaves in an x-for list editable,
-       but ONLY when the binding is a SIMPLE field ref of the loop var (p.name) — computed
-       expressions (e.g. '$' + p.price) stay read-only. Edit → data mutation, not HTML.
-       (Scope today: x-for list item fields. Direct $x.a.b bindings outside a list are a
-       natural extension — different addressing {source,path} + key-value write-back.) ---- */
+    /* ---- Data values (.data): x-for fields bound to a plain `item.field` are editable ---- */
     function armDataValues(area) {
         const tpl = area.querySelector('template[x-for]'); if (!tpl) return;
         const lv = (tpl.getAttribute('x-for').match(/^\s*([\w$]+)\s+in\b/) || [])[1]; if (!lv) return;
@@ -62,14 +55,9 @@
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
                 const m = expr.match(fieldRe); if (!m) return;
                 const field = m[1];
-                el.setAttribute('data-edit-field', field);
-                // A field bound with x-html can hold markup, so it is styleable like
-                // any other text — the value simply carries the tags. Bound with
-                // x-text it cannot, and offering the controls there would write
-                // markup the binding renders as literal characters. The author's
-                // choice of binding is the whole distinction.
-                el.toggleAttribute('data-edit-rich', rich);
-                // The rich editor owns the caret where it is present.
+                el._editField = field;
+                // x-html fields hold markup; x-text fields are plain.
+                el._editRich = rich;
                 if (!el.hasAttribute('data-text-edit')) el.setAttribute('contenteditable', 'true');
                 if (el._dvBound) return; el._dvBound = true;
                 const read = () => rich ? el.innerHTML.trim() : el.textContent;
@@ -80,42 +68,35 @@
         });
     }
 
-    /* ---- COMPONENT editing: text leaves addressed by structural path. Right-click an
-       instance for the scope (this instance vs all) + per-element classes + revert. ---- */
+    /* ---- Components: nodes addressed by structural path; scope via $edit.scope ---- */
     const componentName = (area) => { const r = area.querySelector('[data-component]'); return (r?.getAttribute('data-component') || '').replace(/-\d+$/, ''); };
-    // Paths index authored children only (realChildren): plugin-injected nodes never count.
     function pathOf(node, root) { const idx = []; let n = node; while (n && n !== root && n.parentElement) { idx.unshift(realChildren(n.parentElement).indexOf(n)); n = n.parentElement; } return idx.join('.'); }
     function nodeByPath(root, path) { let el = root; for (const i of path.split('.').map(Number)) { el = realChildren(el)[i]; if (!el) return null; } return el; }
-    // While editing in 'All' scope, mirror the edit to every OTHER instance live — but
-    // skip the source element (don't fight the caret) and skip any instance that has its
-    // OWN committed override for this node/prop (instance overrides always win).
+    // 'main' scope: mirror live to other instances without their own override.
     function liveMainPropagate(area, sourceEl, prop, value) {
         if ((area._editScope || 'instance') !== 'main') return;
-        const comp = componentName(area), path = sourceEl.getAttribute('data-edit-path'), { inst } = componentState();
-        document.querySelectorAll('[data-edit-area]').forEach(a => {
-            if (!a._edit || classify(a) !== 'component' || componentName(a) !== comp) return;
+        const comp = componentName(area), path = sourceEl._editPath, { inst } = componentState();
+        areas().forEach(a => {
+            if (classify(a) !== 'component' || componentName(a) !== comp) return;
             const root = a.querySelector('[data-component]'); if (!root) return;
             const el = path === '' ? root : nodeByPath(root, path); if (!el || el === sourceEl) return;
             const iv = (inst[key(a)] && inst[key(a)][path]) || {}; if (iv[prop] !== undefined) return;   // override wins
-            if (prop === 'class') { if (el.getAttribute('class') !== value) el.setAttribute('class', value); }
+            if (prop === 'class') writeClass(el, value);
             else if (el.innerHTML !== value) el.innerHTML = value;
         });
     }
     function armComponent(area) {
         const root = area.querySelector('[data-component]'); if (!root) return;
-        if (!area._editScope) { area._editScope = 'instance'; area.setAttribute('data-edit-scope', 'instance'); }
+        if (!area._editScope) area._editScope = 'instance';
         area._baseText = area._baseText || {}; area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {};
-        // Mark the root AND every element with a path → all are class-editable (incl. the parent).
-        const markClass = (el) => { const p = pathOf(el, root); el.setAttribute('data-edit-path', p); if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
+        const markClass = (el) => { const p = pathOf(el, root); el._editPath = p; if (!(p in area._baseClass)) area._baseClass[p] = el.getAttribute('class') || ''; if (!(p in area._baseStyle)) area._baseStyle[p] = el.getAttribute('style') || ''; };
         markClass(root);
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
-        // Text leaves also become contenteditable. Capture innerHTML (not textContent) so
-        // nested inline elements like <i>/<br> the user adds are preserved.
         armRichText(area);
-        root.querySelectorAll('[data-edit-path]').forEach(el => {
+        componentNodes(root).forEach(el => {
             if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
             if (el.closest('[data-text-edit]')) return;                 // the rich editor owns this subtree
-            const p = el.getAttribute('data-edit-path');
+            const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
             el.setAttribute('contenteditable', 'true');
             if (el._textBound) return; el._textBound = true;
@@ -124,35 +105,22 @@
             el.addEventListener('blur', () => commitComponentNode(area, el, 'text', el.innerHTML.trim()));
         });
     }
-    let cmpMenu;
-    function openComponentMenu(e, area) {
-        if (!isActive(area)) return; e.preventDefault(); e.stopPropagation();
-        const target = e.target.closest('[data-edit-path]');
-        if (!cmpMenu) {
-            cmpMenu = document.createElement('div'); cmpMenu.setAttribute('data-edit-menu', ''); cmpMenu.setAttribute('popover', 'manual');
-            cmpMenu.addEventListener('pointerdown', ev => ev.stopPropagation());
-            document.body.appendChild(cmpMenu);
-            document.addEventListener('pointerdown', () => { if (cmpMenu && cmpMenu.matches(':popover-open')) cmpMenu.hidePopover(); });
+    // Escape leaves text with the piece focused, so Alt+arrows move it.
+    function leaveText(el) {
+        el.blur();
+        const piece = [el, ...ancestorsIn(el)].find(n => n.hasAttribute && n.hasAttribute('data-edit-piece'));
+        if (!piece) return;
+        if (piece.isContentEditable) {
+            piece._pieceMode = true;
+            piece.setAttribute('contenteditable', 'false');
+            piece.addEventListener('focusout', () => exitPieceMode(piece), { once: true });
         }
-        if (target) target._preClass = target.getAttribute('class') || '';
-        const cur = area._editScope || 'instance';
-        cmpMenu.innerHTML =
-            `<small>Scope · ${componentName(area)}</small>`
-            + `<div class="row"><button class="ghost sm" data-s="instance">${cur === 'instance' ? '✓ ' : ''}This instance</button><button class="ghost sm" data-s="main">${cur === 'main' ? '✓ ' : ''}All</button></div>`
-            + (target ? `<small>Classes · ${target.tagName.toLowerCase()} · live</small><input type="text" spellcheck="false" data-cls>` : '')
-            + `<div class="row">${target ? '<button class="ghost sm" data-a="revert">Revert element</button>' : ''}<button class="ghost sm" data-a="revertall">Revert all</button></div>`;
-        cmpMenu.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { area._editScope = b.getAttribute('data-s'); area.setAttribute('data-edit-scope', area._editScope); area.setAttribute('data-edit-label', `${key(area)} · component · ${area._editScope}`); openComponentMenu(e, area); });
-        const cls = cmpMenu.querySelector('[data-cls]');
-        if (cls && target) {
-            cls.value = target.getAttribute('class') || '';
-            cls.addEventListener('input', () => { target.setAttribute('class', cls.value); liveMainPropagate(area, target, 'class', cls.value); });
-            cls.addEventListener('change', () => commitComponentNode(area, target, 'class', cls.value));
-            cls.addEventListener('keydown', ev => { if (ev.key === 'Enter') cls.blur(); });
-        }
-        const hide = () => { if (cmpMenu.matches(':popover-open')) cmpMenu.hidePopover(); };
-        const rv = cmpMenu.querySelector('[data-a="revert"]'); if (rv) rv.onclick = () => { revertNode(area, target); hide(); };
-        cmpMenu.querySelector('[data-a="revertall"]').onclick = () => { revertAll(area); hide(); };
-        cmpMenu.style.left = Math.min(e.clientX, innerWidth - 240) + 'px'; cmpMenu.style.top = Math.min(e.clientY, innerHeight - 180) + 'px';
-        if (!cmpMenu.matches(':popover-open')) { try { cmpMenu.showPopover(); } catch { } }
-        if (cls) setTimeout(() => cls.focus(), 0);
+        try { piece.focus(); } catch { }
+    }
+    const ancestorsIn = (el) => { const out = [], area = regionOf(el); for (let n = el.parentElement; n && n !== area; n = n.parentElement) out.push(n); return out; };
+    function exitPieceMode(el, edit) {
+        if (!el._pieceMode) return;
+        el._pieceMode = false;
+        if (el.getAttribute('contenteditable') === 'false') el.setAttribute('contenteditable', 'true');
+        if (edit) { try { el.focus(); } catch { } selectAllIn(el); }
     }

@@ -1,58 +1,77 @@
-    /* ---- Restore persisted edits + boot (registers x-edit directive + $edit magic) ---- */
+    /* ---- Restore persisted edits + boot ---- */
+    // Deltas for areas that no longer persist are dropped before replay.
+    function pruneLoaded() {
+        const stale = (d) => {
+            const regions = d.kind === 'st-move' ? [d.from, d.to] : d.region != null ? [d.region] : [];
+            return regions.some(r => { const a = areaByKey(r); return a && !a._edit.persist; });
+        };
+        if (!log.some(stale)) return;
+        let c = 0;
+        const kept = log.filter((d, i) => { const keep = !stale(d); if (keep && i < cursor) c++; return keep; });
+        log = kept; cursor = c; ver++;
+        saveState();
+    }
     function restore() {
         if (!log.length) return;
+        pruneLoaded();
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
-        // A replayed move must first converge live keys to the recorded ones (ordinal
-        // renames from collisions). Skipped when the source already holds the move
-        // (post-save reload): fresh derivation then matches the recorded order.
+        // Converge live keys to a replayed move's renames, unless the source already holds the move.
         for (let i = 0; i < cursor; i++) {
             const d = log[i];
-            if (d.kind !== 'st-move' || !d.remap) continue;
-            const ta = areaByKey(d.to);
-            if (!ta || eq(staticKeys(ta), d.toOrder)) continue;
+            if (d.kind !== 'st-move' || !d.remap || !d.remap.length) continue;
+            const ta = areaByKey(d.to); if (!ta) continue;
+            const tc = d.toParent ? keyMap(ta).get(d.toParent) : ta;
+            if (!tc || eq(staticKeys(tc), d.toOrder)) continue;
             applyMoveKeys(d, false);
         }
-        if (log.some(d => d.kind === 'st-node' || d.kind === 'st-order' || d.kind === 'st-move')) applyStaticState();
+        if (log.some(d => /^st-/.test(d.kind))) applyStaticState();
         if (log.some(d => d.kind === 'cmp-main' || d.kind === 'cmp-inst')) applyComponentState();
         if (log.some(d => d.kind === 'data-val')) { const da = areas().find(a => classify(a) === 'data'); if (da) waitForData(da, applyDataValues); }
         if (log.some(d => d.kind === 'theme')) applyThemeState();
+        if (log.some(d => d.kind === 'lock')) areas().forEach(rearm);
+        refresh();
     }
-    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch {} if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
+    function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = area.querySelector('template[x-for]'); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch { } if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
         Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
             registerEdit(el, modifiers, expression);
-            armLater();                        // a region rendered after boot arms itself
-            cleanup(() => releaseEdit(el));    // ...and lets go when Alpine tears it down
+            armLater();
+            cleanup(() => releaseEdit(el));
         });
         Alpine.store('edit', {
-            active: false, canUndo: false, canRedo: false,
-            onPublish: null,                                 // author sets a fn(patches, {log,cursor}) → route to cloud/custom
+            active: false, canUndo: false, canRedo: false, version: 0,
+            onPublish: null,
             toggle() { this.active ? off() : on(); }, on() { on(); }, off() { off(); },
-            undo() { undo(); }, redo() { redo(); }, lock(el) { setLock(el, true); }, unlock(el) { setLock(el, false); },
+            undo() { return undo(); }, redo() { return redo(); },
             publish() { return publish(); },
-            // Block operations. Called with no element they act on the block the last
-            // right-click reported, which is what a context menu wants.
-            targetVersion: 0,                                // trackable: see blocks.js
-            get target() { void this.targetVersion; return blockTarget(); },
+            patches() { return buildPatches(); },
+            export() { return JSON.parse(JSON.stringify({ log, cursor })); },
+            get target() { void this.version; return target; },
             set target(el) { setBlockTarget(el); },
-            can(op, el) { void this.targetVersion; return canDo(op, el); },
+            can(action, el) { void this.version; return canDo(action, el === undefined ? target : el); },
+            lock(el, action) { return setLock(el === undefined ? target : el, action, true); },
+            unlock(el, action) { return setLock(el === undefined ? target : el, action, false); },
             copy(el) { return copyBlock(el); },
             cut(el) { return cutBlock(el); },
             paste(el) { return pasteBlock(el); },
             duplicate(el) { return duplicateBlock(el); },
             remove(el) { return removeBlock(el); },
             move(el, dest, before) { return moveBlock(el, dest, before); },
-            block(node) { return blockOf(node); },
-            patches() { return buildPatches(); },            // resolved B-side source patches
-            export() { return JSON.parse(JSON.stringify({ log, cursor })); }   // A-side overlay (e.g. push to Appwrite)
+            nest(el) { const p = asPiece(el === undefined ? target : el); return !!p && movable(p) && nestInto(p); },
+            unnest(el) { const p = asPiece(el === undefined ? target : el); return !!p && movable(p) && unnest(p); },
+            block(node) { return pieceOf(node); },
+            attr(name, value, el) { return setAttr(name, value, el); },
+            classes: classesApi,
+            scope(value, el) { void this.version; return value === undefined ? scopeOf(el) : setScope(value, el); },
+            revert(el) { return revert(el); }
         });
         estore = Alpine.store('edit');
         Alpine.magic('edit', () => Alpine.store('edit'));
         loadState();
-        setTimeout(() => { armAll(); restore(); }, 450);   // arm (captures baselines) THEN re-apply persisted edits
-        window.addEventListener('manifest:route-change', () => setTimeout(refresh, 0));   // chrome follows the route
+        setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
+        document.addEventListener('contextmenu', onContextCapture, true);
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

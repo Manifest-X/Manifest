@@ -1,155 +1,56 @@
-    /* ---- Drag: reorder (in-flow, pointer+keyboard) OR move (positioned) ----
-       Pointer-based so it works with mouse, touch, and pen (HTML5 DnD was mouse-only).
-       Keyboard: focus an item, Space/Enter to grab, arrows to move, Enter/Esc to drop/cancel;
-       Alt/Option+arrow moves the focused row one step; in text only Up/Down (Left/Right stay word-jump).
-       CSS-var config:
-         --edit-drop-reach        48px        how far outside a cross-region destination a drop still lands in it */
+    /* ---- Move: one pointer engine for reorder, nest, un-nest and cross-area moves ----
+       Keyboard: Alt+Up/Down steps among siblings, Alt+Right nests into the previous
+       container, Alt+Left moves out one level. Space/Enter grabs, arrows move, Enter drops.
+       After a drop, CSS decides: in flow the piece takes DOM order; absolutely positioned
+       it lands at the drop point.
+         --edit-drop-reach   48px   how far outside another area a drop still lands in it */
     const isPositioned = (el) => { const p = getComputedStyle(el).position; return p === 'absolute' || p === 'fixed'; };
+    const addedTab = new WeakSet();
     let grabbed = null, liveRegion;
     function announce(msg) { if (!liveRegion || !liveRegion.isConnected) { liveRegion = document.createElement('div'); liveRegion.setAttribute('data-edit-live', ''); liveRegion.setAttribute('aria-live', 'polite'); document.body.appendChild(liveRegion); } liveRegion.textContent = msg; }
 
-    function makeSortable(container) {
-        sortableChildren(container).forEach(child => {
-            if (locked(child)) return;
-            if (isPositioned(child)) { if (!child._dragBound) { child._dragBound = true; makeMovable(child); } return; }
-            child.setAttribute('data-edit-sortable', ''); child.tabIndex = 0; child.setAttribute('role', 'listitem');
-            if (child._dragBound) return; child._dragBound = true;
-            child.addEventListener('pointerdown', onPointerDown);
-            child.addEventListener('keydown', onItemKeydown);
-            child.addEventListener('keydown', onBlockKey);
+    function collectPieces(area) {
+        const kind = classify(area);
+        if (kind === 'component') return [];
+        if (kind === 'data') { const tpl = area.querySelector('template[x-for]'); return tpl ? sortableChildren(tpl.parentElement) : []; }
+        const out = [];
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; out.push(ch); if (isContainer(ch)) walk(ch); });
+        if (isContainer(area)) walk(area);
+        return out;
+    }
+    function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
+    function markPieces(area) {
+        const want = new Set(collectPieces(area).filter(movable));
+        area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el)) unmarkPiece(el); });
+        want.forEach(el => {
+            el.setAttribute('data-edit-piece', '');
+            if (!el.hasAttribute('tabindex')) { el.tabIndex = 0; addedTab.add(el); }
         });
-        container.setAttribute('role', 'list');
-        // x-for rows and any other late arrivals are not sortable unless we notice
-        // them — arming only ever ran once, so a list that grows loses its handles.
-        if (!container._sortObserver) {
-            container._sortObserver = new MutationObserver(() => {
-                if (dragged) return;                        // never re-arm mid-drag
-                if (isActive(container.closest('[data-edit-area]'))) makeSortable(container);
-            });
-            container._sortObserver.observe(container, { childList: true });
-        }
     }
-    function onPointerDown(e) {
-        const item = this, area = item.parentElement && item.parentElement.closest('[data-edit-area]');   // origin = the OUTER region, never the item itself
-        if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0)) return;
-        if (e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;   // text/size win
-        if (e._editDrag) return; e._editDrag = true;   // one drag per gesture — the innermost sortable item claims it
-        const container = item.parentElement;
-        const crossOK = classify(area) === 'static' && !isRegionBlock(item) && topArea(area);   // cross-region: top-level static → static only; a region-block only reorders in place
-        let hovered = container;
-        const homeNext = item.nextElementSibling;          // where to put it back if cancelled
-        const start = item.getBoundingClientRect();
-        const preStyle = item.getAttribute('style');
-        const grabX = e.clientX - start.left, grabY = e.clientY - start.top;
-        const sx = e.clientX, sy = e.clientY;
-        let active = false, frame = 0, px = sx, py = sy, ghost = null;
 
-        // The item leaves the flow and a stand-in takes its slot, so the gap that
-        // opens is a real element the author can style — by default a translucent
-        // copy of what is being dragged, showing exactly where it would land.
-        const lift = (ev) => {
-            // Valid cross-region destinations announce themselves for the whole
-            // drag: a dashed target outline, and a min-height (via CSS) so an
-            // EMPTY region has a surface to drop onto at all.
-            if (crossOK) areas().forEach(a => {
-                if (a !== area && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a)) a.setAttribute('data-edit-drop-target', '');
-            });
-            ghost = item.cloneNode(true);
-            ghost.setAttribute('data-edit-ghost', '');
-            ghost.setAttribute('x-ignore', '');            // a clone must not re-bind
-            ghost.removeAttribute('id');
-            ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
-            [ghost, ...ghost.querySelectorAll('*')].forEach(n => {
-                [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && a.name !== 'data-edit-ghost') n.removeAttribute(a.name); });
-                n.removeAttribute('contenteditable'); n.removeAttribute('tabindex'); n.removeAttribute('draggable');
-            });
-            item.before(ghost);
-            item.style.position = 'fixed';
-            item.style.width = start.width + 'px';
-            item.style.height = start.height + 'px';
-            item.style.margin = '0';
-            item.style.pointerEvents = 'none';
-            item.setAttribute('data-edit-dragging', '');
-            area.setAttribute('data-edit-dragging-in', '');
-            dragged = ghost;
-            try { item.setPointerCapture(ev.pointerId); } catch { }
-        };
-
-        const paint = () => {
-            frame = 0;
-            item.style.left = (px - grabX) + 'px';
-            item.style.top = (py - grabY) + 'px';
-        };
-
-        const onMove = (ev) => {
-            px = ev.clientX; py = ev.clientY;
-            if (!active) {
-                if (Math.hypot(px - sx, py - sy) < 5) return;   // threshold so taps/clicks still work
-                active = true; lift(ev); paint();
-            }
-            ev.preventDefault();
-            const over = (crossOK && dropArea(px, py, area)) || ghost.parentElement;   // cross-region drop search
-            if (over !== hovered) {
-                if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
-                hovered = over;
-                if (hovered !== container) hovered.setAttribute('data-edit-dragging-in', '');
-            }
-            reorderOver(over, px, py);
-            if (!frame) frame = requestAnimationFrame(paint);
-        };
-
-        const settle = (cancelled) => {
-            document.removeEventListener('pointermove', onMove);
-            document.removeEventListener('pointerup', onUp);
-            document.removeEventListener('pointercancel', onCancel);
-            document.removeEventListener('keydown', onKey, true);
-            if (frame) cancelAnimationFrame(frame);
-            if (!active) return;
-            if (cancelled) {
-                ghost.remove();
-                if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item);
-            } else ghost.replaceWith(item);
-            if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
-            item.removeAttribute('data-edit-dragging');
-            area.removeAttribute('data-edit-dragging-in');
-            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
-            if (hovered !== container) hovered.removeAttribute('data-edit-dragging-in');
-            ghost = null; dragged = null;
-            if (cancelled) { announce('Cancelled'); return; }
-            const dest = item.parentElement;
-            if (crossOK && dest !== container && dest._edit) {
-                // Re-validate at drop: a region locked or deactivated mid-drag
-                // (reached through the ghost fallback) must not take the block.
-                if (isActive(dest) && !locked(dest) && capOf(dest, 'sort') && topArea(dest)) { commitMove(area, dest, item); announce('Moved to ' + key(dest)); }
-                else { if (homeNext) container.insertBefore(item, homeNext); else container.appendChild(item); announce('Cancelled'); }
-            }
-            else finishReorder(area);
-        };
-        const onUp = () => settle(false);
-        // Escape puts it back, the way every drag is expected to be escapable. A
-        // cancelled pointer (OS gesture, alert, pen out of range) also reverts —
-        // otherwise the item wedges position:fixed with drop targets still lit.
-        const onCancel = () => settle(true);
-        const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
-        document.addEventListener('pointermove', onMove);
-        document.addEventListener('pointerup', onUp);
-        document.addEventListener('pointercancel', onCancel);
-        document.addEventListener('keydown', onKey, true);
+    const flowAxis = (c) => { const cs = getComputedStyle(c); return /grid/.test(cs.display) || (/flex/.test(cs.display) && !String(cs.flexDirection || '').startsWith('column')) ? 'x' : 'y'; };
+    // Beside a hovered piece: before it when the pointer is in its leading half.
+    function beside(el, x, y, parent) {
+        const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
+        const lead = horiz ? x < r.left + r.width / 2 : y < r.top + r.height / 2;
+        let ref = lead ? el : el.nextElementSibling;
+        while (ref && (ref === dragged || ref.hasAttribute('data-edit-dragging'))) ref = ref.nextElementSibling;
+        return { container: parent, ref };
     }
-    function reorderOver(container, x, y) {
-        if (!dragged) return;
-        const ref = afterElement(container, x, y);
-        if (dragged.parentElement === container && (ref === dragged || ref === dragged.nextElementSibling)) return;
-        if (ref == null) container.appendChild(dragged); else container.insertBefore(dragged, ref);
+    // Middle band of a container nests; its edges insert before/after it.
+    function inMiddle(el, x, y, parent) {
+        const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
+        const lo = horiz ? r.left : r.top, size = horiz ? r.width : r.height, p = horiz ? x : y;
+        if (!size) return true;
+        const edge = Math.min(size * 0.25, 24);
+        return p >= lo + edge && p <= lo + size - edge;
     }
-    // Cross-region drop target: the innermost valid region under the pointer, else
-    // the nearest valid one within reach — regions are often shorter than their column.
-    const dropValid = (a) => !!a && !!a._edit && isActive(a) && !locked(a) && capOf(a, 'sort') && classify(a) === 'static' && topArea(a);
+    const dropValid = (a) => !!a && !!a._edit && accepts(a) && classify(a) === 'static' && topArea(a);
+    // Another area under the pointer, else the nearest within reach.
     function dropArea(x, y, origin) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
-        for (let a = hit && hit.closest ? hit.closest('[data-edit-area]') : null; a; a = a.parentElement && a.parentElement.closest('[data-edit-area]')) {
-            if (dropValid(a)) return a;
-        }
+        const hitArea = hit && regionOf(hit);
+        if (hitArea && dropValid(hitArea)) return hitArea;
         const cands = [origin, ...document.querySelectorAll('[data-edit-drop-target]')].filter((a, i, all) => dropValid(a) && all.indexOf(a) === i);
         const inside = (r, pad) => x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
         let best = null, bestD = Infinity;
@@ -157,103 +58,257 @@
             const r = a.getBoundingClientRect();
             const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
             const reach = toPx(cssVar(a, '--edit-drop-reach', ''), a, 'w') ?? 48;
-            // The block wrapping the region (its column) counts as its surface, unless it wraps another candidate too.
             const p = a.parentElement;
             const column = p && p !== document.body && p !== document.documentElement && !cands.some(o => o !== a && p.contains(o)) && inside(p.getBoundingClientRect(), 0);
             if ((inside(r, reach) || column) && d < bestD) { best = a; bestD = d; }
         }
         return best;
     }
-    function finishReorder(area) { if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(area).map(c => itemKey(c, area))); commit(area); } else commitStaticOrder(area); }
-    // Reading-order insertion: block, inline, flex row/col/wrap, grid auto-flow.
-    // The FIRST sibling past the pointer, not the nearest — nearest can pick an
-    // element further down the list and makes the drop point jump around. Taking the
-    // first is also self-stabilising: once the item lands, that sibling's midpoint is
-    // behind the pointer, so it does not immediately swap back.
+    function dropTarget(x, y, s) {
+        if (s.dataList) return { container: s.home, ref: afterElement(s.home, x, y) };
+        const region = s.crossOK ? dropArea(x, y, s.area) : s.area;
+        if (!region) return null;
+        const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        if (hit && hit !== region && region.contains(hit)) {
+            for (let el = hit; el && el !== region; el = el.parentElement) {
+                if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
+                const parent = el.parentElement;
+                if (!isContainer(parent)) continue;
+                if (isContainer(el) && accepts(el) && inMiddle(el, x, y, parent)) return { container: el, ref: afterElement(el, x, y) };
+                if (accepts(parent) && !s.item.contains(parent)) return beside(el, x, y, parent);
+            }
+        }
+        if (!s.crossOK && (!hit || !region.contains(hit))) { const c = s.ghost.parentElement; return { container: c, ref: afterElement(c, x, y) }; }
+        return accepts(region) ? { container: region, ref: afterElement(region, x, y) } : null;
+    }
+    // Reading-order insertion: the first sibling past the pointer.
     function afterElement(c, x, y) {
         for (const el of sortableChildren(c)) {
-            if (el === dragged || locked(el) || el.hasAttribute('data-edit-dragging')) continue;
+            if (el === dragged || el.hasAttribute('data-edit-dragging') || lockedFor(el, 'move')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
             const sameRow = Math.abs(cy - y) <= b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
         }
         return null;
     }
-    // Keyboard reorder: grab → arrows move among siblings → drop. Space/Enter belong
-    // to text and controls inside the row; Alt+arrow moves the row directly.
+    // Drop point in the piece's own units, relative to its offset parent.
+    function placeAt(el, x, y, s) {
+        const op = el.offsetParent || el.parentElement, r = op.getBoundingClientRect();
+        let left = x - s.grabX - r.left - (op.clientLeft || 0) + (op.scrollLeft || 0);
+        let top = y - s.grabY - r.top - (op.clientTop || 0) + (op.scrollTop || 0);
+        const maxL = op.clientWidth - el.offsetWidth, maxT = op.clientHeight - el.offsetHeight;
+        left = maxL > 0 ? clamp(left, 0, maxL) : Math.max(0, left);
+        top = maxT > 0 ? clamp(top, 0, maxT) : Math.max(0, top);
+        el.style.left = toUnit(left, s.lu, el, op, 'w') + s.lu;
+        el.style.top = toUnit(top, s.tu, el, op, 'h') + s.tu;
+    }
+    const clearPlacement = (el) => { el.style.removeProperty('left'); el.style.removeProperty('top'); if (!el.getAttribute('style')) el.removeAttribute('style'); };
+    const keysWithout = (c, item) => staticKeys(c).filter((k, i) => sortableChildren(c)[i] !== item);
+
+    function onAreaPointerDown(e) {
+        const area = this;
+        if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e._editDrag) return;
+        const t = e.target;
+        if (!t || t.nodeType !== 1 || t.isContentEditable || t.hasAttribute('data-edit-handle')) return;
+        if (t._pieceMode) { exitPieceMode(t); return; }
+        let item = null;
+        for (let n = t; n && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece') && movable(n)) { item = n; break; }
+        if (!item) return;
+        e._editDrag = true;
+        startDrag(e, item, area);
+    }
+
+    function startDrag(e, item, area) {
+        const home = item.parentElement, homeNext = item.nextElementSibling;
+        const dataList = classify(area) === 'data';
+        const s = {
+            item, area, home, dataList, ghost: null,
+            crossOK: !dataList && classify(area) === 'static' && !isRegionBlock(item),
+            homeBefore: dataList ? null : staticKeys(home),
+            lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
+        };
+        const start = item.getBoundingClientRect(), preStyle = item.getAttribute('style');
+        s.grabX = e.clientX - start.left; s.grabY = e.clientY - start.top;
+        const sx = e.clientX, sy = e.clientY;
+        let active = false, frame = 0, px = sx, py = sy, last = null;
+
+        const lift = (ev) => {
+            if (s.crossOK) areas().forEach(a => { if (a !== area && dropValid(a)) a.setAttribute('data-edit-drop-target', ''); });
+            const ghost = s.ghost = item.cloneNode(true);
+            ghost.setAttribute('data-edit-ghost', '');
+            ghost.setAttribute('x-ignore', '');
+            ghost.removeAttribute('id');
+            ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+            [ghost, ...ghost.querySelectorAll('*')].forEach(n => {
+                [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && a.name !== 'data-edit-ghost') n.removeAttribute(a.name); });
+                n.removeAttribute('contenteditable'); n.removeAttribute('tabindex'); n.removeAttribute('draggable');
+            });
+            item.before(ghost);
+            Object.assign(item.style, { position: 'fixed', width: start.width + 'px', height: start.height + 'px', margin: '0', pointerEvents: 'none' });
+            item.setAttribute('data-edit-dragging', '');
+            dragged = ghost;
+            try { item.setPointerCapture(ev.pointerId); } catch { }
+        };
+        const paint = () => { frame = 0; item.style.left = (px - s.grabX) + 'px'; item.style.top = (py - s.grabY) + 'px'; };
+        const placeGhost = (drop) => {
+            const g = s.ghost, { container, ref } = drop;
+            const same = last && last.container === container && last.ref === ref;
+            last = drop;
+            if (!same) container.insertBefore(g, ref && ref.parentElement === container ? ref : null);
+            if (isPositioned(g)) {
+                if (!same) { if (container === home && item.parentElement === home) home.insertBefore(g, item); else if (g.nextElementSibling) container.appendChild(g); }
+                placeAt(g, px, py, s);
+            } else if (g.style.left || g.style.top) clearPlacement(g);
+        };
+        const onMove = (ev) => {
+            px = ev.clientX; py = ev.clientY;
+            if (!active) {
+                if (Math.hypot(px - sx, py - sy) < 5) return;
+                active = true; lift(ev); paint();
+            }
+            ev.preventDefault();
+            const drop = dropTarget(px, py, s);
+            if (drop) placeGhost(drop);
+            if (!frame) frame = requestAnimationFrame(paint);
+        };
+        const settle = (cancelled) => {
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onCancel);
+            document.removeEventListener('keydown', onKey, true);
+            if (frame) cancelAnimationFrame(frame);
+            if (!active) return;
+            document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
+            item.removeAttribute('data-edit-dragging');
+            if (cancelled) s.ghost.remove(); else s.ghost.replaceWith(item);
+            if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
+            s.ghost = null; dragged = null;
+            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, homeNext); else home.appendChild(item); };
+            if (cancelled) { back(); announce('Cancelled'); return; }
+            const dest = item.parentElement, toArea = regionOf(dest);
+            if (dest !== home && (s.dataList || !accepts(dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
+            if (isPositioned(item)) placeAt(item, px, py, s);
+            else if (item.style.left || item.style.top) clearPlacement(item);
+            const styled = (item.getAttribute('style') || '') !== (preStyle || '');
+            if (s.dataList) { finishReorder(area, home); announce('Dropped'); return; }
+            let did = false;
+            if (dest === home) did = commitOrder(area, home, s.homeBefore);
+            else { commitMove(area, toArea, item, home, s.homeBefore, keysWithout(dest, item)); did = true; }
+            if (styled) commitStyle(regionOf(item), item, { before: preStyle || '', join: did });
+            announce(toArea !== area ? 'Moved to ' + key(toArea) : 'Dropped');
+        };
+        const onUp = () => settle(false);
+        const onCancel = () => settle(true);
+        const onKey = (ev) => { if (ev.key !== 'Escape') return; ev.preventDefault(); ev.stopPropagation(); settle(true); };
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
+        document.addEventListener('keydown', onKey, true);
+    }
+
+    function finishReorder(area, container) {
+        if (classify(area) === 'data') { applyDataOrder(area, sortableChildren(container).map(c => itemKey(c, area))); commit(area); return true; }
+        return false;
+    }
+
+    /* ---- Keyboard ---- */
     const ownControl = (e, item) => e.target !== item && !!e.target.closest && item.contains(e.target.closest('a[href], button, summary, [role="button"], [role="link"]'));
-    function onItemKeydown(e) {
-        const item = this, area = item.closest('[data-edit-area]'); if (!isActive(area)) return;
-        if (e._editRow) return;                            // the innermost row claims the key
-        const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
-        const wordJump = inText(e) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
-        if (dir != null && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !wordJump) {
-            const home = item.parentElement && item.parentElement.closest('[data-edit-area]');   // the row's region, never the row itself
-            if (!isActive(home)) return;
-            e._editRow = true; e.preventDefault(); stepRow(item, home, dir); return;
-        }
-        if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item)) {
-            e._editRow = true;
-            e.preventDefault();
-            if (grabbed === item) { grabbed = null; item.removeAttribute('data-edit-grabbed'); finishReorder(area); item.focus(); announce('Dropped'); }
-            else { if (grabbed) grabbed.removeAttribute('data-edit-grabbed'); grabbed = item; item.setAttribute('data-edit-grabbed', ''); announce('Grabbed — arrow keys to move, Enter to drop'); }
+    const siblingsOf = (item) => sortableChildren(item.parentElement).filter(c => c === item || !lockedFor(c, 'move'));
+    function refocus(el) { if (document.activeElement !== el) try { el.focus(); } catch { } }
+
+    function onPieceKeydown(e, area) {
+        if (e._editRow) return;
+        const t = e.target;
+        if (t._pieceMode && e.key === 'Enter') { e._editRow = true; e.preventDefault(); exitPieceMode(t, true); return; }
+        let item = null;
+        for (let n = t; n && n !== area; n = n.parentElement) if (n.hasAttribute && n.hasAttribute('data-edit-piece') && movable(n)) { item = n; break; }
+        if (!grabbed) { const b = asPiece(t); if (b && onBlockKey(e, b)) { e._editRow = true; e.preventDefault(); e.stopPropagation(); return; } }
+        if (!item) return;
+        const dir = { ArrowUp: -1, ArrowDown: 1 }[e.key], side = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+        const plainAlt = e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+        if (plainAlt && dir != null && !(grabbed && grabbed.item === item)) { e._editRow = true; e.preventDefault(); stepRow(item, dir); return; }
+        if (plainAlt && side != null && !inText(e)) { e._editRow = true; e.preventDefault(); if (side > 0) nestInto(item); else unnest(item); return; }
+        if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item) && !e.altKey && !e.metaKey && !e.ctrlKey) {
+            e._editRow = true; e.preventDefault();
+            if (grabbed && grabbed.item === item) { dropGrab(); refocus(item); announce('Dropped'); }
+            else { if (grabbed) cancelGrab(); grabbed = { item, area: regionOf(item), container: item.parentElement, next: item.nextElementSibling, before: classify(regionOf(item)) === 'data' ? null : staticKeys(item.parentElement) }; item.setAttribute('data-edit-dragging', 'keyboard'); announce('Grabbed — arrow keys to move, Enter to drop'); }
             return;
         }
-        if (grabbed !== item) return;
-        if (e.key === 'Escape') { e.preventDefault(); grabbed = null; item.removeAttribute('data-edit-grabbed'); item.focus(); announce('Cancelled'); return; }
-        if (dir == null) return;
-        e._editRow = true;
-        e.preventDefault();
-        const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
-        if (j < 0 || j >= sibs.length) return;
-        if (dir > 0) sibs[j].after(item); else sibs[j].before(item);
-        item.focus(); announce(`Position ${j + 1} of ${sibs.length}`);
+        if (grabbed && grabbed.item === item) {
+            if (e.key === 'Escape') { e._editRow = true; e.preventDefault(); cancelGrab(); refocus(item); announce('Cancelled'); return; }
+            const step = dir ?? side; if (step == null) return;
+            e._editRow = true; e.preventDefault();
+            const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + step;
+            if (j < 0 || j >= sibs.length) return;
+            if (step > 0) sibs[j].after(item); else sibs[j].before(item);
+            refocus(item); announce(`Position ${j + 1} of ${sibs.length}`);
+            return;
+        }
+        if (t === item && !inText(e) && !e.altKey && !e.metaKey && !e.ctrlKey && (dir != null || side != null) && isPositioned(item)) { e._editRow = true; nudge(e, item); }
     }
-    // One step, committed at once. The row itself never leaves the DOM — its
-    // neighbours move round it — so focus and the caret in its text survive.
-    function stepRow(item, area, dir) {
-        const sibs = sortableChildren(item.parentElement).filter(c => !locked(c)), i = sibs.indexOf(item), j = i + dir;
+    function dropGrab() {
+        const g = grabbed; grabbed = null; if (!g) return;
+        g.item.removeAttribute('data-edit-dragging');
+        if (g.before) commitOrder(g.area, g.container, g.before); else finishReorder(g.area, g.container);
+    }
+    function cancelGrab() {
+        const g = grabbed; grabbed = null; if (!g) return;
+        g.item.removeAttribute('data-edit-dragging');
+        if (g.next && g.next.parentElement === g.container) g.container.insertBefore(g.item, g.next); else g.container.appendChild(g.item);
+    }
+    // One step, committed at once. Neighbours move round the piece, so focus and caret survive.
+    function stepRow(item, dir) {
+        const area = regionOf(item), container = item.parentElement;
+        const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + dir;
         if (i < 0 || j < 0 || j >= sibs.length) { announce(`Position ${i + 1} of ${sibs.length}`); return; }
+        const before = classify(area) === 'data' ? null : staticKeys(container);
         const other = sibs[j], between = [];
         for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
         if (dir > 0) { item.before(other); between.forEach(n => item.before(n)); }
         else { item.after(other); between.forEach(n => item.after(n)); }
         const focused = document.activeElement, sel = window.getSelection && window.getSelection();
         const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-        finishReorder(area);
+        if (before) commitOrder(area, container, before); else finishReorder(area, container);
         if (focused && focused.isConnected && document.activeElement !== focused) {
             focused.focus();
             if (range) try { sel.removeAllRanges(); sel.addRange(range); } catch { }
         }
         announce(`Moved to position ${j + 1} of ${sibs.length}`);
     }
-    // Move mode: positioned elements → pointer-drag left/top (touch-capable) + keyboard nudge, unit-preserving.
-    function makeMovable(el) {
-        el.setAttribute('data-edit-movable', ''); el.tabIndex = 0; el.setAttribute('role', 'application'); el.setAttribute('aria-label', 'Draggable; arrow keys to move');
-        el.addEventListener('pointerdown', (e) => {
-            const area = el.closest('[data-edit-area]');
-            if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e.target.isContentEditable || e.target.hasAttribute('data-edit-handle')) return;
-            e.preventDefault(); el._preStyle = el.getAttribute('style') || '';
-            const cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
-            const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            const baseL = parseFloat(cs.left) || 0, baseT = parseFloat(cs.top) || 0, sx = e.clientX, sy = e.clientY;
-            const ov = showOverlay();
-            // Clamped to the containing block: a freeform card must not leave its canvas.
-            const maxL = () => Math.max(0, parent.clientWidth - el.offsetWidth), maxT = () => Math.max(0, parent.clientHeight - el.offsetHeight);
-            const move = (ev) => { ev.preventDefault(); el.style.left = toUnit(Math.min(maxL(), Math.max(0, baseL + (ev.clientX - sx))), lu, el, parent, 'w') + lu; el.style.top = toUnit(Math.min(maxT(), Math.max(0, baseT + (ev.clientY - sy))), tu, el, parent, 'h') + tu; };
-            const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); hideOverlay(ov); commitStyle(area, el); };
-            document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
-        });
-        el.addEventListener('keydown', (e) => {
-            const area = el.closest('[data-edit-area]'); if (!isActive(area)) return;
-            const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
-            e.preventDefault();
-            if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';   // baseline at start of a key burst
-            const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
-            const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
-            const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
-            if (d[0]) el.style.left = toUnit(Math.min(maxL, Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step)), lu, el, parent, 'w') + lu;
-            if (d[1]) el.style.top = toUnit(Math.min(maxT, Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step)), tu, el, parent, 'h') + tu;
-            clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(area, el); }, 350);
-        });
+    const describe = (el) => el === regionOf(el) ? key(el) : el.tagName.toLowerCase();
+    function nestInto(item) {
+        const area = regionOf(item);
+        if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
+        let prev = item.previousElementSibling;
+        while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE')) prev = prev.previousElementSibling;
+        if (!prev || !accepts(prev)) { announce('Nothing to nest into'); return false; }
+        const from = item.parentElement, fb = staticKeys(from), tb = staticKeys(prev);
+        prev.appendChild(item);
+        commitMove(area, area, item, from, fb, tb);
+        refocus(item); announce('Nested in ' + describe(prev));
+        return true;
+    }
+    function unnest(item) {
+        const area = regionOf(item), from = item.parentElement;
+        if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
+        const out = from && from !== area ? from.parentElement : null;
+        if (!out || !(out === area || area.contains(out)) || !accepts(out)) { announce('Already at the top level'); return false; }
+        const fb = staticKeys(from), tb = staticKeys(out);
+        from.after(item);
+        commitMove(area, area, item, from, fb, tb);
+        refocus(item); announce('Moved out to ' + describe(out));
+        return true;
+    }
+    // Arrow nudge for a focused, absolutely positioned piece; a key burst commits once.
+    function nudge(e, el) {
+        const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
+        e.preventDefault();
+        if (!el._moveTimer) el._preStyle = el.getAttribute('style') || '';
+        const step = e.shiftKey ? 16 : 4, cs = getComputedStyle(el), parent = el.offsetParent || el.parentElement;
+        const lu = unitOf(el.style.left) || 'px', tu = unitOf(el.style.top) || 'px';
+        const maxL = Math.max(0, parent.clientWidth - el.offsetWidth), maxT = Math.max(0, parent.clientHeight - el.offsetHeight);
+        const nl = Math.max(0, (parseFloat(cs.left) || 0) + d[0] * step), nt = Math.max(0, (parseFloat(cs.top) || 0) + d[1] * step);
+        if (d[0]) el.style.left = toUnit(maxL ? Math.min(maxL, nl) : nl, lu, el, parent, 'w') + lu;
+        if (d[1]) el.style.top = toUnit(maxT ? Math.min(maxT, nt) : nt, tu, el, parent, 'h') + tu;
+        clearTimeout(el._moveTimer); el._moveTimer = setTimeout(() => { el._moveTimer = null; commitStyle(regionOf(el), el); }, 350);
     }

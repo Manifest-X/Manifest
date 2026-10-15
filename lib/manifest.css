@@ -2922,142 +2922,107 @@
 
 @layer base, components, utilities;
 
-/* Self-contained: every rule the plugin needs lives here, so this stylesheet works
-   on its own. Authors override without specificity battles — rules are :where()
-   wrapped and keyed off data-edit-* attributes, including the injected affordances
-   (handles, overlay, live region, toolbar, menu). No class names to collide with. */
+/* Rules are :where()-wrapped and keyed off data-edit-* attributes, so authors
+   override without specificity battles. Visuals are on for every area;
+   x-edit.bare (data-edit-area="bare") keeps the behaviour and draws none of them. */
 
 @layer utilities {
 
-    /* ---- Editing UI scope ----
-       ALL chrome — cursors, movable/text outlines, size-handle hairlines, drop
-       targets, the floating toolbar — lives under ONE scope: [data-edit-ui], on
-       the region itself or any ancestor (e.g. <body data-edit-ui> for a whole
-       editor view). The plugin sets it on `.authoring` regions automatically;
-       everything else opts in with the attribute. A region outside the scope is
-       just as editable — it simply carries no visual cues. */
-
-    /* ---- Editable area (armed) ---- */
-    :where([data-edit-armed]) {
-        position: relative;
-    }
-
-    /* No default region boundary or label: a page being edited should look
-       like the page, not a diagram of its regions. The hooks remain for a real
-       editor product to draw its own — [data-edit-authoring] marks the region
-       and data-edit-label carries "key · regime". */
-
-    /* ---- Reorder (pointer + keyboard; touch-action:none lets touch-drag beat scroll) ---- */
-    :where([data-edit-sortable]) {
+    /* ---- Pieces ---- */
+    :where([data-edit-piece]) {
         cursor: grab;
         touch-action: none;
         transition: opacity 0.12s ease, outline-color 0.12s ease;
     }
 
-    /* No injected grip: the row itself is the handle (grab cursor), while text
-       inside stays a text surface (text cursor, below). Rows that are pure text
-       still reorder by keyboard (Alt/Option + arrows). */
-
-    /* Hover hint in the UI scope; quiet while a drag is in progress. */
-    :where([data-edit-ui] [data-edit-sortable], [data-edit-ui][data-edit-sortable]):where(:hover):where(:not([data-edit-dragging], [data-edit-ghost], [data-edit-dragging-in] [data-edit-sortable])) {
+    :where([data-edit-piece]):where(:hover):where(:not([data-edit-area="bare"], [data-edit-area="bare"] *, [data-edit-dragging], [data-edit-ghost], :has([data-edit-dragging]) *)) {
         outline: 1px solid color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
         outline-offset: 3px;
     }
 
-    :where([data-edit-sortable], [data-edit-movable]):focus-visible {
+    :where([data-edit-piece]):focus-visible {
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
         outline-offset: 3px;
     }
 
-    /* Lifted out of the flow and following the pointer. */
-    :where([data-edit-sortable][data-edit-dragging]) {
+    /* Lifted, following the pointer */
+    :where([data-edit-dragging=""]) {
         z-index: 1000;
         cursor: grabbing;
         box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
     }
 
-    /* The stand-in holding the slot the drop would land in — a translucent copy of
-       the element by default, because the clearest preview of where it lands is the
-       thing itself. Restyle it freely: hide its contents for an empty outlined slot,
-       give it a background, animate it. */
+    /* Grabbed from the keyboard */
+    :where([data-edit-dragging="keyboard"]) {
+        outline: 2px dashed var(--edit-accent, var(--color-brand-content));
+        outline-offset: 3px;
+    }
+
+    /* The stand-in holding the slot the drop would land in */
     :where([data-edit-ghost]) {
         opacity: var(--edit-ghost-opacity, 0.4);
         pointer-events: none;
     }
 
-    /* Valid cross-region destinations during a drag: a dashed invitation, and
-       enough height that an EMPTY region can be dropped onto at all. */
-    :where([data-edit-drop-target]) {
+    /* The container the drop would land in */
+    :where(:has(> [data-edit-ghost])):where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {
         outline: 1px dashed color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 55%, transparent);
         outline-offset: 4px;
+    }
+
+    /* Other areas a drag can land in; an empty one still has a surface */
+    :where([data-edit-drop-target]) {
         min-height: 2.5rem;
     }
 
-    /* Nothing else should react while a drag is in progress */
-    :where([data-edit-dragging-in]) {
+    :where([data-edit-drop-target]):where(:not([data-edit-area="bare"])) {
+        outline: 1px dashed color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 55%, transparent);
+        outline-offset: 4px;
+    }
+
+    /* While dragging: empty containers can be dropped into, nothing else reacts */
+    :where([data-edit-area]:has([data-edit-dragging=""])) {
         cursor: grabbing;
         user-select: none;
 
-        & :where([data-edit-sortable]:not([data-edit-dragging])) {
+        & :where(:empty:not(img, input, br, hr, svg, video, canvas, iframe, textarea, [data-edit-ghost], [data-edit-handle])) {
+            min-height: 2.5rem;
+        }
+
+        & :where([data-edit-piece]:not([data-edit-dragging])) {
             cursor: grabbing;
         }
     }
 
-    :where([data-edit-grabbed]) {
-        outline: 2px dashed var(--edit-accent, var(--color-brand-content));
-        outline-offset: 3px;
-    }
-
-    /* ---- Move (positioned children) ---- */
-    :where([data-edit-movable]) {
-        cursor: move;
-        touch-action: none;
-    }
-
-    :where([data-edit-ui] [data-edit-movable], [data-edit-ui][data-edit-movable]):hover {
-        outline: 1px solid var(--edit-accent, var(--color-brand-content));
-        outline-offset: 2px;
-    }
-
-    /* ---- Inline text ----
-       One weight everywhere: hover hints and the focused caret both use the same
-       1px line, so focusing doesn't make the page jump a weight class. */
-    :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"],
-    :where([data-edit-ui])[data-edit-armed] [contenteditable="true"] {
+    /* ---- Inline text ---- */
+    :where([data-edit-area]:not([data-edit-area="bare"])) :where([contenteditable="true"]):where(:not([data-edit-area="bare"] *)),
+    :where([data-edit-area][contenteditable="true"]:not([data-edit-area="bare"])) {
         cursor: text;
         outline: 1px solid transparent;
         outline-offset: 2px;
         border-radius: 3px;
         transition: outline-color 0.12s ease;
+
+        &:hover {
+            outline-color: color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
+        }
+
+        &:focus {
+            outline-color: var(--edit-accent, var(--color-brand-content));
+        }
     }
 
-    :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"]:hover,
-    :where([data-edit-ui])[data-edit-armed] [contenteditable="true"]:hover {
-        outline-color: color-mix(in oklch, var(--edit-accent, var(--color-brand-content)) 45%, transparent);
-    }
-
-    :where([data-edit-ui]) :where([data-edit-armed]) [contenteditable="true"]:focus,
-    :where([data-edit-ui])[data-edit-armed] [contenteditable="true"]:focus {
-        outline-color: var(--edit-accent, var(--color-brand-content));
-    }
-
-    /* ---- Size handles ----
-       Injected as siblings of the element's own markup, so its native :hover and
-       :focus still fire and its body stays interactive. */
-    :where([data-edit-sizable]) {
+    /* ---- Size handles ---- */
+    :where(:has(> [data-edit-handle])) {
         position: relative;
     }
 
-    /* Handles reveal on approach rather than sitting on the element permanently.
-       The hairline is chrome, so it follows the [data-edit-ui] scope like every
-       other affordance; outside the scope the handles still work (hit areas and
-       resize cursors stay), they just draw nothing. */
-    :where([data-edit-sizable]) :where([data-edit-handle])::before {
+    :where([data-edit-handle])::before {
         opacity: 0;
         transition: opacity 0.12s ease, background-color 0.15s ease;
     }
 
-    :where([data-edit-ui] [data-edit-sizable], [data-edit-ui][data-edit-sizable]):is(:hover, :focus-within) :where([data-edit-handle])::before {
+    :where(:has(> [data-edit-handle])):is(:hover, :focus-within):where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) > :where([data-edit-handle])::before {
         opacity: 1;
     }
 
@@ -3067,7 +3032,6 @@
         background: transparent;
         --h: var(--edit-size-handle, 1rem);
 
-        /* Hairline, revealed on hover */
         &::before {
             content: '';
             position: absolute;
@@ -3091,7 +3055,6 @@
         outline: 2px solid var(--edit-accent, var(--color-brand-content));
     }
 
-    /* Edges span their axis; corners are square. A corner value contains a hyphen. */
     :where([data-edit-handle="top"], [data-edit-handle="bottom"]) {
         left: 0;
         width: 100%;
@@ -3119,8 +3082,6 @@
         height: var(--h);
     }
 
-    /* Inset — each handle straddles its edge; a corner matches one rule per axis.
-       inset-inline-* carries the logical start/end values, so they flip for RTL. */
     :where([data-edit-handle^="top"]) {
         top: calc(var(--h) * -0.5);
     }
@@ -3145,7 +3106,6 @@
         inset-inline-end: calc(var(--h) * -0.5);
     }
 
-    /* Corner cursors; the logical pair flips with direction. */
     :where([data-edit-handle="top-left"], [data-edit-handle="bottom-right"], [data-edit-handle="top-start"], [data-edit-handle="bottom-end"]) {
         cursor: nwse-resize;
     }
@@ -3162,12 +3122,7 @@
         cursor: nwse-resize;
     }
 
-    /* Collapsed past --edit-size-collapse-* — authors restyle freely */
-    :where([data-edit-collapsed]) {
-        opacity: 0.45;
-    }
-
-    /* Full-viewport capture layer during a size or move drag */
+    /* Pointer capture layer during a resize */
     :where([data-edit-overlay]) {
         position: fixed;
         inset: 0;
@@ -3175,7 +3130,7 @@
         background: transparent;
     }
 
-    /* Screen-reader announcements (keyboard grab / move / drop) */
+    /* Screen-reader announcements */
     :where([data-edit-live]) {
         position: absolute;
         width: 1px;
@@ -3190,65 +3145,9 @@
 
     @media (prefers-reduced-motion: reduce) {
 
-        :where([data-edit-armed]) > [draggable="true"],
+        :where([data-edit-piece]),
         :where([data-edit-handle])::before {
             transition: none;
-        }
-    }
-}
-
-/* ---- Authoring chrome (toolbar + class/scope menu) ---- */
-@layer components {
-
-    /* Presence is script's business — it knows which route is on screen. Whether it
-       is seen is not, so the toolbar is styled and revealed here. */
-    :where([data-edit-toolbar]) {
-        display: none;
-        position: fixed;
-        inset-block-end: 1rem;
-        inset-inline-end: 1rem;
-        z-index: 9999;
-        gap: 0.5rem;
-        align-items: center;
-
-        & button[disabled] {
-            opacity: 0.35;
-            pointer-events: none;
-        }
-    }
-
-    /* --edit-toolbar: none (any scope up to :root) suppresses it — e.g. a site
-       that demos .authoring regions but has its own publish flow. */
-    :root[data-edit-active] :where([data-edit-toolbar]) {
-        display: var(--edit-toolbar, flex);
-    }
-
-    /* A popover: the top layer sits above every stacking context, so no handle,
-       overlay or z-index anywhere on the page can paint over it. */
-    :where([data-edit-menu]) {
-        position: fixed;
-        margin: 0;
-        width: 16rem;
-        padding: 0.6rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-        background: var(--color-surface-1);
-        border: 1px solid var(--color-line);
-        border-radius: var(--radius);
-        box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
-
-        & input {
-            width: 100%;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.75rem;
-        }
-
-        & small {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--color-content-subtle);
         }
     }
 }
