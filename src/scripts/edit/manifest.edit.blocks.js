@@ -37,11 +37,12 @@
     const blockArea = (el) => el && regionOf(el.parentElement);
     const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
     // A piece can be dragged when its container moves and nothing up to the region locks it.
-    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el.parentElement)) !== 'component';
+    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && !insideRendered(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el.parentElement)) !== 'component';
     function accepts(c) {
         if (!c || c.nodeType !== 1) return false;
         const area = regionOf(c);
         if (!area || !isActive(area) || !isContainer(c)) return false;
+        for (let n = c; n && n !== area; n = n.parentElement) if (n._manifestComponent) return false;   // a host's markup is another file's
         return capOf(c, 'move');
     }
 
@@ -92,7 +93,7 @@
     function canDo(action, el) {
         if (!ACTIONS.includes(action)) return false;
         if (action === 'paste') { const d = clipboard && pasteDest(el); return !!d && pasteFits(regionOf(d)); }
-        if (!el || el.nodeType !== 1) return false;
+        if (!el || el.nodeType !== 1 || insideRendered(el)) return false;
         // A component host moves, duplicates and goes as a piece of the area around it
         if (isHostEl(el) && (action === 'move' || action === 'duplicate' || action === 'remove')) {
             const outer = blockArea(el);

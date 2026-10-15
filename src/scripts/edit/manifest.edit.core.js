@@ -234,7 +234,17 @@
     const editEls = new Set();
     const themeScopes = {};
     const warnedRetired = new Set();
+    // Inside what a plugin renders (x-html output and the like) nothing is source: an x-edit there is not a region.
+    const renderedHost = (el) => { for (let n = el && el.parentElement; n; n = n.parentElement) if (n.nodeType === 1 && isRendered(n)) return n; return null; };
+    const insideRendered = (el) => { const a = regionOf(el); for (let n = el && el.parentElement; n; n = n.parentElement) { if (isRendered(n)) return true; if (n === a) break; } return false; };
+    const warnedRendered = new Set();
     function registerEdit(el, modifiers, expression) {
+        const rh = renderedHost(el);
+        if (rh) {
+            const k = (expression || '').trim() || '(unnamed)';
+            if (!warnedRendered.has(k)) { warnedRendered.add(k); console.warn(`[edit] x-edit="${k}" is inside content a plugin renders (${[...rh.attributes].map(a => a.name).find(n => RENDERED.some(r => n === r || n.startsWith(r + '.')))}); it is not editable`); }
+            return;
+        }
         if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
         modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
         if (modifiers.includes('lock')) {
@@ -411,8 +421,10 @@
         const sub = new Set();
         const add = (root) => [root, ...root.querySelectorAll('*')].forEach(n => { if (n.nodeType !== 1) return; sub.add(n.tagName.toLowerCase()); if (n.tagName === 'TEMPLATE' && n.content) [...n.content.children].forEach(add); });
         groupOf(piece).forEach(add);
-        // A component never goes inside its own markup
-        if (piece._manifestComponent) for (let a = container; a; a = a.parentElement) if (a._manifestComponent === piece._manifestComponent) return false;
+        // A component never goes inside its own markup, however deep it includes it
+        const around = new Set();
+        for (let a = container; a; a = a.parentElement) if (a._manifestComponent) around.add(a._manifestComponent);
+        if (around.size && groupOf(piece).some(r => [r, ...r.querySelectorAll('*')].some(n => n._manifestComponent && around.has(n._manifestComponent)))) return false;
         return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
     }
 

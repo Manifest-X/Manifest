@@ -371,7 +371,16 @@
             if (!r || !Array.isArray(r.results) || (Array.isArray(r.stale) && r.stale.length)) return null;
             const failed = new Set(r.results.filter(x => x && x.failed != null).map(x => x.failed));
             if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
-            for (let grew = true; grew;) { grew = false; log.slice(0, cursor).forEach(d => { if (d.kind === 'st-move' && failed.has(d.from) !== failed.has(d.to)) { failed.add(d.from); failed.add(d.to); grew = true; } }); }
+            const via = new Map();   // a region held back -> the failed region a move ties it to
+            for (let grew = true; grew;) {
+                grew = false;
+                log.slice(0, cursor).forEach(d => {
+                    if (d.kind !== 'st-move' || failed.has(d.from) === failed.has(d.to)) return;
+                    const [had, add] = failed.has(d.from) ? [d.from, d.to] : [d.to, d.from];
+                    failed.add(add); via.set(add, via.get(had) || had); grew = true;
+                });
+            }
+            failed.via = via;
             return patches.some(p => !failed.has(p.region)) ? failed : null;
         };
         const send = () => {
@@ -387,7 +396,7 @@
                 const rest = patches.filter(p => !out.has(p.region));
                 return post(rest).then(r2 => {
                     const results = patches.map((p, i) => out.has(p.region)
-                        ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: 'not published: a move ties it to an area that failed' })
+                        ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: `not published: tied by a move to x-edit="${out.via.get(p.region) || [...out].find(x => !out.via.has(x))}", which failed` })
                         : r2.results[rest.indexOf(p)]);
                     const merged = Object.assign({}, r2, { results });
                     const o = done(merged, out); settled(r2, !!(opts && opts.rebase)); return o;

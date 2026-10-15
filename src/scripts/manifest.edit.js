@@ -238,7 +238,17 @@
     const editEls = new Set();
     const themeScopes = {};
     const warnedRetired = new Set();
+    // Inside what a plugin renders (x-html output and the like) nothing is source: an x-edit there is not a region.
+    const renderedHost = (el) => { for (let n = el && el.parentElement; n; n = n.parentElement) if (n.nodeType === 1 && isRendered(n)) return n; return null; };
+    const insideRendered = (el) => { const a = regionOf(el); for (let n = el && el.parentElement; n; n = n.parentElement) { if (isRendered(n)) return true; if (n === a) break; } return false; };
+    const warnedRendered = new Set();
     function registerEdit(el, modifiers, expression) {
+        const rh = renderedHost(el);
+        if (rh) {
+            const k = (expression || '').trim() || '(unnamed)';
+            if (!warnedRendered.has(k)) { warnedRendered.add(k); console.warn(`[edit] x-edit="${k}" is inside content a plugin renders (${[...rh.attributes].map(a => a.name).find(n => RENDERED.some(r => n === r || n.startsWith(r + '.')))}); it is not editable`); }
+            return;
+        }
         if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
         modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
         if (modifiers.includes('lock')) {
@@ -415,8 +425,10 @@
         const sub = new Set();
         const add = (root) => [root, ...root.querySelectorAll('*')].forEach(n => { if (n.nodeType !== 1) return; sub.add(n.tagName.toLowerCase()); if (n.tagName === 'TEMPLATE' && n.content) [...n.content.children].forEach(add); });
         groupOf(piece).forEach(add);
-        // A component never goes inside its own markup
-        if (piece._manifestComponent) for (let a = container; a; a = a.parentElement) if (a._manifestComponent === piece._manifestComponent) return false;
+        // A component never goes inside its own markup, however deep it includes it
+        const around = new Set();
+        for (let a = container; a; a = a.parentElement) if (a._manifestComponent) around.add(a._manifestComponent);
+        if (around.size && groupOf(piece).some(r => [r, ...r.querySelectorAll('*')].some(n => n._manifestComponent && around.has(n._manifestComponent)))) return false;
         return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
     }
 
@@ -1063,11 +1075,12 @@
     const blockArea = (el) => el && regionOf(el.parentElement);
     const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
     // A piece can be dragged when its container moves and nothing up to the region locks it.
-    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el.parentElement)) !== 'component';
+    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && !insideRendered(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el.parentElement)) !== 'component';
     function accepts(c) {
         if (!c || c.nodeType !== 1) return false;
         const area = regionOf(c);
         if (!area || !isActive(area) || !isContainer(c)) return false;
+        for (let n = c; n && n !== area; n = n.parentElement) if (n._manifestComponent) return false;   // a host's markup is another file's
         return capOf(c, 'move');
     }
 
@@ -1118,7 +1131,7 @@
     function canDo(action, el) {
         if (!ACTIONS.includes(action)) return false;
         if (action === 'paste') { const d = clipboard && pasteDest(el); return !!d && pasteFits(regionOf(d)); }
-        if (!el || el.nodeType !== 1) return false;
+        if (!el || el.nodeType !== 1 || insideRendered(el)) return false;
         // A component host moves, duplicates and goes as a piece of the area around it
         if (isHostEl(el) && (action === 'move' || action === 'duplicate' || action === 'remove')) {
             const outer = blockArea(el);
@@ -1330,7 +1343,7 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
@@ -2748,7 +2761,16 @@
             if (!r || !Array.isArray(r.results) || (Array.isArray(r.stale) && r.stale.length)) return null;
             const failed = new Set(r.results.filter(x => x && x.failed != null).map(x => x.failed));
             if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
-            for (let grew = true; grew;) { grew = false; log.slice(0, cursor).forEach(d => { if (d.kind === 'st-move' && failed.has(d.from) !== failed.has(d.to)) { failed.add(d.from); failed.add(d.to); grew = true; } }); }
+            const via = new Map();   // a region held back -> the failed region a move ties it to
+            for (let grew = true; grew;) {
+                grew = false;
+                log.slice(0, cursor).forEach(d => {
+                    if (d.kind !== 'st-move' || failed.has(d.from) === failed.has(d.to)) return;
+                    const [had, add] = failed.has(d.from) ? [d.from, d.to] : [d.to, d.from];
+                    failed.add(add); via.set(add, via.get(had) || had); grew = true;
+                });
+            }
+            failed.via = via;
             return patches.some(p => !failed.has(p.region)) ? failed : null;
         };
         const send = () => {
@@ -2764,7 +2786,7 @@
                 const rest = patches.filter(p => !out.has(p.region));
                 return post(rest).then(r2 => {
                     const results = patches.map((p, i) => out.has(p.region)
-                        ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: 'not published: a move ties it to an area that failed' })
+                        ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: `not published: tied by a move to x-edit="${out.via.get(p.region) || [...out].find(x => !out.via.has(x))}", which failed` })
                         : r2.results[rest.indexOf(p)]);
                     const merged = Object.assign({}, r2, { results });
                     const o = done(merged, out); settled(r2, !!(opts && opts.rebase)); return o;

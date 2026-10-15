@@ -530,6 +530,21 @@ describe('/__edit/save component hosts', () => {
         }
     })
 
+    it('nor into a file it includes through other components', async () => {
+        comp('components/hero.html', `<section class="hero"><x-mid></x-mid></section>\n`)
+        comp('components/mid.html', `<div class="mid"><x-card></x-card></div>\n`)
+        comp('components/card.html', `<div x-edit="cr"><p>C</p></div>\n`)
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="ix"><h1>T</h1><x-hero></x-hero></section>`)
+        const r = await save([
+            st('ix', [n('ix', 'H1:T', { at: '0' })], [n('ix', 'H1:T', { at: '0' }), n('ix', 'X-HERO:', { at: '1' })]),
+            st('cr', [n('cr', 'P:C', { at: '0' }), n('ix', 'X-HERO:', { at: '1' })], [n('cr', 'P:C', { at: '0' })], { component: 'card' })
+        ])
+        expect(r.results.map(x => x.status)).toContain('error')
+        expect(JSON.stringify(r.results)).toContain('which would then include itself')
+        expect(readFileSync(path.join(dir, 'components/card.html'), 'utf8')).toBe(`<div x-edit="cr"><p>C</p></div>\n`)
+        expect(file()).toBe(`<section x-edit="ix"><h1>T</h1><x-hero></x-hero></section>`)
+    })
+
     it('a component never goes into its own file', async () => {
         comp('components/promo.html', `<div x-edit="pr2"><p>P</p></div>\n`)
         writeFileSync(path.join(dir, 'index.html'), `<section x-edit="ix"><h1>T</h1><x-promo></x-promo></section>`)

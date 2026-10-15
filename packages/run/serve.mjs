@@ -1287,6 +1287,17 @@ function staticWriter(file, patches, foreign, manifest) {
     }
     return hosts.get(tag);
   };
+  // Whether component `tag` includes `target`, directly or through other components.
+  const reaches = (tag, target) => {
+    const seen = new Set(), stack = [tag];
+    while (stack.length) {
+      const t = stack.pop();
+      if (t === target) return true;
+      if (seen.has(t)) continue; seen.add(t);
+      const h = hostOf(t); if (h) h.tags.forEach(x => { if (/^x-/.test(x) && !seen.has(x)) stack.push(x); });
+    }
+    return false;
+  };
   const ownComponent = /^components\//.test(relKey(relative(root, file))) || basename(file) !== 'index.html' ? 'x-' + basename(file, '.html') : null;
   const regions = new Map();
   const region = (name) => {
@@ -1426,7 +1437,8 @@ function staticWriter(file, patches, foreign, manifest) {
       const { node: child } = resolve(c);
       if (child.parent === node && !/^~/.test(c.key)) continue;    // authored placement is left as written
       const sub = finalSubtree(c);
-      if (ownComponent && sub.has(ownComponent)) fail(`<${ownComponent}> cannot go into its own component file`);
+      const loop = ownComponent && [...sub].find(t => reaches(t, ownComponent));
+      if (loop) fail(loop === ownComponent ? `<${ownComponent}> cannot go into its own component file` : `<${loop}> cannot go into ${basename(file)}: it includes <${ownComponent}>, which would then include itself`);
       const h = hostOf(child.name);
       const why = contentRefusal(h ? h.tag : child.name, node.name, anc, sub);
       if (why) fail(`<${child.name}> cannot go into <${node.name}>: ${why}`);

@@ -78,3 +78,21 @@ describe('locks on a component host', () => {
         expect(store().can('move', card)).toBe(true)
     })
 })
+
+describe('a component never goes inside markup that includes it', () => {
+    it('however deep: a host whose markup includes card cannot go into card\'s region', async () => {
+        const root = document.createElement('div')
+        root.innerHTML = `<section x-edit="cy"><div class="hero"><div class="mid"><div class="card"><p>C</p></div></div></div></section><div class="cardroot"><section x-edit="cardr"><p>In card</p></section></div>`
+        const mark = (el, name) => { el._manifestComponent = name; el._manifestHost = { roots: [el] } }
+        mark(root.querySelector('.hero'), 'hero'); mark(root.querySelector('.mid'), 'mid'); mark(root.querySelector('.card'), 'card')
+        mark(root.querySelector('.cardroot'), 'card')
+        window.ManifestComponentsLoader = { cache: { card: '<div class="cardroot"><section x-edit="cardr"><p>In card</p></section></div>' } }
+        Alpine.mutateDom(() => document.body.appendChild(root))
+        Alpine.initTree(root)
+        await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0))
+        const hero = root.querySelector('.hero')
+        expect(store().can('move', hero)).toBe(true)
+        expect(store().move(hero, 'cardr', null)).toBe(false)
+        expect(hero.parentElement.getAttribute('x-edit')).toBe('cy')
+    })
+})
