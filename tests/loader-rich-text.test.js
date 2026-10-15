@@ -103,6 +103,44 @@ describe('rich-text plugin loading', () => {
         expect(injected()).toContain('rich.text')
     })
 
+    it('$rich detection is word-bounded', async () => {
+        boot({}, '<button @click="$richness = 1">x</button>'); await settle()
+        expect(injected()).not.toContain('rich.text')
+    })
+
+    it('data-plugins="text-edit" warns once about the rename and loads nothing for it', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        boot({ 'data-plugins': 'tabs,text-edit' }); await settle()
+        const said = warn.mock.calls.map(a => a.join(' ')).filter(s => s.includes('text-edit was renamed to rich-text'))
+        expect(said.length).toBe(1)
+        expect(injected()).not.toContain('text.edit')
+        expect(injected()).not.toContain('rich.text')
+        warn.mockRestore()
+    })
+
+    it('Manifest.loadUsed() loads on-use plugins referenced by component HTML', async () => {
+        boot({}, '<p>x</p>'); await settle()
+        expect(injected()).not.toContain('rich.text')
+        const loading = window.Manifest.loadUsed('<section><div x-rich-text.html="body"></div></section>')
+        await settle()
+        expect(injected()).toContain('rich.text')
+        await loading
+    })
+
+    it('Manifest.loadUsed() ignores HTML that uses nothing', async () => {
+        boot({}, '<p>x</p>'); await settle()
+        expect(await window.Manifest.loadUsed('<p x-text="$x.title"></p>')).toEqual([])
+        expect(injected()).not.toContain('rich.text')
+    })
+
+    it('content inserted after boot (x-html, markdown) loads the plugin', async () => {
+        boot({}, '<main id="m"></main>'); await settle()
+        expect(injected()).not.toContain('rich.text')
+        document.getElementById('m').innerHTML = '<div x-rich-text></div>'
+        await settle()
+        expect(injected()).toContain('rich.text')
+    })
+
     it('an explicit list without it stays a constraint', async () => {
         boot({ 'data-plugins': 'tabs' }, '<div x-rich-text></div>'); await settle()
         expect(injected()).not.toContain('rich.text')

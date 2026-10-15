@@ -584,45 +584,104 @@
 		{ magic: '$presence', plugin: 'appwrite-presences' },
 		{ magic: '$rich', plugin: 'rich-text', attr: 'x-rich-text' },
 		...['$share', '$secure', '$links', '$push', '$app', '$haptics', '$biometric', '$camera'].map(magic => ({ magic, plugin: 'device' }))
-	];
+	].map(u => ({ ...u, re: new RegExp('\\' + u.magic + '\\b') }));
 	// Framework web components — <x-*> tags that are NOT project components.
 	const FRAMEWORK_TAG_RE = /^x-(code|code-group)$/;
-	function detectUsagePlugins(alreadyLoaded) {
+	function detectUsagePlugins(alreadyLoaded, root = typeof document === 'undefined' ? null : document) {
 		const wanted = USAGE_PLUGINS.filter(u => !alreadyLoaded.includes(u.plugin));
 		// <x-*> tags load the components plugin even with nothing registered in
 		// manifest.json (the loader's components/<name>.html convention).
 		const wantComponents = !alreadyLoaded.includes('components');
-		if ((wanted.length === 0 && !wantComponents) || typeof document === 'undefined') return [];
+		if ((wanted.length === 0 && !wantComponents) || !root) return [];
 		const found = new Set();
-		const done = () => found.size === wanted.length + (wantComponents ? 1 : 0);
+		const done = () => found.size === new Set(wanted.map(u => u.plugin)).size + (wantComponents ? 1 : 0);
 
-		for (const s of document.querySelectorAll('script:not([src])')) {
+		for (const s of root.querySelectorAll('script:not([src])')) {
 			const t = s.textContent || '';
-			for (const u of wanted) if (!found.has(u.plugin) && t.includes(u.magic)) found.add(u.plugin);
+			for (const u of wanted) if (!found.has(u.plugin) && u.re.test(t)) found.add(u.plugin);
 			if (done()) return [...found];
 		}
 
-		const scan = (root) => {
-			for (const el of root.querySelectorAll('*')) {
-				if (wantComponents && !found.has('components')) {
-					const tag = el.tagName.toLowerCase();
-					if (tag.startsWith('x-') && !FRAMEWORK_TAG_RE.test(tag)) found.add('components');
-				}
-				for (const attr of el.attributes || []) {
-					for (const u of wanted) if (u.attr && !found.has(u.plugin) && attr.name.startsWith(u.attr)) found.add(u.plugin);
-					const v = attr.value;
-					if (!v || v.indexOf('$') === -1) continue;
-					for (const u of wanted) if (!found.has(u.plugin) && v.includes(u.magic)) found.add(u.plugin);
-					if (done()) return;
-				}
+		const check = (el) => {
+			if (wantComponents && !found.has('components')) {
+				const tag = el.tagName.toLowerCase();
+				if (tag.startsWith('x-') && !FRAMEWORK_TAG_RE.test(tag)) found.add('components');
+			}
+			for (const attr of el.attributes || []) {
+				for (const u of wanted) if (u.attr && !found.has(u.plugin) && attr.name.startsWith(u.attr)) found.add(u.plugin);
+				const v = attr.value;
+				if (!v || v.indexOf('$') === -1) continue;
+				for (const u of wanted) if (!found.has(u.plugin) && u.re.test(v)) found.add(u.plugin);
+			}
+		};
+		const scan = (node) => {
+			for (const el of node.querySelectorAll('*')) {
+				check(el);
+				if (done()) return;
 				if (el.tagName === 'TEMPLATE' && el.content) {
 					scan(el.content);
 					if (done()) return;
 				}
 			}
 		};
-		scan(document);
+		if (root.nodeType === 1) {
+			check(root);
+			if (root.tagName === 'TEMPLATE' && root.content) scan(root.content);
+		}
+		if (!done()) scan(root);
 		return [...found];
+	}
+
+	// Post-boot usage: component HTML, x-html and markdown content load the
+	// on-use plugins they reference. Derive path only, like the boot sniff.
+	let usageSniff = false;
+	const usageLoaded = (p) => pluginLoads.has(p);
+	function loadUsed(source, version = RESOLVED_VERSION) {
+		if (!usageSniff || !source || typeof document === 'undefined') return Promise.resolve([]);
+		let root = source;
+		if (typeof source === 'string') {
+			if (source.indexOf('x-') === -1 && source.indexOf('$') === -1) return Promise.resolve([]);
+			root = document.createElement('template');
+			root.innerHTML = source;
+			root = root.content;
+		}
+		const loaded = [...new Set(USAGE_PLUGINS.map(u => u.plugin))].filter(usageLoaded).concat('components');
+		const used = detectUsagePlugins(loaded, root);
+		if (!used.length) return Promise.resolve([]);
+		const list = resolveDependencies(used).filter(p => !usageLoaded(p));
+		return Promise.all(list.map(p => addScript(p, version).catch(error => {
+			console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
+		}))).then(() => list);
+	}
+
+	function watchUsage(version) {
+		if (typeof MutationObserver === 'undefined') return;
+		const pending = new Set();
+		let queued = false;
+		const allLoaded = () => USAGE_PLUGINS.every(u => usageLoaded(u.plugin));
+		const observer = new MutationObserver((records) => {
+			for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) pending.add(n);
+			if (queued || !pending.size) return;
+			queued = true;
+			setTimeout(() => {
+				queued = false;
+				const nodes = [...pending].filter(n => n.isConnected);
+				pending.clear();
+				nodes.forEach(n => loadUsed(n, version));
+				if (allLoaded()) observer.disconnect();
+			}, 0);
+		});
+		observer.observe(document.documentElement, { childList: true, subtree: true });
+	}
+
+	const RENAMED_PLUGINS = { 'text-edit': 'rich-text' };
+	function dropRenamed(list) {
+		return list.filter(p => {
+			const name = p.replace(/^\+/, '');
+			if (!RENAMED_PLUGINS[name]) return true;
+			console.warn(`[Manifest Loader] ${name} was renamed to ${RENAMED_PLUGINS[name]}`);
+			return false;
+		});
 	}
 
 	// Detect the device plugin (, , , …). Auto-loaded inside a
@@ -667,7 +726,7 @@
 		let deriveFromManifest = !plugins;
 
 		if (plugins) {
-			const entries = plugins.split(',').map(p => p.trim()).filter(p => p);
+			const entries = dropRenamed(plugins.split(',').map(p => p.trim()).filter(p => p));
 			extraPlugins = entries.filter(p => p.startsWith('+')).map(p => p.slice(1));
 			const explicit = entries.filter(p => !p.startsWith('+'));
 			if (explicit.length > 0) {
@@ -747,7 +806,8 @@
 			// manifest.utilities.static.js setupUncoveredClassWatcher).
 			const allPlugins = [...AVAILABLE_PLUGINS, ...USAGE_LOADED_PLUGINS, ...APPWRITE_PLUGINS, ...AUTHORING_PLUGINS, 'payments', 'chat', 'device', 'native', 'import', 'tailwind'];
 			if (!allPlugins.includes(pluginName)) {
-				console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
+				if (RENAMED_PLUGINS[pluginName]) dropRenamed([pluginName]);
+				else console.warn(`[Manifest Loader] Unknown plugin: ${pluginName}`);
 				return Promise.reject(new Error(`Unknown plugin: ${pluginName}`));
 			}
 
@@ -758,7 +818,9 @@
 			return Promise.all(pluginList.map(plugin => addScript(plugin, version)));
 		},
 		loadTailwind: loadTailwind,
-		getPluginUrl: getPluginUrl
+		getPluginUrl: getPluginUrl,
+		// On-use plugins referenced by an HTML string or element
+		loadUsed: loadUsed
 	};
 
 	// ---- App-shell service worker (PERF-PRIMITIVES-DESIGN §13) ----
@@ -1012,6 +1074,8 @@
 							})));
 						}
 					} catch (_) { /* sniffing must never block Alpine */ }
+					usageSniff = true;
+					watchUsage(config.version);
 				}
 				startReadyCoordinator(pluginsToLoad, config.tailwind);
 				loadAlpine(alpineUrlCandidates(config.alpine));
