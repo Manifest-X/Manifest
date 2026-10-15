@@ -1275,15 +1275,62 @@
         // Pasted or dropped links never land inside a link
         const at = elementAt(r.startContainer);
         if (at && at.closest('a')) [...frag.querySelectorAll('a')].forEach(unwrapEl);
-        const end = frag.lastChild; if (!end) return;
+        if (!frag.lastChild) return;
         record(area);
         r.deleteContents();
-        r.insertNode(frag);
+        // An empty block's placeholder <br> goes; at a block's start, so does the content's leading space
+        const holder = blockEl() || area;
+        if (!holder.textContent.length && !holder.querySelector('img')) holder.querySelectorAll('br').forEach(b => b.remove());
+        if (offsetIn(holder) === 0) {
+            const w = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT), first = w.nextNode();
+            if (first) first.nodeValue = first.nodeValue.replace(/^\s+/, '');
+        }
+        let end = frag.lastChild;
+        if (!end) return;
+        const cr = range(); if (cr && area.contains(cr.startContainer)) cr.insertNode(frag); else area.appendChild(frag);
+        // The caret ends inside the last text, never at an element boundary (an IME composition there is left behind)
         const s = sel(), nr = document.createRange();
-        nr.setStartAfter(end); nr.collapse(true);
+        if (end.nodeType === 1) { const w = document.createTreeWalker(end, NodeFilter.SHOW_TEXT); let t = null; for (let n = w.nextNode(); n; n = w.nextNode()) t = n; if (t) end = t; }
+        if (end.nodeType === 3) nr.setStart(end, end.length); else nr.setStartAfter(end);
+        nr.collapse(true);
         s.removeAllRanges(); s.addRange(nr);
         record(area);
         area.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    // A selection across blocks is deleted as the browser would: the partly selected end
+    // block merges into the start block (never across a table cell), emptied wrappers go.
+    // A selection of everything leaves one empty paragraph.
+    function clearSpan(area) {
+        const r = range(); if (!r || r.collapsed || !area.contains(r.startContainer)) return;
+        const texts = textIn(area).filter(t => r.intersectsNode(t) && t.nodeValue.length);
+        const whole = document.createRange(); whole.selectNodeContents(area);
+        const all = (r.compareBoundaryPoints(Range.START_TO_START, whole) <= 0 && r.compareBoundaryPoints(Range.END_TO_END, whole) >= 0)
+            || (texts.length && r.toString() === area.textContent && !area.querySelector('img, hr, table'));
+        if (all) {
+            area.innerHTML = '<p></p>'; caretIn(area.firstElementChild, 0); return;
+        }
+        const blockOf = (n) => { for (let e = elementAt(n); e && e !== area; e = e.parentElement) if (BLOCK.includes(e.tagName)) return e; return null; };
+        // Boundaries on elements move into text, so the blocks they name are the ones holding text
+        if (texts.length) {
+            if (r.startContainer.nodeType !== 3) r.setStart(texts[0], 0);
+            if (r.endContainer.nodeType !== 3) { const l = texts[texts.length - 1]; r.setEnd(l, l.length); }
+        }
+        const a = blockOf(r.startContainer), b = blockOf(r.endContainer), at = [r.startContainer, r.startOffset];
+        r.deleteContents();
+        if (a && b && a !== b && b.isConnected && !/^(TD|TH)$/.test(a.tagName) && !/^(TD|TH)$/.test(b.tagName) && !b.contains(a) && !a.contains(b)) {
+            a.append(...b.childNodes);
+            let gone = b;
+            while (gone.parentElement && gone.parentElement !== area && !gone.parentElement.contains(a) && gone.parentElement.children.length === 1) gone = gone.parentElement;
+            gone.remove();
+        }
+        // The caret stays where the selection started, inside its block (deleteContents leaves it between blocks)
+        const c = document.createRange();
+        if (at[0].isConnected && area.contains(at[0])) c.setStart(at[0], Math.min(at[1], at[0].nodeType === 3 ? at[0].length : at[0].childNodes.length));
+        else if (a && a.isConnected) c.selectNodeContents(a);
+        else c.setStart(area, 0);
+        c.collapse(c.startContainer === a ? false : true);
+        const s = sel(); s.removeAllRanges(); s.addRange(c);
     }
     // A <br> at the caret; with nothing after it, a second one so the new line shows
     function insertBreak(area) {
@@ -1314,6 +1361,26 @@
     }
 
     // A trailing table, rule or similar block gets a line after it to land on
+    // Text and inline marks sitting directly in a block field are wrapped into one <p> per run, caret kept;
+    // childless blocks (not the caret's) go
+    function looseInline(area) {
+        const loose = [...area.childNodes].some(n => (n.nodeType === 3 && n.nodeValue.trim()) || (n.nodeType === 1 && INLINE_OK.has(n.tagName) && n.tagName !== 'BR'));
+        const empty = [...area.children].filter(c => BLOCK.includes(c.tagName) && !c.firstChild && !(range() && c.contains(range().startContainer)) && !/^(HR|TD|TH)$/.test(c.tagName));
+        if (!loose && !empty.length) return;
+        const off = offsetIn(area);
+        empty.forEach(c => c.remove());
+        if (loose) {
+            let run = null;
+            [...area.childNodes].forEach(n => {
+                const inl = n.nodeType === 3 || (n.nodeType === 1 && INLINE_OK.has(n.tagName));
+                if (!inl) { run = null; return; }
+                if (!run) { if (n.nodeType === 3 && !n.nodeValue.trim()) return; run = document.createElement('p'); n.before(run); }
+                run.appendChild(n);
+            });
+        }
+        if (off != null && document.activeElement === area) caretIn(area, off);
+    }
+
     function ensureTrailingBlock(area) {
         const last = area.lastElementChild;
         if (!last || !/^(TABLE|HR|FIGURE|PRE|UL|OL|BLOCKQUOTE|DL)$/.test(last.tagName)) return false;
@@ -2416,6 +2483,7 @@
                 return;
             }
             if (el.querySelector('table')) normalizeTables(el);
+            if (format !== 'plain') looseInline(el);
             ensureTrailingBlock(el);
             if (!el.textContent.trim() && !el.querySelector('img, table, hr')) {
                 if (el.children.length !== 1 || el.firstElementChild.tagName !== 'P') el.replaceChildren();
@@ -2617,7 +2685,7 @@
             const t = document.createElement('template'); t.innerHTML = clip;
             const only = t.content.children.length === 1 && t.content.firstElementChild.tagName === 'P' && !t.content.textContent.replace(t.content.firstElementChild.textContent, '').trim() ? t.content.firstElementChild : null;
             if (only) t.innerHTML = only.innerHTML;
-            if (!t.content.querySelector(BLOCK_SEL)) return insertNodes(el, t.content);
+            if (!t.content.querySelector(BLOCK_SEL)) { clearSpan(el); return insertNodes(el, t.content); }
             // Its own undo step: a pending burst lands first, the paste records after
             record(el);
             insertHTML(clip);

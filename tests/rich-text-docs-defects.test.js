@@ -233,3 +233,63 @@ describe('paste into a block', () => {
         expect(window.ManifestRichText.toMarkdown(d)).toBe('> Quote line\n>\n> under mk s **st** sp')
     })
 })
+
+describe('paste over a selection across blocks', () => {
+    const paste = (target, html) => { const ev = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(ev, 'clipboardData', { value: { getData: (t) => t === 'text/html' ? html : '' } }); target.dispatchEvent(ev) }
+    const doc = '<h2>Heading</h2><p>First para here</p><p>Second para here</p><ul><li>Item one</li><li>Item two</li></ul><table><tbody><tr><td>Cell A</td><td>Cell B</td></tr></tbody></table><p>Last</p>'
+    const field = () => { const root = mount(`<div x-rich-text.html id="h">${doc}</div>`); const el = root.querySelector('#h'); focusin(el); return el }
+    const span = (sc, so, ec, eo) => { const r = document.createRange(); r.setStart(sc, so); r.setEnd(ec, eo); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')) }
+    const NEW = '<strong>NEW</strong> text'
+
+    it('a triple-clicked paragraph (ending at the next one\'s start) is replaced in place', () => {
+        const el = field(), [p1, p2] = el.querySelectorAll('p')
+        span(p1.firstChild, 0, p2, 0)
+        paste(el, NEW)
+        expect(el.innerHTML).toBe(doc.replace('<p>First para here</p>', '<p><strong>NEW</strong> text</p>'))
+    })
+
+    it('everything selected leaves one paragraph of the paste', () => {
+        const el = field()
+        span(el, 0, el, el.childNodes.length)
+        paste(el, NEW)
+        expect(el.innerHTML).toBe('<p><strong>NEW</strong> text</p>')
+    })
+
+    it('from the middle of one paragraph into the next: they merge around the paste', () => {
+        const el = field(), [p1, p2] = el.querySelectorAll('p')
+        span(p1.firstChild, 6, p2.firstChild, 7)
+        paste(el, NEW)
+        expect(el.querySelectorAll('p')[0].outerHTML).toBe('<p>First <strong>NEW</strong> textpara here</p>')
+        expect(el.innerHTML).not.toContain('Second')
+    })
+
+    it('from a list item into a table cell: the cell stays, the paste goes in the item', () => {
+        const el = field(), li = el.querySelectorAll('li')[1], td = el.querySelector('td')
+        span(li.firstChild, 2, td.firstChild, 3)
+        paste(el, NEW)
+        expect(li.innerHTML).toBe('It<strong>NEW</strong> text')
+        expect(td.innerHTML).toBe('l A')
+        expect([...el.children].map(c => c.tagName)).toEqual(['H2', 'P', 'P', 'UL', 'TABLE', 'P'])
+    })
+
+    it('the caret ends inside the last pasted text, and an empty field loses its placeholder and leading space', () => {
+        const root = mount(`<div x-rich-text.html id="e"></div>`)
+        const el = root.querySelector('#e')
+        expect(el.innerHTML).toBe('<p><br></p>')
+        focusin(el); select(el.querySelector('p'), 0)
+        paste(el, ' <u>u</u> <em>em</em>')
+        expect(el.innerHTML).toBe('<p><u>u</u> <em>em</em></p>')
+        const r = window.getSelection().getRangeAt(0)
+        expect(r.startContainer.nodeType).toBe(3)
+        expect(r.startContainer.nodeValue).toBe('em')
+        expect(r.startOffset).toBe(2)
+    })
+
+    it('loose inline content at a block field\'s root is wrapped in a paragraph on settle', () => {
+        const root = mount(`<div x-rich-text.html id="l"><p>One</p></div>`)
+        const el = root.querySelector('#l')
+        el.append(' loose ', Object.assign(document.createElement('strong'), { textContent: 'bold' }))
+        el.dispatchEvent(new InputEvent('input', { bubbles: true }))
+        expect(el.innerHTML).toBe('<p>One</p><p> loose <strong>bold</strong></p>')
+    })
+})
