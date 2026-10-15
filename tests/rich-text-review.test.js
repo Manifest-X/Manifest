@@ -373,6 +373,38 @@ describe('re-review regressions', () => {
     })
 })
 
+describe('third-pass regressions', () => {
+    it.each([
+        ['one <img alt="i" src="/i.png"> two', 'one <img alt="i" src="/i.png"> two'],
+        ['a <img alt="1" src="/1.png"> <img alt="2" src="/2.png"> b', 'a <img alt="1" src="/1.png"> <img alt="2" src="/2.png"> b'],
+        ['x<img alt="i" src="/i.png"> ', 'x<img alt="i" src="/i.png">'],
+        ['a<wbr> b', 'a<wbr> b'],
+    ])('the space after an image survives in .inline.html: %s', (html, want) => {
+        const el = area('html.inline', 'x')
+        el.innerHTML = html
+        expect(api(el).value).toBe(want)
+    })
+
+    it('the space after an image survives in .inline markdown', () => {
+        const root = mount(`<div x-data="{ t: 'one ![i](/i.png) two' }"><div x-rich-text.inline="t" id="a"></div></div>`)
+        const el = root.querySelector('#a')
+        expect(api(el).value).toBe('one ![i](/i.png) two')
+    })
+
+    it('the first undo after a value loads restores the caret, not offset 0', () => {
+        const el = area('html.inline', 'x')
+        api(el).value = 'hello world'
+        focusin(el); select(el.firstChild, 5)
+        transfer(el, 'paste', { 'text/plain': 'X' })
+        expect(api(el).value).toBe('helloX world')
+        api(el).undo()
+        expect(api(el).value).toBe('hello world')
+        const r = window.getSelection().getRangeAt(0), pre = document.createRange()
+        pre.selectNodeContents(el); pre.setEnd(r.startContainer, r.startOffset)
+        expect(pre.toString().length).toBe(5)
+    })
+})
+
 describe('9. command methods are typed', () => {
     it.each(['strong(', 'abbr(title?', 'img(src', 'table(columns?', 'h2(', 'figcaption(', 'undo(', "'row-before'("])('declares %s', (sig) => {
         expect(DTS).toContain(sig)

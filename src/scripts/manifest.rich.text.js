@@ -281,18 +281,17 @@
         t.content.querySelectorAll('*').forEach(el => { if (!INLINE_OK.has(el.tagName)) { el.before(' '); el.after(' '); } });
         t.innerHTML = sanitize(t.innerHTML, false, keepStyle);
         // One space per boundary, across element edges too
-        const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
-        const texts = [];
-        let spaced = true;
+        // Images and other replaced elements are content: the space after one stays
+        const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+        let spaced = true, last = null;
         for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            if (n.nodeType === 1) { if (/^(IMG|WBR)$/.test(n.tagName)) { spaced = false; last = n; } continue; }
             let v = n.nodeValue.replace(/[ \t\n\r\f]+/g, ' ');
             if (spaced) v = v.replace(/^ /, '');
-            if (v) spaced = v.endsWith(' ');
+            if (v) { spaced = v.endsWith(' '); last = n; }
             n.nodeValue = v;
-            texts.push(n);
         }
-        const z = texts.filter(n => n.nodeValue).pop();
-        if (z) z.nodeValue = z.nodeValue.replace(/ $/, '');
+        if (last && last.nodeType === 3) last.nodeValue = last.nodeValue.replace(/ $/, '');
         return t.innerHTML;
     }
 
@@ -1713,7 +1712,12 @@
         const h = area._history; if (!h || h.restoring) return;
         clearTimeout(h.timer); h.timer = null;
         const html = area.innerHTML;
-        if (h.stack[h.at] && h.stack[h.at].html === html) return;
+        // Unchanged: the entry still learns where the caret is, so undoing back to it lands there
+        if (h.stack[h.at] && h.stack[h.at].html === html) {
+            const caret = offsetIn(area);
+            if (caret != null) h.stack[h.at].caret = caret;
+            return;
+        }
         h.stack.length = h.at + 1;
         h.stack.push({ html, caret: offsetIn(area) });
         if (h.stack.length > HISTORY_CAP) h.stack.shift();
