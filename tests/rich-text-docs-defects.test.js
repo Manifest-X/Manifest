@@ -158,7 +158,9 @@ describe('markdown paste', () => {
         const paste = (target, html) => { const ev = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(ev, 'clipboardData', { value: { getData: (t) => t === 'text/html' ? html : 'x' } }); target.dispatchEvent(ev) }
         focusin(el); select(el.querySelector('p').firstChild, 3)
         paste(el, '<p><u>under</u> <mark>hi</mark> H<sub>2</sub>O <strong>bold</strong> <a href="/x">l</a></p>')
-        expect(inserted.at(-1)).toBe('<p>under hi H2O <strong>bold</strong> <a href="/x">l</a></p>')
+        expect(el.innerHTML).toBe('<p>Oneunder hi H2O <strong>bold</strong> <a href="/x">l</a></p>')
+        paste(el, '<h2>Head</h2><p><u>u</u></p>')
+        expect(inserted.at(-1)).toBe('<h2>Head</h2><p>u</p>')
         focusin(il); select(il.firstChild, 1)
         paste(il, '<u>u</u><em>e</em><span style="color:red">s</span>')
         expect(il.innerHTML).toBe('xu<em>e</em>s')
@@ -206,5 +208,28 @@ describe('small things', () => {
         select(el.querySelector('p').firstChild, 0, 5)
         el._rt.api.color('')
         expect(el.querySelector('span')).toBe(null)
+    })
+})
+
+describe('paste into a block', () => {
+    const paste = (target, html, text = '') => { const ev = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(ev, 'clipboardData', { value: { getData: (t) => t === 'text/html' ? html : text } }); target.dispatchEvent(ev) }
+    it('inline content lands inside the caret\'s paragraph, in a quote too, leading space and formatting kept', () => {
+        const root = mount(`<div x-rich-text id="md"><blockquote><p>Quote line</p></blockquote><p>After</p></div>`)
+        const el = root.querySelector('#md'), q = el.querySelector('blockquote p')
+        focusin(el); select(q.firstChild, 10)
+        const clip = ' <u>under</u> <mark>mk</mark> <sub>s</sub> <strong>st</strong> <span style="color:red">sp</span>'
+        paste(el, clip)
+        expect(el.querySelector('blockquote').innerHTML).toBe('<p>Quote line under mk s <strong>st</strong> sp</p>')
+        const after = el.querySelectorAll(':scope > p')[0]
+        select(after.firstChild, 5)
+        paste(el, clip)
+        expect(after.innerHTML).toBe('After under mk s <strong>st</strong> sp')
+        expect(el._rt.api.value).toBe('> Quote line under mk s **st** sp\n\nAfter under mk s **st** sp')
+    })
+
+    it('loose inline runs inside a quote serialise as one paragraph, formatting kept', () => {
+        const d = document.createElement('div')
+        d.innerHTML = '<blockquote><p>Quote line</p> under mk s <strong>st</strong> sp</blockquote>'
+        expect(window.ManifestRichText.toMarkdown(d)).toBe('> Quote line\n>\n> under mk s **st** sp')
     })
 })

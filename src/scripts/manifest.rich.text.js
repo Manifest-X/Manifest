@@ -93,9 +93,20 @@
         return c;
     }
 
+    // Consecutive inline nodes (loose text, marks) are one paragraph, formatting kept
     function blocks(root, depth) {
         const parts = [];
-        root.childNodes.forEach(n => { const b = block(n, depth || 0); if (b) parts.push(b); });
+        let run = null;
+        const flush = () => { if (run) { const t = escLead(inline(run).trim()); if (t) parts.push(t); run = null; } };
+        root.childNodes.forEach(n => {
+            if (n.nodeType === 1 && (BLOCK.includes(n.tagName) || [...n.children].some(c => BLOCK.includes(c.tagName)))) {
+                flush();
+                const b = block(n, depth || 0); if (b) parts.push(b);
+                return;
+            }
+            if (n.nodeType === 1 || n.nodeType === 3) (run = run || document.createElement('div')).appendChild(n.cloneNode(true));
+        });
+        flush();
         return parts.join('\n\n');
     }
 
@@ -2599,10 +2610,17 @@
             if (format === 'plain') return insertPlain(el, single ? flatText(text).trim() : text);
             const html = dt.getData('text/html');
             if (single) return insertFlat(flatClip(html, text), null, text);
+            const clip = html ? unwrapBareSpans(format === 'markdown' ? markdownMarks(markdownBlocks(sanitize(flattenTables(html, true), true))) : sanitize(html, true))
+                : markdownHtml(text.replace(/([^\n])\n(?!\n)/g, '$1  \n'));
+            // Inline content (or a single paragraph of it) goes in at the caret, inside the caret's block,
+            // leading space and formatting kept; the browser's insertHTML would place it beside the block
+            const t = document.createElement('template'); t.innerHTML = clip;
+            const only = t.content.children.length === 1 && t.content.firstElementChild.tagName === 'P' && !t.content.textContent.replace(t.content.firstElementChild.textContent, '').trim() ? t.content.firstElementChild : null;
+            if (only) t.innerHTML = only.innerHTML;
+            if (!t.content.querySelector(BLOCK_SEL)) return insertNodes(el, t.content);
             // Its own undo step: a pending burst lands first, the paste records after
             record(el);
-            insertHTML(html ? unwrapBareSpans(format === 'markdown' ? markdownMarks(markdownBlocks(sanitize(flattenTables(html, true), true))) : sanitize(html, true))
-                : markdownHtml(text.replace(/([^\n])\n(?!\n)/g, '$1  \n')));
+            insertHTML(clip);
             record(el);
         });
 

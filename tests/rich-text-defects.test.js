@@ -110,8 +110,10 @@ describe('1. markdown mode cannot store live markup through link/image syntax', 
         const area = root.querySelector('#a')
         focusin(area); select(text(area), 1)
         paste(area, { 'text/plain': '![a](x"onerror="alert(1))' })
-        expect(inserted.length).toBe(1)
-        expect(parse(inserted[0]).querySelector('[onerror]')).toBe(null)
+        // One line of text goes in at the caret (inline), not through insertHTML
+        expect(inserted.length).toBe(0)
+        expect(area.querySelector('[onerror]')).toBe(null)
+        expect(area.querySelectorAll('p').length).toBe(1)
     })
 })
 
