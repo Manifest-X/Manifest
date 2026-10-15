@@ -58,7 +58,7 @@
         const put = (x) => x === null ? t.el.removeAttribute(name) : t.el.setAttribute(name, x);
         put(v);
         if (leafText(host) === cur) { put(was); console.warn(`[edit] ${name} is not kept inside text`); return false; }
-        const value = host.innerHTML.trim();
+        const value = leafHTML(host);
         const done = t.kind === 'component' ? commitComponentNode(t.area, host, 'text', value, before) : commitStaticNode(regionOf(host), host, 'text', value, { before });
         if (focused) { restartRich(host); host._preEdit = leafText(host); }
         return done;

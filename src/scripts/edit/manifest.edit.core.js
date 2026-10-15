@@ -111,10 +111,24 @@
     const authoredRich = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-rich-text') && !el._editRt;
     const LEAF_STYLE = true;   // inline style survives Rich Text's sanitizer, so it is plain formatting too
     const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
-    // A trailing <br> shows nothing: leaf text never ends with one
-    const leafClean = (html) => inlineClean(html).replace(/(\s*<br>)+\s*$/, '');
+    // Leaf text: Rich Text's allowlist; no interactive element inside another (or inside an
+    // interactive leaf), no empty link; a trailing <br> shows nothing, so none is kept.
+    function leafClean(html, host) {
+        const t = document.createElement('template');
+        t.innerHTML = inlineClean(html).replace(/(\s*<br>)+\s*$/, '');
+        const sel = CONTENT_RULES.interactive.join(','), hosted = !!(host && host.closest && host.closest('a, button'));
+        [...t.content.querySelectorAll(sel)].forEach(n => { if (hosted || (n.parentElement && n.parentElement.closest(sel))) n.replaceWith(...n.childNodes); });
+        t.content.querySelectorAll('a').forEach(a => { if (!a.textContent.trim() && !a.querySelector('img')) a.replaceWith(...a.childNodes); });
+        return t.innerHTML.trim();
+    }
+    // A live leaf's markup; links nested by DOM edits are unwrapped first (a parser would split them).
+    function leafHTML(el) {
+        const sel = CONTENT_RULES.interactive.join(','), hosted = !!el.closest('a, button');
+        [...el.querySelectorAll(sel)].forEach(n => { const up = n.parentElement && n.parentElement.closest(sel); if (hosted || (up && el.contains(up))) n.replaceWith(...n.childNodes); });
+        return el.innerHTML.trim();
+    }
     const sanitizeFor = (el, html) => !window.ManifestRichText ? sanitizeHTML(html)
-        : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : leafClean(html);
+        : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : leafClean(html, el);
 
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);

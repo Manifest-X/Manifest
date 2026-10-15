@@ -93,7 +93,7 @@
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
-            bindLeaf(el, () => commitStaticNode(regionOf(el) || area, el, 'text', el.innerHTML.trim()));   // live region: the element may have moved since arming
+            bindLeaf(el, () => commitStaticNode(regionOf(el) || area, el, 'text', leafHTML(el)));   // live region: the element may have moved since arming
             editable(el, 'html');
         });
     }
@@ -116,7 +116,7 @@
                 el._editRich = rich;
                 if (!el._dvBound) {
                     el._dvBound = true;
-                    const read = () => rich ? el.innerHTML.trim() : el.textContent;
+                    const read = () => rich ? leafHTML(el) : el.textContent;
                     el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); if (!authoredRich(el)) selectAllIn(el); });   // the rich editor owns its caret
                     el.addEventListener('focusin', () => { el._preEdit = leafText(el); });
                     el.addEventListener('keydown', richHistoryKey);
@@ -157,7 +157,7 @@
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
-            bindLeaf(el, () => commitComponentNode(area, el, 'text', el.innerHTML.trim()), () => liveMainPropagate(area, el, 'text', el.innerHTML));
+            bindLeaf(el, () => commitComponentNode(area, el, 'text', leafHTML(el)), () => liveMainPropagate(area, el, 'text', el.innerHTML));
             editable(el, 'html');
         });
     }

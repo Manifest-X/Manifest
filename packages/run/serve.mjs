@@ -1004,6 +1004,7 @@ function parseHTML(s, from = 0, to = s.length) {
 const openOf = (s, n) => n.implied ? '' : s.slice(n.tagStart, n.openEnd + 1);
 const isPluginNode = (s, n) => !n.implied && /\sdata-edit-(handle|ghost|grip)[\s=/>]/.test(openOf(s, n));
 const kidsOf = (s, n) => n.children.filter(k => !isPluginNode(s, k));
+const ancestorsOf = (n) => { const out = []; for (let p = n.parent; p && p.name; p = p.parent) out.push(p.name); return out; };
 function allElements(root) { const out = []; const walk = (n) => n.children.forEach(k => { out.push(k); walk(k); }); walk(root); return out; }
 // The element carrying x-edit*="<key>" as a real attribute.
 function locateEditEl(html, key, doc) {
@@ -1233,6 +1234,10 @@ function writeStaticTrees(file, patches) {
     if ('text' in e) {
       if (RAW_EDIT.has(node.name)) fail(`text edits are refused on <${node.name}>`);
       inner = sanitizeHTML(e.text); sk = fragSkeleton(inner);
+      const chain = [node.name, ...(anc || [])];
+      for (let p = node.parent; !anc && p && p.name; p = p.parent) chain.push(p.name);
+      const nested = allElements(parseHTML(inner)).find(k => CONTENT_RULES.interactive.includes(k.name) && (chain.includes('a') || chain.includes('button') || ancestorsOf(k).some(t => CONTENT_RULES.interactive.includes(t))));
+      if (nested) fail(`text in <${node.name}>: <${nested.name}> is interactive content and cannot go inside a link or button`);
     } else if (Array.isArray(n.children)) [inner, sk] = rebuildInner(node, n.children, copy, [node.name, ...(anc || [])]);
     else { inner = html.slice(node.innerStart, node.innerEnd); sk = kidsOf(html, node).map(k => skeletonOf(html, k)).join(','); }
     let close = html.slice(node.innerEnd, node.closeEnd);

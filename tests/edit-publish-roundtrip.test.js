@@ -274,6 +274,21 @@ describe('publish round trips', () => {
         expect(r.src).toBe(body.replace('<strong id="s2">dup<', '<strong id="s2">two<').replace('<p><strong>dup</strong></p>', '<p><strong>dup</strong> three</p>'))
     })
 
+    it('the writer refuses a text edit that nests interactive content, writing nothing', async () => {
+        const body = `<section x-edit="k2"><p>One</p><a href="/x">Link</a></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        const send = (k, t) => post([{ kind: 'static-tree', region: 'k2', tree: { key: '', children: [{ key: '@k2@P:One', at: '0', ...(k === 'p' ? { edits: { text: t } } : {}) }, { key: '@k2@A:Link', at: '1', ...(k === 'a' ? { edits: { text: t } } : {}) }] } }])
+        let res = await send('p', 'A <a href="/1">b <a href="/2">c</a></a>')
+        expect(res.results[0].status).toBe('error')
+        expect(res.results[0].reason).toMatch(/interactive content/)
+        res = await send('a', 'Link <a href="/2">in</a>')
+        expect(res.results[0].status).toBe('error')
+        expect(res.results[0].reason).toMatch(/inside a link or button/)
+        expect(regionSource()).toBe(body)
+        res = await send('p', 'A <a href="/1">b</a>')
+        expect(res.results[0].status).toBe('written')
+    })
+
     it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
         const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
         const r = await roundTrip(body, async (root) => {

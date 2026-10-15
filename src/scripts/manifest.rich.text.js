@@ -1168,16 +1168,46 @@
         if (/^[\w-]+(\.[\w-]+)+(:\d+)?(\/|$|\?|#)/.test(url)) return 'https://' + url;
         return null;
     }
-    function setLink(href) {
-        const existing = ancestor('a');
+    // An area that is, or sits in, a link takes no links: they cannot nest
+    const linkHost = (area) => !!(area && area.closest('a'));
+    const unwrapEl = (el) => el.replaceWith(...el.childNodes);
+    const textIn = (el) => { const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), out = []; for (let n = w.nextNode(); n; n = w.nextNode()) out.push(n); return out; };
+    // Same-href neighbours merge; links left without content go
+    function tidyLinks(area) {
+        area.querySelectorAll('a').forEach(a => {
+            if (!a.isConnected) return;
+            for (let n = a.nextSibling; n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === a.getAttribute('href'); n = a.nextSibling) a.append(...n.childNodes), n.remove();
+        });
+        area.querySelectorAll('a').forEach(a => { if (!a.textContent.trim() && !a.querySelector('img')) unwrapEl(a); });
+    }
+    function setLink(href, area) {
+        if (linkHost(area)) return;
+        const existing = ancestor('a'), r = range();
         const raw = href == null ? '' : String(href).trim();
-        if (!raw) { if (existing) existing.replaceWith(...existing.childNodes); return; }
+        // Links the selection touches, within the area
+        const touched = (nodes) => [...new Set(nodes.map(n => elementAt(n) && elementAt(n).closest('a')).filter(a => a && withinArea(a, a)))];
+        if (!raw) {
+            if (r && !r.collapsed) touched(selectedTextNodes()).forEach(unwrapEl);
+            else if (existing) unwrapEl(existing);
+            return;
+        }
         const url = normalizeUrl(raw);
         if (!url) return;
-        if (existing) { existing.setAttribute('href', url); return; }
-        const made = wrapInline('a');
-        if (made.length) made.forEach(a => a.setAttribute('href', url));
-        else insertHTML(`<a href="${escHtml(url)}">${escHtml(url)}</a>`);
+        if (existing && (r.collapsed || existing.contains(r.endContainer))) { existing.setAttribute('href', url); return; }
+        if (!r || r.collapsed) { insertHTML(`<a href="${escHtml(url)}">${escHtml(url)}</a>`); return; }
+        // Overlap: each touched link keeps its unselected text, the selection becomes the new link
+        const nodes = selectedTextNodes(); if (!nodes.length) return;
+        touched(nodes).forEach(a => {
+            const old = a.getAttribute('href'), keep = textIn(a).filter(t => !nodes.includes(t) && t.nodeValue.length);
+            unwrapEl(a);
+            keep.forEach(t => { const x = document.createElement('a'); if (old != null) x.setAttribute('href', old); t.before(x); x.appendChild(t); });
+        });
+        const s = sel(), nr = document.createRange(), last = nodes[nodes.length - 1];
+        nr.setStart(nodes[0], 0); nr.setEnd(last, last.length);
+        s.removeAllRanges(); s.addRange(nr);
+        wrapInline('a').forEach(a => a.setAttribute('href', url));
+        const root = area || elementAt(nodes[0]).closest('[data-rich-text]');
+        if (root) tidyLinks(root);
     }
     const linkHref = () => { const a = ancestor('a'); return a ? a.getAttribute('href') || '' : ''; };
 
@@ -1201,6 +1231,9 @@
     // Inserted by hand, so the browser adds no style wrappers of its own
     function insertNodes(area, frag) {
         const r = range(); if (!r || !area.contains(r.startContainer)) return;
+        // Pasted or dropped links never land inside a link
+        const at = elementAt(r.startContainer);
+        if (at && at.closest('a')) [...frag.querySelectorAll('a')].forEach(unwrapEl);
         const end = frag.lastChild; if (!end) return;
         record(area);
         r.deleteContents();
@@ -1280,8 +1313,8 @@
         COMMANDS[tag] = { md: meta.md, block: 1, run: () => setBlock(tag), active: () => blockTag() === tag.toUpperCase() };
     });
     Object.assign(COMMANDS, {
-        a: { md: 1, run: setLink, active: () => !!ancestor('a'), reflect: linkHref, enabled: () => !!ancestor('a') || hasSelection() },
-        unlink: { md: 1, run: () => { const a = ancestor('a'); if (a) a.replaceWith(...a.childNodes); }, active: () => false, enabled: () => !!ancestor('a') },
+        a: { md: 1, run: setLink, active: () => !!ancestor('a'), reflect: linkHref, enabled: (area) => !linkHost(area) && (!!ancestor('a') || hasSelection()) },
+        unlink: { md: 1, run: (v, area) => setLink('', area), active: () => false, enabled: (area) => !linkHost(area) && (!!ancestor('a') || (hasSelection() && [...area.querySelectorAll('a')].some(a => range().intersectsNode(a)))) },
         br: { md: 1, run: (v, area) => area && area._rt && area._rt.breaks ? insertBreak(area) : insertHTML('<br>'), active: () => false },
         wbr: { run: () => insertVoid('wbr'), active: () => false },
         img: { md: 1, args: 2, run: (v) => Array.isArray(v) ? insertImage(v[0], v[1]) : insertImage(v), active: () => false },

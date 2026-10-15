@@ -331,6 +331,63 @@ describe('a leaf resting as a focused piece', () => {
     })
 })
 
+describe('links never nest', () => {
+    it('a link leaf takes no link: $rich.a and unlink are unavailable, a pasted link is unwrapped', async () => {
+        const root = await mount(`<section x-edit="ln1"><p>Go <a class="btn" href="/y">there now</a></p></section>`)
+        const a = root.querySelector('a')
+        expect(a._editRt).toBeTruthy()
+        await enter(a)
+        select(a.firstChild, 1, 4)
+        expect(a._editRt.can('a')).toBe(false)
+        a._editRt.a('https://z.com')
+        expect(a.querySelector('a')).toBe(null)
+        select(a.firstChild, 9)
+        paste(a, { 'text/html': 'see <a href="https://evil.example">x</a>' })
+        expect(a.querySelector('a')).toBe(null)
+        expect(a.innerHTML).toBe('there nowsee x')
+        await blur(a)
+        expect(log().at(-1).value).toBe('there nowsee x')
+    })
+
+    it('a link over part of an existing link splits it, leaving no nested or empty link', async () => {
+        const root = await mount(`<section x-edit="ln2"><p>Read the <a href="/guide">guide</a> today.</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        const r = document.createRange(); r.setStart(p.firstChild, 5); r.setEnd(p.querySelector('a').firstChild, 2)
+        window.getSelection().removeAllRanges(); window.getSelection().addRange(r); document.dispatchEvent(new Event('selectionchange'))
+        p._editRt.a('https://y.com')
+        expect(p.innerHTML).toBe('Read <a href="https://y.com">the gu</a><a href="/guide">ide</a> today.')
+        await blur(p)
+        expect(log().at(-1).value).toBe('Read <a href="https://y.com">the gu</a><a href="/guide">ide</a> today.')
+    })
+
+    it('a selection covering a whole link replaces it; unlink over a selection removes every link it touches', async () => {
+        const root = await mount(`<section x-edit="ln3"><p>Read the <a href="/guide">guide</a> today.</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        select(p.lastChild, 0, 3)
+        const r = document.createRange(); r.setStart(p.firstChild, 5); r.setEnd(p.lastChild, 3)
+        window.getSelection().removeAllRanges(); window.getSelection().addRange(r); document.dispatchEvent(new Event('selectionchange'))
+        p._editRt.a('https://y.com')
+        expect(p.innerHTML).toBe('Read <a href="https://y.com">the guide to</a>day.')
+        const r2 = document.createRange(); r2.selectNodeContents(p)
+        window.getSelection().removeAllRanges(); window.getSelection().addRange(r2); document.dispatchEvent(new Event('selectionchange'))
+        p._editRt.unlink()
+        expect(p.querySelector('a')).toBe(null)
+    })
+
+    it('leaf text never carries a nested or empty link, whatever reaches the DOM', async () => {
+        const root = await mount(`<section x-edit="ln4"><p>One <a href="/a">two</a></p><p>Btn</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        const inner = document.createElement('a'); inner.href = '/b'; inner.textContent = 'w'
+        const outer = p.querySelector('a'); outer.textContent = 'tx'; outer.firstChild.splitText(1); outer.insertBefore(inner, outer.lastChild)
+        const empty = document.createElement('a'); empty.setAttribute('href', '/c'); p.append(' ', empty)
+        await blur(p)
+        expect(log().at(-1).value).toBe('One <a href="/a">twx</a>')
+    })
+})
+
 describe('line breaks in leaves', () => {
     it('an address is one leaf: its <br>s stay, Shift+Enter adds one, Enter is swallowed', async () => {
         const root = await mount(`<section x-edit="br1"><p>1 Main St<br>Springfield</p></section>`)
