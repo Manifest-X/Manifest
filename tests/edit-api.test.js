@@ -1042,6 +1042,6 @@ describe('$edit.classes and $edit.attr', () => {
         const region = id('pub')
         const root = await mount(`<section x-edit="${region}"><p>One</p></section>`)
         store().attr('aria-label', 'First', root.querySelector('p'))
-        expect(treeOf(region)).toEqual({ key: K(region, 'SECTION:One'), children: [{ key: K(region, 'P:One'), at: '0', edits: { 'aria-label': 'First' } }] })
+        expect(treeOf(region)).toEqual({ key: K(region, 'SECTION:One'), path: true, children: [{ key: K(region, 'P:One'), at: '0', edits: { 'aria-label': 'First' } }] })
     })
 })
