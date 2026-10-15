@@ -23,7 +23,7 @@
   "manifest.markdown.js": "sha384-heyDR40LXHaAmAuA+fa381uFwShk1oAqpFFY6E2Qq4T3VN0TQfRqyc++MF40K5Hj",
   "manifest.native.js": "sha384-g+txmrEszYtuOvRelTp/c1wSNR2AtllVI9rx5NPPD7DzhVUnMNughonZykv2xlBW",
   "manifest.payments.js": "sha384-8pofk2zhxtapPMpwnFyTelPMrYhShNhDCE722uQh/EYFvZFuPLmSdgunqsarVQjv",
-  "manifest.rich.text.js": "sha384-iI6175sXZV4O20vz+cjPS3HnOOBrt8S/otiZLk0dAMSpj3lHjde+tM2jxSig/Z4D",
+  "manifest.rich.text.js": "sha384-VDcPTtfnjCs3cmpMN3YfvgXRrPIgPnMTmkqVXuvlUBt9EHX0oie0gjXdflY/ghG5",
   "manifest.router.js": "sha384-xkQaHO60lMQwtnqGPxPJJ646eyqBjINs4AFesrQbe2dWqPIoIcJ9RD5wsjqjak7w",
   "manifest.slides.js": "sha384-3uRTkyK9XPLmnxI2+igZlpi4EyPlU/7IHj5j3BZJJ2KN455vXyk99fiXV3feO/XY",
   "manifest.status.js": "sha384-MBO345ab7H6Uq1X2dZLt4Ge1Gcra+Z2qYApvlAeIV8CJhDDJrz2FPXpp+Kcp8zcM",
@@ -36,5 +36,5 @@
   "manifest.url.parameters.js": "sha384-J2aSVBOPsoqsbafHndrWLHEDpKb4AKJAoQnVmKA4gZh5P/8HHjFWHO/lkusmG84l",
   "manifest.utilities.js": "sha384-L5uXMLFBIF6LUM1haRjd4eGjHSWuqsCYSpPZRPYosNfJsMC5U5TnmjBxIhrZRe2d",
   "manifest.virtual.js": "sha384-ZDNoF9QVhVcVpkjIK6NH15S6I5c6OBshiJpXSOYjNsIB+298I0a7g3aFO+jyq4Vb",
-  "manifest.js": "sha384-PxT+YE3XN0/n2PlVy/+kMpoRkpn7A11lByD1+yH59hCdJ0MmpUNUQAsIzCGARb7S"
+  "manifest.js": "sha384-G+ctciC90o/zSB/sRbmX7ANE/7rYvnepyzIsvNbD6N5ynlO5oludSDfzYVCdzU/g"
 }

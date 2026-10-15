@@ -585,6 +585,26 @@
 		{ magic: '$rich', plugin: 'rich-text', attr: 'x-rich-text' },
 		...['$share', '$secure', '$links', '$push', '$app', '$haptics', '$biometric', '$camera'].map(magic => ({ magic, plugin: 'device' }))
 	].map(u => ({ ...u, re: new RegExp('\\' + u.magic + '\\b') }));
+	// $rich before Rich Text arrives (it loads on use, and SPA routes or component HTML can
+	// need it later): an idle stand-in, so expressions never throw. Rich Text bumps `v` when
+	// it registers the real magic, so effects that read $rich run again; Alpine binds magics
+	// when a directive is first evaluated, so the stand-in then delegates to the real one.
+	let richStubArmed = false;
+	function stubRichMagic() {
+		if (typeof window === 'undefined' || typeof document === 'undefined' || richStubArmed) return;
+		richStubArmed = true;
+		const install = () => {
+			const A = window.Alpine;
+			if (window.ManifestRichText || !A || !A.magic || !A.reactive || window.__manifestRichStub) return;
+			const state = window.__manifestRichStub = A.reactive({ v: 0 });
+			const idle = new Proxy({ value: '', link: '', selection: null, all: {}, active: () => false, can: () => false, markdown: () => '', html: () => '' },
+				{ get: (t, k) => k in t ? t[k] : (typeof k === 'string' ? () => { } : undefined), set: () => true });
+			A.magic('rich', (el, u) => { void state.v; return window.__manifestRichMagic ? window.__manifestRichMagic(el, u) : idle; });
+		};
+		document.addEventListener('alpine:init', install, { once: true });
+		if (window.Alpine && window.Alpine.magic) install();
+	}
+	stubRichMagic();
 	// Framework web components — <x-*> tags that are NOT project components.
 	const FRAMEWORK_TAG_RE = /^x-(code|code-group)$/;
 	function detectUsagePlugins(alreadyLoaded, root = typeof document === 'undefined' ? null : document) {
