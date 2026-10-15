@@ -604,5 +604,64 @@ describe('startup sweep', () => {
         expect(msg).toMatchObject({ rel: 'styles/core/manifest.theme.css' })
         expect(msg.hash).toMatch(/^[0-9a-f]{40}$/)
     })
+
+    it('a container listed only as a path keeps the source\'s current order; a restructured one must match its base', async () => {
+        const src = `<section x-edit="r"><p>Beta</p><p>Alpha</p><p>Gamma</p></section>`   // reordered since the page loaded
+        const path = await write(src, [{ kind: 'static-tree', region: 'r', tree: { key: '', path: true, children: [n('r', 'P:Gamma', { edits: { text: 'Gamma edited' } })] } }])
+        expect(path.results[0].status).toBe('written')
+        expect(path.out).toBe(`<section x-edit="r"><p>Beta</p><p>Alpha</p><p>Gamma edited</p></section>`)
+        const base = ['P:Alpha', 'P:Beta', 'P:Gamma'].map((k, i) => ({ key: K('r', k), at: String(i) }))
+        const moved = await write(src, [{ kind: 'static-tree', region: 'r', tree: { key: '', base, children: [n('r', 'P:Beta'), n('r', 'P:Gamma'), n('r', 'P:Alpha')] } }])
+        expect(moved.results[0].status).toBe('error')
+        expect(moved.results[0].reason).toContain('changed since this page loaded')
+        expect(moved.out).toBe(src)
+    })
+
+    it('an external reorder of a different container merges with the page\'s restructure', async () => {
+        const src = `<section x-edit="m"><ul class="a"><li>A1</li><li>A2</li></ul><ul class="b"><li>B2</li><li>B1</li></ul></section>`   // list b reordered externally
+        const base = [{ key: K('m', 'LI:A1'), at: '0.0' }, { key: K('m', 'LI:A2'), at: '0.1' }]
+        const { results, out } = await write(src, [{ kind: 'static-tree', region: 'm', tree: { key: '', path: true, children: [
+            n('m', 'UL:A1A2', { base, children: [n('m', 'LI:A2'), n('m', 'LI:A1')] }),
+            n('m', 'UL:B1B2', { at: '1', path: true, children: [n('m', 'LI:B1', { edits: { text: 'B1 edited' } })] })
+        ] } }])
+        expect(results[0].status, JSON.stringify(results)).toBe('written')
+        expect(out).toBe(`<section x-edit="m"><ul class="a"><li>A2</li><li>A1</li></ul><ul class="b"><li>B2</li><li>B1 edited</li></ul></section>`)
+        // found by path only when its listed children really sit in it
+        const wrong = await write(src, [{ kind: 'static-tree', region: 'm', tree: { key: '', path: true, children: [n('m', 'UL:B1B2', { at: '1', path: true, children: [n('m', 'LI:A1', { edits: { text: 'x' } })] })] } }])
+        expect(wrong.results[0].status).toBe('error')
+    })
+
+    it('component names must be declared: no traversal, no hidden or node_modules paths (any case)', async () => {
+        mkdirSync(path.join(dir, 'components/cards'), { recursive: true }); mkdirSync(path.join(dir, 'NODE_MODULES/pkg'), { recursive: true })
+        const page = `<div class="card"><h3>T</h3></div>\n`
+        writeFileSync(path.join(dir, 'NODE_MODULES/pkg/page.html'), page)
+        writeFileSync(path.join(dir, 'components/cards/promo.html'), page)
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="a"><p>One</p></section>`)
+        const edit = (component) => save([{ kind: 'component', scope: 'main', component, edits: [{ path: '0', prop: 'text', value: 'X' }] }])
+        try {
+            for (const bad of ['../NODE_MODULES/pkg/page', '../index', '/index', 'cards/../../index', '.hidden', 'cards/.x']) {
+                const { results } = await edit(bad)
+                expect(results[0].status, bad).toBe('error')
+            }
+            expect(readFileSync(path.join(dir, 'NODE_MODULES/pkg/page.html'), 'utf8')).toBe(page)
+            expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(`<section x-edit="a"><p>One</p></section>`)
+            const ok = await edit('cards/promo')
+            expect(ok.results[0].status).toBe('written')
+        } finally { rmSync(path.join(dir, 'NODE_MODULES'), { recursive: true, force: true }); rmSync(path.join(dir, 'components/cards'), { recursive: true, force: true }) }
+    })
+
+    it('confinement compares segments case-insensitively and refuses Windows aliases', async () => {
+        mkdirSync(path.join(dir, 'Node_Modules/x'), { recursive: true }); mkdirSync(path.join(dir, 'styles./t'), { recursive: true })
+        const css = `:root {\n    --x: 1;\n}\n`
+        writeFileSync(path.join(dir, 'Node_Modules/x/theme.css'), css); writeFileSync(path.join(dir, 'styles./t/theme.css'), css)
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="Node_Modules/x/theme.css"><link rel="stylesheet" href="styles./t/theme.css"><section x-edit="a"><p>One</p></section>`)
+        try {
+            for (const file of ['Node_Modules/x/theme.css', 'styles./t/theme.css']) {
+                const { results } = await save([{ kind: 'theme', scope: null, var: '--x', value: 'red', file }])
+                expect(results[0].status, file).toBe('error')
+                expect(readFileSync(path.join(dir, file), 'utf8')).toBe(css)
+            }
+        } finally { rmSync(path.join(dir, 'Node_Modules'), { recursive: true, force: true }); rmSync(path.join(dir, 'styles.'), { recursive: true, force: true }) }
+    })
 })
 

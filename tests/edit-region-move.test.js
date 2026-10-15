@@ -383,7 +383,8 @@ describe('x-edit plugin-node indexing (handles/ghosts never count)', () => {
         expect(area.firstElementChild.tagName).toBe('P')
         expect([...area.children].filter(c => c.tagName === 'P').map(c => c.textContent)).toEqual(['One', 'Two'])
         editText(area.querySelector('p'), 'Edited')
-        expect(kidKeys(treeOf('sz1'))).toEqual([K('sz1', 'P:One'), K('sz1', 'P:Two')])
+        expect(treeOf('sz1').path).toBe(true)                            // undone: only a path to the edit
+        expect(kidKeys(treeOf('sz1'))).toEqual([K('sz1', 'P:One')])
         expect(findNode(treeOf('sz1'), K('sz1', 'P:One')).edits).toEqual({ text: 'Edited' })
     })
 })

@@ -694,12 +694,13 @@ const vread = (file) => { if (READS) READS.add(file); return VFS && VFS.has(file
 const WRITE_EXT = { html: ['.html'], css: ['.css'], data: ['.json', '.csv', '.yaml', '.yml', '.md'] };
 WRITE_EXT.any = [...WRITE_EXT.html, ...WRITE_EXT.css, ...WRITE_EXT.data];
 let REAL_ROOT = null;
-const realRoot = () => REAL_ROOT || (REAL_ROOT = realpathSync(root));
-const hiddenSegment = (rel) => rel.split(/[\\/]/).some(seg => seg.startsWith('.') || seg === 'node_modules');
+const realRoot = () => REAL_ROOT || (REAL_ROOT = realpathSync.native(root));
+// Case-insensitive (APFS/NTFS), and segments Windows would alias (trailing dot or space).
+const hiddenSegment = (rel) => rel.split(/[\\/]/).some(seg => seg.startsWith('.') || seg.toLowerCase() === 'node_modules' || /[. ]$/.test(seg));
 const outside = (rel) => !rel || rel.startsWith('..') || isAbsolute(rel);
 function realTarget(file) {
-  try { return realpathSync(file); } catch { }
-  try { return join(realpathSync(dirname(file)), basename(file)); } catch { return null; }
+  try { return realpathSync.native(file); } catch { }
+  try { return join(realpathSync.native(dirname(file)), basename(file)); } catch { return null; }
 }
 function writeRefusal(file, kind) {
   const exts = WRITE_EXT[kind] || WRITE_EXT.any, ext = extname(file).toLowerCase();
@@ -733,7 +734,7 @@ function baseHashes() {
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name === 'node_modules' || EDIT_TEMP.test(e.name)) continue;
       const p = join(dir, e.name);
-      let real; try { real = realpathSync(p); } catch { continue; }
+      let real; try { real = realpathSync.native(p); } catch { continue; }
       const rrel = relative(realRoot(), real);
       if (outside(rrel) && real !== realRoot()) continue;
       if (hiddenSegment(rrel)) continue;
@@ -1203,15 +1204,22 @@ function writeStaticTrees(file, patches) {
     return regions.get(name);
   };
   const removed = new Set(patches.flatMap(p => p.removed || []));
-  const placed = new Map(), rebuilt = new Set();
-  const resolve = (k, at) => {
+  const placed = new Map(), rebuilt = new Set(), renderedUnder = new Map();
+  // `kids` (the node's listed children) lets a container whose text changed (its children
+  // reordered elsewhere) be found by path: its listed children must all sit in it.
+  const resolve = (k, at, kids) => {
     const m = /^(?:~([a-z0-9]+)~)?@([^@]*)@([\s\S]*)$/.exec(String(k || ''));
     if (!m) fail(`not a source element: ${k}`);
     const reg = region(decodeURIComponent(m[2]));
     if (!reg) fail(`x-edit="${decodeURIComponent(m[2])}" not found in ${basename(file)}`);
     let node = reg.byKey.get('@' + m[2] + '@' + m[3]);
     // The path is a fallback only when tag and text agree, i.e. just the ordinal differs.
-    if (!node && at != null) { const p = reg.byPath.get(String(at)); if (p && p.base === m[3].replace(/#\d+$/, '')) node = p; }
+    if (!node && at != null) {
+      const p = reg.byPath.get(String(at));
+      if (p && p.base === m[3].replace(/#\d+$/, '')) node = p;
+      else if (p && p.name.toUpperCase() === m[3].split(':')[0] && Array.isArray(kids) && kids.some(c => !/^~/.test(c.key))
+        && kids.every(c => { if (/^~/.test(c.key)) return true; try { return resolve(c.key, c.at, c.children).node.parent === p; } catch { return false; } })) node = p;
+    }
     if (!node) fail(`element '${m[3]}' not found in x-edit="${reg.name}"`);
     return { node, copy: !!m[1] };
   };
@@ -1244,7 +1252,9 @@ function writeStaticTrees(file, patches) {
       for (let p = node.parent; !anc && p && p.name; p = p.parent) chain.push(p.name);
       const nested = allElements(parseHTML(inner)).find(k => CONTENT_RULES.interactive.includes(k.name) && (chain.includes('a') || chain.includes('button') || ancestorsOf(k).some(t => CONTENT_RULES.interactive.includes(t))));
       if (nested) fail(`text in <${node.name}>: <${nested.name}> is interactive content and cannot go inside a link or button`);
-    } else if (Array.isArray(n.children)) [inner, sk] = rebuildInner(node, n.children, copy, [node.name, ...(anc || [])]);
+    } else if (Array.isArray(n.children)) [inner, sk] = n.path && !copy
+      ? renderPathInner(node, n.children, [node.name, ...(anc || [])])
+      : rebuildInner(node, n.children, copy, [node.name, ...(anc || [])], n.base);
     else { inner = html.slice(node.innerStart, node.innerEnd); sk = kidsOf(html, node).map(k => skeletonOf(html, k)).join(','); }
     let close = html.slice(node.innerEnd, node.closeEnd);
     if ((node.implied && attrsEdited) || (node.impliedEnd && inRebuilt && !node.implied)) close = `</${node.name}>`;
@@ -1252,12 +1262,12 @@ function writeStaticTrees(file, patches) {
   }
   function renderNode(n, parentRebuilt, anc) {
     if (!n || typeof n !== 'object') fail('malformed tree');
-    const { node, copy } = resolve(n.key, n.at);
+    const { node, copy } = resolve(n.key, n.at, n.children);
     if (copy && [...regions.values()].some(r => r && r.root === node)) fail(`an area cannot be copied: ${n.key}`);
     if (!copy) {
       if (placed.has(node)) fail(`'${n.key}' placed twice`);
       if (removed.has(node.key)) fail(`'${n.key}' is both placed and removed`);
-      placed.set(node, Array.isArray(n.children) ? 'rebuilt' : 'kept');
+      placed.set(node, Array.isArray(n.children) ? (n.path ? 'path' : 'rebuilt') : 'kept');
     }
     const [markup, sk] = renderAt(node, n, copy, parentRebuilt, anc);
     return [(copy ? '' : html.slice(node.lead ?? node.tagStart, node.tagStart)) + markup, sk];
@@ -1267,22 +1277,52 @@ function writeStaticTrees(file, patches) {
   // subtree (template contents included — an x-if can render them here); text edits by
   // what they parse to.
   function finalSubtree(n, out = new Set()) {
-    const { node } = resolve(n.key, n.at);
+    const { node } = resolve(n.key, n.at, n.children);
     out.add(node.name);
     if (n.edits && 'text' in n.edits) { const f = sanitizeHTML(n.edits.text); allElements(parseHTML(f)).forEach(k => out.add(k.name)); }
     else if (Array.isArray(n.children)) n.children.forEach(c => finalSubtree(c, out));
     else allElements(node).forEach(k => out.add(k.name));
     return out;
   }
-  function rebuildInner(node, children, copy, anc) {
+  // A container listed only as a path to edits: its current children, in the source's
+  // current order; listed ones render with their edits, the rest stay as written.
+  function renderPathInner(node, listed, anc) {
+    const kids = node.kids || kidsOf(html, node);
+    const want = new Map();
+    for (const c of listed) {
+      const { node: k, copy } = resolve(c.key, c.at, c.children);
+      if (copy || k.parent !== node) fail(`'${c.key}' is no longer in its <${node.name}> (the source changed since this page loaded); reload to continue`);
+      want.set(k, c);
+    }
+    let out = '', prev = node.innerStart;
+    const sk = [];
+    for (const k of kids) {
+      const c = want.get(k);
+      if (!c) { sk.push(skeletonOf(html, k)); continue; }
+      out += html.slice(prev, k.lead ?? k.tagStart);
+      renderedUnder.set(k, node);
+      const [m, s2] = renderNode(c, false, anc);
+      out += m; sk.push(s2); prev = k.closeEnd;
+    }
+    return [out + html.slice(prev, node.innerEnd), sk.join(',')];
+  }
+  function rebuildInner(node, children, copy, anc, base) {
     if (!copy) rebuilt.add(node);
     const kids = node.kids || kidsOf(html, node);
+    // A restructured container must still hold what the page loaded with.
+    if (Array.isArray(base) && !copy) {
+      const changed = () => fail(`<${node.name}> ${node.key ? `'${node.key}' ` : ''}changed since this page loaded; reload to continue`);
+      const current = kids.filter(k => k.name !== 'template');
+      if (base.length !== current.length) changed();
+      base.forEach((b, i) => { let r; try { r = resolve(b.key, b.at); } catch { changed(); } if (r.node !== current[i]) changed(); });
+    }
     for (const c of children) {
-      const { node: child } = resolve(c.key, c.at);
+      const { node: child } = resolve(c.key, c.at, c.children);
       if (child.parent === node && !/^~/.test(c.key)) continue;    // authored placement is left as written
       const why = contentRefusal(child.name, node.name, anc, finalSubtree(c));
       if (why) fail(`<${child.name}> cannot go into <${node.name}>: ${why}`);
     }
+    children.forEach(c => { const r = resolve(c.key, c.at, c.children); if (!r.copy) renderedUnder.set(r.node, node); });
     const rendered = children.map(c => renderNode(c, true, anc));
     const sk = rendered.map(r => r[1]).join(',');
     const gaps = []; let prev = node.innerStart;
@@ -1307,7 +1347,7 @@ function writeStaticTrees(file, patches) {
       if (!reg) fail(`x-edit="${p.region}" not found in ${basename(file)}`);
       const t = p.tree || {};
       if (!t.edits && !Array.isArray(t.children)) continue;
-      placed.set(reg.root, Array.isArray(t.children) ? 'rebuilt' : 'kept');
+      placed.set(reg.root, Array.isArray(t.children) ? (t.path ? 'path' : 'rebuilt') : 'kept');
       const rootAnc = []; for (let a = reg.root.parent; a && a !== doc; a = a.parent) rootAnc.push(a.name);
       const [markup, sk] = renderAt(reg.root, t, false, false, rootAnc);
       out.push({ reg, text: markup, sk });
@@ -1316,10 +1356,11 @@ function writeStaticTrees(file, patches) {
     const roots = new Set([...regions.values()].filter(Boolean).map(r => r.root));
     // Every placed element's source ancestors must be rebuilt (or removed), up to its area.
     for (const [node] of placed) {
-      if (roots.has(node)) continue;
+      if (roots.has(node) || renderedUnder.get(node) === node.parent) continue;   // in place: its parent is checked in turn
       for (let a = node.parent; a; a = a.parent) {
+        // Its source parent must be rebuilt; higher up, a path (rendered from the tree) is fine too.
         const how = placed.get(a);
-        if (how === 'rebuilt') { if (roots.has(a)) break; continue; }
+        if (how === 'rebuilt' || (how === 'path' && a !== node.parent)) { if (roots.has(a)) break; continue; }
         if (how) fail(`'${node.key}' would appear twice: its source container is kept as is`);
         if (removed.has(a.key)) break;
         if (roots.has(a) || !a.parent || a.parent === doc) fail(`'${node.key}' moved, but its source area is not rebuilt`);
@@ -1362,10 +1403,14 @@ function navigateToNode(html, path) {
 }
 // A project-relative path from manifest.json ("components/x.html", "/data/a.csv").
 const resolveRel = (rel) => safeResolve('/' + String(rel).replace(/^\/+/, ''));
+// A component the project declares: a manifest.json entry (matched by file name, as the
+// client names components by tag), or the convention components/<name>.html.
+const COMPONENT_NAME = /^[\w-]+(\/[\w-]+)*$/;
 function resolveComponentFile(manifest, name) {
+  if (typeof name !== 'string' || !COMPONENT_NAME.test(name)) return null;
   const all = [...(manifest.preloadedComponents || []), ...(manifest.components || [])];
-  const listed = all.find(p => String(p).split('/').pop().replace('.html', '') === name);
-  if (listed) return listed;
+  const listed = all.find(p => String(p).split('/').pop().replace('.html', '') === name.split('/').pop());
+  if (listed) { const rel = String(listed).replace(/^\/+/, ''); return /(^|\/)\.\.?(\/|$)/.test(rel) ? null : rel; }
   // Convention component: components/<name>.html needs no manifest entry.
   const rel = 'components/' + name + '.html';
   const file = safeResolve('/' + rel);

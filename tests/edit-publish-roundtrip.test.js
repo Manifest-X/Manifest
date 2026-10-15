@@ -413,5 +413,30 @@ describe('publish round trips', () => {
         const live = store().export().log.filter(d => d.kind === 'lock')
         expect(live).toEqual([expect.objectContaining({ key: '@t5@P:Uno', actions: ['move'], value: true })])
     })
+
+    it('an external reorder survives a text edit published over it', async () => {
+        const body = `<section x-edit="rb1"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        const root = await mount(body)
+        writeFileSync(path.join(dir, 'index.html'), page(`<section x-edit="rb1"><p>Beta</p><p>Alpha</p><p>Gamma</p></section>`))   // edited elsewhere
+        editText(root.querySelectorAll('p')[2], 'Gamma edited')
+        const res = await store().publish({ rebase: true })
+        expect(res.results[0].status).toBe('written')
+        expect(regionSource()).toBe(`<section x-edit="rb1"><p>Beta</p><p>Alpha</p><p>Gamma edited</p></section>`)
+    })
+
+    it('a page move into a container reordered elsewhere is refused, not reverted', async () => {
+        const body = `<section x-edit="rb2"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        const root = await mount(body)
+        writeFileSync(path.join(dir, 'index.html'), page(`<section x-edit="rb2"><p>Beta</p><p>Alpha</p><p>Gamma</p></section>`))
+        const [alpha] = root.querySelectorAll('p')
+        alpha.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }))
+        const res = await store().publish({ rebase: true })
+        expect(res.results[0].status).toBe('error')
+        expect(res.results[0].reason).toContain('changed since this page loaded')
+        expect(regionSource()).toBe(`<section x-edit="rb2"><p>Beta</p><p>Alpha</p><p>Gamma</p></section>`)
+        await store().undo()
+    })
 })
 
