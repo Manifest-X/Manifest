@@ -89,7 +89,7 @@
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
@@ -106,8 +106,8 @@
         sortableChildren(area).forEach(clone => {
             const id = clone.getAttribute('data-key'); if (id == null) return;
             clone.querySelectorAll('*').forEach(el => {
-                if (el.children.length || el.hasAttribute('data-edit-handle')) return;
                 const rich = el.hasAttribute('x-html');
+                if ((el.children.length && !(rich && plainFormatted(el))) || el.hasAttribute('data-edit-handle')) return;
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
                 const m = expr.match(fieldRe); if (!m) return;
                 const field = m[1];
@@ -153,7 +153,7 @@
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
         armRichText(area);
         componentNodes(root).forEach(el => {
-            if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
+            if ((el.children.length && !wholeLeaf(el)) || !el.textContent.trim() || !capOf(el, 'text')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();

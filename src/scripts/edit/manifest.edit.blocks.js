@@ -98,6 +98,8 @@
         // attrs: any attribute (static elements); class: the class list (static and component nodes).
         if (action === 'attrs' || action === 'class') {
             if (kind === 'data' || lockedFor(el, 'attrs')) return false;
+            const host = leafHost(el);
+            if (host) return action === 'attrs' && capOf(host, 'text');   // inside text: through the leaf's text, never classes
             if (kind === 'component') return action === 'class' && el._editPath != null;
             const k = el.getAttribute('data-edit-key');
             return !!k && k[0] !== '!';

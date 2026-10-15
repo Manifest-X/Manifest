@@ -113,7 +113,7 @@ describe('leaves are inline Rich Text fields', () => {
     })
 
     it('data x-text fields are plain; x-html fields are html', async () => {
-        const root = await mount(`<div x-data="{ rows: [{ id: 1, name: 'Rose', note: 'red' }] }">
+        const root = await mount(`<div x-data="{ rows: [{ id: 1, name: 'Rose', note: '<em>red</em>' }] }">
             <ul x-edit.move.data="a2"><template x-for="r in rows" :key="r.id"><li :data-key="r.id"><span x-text="r.name"></span> <b x-html="r.note"></b></li></template></ul></div>`)
         await frame()
         const name = root.querySelector('span'), note = root.querySelector('b')
@@ -250,6 +250,53 @@ describe('undo hand-off', () => {
         expect(cursor()).toBe(base + 1)
         await blur(two)
         expect(cursor()).toBe(base + 1)
+    })
+})
+
+describe('whole leaves', () => {
+    it('a paragraph of plain formatting is one leaf; a class, a directive or a <br> keeps it granular', async () => {
+        const root = await mount(`<section x-edit="w0"><p id="a">Read <a href="/x">guide</a> <em>now</em></p><p id="b">Go <a class="btn" href="/y">there</a></p><p id="c">Hi <code x-tooltip="t">x</code></p><p id="d">One<br>two</p></section>`)
+        const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(x => root.querySelector('#' + x))
+        expect(a._editRt).toBeTruthy()
+        expect(a.querySelector('a').hasAttribute('data-rich-text')).toBe(false)
+        for (const el of [b, c, d]) expect(el.hasAttribute('data-rich-text')).toBe(false)
+        expect(b.querySelector('a')._editRt).toBeTruthy()            // its plain-text children stay their own leaves
+        expect(store().can('text', a)).toBe(true)
+    })
+
+    it('$edit.attr on a link inside a leaf is the leaf\'s text delta; classes are refused', async () => {
+        const root = await mount(`<section x-edit="w2"><p>Read <a href="/x">guide</a> now</p></section>`)
+        const p = root.querySelector('p'), a = p.querySelector('a'), at = cursor()
+        expect(store().can('attrs', a)).toBe(true)
+        expect(store().can('class', a)).toBe(false)
+        expect(store().attr('href', '/docs', a)).toBe(true)
+        expect(cursor()).toBe(at + 1)
+        expect(log().at(-1)).toMatchObject({ kind: 'st-node', path: p.getAttribute('data-edit-key'), prop: 'text', before: 'Read <a href="/x">guide</a> now', value: 'Read <a href="/docs">guide</a> now' })
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        expect(store().classes.add('big', a)).toBe(false)
+        expect(store().attr('class', 'big', a)).toBe(false)
+        expect(store().attr('onclick', 'x()', a)).toBe(false)
+        warn.mockRestore()
+        expect(a.hasAttribute('class')).toBe(false)
+        expect(cursor()).toBe(at + 1)
+        await store().undo()
+        expect(p.innerHTML).toBe('Read <a href="/x">guide</a> now')
+        await store().redo()
+        expect(p.querySelector('a').getAttribute('href')).toBe('/docs')
+    })
+
+    it('an href change while typing is one delta with the typing; blur adds none', async () => {
+        const root = await mount(`<section x-edit="w4"><p>Read <a href="/x">guide</a></p></section>`)
+        const p = root.querySelector('p'), at = cursor()
+        await enter(p)
+        p.firstChild.nodeValue = 'Please read '
+        p.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'e' }))
+        expect(store().attr('href', '/y', p.querySelector('a'))).toBe(true)
+        expect(cursor()).toBe(at + 1)
+        expect(log().at(-1)).toMatchObject({ before: 'Read <a href="/x">guide</a>', value: 'Please read <a href="/y">guide</a>' })
+        expect(p._editRt.can('undo')).toBe(false)
+        await blur(p)
+        expect(cursor()).toBe(at + 1)
     })
 })
 

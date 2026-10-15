@@ -200,15 +200,66 @@ describe('publish round trips', () => {
         expect(regionSource()).toBe(body)
     })
 
-    it('edits inside text elements publish: link text, an href in a paragraph, code in a list item', async () => {
-        const r = await roundTrip(`<section x-edit="t1"><p>Read <a href="/a">the guide</a> now.</p><ul><li>Run <code>npm i</code></li></ul></section>`, async (root) => {
-            const a = root.querySelector('a'), code = root.querySelector('code')
-            editText(a, 'the docs')
-            store().attr('href', '/docs', a)
-            editText(code, 'npm install')
+    it('a paragraph with a link is one leaf: its text, the link text and the href publish; its own attributes stay', async () => {
+        const body = `<section x-edit="t1"><p class="lead" id="intro">Read <a href="/a">the guide</a> now.</p><ul><li>Run <code>npm i</code></li></ul></section>`
+        const r = await roundTrip(body, async (root) => {
+            const p = root.querySelector('p'), li = root.querySelector('li')
+            expect(p._editRt).toBeTruthy()
+            expect(li._editRt).toBeTruthy()
+            expect(p.querySelector('a').hasAttribute('contenteditable')).toBe(false)
+            expect(p.querySelector('a').hasAttribute('data-edit-key')).toBe(false)
+            editText(p, 'Please read <a href="/a">the docs</a> today.')
+            expect(store().attr('href', '/docs', p.querySelector('a'))).toBe(true)
+            editText(li, 'Run <code>npm install</code>')
         })
         expect(r.res.results.map(x => x.status)).toEqual(['written'])
-        expect(r.src).toBe(`<section x-edit="t1"><p>Read <a href="/docs">the docs</a> now.</p><ul><li>Run <code>npm install</code></li></ul></section>`)
+        expect(r.src).toBe(`<section x-edit="t1"><p class="lead" id="intro">Please read <a href="/docs">the docs</a> today.</p><ul><li>Run <code>npm install</code></li></ul></section>`)
+        expect(r.after).toEqual(r.live)
+        expect(document.querySelector('#intro')._editRt).toBeTruthy()             // one leaf again after reload
+    })
+
+    it('a formatted heading is one leaf before and after publish and reload; keys agree with the writer', async () => {
+        const body = `<section x-edit="w1"><h1>Hello <strong>world</strong></h1><div><strong class="k">world</strong></div></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        let root = await mount(body)
+        let h1 = root.querySelector('h1'), twin = root.querySelector('.k')
+        expect(h1._editRt).toBeTruthy()
+        expect(twin._editRt).toBeTruthy()
+        expect(twin.getAttribute('data-edit-key')).toBe('@w1@STRONG:world#2')   // the heading's inner strong is counted, as the writer counts it
+        editText(h1, '<em>Hello</em> <strong>world</strong>')
+        let res = await store().publish()
+        expect(res.results.map(x => x.status)).toEqual(['written'])
+        // Same session, after the rebase: the twin still addresses the right element
+        expect(twin.getAttribute('data-edit-key')).toBe('@w1@STRONG:world#2')
+        editText(twin, 'planet')
+        res = await store().publish()
+        expect(res.results.map(x => x.status)).toEqual(['written'])
+        expect(regionSource()).toBe(`<section x-edit="w1"><h1><em>Hello</em> <strong>world</strong></h1><div><strong class="k">planet</strong></div></section>`)
+        // Reload: the heading is still one leaf and still edits as one
+        document.body.innerHTML = ''; await flush()
+        root = await mount(regionSource())
+        h1 = root.querySelector('h1')
+        expect(h1._editRt).toBeTruthy()
+        expect(h1.querySelector('em').hasAttribute('data-rich-text')).toBe(false)
+        editText(h1, '<em>Hi</em> <strong>world</strong>')
+        res = await store().publish()
+        expect(res.results.map(x => x.status)).toEqual(['written'])
+        expect(regionSource()).toBe(`<section x-edit="w1"><h1><em>Hi</em> <strong>world</strong></h1><div><strong class="k">planet</strong></div></section>`)
+    })
+
+    it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
+        const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
+        const r = await roundTrip(body, async (root) => {
+            const p = root.querySelector('p'), span = root.querySelector('span'), em = root.querySelector('em')
+            expect(p.hasAttribute('data-rich-text')).toBe(false)
+            expect(p.hasAttribute('contenteditable')).toBe(false)
+            expect(span.hasAttribute('contenteditable')).toBe(false)
+            expect(span.textContent).toBe('Ada')
+            expect(em._editRt).toBeTruthy()
+            editText(em, 'home')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(body.replace('<em>back</em>', '<em>home</em>'))
     })
 
     it('plugin-rendered content is not source: not editable, not keyed, never blocks a publish', async () => {

@@ -38,6 +38,8 @@
         const refused = attrRefusal(name, v, t.el.tagName);
         if (refused) { console.warn(`[edit] attribute refused (${refused}):`, name); return false; }
         if (lockedFor(t.el, 'attrs')) return false;
+        const host = t.kind !== 'data' && leafHost(t.el);
+        if (host) return setInLeaf(t, host, name, v);
         if (name === 'class') return setClass(t, v || '');
         if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
         if (t.kind === 'component') { console.warn('[edit] component nodes take class changes only'); return false; }
@@ -48,8 +50,22 @@
         if (v === null) t.el.removeAttribute(name); else t.el.setAttribute(name, v);
         return commitStaticNode(t.area, t.el, name, v, { before, coalesce: true });
     }
+    // Inside a Rich Text leaf an attribute is part of the leaf's text: one text delta, kept only if the sanitizer keeps it.
+    function setInLeaf(t, host, name, v) {
+        if (lockedFor(host, 'text') || t.el.getAttribute(name) === v) return false;
+        const focused = document.activeElement === host;
+        const before = focused && host._preEdit !== undefined ? host._preEdit : leafText(host), was = t.el.getAttribute(name), cur = leafText(host);
+        const put = (x) => x === null ? t.el.removeAttribute(name) : t.el.setAttribute(name, x);
+        put(v);
+        if (leafText(host) === cur) { put(was); console.warn(`[edit] ${name} is not kept inside text`); return false; }
+        const value = host.innerHTML.trim();
+        const done = t.kind === 'component' ? commitComponentNode(t.area, host, 'text', value, before) : commitStaticNode(regionOf(host), host, 'text', value, { before });
+        if (focused) { restartRich(host); host._preEdit = leafText(host); }
+        return done;
+    }
     function setClass(t, value) {
         if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
+        if (leafHost(t.el)) { console.warn('[edit] class is not kept inside text'); return false; }
         const before = readClass(t.el);
         value = splitClasses(value).join(' ');
         if (before === value) return false;

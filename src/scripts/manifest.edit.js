@@ -113,8 +113,10 @@
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
     // x-rich-text fields keep blocks; every other text leaf is inline. Rich Text's allowlist when loaded.
     const authoredRich = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-rich-text') && !el._editRt;
+    const LEAF_STYLE = true;   // inline style survives Rich Text's sanitizer, so it is plain formatting too
+    const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
     const sanitizeFor = (el, html) => !window.ManifestRichText ? sanitizeHTML(html)
-        : window.ManifestRichText.sanitize(html, authoredRich(el), true);
+        : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : inlineClean(html);
 
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
@@ -224,7 +226,22 @@
     const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
     const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TITLE', 'XMP']);
     const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
-    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el);
+    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el) || wholeLeaf(el);
+    // One leaf: a text element whose elements inside are all plain formatting, i.e. markup
+    // Rich Text's inline sanitizer keeps unchanged (Edit's own attributes aside). No <br>: a leaf is one line.
+    const LEAF_TAGS = new Set([...TEXT_TAGS, 'LI', 'TD', 'TH']);
+    function plainFormatted(el) {
+        if (!window.ManifestRichText) return false;
+        const c = el.cloneNode(true);
+        c.querySelectorAll('[data-edit-handle], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
+        if (!c.children.length) return true;
+        if (c.querySelector('br')) return false;
+        c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
+        return inlineClean(c.innerHTML) === c.innerHTML;
+    }
+    const wholeLeaf = (el) => LEAF_TAGS.has(el.tagName) && realChildren(el).length > 0 && plainFormatted(el);
+    // The Rich Text leaf an element sits inside (not the leaf itself).
+    const leafHost = (el) => { const h = el && el.parentElement && el.parentElement.closest('[data-edit-text]'); return h && h._editRt ? h : null; };
     function isContainer(el) {
         if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
         return !isTextEl(el);
@@ -768,6 +785,8 @@
         // attrs: any attribute (static elements); class: the class list (static and component nodes).
         if (action === 'attrs' || action === 'class') {
             if (kind === 'data' || lockedFor(el, 'attrs')) return false;
+            const host = leafHost(el);
+            if (host) return action === 'attrs' && capOf(host, 'text');   // inside text: through the leaf's text, never classes
             if (kind === 'component') return action === 'class' && el._editPath != null;
             const k = el.getAttribute('data-edit-key');
             return !!k && k[0] !== '!';
@@ -1588,7 +1607,7 @@
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if (realChildren(el).length || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
@@ -1605,8 +1624,8 @@
         sortableChildren(area).forEach(clone => {
             const id = clone.getAttribute('data-key'); if (id == null) return;
             clone.querySelectorAll('*').forEach(el => {
-                if (el.children.length || el.hasAttribute('data-edit-handle')) return;
                 const rich = el.hasAttribute('x-html');
+                if ((el.children.length && !(rich && plainFormatted(el))) || el.hasAttribute('data-edit-handle')) return;
                 const expr = el.getAttribute('x-text') || el.getAttribute('x-html'); if (!expr) return;
                 const m = expr.match(fieldRe); if (!m) return;
                 const field = m[1];
@@ -1652,7 +1671,7 @@
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
         armRichText(area);
         componentNodes(root).forEach(el => {
-            if (el.children.length || !el.textContent.trim() || !capOf(el, 'text')) return;
+            if ((el.children.length && !wholeLeaf(el)) || !el.textContent.trim() || !capOf(el, 'text')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
@@ -1722,6 +1741,8 @@
         const refused = attrRefusal(name, v, t.el.tagName);
         if (refused) { console.warn(`[edit] attribute refused (${refused}):`, name); return false; }
         if (lockedFor(t.el, 'attrs')) return false;
+        const host = t.kind !== 'data' && leafHost(t.el);
+        if (host) return setInLeaf(t, host, name, v);
         if (name === 'class') return setClass(t, v || '');
         if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
         if (t.kind === 'component') { console.warn('[edit] component nodes take class changes only'); return false; }
@@ -1732,8 +1753,22 @@
         if (v === null) t.el.removeAttribute(name); else t.el.setAttribute(name, v);
         return commitStaticNode(t.area, t.el, name, v, { before, coalesce: true });
     }
+    // Inside a Rich Text leaf an attribute is part of the leaf's text: one text delta, kept only if the sanitizer keeps it.
+    function setInLeaf(t, host, name, v) {
+        if (lockedFor(host, 'text') || t.el.getAttribute(name) === v) return false;
+        const focused = document.activeElement === host;
+        const before = focused && host._preEdit !== undefined ? host._preEdit : leafText(host), was = t.el.getAttribute(name), cur = leafText(host);
+        const put = (x) => x === null ? t.el.removeAttribute(name) : t.el.setAttribute(name, x);
+        put(v);
+        if (leafText(host) === cur) { put(was); console.warn(`[edit] ${name} is not kept inside text`); return false; }
+        const value = host.innerHTML.trim();
+        const done = t.kind === 'component' ? commitComponentNode(t.area, host, 'text', value, before) : commitStaticNode(regionOf(host), host, 'text', value, { before });
+        if (focused) { restartRich(host); host._preEdit = leafText(host); }
+        return done;
+    }
     function setClass(t, value) {
         if (t.kind === 'data') { console.warn('[edit] list rows are rendered from data; attributes on them are not editable'); return false; }
+        if (leafHost(t.el)) { console.warn('[edit] class is not kept inside text'); return false; }
         const before = readClass(t.el);
         value = splitClasses(value).join(' ');
         if (before === value) return false;
@@ -1884,7 +1919,7 @@
         const count = (el) => { for (const c of el.children) { const b = staticKey(c); seen[b] = (seen[b] || 0) + 1; count(c); } };
         const walk = (el, path) => {
             markEl(el, path);
-            if (el._editRt) { if (first) count(el); return; }
+            if (el._editRt || (first && wholeLeaf(el) && capOf(el, 'text') && !isRendered(el))) { if (first) count(el); return; }
             if (el !== area && (el.hasAttribute('data-rich-text') || isRendered(el))) return;
             let i = 0;
             for (const c of el.children) {

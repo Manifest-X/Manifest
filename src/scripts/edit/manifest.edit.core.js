@@ -109,8 +109,10 @@
     const SAFE_TAGS = new Set(['B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'BR', 'SPAN', 'A']);
     // x-rich-text fields keep blocks; every other text leaf is inline. Rich Text's allowlist when loaded.
     const authoredRich = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-rich-text') && !el._editRt;
+    const LEAF_STYLE = true;   // inline style survives Rich Text's sanitizer, so it is plain formatting too
+    const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
     const sanitizeFor = (el, html) => !window.ManifestRichText ? sanitizeHTML(html)
-        : window.ManifestRichText.sanitize(html, authoredRich(el), true);
+        : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : inlineClean(html);
 
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
@@ -220,7 +222,22 @@
     const TEXT_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SPAN', 'A', 'LABEL', 'STRONG', 'EM', 'B', 'I', 'U', 'S', 'SMALL', 'CODE', 'MARK', 'SUB', 'SUP', 'Q', 'CITE', 'ABBR', 'TIME', 'DT', 'DD', 'FIGCAPTION', 'CAPTION', 'LEGEND', 'SUMMARY', 'BUTTON', 'OPTION']);
     const ATOMIC_TAGS = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG', 'svg', 'IFRAME', 'OBJECT', 'SELECT', 'TEXTAREA', 'PICTURE', 'MATH', 'math', 'TEMPLATE', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TITLE', 'XMP']);
     const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
-    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el);
+    const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el) || wholeLeaf(el);
+    // One leaf: a text element whose elements inside are all plain formatting, i.e. markup
+    // Rich Text's inline sanitizer keeps unchanged (Edit's own attributes aside). No <br>: a leaf is one line.
+    const LEAF_TAGS = new Set([...TEXT_TAGS, 'LI', 'TD', 'TH']);
+    function plainFormatted(el) {
+        if (!window.ManifestRichText) return false;
+        const c = el.cloneNode(true);
+        c.querySelectorAll('[data-edit-handle], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
+        if (!c.children.length) return true;
+        if (c.querySelector('br')) return false;
+        c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
+        return inlineClean(c.innerHTML) === c.innerHTML;
+    }
+    const wholeLeaf = (el) => LEAF_TAGS.has(el.tagName) && realChildren(el).length > 0 && plainFormatted(el);
+    // The Rich Text leaf an element sits inside (not the leaf itself).
+    const leafHost = (el) => { const h = el && el.parentElement && el.parentElement.closest('[data-edit-text]'); return h && h._editRt ? h : null; };
     function isContainer(el) {
         if (!el || el.nodeType !== 1 || ATOMIC_TAGS.has(el.tagName) || pluginNode(el)) return false;
         return !isTextEl(el);
