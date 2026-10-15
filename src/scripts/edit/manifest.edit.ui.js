@@ -3,6 +3,7 @@
         estore.canUndo = cursor > 0;
         estore.canRedo = cursor < log.length;
         estore.version = (estore.version || 0) + 1;
+        if (heldReload) setTimeout(takeHeldReload, 0);
     }
 
     /* ---- Undo/redo hotkeys: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y ----

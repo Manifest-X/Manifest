@@ -394,6 +394,8 @@ export interface ManifestEdit {
      *  restructured containers no longer hold what the edits started from loses all its
      *  structural edits, reported once as `{ region, prop: 'structure', key: '' }`. */
     conflicts: Array<{ region: string; key: string; element: string; prop: string; value: unknown; before: unknown }>;
+    /** Empty `conflicts`. Those of `.persist` regions are kept across reloads until this is called. */
+    clearConflicts(): void;
     /** Send every area's patches; on success the history is cleared (the source now holds it).
      *  `rebase: true` takes the current source as the base (writes over external changes). */
     publish(opts?: { rebase?: boolean }): Promise<unknown>;

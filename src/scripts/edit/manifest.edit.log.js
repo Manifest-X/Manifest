@@ -195,36 +195,120 @@
     // nowhere and never publishable, so they are surfaced ($edit.conflicts, `edit:conflict`,
     // a warning) and dropped from the log. Checked against a freshly rendered source only.
     function surfaceConflicts(fresh) {
-        const live = keyMap(staticAreas()), lost = [], regions = new Set(fresh.map(key));
+        // Only regions keyed on this page load: an unarmed (gated) region has no keys yet
+        const live = keyMap(staticAreas()), lost = [], regions = new Set(fresh.filter(a => a._marked).map(key));
         const isStatic = (r) => regions.has(r) && !!areaByKey(r) && classify(areaByKey(r)) === 'static';
-        // Structure: a container the log restructured must still hold what the log started
-        // from; if not, every structural edit of that region goes (the writer refuses them).
-        const first = new Map(), broken = new Set();
+        // Structure: a container the log restructured must still hold what the log started from.
+        // Children matched by position and tag whose own text changed in place are renamed to
+        // their new keys, so the reorder still applies, but only if no structural edit moved,
+        // added or removed them. Otherwise every structural edit of that region goes (the
+        // writer would refuse them), reported with the children that changed.
+        const first = new Map(), broken = new Map(), renames = new Map();
         const note = (region, parent, before) => { const k = JSON.stringify([region, parent]); if (!first.has(k) && isStatic(region)) first.set(k, [region, parent, before || []]); };
         log.forEach(d => {
             if (d.kind === 'st-order' || d.kind === 'st-children') note(d.region, d.parent, d.before);
             if (d.kind === 'st-move') { note(d.from, d.fromParent, d.fromBefore); note(d.to, d.toParent, d.toBefore); }
         });
+        const tagOf = (k) => String(k).slice(String(k).indexOf('@', 1) + 1).split(':')[0];
+        // Keys a structural edit moved (out of the longest kept order), added or removed in a container
+        const moved = (region, parent) => {
+            const out = new Set();
+            const diff = (before, after) => {
+                before = before || []; after = after || [];
+                before.forEach(k => { if (!after.includes(k)) out.add(k); });
+                after.forEach(k => { if (!before.includes(k)) out.add(k); });
+                const pos = after.filter(k => before.includes(k)).map(k => before.indexOf(k));
+                const tails = [], prev = new Array(pos.length).fill(-1), idx = [];
+                pos.forEach((p, i) => { let lo = 0, hi = tails.length; while (lo < hi) { const m = (lo + hi) >> 1; if (pos[tails[m]] < p) lo = m + 1; else hi = m; } if (lo > 0) prev[i] = tails[lo - 1]; tails[lo] = i; });
+                const keep = new Set(); for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) keep.add(i);
+                after.filter(k => before.includes(k)).forEach((k, i) => { if (!keep.has(i)) out.add(k); });
+            };
+            log.forEach(d => {
+                if ((d.kind === 'st-order' || d.kind === 'st-children') && d.region === region && (d.parent || '') === parent) diff(d.before, d.order);
+                if (d.kind === 'st-move') {
+                    if (d.from === region && (d.fromParent || '') === parent) { out.add(d.key); diff(d.fromBefore, d.fromOrder); }
+                    if (d.to === region && (d.toParent || '') === parent) { out.add(d.key); diff(d.toBefore, d.toOrder); }
+                }
+            });
+            return out;
+        };
         first.forEach(([region, parent, before]) => {
-            const c = parent === '' ? areaByKey(region) : live.get(parent);
-            if (!c || staticKeys(c).join('\n') !== before.join('\n')) broken.add(region);
+            let c = parent === '' ? areaByKey(region) : live.get(parent), renamedParent = null;
+            if (!c && parent !== '') {
+                // The container's own key changed with a child's text: found again through its unchanged children
+                const holders = new Set(before.map(k => live.get(k)).filter(Boolean).map(el => el.parentElement));
+                if (holders.size === 1) { c = [...holders][0]; renamedParent = c.getAttribute('data-edit-key'); }
+            }
+            const now = c ? staticKeys(c) : [];
+            if (c && now.join('\n') === before.join('\n') && !renamedParent) return;
+            const changed = [];
+            before.forEach((k, i) => { if (now[i] !== k) changed.push({ was: k, now: now[i] ?? null }); });
+            now.slice(before.length).forEach(k => changed.push({ was: null, now: k }));
+            const shift = moved(region, parent);
+            const same = !!c && now.length === before.length && before.every((k, i) => tagOf(k) === tagOf(now[i]));
+            if (same && changed.every(x => !shift.has(x.was))) {
+                const m = renames.get(region) || new Map();
+                changed.forEach(x => m.set(x.was, x.now));
+                if (renamedParent && renamedParent !== parent) m.set(parent, renamedParent);
+                renames.set(region, m);
+            } else broken.set(region, [...(broken.get(region) || []), { container: parent, changed: changed.map(x => ({ was: x.was && tagOf(x.was) && x.was.slice(x.was.indexOf('@', 1) + 1), now: x.now && x.now.slice(x.now.indexOf('@', 1) + 1) })) }]);
+        });
+        // Renamed children keep their place in every structural edit (their own text edits stay conflicts)
+        renames.forEach((m, region) => {
+            if (broken.has(region)) return;
+            const ren = (k) => typeof k !== 'string' ? k : m.has(k) ? m.get(k) : k[0] === '~' && m.has(originOf(k)) ? k.slice(0, k.length - originOf(k).length) + m.get(originOf(k)) : k;
+            const arr = (a) => Array.isArray(a) ? a.map(ren) : a;
+            const enc = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;'), dec = (v) => v.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+            const markup = (h) => typeof h === 'string' ? h.replace(/data-edit-key="([^"]*)"/g, (all, v) => `data-edit-key="${enc(ren(dec(v)))}"`) : h;
+            const keyed = (o) => o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).map(([k, v]) => [ren(k), markup(v)])) : o;
+            log.forEach(d => {
+                if ((d.kind === 'st-order' || d.kind === 'st-children') && d.region === region) { d.parent = ren(d.parent); d.before = arr(d.before); d.order = arr(d.order); if (d.html) d.html = keyed(d.html); if (d.copies) d.copies = Object.fromEntries(Object.entries(d.copies).map(([k, v]) => [ren(k), v])); }
+                if (d.kind === 'st-node' && d.region === region && typeof d.path === 'string' && d.path[0] === '~') d.path = ren(d.path);   // a copy is new content: its edits follow its source's new key
+                if (d.kind === 'st-move' && (d.from === region || d.to === region)) { d.key = ren(d.key); d.fromParent = ren(d.fromParent); d.toParent = ren(d.toParent); d.fromBefore = arr(d.fromBefore); d.toBefore = arr(d.toBefore); d.fromOrder = arr(d.fromOrder); d.toOrder = arr(d.toOrder); }
+                if (d.kind === 'lock' && d.region === region) d.key = ren(d.key);
+            });
+            ver++;
         });
         const structural = (d) => ((d.kind === 'st-order' || d.kind === 'st-children') && broken.has(d.region)) || (d.kind === 'st-move' && (broken.has(d.from) || broken.has(d.to)))
             || (d.kind === 'st-node' && broken.has(d.region) && typeof d.path === 'string' && d.path[0] === '~');
         const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && !live.has(d.path)) || structural(d);
         log.forEach((d, i) => { if (gone(d) && i < cursor && d.kind === 'st-node' && d.path[0] === '@') lost.push(d); });
-        if (!log.some(gone)) return [];
+        if (!log.some(gone)) { if (renames.size) saveState(); return []; }
         const latest = new Map();
         lost.forEach(d => latest.set(d.path + '|' + d.prop, d));
-        const found = [...latest.values()].map(d => ({ region: d.region, key: d.path, element: d.path.slice(d.path.indexOf('@', 1) + 1), prop: d.prop, value: d.value, before: d.before }));
-        broken.forEach(region => found.push({ region, key: '', element: '', prop: 'structure', value: null, before: null }));
+        const label = (k) => typeof k === 'string' ? originOf(k).slice(originOf(k).indexOf('@', 1) + 1) : '';
+        const found = [...latest.values()].map(d => ({ region: d.region, key: d.path, element: label(d.path), prop: d.prop, value: d.value, before: d.before,
+            reason: `${label(d.path)} changed in the source, so the ${d.prop === 'text' ? 'text' : d.prop} edited into it was not applied` }));
+        // A dropped structure carries what it held: the children that changed, the elements it moved,
+        // and every copy it made, with the copy's markup and the text typed into it
+        broken.forEach((containers, region) => {
+            const deltas = log.filter((d, i) => i < cursor && structural(d) && (d.region === region || d.from === region || d.to === region));
+            const movedKeys = new Set(), copies = [];
+            deltas.forEach(d => {
+                if (d.kind === 'st-move') movedKeys.add(d.key);
+                if (d.kind === 'st-order' || d.kind === 'st-children') moved(region, d.parent || '').forEach(k => movedKeys.add(k));
+                if (d.kind === 'st-children' && d.html) Object.entries(d.html).forEach(([k, h]) => {
+                    if (k[0] !== '~') return;
+                    const t = document.createElement('template'); t.innerHTML = h;
+                    const typed = log.filter((x, i) => i < cursor && x.kind === 'st-node' && x.path === k && x.prop === 'text').pop();
+                    copies.push({ of: label(k), html: h, text: typed ? typed.value : t.content.textContent.trim() });
+                });
+            });
+            const changed = containers.flatMap(c => c.changed);
+            const moves = [...movedKeys].filter(k => k && k[0] === '@').map(label);
+            const what = [moves.length && `moved ${moves.join(', ')}`, copies.length && `copied ${copies.map(c => `${c.of} ("${String(c.text).slice(0, 40)}")`).join(', ')}`].filter(Boolean).join('; ');
+            found.push({ region, key: '', element: containers.map(c => c.container ? label(c.container) : region).join(', '), prop: 'structure',
+                value: { changed, moved: moves, copies }, before: null,
+                reason: `${changed.map(x => x.was || x.now).join(', ')} changed in the source where the layout was edited, so the layout edits (${what || 'reordering'}) were not applied` });
+        });
+        found.forEach(f => { conflicts.push(f); if (persistOf(f.region)) keptConflicts.add(f); });
         let c = 0;
         log = log.filter((d, i) => { const keep = !gone(d); if (keep && i < cursor) c++; return keep; });
         cursor = c; ver++;
         saveState(); refresh();
         if (found.length) {
-            if (estore) estore.conflicts = [...(estore.conflicts || []), ...found];
-            console.warn('[edit] edits to elements that changed in the source were dropped:', found.map(f => `${f.element} (${f.prop}: ${String(f.value).slice(0, 60)})`).join('; '));
+            if (estore) estore.conflicts = conflicts.slice();
+            console.warn('[edit] edits to elements that changed in the source were dropped:\n' + found.map(f => '  ' + f.reason + (f.prop === 'structure' ? '' : `: "${String(f.value).slice(0, 80)}"`)).join('\n'));
             document.dispatchEvent(new CustomEvent('edit:conflict', { detail: { conflicts: found } }));
         }
         return found;

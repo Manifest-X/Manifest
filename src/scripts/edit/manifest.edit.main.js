@@ -57,7 +57,8 @@
             attr(name, value, el) { return setAttr(name, value, el); },
             classes: classesApi,
             scope(value, el) { void this.version; return value === undefined ? scopeOf(el) : setScope(value, el); },
-            revert(el) { return revert(el); }
+            revert(el) { return revert(el); },
+            clearConflicts() { conflicts = []; this.conflicts = []; saveState(); }
         });
         estore = Alpine.store('edit');
         Alpine.magic('edit', () => Alpine.store('edit'));

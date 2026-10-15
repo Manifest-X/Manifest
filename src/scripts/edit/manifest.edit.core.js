@@ -59,11 +59,18 @@
             return n > 1 ? base + '#' + n : base;
         });
     }
+    // Surfaced conflicts ($edit.conflicts); those of .persist regions are stored with the log until cleared
+    let conflicts = [];
+    const keptConflicts = new WeakSet();
     const loadState = () => {
         try {
             lsPath = location.pathname;
             const s = JSON.parse(localStorage.getItem(lsKey(lsPath)));
-            if (s && s.v === SCHEMA) { log = s.log || []; cursor = s.cursor ?? log.length; log.forEach(d => persisted.add(d)); }
+            if (s && s.v === SCHEMA) {
+                log = s.log || []; cursor = s.cursor ?? log.length; log.forEach(d => persisted.add(d));
+                conflicts = Array.isArray(s.conflicts) ? s.conflicts : []; conflicts.forEach(c => keptConflicts.add(c));
+                if (estore) estore.conflicts = conflicts.slice();
+            }
             else if (s) localStorage.removeItem(lsKey(lsPath));
         } catch { }
     };
@@ -74,10 +81,11 @@
         if (log.length > HISTORY_CAP) { const n = log.length - HISTORY_CAP; log.splice(0, n); cursor = Math.max(0, cursor - n); }
         const done = log.slice(0, cursor).filter(d => persisted.has(d)), ahead = log.slice(cursor).filter(d => persisted.has(d));
         sessionPaths.add(path || location.pathname);
+        const kept = conflicts.filter(c => keptConflicts.has(c));
         (path ? [path] : [...sessionPaths]).forEach(p => {
             try {
-                if (!done.length && !ahead.length) localStorage.removeItem(lsKey(p));
-                else localStorage.setItem(lsKey(p), JSON.stringify({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }));
+                if (!done.length && !ahead.length && !kept.length) localStorage.removeItem(lsKey(p));
+                else localStorage.setItem(lsKey(p), JSON.stringify(Object.assign({ v: SCHEMA, log: [...done, ...ahead], cursor: done.length }, kept.length ? { conflicts: kept } : {})));
             } catch { }
         });
     };

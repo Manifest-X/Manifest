@@ -271,11 +271,30 @@
     // so no reload is ours to skip, and with no live reload coming the page reloads itself.
     // A reload never discards edits it cannot restore: with unpersisted edits pending, the
     // page stays and says so (edit:stale), so they can be published first.
-    let ownWrites = null, inFlight = 0, held = [], resync = false;
+    let ownWrites = null, inFlight = 0, held = [], resync = false, heldReload = null;
     const ours = (files) => !resync && !!ownWrites && Date.now() < ownWrites.until && files.length > 0 && files.every(f => f && ownWrites.files[f.rel] && ownWrites.files[f.rel] === f.hash);
-    const reloadSafe = () => log.every(d => d.kind === 'lock' || persisted.has(d));
+    // A reload is safe when every applied edit of a region on this page survives it (persisted), and
+    // no focused leaf holds typing not yet logged (a persisting one is committed first). Undone
+    // steps, and edits of regions not on this page, never hold it.
+    const onPage = (d) => [d.region, d.from, d.to].filter(r => r != null).every(r => !!areaByKey(r));
+    // Typing in a focused leaf, not yet logged (it is, on blur): committed now when `force` or its region persists
+    function commitFocused(force) {
+        const f = document.activeElement;
+        if (!f || !f._commitText || f._preEdit === undefined || !f.isContentEditable || leafText(f) === f._preEdit) return true;
+        const a = regionOf(f);
+        if (!a || (!force && !a._edit.persist)) return false;
+        f._commitText(); restartRich(f); f._preEdit = leafText(f);
+        return true;
+    }
+    function reloadSafe() {
+        if (!commitFocused(false)) return false;
+        return log.slice(0, cursor).every(d => d.kind === 'lock' || persisted.has(d) || !onPage(d));
+    }
+    // A held reload is taken as soon as nothing it would lose remains
+    function takeHeldReload() { if (heldReload && reloadSafe()) { heldReload = null; location.reload(); } }
     function reloadIfSafe(files) {
         if (reloadSafe()) return location.reload();
+        heldReload = files;
         const changed = files.map(f => f && f.rel).filter(Boolean);
         if (estore) estore.stale = [...new Set([...(estore.stale || []), ...changed])];
         console.warn('[edit] the source changed, but a reload would lose unpublished edits: publish (with rebase), then reload');
@@ -318,12 +337,14 @@
             if (estore) estore.stale = stale;
             if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
             if (published(r)) rebase();
+            takeHeldReload();
             return r;
         };
         const send = () => {
+            commitFocused(true);   // typing under way publishes with the rest (identities are re-derived from the page after)
             const patches = buildPatches();
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
-            if (!patches.length) return Promise.resolve({ results: [] });
+            if (!patches.length) { takeHeldReload(); return Promise.resolve({ results: [] }); }   // nothing to send: a held reload goes now
             const body = { patches, base: baseFiles };
             inFlight++;
             return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())

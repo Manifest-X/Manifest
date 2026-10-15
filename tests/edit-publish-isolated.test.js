@@ -135,7 +135,43 @@ describe('live reload around our own publishes', () => {
         expect(reload).not.toHaveBeenCalled()
         store().onPublish = () => ({ results: [{ region: 'lr3', status: 'written' }] })   // leave nothing pending
         await store().publish()
+        expect(reload).toHaveBeenCalledTimes(1)                                         // the held reload is taken once nothing would be lost
         store().stale = []
+    })
+
+    it('undone steps, and edits of regions not on the page, never hold a reload back', async () => {
+        const root = await mount(`<section x-edit="lr4"><p>One</p></section><section x-edit="lr5"><p>Two</p></section>`)
+        editText(root.querySelector('[x-edit="lr4"] p'), 'Uno')
+        await store().undo()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'ext1' }])).toBe(false)        // only an undone step: the reload goes
+        await store().redo()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'ext2' }])).toBe(true)         // applied and unpersisted: held
+        root.querySelector('[x-edit="lr4"]').remove()                                 // its region leaves the page
+        await flush()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'ext3' }])).toBe(false)
+        expect(reload).not.toHaveBeenCalled()
+        // Back on the page, published: nothing left pending
+        await mount(`<section x-edit="lr4"><p>One</p></section>`)
+        store().onPublish = (patches) => ({ results: patches.map(p => ({ region: p.region, status: 'written' })) })
+        await store().publish()
+    })
+
+    it('typing in a focused leaf holds a reload (unpersisted) or is committed first (persisted); a publish takes it along', async () => {
+        const root = await mount(`<section x-edit="lr6"><p>One</p></section><section x-edit.persist="lr7"><p>Two</p></section>`)
+        const [one, two] = root.querySelectorAll('p')
+        two.focus(); two.firstChild.nodeValue = 'Two typed'
+        expect(reloadEvent([{ rel: 'index.html', hash: 'e1' }])).toBe(false)          // committed and persisted: nothing is lost
+        expect(log().map(d => d.value)).toEqual(['Two typed'])
+        one.focus(); one.firstChild.nodeValue = 'One typed'
+        expect(reloadEvent([{ rel: 'index.html', hash: 'e2' }])).toBe(true)           // unpersisted typing: held
+        expect(log().map(d => d.value)).toEqual(['Two typed'])
+        let sent = null
+        store().onPublish = (patches) => { sent = patches; return { results: patches.map(p => ({ region: p.region, status: 'written' })) } }
+        await store().publish()
+        expect(JSON.stringify(sent)).toContain('One typed')                             // the typing went with the publish
+        await flush(); await flush()
+        expect(reload).toHaveBeenCalledTimes(1)                                         // the held reload, once nothing would be lost (an untouched one is the live script's to take)
+        one.blur(); two.blur()
     })
 })
 
@@ -237,7 +273,7 @@ describe('edits whose element changed in the source', () => {
         await new Promise(r => setTimeout(r, 600))
         const said = warn.mock.calls.map(c => String(c[0])).join('\n')
         warn.mockRestore(); document.removeEventListener('edit:conflict', onConflict)
-        const conflict = { region: 'cf', key: '@cf@P:Beta text', element: 'P:Beta text', prop: 'text', value: 'Beta edited', before: 'Beta text' }
+        const conflict = { region: 'cf', key: '@cf@P:Beta text', element: 'P:Beta text', prop: 'text', value: 'Beta edited', before: 'Beta text', reason: 'P:Beta text changed in the source, so the text edited into it was not applied' }
         expect(store().conflicts).toEqual([conflict])
         expect(events).toEqual([{ conflicts: [conflict] }])
         expect(said).toMatch(/changed in the source were dropped/)
@@ -267,12 +303,121 @@ describe('edits whose element changed in the source', () => {
         const fresh = await mount(changed)
         await new Promise(r => setTimeout(r, 600))
         warn.mockRestore()
-        expect(store().conflicts).toEqual([{ region: 'cf2', key: '', element: '', prop: 'structure', value: null, before: null }])
+        expect(store().conflicts.filter(c => c.region === 'cf2')).toEqual([{ region: 'cf2', key: '', element: 'cf2', prop: 'structure', before: null,
+            value: { changed: [{ was: 'P:Beta text', now: 'P:Beta external' }], moved: ['P:Beta text'], copies: [] },
+            reason: 'P:Beta text changed in the source where the layout was edited, so the layout edits (moved P:Beta text) were not applied' }])
         expect(log()).toEqual([])
         expect([...fresh.querySelectorAll('p')].map(p => p.textContent)).toEqual(['Alpha', 'Beta external', 'Gamma'])
         store().onPublish = (patches) => post(patches)
         const res = await store().publish()
         expect(res.results).toEqual([])
         expect(regionSource()).toBe(changed)
+    })
+})
+
+describe('reloads, keyed regions and lasting conflicts', () => {
+    const reloadWith = async (html) => {
+        document.body.innerHTML = ''
+        new Function(EDIT_SRC)()
+        await flush()
+        const root = await mount(html)
+        await new Promise(r => setTimeout(r, 600))
+        store().onPublish = (patches) => post(patches)
+        return root
+    }
+    const done = async () => { store().onPublish = (patches) => ({ results: patches.map(p => ({ region: p.region, status: 'written' })) }); await store().publish(); store().onPublish = (patches) => post(patches) }
+
+    it('a gated .persist region keeps its edits across reloads: a region is judged only once keyed', async () => {
+        store().clearConflicts()
+        const body = `<section x-edit.gated.persist="gq"><p>Gated</p></section>`
+        let root = await mount(body)
+        store().on(); await flush(); await flush()
+        editText(root.querySelector('p'), 'Gated edited')
+        for (let i = 0; i < 2; i++) {
+            root = await reloadWith(body)
+            expect(store().conflicts).toEqual([])
+            expect(log().map(d => d.value)).toEqual(['Gated edited'])
+            expect(root.querySelector('p').textContent).toBe('Gated')
+            store().on(); await flush(); await flush()
+            expect(root.querySelector('p').textContent).toBe('Gated edited')
+            expect(store().conflicts).toEqual([])
+        }
+        await done()
+        store().off()
+    })
+
+    it('conflicts of .persist regions last across reloads until clearConflicts()', async () => {
+        const body = `<section x-edit.persist="cq"><p>Beta text</p></section>`
+        let root = await mount(body)
+        editText(root.querySelector('p'), 'Beta edited')
+        const changed = body.replace('Beta text', 'Beta external')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        root = await reloadWith(changed)
+        expect(store().conflicts.map(c => c.value)).toEqual(['Beta edited'])
+        root = await reloadWith(changed)
+        warn.mockRestore()
+        expect(store().conflicts.map(c => c.value)).toEqual(['Beta edited'])          // still there after another reload
+        store().clearConflicts()
+        expect(store().conflicts).toEqual([])
+        root = await reloadWith(changed)
+        expect(store().conflicts).toEqual([])
+        expect(localStorage.getItem('mnfst-edit-log:' + location.pathname)).toBe(null)
+    })
+
+    it('a reorder survives a sibling\'s text changing in place; the writer agrees', async () => {
+        const body = `<section x-edit.persist="ro"><p>First line</p><p>Second line</p><p>Third line</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        let root = await mount(body)
+        const [p1, , p3] = root.querySelectorAll('p')
+        store().move(p3, root.querySelector('section'), p1)
+        const changed = body.replace('Second line', 'Second CHANGED')
+        writeFileSync(path.join(dir, 'index.html'), page(changed))
+        root = await reloadWith(changed)
+        expect([...root.querySelectorAll('p')].map(p => p.textContent)).toEqual(['Third line', 'First line', 'Second CHANGED'])
+        expect(store().conflicts).toEqual([])
+        store().onPublish = (patches) => post(patches)
+        const res = await store().publish()
+        expect(statuses(res), JSON.stringify(res)).toEqual(['written'])
+        expect(regionSource()).toBe(`<section x-edit.persist="ro"><p>Third line</p><p>First line</p><p>Second CHANGED</p></section>`)
+    })
+
+    it('a move and a typed copy survive when the copied element\'s own text changes in the source', async () => {
+        store().clearConflicts()
+        const body = `<section x-edit.persist="w2"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
+        writeFileSync(path.join(dir, 'index.html'), page(body))
+        let root = await mount(body)
+        const sec = root.querySelector('section'), P = (t) => [...sec.querySelectorAll('p')].find(p => p.textContent === t)
+        store().move(P('Gamma'), sec, P('Alpha'))
+        store().duplicate(P('Beta')); await flush()
+        editText([...sec.querySelectorAll('p')].filter(p => p.textContent === 'Beta')[1], 'Copy typed text')
+        const changed = body.replace('<p>Beta</p>', '<p>Beta external</p>')
+        writeFileSync(path.join(dir, 'index.html'), page(changed))
+        root = await reloadWith(changed)
+        expect([...root.querySelectorAll('p')].map(p => p.textContent)).toEqual(['Gamma', 'Alpha', 'Beta external', 'Copy typed text'])
+        expect(store().conflicts).toEqual([])
+        const res = await store().publish()
+        expect(statuses(res), JSON.stringify(res)).toEqual(['written'])
+        expect(regionSource()).toBe(`<section x-edit.persist="w2"><p>Gamma</p><p>Alpha</p><p>Beta external</p><p>Copy typed text</p></section>`)
+    })
+
+    it('a layout edit that moved a changed element is dropped with its content in the conflict, and the warning names it', async () => {
+        store().clearConflicts()
+        const body = `<section x-edit.persist="w3"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`
+        let root = await mount(body)
+        const sec = root.querySelector('section'), P = (t) => [...sec.querySelectorAll('p')].find(p => p.textContent === t)
+        store().move(P('Beta'), sec, P('Alpha'))
+        store().duplicate(P('Gamma')); await flush()
+        editText([...sec.querySelectorAll('p')].filter(p => p.textContent === 'Gamma')[1], 'Copy typed text')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        root = await reloadWith(body.replace('<p>Beta</p>', '<p>Beta external</p>'))
+        const said = warn.mock.calls.map(c => String(c[0])).join('\n')
+        warn.mockRestore()
+        const [c] = store().conflicts
+        expect(c).toMatchObject({ region: 'w3', prop: 'structure', value: { changed: [{ was: 'P:Beta', now: 'P:Beta external' }], moved: ['P:Beta'] } })
+        expect(c.value.copies).toEqual([{ of: 'P:Gamma', html: expect.stringContaining('Gamma'), text: 'Copy typed text' }])
+        expect(c.reason).toMatch(/moved P:Beta; copied P:Gamma \("Copy typed text"\)/)
+        expect(said).toMatch(/Copy typed text/)
+        expect(log()).toEqual([])
+        store().clearConflicts()
     })
 })
