@@ -212,7 +212,9 @@ describe('x-text-edit inline markdown as you type', () => {
         for (const ch of '`lit`') typeChar(area, node, ch)
         const code = area.querySelector('code')
         expect(code && code.textContent).toBe('lit')
-        // typing inside the <code> element must stay literal
+        // typing inside the <code> element must stay literal (clicked into: the
+        // keystroke right after a conversion leaves the mark instead)
+        pointerdown(code)
         const inner = code.firstChild
         for (const ch of ' **no**') typeChar(area, inner, ch)
         expect(code.querySelector('strong')).toBe(null)

@@ -36,6 +36,11 @@
         }
     }
 
+    /* A .page background applies to an unstyled area too. */
+    :where([data-text-edit].unstyle[style*="--text-edit-background"]) {
+        background: var(--text-edit-background);
+    }
+
     /* An unstyled area has no field padding, so its placeholder hugs the line. */
     :where([data-text-edit].unstyle)[data-text-edit-empty]::before {
         inset-block-start: 0;
@@ -111,9 +116,16 @@
         }
     }
 
-    :where(button[data-text-edit-control]) {
+    /* Icon-only buttons; text buttons keep the house padding. */
+    :where(button[data-text-edit-control]:has(> svg:only-child)) {
         padding: 0.35rem;
         line-height: 0;
+    }
+
+    /* The reset drops pointer events on disabled elements; a click would fall
+       through and blur the area. The plugin ignores it instead. */
+    :where([data-text-edit-control][aria-disabled=true]) {
+        pointer-events: auto;
     }
 
     /* ---- Editable content ----
