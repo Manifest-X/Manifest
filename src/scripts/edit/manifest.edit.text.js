@@ -45,9 +45,10 @@
         onHistoryKey(e);
         if (e.defaultPrevented) e.stopImmediatePropagation();
     }
-    // Copies and ghosts of a leaf carry none of the engine's attributes.
+    // Copies and ghosts of a leaf carry none of the engine's attributes or --rich-text-* state.
     function unrich(src, copy) {
         const s = [src, ...src.querySelectorAll('*')], c = [copy, ...copy.querySelectorAll('*')];
+        c.forEach(n => { const st = n.getAttribute('style'); if (st && /--rich-text-/.test(st)) { const v = stripRuntime(st); v ? n.setAttribute('style', v) : n.removeAttribute('style'); } });
         s.forEach((n, i) => {
             if (!n._editRt || !c[i]) return;
             [...c[i].attributes].forEach(a => { if (a.name.startsWith('data-rich-text')) c[i].removeAttribute(a.name); });

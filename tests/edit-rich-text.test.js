@@ -388,6 +388,25 @@ describe('links never nest', () => {
     })
 })
 
+describe('selection geometry stays out of content', () => {
+    it('selecting in a leaf sets --rich-text-selection-* on <html> only; styles and copies never carry --rich-text-*', async () => {
+        const root = await mount(`<section x-edit="sg1"><h2 style="color: red">Float title</h2><p>Two</p></section>`)
+        const h2 = root.querySelector('h2')
+        await enter(h2)
+        select(h2.firstChild, 0, 5)
+        expect(h2.getAttribute('style')).toMatch(/^color: red;?$/)
+        expect(document.documentElement.style.getPropertyValue('--rich-text-selection-width')).not.toBe('')
+        await blur(h2)
+        h2.style.setProperty('--rich-text-selection-x', '9px')            // left by an older build
+        store().duplicate(h2)
+        await flush()
+        const copy = root.querySelectorAll('h2')[1]
+        expect(copy.getAttribute('style')).toMatch(/^color: red;?$/)
+        expect(JSON.stringify(store().patches())).not.toContain('--rich-text-')
+        expect(JSON.stringify(log())).not.toContain('--rich-text-')
+    })
+})
+
 describe('line breaks in leaves', () => {
     it('an address is one leaf: its <br>s stay, Shift+Enter adds one, Enter is swallowed', async () => {
         const root = await mount(`<section x-edit="br1"><p>1 Main St<br>Springfield</p></section>`)

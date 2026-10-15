@@ -95,14 +95,17 @@
         return v === 'none' && name !== '--edit-size' ? (fallback ?? '') : v;
     }
     // Inline style minus declarations the plugin applied itself.
-    function ownStyle(el) {
-        const s = el.getAttribute('style') || '';
-        if (!el._editPos) return s;
+    // Inline style minus declarations the plugins applied: Edit's position, Rich Text's --rich-text-* state.
+    function stripRuntime(s, pos) {
+        if (!pos && !/--rich-text-/.test(s)) return s;
         const d = document.createElement('div');
         d.setAttribute('style', s);
-        d.style.removeProperty('position');
+        if (pos) d.style.removeProperty('position');
+        const names = []; for (let i = 0; i < d.style.length; i++) names.push(d.style.item(i));
+        names.filter(p => p.startsWith('--rich-text-')).forEach(p => d.style.removeProperty(p));
         return d.getAttribute('style') || '';
     }
+    const ownStyle = (el) => stripRuntime(el.getAttribute('style') || '', !!el._editPos);
     function writeStyle(el, v) {
         if (v == null || v === '') el.removeAttribute('style'); else if (el.getAttribute('style') !== v) el.setAttribute('style', v);
         if (el._editPos && !el.style.position) el.style.position = 'relative';
@@ -1656,9 +1659,10 @@
         onHistoryKey(e);
         if (e.defaultPrevented) e.stopImmediatePropagation();
     }
-    // Copies and ghosts of a leaf carry none of the engine's attributes.
+    // Copies and ghosts of a leaf carry none of the engine's attributes or --rich-text-* state.
     function unrich(src, copy) {
         const s = [src, ...src.querySelectorAll('*')], c = [copy, ...copy.querySelectorAll('*')];
+        c.forEach(n => { const st = n.getAttribute('style'); if (st && /--rich-text-/.test(st)) { const v = stripRuntime(st); v ? n.setAttribute('style', v) : n.removeAttribute('style'); } });
         s.forEach((n, i) => {
             if (!n._editRt || !c[i]) return;
             [...c[i].attributes].forEach(a => { if (a.name.startsWith('data-rich-text')) c[i].removeAttribute(a.name); });

@@ -91,14 +91,17 @@
         return v === 'none' && name !== '--edit-size' ? (fallback ?? '') : v;
     }
     // Inline style minus declarations the plugin applied itself.
-    function ownStyle(el) {
-        const s = el.getAttribute('style') || '';
-        if (!el._editPos) return s;
+    // Inline style minus declarations the plugins applied: Edit's position, Rich Text's --rich-text-* state.
+    function stripRuntime(s, pos) {
+        if (!pos && !/--rich-text-/.test(s)) return s;
         const d = document.createElement('div');
         d.setAttribute('style', s);
-        d.style.removeProperty('position');
+        if (pos) d.style.removeProperty('position');
+        const names = []; for (let i = 0; i < d.style.length; i++) names.push(d.style.item(i));
+        names.filter(p => p.startsWith('--rich-text-')).forEach(p => d.style.removeProperty(p));
         return d.getAttribute('style') || '';
     }
+    const ownStyle = (el) => stripRuntime(el.getAttribute('style') || '', !!el._editPos);
     function writeStyle(el, v) {
         if (v == null || v === '') el.removeAttribute('style'); else if (el.getAttribute('style') !== v) el.setAttribute('style', v);
         if (el._editPos && !el.style.position) el.style.position = 'relative';
