@@ -105,3 +105,46 @@ describe('controls judge and act on the field they serve', () => {
         expect(u.getAttribute('aria-disabled')).toBe('true')
     })
 })
+
+describe('typed and pending marks', () => {
+    const typeAtCaret = (el, ch, data) => {
+        const r = window.getSelection().getRangeAt(0), t = r.startContainer
+        t.insertData(r.startOffset, ch)
+        window.getSelection().collapse(t, r.startOffset + ch.length)
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: data ?? ch }))
+    }
+    it('a space typed after a converted mark lands outside it, stored as U+00A0 or not', () => {
+        const root = mount(`<div x-rich-text id="m"></div>`)
+        const el = root.querySelector('#m')
+        focusin(el)
+        el.firstElementChild.textContent = 'A **bold*'
+        window.getSelection().collapse(el.firstElementChild.firstChild, 9)
+        typeAtCaret(el, '*')
+        expect(el.innerHTML).toBe('<p>A <strong>bold</strong></p>')
+        window.getSelection().collapse(el.querySelector('strong').firstChild, 4)   // where Chrome keeps the caret
+        typeAtCaret(el, '\u00a0', ' ')
+        expect(el.innerHTML).toBe('<p>A <strong>bold</strong>&nbsp;</p>')
+        typeAtCaret(el, 'then')
+        expect(el._rt.api.value.replace(/\u00a0/g, ' ')).toBe('A **bold** then')
+    })
+
+    it('an armed mark wraps what is typed, a leading space included', () => {
+        const root = mount(`<div x-rich-text.html id="h"><p>Hello world</p></div>`)
+        const el = root.querySelector('#h'), t = el.querySelector('p').firstChild
+        focusin(el); select(t, 11)
+        key(el, { key: 'b', metaKey: true })
+        typeAtCaret(el, '\u00a0', ' ')
+        expect(el.innerHTML).toBe('<p>Hello world<strong>&nbsp;</strong></p>')
+        typeAtCaret(el, 'big')
+        expect(el.innerHTML).toBe('<p>Hello world<strong>&nbsp;big</strong></p>')
+    })
+
+    it('arming bold inside bold ends it: the text goes after, other formatting carries on', () => {
+        const root = mount(`<div x-rich-text.html id="b"><p>Hi <strong>bo<em>ld</em></strong></p></div>`)
+        const el = root.querySelector('#b'), t = el.querySelector('em').firstChild
+        focusin(el); select(t, 2)
+        key(el, { key: 'b', metaKey: true })
+        typeAtCaret(el, 'x')
+        expect(el.innerHTML).toBe('<p>Hi <strong>bo<em>ld</em></strong><em>x</em></p>')
+    })
+})

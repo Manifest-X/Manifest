@@ -1325,7 +1325,7 @@
         COMMANDS[tag] = {
             md: meta.md,
             run: (v, area) => hasSelection() ? toggleInline(tag, null, attrsFor(tag, v)) : armPending(area, tag, attrsFor(tag, v)),
-            active: (v, area) => selectionMarked(tag) || pendingHas(area, tag)
+            active: (v, area) => selectionMarked(tag) !== pendingHas(area, tag)   // pending inside the tag ends it
         };
     });
     Object.entries(BLOCK_TAGS).forEach(([tag, meta]) => {
@@ -1411,18 +1411,38 @@
         const node = r.startContainer, start = at.offset;
         const span = document.createRange();
         span.setStart(node, start); span.setEnd(node, r.startOffset);
+        const text = span.toString();                 // as the browser stored it (a trailing space may be U+00A0)
         span.deleteContents();
+        // A pending tag already around the caret ends there: the text goes after it, keeping other formatting inside it
+        const off = [], on = [];
+        at.tags.forEach((attrs, tag) => { const h = elementAt(node).closest(tag); (h && withinArea(node, h) ? off : on).push([tag, attrs]); });
+        const offTags = new Set(off.map(([t]) => t.toUpperCase()));
+        let pos = { node, offset: start }, keep = [];
+        off.forEach(([tag]) => {
+            const host = elementAt(pos.node).closest(tag); if (!host) return;
+            for (let n = elementAt(pos.node); n && n !== host; n = n.parentElement) if (!offTags.has(n.tagName)) keep.unshift(n.cloneNode(false));
+            const rest = document.createRange(); rest.setStart(pos.node, pos.offset); rest.setEnd(host, host.childNodes.length);
+            const tail = host.cloneNode(false); tail.appendChild(rest.extractContents());
+            host.after(tail);
+            if (!tail.textContent) tail.remove();
+            pos = { node: host.parentNode, offset: [...host.parentNode.childNodes].indexOf(host) + 1 };
+            if (!host.textContent) { pos.offset--; host.remove(); }
+        });
         let outer = null, inner = null;
-        at.tags.forEach((attrs, tag) => {
+        const wrap = (el) => { if (inner) inner.appendChild(el); else outer = el; inner = el; };
+        keep.forEach(wrap);
+        on.forEach(([tag, attrs]) => {
             const el = document.createElement(tag);
             if (attrs) Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
-            if (inner) inner.appendChild(el); else outer = el;
-            inner = el;
+            wrap(el);
         });
-        inner.textContent = typed;
-        span.insertNode(outer);
+        const t = document.createTextNode(text);
+        if (inner) inner.appendChild(t); else outer = t;
+        const ins = document.createRange(); ins.setStart(pos.node, pos.offset); ins.collapse(true);
+        ins.insertNode(outer);
         area._pending = null;
-        caretIn(inner, typed.length);
+        const s = sel(), nr = document.createRange(); nr.setStart(t, text.length); nr.collapse(true);
+        s.removeAllRanges(); s.addRange(nr);
         return true;
     }
 
@@ -1593,14 +1613,17 @@
         const r = range();
         if (!el || !el.isConnected || !r || !r.collapsed) return false;
         const node = r.startContainer;
-        if (node.nodeType !== 3 || !el.contains(node) || r.startOffset !== node.length || !node.nodeValue.endsWith(typed)) return false;
+        // Chrome stores a typed trailing space as U+00A0
+        const nb = (s) => s.replace(/\u00a0/g, ' ');
+        if (node.nodeType !== 3 || !el.contains(node) || r.startOffset !== node.length || !nb(node.nodeValue).endsWith(nb(typed))) return false;
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
         let last = null; for (let n = walker.nextNode(); n; n = walker.nextNode()) last = n;
         if (last !== node || node.length === typed.length) return false;
+        const moved = node.nodeValue.slice(node.length - typed.length);
         node.deleteData(node.length - typed.length, typed.length);
         let tail = el.nextSibling;
         if (!tail || tail.nodeType !== 3) { tail = document.createTextNode(''); el.after(tail); }
-        tail.insertData(0, typed);
+        tail.insertData(0, moved);
         const s = sel(), nr = document.createRange();
         nr.setStart(tail, typed.length); nr.collapse(true);
         s.removeAllRanges(); s.addRange(nr);
