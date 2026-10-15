@@ -504,6 +504,8 @@ export interface ManifestRichText {
 export interface ManifestRichTextAttachOptions {
     /** 'block' (default) or 'inline' (single line: no block commands, Enter fires `rich-text:enter`). */
     mode?: 'block' | 'inline';
+    /** Inline html only: `<br>` line breaks are kept, Shift+Enter inserts one, pasted blocks become lines. */
+    breaks?: boolean;
     /** Storage format: 'markdown' (default), 'html' or 'plain'. */
     format?: 'markdown' | 'html' | 'plain';
     /** Initial value; omitted, the element's existing markup is the content. */

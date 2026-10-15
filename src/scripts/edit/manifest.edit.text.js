@@ -22,7 +22,7 @@
         if (el._editRt) return;
         const RT = rtEngine();
         el._editRtPrior = ['role', 'aria-multiline'].map(a => [a, el.getAttribute(a)]);
-        const h = RT && RT.attach(el, { mode: 'inline', format, onChange: () => { } });
+        const h = RT && RT.attach(el, { mode: 'inline', breaks: true, format, onChange: () => { } });
         if (!h) { el.setAttribute('contenteditable', 'true'); return; }
         el._editRt = h;
         el.setAttribute('data-edit-text', '');

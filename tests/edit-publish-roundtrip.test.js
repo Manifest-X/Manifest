@@ -247,6 +247,21 @@ describe('publish round trips', () => {
         expect(regionSource()).toBe(`<section x-edit="w1"><h1><em>Hi</em> <strong>world</strong></h1><div><strong class="k">planet</strong></div></section>`)
     })
 
+    it('an address with <br>s is one leaf: edits publish with the breaks, and it is one leaf after reload', async () => {
+        const body = `<section x-edit="w5"><address><p>1 Main St<br>Springfield</p></address></section>`
+        const r = await roundTrip(body, async (root) => {
+            const p = root.querySelector('p')
+            expect(p._editRt).toBeTruthy()
+            editText(p, '1 Main St<br>Springfield<br>USA')
+        })
+        expect(r.res.results.map(x => x.status)).toEqual(['written'])
+        expect(r.src).toBe(body.replace('Springfield<', 'Springfield<br>USA<'))
+        expect(r.after).toEqual(r.live)
+        const p = document.querySelector('address p')
+        expect(p._editRt).toBeTruthy()
+        expect(p.innerHTML).toBe('1 Main St<br>Springfield<br>USA')
+    })
+
     it('a paragraph with an Alpine-bound span stays granular; the span is untouched', async () => {
         const body = `<section x-edit="w3" x-data="{ name: 'Ada' }"><p>Hello <span x-text="name"></span>, welcome <em>back</em></p></section>`
         const r = await roundTrip(body, async (root) => {

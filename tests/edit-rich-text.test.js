@@ -181,7 +181,7 @@ describe('formatting page text', () => {
         expect(key(p, { key: ' ' }).defaultPrevented).toBe(false)
     })
 
-    it('paste is flattened to one line and sanitized', async () => {
+    it('paste is sanitized; its blocks become <br>-separated lines', async () => {
         const root = await mount(`<section x-edit="b4"><p>Start</p></section>`)
         const p = root.querySelector('p')
         await enter(p)
@@ -190,7 +190,7 @@ describe('formatting page text', () => {
         expect(p.querySelector('h1, p, script, iframe')).toBe(null)
         expect(p.innerHTML).not.toMatch(/onclick|javascript|bad\(\)/)
         expect(p.innerHTML).toContain('<em>two</em>')
-        expect(p.textContent).toBe('StartBig one two link')
+        expect(p.innerHTML).toBe('StartBig<br>one <em>two</em><br><a>link</a>')
         await blur(p)
         expect(log().at(-1).value).toBe(p.innerHTML)
     })
@@ -254,12 +254,14 @@ describe('undo hand-off', () => {
 })
 
 describe('whole leaves', () => {
-    it('a paragraph of plain formatting is one leaf; a class, a directive or a <br> keeps it granular', async () => {
+    it('a paragraph of plain formatting is one leaf, <br> included; a class or a directive keeps it granular', async () => {
         const root = await mount(`<section x-edit="w0"><p id="a">Read <a href="/x">guide</a> <em>now</em></p><p id="b">Go <a class="btn" href="/y">there</a></p><p id="c">Hi <code x-tooltip="t">x</code></p><p id="d">One<br>two</p></section>`)
         const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(x => root.querySelector('#' + x))
         expect(a._editRt).toBeTruthy()
         expect(a.querySelector('a').hasAttribute('data-rich-text')).toBe(false)
-        for (const el of [b, c, d]) expect(el.hasAttribute('data-rich-text')).toBe(false)
+        for (const el of [b, c]) expect(el.hasAttribute('data-rich-text')).toBe(false)
+        expect(d._editRt).toBeTruthy()
+        expect(d.innerHTML).toBe('One<br>two')
         expect(b.querySelector('a')._editRt).toBeTruthy()            // its plain-text children stay their own leaves
         expect(store().can('text', a)).toBe(true)
     })
@@ -297,6 +299,73 @@ describe('whole leaves', () => {
         expect(p._editRt.can('undo')).toBe(false)
         await blur(p)
         expect(cursor()).toBe(at + 1)
+    })
+})
+
+describe('line breaks in leaves', () => {
+    it('an address is one leaf: its <br>s stay, Shift+Enter adds one, Enter is swallowed', async () => {
+        const root = await mount(`<section x-edit="br1"><p>1 Main St<br>Springfield</p></section>`)
+        const p = root.querySelector('p'), at = cursor()
+        expect(p._editRt).toBeTruthy()
+        expect(p.innerHTML).toBe('1 Main St<br>Springfield')
+        expect(p.getAttribute('aria-multiline')).toBe('true')
+        await enter(p)
+        select(p.lastChild, 11)
+        const heard = []
+        p.addEventListener('rich-text:enter', () => heard.push(1))
+        expect(key(p, { key: 'Enter' }).defaultPrevented).toBe(true)
+        expect(heard.length).toBe(1)
+        expect(p.innerHTML).toBe('1 Main St<br>Springfield')
+        expect(key(p, { key: 'Enter', shiftKey: true }).defaultPrevented).toBe(true)
+        expect(heard.length).toBe(1)
+        expect(p.innerHTML).toBe('1 Main St<br>Springfield<br><br>')   // a trailing pair shows the new line
+        const caret = window.getSelection().getRangeAt(0)
+        caret.insertNode(document.createTextNode('USA'))
+        p.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'A' }))
+        await blur(p)
+        expect(cursor()).toBe(at + 1)
+        expect(log().at(-1).value).toBe('1 Main St<br>Springfield<br>USA')
+        expect(p.innerHTML).toBe('1 Main St<br>Springfield<br>USA')
+    })
+
+    it('Shift+Enter mid-line splits the line with one <br>', async () => {
+        const root = await mount(`<section x-edit="br2"><p>Roses are red</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        select(p.firstChild, 9)
+        key(p, { key: 'Enter', shiftKey: true })
+        expect(p.innerHTML).toBe('Roses are<br> red')
+        expect(p._editRt.can('undo')).toBe(true)
+    })
+
+    it('a multi-paragraph paste becomes <br>-separated lines', async () => {
+        const root = await mount(`<section x-edit="br3"><p>Note: </p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        select(p.firstChild, 6)
+        paste(p, { 'text/html': '<p>Dear Ada,</p>\n<p>Thanks for <b>everything</b>.</p><ul><li>One</li><li>Two</li></ul>' })
+        expect(p.innerHTML).toBe('Note: Dear Ada,<br>Thanks for <b>everything</b>.<br>One<br>Two')
+        p.innerHTML = 'x'
+        select(p.firstChild, 1)
+        paste(p, { 'text/plain': 'line one\n\nline two\nline three' })
+        expect(p.innerHTML).toBe('xline one<br>line two<br>line three')
+    })
+
+    it('x-rich-text.inline without breaks stays one line', async () => {
+        const root = await mount(`<div x-data><div x-rich-text.html.inline id="one">A<br>B</div></div>`)
+        const el = root.querySelector('#one')
+        expect(el.innerHTML).toBe('A B')
+        expect(el.getAttribute('aria-multiline')).toBe('false')
+        el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+        select(el.firstChild, 3)
+        const heard = []
+        el.addEventListener('rich-text:enter', (e) => heard.push(e.detail.shiftKey))
+        key(el, { key: 'Enter', shiftKey: true })
+        expect(heard).toEqual([true])
+        expect(el.innerHTML).toBe('A B')
+        expect(el._rt.api.can('br')).toBe(false)
+        paste(el, { 'text/html': '<p>one</p><p>two</p>' })
+        expect(el.innerHTML).toBe('A Bone two')
     })
 })
 

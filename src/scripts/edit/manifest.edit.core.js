@@ -111,8 +111,10 @@
     const authoredRich = (el) => !!el && el.nodeType === 1 && el.hasAttribute('data-rich-text') && !el._editRt;
     const LEAF_STYLE = true;   // inline style survives Rich Text's sanitizer, so it is plain formatting too
     const inlineClean = (html) => window.ManifestRichText.sanitize(html, false, LEAF_STYLE);
+    // A trailing <br> shows nothing: leaf text never ends with one
+    const leafClean = (html) => inlineClean(html).replace(/(\s*<br>)+\s*$/, '');
     const sanitizeFor = (el, html) => !window.ManifestRichText ? sanitizeHTML(html)
-        : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : inlineClean(html);
+        : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : leafClean(html);
 
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);
@@ -224,14 +226,13 @@
     const ownText = (el) => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
     const isTextEl = (el) => TEXT_TAGS.has(el.tagName) || el.hasAttribute('data-rich-text') || ownText(el) || wholeLeaf(el);
     // One leaf: a text element whose elements inside are all plain formatting, i.e. markup
-    // Rich Text's inline sanitizer keeps unchanged (Edit's own attributes aside). No <br>: a leaf is one line.
+    // Rich Text's inline sanitizer keeps unchanged (Edit's own attributes aside); <br> included.
     const LEAF_TAGS = new Set([...TEXT_TAGS, 'LI', 'TD', 'TH']);
     function plainFormatted(el) {
         if (!window.ManifestRichText) return false;
         const c = el.cloneNode(true);
         c.querySelectorAll('[data-edit-handle], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
         if (!c.children.length) return true;
-        if (c.querySelector('br')) return false;
         c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
         return inlineClean(c.innerHTML) === c.innerHTML;
     }
