@@ -25,6 +25,8 @@
     function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = listTpl(area); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch { } if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
+        // Alpine walks only x-data trees: a page with none still gets its areas
+        if (document.body && !document.body.hasAttribute('x-data')) document.body.setAttribute('x-data', '{}');
         Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
             registerEdit(el, modifiers, expression);
             armLater();

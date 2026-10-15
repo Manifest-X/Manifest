@@ -766,6 +766,17 @@ describe('live reload after our own publish', () => {
     })
 })
 
+describe('grip', () => {
+    it('takes the piece\'s --edit-accent, since it lives on <body>', async () => {
+        const root = await mount(`<section x-edit="gr1" style="--edit-accent: rgb(255, 0, 0)"><p>One</p><p>Two</p></section>`)
+        const p = root.querySelector('p')
+        p.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+        const g = document.querySelector('[data-edit-grip]')
+        expect(g).toBeTruthy()
+        expect(g.style.getPropertyValue('--edit-accent')).toBe('rgb(255, 0, 0)')
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)

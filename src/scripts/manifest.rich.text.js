@@ -1134,7 +1134,7 @@
     // Nest at most one level below the item above
     function moveItem(by) {
         const li = ancestor('li'); if (!li) return;
-        const list = li.parentElement;
+        const list = li.parentElement, off = offsetIn(li);
         if (by > 0) {
             const prev = li.previousElementSibling;
             if (!prev || prev.tagName !== 'LI') return;
@@ -1147,6 +1147,7 @@
             parentItem.parentElement.insertBefore(li, parentItem.nextSibling);
             if (!list.children.length) list.remove();
         }
+        if (off != null) caretIn(li, off);   // the caret stays in the item's text, so Tab and Shift+Tab chain
     }
 
     function canIndent(area) {
@@ -1311,6 +1312,15 @@
         return true;
     }
 
+    // A value styles the selection; an empty one removes that style from it (spans left bare go)
+    function styleSpan(prop, v) {
+        if (v != null && v !== '') return wrapInline('span', { [prop]: v });
+        const nodes = selectedTextNodes(), spans = new Set();
+        nodes.forEach(n => { for (let el = elementAt(n); el && el.closest && !el.hasAttribute('data-rich-text'); el = el.parentElement) if (el.tagName === 'SPAN' && el.style[prop]) spans.add(el); });
+        spans.forEach(s => { s.style[prop] = ''; if (!s.getAttribute('style')) s.removeAttribute('style'); if (!s.attributes.length) unwrapEl(s); });
+        return [];
+    }
+
     function clearFormatting() {
         Object.keys(INLINE_TAGS).forEach(t => unwrapInline(t));
         unwrapInline('a');
@@ -1373,10 +1383,10 @@
         indent: { md: 1, block: 1, run: (v, area) => indent(1, area), active: () => false, enabled: (a) => canIndent(a) },
         outdent: { md: 1, block: 1, run: (v, area) => indent(-1, area), active: () => false, enabled: (a) => canOutdent(a) },
         align: { block: 1, all: 1, run: (v) => styleBlock('textAlign', v || 'start'), active: () => false, reflect: () => readBlockStyle('textAlign') },
-        color: { all: 1, needsSelection: 1, run: (v) => wrapInline('span', { color: v }), active: () => false, reflect: () => rgbToHex(readInlineStyle('color')) },
-        background: { all: 1, needsSelection: 1, run: (v) => wrapInline('span', { backgroundColor: v }), active: () => false, reflect: () => rgbToHex(readInlineStyle('backgroundColor')) },
-        font: { all: 1, needsSelection: 1, run: (v) => wrapInline('span', { fontFamily: v }), active: () => false, reflect: () => readInlineStyle('fontFamily').split(',')[0].replace(/['"]/g, '') },
-        size: { all: 1, needsSelection: 1, run: (v) => wrapInline('span', { fontSize: px(v) }), active: () => false, reflect: () => readInlineStyle('fontSize') },
+        color: { all: 1, needsSelection: 1, run: (v) => styleSpan('color', v), active: () => false, reflect: () => rgbToHex(readInlineStyle('color')) },
+        background: { all: 1, needsSelection: 1, run: (v) => styleSpan('backgroundColor', v), active: () => false, reflect: () => rgbToHex(readInlineStyle('backgroundColor')) },
+        font: { all: 1, needsSelection: 1, run: (v) => styleSpan('fontFamily', v), active: () => false, reflect: () => readInlineStyle('fontFamily').split(',')[0].replace(/['"]/g, '') },
+        size: { all: 1, needsSelection: 1, run: (v) => styleSpan('fontSize', v ? px(v) : ''), active: () => false, reflect: () => readInlineStyle('fontSize') },
         leading: { all: 1, block: 1, run: (v) => styleBlock('lineHeight', v), active: () => false, reflect: () => readBlockStyle('lineHeight') },
 
         clear: { md: 1, run: clearFormatting, active: () => false },
@@ -1775,6 +1785,15 @@
 
         if (holder.tagName === 'LI' && !holder.textContent.length) return liftItem(holder);
 
+        // An empty last paragraph leaves its quote (a quote from markdown holds paragraphs)
+        const quote = holder.parentElement;
+        if (holder.tagName === 'P' && quote && quote.tagName === 'BLOCKQUOTE' && quote !== area && area.contains(quote) && holder === quote.lastElementChild && !holder.textContent.trim()) {
+            quote.after(holder);
+            if (!quote.textContent.trim() && !quote.querySelector('img')) quote.remove();
+            caretIn(holder, 0);
+            return;
+        }
+
         // Terms alternate dt → dd → dt; an empty one leaves the list
         if (/^(DT|DD)$/.test(holder.tagName)) {
             if (!holder.textContent.length) return liftItem(holder);
@@ -2077,6 +2096,8 @@
     /* ---- Directive ---- */
     function init() {
         if (!window.Alpine || !Alpine.directive) return;
+        // Alpine walks only x-data trees: a page with none still gets its fields
+        if (document.body && !document.body.hasAttribute('x-data')) document.body.setAttribute('x-data', '{}');
         listen();
 
         Alpine.directive('rich-text', (el, { expression, modifiers }, { effect, evaluateLater, evaluate, cleanup }) => {

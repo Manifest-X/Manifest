@@ -164,3 +164,47 @@ describe('markdown paste', () => {
         expect(il.innerHTML).toBe('xu<em>e</em>s')
     })
 })
+
+describe('small things', () => {
+    it('a page with no x-data still gets its fields (body gains an empty scope)', () => {
+        expect(document.body.getAttribute('x-data')).toBe('{}')
+    })
+
+    it('Tab then Shift+Tab: the caret stays in the item, so they chain', () => {
+        const root = mount(`<div x-rich-text.html id="l"><ul><li>One</li><li>Two</li></ul></div>`)
+        const el = root.querySelector('#l'), two = el.querySelectorAll('li')[1]
+        focusin(el); select(two.firstChild, 2)
+        key(el, { key: 'Tab' })
+        expect(el.querySelector('li li')).toBe(two)
+        const r = window.getSelection().getRangeAt(0)
+        expect(two.contains(r.startContainer)).toBe(true)
+        key(el, { key: 'Tab', shiftKey: true })
+        expect(el.querySelector('li li')).toBe(null)
+        expect(el.querySelectorAll('ul > li').length).toBe(2)
+    })
+
+    it('Enter on an empty last paragraph of a quote leaves it', () => {
+        const root = mount(`<div x-rich-text id="q"></div>`, '{}')
+        const el = root.querySelector('#q')
+        el._rt.api.value = '> quoted'
+        expect(el.querySelector('blockquote > p')).toBeTruthy()
+        focusin(el); const p = el.querySelector('blockquote p'); select(p.firstChild, 6)
+        key(el, { key: 'Enter' })
+        expect(el.querySelectorAll('blockquote p').length).toBe(2)
+        key(el, { key: 'Enter' })
+        expect(el.querySelectorAll('blockquote p').length).toBe(1)
+        expect(el.querySelector('blockquote').nextElementSibling.tagName).toBe('P')
+        expect(el._rt.api.value).toBe('> quoted')
+    })
+
+    it('an empty font (or colour, size) removes it instead of wrapping a bare span', () => {
+        const root = mount(`<div x-rich-text.html id="f"><p><span style="font-family: serif">Hello</span> world</p></div>`)
+        const el = root.querySelector('#f')
+        focusin(el); select(el.querySelector('span').firstChild, 0, 5)
+        el._rt.api.font('')
+        expect(el.innerHTML).toBe('<p>Hello world</p>')
+        select(el.querySelector('p').firstChild, 0, 5)
+        el._rt.api.color('')
+        expect(el.querySelector('span')).toBe(null)
+    })
+})

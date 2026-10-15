@@ -153,6 +153,8 @@
         const area = regionOf(piece);
         if (dragged || !area || area._edit.bare || piece.closest('[data-edit-area="bare"]')) return hideGrip();
         const g = ensureGrip();
+        // The grip lives on <body>: it takes the piece's own accent and sizes
+        ['--edit-accent', '--edit-grip-size', '--edit-grip-offset'].forEach(v => { const x = rawVar(piece, v); if (x) g.style.setProperty(v, x); else g.style.removeProperty(v); });
         gripFor = piece; placeGrip(); g.hidden = false;
     }
     function hideGrip() { gripFor = null; if (grip) grip.hidden = true; }
