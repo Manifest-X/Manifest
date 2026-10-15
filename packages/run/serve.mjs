@@ -689,12 +689,13 @@ const vread = (file) => { if (READS) READS.add(file); return VFS && VFS.has(file
 const WRITE_EXT = { html: ['.html'], css: ['.css'], data: ['.json', '.csv', '.yaml', '.yml', '.md'] };
 WRITE_EXT.any = [...WRITE_EXT.html, ...WRITE_EXT.css, ...WRITE_EXT.data];
 let REAL_ROOT = null;
-const realRoot = () => REAL_ROOT || (REAL_ROOT = realpathSync(root));
-const hiddenSegment = (rel) => rel.split(/[\\/]/).some(seg => seg.startsWith('.') || seg === 'node_modules');
+const realRoot = () => REAL_ROOT || (REAL_ROOT = realpathSync.native(root));
+// Case-insensitive (APFS/NTFS), and segments Windows would alias (trailing dot or space).
+const hiddenSegment = (rel) => rel.split(/[\\/]/).some(seg => seg.startsWith('.') || seg.toLowerCase() === 'node_modules' || /[. ]$/.test(seg));
 const outside = (rel) => !rel || rel.startsWith('..') || isAbsolute(rel);
 function realTarget(file) {
-  try { return realpathSync(file); } catch { }
-  try { return join(realpathSync(dirname(file)), basename(file)); } catch { return null; }
+  try { return realpathSync.native(file); } catch { }
+  try { return join(realpathSync.native(dirname(file)), basename(file)); } catch { return null; }
 }
 function writeRefusal(file, kind) {
   const exts = WRITE_EXT[kind] || WRITE_EXT.any, ext = extname(file).toLowerCase();
@@ -728,7 +729,7 @@ function baseHashes() {
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name === 'node_modules' || EDIT_TEMP.test(e.name)) continue;
       const p = join(dir, e.name);
-      let real; try { real = realpathSync(p); } catch { continue; }
+      let real; try { real = realpathSync.native(p); } catch { continue; }
       const rrel = relative(realRoot(), real);
       if (outside(rrel) && real !== realRoot()) continue;
       if (hiddenSegment(rrel)) continue;
@@ -1348,10 +1349,14 @@ function navigateToNode(html, path) {
 }
 // A project-relative path from manifest.json ("components/x.html", "/data/a.csv").
 const resolveRel = (rel) => safeResolve('/' + String(rel).replace(/^\/+/, ''));
+// A component the project declares: a manifest.json entry (matched by file name, as the
+// client names components by tag), or the convention components/<name>.html.
+const COMPONENT_NAME = /^[\w-]+(\/[\w-]+)*$/;
 function resolveComponentFile(manifest, name) {
+  if (typeof name !== 'string' || !COMPONENT_NAME.test(name)) return null;
   const all = [...(manifest.preloadedComponents || []), ...(manifest.components || [])];
-  const listed = all.find(p => String(p).split('/').pop().replace('.html', '') === name);
-  if (listed) return listed;
+  const listed = all.find(p => String(p).split('/').pop().replace('.html', '') === name.split('/').pop());
+  if (listed) { const rel = String(listed).replace(/^\/+/, ''); return /(^|\/)\.\.?(\/|$)/.test(rel) ? null : rel; }
   // Convention component: components/<name>.html needs no manifest entry.
   const rel = 'components/' + name + '.html';
   const file = safeResolve('/' + rel);

@@ -590,5 +590,38 @@ describe('startup sweep', () => {
         expect(msg).toMatchObject({ rel: 'styles/core/manifest.theme.css' })
         expect(msg.hash).toMatch(/^[0-9a-f]{40}$/)
     })
+
+    it('component names must be declared: no traversal, no hidden or node_modules paths (any case)', async () => {
+        mkdirSync(path.join(dir, 'components/cards'), { recursive: true }); mkdirSync(path.join(dir, 'NODE_MODULES/pkg'), { recursive: true })
+        const page = `<div class="card"><h3>T</h3></div>\n`
+        writeFileSync(path.join(dir, 'NODE_MODULES/pkg/page.html'), page)
+        writeFileSync(path.join(dir, 'components/cards/promo.html'), page)
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="a"><p>One</p></section>`)
+        const edit = (component) => save([{ kind: 'component', scope: 'main', component, edits: [{ path: '0', prop: 'text', value: 'X' }] }])
+        try {
+            for (const bad of ['../NODE_MODULES/pkg/page', '../index', '/index', 'cards/../../index', '.hidden', 'cards/.x']) {
+                const { results } = await edit(bad)
+                expect(results[0].status, bad).toBe('error')
+            }
+            expect(readFileSync(path.join(dir, 'NODE_MODULES/pkg/page.html'), 'utf8')).toBe(page)
+            expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toBe(`<section x-edit="a"><p>One</p></section>`)
+            const ok = await edit('cards/promo')
+            expect(ok.results[0].status).toBe('written')
+        } finally { rmSync(path.join(dir, 'NODE_MODULES'), { recursive: true, force: true }); rmSync(path.join(dir, 'components/cards'), { recursive: true, force: true }) }
+    })
+
+    it('confinement compares segments case-insensitively and refuses Windows aliases', async () => {
+        mkdirSync(path.join(dir, 'Node_Modules/x'), { recursive: true }); mkdirSync(path.join(dir, 'styles./t'), { recursive: true })
+        const css = `:root {\n    --x: 1;\n}\n`
+        writeFileSync(path.join(dir, 'Node_Modules/x/theme.css'), css); writeFileSync(path.join(dir, 'styles./t/theme.css'), css)
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="Node_Modules/x/theme.css"><link rel="stylesheet" href="styles./t/theme.css"><section x-edit="a"><p>One</p></section>`)
+        try {
+            for (const file of ['Node_Modules/x/theme.css', 'styles./t/theme.css']) {
+                const { results } = await save([{ kind: 'theme', scope: null, var: '--x', value: 'red', file }])
+                expect(results[0].status, file).toBe('error')
+                expect(readFileSync(path.join(dir, file), 'utf8')).toBe(css)
+            }
+        } finally { rmSync(path.join(dir, 'Node_Modules'), { recursive: true, force: true }); rmSync(path.join(dir, 'styles.'), { recursive: true, force: true }) }
+    })
 })
 
