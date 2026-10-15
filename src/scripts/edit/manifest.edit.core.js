@@ -250,6 +250,29 @@
     const areas = () => areasCache || (areasCache = [...editEls].filter(el => { for (let n = el.parentElement; n; n = n.parentElement) if (n._edit) return false; return true; }));
     const resetAreas = () => { areasCache = null; };
     const areaByKey = (k) => areas().find(a => a._edit.key === k);
+    // A key mounted more than once (a component used several times) is not editable.
+    const sharedKey = (a) => areas().filter(b => b._edit.key === a._edit.key).length > 1;
+    // The component file an area is authored in: its nearest component root, when the area
+    // sits inside it or that file itself carries this x-edit (else it came from the placeholder).
+    function sourceComponent(area) {
+        if (area._editSrc !== undefined) return area._editSrc;
+        let name = null;
+        for (let n = area; n; n = n.parentElement) {
+            if (!n._manifestComponent) continue;
+            const src = n === area && window.ManifestComponentsLoader && window.ManifestComponentsLoader.cache[n._manifestComponent];
+            const own = new RegExp('\\sx-edit(?:\\.[\\w-]+)*\\s*=\\s*(["\'])' + area._edit.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\1');
+            if (n !== area || (src && own.test(src))) name = n._manifestComponent;
+            break;
+        }
+        return (area._editSrc = name);
+    }
+    // Its project path, as the components loader resolves it.
+    function componentFile(name) {
+        const mf = (window.ManifestComponentsRegistry && window.ManifestComponentsRegistry.manifest) || {};
+        const p = [...(mf.preloadedComponents || []), ...(mf.components || [])].find(x => String(x).split('/').pop().replace('.html', '') === name);
+        return String(p || 'components/' + name + '.html').replace(/^\/+/, '');
+    }
+    const sourceFile = (area) => { const c = sourceComponent(area); return c ? componentFile(c) : 'index.html'; };
     const topArea = (a) => !!a && areas().includes(a);
     const regionOf = (el) => el && areas().find(a => a === el || a.contains(el));
     const key = (area) => area._edit.key;
@@ -261,7 +284,7 @@
     /* ---- Regime classification ---- */
     function classify(area) {
         if (listTpl(area)) return 'data';
-        if (area.matches('[data-component]') || area.querySelector('[data-component]')) return 'component';
+        if ((area.matches('[data-component]') && !sourceComponent(area)) || area.querySelector('[data-component]')) return 'component';
         return 'static';
     }
     function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }

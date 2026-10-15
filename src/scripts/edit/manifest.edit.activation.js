@@ -82,9 +82,15 @@
 
     /* ---- Activation: always-on by default; .gated waits for $edit.on() ---- */
     let estore, booted = false, armQueued = false;
-    const isActive = (a) => !!a && !!a._edit && (!a._edit.gated || !!(estore && estore.active));
+    const isActive = (a) => !!a && !!a._edit && (!a._edit.gated || !!(estore && estore.active)) && !sharedKey(a);
+    const warnedShared = new Set();
     function armAll() {
         const fresh = [];
+        areas().forEach(a => {
+            if (!sharedKey(a)) return;
+            if (!warnedShared.has(key(a))) { warnedShared.add(key(a)); console.warn(`[edit] x-edit="${key(a)}" is on the page more than once (a component used several times); it is not editable here`); }
+            if (a._armed) { disarmArea(a); a._armed = false; }
+        });
         areas().forEach(a => { if (isActive(a) && !a._armed) { if (!a._editBound) fresh.push(a); lastSnap[key(a)] = snapshot(a, classify(a)); armArea(a); a._armed = true; } });
         // A region mounted again after boot (x-if, a deferred route) shows the edits the log still holds for it
         if (booted && fresh.length) {
@@ -130,19 +136,19 @@
         const nontrivial = (n) => n.edits || n.children || n.key[0] === '~';
         const live = keyMap(staticAreas());
         staticAreas().forEach(area => {
-            const region = key(area);
+            const region = key(area), comp = sourceComponent(area), ids = baseIds && baseIds[sourceFile(area)];
             // The children a restructured container had when the page loaded (the server refuses
             // the rewrite if the source no longer has them).
             const baseOf = (parent) => {
                 const list = parent === '' ? (ss.orderBase[region] || {})[''] : Object.values(ss.orderBase).map(m => m[parent]).find(Boolean);
-                return list ? list.filter(k => k[0] === '@').map(k => { const b = { key: k }, at = originAt.get(k); if (at != null) b.at = at; if (baseIds && baseIds[k]) b.fp = baseIds[k]; return b; }) : null;
+                return list ? list.filter(k => k[0] === '@').map(k => { const b = { key: k }, at = originAt.get(k); if (at != null) b.at = at; if (ids && ids[k]) b.fp = ids[k]; return b; }) : null;
             };
             const build = (el, isRoot) => {
                 const id = el.getAttribute('data-edit-key');
                 if (!id || id[0] === '!') return null;
                 const n = { key: id };
                 const at = originAt.get(originOf(id)); if (at != null) n.at = at;
-                if (baseIds && baseIds[originOf(id)]) n.fp = baseIds[originOf(id)];
+                if (ids && ids[originOf(id)]) n.fp = ids[originOf(id)];
                 const e = editsFor(id); if (e) n.edits = e;
                 if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
@@ -155,7 +161,7 @@
             const tree = build(area, true);
             if (!tree || !(tree.edits || tree.children)) return;
             delete tree.at; delete tree.fp;
-            out.push({ kind: 'static-tree', region, tree });
+            out.push(comp ? { kind: 'static-tree', region, component: comp, tree } : { kind: 'static-tree', region, tree });
         });
         // Removed: named by a structural delta's `before`, absent from every current order.
         const placedKeys = new Set();
@@ -171,7 +177,7 @@
         removed.forEach(k => {
             const r = regionOfKey(k);
             let p = out.find(x => x.region === r);
-            if (!p) { if (!areaByKey(r)) return; p = { kind: 'static-tree', region: r, tree: { key: '' } }; out.push(p); }
+            if (!p) { const a = areaByKey(r); if (!a || sharedKey(a)) return; const c = sourceComponent(a); p = c ? { kind: 'static-tree', region: r, component: c, tree: { key: '' } } : { kind: 'static-tree', region: r, tree: { key: '' } }; out.push(p); }
             (p.removed = p.removed || []).push(k);
         });
         return out;
@@ -248,7 +254,13 @@
     }
     // Stylesheets and data hot-swap: their new hash applies. HTML waits for the reload
     // (a cancelled one leaves the page on what it loaded); our own writes advance on publish.
-    window.addEventListener('manifest:source-change', (e) => { const d = e.detail || {}; if (baseFiles && d.file && d.hash && !/\.html?$/i.test(d.file)) baseFiles[d.file] = d.hash; });
+    // HTML that changes before the base arrives makes a late base untrustworthy.
+    let movedUnbased = false;
+    window.addEventListener('manifest:source-change', (e) => {
+        const d = e.detail || {}, html = /\.html?$/i.test(d.file || '');
+        if (html && !baseIds) movedUnbased = true;
+        if (baseFiles && d.file && d.hash && !html) baseFiles[d.file] = d.hash;
+    });
     // A refusal for files changed since load keeps the log and reports them ($edit.stale,
     // `edit:stale`). Reload to take the new source, or publish({ rebase: true }) to write
     // the edits over it; the history is kept until a publish succeeds.
@@ -305,12 +317,19 @@
             const patches = buildPatches();
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
             if (!patches.length) return Promise.resolve({ results: [] });
-            const body = baseFiles ? { patches, base: baseFiles } : patches;
+            const body = { patches, base: baseFiles };
             inFlight++;
             return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
                 .then(r => { const out = done(r); settled(r, !!(opts && opts.rebase)); return out; }, (err) => { settled(null); throw err; });
         };
-        return opts && opts.rebase ? loadBase(true).then(send) : send();
+        // mnfst-run gets a publish only with the base the page loaded; a missing one is
+        // fetched once more, else the publish is refused and the history kept.
+        const refuse = (reason) => { const patches = buildPatches(); return patches.length ? done({ results: patches.map(p => ({ region: p.region, status: 'error', reason })) }) : { results: [] }; };
+        const custom = estore && typeof estore.onPublish === 'function';
+        const based = custom || (baseFiles && baseIds) ? Promise.resolve(null)
+            : movedUnbased ? Promise.resolve('the source changed before this page could read its base from the dev server; reload to continue')
+            : loadBase().then(() => baseFiles && baseIds ? null : 'the dev server\'s base (/__edit/base) could not be read, so nothing can be checked against the source; nothing was published');
+        return based.then(why => why ? refuse(why) : opts && opts.rebase ? loadBase(true).then(send) : send());
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {

@@ -210,6 +210,8 @@ window.ManifestComponentsProcessor = {
                     rootElement.setAttribute(attr.name, attr.value);
                 }
             });
+            // The file this markup came from (Edit writes regions authored in it back there)
+            rootElement._manifestComponent = name;
             // Set data-component=instanceId if provided
             if (instanceId) {
                 rootElement.setAttribute('data-component', instanceId);

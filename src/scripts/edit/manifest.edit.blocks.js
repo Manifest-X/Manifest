@@ -96,6 +96,7 @@
         if (action === 'text') return capOf(el, 'text') && !el.hasAttribute('x-text') && !el.hasAttribute('x-html')
             && (el.getAttribute('contenteditable') === 'true' || !!el._pieceMode || el.hasAttribute('data-rich-text') || (el._editField != null && capOf(el, 'data')));
         // attrs: any attribute (static elements); class: the class list (static and component nodes).
+        if ((action === 'attrs' || action === 'class') && kind === 'static' && el._manifestComponent) return false;
         if (action === 'attrs' || action === 'class') {
             if (kind === 'data' || lockedFor(el, 'attrs')) return false;
             const host = leafHost(el);

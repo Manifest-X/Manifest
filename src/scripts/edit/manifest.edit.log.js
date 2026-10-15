@@ -168,7 +168,7 @@
         if (el && k) el.setAttribute('data-edit-key', k);
         return el;
     };
-    const staticAreas = () => areas().filter(a => classify(a) === 'static');
+    const staticAreas = () => areas().filter(a => classify(a) === 'static' && !sharedKey(a));
     // Removed elements, kept so undo puts back the same element (listeners, titling comment).
     const detached = new Map();
     function keyMap(roots) {

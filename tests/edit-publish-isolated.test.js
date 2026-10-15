@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url'
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import Alpine from 'alpinejs'
 import { EDIT_SRC } from './helpers/edit-setup.js'
+import { withBase } from './helpers/edit-base.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
@@ -48,8 +49,8 @@ afterAll(() => { try { proc.kill() } catch { } try { rmSync(dir, { recursive: tr
 beforeEach(() => { expect(store().export().log, 'log left by an earlier test').toEqual([]) })
 afterEach(() => { document.body.innerHTML = ''; localStorage.clear() })
 
-function post(patches) {
-    const body = JSON.stringify(patches)
+async function post(patches) {
+    const body = JSON.stringify(await withBase(port, patches))
     return new Promise((resolve, reject) => {
         const req = http.request({ host: 'localhost', port, path: '/__edit/save', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Origin: `http://localhost:${port}` } }, res => {
             let data = ''; res.on('data', c => data += c); res.on('end', () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
