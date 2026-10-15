@@ -590,6 +590,27 @@ describe('content model and titling comments', () => {
     })
 })
 
+describe('publish refusals never wedge', () => {
+    it('a stale refusal keeps the log and reports the files; a later publish can still succeed', async () => {
+        const region = id('st')
+        const root = await mount(`<section x-edit="${region}"><p>One</p></section>`)
+        editText(root.querySelector('p'), 'Uno')
+        const at = store().export().log.length
+        let seen = null
+        document.addEventListener('edit:stale', (e) => { seen = e.detail.files }, { once: true })
+        store().onPublish = () => ({ results: [{ status: 'error', stale: ['index.html'] }], stale: ['index.html'] })
+        await store().publish()
+        expect(store().stale).toEqual(['index.html'])
+        expect(seen).toEqual(['index.html'])
+        expect(store().export().log.length).toBe(at)
+        store().onPublish = () => ({ results: [{ status: 'written' }] })
+        await store().publish({ rebase: true })
+        expect(store().stale).toEqual([])
+        expect(store().export().log.some(d => d.region === region)).toBe(false)      // published, so cleared
+        store().onPublish = null
+    })
+})
+
 describe('entity table', () => {
     it('is the full WHATWG list', () => {
         const t = JSON.parse(readFileSync(path.join(__dirname, '../packages/run/html-entities.json'), 'utf8'))

@@ -338,8 +338,10 @@ describe('/__edit/save parsing as a browser does', () => {
             expect(readFileSync(themeFile, 'utf8')).toBe(css)
         }
         writeFileSync(themeFile, css)
-        await save([{ kind: 'theme', scope: null, var: '--brand', value: "'$& $` $1'" }])
-        expect(readFileSync(themeFile, 'utf8')).toBe(`:root {\n    --brand: '$& $\` $1';\n}\n`)
+        await save([{ kind: 'theme', scope: null, var: '--brand', value: "'$& $' $1'" }])
+        expect(readFileSync(themeFile, 'utf8')).toBe(`:root {\n    --brand: blue;\n}\n`)              // unbalanced quote: refused
+        await save([{ kind: 'theme', scope: null, var: '--brand', value: "'$& $1 $$'" }])
+        expect(readFileSync(themeFile, 'utf8')).toBe(`:root {\n    --brand: '$& $1 $$';\n}\n`)
     })
 
     it('component patches resolve listed and convention components', async () => {
@@ -483,6 +485,110 @@ describe('startup sweep', () => {
             expect(readdirSync(path.join(d, 'components'))).toEqual([])
             expect(readdirSync(d).sort()).toEqual(['components', 'index.html', 'notes.tmp'])
         } finally { p.kill(); rmSync(d, { recursive: true, force: true }) }
+    })
+
+    it('theme writes go only to a stylesheet the page uses: never hooks, config, HTML or outside the project', async () => {
+        const css = `:root {\n    --x: 1;\n}\n`
+        mkdirSync(path.join(dir, '.husky'), { recursive: true }); mkdirSync(path.join(dir, 'styles/core'), { recursive: true }); mkdirSync(path.join(dir, 'css'), { recursive: true })
+        const outsideDir = mkdtempSync(path.join(tmpdir(), 'mnfst-outside-'))
+        writeFileSync(path.join(outsideDir, 'x.css'), css)
+        rmSync(path.join(dir, 'shared'), { force: true, recursive: true })
+        symlinkSync(outsideDir, path.join(dir, 'shared'))
+        const hook = path.join(dir, '.husky/pre-commit'), hookSrc = '#!/bin/sh\necho ok\n'
+        writeFileSync(hook, hookSrc); chmodSync(hook, 0o755)
+        writeFileSync(path.join(dir, 'css/site.css'), css); writeFileSync(path.join(dir, 'css/unlinked.css'), css); writeFileSync(path.join(dir, 'styles/core/manifest.theme.css'), css)
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/css/site.css?v=2"><link rel="stylesheet" href="shared/x.css"><section x-edit="a" data-edit-theme-file="styles/core/manifest.theme.css"><p>One</p></section>`)
+        const manifestBefore = readFileSync(path.join(dir, 'manifest.json'), 'utf8')
+        try {
+            for (const file of ['.husky/pre-commit', 'manifest.json', 'index.html', 'css/unlinked.css', 'shared/x.css', '../outside.css']) {
+                const { results } = await save([{ kind: 'theme', scope: null, var: '--x', value: 'red', file }])
+                expect(results[0].status, file).toBe('error')
+            }
+            expect(readFileSync(hook, 'utf8')).toBe(hookSrc)
+            expect(readFileSync(path.join(dir, 'manifest.json'), 'utf8')).toBe(manifestBefore)
+            expect(readFileSync(path.join(outsideDir, 'x.css'), 'utf8')).toBe(css)
+            for (const [file, value] of [['css/site.css', 'red'], ['styles/core/manifest.theme.css', 'blue'], [undefined, 'green']]) {
+                const { results } = await save([{ kind: 'theme', scope: null, var: '--x', value, file }])
+                expect(results[0].status, String(file)).toBe('written')
+            }
+            for (const value of ['$(touch PWNED)', '`id`']) {
+                const { results } = await save([{ kind: 'theme', scope: null, var: '--x', value, file: 'css/site.css' }])
+                expect(results[0].status, value).toBe('error')
+            }
+        } finally { rmSync(path.join(dir, 'shared'), { force: true }); rmSync(outsideDir, { recursive: true, force: true }) }
+    })
+
+    it('data, component and static writes refuse hidden paths, other file types and out-of-project links', async () => {
+        mkdirSync(path.join(dir, '.secrets'), { recursive: true })
+        writeFileSync(path.join(dir, '.secrets/rows.json'), '[{"id":"1","t":"a"}]\n')
+        writeFileSync(path.join(dir, 'rows.js'), '[{"id":"1","t":"a"}]\n')
+        writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ data: { hidden: '.secrets/rows.json', script: 'rows.js' } }))
+        try {
+            for (const source of ['hidden', 'script']) {
+                const { results } = await save([{ kind: 'data-val', source, id: '1', field: 't', value: 'b' }])
+                expect(results[0].status, source).toBe('error')
+                expect(results[0].reason).toContain('refused')
+            }
+            expect(readFileSync(path.join(dir, '.secrets/rows.json'), 'utf8')).toBe('[{"id":"1","t":"a"}]\n')
+            // index.html linked outside the project
+            const outsideDir = mkdtempSync(path.join(tmpdir(), 'mnfst-outside-'))
+            writeFileSync(path.join(outsideDir, 'page.html'), `<section x-edit="a"><p>One</p></section>`)
+            rmSync(path.join(dir, 'index.html'), { force: true })
+            symlinkSync(path.join(outsideDir, 'page.html'), path.join(dir, 'index.html'))
+            try {
+                const { results } = await save([tree('a', [n('a', 'P:One', { edits: { text: 'Uno' } })])])
+                expect(results[0].status).toBe('error')
+                expect(results[0].reason).toContain('outside the project')
+                expect(readFileSync(path.join(outsideDir, 'page.html'), 'utf8')).toBe(`<section x-edit="a"><p>One</p></section>`)
+            } finally { rmSync(path.join(dir, 'index.html'), { force: true }); writeFileSync(path.join(dir, 'index.html'), ''); rmSync(outsideDir, { recursive: true, force: true }) }
+        } finally { writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'tree-test' })); rmSync(path.join(dir, '.secrets'), { recursive: true, force: true }); rmSync(path.join(dir, 'rows.js'), { force: true }) }
+    })
+
+    it('/__edit/base lists only writable source types, never dot entries or out-of-project links', async () => {
+        mkdirSync(path.join(dir, '.secrets'), { recursive: true }); writeFileSync(path.join(dir, '.secrets/k.json'), '{}'); writeFileSync(path.join(dir, '.env.json'), '{}')
+        writeFileSync(path.join(dir, 'app.js'), 'x'); writeFileSync(path.join(dir, 'index.html'), '<p>x</p>')
+        const outsideDir = mkdtempSync(path.join(tmpdir(), 'mnfst-outside-'))
+        writeFileSync(path.join(outsideDir, 'o.css'), 'a{}')
+        rmSync(path.join(dir, 'linked'), { force: true, recursive: true })
+        symlinkSync(outsideDir, path.join(dir, 'linked'))
+        try {
+            const { files } = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
+            const names = Object.keys(files)
+            expect(names).toContain('index.html')
+            expect(names.some(f => f.startsWith('.') || f.includes('/.'))).toBe(false)
+            expect(names).not.toContain('app.js')
+            expect(names.some(f => f.startsWith('linked/'))).toBe(false)
+        } finally { rmSync(path.join(dir, 'linked'), { force: true }); rmSync(outsideDir, { recursive: true, force: true }); rmSync(path.join(dir, '.secrets'), { recursive: true, force: true }); rmSync(path.join(dir, '.env.json'), { force: true }); rmSync(path.join(dir, 'app.js'), { force: true }) }
+    })
+
+    it('an external CSS save never blocks a theme publish; a changed HTML file is reported as stale', async () => {
+        const themeFile = path.join(dir, 'styles/core/manifest.theme.css')
+        mkdirSync(path.dirname(themeFile), { recursive: true })
+        writeFileSync(themeFile, `:root {\n    --brand: blue;\n}\n`)
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="h"><p>One</p></section>`)
+        const { files } = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
+        writeFileSync(themeFile, `:root {\n    --brand: blue;\n    --other: 1;\n}\n`)       // saved elsewhere
+        const post = (body) => fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify(body) }).then(r => r.json())
+        const ok = await post({ patches: [{ kind: 'theme', scope: null, var: '--brand', value: 'red' }], base: files })
+        expect(ok.results[0].status).toBe('written')
+        expect(readFileSync(themeFile, 'utf8')).toBe(`:root {\n    --brand: red;\n    --other: 1;\n}\n`)
+        writeFileSync(path.join(dir, 'index.html'), `<section x-edit="h"><p>One</p> </section>`)
+        const stale = await post({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' } })])], base: files })
+        expect(stale.stale).toEqual(['index.html'])
+        expect(stale.results[0].reason).toContain('rebase')
+    })
+
+    it('SSE css messages carry the file and its new hash', async () => {
+        const events = []
+        const sse = http.get(`http://localhost:${port}/__mnfst_sse__?tabId=h-${Date.now()}`, res => res.on('data', c => events.push(String(c))))
+        await new Promise(r => setTimeout(r, 300))
+        const themeFile = path.join(dir, 'styles/core/manifest.theme.css')
+        writeFileSync(themeFile, `:root {\n    --brand: teal;\n}\n`)
+        await new Promise(r => setTimeout(r, 800))
+        sse.destroy()
+        const msg = events.join('').split('\n').filter(l => l.startsWith('data:')).map(l => JSON.parse(l.slice(5))).find(m => m.type === 'css')
+        expect(msg).toMatchObject({ rel: 'styles/core/manifest.theme.css' })
+        expect(msg.hash).toMatch(/^[0-9a-f]{40}$/)
     })
 })
 

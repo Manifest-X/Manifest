@@ -217,16 +217,31 @@
     // so the server can refuse when a file changed underneath this page.
     let baseFiles = null;
     function loadBase() {
-        if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return;
-        fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.files) baseFiles = j.files; }).catch(() => { });
+        if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return Promise.resolve(null);
+        return fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.files) baseFiles = j.files; return baseFiles; }).catch(() => null);
     }
-    function publish() {
-        const patches = buildPatches();
-        const done = (r) => { if (r && r.base && baseFiles) Object.assign(baseFiles, r.base); if (published(r)) rebase(); return r; };
-        if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
-        if (!patches.length) return Promise.resolve({ results: [] });
-        const body = baseFiles ? { patches, base: baseFiles } : patches;
-        return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).then(done);
+    // Stylesheets and data hot-swap without a reload: the dev server sends their new hash.
+    window.addEventListener('manifest:source-change', (e) => { const d = e.detail || {}; if (baseFiles && d.file && d.hash) baseFiles[d.file] = d.hash; });
+    // A refusal for files changed since load keeps the log and reports them ($edit.stale,
+    // `edit:stale`). Reload to take the new source, or publish({ rebase: true }) to write
+    // the edits over it; the history is kept until a publish succeeds.
+    function publish(opts) {
+        const done = (r) => {
+            if (r && r.base && baseFiles) Object.assign(baseFiles, r.base);
+            const stale = r && Array.isArray(r.stale) ? r.stale : [];
+            if (estore) estore.stale = stale;
+            if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
+            if (published(r)) rebase();
+            return r;
+        };
+        const send = () => {
+            const patches = buildPatches();
+            if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
+            if (!patches.length) return Promise.resolve({ results: [] });
+            const body = baseFiles ? { patches, base: baseFiles } : patches;
+            return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).then(done);
+        };
+        return opts && opts.rebase ? loadBase().then(send) : send();
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {
