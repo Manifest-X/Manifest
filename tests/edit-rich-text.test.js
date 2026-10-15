@@ -591,6 +591,27 @@ describe('.all on leaves', () => {
     })
 })
 
+describe('data values', () => {
+    it('undoing the only data-val delta restores the model', async () => {
+        const root = await mount(`<div x-data="{ rows: [{ id: 1, name: 'Rose' }] }"><ul x-edit.move.data="dv1"><template x-for="r in rows" :key="r.id"><li :data-key="r.id"><span x-text="r.name"></span></li></template></ul><i id="out" x-text="rows[0].name"></i></div>`)
+        await frame()
+        const span = root.querySelector('span'), at = cursor()
+        await enter(span)
+        span.textContent = 'Tulip'
+        await blur(span)
+        await frame()
+        expect(cursor()).toBe(at + 1)
+        expect(root.querySelector('#out').textContent).toBe('Tulip')
+        await store().undo()
+        await frame()
+        expect(root.querySelector('#out').textContent).toBe('Rose')
+        await store().redo()
+        await frame()
+        expect(root.querySelector('#out').textContent).toBe('Tulip')
+        await store().undo()                                             // leave no data patch for later publishes
+    })
+})
+
 describe('drops', () => {
     it('a leaf in an active area takes no drop, multi-line or not, as the area takes none', async () => {
         const root = await mount(`<section x-edit="dr1"><h1>Hello <strong>world</strong></h1></section>`)
