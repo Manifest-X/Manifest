@@ -52,8 +52,26 @@
         Object.keys(themeBaseline).forEach(kk => { const sep = kk.indexOf('|'); themeBaseline[kk] = themeTargetEl(kk.slice(0, sep) || null).style.getPropertyValue(kk.slice(sep + 1)); });
         themeTouched.clear();
     }
+    // A custom-property value must stay inside its declaration (same rule as the source writer).
+    function themeValueRefusal(v) {
+        const s = String(v == null ? '' : v);
+        if (!s.trim()) return 'empty';
+        if (/[;{}<]|\/\*|\*\//.test(s)) return 'contains ; { } < or a comment';
+        const stack = [], pairs = { ')': '(', ']': '[' };
+        let q = null;
+        for (const ch of s) {
+            if (q) { if (ch === q) q = null; continue; }
+            if (ch === '"' || ch === "'") q = ch;
+            else if (ch === '(' || ch === '[') stack.push(ch);
+            else if (pairs[ch]) { if (stack.pop() !== pairs[ch]) return 'unbalanced brackets'; }
+        }
+        if (q) return 'unbalanced quotes';
+        return stack.length ? 'unbalanced brackets' : null;
+    }
     function commitTheme(scope, v, value, persist) {
         if (!/^--[\w-]+$/.test(v || '')) { console.warn('[edit] x-edit.cssvar needs a custom property name (--name):', v); return; }
+        const why = themeValueRefusal(value);
+        if (why) { console.warn(`[edit] theme value refused (${why}):`, value); return; }
         const kk = tkey(scope, v); themeTouched.add(kk);
         themeTargetEl(scope).style.setProperty(v, value);
         const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe

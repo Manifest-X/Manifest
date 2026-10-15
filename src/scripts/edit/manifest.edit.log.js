@@ -169,6 +169,8 @@
         return el;
     };
     const staticAreas = () => areas().filter(a => classify(a) === 'static');
+    // Removed elements, kept so undo puts back the same element (listeners, titling comment).
+    const detached = new Map();
     function keyMap(roots) {
         const m = new Map();
         roots.forEach(area => [area, ...area.querySelectorAll('[data-edit-key]')].forEach(el => {
@@ -205,6 +207,7 @@
         const touchedAreas = new Set();
         const get = (k) => {
             let el = byId.get(k);
+            if (!el && detached.has(k)) { el = detached.get(k); detached.delete(k); byId.set(k, el); }
             if (!el && html[k]) {
                 el = materialize(html[k], k);
                 if (el) { byId.set(k, el); el.querySelectorAll('[data-edit-key]').forEach(n => { const nk = n.getAttribute('data-edit-key'); if (!byId.has(nk)) byId.set(nk, n); }); }
@@ -225,8 +228,9 @@
                 const target = [...next, ...stay];
                 if (target.length === kids.length && target.every((el, j) => el === kids[j])) continue;
                 const anchor = kids.length ? kids[kids.length - 1].nextSibling : Array.from(c.children).find(pluginNode) || null;
-                kids.forEach(el => { if (!target.includes(el)) el.remove(); });
-                target.forEach(el => { const from = regionOf(el); if (from) touchedAreas.add(from); c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null); });
+                const leads = new Map(target.map(el => [el, el.isConnected ? leadNodes(el) : el._editLead || []]));
+                kids.forEach(el => { if (target.includes(el)) return; el._editLead = leadNodes(el); el._editLead.forEach(n => n.remove()); el.remove(); const k = el.getAttribute('data-edit-key'); if (k) detached.set(k, el); });
+                target.forEach(el => { const from = regionOf(el); if (from) touchedAreas.add(from); c.insertBefore(el, anchor && anchor.parentNode === c ? anchor : null); const l = leads.get(el); if (l.length) el.before(...l); });
                 const a = regionOf(c); if (a) touchedAreas.add(a);
             }
         }

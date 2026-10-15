@@ -225,6 +225,69 @@
         return !isTextEl(el);
     }
 
+    /* ---- Titling comments ----
+       A comment directly above an element (whitespace between, at most one newline)
+       titles it and moves with it, unless it opens its container. Mirrors the source
+       writer's leadOf (packages/run/serve.mjs). */
+    function leadNodes(el) {
+        const out = [];
+        let n = el.previousSibling;
+        for (;;) {
+            let ws = null;
+            if (n && n.nodeType === 3) { if (!/^[ \t]*(\r?\n)?[ \t]*$/.test(n.textContent)) break; ws = n; n = n.previousSibling; }
+            if (!n || n.nodeType !== 8) break;
+            let p = n.previousSibling;
+            while (p && p.nodeType === 3 && !p.textContent.trim()) p = p.previousSibling;
+            if (!p) break;
+            out.unshift(n, ...(ws ? [ws] : []));
+            n = n.previousSibling;
+        }
+        return out;
+    }
+    const startOf = (el) => el ? leadNodes(el)[0] || el : null;
+    function moveWith(el, place) { const lead = leadNodes(el); place(el); if (lead.length) el.before(...lead); }
+
+    /* ---- HTML content model ----
+       Drops the parser would re-nest, foster-parent or drop. Mirrors CONTENT_RULES in
+       the source writer (packages/run/serve.mjs). */
+    const CONTENT_RULES = {
+        only: {
+            table: ['caption', 'colgroup', 'thead', 'tbody', 'tfoot', 'script', 'template', 'style'],
+            thead: ['tr', 'script', 'template'], tbody: ['tr', 'script', 'template'], tfoot: ['tr', 'script', 'template'],
+            tr: ['td', 'th', 'script', 'template'], colgroup: ['col', 'template'],
+            ul: ['li', 'script', 'template'], ol: ['li', 'script', 'template'], menu: ['li', 'script', 'template'],
+            dl: ['dt', 'dd', 'div', 'script', 'template'],
+            select: ['option', 'optgroup', 'hr', 'script', 'template'], datalist: ['option', 'script', 'template'], optgroup: ['option', 'script', 'template']
+        },
+        parent: {
+            tr: ['thead', 'tbody', 'tfoot'], td: ['tr'], th: ['tr'], caption: ['table'], colgroup: ['table'], col: ['colgroup'],
+            thead: ['table'], tbody: ['table'], tfoot: ['table'], li: ['ul', 'ol', 'menu'], dt: ['dl', 'div'], dd: ['dl', 'div'],
+            option: ['select', 'datalist', 'optgroup'], optgroup: ['select']
+        },
+        interactive: ['a', 'button', 'input', 'select', 'textarea', 'details', 'label', 'iframe', 'embed', 'object', 'audio', 'video', 'keygen'],
+        phrasingOnly: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre'],
+        block: ['address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div', 'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'search', 'section', 'table', 'ul', 'li', 'dd', 'dt']
+    };
+    function contentRefusal(child, parent, ancestors, subtree) {
+        const R = CONTENT_RULES;
+        if (R.only[parent] && !R.only[parent].includes(child)) return `<${parent}> takes only ${R.only[parent].filter(t => t !== 'script' && t !== 'template' && t !== 'style').join(', ')}`;
+        if (R.parent[child] && !R.parent[child].includes(parent)) return `<${child}> belongs in ${R.parent[child].join(' or ')}`;
+        if ((child === 'dt' || child === 'dd') && parent === 'div' && ancestors[1] !== 'dl') return `<${child}> belongs in a dl`;
+        if (subtree.has('form') && ancestors.includes('form')) return 'a form cannot contain a form';
+        if ((ancestors.includes('a') || ancestors.includes('button')) && R.interactive.some(t => subtree.has(t))) return 'interactive content cannot go inside a link or button';
+        if (R.phrasingOnly.includes(parent) && R.block.some(t => subtree.has(t))) return `<${parent}> takes only inline content`;
+        return null;
+    }
+    // Whether `piece` may be placed in `container` without the parser changing it.
+    function fits(piece, container) {
+        if (!piece || !container) return false;
+        if (piece.parentElement === container) return true;
+        const anc = [];
+        for (let a = container; a && a.nodeType === 1; a = a.parentElement) anc.push(a.tagName.toLowerCase());
+        const sub = new Set([piece, ...piece.querySelectorAll('*')].map(n => n.tagName.toLowerCase()));
+        return !contentRefusal(piece.tagName.toLowerCase(), container.tagName.toLowerCase(), anc, sub);
+    }
+
     /* ---- Units ---- */
     const unitOf = (v) => { const m = String(v || '').match(/[a-z%]+$/i); return m ? m[0] : null; };
     function toUnit(px, unit, el, basisEl, dim) {
