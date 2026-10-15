@@ -14,14 +14,14 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]') || ch._manifestComponent) return; out.push(ch); if (isContainer(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
     function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
     function markPieces(area) {
         const want = new Set(collectPieces(area).filter(movable));
-        area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el)) unmarkPiece(el); });
+        area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el) && regionOf(el.parentElement) === area) unmarkPiece(el); });
         want.forEach(el => {
             el.setAttribute('data-edit-piece', '');
             if (!el.hasAttribute('tabindex')) { el.tabIndex = 0; addedTab.add(el); }
@@ -33,7 +33,7 @@
     function beside(el, x, y, parent) {
         const r = el.getBoundingClientRect(), horiz = flowAxis(parent) === 'x';
         const lead = horiz ? x < r.left + r.width / 2 : y < r.top + r.height / 2;
-        let ref = lead ? el : el.nextElementSibling;
+        let ref = lead ? el : groupOf(el).pop().nextElementSibling;
         while (ref && (ref === dragged || ref.hasAttribute('data-edit-dragging'))) ref = ref.nextElementSibling;
         return { container: parent, ref };
     }
@@ -49,7 +49,8 @@
     // Another area under the pointer, else the nearest within reach.
     function dropArea(x, y, origin) {
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
-        const hitArea = hit && regionOf(hit);
+        let hitArea = hit && regionOf(hit);
+        if (hitArea && hitArea !== origin && origin.contains(hitArea)) hitArea = origin;   // a component region inside: its host is one piece here
         if (hitArea && dropValid(hitArea)) return hitArea;
         const cands = [origin, ...document.querySelectorAll('[data-edit-drop-target]')].filter((a, i, all) => dropValid(a) && all.indexOf(a) === i);
         const inside = (r, pad) => x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
@@ -75,10 +76,14 @@
         if (!region) return null;
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
         if (hit && hit !== region && region.contains(hit)) {
-            for (let el = hit; el && el !== region; el = el.parentElement) {
+            // Inside a component host: the host is what is hit (its markup is another file's)
+            let from = hit;
+            for (let n = hit; n && n !== region; n = n.parentElement) if (isHostEl(n) || extraRoot(n)) from = isHostEl(n) ? n : n._manifestHost.roots[0];
+            for (let el = from; el && el !== region; el = el.parentElement) {
                 if (el === s.item || s.item.contains(el) || pluginNode(el)) continue;
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
+                if (isHostEl(el)) { if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent); continue; }
                 if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) {
                     if (s.ghost && s.ghost.parentElement !== el) s.nested = { el, rect: el.getBoundingClientRect(), horiz: flowAxis(parent) === 'x' };
                     return { container: el, ref: afterElement(el, x, y) };
@@ -199,11 +204,11 @@
     }
 
     function startDrag(e, item, area) {
-        const home = item.parentElement, homeNext = item.nextElementSibling;
+        const home = item.parentElement, homeNext = groupOf(item).pop().nextElementSibling, rest = groupOf(item).slice(1);
         const dataList = classify(area) === 'data';
         const s = {
             item, area, home, dataList, ghost: null,
-            crossOK: !dataList && classify(area) === 'static' && !isRegionBlock(item),
+            crossOK: !dataList && classify(area) === 'static' && (isHostEl(item) || !isRegionBlock(item)),
             homeBefore: dataList ? null : staticKeys(home),
             lu: unitOf(item.style.left) || 'px', tu: unitOf(item.style.top) || 'px'
         };
@@ -261,10 +266,10 @@
             if (!active) return;
             document.querySelectorAll('[data-edit-drop-target]').forEach(a => a.removeAttribute('data-edit-drop-target'));
             item.removeAttribute('data-edit-dragging');
-            if (cancelled) s.ghost.remove(); else { s.ghost.replaceWith(item); if (lead.length) item.before(...lead); }
+            if (cancelled) s.ghost.remove(); else { s.ghost.replaceWith(item); if (lead.length) item.before(...lead); if (rest.length) item.after(...rest); }
             if (preStyle == null) item.removeAttribute('style'); else item.setAttribute('style', preStyle);
             s.ghost = null; dragged = null;
-            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, startOf(homeNext)); else home.appendChild(item); if (lead.length) item.before(...lead); };
+            const back = () => { if (homeNext && homeNext.parentElement === home) home.insertBefore(item, startOf(homeNext)); else home.appendChild(item); if (lead.length) item.before(...lead); if (rest.length) item.after(...rest); };
             if (cancelled) { back(); announce('Cancelled'); return; }
             const dest = item.parentElement, toArea = regionOf(dest);
             if (dest !== home && (s.dataList || !accepts(dest) || !fits(item, dest) || !toArea || (toArea !== area && !(s.crossOK && dropValid(toArea))))) { back(); announce('Cancelled'); return; }
@@ -312,7 +317,7 @@
         if ((e.key === ' ' || e.key === 'Enter') && !inText(e) && !ownControl(e, item) && !e.altKey && !e.metaKey && !e.ctrlKey) {
             e._editRow = true; e.preventDefault();
             if (grabbed && grabbed.item === item) { dropGrab(); refocus(item); announce('Dropped'); }
-            else { if (grabbed) cancelGrab(); grabbed = { item, area: regionOf(item), container: item.parentElement, next: item.nextElementSibling, before: classify(regionOf(item)) === 'data' ? null : staticKeys(item.parentElement) }; item.setAttribute('data-edit-dragging', 'keyboard'); announce('Grabbed — arrow keys to move, Enter to drop'); }
+            else { if (grabbed) cancelGrab(); grabbed = { item, area: blockArea(item), container: item.parentElement, next: groupOf(item).pop().nextElementSibling, before: classify(blockArea(item)) === 'data' ? null : staticKeys(item.parentElement) }; item.setAttribute('data-edit-dragging', 'keyboard'); announce('Grabbed — arrow keys to move, Enter to drop'); }
             return;
         }
         if (grabbed && grabbed.item === item) {
@@ -321,7 +326,7 @@
             e._editRow = true; e.preventDefault();
             const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + step;
             if (j < 0 || j >= sibs.length) return;
-            moveWith(item, it => { if (step > 0) sibs[j].after(it); else startOf(sibs[j]).before(it); });
+            moveWith(item, it => { if (step > 0) groupOf(sibs[j]).pop().after(it); else startOf(sibs[j]).before(it); });
             refocus(item); announce(`Position ${j + 1} of ${sibs.length}`);
             return;
         }
@@ -339,16 +344,16 @@
     }
     // One step, committed at once. Neighbours move round the piece, so focus and caret survive.
     function stepRow(item, dir) {
-        const area = regionOf(item), container = item.parentElement;
+        const area = blockArea(item), container = item.parentElement;
         const sibs = siblingsOf(item), i = sibs.indexOf(item), j = i + dir;
         if (i < 0 || j < 0 || j >= sibs.length) { announce(`Position ${i + 1} of ${sibs.length}`); return; }
         const before = classify(area) === 'data' ? null : staticKeys(container);
         const other = sibs[j], between = [];
         for (let n = dir > 0 ? item.nextElementSibling : item.previousElementSibling; n && n !== other; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling) between.push(n);
         // Neighbours move round the piece, each with its titling comment.
-        const block = (n) => [...leadNodes(n), n];
-        if (dir > 0) { const at = startOf(item); [other, ...between].forEach(n => at.before(...block(n))); }
-        else { let after = item; [...between.slice().reverse(), other].forEach(n => { after.after(...block(n)); after = n; }); }
+        const block = (n) => [...leadNodes(n), ...groupOf(n)];
+        if (dir > 0) { const at = startOf(item); [other, ...between].filter(n => !extraRoot(n)).forEach(n => at.before(...block(n))); }
+        else { let after = groupOf(item).pop(); [...between.slice().reverse(), other].filter(n => !extraRoot(n)).forEach(n => { after.after(...block(n)); after = groupOf(n).pop(); }); }
         const focused = document.activeElement, sel = window.getSelection && window.getSelection();
         const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
         if (before) commitOrder(area, container, before); else finishReorder(area, container);
@@ -360,11 +365,11 @@
     }
     const describe = (el) => el === regionOf(el) ? key(el) : el.tagName.toLowerCase();
     function nestInto(item) {
-        const area = regionOf(item);
+        const area = blockArea(item);
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         let prev = item.previousElementSibling;
-        while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE')) prev = prev.previousElementSibling;
-        if (!prev || !accepts(prev) || !fits(item, prev)) { announce('Nothing to nest into'); return false; }
+        while (prev && (pluginNode(prev) || prev.tagName === 'TEMPLATE' || extraRoot(prev))) prev = prev.previousElementSibling;
+        if (!prev || isHostEl(prev) || !accepts(prev) || !fits(item, prev)) { announce('Nothing to nest into'); return false; }
         const from = item.parentElement, fb = staticKeys(from), tb = staticKeys(prev);
         moveWith(item, it => prev.appendChild(it));
         commitMove(area, area, item, from, fb, tb);
@@ -372,13 +377,13 @@
         return true;
     }
     function unnest(item) {
-        const area = regionOf(item), from = item.parentElement;
+        const area = blockArea(item), from = item.parentElement;
         if (classify(area) !== 'static') { announce('Records stay in their list'); return false; }
         const out = from && from !== area ? from.parentElement : null;
         if (!out || !(out === area || area.contains(out)) || !accepts(out)) { announce('Already at the top level'); return false; }
         if (!fits(item, out)) { announce('Cannot move out here'); return false; }
         const fb = staticKeys(from), tb = staticKeys(out);
-        moveWith(item, it => from.after(it));
+        moveWith(item, it => groupOf(from).pop().after(it));
         commitMove(area, area, item, from, fb, tb);
         refocus(item); announce('Moved out to ' + describe(out));
         return true;

@@ -10,6 +10,8 @@
     function pieceOf(node) {
         if (node && node.nodeType !== 1) node = node.parentElement;
         const area = regionOf(node);
+        // A component host is one piece of the area around it, whatever inside it was hit.
+        if (isHostEl(node) && blockArea(node) && classify(blockArea(node)) === 'static') return node;
         if (!area || node === area) return null;
         const kind = classify(area);
         if (kind === 'data') {
@@ -21,6 +23,9 @@
             for (let n = node; n && n !== area; n = n.parentElement) if (n._editPath != null) return n;
             return null;
         }
+        let host = null;
+        for (let n = node; n && n !== area; n = n.parentElement) if (isHostEl(n) || extraRoot(n)) host = isHostEl(n) ? n : n._manifestHost.roots[0];
+        if (host) return host;
         for (let n = node; n && n !== area; n = n.parentElement) {
             if (pluginNode(n)) return null;
             if (isContainer(n.parentElement)) return n;
@@ -32,7 +37,7 @@
     const blockArea = (el) => el && regionOf(el.parentElement);
     const isRegionBlock = (el) => !!el && (!!el._edit || el.hasAttribute('data-edit-area'));
     // A piece can be dragged when its container moves and nothing up to the region locks it.
-    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el)) !== 'component';
+    const movable = (el) => !!el && !!el.parentElement && !pluginNode(el) && capOf(el.parentElement, 'move') && !lockedFor(el, 'move') && classify(regionOf(el.parentElement)) !== 'component';
     function accepts(c) {
         if (!c || c.nodeType !== 1) return false;
         const area = regionOf(c);
@@ -88,6 +93,13 @@
         if (!ACTIONS.includes(action)) return false;
         if (action === 'paste') { const d = clipboard && pasteDest(el); return !!d && pasteFits(regionOf(d)); }
         if (!el || el.nodeType !== 1) return false;
+        // A component host moves, duplicates and goes as a piece of the area around it
+        if (isHostEl(el) && (action === 'move' || action === 'duplicate' || action === 'remove')) {
+            const outer = blockArea(el);
+            if (!outer || !isActive(outer)) return false;
+            if (action === 'move') return movable(el);
+            return capOf(el.parentElement, 'move') && !lockedFor(el, action);
+        }
         const area = regionOf(el);
         if (!area || !isActive(area)) return false;
         const kind = classify(area);
@@ -108,7 +120,7 @@
         if (kind === 'component') return false;
         const block = asPiece(el);
         if (!block) return false;
-        if (action === 'copy') return true;
+        if (action === 'copy' || action === 'cut') return !isHostEl(block);
         if (action === 'move') return movable(block);
         const lockAs = action === 'duplicate' ? 'duplicate' : 'remove';
         return capOf(block.parentElement, 'move') && !lockedFor(block, lockAs);
@@ -160,9 +172,23 @@
             commitSplice(area, i + 1, copy, 'insert');
             return true;
         }
+        if (isHostEl(block)) return duplicateHost(area, block);
         const made = materialize(blockHTML(block, true));
         if (!made) return false;
         insertStatic(area, block.parentElement, made, block, subtreeOps(block));
+        return true;
+    }
+    // A new instance of the component: its host copied in the source; on the page, its roots.
+    function duplicateHost(area, block) {
+        const container = block.parentElement, before = staticKeys(container), roots = groupOf(block);
+        const made = roots.map(r => materialize(blockHTML(r)));
+        if (made.some(m => !m)) return false;
+        const host = { roots: made }, k = '~' + mint() + '~' + originOf(idOf(block));
+        made.forEach(m => { m._manifestComponent = block._manifestComponent; m._manifestHost = host; m.removeAttribute('data-component'); });
+        made[0].setAttribute('data-edit-host', k);
+        roots[roots.length - 1].after(...made);
+        markStatic(area); armArea(area);
+        commitStructure(area, container, before, { [k]: made[0].outerHTML });
         return true;
     }
 
@@ -179,9 +205,10 @@
             return true;
         }
         const container = block.parentElement, before = staticKeys(container);
-        const gone = block.getAttribute('data-edit-key'), markup = blockHTML(block, true);
+        const gone = idOf(block), markup = isHostEl(block) ? block.outerHTML : blockHTML(block, true);
         block._editLead = leadNodes(block);
         block._editLead.forEach(n => n.remove());
+        groupOf(block).slice(1).forEach(n => n.remove());
         block.remove();
         detached.set(gone, block);
         if (target === block || (target && block.contains(target))) setTarget(null);
@@ -195,7 +222,7 @@
     function moveBlock(el, dest, ref) {
         const block = asPiece(el == null ? target : el);
         if (!block || !movable(block)) return false;
-        const from = regionOf(block);
+        const from = blockArea(block);
         const container = typeof dest === 'string' ? areaByKey(dest) : dest;
         if (!container || container.nodeType !== 1 || container === block || block.contains(container)) return false;
         const to = regionOf(container);
@@ -210,7 +237,7 @@
             return true;
         }
         if (classify(from) !== 'static' || classify(to) !== 'static') return false;
-        if (from !== to && isRegionBlock(block)) return false;
+        if (from !== to && isRegionBlock(block) && !isHostEl(block)) return false;
         const fromBefore = staticKeys(fromContainer), toBefore = staticKeys(container);
         moveWith(block, b => container.insertBefore(b, ref ? startOf(ref) : null));
         if (container === fromContainer) return commitOrder(from, container, fromBefore);

@@ -31,24 +31,23 @@
             markEl(el, path);
             if (el !== area && opaque(el)) return;
             if (el._editRt || ((first || el._editRtFormat) && wholeLeaf(el) && capOf(el, 'text') && !isRendered(el))) { if (first) count(el); return; }
-            let i = 0, prevHost = null;
+            let i = 0;
             for (const c of el.children) {
                 if (pluginNode(c) || c.closest('[data-edit-ghost]') || isGenerated(c)) continue;
                 const p = path === '' ? String(i) : path + '.' + i;
                 // Another component's markup is one opaque element here, its <x-name> host
                 // (data-edit-host; its first root stands for it, the rest follow it)
                 if (c._manifestComponent) {
-                    const same = !!c._manifestHost && c._manifestHost === prevHost;
-                    prevHost = c._manifestHost || null;
-                    if (same) continue;
+                    if (extraRoot(c)) continue;
                     if (!c.hasAttribute('data-edit-host')) {
-                        let k = '!' + mint();
-                        if (first) { const b = 'X-' + c._manifestComponent.toUpperCase() + ':', n = seen[b] = (seen[b] || 0) + 1; k = canonKey(region, n > 1 ? b + '#' + n : b); originAt.set(k, p); }
+                        // Marked while still a placeholder: the components plugin carried its key over
+                        const carried = c.getAttribute('data-edit-key'), own = canonKey(region, 'X-' + c._manifestComponent.toUpperCase() + ':');
+                        let k = carried && (carried === own || carried.startsWith(own + '#')) ? carried : '!' + mint();
+                        if (first && k[0] === '!') { const b = 'X-' + c._manifestComponent.toUpperCase() + ':', n = seen[b] = (seen[b] || 0) + 1; k = canonKey(region, n > 1 ? b + '#' + n : b); originAt.set(k, p); }
                         c.setAttribute('data-edit-host', k);
                     }
                     i++; continue;
                 }
-                prevHost = null;
                 walk(c, p);
                 i++;
             }
@@ -151,7 +150,8 @@
         const nontrivial = (n) => n.edits || n.children || n.key[0] === '~';
         const live = keyMap(staticAreas());
         staticAreas().forEach(area => {
-            const region = key(area), comp = sourceComponent(area), ids = baseIds && baseIds[sourceFile(area)];
+            const region = key(area), comp = sourceComponent(area);
+            const ids = new Proxy({}, { get: (_, k) => { const o = originOf(String(k)), a = areaByKey(decodeURIComponent(o.slice(1, o.indexOf('@', 1)))); const m = baseIds && a && baseIds[sourceFile(a)]; return m ? m[o] : undefined; } });
             // The children a restructured container had when the page loaded (the server refuses
             // the rewrite if the source no longer has them).
             const baseOf = (parent) => {
