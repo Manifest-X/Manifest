@@ -2353,7 +2353,13 @@
     }
     // Stylesheets and data hot-swap: their new hash applies. HTML waits for the reload
     // (a cancelled one leaves the page on what it loaded); our own writes advance on publish.
-    window.addEventListener('manifest:source-change', (e) => { const d = e.detail || {}; if (baseFiles && d.file && d.hash && !/\.html?$/i.test(d.file)) baseFiles[d.file] = d.hash; });
+    // HTML that changes before the base arrives makes a late base untrustworthy.
+    let movedUnbased = false;
+    window.addEventListener('manifest:source-change', (e) => {
+        const d = e.detail || {}, html = /\.html?$/i.test(d.file || '');
+        if (html && !baseIds) movedUnbased = true;
+        if (baseFiles && d.file && d.hash && !html) baseFiles[d.file] = d.hash;
+    });
     // A refusal for files changed since load keeps the log and reports them ($edit.stale,
     // `edit:stale`). Reload to take the new source, or publish({ rebase: true }) to write
     // the edits over it; the history is kept until a publish succeeds.
@@ -2395,12 +2401,19 @@
             const patches = buildPatches();
             if (estore && typeof estore.onPublish === 'function') return Promise.resolve(estore.onPublish(patches, { log, cursor })).then(done);
             if (!patches.length) return Promise.resolve({ results: [] });
-            const body = baseFiles ? { patches, base: baseFiles } : patches;
+            const body = { patches, base: baseFiles };
             inFlight++;
             return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
                 .then(r => { const out = done(r); settled(r); return out; }, (err) => { settled(null); throw err; });
         };
-        return opts && opts.rebase ? loadBase(true).then(send) : send();
+        // mnfst-run gets a publish only with the base the page loaded; a missing one is
+        // fetched once more, else the publish is refused and the history kept.
+        const refuse = (reason) => { const patches = buildPatches(); return patches.length ? done({ results: patches.map(p => ({ region: p.region, status: 'error', reason })) }) : { results: [] }; };
+        const custom = estore && typeof estore.onPublish === 'function';
+        const based = custom || (baseFiles && baseIds) ? Promise.resolve(null)
+            : movedUnbased ? Promise.resolve('the source changed before this page could read its base from the dev server; reload to continue')
+            : loadBase().then(() => baseFiles && baseIds ? null : 'the dev server\'s base (/__edit/base) could not be read, so nothing can be checked against the source; nothing was published');
+        return based.then(why => why ? refuse(why) : opts && opts.rebase ? loadBase(true).then(send) : send());
     }
     function on() { if (estore) estore.active = true; armAll(); }
     function off() {

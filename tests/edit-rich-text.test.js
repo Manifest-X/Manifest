@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url'
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import Alpine from 'alpinejs'
 import { EDIT_SRC } from './helpers/edit-setup.js'
+import { withBase } from './helpers/edit-base.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
@@ -52,8 +53,8 @@ afterEach(() => {
     localStorage.clear()
 })
 
-function post(patches) {
-    const body = JSON.stringify(patches)
+async function post(patches) {
+    const body = JSON.stringify(await withBase(port, patches))
     return new Promise((resolve, reject) => {
         const req = http.request({ host: 'localhost', port, path: '/__edit/save', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Origin: `http://localhost:${port}` } }, res => {
             let data = ''; res.on('data', c => data += c); res.on('end', () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
@@ -738,7 +739,7 @@ describe('live reload after our own publish', () => {
         await enter(p); p.firstChild.nodeValue = 'Uno'; await blur(p)
         let answer
         const realFetch = window.fetch
-        window.fetch = vi.fn(() => new Promise(r => { answer = r }))
+        window.fetch = vi.fn((u) => String(u).includes('/__edit/base') ? Promise.resolve({ ok: true, json: () => ({ files: {}, ids: {} }) }) : new Promise(r => { answer = r }))
         const reload = vi.fn()
         const loc = window.location, realReload = loc.reload
         try { loc.reload = reload } catch { }

@@ -11,6 +11,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { withBase } from './helpers/edit-base.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SERVE = path.join(__dirname, '../packages/run/serve.mjs')
@@ -37,10 +38,10 @@ afterAll(() => {
     try { rmSync(dir, { recursive: true, force: true }) } catch { }
 })
 
-const save = (patches) => fetch(`http://localhost:${port}/__edit/save`, {
+const save = async (patches) => fetch(`http://localhost:${port}/__edit/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Origin': `http://localhost:${port}` },
-    body: JSON.stringify(patches)
+    body: JSON.stringify(Array.isArray(patches) ? await withBase(port, patches) : patches)
 }).then(r => r.json())
 
 const K = (region, key) => '@' + encodeURIComponent(region) + '@' + key
@@ -60,6 +61,8 @@ const NEST = `<section x-edit="u">
     <p>Four</p>
 </section>
 `
+// Fingerprints of `src` as a page loading it would get them.
+async function loadedIds(src) { writeFileSync(path.join(dir, 'index.html'), src); return (await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())).ids }
 const tree = (region, children, extra = {}) => ({ kind: 'static-tree', region, tree: { key: '', children }, ...extra })
 const n = (region, key, more = {}) => ({ key: K(region, key), ...more })
 
@@ -142,7 +145,8 @@ describe('/__edit/save static-tree', () => {
 
     it('takes the origin path only when tag and text agree (just the ordinal differs)', async () => {
         const src = `<section x-edit="p"><p>Same</p><p>Body</p></section>`
-        const { out } = await write(src, [tree('p', [n('p', 'P:Body'), { key: K('p', 'P:Same#3'), at: '0' }])])
+        const same = (await loadedIds(src))[K('p', 'P:Same')]
+        const { out } = await write(src, [tree('p', [n('p', 'P:Body'), { key: K('p', 'P:Same#3'), at: '0', fp: same }])])
         expect(out).toBe(`<section x-edit="p"><p>Body</p><p>Same</p></section>`)
         const wrong = await write(src, [tree('p', [n('p', 'P:Same'), { key: K('p', 'P:Other'), at: '1' }])])
         expect(wrong.results[0].status).toBe('error')                // a different element at that path is never taken
@@ -459,11 +463,11 @@ describe('/__edit/save parsing as a browser does', () => {
         const base = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
         expect(base.files['index.html']).toMatch(/^[0-9a-f]{40}$/)
         writeFileSync(path.join(dir, 'index.html'), src.replace('One', 'One ').replace('<p>One </p>', '<p>One</p> '))
-        const stale = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' } })])], base: base.files }) }).then(r => r.json())
+        const stale = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' }, fp: base.ids[K('h', 'P:One')] })])], base: base.files }) }).then(r => r.json())
         expect(stale.results[0].status).toBe('error')
         expect(stale.results[0].reason).toContain('source changed since this page loaded (index.html)')
         const fresh = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
-        const ok = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' } })])], base: fresh.files }) }).then(r => r.json())
+        const ok = await fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify({ patches: [tree('h', [n('h', 'P:One', { edits: { text: 'Uno' }, fp: fresh.ids[K('h', 'P:One')] })])], base: fresh.files }) }).then(r => r.json())
         expect(ok.results[0].status).toBe('written')
         expect(ok.base['index.html']).toMatch(/^[0-9a-f]{40}$/)
         expect(ok.base['index.html']).not.toBe(fresh.files['index.html'])
@@ -537,6 +541,25 @@ describe('/__edit/save element fingerprints', () => {
         // A stale fingerprint for the same key is refused.
         const third = await send([tree('f5', [n('f5', 'P:Beta', { at: '0', edits: { text: 'B' } })])], { [K('f5', 'P:Beta')]: 'ffffffffffff' })
         expect(third.results[0].status).toBe('error')
+    })
+
+    it('a node without its fingerprint is refused, even after a twin swap; so is HTML without a base', async () => {
+        const src = `<section x-edit="f6">\n  <div class="card red"><p>Same</p></div>\n  <div class="card blue"><p>Same</p></div>\n</section>`
+        page(src)
+        const { files } = await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())
+        const swapped = src.replace(/(<div class="card red">.*<\/div>)\n  (<div class="card blue">.*<\/div>)/, '$2\n  $1')
+        page(swapped)
+        const raw = (body) => fetch(`http://localhost:${port}/__edit/save`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://localhost:${port}` }, body: JSON.stringify(body) }).then(r => r.json())
+        const patches = [tree('f6', [n('f6', 'DIV:Same#2', { at: '1', path: true, children: [n('f6', 'P:Same#2', { at: '1.0', edits: { text: 'Blue page' } })] })], { tree: { key: '', path: true, children: [n('f6', 'DIV:Same#2', { at: '1', path: true, children: [n('f6', 'P:Same#2', { at: '1.0', edits: { text: 'Blue page' } })] })] } })]
+        const fresh = (await fetch(`http://localhost:${port}/__edit/base`).then(r => r.json())).files
+        const noFp = await raw({ patches, base: fresh })
+        expect(noFp.results[0].status).toBe('error')
+        expect(noFp.results[0].reason).toContain('without the fingerprint it loaded with')
+        const noBase = await raw(patches)
+        expect(noBase.results[0].status).toBe('error')
+        expect(noBase.results[0].reason).toContain('carries no base')
+        expect(file()).toBe(swapped)
+        expect(files['index.html']).not.toBe(fresh['index.html'])
     })
 })
 
@@ -688,16 +711,17 @@ describe('startup sweep', () => {
     })
 
     it('an external reorder of a different container merges with the page\'s restructure', async () => {
+        const loaded = await loadedIds(`<section x-edit="m"><ul class="a"><li>A1</li><li>A2</li></ul><ul class="b"><li>B1</li><li>B2</li></ul></section>`)
         const src = `<section x-edit="m"><ul class="a"><li>A1</li><li>A2</li></ul><ul class="b"><li>B2</li><li>B1</li></ul></section>`   // list b reordered externally
         const base = [{ key: K('m', 'LI:A1'), at: '0.0' }, { key: K('m', 'LI:A2'), at: '0.1' }]
         const { results, out } = await write(src, [{ kind: 'static-tree', region: 'm', tree: { key: '', path: true, children: [
             n('m', 'UL:A1A2', { base, children: [n('m', 'LI:A2'), n('m', 'LI:A1')] }),
-            n('m', 'UL:B1B2', { at: '1', path: true, children: [n('m', 'LI:B1', { edits: { text: 'B1 edited' } })] })
+            n('m', 'UL:B1B2', { at: '1', path: true, fp: loaded[K('m', 'UL:B1B2')], children: [n('m', 'LI:B1', { edits: { text: 'B1 edited' } })] })
         ] } }])
         expect(results[0].status, JSON.stringify(results)).toBe('written')
         expect(out).toBe(`<section x-edit="m"><ul class="a"><li>A2</li><li>A1</li></ul><ul class="b"><li>B2</li><li>B1 edited</li></ul></section>`)
         // found by path only when its listed children really sit in it
-        const wrong = await write(src, [{ kind: 'static-tree', region: 'm', tree: { key: '', path: true, children: [n('m', 'UL:B1B2', { at: '1', path: true, children: [n('m', 'LI:A1', { edits: { text: 'x' } })] })] } }])
+        const wrong = await write(src, [{ kind: 'static-tree', region: 'm', tree: { key: '', path: true, children: [n('m', 'UL:B1B2', { at: '1', path: true, fp: loaded[K('m', 'UL:B1B2')], children: [n('m', 'LI:A1', { edits: { text: 'x' } })] })] } }])
         expect(wrong.results[0].status).toBe('error')
     })
 

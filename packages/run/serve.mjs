@@ -731,6 +731,7 @@ function baseHashes() {
   const walk = (dir, depth) => {
     if (depth > 12 || n > 5000) return;
     let entries = []; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const dirs = [];
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name === 'node_modules' || EDIT_TEMP.test(e.name)) continue;
       const p = join(dir, e.name);
@@ -739,9 +740,10 @@ function baseHashes() {
       if (outside(rrel) && real !== realRoot()) continue;
       if (hiddenSegment(rrel)) continue;
       let st; try { st = statSync(p); } catch { continue; }
-      if (st.isDirectory()) { if (e.isSymbolicLink()) continue; walk(p, depth + 1); }
+      if (st.isDirectory()) { if (!e.isSymbolicLink()) dirs.push(p); }
       else if (WRITE_EXT.any.includes(extname(e.name).toLowerCase())) { try { out[relKey(relative(root, p))] = fileHash(p); n++; } catch { } }
     }
+    dirs.forEach(d => walk(d, depth + 1));
   };
   walk(root, 0);
   return out;
@@ -1253,6 +1255,8 @@ function writeStaticTrees(file, patches) {
         && kids.every(c => { if (/^~/.test(c.key)) return true; try { return resolve(c).node.parent === p; } catch { return false; } })) node = p;
     }
     if (!node) fail(`element '${m[3]}' not found in x-edit="${reg.name}": it changed or was removed since this page loaded; reload to continue`);
+    // Required on source elements; a copy names one only when its source has one.
+    if (typeof fp !== 'string' && !m[1] && node !== reg.root) fail(`'${m[3]}' came without the fingerprint it loaded with; reload to continue`);
     if (typeof fp === 'string' && node !== reg.root && fp !== node.fp) {
       if (fp.includes('.') || String(node.fp).includes('.')) fail(`identical elements '${m[3].replace(/#\d+$/, '')}' were reordered or changed since this page loaded; reload to continue`);
       fail(`'${m[3]}' changed or moved since this page loaded; reload to continue`);
@@ -1965,9 +1969,10 @@ const server = createServer((req, res) => {
         // Refuse the whole batch if a file it read changed since the page loaded.
         // Structural rewrites (HTML) need the version the page loaded; CSS declarations and
         // data records are written by key, so changes elsewhere in those files are fine.
-        const staleFiles = !base ? [] : [...new Set([...READS, ...VFS.keys()].map(f => relKey(relative(root, f))))]
-          .filter(rel => extname(rel).toLowerCase() === '.html' && rel in base && (() => { try { return fileHash(join(root, rel)) !== base[rel]; } catch { return true; } })());
-        if (staleFiles.length) results = results.map(r => Object.assign({}, r, { status: 'error', stale: staleFiles, reason: `source changed since this page loaded (${staleFiles.join(', ')}); reload, or publish again with rebase to write over it` }));
+        const html = [...new Set([...READS, ...VFS.keys()].map(f => relKey(relative(root, f))))].filter(rel => extname(rel).toLowerCase() === '.html');
+        const staleFiles = !base ? [] : html.filter(rel => !(rel in base) || (() => { try { return fileHash(join(root, rel)) !== base[rel]; } catch { return true; } })());
+        if (html.length && !base) results = results.map(r => Object.assign({}, r, { status: 'error', reason: 'the publish carries no base (the source hashes the page loaded with); reload the page and publish again' }));
+        else if (staleFiles.length) results = results.map(r => Object.assign({}, r, { status: 'error', stale: staleFiles, reason: `source changed since this page loaded (${staleFiles.join(', ')}); reload, or publish again with rebase to write over it` }));
         else if (results.some(r => r && r.status === 'error')) results = abort('batch aborted: another patch failed; nothing was written');
         else {
           try { commitFiles(VFS); written = {}; for (const f of VFS.keys()) { const rel = relKey(relative(root, f)); try { written[rel] = fileHash(f); } catch { } } }
