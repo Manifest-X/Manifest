@@ -247,7 +247,17 @@
             now.slice(before.length).forEach(k => changed.push({ was: null, now: k }));
             const shift = moved(region, parent);
             const same = !!c && now.length === before.length && before.every((k, i) => tagOf(k) === tagOf(now[i]));
-            if (same && changed.every(x => !shift.has(x.was))) {
+            // A rename is a child whose own text changed in place: its old key is gone from the whole
+            // new source and its new key is new to the log (else elements were swapped or moved,
+            // which position cannot tell from a rename), its opening tag unchanged where a copy
+            // recorded it. Anything else is a conflict.
+            const known = new Set();
+            log.forEach(d => [d.before, d.order, d.fromBefore, d.toBefore, d.fromOrder, d.toOrder].forEach(a => Array.isArray(a) && a.forEach(k => known.add(k))));
+            const openTag = (el) => { const c2 = el.cloneNode(false); [...c2.attributes].forEach(a => { if (/^(data-edit-|data-rich-text|contenteditable$|role$|aria-multiline$|tabindex$)/.test(a.name)) c2.removeAttribute(a.name); }); return c2.outerHTML.replace(/<\/[^>]+>$/, ''); };
+            const copyTag = (k) => { for (const d of log) if (d.kind === 'st-children' && d.html) for (const [ck, h] of Object.entries(d.html)) if (ck[0] === '~' && originOf(ck) === k) { const t = document.createElement('template'); t.innerHTML = h; const e = t.content.firstElementChild; if (e) return openTag(e); } return null; };
+            const renamable = (x) => !!x.was && !!x.now && x.was[0] === '@' && !live.has(x.was) && !known.has(x.now)
+                && (() => { const t = copyTag(x.was), el = live.get(x.now); return !t || !el || t === openTag(el); })();
+            if (same && changed.every(x => renamable(x) && !shift.has(x.was))) {
                 const m = renames.get(region) || new Map();
                 changed.forEach(x => m.set(x.was, x.now));
                 if (renamedParent && renamedParent !== parent) m.set(parent, renamedParent);
@@ -261,7 +271,17 @@
             const arr = (a) => Array.isArray(a) ? a.map(ren) : a;
             const enc = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;'), dec = (v) => v.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
             const markup = (h) => typeof h === 'string' ? h.replace(/data-edit-key="([^"]*)"/g, (all, v) => `data-edit-key="${enc(ren(dec(v)))}"`) : h;
-            const keyed = (o) => o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).map(([k, v]) => [ren(k), markup(v)])) : o;
+            // A copy with no text of its own follows its source, as the writer copies it: shown = published
+            const typedCopy = (k) => log.some(d => d.kind === 'st-node' && d.path === k && d.prop === 'text');
+            const follow = (k, v) => {
+                if (k[0] !== '~' || !m.has(originOf(k)) || typedCopy(k)) return markup(v);
+                const src = live.get(m.get(originOf(k))); if (!src) return markup(v);
+                const t = document.createElement('template'); t.innerHTML = blockHTML(src, true);
+                const prefix = k.slice(0, k.length - originOf(k).length);
+                [t.content.firstElementChild, ...t.content.firstElementChild.querySelectorAll('[data-edit-key]')].forEach(n => { const nk = n.getAttribute('data-edit-key'); if (nk && nk[0] === '@') n.setAttribute('data-edit-key', prefix + nk); });
+                return t.innerHTML;
+            };
+            const keyed = (o) => o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).map(([k, v]) => [ren(k), follow(k, v)])) : o;
             log.forEach(d => {
                 if ((d.kind === 'st-order' || d.kind === 'st-children') && d.region === region) { d.parent = ren(d.parent); d.before = arr(d.before); d.order = arr(d.order); if (d.html) d.html = keyed(d.html); if (d.copies) d.copies = Object.fromEntries(Object.entries(d.copies).map(([k, v]) => [ren(k), v])); }
                 if (d.kind === 'st-node' && d.region === region && typeof d.path === 'string' && d.path[0] === '~') d.path = ren(d.path);   // a copy is new content: its edits follow its source's new key
