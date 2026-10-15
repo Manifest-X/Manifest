@@ -11,7 +11,7 @@ import { spawn } from 'child_process'
 import http from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import Alpine from 'alpinejs'
 import { EDIT_SRC } from './helpers/edit-setup.js'
 
@@ -328,19 +328,32 @@ describe('publish round trips', () => {
         expect(r.src).toBe(`<section x-edit="k5"><p>${shown}</p></section>`)
     })
 
-    it('comments inside text are kept through a text edit; one that cannot be kept leaves the element granular', async () => {
-        const body = `<section x-edit="k6"><p>Hello <!-- note --><em>world</em></p><p>Plain <!--x--> text</p><p>Bad <!-- a -- b --><em>it</em></p></section>`
+    it('comments inside text are kept through a text edit, -- included; typed marker-like text stays text', async () => {
+        const body = `<section x-edit="k6"><p>Hello <!-- note --><em>world</em></p><p>Plain <!--x--> text</p><p>Bad <!-- a -- b --><em>it</em></p><p>Only <!-- a -- b --> text</p></section>`
         const r = await roundTrip(body, async (root) => {
-            const [p1, p2, p3] = root.querySelectorAll('p')
-            expect(p1._editRt).toBeTruthy()
-            expect(p3._editRt).toBeFalsy()
-            expect(p3.querySelector('em')._editRt).toBeTruthy()
+            const [p1, p2, p3, p4] = root.querySelectorAll('p')
+            for (const p of [p1, p2, p3, p4]) expect(p._editRt).toBeTruthy()
             editText(p1, p1.innerHTML.replace('world', 'there') + '<br>')
-            editText(p2, p2.innerHTML.replace('text', 'words'))
-            editText(p3.querySelector('em'), 'ok')
+            editText(p2, p2.innerHTML.replace('text', 'words \uE0000\uE001 mnfst0_'))
+            editText(p3, p3.innerHTML.replace('it', 'ok'))
+            editText(p4, p4.innerHTML.replace('text', 'more'))
         })
         expect(r.res.results.map(x => x.status)).toEqual(['written'])
-        expect(r.src).toBe(`<section x-edit="k6"><p>Hello <!-- note --><em>there</em></p><p>Plain <!--x--> words</p><p>Bad <!-- a -- b --><em>ok</em></p></section>`)
+        expect(r.src).toBe(`<section x-edit="k6"><p>Hello <!-- note --><em>there</em></p><p>Plain <!--x--> words \uE0000\uE001 mnfst0_</p><p>Bad <!-- a -- b --><em>ok</em></p><p>Only <!-- a -- b --> more</p></section>`)
+    })
+
+    it('a comment that cannot be written back is left out of an edited leaf, with one warning', async () => {
+        const body = `<section x-edit="k8"><p>One two</p></section>`
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        const r = await roundTrip(body, async (root) => {
+            const p = root.querySelector('p')
+            p.firstChild.splitText(3); p.insertBefore(document.createComment('>bad'), p.lastChild)
+            editText(p, p.innerHTML.replace('two', 'three'))
+        })
+        const said = warn.mock.calls.filter(c => String(c[0]).includes('comment')).length
+        warn.mockRestore()
+        expect(said).toBe(1)
+        expect(r.src).toBe(`<section x-edit="k8"><p>One three</p></section>`)
     })
 
     it('the writer keeps only comments that cannot close early', async () => {

@@ -1098,8 +1098,8 @@ function sanitizeHTML(html) {
     const lt = s.indexOf('<', i);
     if (lt < 0) { out += s.slice(i); break; }
     out += s.slice(i, lt);
-    // A comment is kept verbatim when nothing in it could close it early or open another
-    if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); if (e >= 0 && !/^-?>|--|<!-|-$/.test(s.slice(lt + 4, e))) out += s.slice(lt, e + 3); i = e < 0 ? s.length : e + 3; continue; }
+    // A comment is kept verbatim when the HTML spec allows its text, so it parses back the same
+    if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); if (e >= 0 && !/^-?>|--!>|<!-$/.test(s.slice(lt + 4, e))) out += s.slice(lt, e + 3); i = e < 0 ? s.length : e + 3; continue; }
     const m = /^<(\/?)([a-zA-Z][^\s/>]*)/.exec(s.slice(lt, lt + 80));
     if (!m) { out += '&lt;'; i = lt + 1; continue; }
     const end = m[1] ? s.indexOf('>', lt) : tagEnd(s, lt);

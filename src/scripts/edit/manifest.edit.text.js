@@ -117,7 +117,7 @@
         nodes.forEach(el => {
             if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
-            if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName) || !commentsKept(el)) return;
+            if (!capOf(el, 'text') || isRendered(el) || RAW_EDIT.has(el.tagName)) return;
             if (!/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;   // only what will be logged and published
             bindLeaf(el, (v) => commitStaticNode(regionOf(el) || area, el, 'text', v ?? leafHTML(el)));   // live region: the element may have moved since arming
             editable(el, 'html');
@@ -181,7 +181,7 @@
         root.querySelectorAll('*').forEach(el => { if (!el.hasAttribute('data-edit-handle')) markClass(el); });
         armRichText(area);
         componentNodes(root).forEach(el => {
-            if ((el.children.length && !wholeLeaf(el)) || !el.textContent.trim() || !capOf(el, 'text') || !commentsKept(el)) return;
+            if ((el.children.length && !wholeLeaf(el)) || !el.textContent.trim() || !capOf(el, 'text')) return;
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             const p = el._editPath;
             if (!(p in area._baseText)) area._baseText[p] = el.innerHTML.trim();
