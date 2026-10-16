@@ -553,6 +553,38 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('a table inserted from inside a table lands after it, with one empty line after, not two', () => {
+        document.body.innerHTML = ''
+        const exec = document.execCommand
+        document.execCommand = (cmd, _ui, html) => {   // as a browser does: block content replaces an empty paragraph
+            if (cmd !== 'insertHTML') return true
+            const r = window.getSelection().getRangeAt(0), t = document.createElement('template'); t.innerHTML = html
+            const b = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement, last = t.content.lastChild
+            if (b.tagName === 'P' && !b.textContent.trim()) b.replaceWith(t.content); else { r.deleteContents(); r.insertNode(t.content) }
+            window.getSelection().collapse(last, 0); return true
+        }
+        const root = mount(`<div x-rich-text.html id="t"><table><tbody><tr><td>x</td></tr></tbody></table></div>`)
+        const el = root.querySelector('#t')
+        expect([...el.children].map(c => c.tagName).join()).toBe('TABLE,P')
+        focusin(el); select(el.querySelector('td').firstChild, 1)
+        el._rt.api.table(2, 1)
+        document.execCommand = exec
+        expect(el.querySelectorAll('table table').length).toBe(0)
+        expect([...el.children].map(c => c.tagName).join()).toBe('TABLE,TABLE,P')
+        expect(el._rt.api.value.endsWith('</table>')).toBe(true)
+    })
+
+    it('values never end in the empty paragraph kept after a closing list, table or code block', () => {
+        for (const [start, want] of [['<ul><li>a</li></ul>', '<ul><li>a</li></ul>'], ['<table><tbody><tr><td>x</td></tr></tbody></table>', '<table><tbody><tr><td>x</td></tr></tbody></table>'], ['<pre>c</pre>', '<pre>c</pre>'], ['<p>a</p><p><br></p><p></p>', '<p>a</p>']]) {
+            document.body.innerHTML = ''
+            const root = mount(`<div x-rich-text.html id="h"></div>`)
+            const el = root.querySelector('#h')
+            el._rt.api.value = start
+            expect(el.lastElementChild.tagName, start).toBe('P')                     // the affordance is there to type into
+            expect(el._rt.api.value, start).toBe(want)
+            expect(window.ManifestRichText.sanitize(el.innerHTML, true, true), start).toBe(want)
+        }
+    })
     it('effects that read and write $rich.all, .value and .link settle (no write of an unchanged value, no beat without a change)', async () => {
         document.body.innerHTML = ''
         window.__runs = { all: 0, value: 0, link: 0 }
@@ -712,7 +744,7 @@ describe('docs certifier defects', () => {
             expect(pre && pre.getAttribute('data-lang'), attr).toBe('ts')
             pre.textContent = 'let y'; window.getSelection().collapse(pre.firstChild, 5)
             el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'y' }))
-            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? 'Intro\n\n```ts\nlet y\n```' : '<p>Intro</p><pre data-lang="ts">let y</pre><p><br></p>')
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? 'Intro\n\n```ts\nlet y\n```' : '<p>Intro</p><pre data-lang="ts">let y</pre>')
         }
     })
 
@@ -732,7 +764,7 @@ describe('docs certifier defects', () => {
             expect(pre.contains(window.getSelection().getRangeAt(0).startContainer), attr).toBe(true)
             pre.textContent = 'code'; window.getSelection().collapse(pre.firstChild, 4)
             el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'e' }))
-            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? '```\ncode\n```' : '<pre>code</pre><p><br></p>')
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? '```\ncode\n```' : '<pre>code</pre>')
         }
     })
 })

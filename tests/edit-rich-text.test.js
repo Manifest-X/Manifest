@@ -861,6 +861,18 @@ describe('x-rich-text blocks inside an area', () => {
         expect(log().at(-1).value).toContain('<h3>Para</h3>')
         expect(log().at(-1).value).toContain('<h2>Head</h2>')
     })
+
+    it('a field ending in a list logs and publishes no empty paragraph after it', async () => {
+        const root = await mount(`<section x-edit="e2"><div x-rich-text.html id="lst"><ul><li>One</li></ul></div></section>`)
+        const blk = root.querySelector('#lst')
+        expect(blk.lastElementChild.tagName).toBe('P')                                  // the affordance, on the page only
+        blk.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+        const t = text(blk.querySelector('li')); t.nodeValue = 'One more'; select(t, 8)
+        blk.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'e' }))
+        blk.dispatchEvent(new FocusEvent('blur'))
+        expect(log().at(-1).value).toBe('<ul><li>One more</li></ul>')
+        expect(JSON.stringify(store().patches())).not.toContain('<p><br></p>')
+    })
 })
 
 describe('typing after a converted mark in a leaf', () => {
