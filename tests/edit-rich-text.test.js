@@ -963,16 +963,44 @@ describe('tables in a rich field', () => {
         expect(log().at(-1).value).toBe('<table><tbody><tr><td>ax</td><td>b</td></tr></tbody></table>')
     })
 
-    it('a drag on a column border writes its widths', async () => {
-        const root = await mount(`<section x-edit="tb2"><div id="tg" x-rich-text.html><table><tbody><tr><td>a</td><td>b</td></tr></tbody></table></div></section>`)
-        const fld = root.querySelector('#tg'), td = fld.querySelector('td')
+})
+
+describe('column resizing', () => {
+    it('tracks the pointer: width moves between neighbours, widths add up, the table stays within the field', async () => {
+        const root = await mount(`<div id="cf" x-rich-text.html style="padding: 0"><table><tbody><tr><td>a</td><td>b</td><td>c</td></tr></tbody></table></div>`)
+        const fld = root.querySelector('#cf'), table = fld.querySelector('table'), cells = [...table.rows[0].cells]
+        // Layout: three 200px columns in a 600px table filling a 600px field
+        const rect = (w, left = 0) => ({ width: w, height: 20, left, top: 0, right: left + w, bottom: 20, x: left, y: 0 })
+        const edge = (i) => layout.slice(0, i + 1).reduce((a, b) => a + b, 0)
+        const widths = () => [...table.querySelectorAll('col')].map(c => parseFloat(c.style.width))
+        let layout = [200, 200, 200]
+        cells.forEach((c, i) => vi.spyOn(c, 'getBoundingClientRect').mockImplementation(() => rect(layout[i], edge(i) - layout[i])))
+        vi.spyOn(table, 'getBoundingClientRect').mockImplementation(() => rect(layout.reduce((a, b) => a + b, 0)))
+        Object.defineProperty(fld, 'clientWidth', { configurable: true, get: () => 600 })
+        const drag = (cell, dx) => {
+            const efp = vi.spyOn(document, 'elementFromPoint').mockImplementation(() => cell)
+            const x = edge(cells.indexOf(cell))                                            // on its right border
+            cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: 10 }))
+            document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: x + dx, clientY: 10 }))
+            document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+            efp.mockRestore()
+            const w = widths(), total = w.reduce((a, b) => a + b, 0)
+            layout = w.map(p => p / 100 * parseFloat(table.style.width) / 100 * 600)   // as a browser renders them
+            return { w, total }
+        }
         fld.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
-        const efp = vi.spyOn(document, 'elementFromPoint').mockImplementation(() => td)
-        td.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 0, clientY: 0 }))
-        document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 40, clientY: 0 }))
-        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
-        efp.mockRestore()
-        expect(fld.querySelector('colgroup')).toBeTruthy()
-        expect(fld.querySelector('col').style.width).toBe('40px')
+        let r = drag(cells[0], 80)                                                        // between columns 1 and 2
+        expect(r.w).toEqual([46.67, 20, 33.33])
+        expect(r.total).toBeCloseTo(100, 5)
+        expect(table.style.width).toBe('100%')
+        expect(layout[0] - 200).toBeCloseTo(80, 0)                                        // the border moved with the pointer
+        r = drag(cells[0], 500)                                                           // never past the neighbour's minimum
+        expect(Math.round(layout[1])).toBe(28)
+        expect(r.total).toBeCloseTo(100, 5)
+        r = drag(cells[2], -60)                                                           // the outer border: last column and table
+        expect(table.style.width).toBe('90%')
+        expect(r.total).toBeCloseTo(100, 5)
+        drag(cells[2], 400)                                                               // grows to the field, no further
+        expect(table.style.width).toBe('100%')
     })
 })

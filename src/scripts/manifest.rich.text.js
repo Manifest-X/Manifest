@@ -1172,21 +1172,34 @@
        Widths on a <colgroup>, heights on the row. */
     const EDGE = 5;
 
-    function ensureCols(table) {
+    const MIN_COL = 28;
+    // Each column's rendered width: a cell spanning it alone, else a spanning cell's share
+    function columnWidths(table) {
+        const grid = tableGrid(table), n = columnCount(table), out = [];
+        for (let i = 0; i < n; i++) {
+            let w = null;
+            for (const row of grid) { const c = row[i]; if (c && (c.colSpan || 1) === 1) { w = c.getBoundingClientRect().width; break; } }
+            if (w == null) { const c = grid.map(r => r[i]).find(Boolean); w = c ? c.getBoundingClientRect().width / (c.colSpan || 1) : 0; }
+            out.push(w);
+        }
+        return out;
+    }
+    // Widths as percentages: of the table for its columns (they add up to 100%), and of the field
+    // for the table, so what is stored is what renders, whatever width the field has
+    function writeWidths(table, widths, tableWidth, fieldWidth) {
         let group = table.querySelector(':scope > colgroup');
         if (!group) { group = document.createElement('colgroup'); table.prepend(group); }
-        const want = columnCount(table);
-        while (group.children.length < want) group.appendChild(document.createElement('col'));
-        while (group.children.length > want) group.lastElementChild.remove();
-        // Freeze current widths so one drag doesn't reflow the rest
+        while (group.children.length < widths.length) group.appendChild(document.createElement('col'));
+        while (group.children.length > widths.length) group.lastElementChild.remove();
+        const total = widths.reduce((a, b) => a + b, 0) || 1, pct = (v) => Math.round(v * 100) / 100;
+        let used = 0;
         [...group.children].forEach((col, i) => {
-            if (col.style.width) return;
-            const at = (tableGrid(table)[0] || [])[i];
-            if (at) col.style.width = Math.round(at.getBoundingClientRect().width / (at.colSpan || 1)) + 'px';
+            const v = i === widths.length - 1 ? pct(100 - used) : pct(widths[i] / total * 100);
+            used += v; col.style.width = v + '%';
         });
-        return group;
+        table.style.width = pct(Math.min(100, tableWidth / fieldWidth * 100)) + '%';
+        table.style.tableLayout = 'fixed';   // stored widths are the rendered ones, with or without the plugin's stylesheet
     }
-
     function borderAt(x, y) {
         const el = document.elementFromPoint(x, y);
         let cell = el && el.closest && el.closest('td, th');
@@ -1223,19 +1236,27 @@
         const begin = () => {
             area.setAttribute('data-rich-text-resizing', hit.axis);
             if (hit.axis === 'x') {
-                const group = ensureCols(table);
+                // As a spreadsheet does: a border between columns moves width from one to the other (the
+                // table keeps its width); the outer border sizes the last column and the table, within the field
                 const { col } = gridPosition(cell);
-                const index = Math.min(col + (cell.colSpan || 1) - 1, group.children.length - 1);
-                const target = group.children[index];
-                const start = parseFloat(target.style.width) || cell.getBoundingClientRect().width;
-                // The outer border sizes the table too
-                const outer = index === group.children.length - 1;
+                const widths = columnWidths(table), last = widths.length - 1;
+                const index = Math.min(col + (cell.colSpan || 1) - 1, last);
                 const tableStart = table.getBoundingClientRect().width;
-                if (outer) table.style.width = Math.round(tableStart) + 'px';
+                const cs = getComputedStyle(area), field = Math.max(1, area.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+                const room = Math.max(field, tableStart) - (tableStart - widths.reduce((a, b) => a + b, 0));   // columns' room, borders aside
                 return (ev) => {
-                    const delta = ev.clientX - fromX;
-                    target.style.width = Math.max(28, Math.round(start + delta)) + 'px';
-                    if (outer) table.style.width = Math.max(60, Math.round(tableStart + delta)) + 'px';
+                    const delta = ev.clientX - fromX, w = widths.slice();
+                    if (index < last) {
+                        const pair = widths[index] + widths[index + 1];
+                        if (pair < 2 * MIN_COL) return;
+                        w[index] = Math.min(pair - MIN_COL, Math.max(MIN_COL, widths[index] + delta));
+                        w[index + 1] = pair - w[index];
+                        writeWidths(table, w, tableStart, field);
+                    } else {
+                        const others = widths.reduce((a, b) => a + b, 0) - widths[last];
+                        w[last] = Math.max(MIN_COL, Math.min(widths[last] + delta, room - others));
+                        writeWidths(table, w, tableStart - widths[last] + w[last], field);
+                    }
                 };
             }
             const row = cell.parentElement, start = row.getBoundingClientRect().height;
