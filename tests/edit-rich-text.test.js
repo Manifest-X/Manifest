@@ -942,3 +942,37 @@ describe('focus and blur without a change', () => {
         expect(root.querySelector('#r1').lastElementChild.tagName).toBe('P')            // the line after the list stays
     })
 })
+
+describe('tables in a rich field', () => {
+    it('focus, click (on a border too), type and blur log only the typed text: no widths, no colgroup', async () => {
+        const root = await mount(`<section x-edit="tb1"><div id="tf" x-rich-text.html><table><tbody><tr><td>a</td><td>b</td></tr></tbody></table></div></section>`)
+        const fld = root.querySelector('#tf'), td = fld.querySelector('td')
+        const at = cursor()
+        const efp = vi.spyOn(document, 'elementFromPoint').mockImplementation(() => td)        // the pointer is on the cell's border
+        fld.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+        const pd = (type, x = 0) => td.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: 0 }))
+        pd('pointerdown'); document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))   // a click on (what reads as) a border
+        td.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        efp.mockRestore()
+        expect(fld.querySelector('colgroup')).toBe(null)
+        expect(fld.querySelector('table').getAttribute('style')).toBe(null)
+        const t = text(td); t.nodeValue = 'ax'; select(t, 2)
+        fld.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'x' }))
+        fld.dispatchEvent(new FocusEvent('blur'))
+        expect(cursor()).toBe(at + 1)
+        expect(log().at(-1).value).toBe('<table><tbody><tr><td>ax</td><td>b</td></tr></tbody></table>')
+    })
+
+    it('a drag on a column border writes its widths', async () => {
+        const root = await mount(`<section x-edit="tb2"><div id="tg" x-rich-text.html><table><tbody><tr><td>a</td><td>b</td></tr></tbody></table></div></section>`)
+        const fld = root.querySelector('#tg'), td = fld.querySelector('td')
+        fld.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+        const efp = vi.spyOn(document, 'elementFromPoint').mockImplementation(() => td)
+        td.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 0, clientY: 0 }))
+        document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 40, clientY: 0 }))
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+        efp.mockRestore()
+        expect(fld.querySelector('colgroup')).toBeTruthy()
+        expect(fld.querySelector('col').style.width).toBe('40px')
+    })
+})

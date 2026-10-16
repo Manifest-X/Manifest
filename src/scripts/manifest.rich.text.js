@@ -1213,39 +1213,48 @@
         return null;
     }
 
+    // Sizes are written only once the pointer actually drags: a click on a border writes nothing
     function startResize(e, hit) {
         const cell = hit.cell, table = cell.closest('table');
         const area = cell.closest('[data-rich-text]');
         e.preventDefault();
-        area.setAttribute('data-rich-text-resizing', hit.axis);
+        const fromX = e.clientX, fromY = e.clientY;
+        let apply = null;
+        const begin = () => {
+            area.setAttribute('data-rich-text-resizing', hit.axis);
+            if (hit.axis === 'x') {
+                const group = ensureCols(table);
+                const { col } = gridPosition(cell);
+                const index = Math.min(col + (cell.colSpan || 1) - 1, group.children.length - 1);
+                const target = group.children[index];
+                const start = parseFloat(target.style.width) || cell.getBoundingClientRect().width;
+                // The outer border sizes the table too
+                const outer = index === group.children.length - 1;
+                const tableStart = table.getBoundingClientRect().width;
+                if (outer) table.style.width = Math.round(tableStart) + 'px';
+                return (ev) => {
+                    const delta = ev.clientX - fromX;
+                    target.style.width = Math.max(28, Math.round(start + delta)) + 'px';
+                    if (outer) table.style.width = Math.max(60, Math.round(tableStart + delta)) + 'px';
+                };
+            }
+            const row = cell.parentElement, start = row.getBoundingClientRect().height;
+            return (ev) => { row.style.height = Math.max(20, Math.round(start + ev.clientY - fromY)) + 'px'; };
+        };
 
-        let apply;
-        if (hit.axis === 'x') {
-            const group = ensureCols(table);
-            const { col } = gridPosition(cell);
-            const index = Math.min(col + (cell.colSpan || 1) - 1, group.children.length - 1);
-            const target = group.children[index];
-            const start = parseFloat(target.style.width) || cell.getBoundingClientRect().width;
-            const from = e.clientX;
-            // The outer border sizes the table too
-            const outer = index === group.children.length - 1;
-            const tableStart = table.getBoundingClientRect().width;
-            if (outer) table.style.width = Math.round(tableStart) + 'px';
-            apply = (ev) => {
-                const delta = ev.clientX - from;
-                target.style.width = Math.max(28, Math.round(start + delta)) + 'px';
-                if (outer) table.style.width = Math.max(60, Math.round(tableStart + delta)) + 'px';
-            };
-        } else {
-            const row = cell.parentElement;
-            const start = row.getBoundingClientRect().height, from = e.clientY;
-            apply = (ev) => { row.style.height = Math.max(20, Math.round(start + ev.clientY - from)) + 'px'; };
-        }
-
-        const move = (ev) => { ev.preventDefault(); apply(ev); };
+        const move = (ev) => {
+            ev.preventDefault();
+            if (!apply) {
+                if (Math.abs(ev.clientX - fromX) < 3 && Math.abs(ev.clientY - fromY) < 3) return;
+                record(area);
+                apply = begin();
+            }
+            apply(ev);
+        };
         const up = () => {
             document.removeEventListener('pointermove', move);
             document.removeEventListener('pointerup', up);
+            if (!apply) return;
             area.removeAttribute('data-rich-text-resizing');
             area.dispatchEvent(new Event('input', { bubbles: true }));
         };
