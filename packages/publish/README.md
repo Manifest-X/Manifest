@@ -15,5 +15,7 @@ project, zips it gitignore-aware, uploads it, and prints the live URL.
 Flags: `--staging` / `--production` (default), `--no-render`, `--promote`,
 `--source render|spa` (auto-detected), `--key <key>`, `--mcp <url>`.
 
-Zero dependencies, cross-platform (pure-Node zip). `.env`, `.env.*`, and
-`.claude/` are never uploaded.
+Zero dependencies, cross-platform (pure-Node zip). Dotfiles and dot-folders
+(`.env*`, `.git/`, `.claude/`, `.mcp.json`; `.well-known/` is kept), agent
+instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `CLAUDE.local.md`),
+keys and `node_modules/` are never uploaded.
