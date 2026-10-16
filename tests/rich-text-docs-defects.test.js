@@ -254,6 +254,25 @@ describe('typed and pending marks', () => {
         expect(el.innerHTML).toBe('<p>Use <code>codeZ</code></p>')            // moved by arrow: the usual edge behaviour
     })
 
+    it('a closing marker committed through an IME converts as a typed one does', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-rich-text id="m"></div>`)
+        const el = root.querySelector('#m')
+        focusin(el)
+        const t = document.createTextNode('A **b'); el.firstElementChild.replaceChildren(t)
+        window.getSelection().collapse(t, t.length)
+        const composing = (data) => { const e = new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data }); Object.defineProperty(e, 'isComposing', { value: true }); return e }
+        el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
+        t.insertData(t.length, '**'); window.getSelection().collapse(t, t.length)
+        el.dispatchEvent(composing('**'))
+        expect(el.querySelector('strong')).toBe(null)                               // not while composing
+        const end = new CompositionEvent('compositionend', { bubbles: true, data: '**' }); Object.defineProperty(end, 'data', { value: '**' })
+        el.dispatchEvent(end)
+        expect(el.innerHTML).toBe('<p>A <strong>b</strong></p>')
+        chromeType(el, 'x')
+        expect(el._rt.api.value).toBe('A **b**x')
+    })
+
     it('IME text composed right after a conversion is moved out of the mark, the caret after it', () => {
         const el = converted('Use **bold*', '*')
         const t = el.querySelector('strong').firstChild                      // Chrome composes into the mark's text
