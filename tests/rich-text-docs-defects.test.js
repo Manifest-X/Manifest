@@ -485,3 +485,25 @@ describe('authored empty blocks', () => {
         expect(a.innerHTML).toBe('<p>One!</p><p></p><p>Two</p><figure></figure><p>Three</p>')
     })
 })
+
+describe('docs certifier defects', () => {
+    it('``` then Enter opens a code block as the first block of an empty field too', () => {
+        for (const attr of ['x-rich-text', 'x-rich-text.html']) {
+            document.body.innerHTML = ''
+            const root = mount(`<div ${attr} id="f"></div>`)
+            const el = root.querySelector('#f')
+            focusin(el)
+            el.firstElementChild.textContent = '```'
+            window.getSelection().collapse(el.firstElementChild.firstChild, 3)
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: '`' }))
+            key(el, { key: 'Enter' })
+            const pre = el.querySelector('pre')
+            expect(pre, attr).toBeTruthy()
+            expect(el.firstElementChild, attr).toBe(pre)
+            expect(pre.contains(window.getSelection().getRangeAt(0).startContainer), attr).toBe(true)
+            pre.textContent = 'code'; window.getSelection().collapse(pre.firstChild, 4)
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'e' }))
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? '```\ncode\n```' : '<pre>code</pre><p><br></p>')
+        }
+    })
+})

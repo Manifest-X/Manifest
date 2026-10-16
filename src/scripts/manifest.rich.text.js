@@ -2585,7 +2585,9 @@
             if (el.querySelector('table')) normalizeTables(el);
             if (format !== 'plain') looseInline(el);
             ensureTrailingBlock(el);
-            if (!el.textContent.trim() && !el.querySelector('img, table, hr')) {
+            // A code block just opened (``` + Enter) holds the caret: it stays
+            const r = range(), first = el.firstElementChild, opened = !!first && first.tagName === 'PRE' && !!r && first.contains(r.startContainer);
+            if (!opened && !el.textContent.trim() && !el.querySelector('img, table, hr')) {
                 if (el.children.length !== 1 || el.firstElementChild.tagName !== 'P') el.replaceChildren();
                 if (!el.firstChild) { el.innerHTML = '<p><br></p>'; if (document.activeElement === el) caretIn(el.firstElementChild, 0); }
                 el.toggleAttribute('data-rich-text-empty', true);
