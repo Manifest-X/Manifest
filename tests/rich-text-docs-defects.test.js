@@ -765,9 +765,17 @@ describe('docs certifier defects', () => {
             key(el, { key: 'Enter' })
             const pre = el.querySelector('pre')
             expect(pre && pre.getAttribute('data-lang'), attr).toBe('ts')
-            pre.textContent = 'let y'; window.getSelection().collapse(pre.firstChild, 5)
+            const code = pre.querySelector(':scope > code')                              // the shape markdown gives
+            expect(code && code.contains(window.getSelection().getRangeAt(0).startContainer), attr).toBe(true)
+            code.textContent = 'let y'; window.getSelection().collapse(code.firstChild, 5)
             el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'y' }))
-            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? 'Intro\n\n```ts\nlet y\n```' : '<p>Intro</p><pre data-lang="ts">let y</pre>')
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? 'Intro\n\n```ts\nlet y\n```' : '<p>Intro</p><pre data-lang="ts"><code>let y</code></pre>')
+            // the same shape as one read from markdown
+            expect(window.ManifestRichText.fromMarkdown('```ts\nlet y\n```')).toBe('<pre data-lang="ts"><code>let y</code></pre>')
+            // an empty last line leaves it, onto the line after it
+            code.innerHTML = 'let y<br><br>'; window.getSelection().collapse(code, 3)
+            key(el, { key: 'Enter' })
+            expect(el.innerHTML.replace(/ data-rich[\w-]*="[^"]*"/g, ''), attr).toBe('<p>Intro</p><pre data-lang="ts"><code>let y</code></pre><p><br></p>')
         }
     })
 
@@ -785,9 +793,10 @@ describe('docs certifier defects', () => {
             expect(pre, attr).toBeTruthy()
             expect(el.firstElementChild, attr).toBe(pre)
             expect(pre.contains(window.getSelection().getRangeAt(0).startContainer), attr).toBe(true)
-            pre.textContent = 'code'; window.getSelection().collapse(pre.firstChild, 4)
+            const code = pre.querySelector('code')
+            code.textContent = 'code'; window.getSelection().collapse(code.firstChild, 4)
             el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'e' }))
-            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? '```\ncode\n```' : '<pre>code</pre>')
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? '```\ncode\n```' : '<pre><code>code</code></pre>')
         }
     })
 })
