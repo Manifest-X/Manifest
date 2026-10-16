@@ -13,6 +13,7 @@ beforeAll(() => { if (!window.ManifestRichText) new Function(RICH_SRC)() })
 // Seeded, so a failure names a case that reproduces
 function rng(seed) { return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296 } }
 const WORDS = ['alpha', 'beta', 'go', 'x', '42', 'snake_case', 'a*b', 'tilde~', 'back`tick', '[br]', 'dot.', 'end!', '(paren)', 'R&D', '<tag>', 'q_', '*', '__', 'it’s']
+const TITLES = ['Docs', 'say "hi"', 'back\\slash', "it's (x)", '']
 const HREFS = ['https://x.dev/a', '/p?q=1&r=2', 'https://e.com/(x)', '#top', 'https://en.wikipedia.org/wiki/Foo_(bar)', 'https://x.dev/a)b', 'https://x.dev/(a', 'https://x.dev/((a)b)c)', 'https://x.dev/a\\b', 'https://x.dev/a%20b']
 const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -27,7 +28,10 @@ function gen(r, depth, noLink) {
         else if (k === 3) out += `<em>${gen(r, depth + 1, noLink)}</em>`
         else if (k === 4) out += `<s>${gen(r, depth + 1, noLink)}</s>`
         else if (k === 5) out += `<code>${esc(words().trim() || 'c')}</code>`
-        else out += noLink ? esc(words()) : `<a href="${esc(HREFS[Math.floor(r() * HREFS.length)])}">${gen(r, depth + 1, true)}</a>`
+        else {
+            const title = r() < 0.4 ? TITLES[Math.floor(r() * TITLES.length)] : null
+            out += noLink ? esc(words()) : `<a href="${esc(HREFS[Math.floor(r() * HREFS.length)])}"${title != null ? ` title="${esc(title).replace(/"/g, '&quot;')}"` : ''}>${gen(r, depth + 1, true)}</a>`
+        }
     }
     return out
 }
@@ -40,7 +44,7 @@ function shape(html) {
         if (c.nodeType === 3) { for (const ch of c.nodeValue) out.push(ch + ' ' + f.filter(x => !/\s/.test(ch) || /^(c|a:)/.test(x)).sort().join(',')); return }
         if (c.nodeType !== 1) return
         const t = c.tagName, add = { STRONG: 'b', B: 'b', EM: 'i', I: 'i', S: 's', DEL: 's', CODE: 'c' }[t]
-        const href = t === 'A' ? 'a:' + (c.getAttribute('href') || '') : null
+        const href = t === 'A' ? 'a:' + (c.getAttribute('href') || '') + (c.hasAttribute('title') ? '|' + c.getAttribute('title') : '') : null
         walk(c, [...new Set([...f, ...(add ? [add] : []), ...(href ? [href] : [])])])
     })
     walk(d.firstElementChild || d, [])
@@ -101,7 +105,10 @@ describe('markdown round trip', () => {
         const md = (html) => { const d = document.createElement('div'); d.innerHTML = html; return RT.toMarkdown(d) }
         expect(RT.fromMarkdown('[x](https://en.wikipedia.org/wiki/Foo_(bar)) after')).toBe('<p><a href="https://en.wikipedia.org/wiki/Foo_(bar)">x</a> after</p>')
         expect(RT.fromMarkdown('[t](<https://x.dev/a b>)')).toBe('<p><a href="https://x.dev/a b">t</a></p>')
-        expect(RT.fromMarkdown('[t](https://x.example "title")')).toBe('<p><a href="https://x.example">t</a></p>')
+        expect(RT.fromMarkdown('[t](https://x.example "title")')).toBe('<p><a href="https://x.example" title="title">t</a></p>')
+        expect(RT.fromMarkdown('[t](https://x.example \'it\\\'s\')')).toBe('<p><a href="https://x.example" title="it\'s">t</a></p>')
+        expect(md('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>')).toBe('[t](https://x.example "say \\"hi\\" \\\\ now")')
+        expect(RT.fromMarkdown(md('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>'))).toBe('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>')
         expect(RT.fromMarkdown('[t](https://x.dev/a\\)b)')).toBe('<p><a href="https://x.dev/a)b">t</a></p>')
         let v = '[x](https://en.wikipedia.org/wiki/Foo_(bar)) after'
         for (let i = 0; i < 3; i++) v = md(RT.fromMarkdown(v))
