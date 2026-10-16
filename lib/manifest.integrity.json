@@ -16,7 +16,7 @@
   "manifest.defer.js": "sha384-pMRGqQKiEoJhpUcD40QeM4jEHau7sz9Xn/YCpiUamT1T4xJBZDSiYX+xnVrSWoq+",
   "manifest.device.js": "sha384-g+txmrEszYtuOvRelTp/c1wSNR2AtllVI9rx5NPPD7DzhVUnMNughonZykv2xlBW",
   "manifest.dropdowns.js": "sha384-acufUps7R9WjqB4XXW5JLACqniuHJGM4CNTb2rF4B2Q/jv7ZRmsAwfr2McanOz3s",
-  "manifest.edit.js": "sha384-UsKV6oSwdF+yFtpZKr8KD62VajynYVsBcVN3+dAUI4nh2pOOf3/2lyybXbEG/pvT",
+  "manifest.edit.js": "sha384-iDzVOJnaJYFEAKSF9Z/LqLhPmad60lqQyimhTgTafv0dRSV0UGfHOz+y5LLS3kUP",
   "manifest.export.js": "sha384-Rx6XvqBZc4apzP/FwcDr6yIln4/zNa08Q4ZqBZcEqUz1aNZQfl4h0+Ae7mqCQyuG",
   "manifest.icons.js": "sha384-kKOINpX70YzNO3FvkV6umrmO3f0KIu0DNbwB+ej55a7y/lhU7v/myQtXL0bwCTbt",
   "manifest.localization.js": "sha384-EImsIw8Z3l13V5eH9ZJF/yfsOfIvR1oPRNSArANkPji7V8O3IRf6zMwsNiAGj3Hk",
@@ -36,5 +36,5 @@
   "manifest.url.parameters.js": "sha384-J2aSVBOPsoqsbafHndrWLHEDpKb4AKJAoQnVmKA4gZh5P/8HHjFWHO/lkusmG84l",
   "manifest.utilities.js": "sha384-L5uXMLFBIF6LUM1haRjd4eGjHSWuqsCYSpPZRPYosNfJsMC5U5TnmjBxIhrZRe2d",
   "manifest.virtual.js": "sha384-ZDNoF9QVhVcVpkjIK6NH15S6I5c6OBshiJpXSOYjNsIB+298I0a7g3aFO+jyq4Vb",
-  "manifest.js": "sha384-G+ctciC90o/zSB/sRbmX7ANE/7rYvnepyzIsvNbD6N5ynlO5oludSDfzYVCdzU/g"
+  "manifest.js": "sha384-XOrOm8bh1KnpUfepxIO3MlCIdhSC6HediAlghJZSHVithZZGz8VxdQxpW+bdd/jl"
 }

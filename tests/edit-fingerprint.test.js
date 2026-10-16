@@ -60,6 +60,7 @@ beforeAll(async () => {
     root.setAttribute('x-data', '')
     root.innerHTML = BODY
     document.body.appendChild(root)
+    window.__mnfstEdit = true   // as mnfst-run --edit marks the page
     new Function(EDIT_SRC)()
     window.Alpine = Alpine; globalThis.Alpine = Alpine
     Alpine.start()

@@ -2935,8 +2935,10 @@
         refresh();
     }
     function waitForData(area, cb) { const expr = dataSourceExpr(area), tpl = listTpl(area); let n = 0; const t = setInterval(() => { let r = false; try { r = Array.isArray(window.Alpine.evaluate(tpl, expr)); } catch { } if (r) { clearInterval(t); cb(); } else if (++n > 100) clearInterval(t); }, 50); }
+    let inited = false;
     function init() {
-        if (!window.Alpine || !Alpine.directive) return;
+        if (inited || !window.Alpine || !Alpine.directive) return;
+        inited = true;
         // Alpine walks only x-data trees: a page with none still gets its areas
         if (document.body && !document.body.hasAttribute('x-data')) document.body.setAttribute('x-data', '{}');
         Alpine.directive('edit', (el, { modifiers, expression }, { cleanup }) => {
@@ -2973,9 +2975,13 @@
             clearConflicts() { conflicts = []; this.conflicts = []; saveState(); }
         });
         estore = Alpine.store('edit');
-        Alpine.magic('edit', () => Alpine.store('edit'));
+        const editMagic = () => Alpine.store('edit');
+        Alpine.magic('edit', editMagic);
+        // The loader's stand-in answered $edit until now: it hands over, and effects that read it run again
+        window.__manifestEditMagic = editMagic;
+        if (window.__manifestEditStub) setTimeout(() => { window.__manifestEditStub.v++; }, 0);
         loadState();
-        loadBase();
+        if (window.__mnfstEdit) loadBase();   // only mnfst-run --edit serves the base
         setTimeout(() => { armAll(); restore(); }, 450);
         document.addEventListener('keydown', onHistoryKey);
         window.addEventListener('click', onAreaLinkClick, true);
@@ -2984,6 +2990,16 @@
         document.addEventListener('dropdown:context', onContextCapture, true);
         // SPA navigation: the state so far is saved under the page it was made on.
         window.addEventListener('manifest:route-change', () => { if (lsPath !== location.pathname) { lsPath = location.pathname; saveState(); } });
+        adopt();
+    }
+    // Loaded after Alpine started: x-edit elements its walk passed get their attributes re-set
+    // (Alpine runs them as new directives); those it never walked (no x-data above) are walked now.
+    function adopt() {
+        if (!window.__manifestAlpineStarted && ![...document.querySelectorAll('[x-data]')].some(e => e._x_marker)) return;
+        const isEdit = (n) => /^x-edit(\.|$)/.test(n);
+        const found = [...document.querySelectorAll('*')].filter(el => !el._edit && [...el.attributes].some(a => isEdit(a.name)));
+        found.forEach(el => { if (el._x_marker) [...el.attributes].filter(a => isEdit(a.name)).forEach(a => el.setAttribute(a.name, a.value)); });
+        if (found.some(el => !el._x_marker)) Alpine.initTree(document.body);
     }
     document.addEventListener('alpine:init', init);
     if (window.Alpine && Alpine.directive) setTimeout(init, 0);

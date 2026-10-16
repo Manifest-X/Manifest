@@ -382,6 +382,8 @@ const APPWRITE_PROXY_TARGET = (process.env.APPWRITE_PROXY_TARGET || privateEnv.A
 const APPWRITE_PROXY_PREFIX = '/_appwrite';
 
 let envInjectScript = buildEnvInjectScript(publicEnv);
+// Edit mode marker: the edit plugin reads /__edit/base only when it is served
+if (EDIT_ENABLED) envInjectScript += '<script>window.__mnfstEdit=true;</script>';
 if (APPWRITE_PROXY_TARGET) {
   // Point the Appwrite endpoint at the same-origin proxy. Computed in the browser
   // from location.origin so it's port-independent (auto-port safe) and prod-safe

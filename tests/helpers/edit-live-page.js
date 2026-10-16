@@ -46,6 +46,7 @@ export async function bootLivePage(body, net = {}, opts = {}) {
     root.innerHTML = opts.dom || body
     document.body.appendChild(root)
     if (opts.mounted) opts.mounted(root)
+    window.__mnfstEdit = true   // as mnfst-run --edit marks the page
     new Function(EDIT_SRC)()
     window.Alpine = Alpine; globalThis.Alpine = Alpine
     Alpine.start()
