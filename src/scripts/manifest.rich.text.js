@@ -692,7 +692,9 @@
     const cellAt = () => ancestor('td, th') || (cellDrag && cellDrag.anchor.isConnected ? cellDrag.anchor : null);
     const tableAt = () => { const c = cellAt(); return c && c.closest('table'); };
     const rowsOf = (table) => [...table.rows];
-    const emptyCell = () => { const td = document.createElement('td'); td.appendChild(document.createElement('br')); return td; };
+    const emptyCell = (tag = 'td') => { const td = document.createElement(tag); td.appendChild(document.createElement('br')); return td; };
+    // A header row (in a thead, or of header cells only) is padded with header cells
+    const rowCellTag = (row) => row.parentElement && row.parentElement.tagName === 'THEAD' || (row.cells.length && [...row.cells].every(c => c.tagName === 'TH')) ? 'th' : 'td';
 
     // Occupancy grid: every slot maps to the cell covering it, spans included
     function tableGrid(table) {
@@ -736,7 +738,7 @@
             const width = Math.max(0, ...grid.map(r => r.length));
             rows.forEach((row, r) => {
                 const have = (grid[r] || []).filter(Boolean).length;
-                for (let i = have; i < width; i++) row.appendChild(emptyCell());
+                for (let i = have; i < width; i++) row.appendChild(emptyCell(rowCellTag(row)));
             });
             if (!table.querySelector('tbody, thead')) {
                 const body = document.createElement('tbody');
@@ -845,13 +847,14 @@
         const cols = cell.colSpan || 1, rows = cell.rowSpan || 1;
         if (cols < 2 && rows < 2) return;
         cell.removeAttribute('colspan'); cell.removeAttribute('rowspan');
-        for (let i = 1; i < cols; i++) cell.after(emptyCell());
+        // A header cell splits into header cells; rows below take their row's kind
+        for (let i = 1; i < cols; i++) cell.after(emptyCell(cell.tagName.toLowerCase()));
         if (rows > 1) {
             const table = cell.closest('table'), { row, col } = gridPosition(cell);
             for (let r = 1; r < rows; r++) {
                 const target = rowsOf(table)[row + r]; if (!target) break;
                 const at = cellCovering(target, col);
-                const fresh = emptyCell();
+                const fresh = emptyCell(rowCellTag(target));
                 if (at) at.before(fresh); else target.appendChild(fresh);
             }
         }
@@ -1419,7 +1422,10 @@
         const n = (v) => Math.max(1, Math.min(20, parseInt(v, 10) || 3));
         const cols = n(parts[0]), rows = n(parts[1]);
         const row = `<tr>${'<td><br></td>'.repeat(cols)}</tr>`;
-        insertHTML(`<table><tbody>${row.repeat(rows)}</tbody></table><p><br></p>`);
+        insertHTML(`<table data-rich-text-new><tbody>${row.repeat(rows)}</tbody></table><p><br></p>`);
+        // The caret goes into the first cell, so typing and table commands start there
+        const made = document.querySelector('table[data-rich-text-new]');
+        if (made) { made.removeAttribute('data-rich-text-new'); const first = made.querySelector('td, th'); if (first) caretIn(first, 0); }
     }
 
     // A trailing table, rule or similar block gets a line after it to land on

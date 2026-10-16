@@ -487,6 +487,30 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('an inserted table takes the caret into its first cell; a merged header cell splits into header cells', () => {
+        document.body.innerHTML = ''
+        const exec = document.execCommand
+        document.execCommand = (cmd, _ui, html) => {
+            if (cmd !== 'insertHTML') return true
+            const r = window.getSelection().getRangeAt(0), t = document.createElement('template'); t.innerHTML = html
+            const last = t.content.lastChild; r.deleteContents(); r.insertNode(t.content)
+            window.getSelection().collapse(last, 0); return true
+        }
+        const root = mount(`<div x-rich-text.html id="t"><p>Before</p></div>`)
+        const el = root.querySelector('#t')
+        focusin(el); select(el.querySelector('p').firstChild, 6)
+        el._rt.api.table(2, 2)
+        const first = el.querySelector('td'), r = window.getSelection().getRangeAt(0)
+        expect(first.contains(r.startContainer) || r.startContainer === first).toBe(true)
+        expect(el.querySelector('[data-rich-text-new]')).toBe(null)
+        expect(el._rt.api.can('row-after')).toBe(true)
+        document.execCommand = exec
+        el._rt.api.value = '<table><thead><tr><th colspan="2">Head</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr></tbody></table>'
+        focusin(el); select(el.querySelector('th').firstChild, 2)
+        el._rt.api.split()
+        expect([...el.querySelector('thead tr').cells].map(c => c.tagName)).toEqual(['TH', 'TH'])
+        expect([...el.querySelector('tbody tr').cells].map(c => c.tagName)).toEqual(['TD', 'TD'])
+    })
     it('$rich bindings follow the value and selection as they change', async () => {
         document.body.innerHTML = ''
         const root = mount(`<div x-data="{ md: 'Hi **there**' }"><p id="s" x-text="'can=' + $rich.can('strong') + ' v=' + $rich.value + ' on=' + $rich.active('strong')"></p><div x-rich-text="md" id="f"></div></div>`)
