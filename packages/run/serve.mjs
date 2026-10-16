@@ -1091,7 +1091,7 @@ const SAN_DROP = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link'
 // The one attribute Rich Text keeps on each of these inline tags.
 const TEXT_ATTR = { abbr: 'title', dfn: 'title', bdo: 'dir', data: 'value', time: 'datetime' };
 function textAttrOk(tag, n, v) {
-  if (tag === 'a' && n === 'href') return !attrRefusal(n, v, tag);
+  if (tag === 'a' && (n === 'href' || n === 'title')) return !attrRefusal(n, v, tag);
   if (tag === 'img' && (n === 'alt' || n === 'src')) return !attrRefusal(n, v, tag);
   if (TEXT_ATTR[tag] === n) return n === 'dir' ? /^(ltr|rtl|auto)$/i.test(v) : !attrRefusal(n, v, tag);
   if (tag === 'input') return n === 'type' ? /^checkbox$/i.test(v) : n === 'checked';
