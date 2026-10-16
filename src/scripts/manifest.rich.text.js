@@ -71,7 +71,15 @@
         .replace(/^(\s*)([-+])(?=\s)/, '$1\\$2')
         .replace(/^(\s*)-(?=-{2,}\s*$)/, '$1\\-')
         .replace(/^(\s*)(\d+)\.(?=\s)/, '$1$2\\.')).join('\n');
-    const mdUrl = (u) => u.replace(/[\s()<>]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')).replace(ENTITY, '\\&');
+    // A link destination that reads back to the same URL: spaces and angle brackets encoded,
+    // backslashes and unbalanced parentheses escaped (balanced ones stay, as CommonMark reads them)
+    const mdUrl = (u) => {
+        const s = String(u).replace(/[\s<>]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+        const open = [], loose = new Set();
+        for (let i = 0; i < s.length; i++) { if (s[i] === '(') open.push(i); else if (s[i] === ')') { if (open.length) open.pop(); else loose.add(i); } }
+        open.forEach(i => loose.add(i));
+        return s.split('').map((c, i) => c === '\\' ? '\\\\' : loose.has(i) ? '\\' + c : c).join('').replace(ENTITY, '\\&');
+    };
 
     // `ctx`: the characters just outside this content, and whether an `_` mark encloses it.
     // em/strong use _/__ where no word character is outside them (and none encloses them), so
@@ -286,6 +294,33 @@
             }
             return -1;
         };
+        // A link destination from the "(" at `at`: <…>, or balanced parentheses; an optional title is skipped
+        const destination = (at) => {
+            let j = at + 1, url;
+            while (s[j] === ' ' || s[j] === '\t') j++;
+            if (s[j] === '<') {
+                const e = s.indexOf('>', j); if (e < 0 || /[\n<]/.test(s.slice(j + 1, e))) return null;
+                url = s.slice(j + 1, e); j = e + 1;
+            } else {
+                const from = j;
+                for (let depth = 0; j < s.length; j++) {
+                    const c = s[j];
+                    if (c === '\\' && /[!-\/:-@\[-`{-~]/.test(s[j + 1] || '')) { j++; continue; }
+                    if (/[\s\x00-\x1f]/.test(c)) break;
+                    if (c === '(') depth++;
+                    else if (c === ')') { if (!depth) break; depth--; }
+                }
+                url = s.slice(from, j);
+            }
+            while (/[ \t\n]/.test(s[j] || '')) j++;
+            const q = s[j];
+            if (q === '"' || q === "'" || (q === '(' && j > at + 1)) {
+                const e = s.indexOf(q === '(' ? ')' : q, j + 1); if (e < 0) return null;
+                j = e + 1; while (/[ \t\n]/.test(s[j] || '')) j++;
+            }
+            if (s[j] !== ')') return null;
+            return { url: url.replace(/\\([!-\/:-@\[-`{-~])/g, '$1'), end: j + 1 };
+        };
         // A bracket's matching close, skipping escapes and code spans
         const closeBracket = (from) => {
             for (let i = from, depth = 0; i < s.length; i++) {
@@ -310,13 +345,13 @@
             }
             if (c === '[' || (c === '!' && s[i + 1] === '[')) {
                 const img = c === '!', open = i + (img ? 2 : 1), close = closeBracket(open);
-                const m = close > 0 && s.slice(close + 1).match(/^\(([^)\s]*)\)/);
+                const m = close > 0 && s[close + 1] === '(' && destination(close + 1);
                 if (m) {
-                    const url = m[1].replace(/\\([!-\/:-@\[-`{-~])/g, '$1'), body = s.slice(open, close);
+                    const url = m.url, body = s.slice(open, close);
                     flush();
                     if (img) parts.push(unsafeUrl(url, true) ? '' : `<img src="${escHtml(url)}" alt="${escHtml(body.replace(/\\([!-\/:-@\[-`{-~])/g, '$1'))}">`);
                     else parts.push(unsafeUrl(url) || !url ? inlineHtml(body) : `<a href="${escHtml(url)}">${inlineHtml(body)}</a>`);
-                    i = close + 1 + m[0].length; continue;
+                    i = m.end; continue;
                 }
             }
             // The inline HTML this writer uses where markdown has no form (raw tags, as CommonMark passes them)

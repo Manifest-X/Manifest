@@ -145,9 +145,9 @@ describe('2. typed HTML is stored as text, not markup', () => {
     it('encodes characters that would end a link destination early', () => {
         const host = parse('<p><a href="https://x.test/a)<b>">t</a> <img alt="a](y" src="/p q.png"></p>')
         const md = TE().toMarkdown(host)
-        expect(md).toBe('[t](https://x.test/a%29%3Cb%3E) ![a\\](y](/p%20q.png)')
+        expect(md).toBe('[t](https://x.test/a\\)%3Cb%3E) ![a\\](y](/p%20q.png)')     // an unbalanced ) is escaped, not encoded
         const back = parse(TE().fromMarkdown(md))
-        expect(back.querySelector('a').getAttribute('href')).toBe('https://x.test/a%29%3Cb%3E')
+        expect(back.querySelector('a').getAttribute('href')).toBe('https://x.test/a)%3Cb%3E')
         expect(back.querySelector('img').getAttribute('alt')).toBe('a](y')
     })
 })
