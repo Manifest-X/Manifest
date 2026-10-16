@@ -1724,8 +1724,21 @@
     }
 
     // A value styles the selection; an empty one removes that style from it (spans left bare go)
+    // A style span covering exactly what a style span around it covers is folded into it, so one span
+    // carries the combined styles and a re-applied value replaces the old one instead of nesting
     function styleSpan(prop, v) {
-        if (v != null && v !== '') return wrapInline('span', { [prop]: v });
+        if (v != null && v !== '') {
+            const made = wrapInline('span', { [prop]: v }).map(sp => {
+                for (let p = sp.parentElement; p && p.tagName === 'SPAN' && !p.hasAttribute('data-rich-text') && [...p.attributes].every(a => a.name === 'style') && [...p.childNodes].filter(c => c.nodeType === 1 || c.nodeValue.length).length === 1; p = sp.parentElement) {
+                    for (let i = 0; i < sp.style.length; i++) { const name = sp.style.item(i); p.style.setProperty(name, sp.style.getPropertyValue(name)); }
+                    sp.replaceWith(...sp.childNodes);
+                    sp = p;
+                }
+                return sp;
+            });
+            if (made.length) { const r = document.createRange(), last = made[made.length - 1]; r.setStart(made[0], 0); r.setEnd(last, last.childNodes.length); const s = sel(); s.removeAllRanges(); s.addRange(r); }
+            return made;
+        }
         const nodes = selectedTextNodes(), spans = new Set();
         nodes.forEach(n => { for (let el = elementAt(n); el && el.closest && !el.hasAttribute('data-rich-text'); el = el.parentElement) if (el.tagName === 'SPAN' && el.style[prop]) spans.add(el); });
         spans.forEach(s => { s.style[prop] = ''; if (!s.getAttribute('style')) s.removeAttribute('style'); if (!s.attributes.length) unwrapEl(s); });
@@ -2523,6 +2536,28 @@
         queueMicrotask(() => { beating = false; const now = surface(); if (now === lastSurface) return; lastSurface = now; pulse.n++; });
     };
 
+    // Any CSS colour (oklch(), a name, rgb()) as #rrggbb, read off a canvas pixel; null when it cannot be
+    let colorCanvas = null;
+    const hexCache = new Map();
+    function hexColor(v) {
+        if (v == null || v === '') return null;
+        const s = String(v).trim();
+        if (/^#[0-9a-f]{6}$/i.test(s)) return s.toLowerCase();
+        if (hexCache.has(s)) return hexCache.get(s);
+        let out = null;
+        try {
+            colorCanvas = colorCanvas || document.createElement('canvas');
+            const g = colorCanvas.getContext && colorCanvas.getContext('2d', { willReadFrequently: true });
+            if (g) {
+                g.clearRect(0, 0, 1, 1); g.fillStyle = '#000'; g.fillStyle = s; g.fillRect(0, 0, 1, 1);
+                const [r, gr, b] = g.getImageData(0, 0, 1, 1).data;
+                out = '#' + [r, gr, b].map(x => x.toString(16).padStart(2, '0')).join('');
+            }
+        } catch { out = null; }
+        hexCache.set(s, out);
+        return out;
+    }
+
     // Reflect caret state onto every control
     function sync() {
         beat();
@@ -2536,9 +2571,10 @@
             c.setAttribute('aria-disabled', String(!usable));
             if (usable && (all || spec.reflect) && 'value' in c && c !== document.activeElement) {
                 const v = all ? area.style.getPropertyValue(ALL_VARS[cfg.id]).trim() : judged(area, () => spec.reflect());
-                // Never blank a <select> with a value it doesn't offer
+                // Never blank a <select> with a value it doesn't offer; a colour input takes #rrggbb only
                 const offered = c.tagName !== 'SELECT' || [...c.options].some(o => o.value === v);
-                if (v != null && offered && c.value !== v) c.value = v;
+                const val = c.type === 'color' ? hexColor(v) : v;
+                if (val != null && offered && c.value !== val) c.value = val;
             }
             if (c.tagName === 'BUTTON') c.setAttribute('aria-pressed', String(c.hasAttribute('data-rich-text-active')));
         });

@@ -553,6 +553,29 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('font then size on the same words is one span; a re-applied size replaces, never nests', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data><select x-rich-text.font id="fnt"><option value="">-</option><option value="Georgia">G</option></select><select x-rich-text.size id="sz"><option value="16">16</option><option value="24">24</option></select><div x-rich-text.html id="d"><p>Select some words here.</p></div></div>`)
+        const el = root.querySelector('#d'), pick = (id, v) => { const c = root.querySelector(id); c.focus(); c.value = v; c.dispatchEvent(new Event('change', { bubbles: true })) }
+        focusin(el); select(el.querySelector('p').firstChild, 12, 17)
+        document.dispatchEvent(new Event('selectionchange'))
+        pick('#fnt', 'Georgia'); pick('#sz', '24')
+        expect(el.innerHTML).toBe('<p>Select some <span style="font-family: Georgia; font-size: 24px;">words</span> here.</p>')
+        pick('#sz', '16')
+        expect(el.innerHTML).toBe('<p>Select some <span style="font-family: Georgia; font-size: 16px;">words</span> here.</p>')
+        expect(window.getSelection().toString()).toBe('words')
+    })
+
+    it('a colour input is never given a value that is not #rrggbb', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data><input type="color" id="c" x-rich-text.color.all><div x-rich-text.html id="d"><p>T</p></div></div>`)
+        const el = root.querySelector('#d'), c = root.querySelector('#c')
+        const set = vi.spyOn(HTMLInputElement.prototype, 'value', 'set')
+        focusin(el); select(el.querySelector('p').firstChild, 1)
+        el._rt.api.all = { color: 'oklch(0.6 0.2 30)' }
+        expect(set.mock.calls.filter(([v]) => !/^#[0-9a-f]{6}$/i.test(v))).toEqual([])
+        set.mockRestore()
+    })
     it('a table inserted from inside a table lands after it, with one empty line after, not two', () => {
         document.body.innerHTML = ''
         const exec = document.execCommand

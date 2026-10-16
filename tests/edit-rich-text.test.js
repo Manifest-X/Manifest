@@ -899,3 +899,15 @@ describe('typing after a converted mark in a leaf', () => {
         expect(sent).toContain('Cell&nbsp;2')
     })
 })
+
+describe('theme colour controls', () => {
+    it('a colour input bound to a theme variable is never given a value that is not #rrggbb', async () => {
+        document.documentElement.style.setProperty('--tc-x', 'oklch(0.852 0.199 91.936)')
+        const set = vi.spyOn(HTMLInputElement.prototype, 'value', 'set')
+        await mount(`<section x-edit="tc"><p>T</p></section><input type="color" id="tc" x-edit.cssvar="--tc-x">`)
+        await new Promise(r => setTimeout(r, 500))
+        expect(set.mock.calls.filter(([v]) => !/^#[0-9a-f]{6}$/i.test(v))).toEqual([])
+        set.mockRestore()
+        document.documentElement.style.removeProperty('--tc-x')
+    })
+})
