@@ -170,7 +170,7 @@ describe('live reload around our own publishes', () => {
         await flush()
         expect(reloadEvent([{ rel: 'index.html', hash: 'g1' }])).toBe(false)          // a reload regenerates them: not held
         let said = warn.mock.calls.map(c => String(c[0])).filter(t => /source changed/.test(t))
-        expect(said).toEqual([`[edit] the source changed: reloading discards the unpublished edits of x-edit="gr1", x-edit="gr2", which mnfst-run can't write (generated content, or tied to it by a move); .persist keeps them`])
+        expect(said).toEqual([`[edit] the source changed: reloading discards the unpublished edits of x-edit="gr1", x-edit="gr2" that mnfst-run can't write (generated content, or a piece moved from it); .persist keeps them`])
         warn.mockClear()
         editText(root.querySelector('[x-edit="gr3"] p'), 'Plain edited')
         expect(reloadEvent([{ rel: 'index.html', hash: 'g2' }])).toBe(true)           // a writable region's edit holds it
@@ -183,6 +183,34 @@ describe('live reload around our own publishes', () => {
         await flush()
         warn.mockRestore()
         expect(r.results.map(x => x.region + ':' + x.status).sort()).toEqual(['gr1:error', 'gr2:error', 'gr3:written', 'gr4:error'])
+        expect(reload).toHaveBeenCalledTimes(1)
+        store().onPublish = (patches) => ({ results: patches.map(p => ({ region: p.region, status: 'written' })) })
+        await store().publish()
+        store().stale = []
+    })
+
+    it('a writable region a move ties to generated content still holds a reload, saying how to resolve it; undoing the move lets it publish and reload', async () => {
+        const root = await mount(`<div x-markdown="page"><section x-edit="gen5"><p>Gen one</p><p>Gen two</p></section></div><section x-edit="w5"><p>W one</p></section>`)
+        const gen = root.querySelector('[x-edit="gen5"]'), w = root.querySelector('[x-edit="w5"]')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        editText(w.querySelector('p'), 'W typed')
+        store().move(gen.querySelector('p'), w, null)
+        await flush()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'r4a' }])).toBe(true)          // "W typed" would be lost: held
+        const said = warn.mock.calls.map(c => String(c[0])).filter(t => /source changed/.test(t))
+        expect(said).toEqual(['[edit] the source changed, but a reload would lose unpublished edits to x-edit="w5": publish (with rebase), then reload. x-edit="w5" is tied by a move to x-edit="gen5", which mnfst-run can\'t write: undo that move to publish it, or publish the rest'])
+        store().onPublish = null
+        window.fetch = vi.fn(async (url) => String(url).includes('/__edit/base') ? { ok: false, json: async () => ({}) } : { json: async () => ({ results: [{ region: 'w5', status: 'written', file: 'index.html' }] }) })
+        const saves = () => window.fetch.mock.calls.filter(c => String(c[0]).includes('/__edit/save')).length
+        let r = await store().publish()
+        expect(r.results.map(x => x.region + ':' + x.status).sort()).toEqual(['gen5:error', 'w5:error'])
+        expect(saves()).toBe(0)
+        expect(reload).not.toHaveBeenCalled()                                           // still held: nothing was written
+        await store().undo()                                                            // the tying move
+        r = await store().publish()
+        await flush()
+        warn.mockRestore()
+        expect(r.results.map(x => x.region + ':' + x.status)).toEqual(['w5:written'])
         expect(reload).toHaveBeenCalledTimes(1)
         store().onPublish = (patches) => ({ results: patches.map(p => ({ region: p.region, status: 'written' })) })
         await store().publish()

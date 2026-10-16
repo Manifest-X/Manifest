@@ -327,23 +327,23 @@
         held.via = via;
         return held;
     }
-    // Regions inside generated content, and those moves tie to them, are in no file mnfst-run
-    // can write: a reload regenerates them, so their edits never hold it (kept if .persist)
-    const touches = (d, set) => set.has(d.region) || set.has(d.from) || set.has(d.to);
-    const regionsOf = (ds, set) => [...new Set(ds.flatMap(d => [d.region, d.from, d.to]).filter(r => r && (!set || set.has(r))))];
+    // Edits mnfst-run can't write (a generated region's own, a move in or out of one, and a piece
+    // moved from one) never hold a reload: it regenerates that markup (.persist keeps them).
+    // A writable region a move ties to one still holds: it is published once that move is undone.
+    const keyRegion = (k) => { if (typeof k !== 'string') return null; const o = originOf(k); return o[0] === '@' ? o.slice(1, o.indexOf('@', 1)) : null; };
+    const unwritableEdit = (d) => renderedRegions.has(d.region) || renderedRegions.has(d.from) || renderedRegions.has(d.to) || renderedRegions.has(keyRegion(d.path)) || renderedRegions.has(keyRegion(d.key));
+    const regionsOf = (ds) => [...new Set(ds.flatMap(d => [d.region, d.from, d.to]).filter(Boolean))];
     const unsaved = () => log.slice(0, cursor).filter(d => d.kind !== 'lock' && !persisted.has(d));
     function focusedRegion() { const f = document.activeElement, a = f && f._commitText && regionOf(f); return a ? key(a) : null; }
     function reloadSafe() {
-        const off = tie(new Set(renderedRegions));
-        if (!commitFocused(false) && !off.has(focusedRegion())) return false;
+        if (!commitFocused(false) && !renderedRegions.has(focusedRegion())) return false;
         // Unpersisted edits exist only for regions of this document (mounted or not): they hold it
-        return unsaved().every(d => touches(d, off));
+        return unsaved().every(unwritableEdit);
     }
     function warnDiscarded() {
-        const off = tie(new Set(renderedRegions)), f = focusedRegion();
-        const lost = regionsOf(unsaved().filter(d => touches(d, off)), off);
-        if (f && off.has(f) && !commitFocused(false) && !lost.includes(f)) lost.push(f);
-        if (lost.length) console.warn(`[edit] the source changed: reloading discards the unpublished edits of ${lost.map(r => `x-edit="${r}"`).join(', ')}, which mnfst-run can't write (generated content, or tied to it by a move); .persist keeps them`);
+        const f = focusedRegion(), lost = regionsOf(unsaved().filter(unwritableEdit));
+        if (f && renderedRegions.has(f) && !commitFocused(false) && !lost.includes(f)) lost.push(f);
+        if (lost.length) console.warn(`[edit] the source changed: reloading discards the unpublished edits of ${lost.map(r => `x-edit="${r}"`).join(', ')} that mnfst-run can't write (generated content, or a piece moved from it); .persist keeps them`);
     }
     function reloadNow() { warnDiscarded(); location.reload(); }
     // A held reload is taken as soon as nothing it would lose remains
@@ -353,9 +353,12 @@
         heldReload = files;
         const changed = files.map(f => f && f.rel).filter(Boolean);
         if (estore) estore.stale = [...new Set([...(estore.stale || []), ...changed])];
-        const off = tie(new Set(renderedRegions)), holding = regionsOf(unsaved().filter(d => !touches(d, off)));
-        const f = focusedRegion(); if (f && !off.has(f) && !holding.includes(f) && !commitFocused(false)) holding.push(f);
-        console.warn(`[edit] the source changed, but a reload would lose unpublished edits${holding.length ? ' to ' + holding.map(r => `x-edit="${r}"`).join(', ') : ''}: publish (with rebase), then reload`);
+        const holding = regionsOf(unsaved().filter(d => !unwritableEdit(d))).filter(r => !renderedRegions.has(r));
+        const f = focusedRegion(); if (f && !renderedRegions.has(f) && !holding.includes(f) && !commitFocused(false)) holding.push(f);
+        const off = tie(new Set(renderedRegions)), tied = holding.filter(r => off.has(r));
+        const name = (rs) => rs.map(r => `x-edit="${r}"`).join(', ');
+        console.warn(`[edit] the source changed, but a reload would lose unpublished edits${holding.length ? ' to ' + name(holding) : ''}: publish (with rebase), then reload`
+            + (tied.length ? `. ${name(tied)} ${tied.length > 1 ? 'are' : 'is'} tied by a move to ${name([...new Set(tied.map(r => off.via.get(r)))])}, which mnfst-run can't write: undo that move to publish ${tied.length > 1 ? 'them' : 'it'}, or publish the rest` : ''));
         document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: changed } }));
     }
     window.addEventListener('manifest:live-reload', (e) => {
