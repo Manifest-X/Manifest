@@ -14,16 +14,17 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost], [data-edit-grab]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost], [x-edit\\.grab]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
-    function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
+    function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); el.removeAttribute('data-edit-grabbable'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
     function markPieces(area) {
         const want = new Set(collectPieces(area).filter(movable));
         area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el) && regionOf(el.parentElement) === area) unmarkPiece(el); });
         want.forEach(el => {
             el.setAttribute('data-edit-piece', '');
+            el.toggleAttribute('data-edit-grabbable', !!ownGrab(el));
             if (!el.hasAttribute('tabindex')) { el.tabIndex = 0; addedTab.add(el); }
         });
     }
@@ -141,8 +142,8 @@
         e._editDrag = true;
         startDrag(e, item, area);
     }
-    // A [data-edit-grab] inside a piece, not a nested piece's: the only place that piece drags from.
-    const ownGrab = (item) => [...item.querySelectorAll('[data-edit-grab]')].find(g => g.closest('[data-edit-piece]') === item) || null;
+    // An x-edit.grab inside a piece, not a nested piece's: the only place that piece drags from.
+    const ownGrab = (item) => [...item.querySelectorAll('[x-edit\\.grab]')].find(g => g.closest('[data-edit-piece]') === item) || null;
     const typing = (t) => { const a = document.activeElement; return !!a && a !== document.body && a.isContentEditable && (a === t || a.contains(t)); };
 
     function startDrag(e, item, area) {

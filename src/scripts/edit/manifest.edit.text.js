@@ -135,7 +135,7 @@
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.closest('[data-edit-handle], [data-edit-grab]')) return;
+            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.closest('[data-edit-handle], [x-edit\\.grab]')) return;
             if (el._manifestComponent && el !== area) return;          // a component host: its markup is another file's
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (el.closest('[contenteditable="false"]:not([data-edit-piece-mode])')) return;   // an authored non-editable island

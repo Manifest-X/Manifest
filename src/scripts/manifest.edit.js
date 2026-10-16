@@ -263,6 +263,7 @@
     function registerEdit(el, modifiers, expression) {
         if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
         modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
+        if (modifiers.includes('grab')) return;                        // a piece's own drag handle, not a region
         if (modifiers.includes('lock')) {
             const actions = modifiers.filter(m => LOCK_ACTIONS.includes(m));
             el._editLock = new Set(actions.length ? actions : ['*']);
@@ -1357,16 +1358,17 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost], [data-edit-grab]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost], [x-edit\\.grab]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
-    function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
+    function unmarkPiece(el) { el.removeAttribute('data-edit-piece'); el.removeAttribute('data-edit-grabbable'); if (addedTab.has(el)) { el.removeAttribute('tabindex'); addedTab.delete(el); } }
     function markPieces(area) {
         const want = new Set(collectPieces(area).filter(movable));
         area.querySelectorAll('[data-edit-piece]').forEach(el => { if (!want.has(el) && regionOf(el.parentElement) === area) unmarkPiece(el); });
         want.forEach(el => {
             el.setAttribute('data-edit-piece', '');
+            el.toggleAttribute('data-edit-grabbable', !!ownGrab(el));
             if (!el.hasAttribute('tabindex')) { el.tabIndex = 0; addedTab.add(el); }
         });
     }
@@ -1484,8 +1486,8 @@
         e._editDrag = true;
         startDrag(e, item, area);
     }
-    // A [data-edit-grab] inside a piece, not a nested piece's: the only place that piece drags from.
-    const ownGrab = (item) => [...item.querySelectorAll('[data-edit-grab]')].find(g => g.closest('[data-edit-piece]') === item) || null;
+    // An x-edit.grab inside a piece, not a nested piece's: the only place that piece drags from.
+    const ownGrab = (item) => [...item.querySelectorAll('[x-edit\\.grab]')].find(g => g.closest('[data-edit-piece]') === item) || null;
     const typing = (t) => { const a = document.activeElement; return !!a && a !== document.body && a.isContentEditable && (a === t || a.contains(t)); };
 
     function startDrag(e, item, area) {
@@ -1877,7 +1879,9 @@
             if ((shutX || shutY) && showExpr) {
                 // Closed at the minimum it can have; with none, at the size it had, so it reopens sensibly.
                 const atMin = (shutX ? minW : 0) > 0 || (shutY ? minH : 0) > 0;
+                const hidden = el.style.display;                         // x-show's own hide, applied while held
                 restore();
+                if (hidden === 'none') el.style.display = 'none';
                 if (atMin) {
                     if (shutX && minW > 0) el.style.width = toUnit(minW, wu, el, el.parentElement, 'w') + wu;
                     if (shutY && minH > 0) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;
@@ -2030,7 +2034,7 @@
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.closest('[data-edit-handle], [data-edit-grab]')) return;
+            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.closest('[data-edit-handle], [x-edit\\.grab]')) return;
             if (el._manifestComponent && el !== area) return;          // a component host: its markup is another file's
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (el.closest('[contenteditable="false"]:not([data-edit-piece-mode])')) return;   // an authored non-editable island

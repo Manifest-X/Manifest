@@ -400,9 +400,10 @@ describe('dragging text pieces from their surface', () => {
         expect(area.firstElementChild).toBe(alpha)
     })
 
-    it('a piece with its own [data-edit-grab] drags only from it', async () => {
-        const root = await mount(`<section x-edit="${id('grab')}"><div class="card"><span data-edit-grab></span><p>Alpha</p></div><div class="card"><p>Beta</p></div></section>`)
-        const area = root.querySelector('section'), [one, two] = area.querySelectorAll('.card'), handle = one.querySelector('[data-edit-grab]')
+    it('a piece with its own x-edit.grab drags only from it', async () => {
+        const root = await mount(`<section x-edit="${id('grab')}"><div class="card"><span x-edit.grab></span><p>Alpha</p></div><div class="card"><p>Beta</p></div></section>`)
+        const area = root.querySelector('section'), [one, two] = area.querySelectorAll('.card'), handle = one.querySelector('[x-edit\\.grab]')
+        expect([one.hasAttribute('data-edit-grabbable'), two.hasAttribute('data-edit-grabbable'), handle.hasAttribute('data-edit-piece')]).toEqual([true, false, false])
         rect(one, 0, 0, 400, 50); rect(two, 0, 50, 400, 100); rect(handle, 0, 0, 16, 16)
         document.elementFromPoint = () => two
         down(one, 200, 40); move(200, 90)                              // the card's own surface: not its handle
@@ -414,14 +415,30 @@ describe('dragging text pieces from their surface', () => {
         expect(area.lastElementChild).toBe(one)
     })
 
-    it('a grab handle is never editable text, and never reaches patches', async () => {
-        const region = id('grab-p')
-        const root = await mount(`<section x-edit="${region}"><div><span data-edit-grab>⠿</span><p>Alpha</p></div></section>`)
-        const handle = root.querySelector('[data-edit-grab]'), p = root.querySelector('p')
-        expect(handle.isContentEditable).toBe(false)
-        editText(p, 'Edited')
-        expect(JSON.stringify(store().patches())).not.toContain('Edited⠿')
-        expect(p.innerHTML).toBe('Edited')
+    it('a grab handle is never editable text, in a card or inside a text element', async () => {
+        const root = await mount(`<section x-edit="${id('grab-p')}"><div><span x-edit.grab>⠿</span><p>Alpha</p></div><p id="inline"><span x-edit.grab>⠿</span>Beta</p></section>`)
+        const [cardGrab, inlineGrab] = root.querySelectorAll('[x-edit\\.grab]'), inline = root.querySelector('#inline')
+        expect(cardGrab.isContentEditable).toBe(false)
+        expect(inlineGrab.isContentEditable).toBe(false)
+        expect(inline.isContentEditable).toBe(false)                 // a text element holding a handle isn't one text leaf
+        expect(inlineGrab.hasAttribute('data-edit-piece')).toBe(false)
+        editText(root.querySelector('div p'), 'Edited')
+        const texts = []; const walk = (n) => { if (n.edits && n.edits.text != null) texts.push(n.edits.text); (n.children || []).forEach(walk) }
+        store().patches().forEach(pt => pt.tree && walk(pt.tree))
+        expect(texts).toEqual(['Edited'])
+    })
+
+    it('a duplicated or pasted piece keeps its grab handle', async () => {
+        const root = await mount(`<section x-edit="${id('grab-d')}"><div class="card"><span x-edit.grab>⠿</span><h3>T</h3></div></section>`)
+        const card = root.querySelector('.card')
+        expect(store().duplicate(card)).toBe(true)
+        await flush()
+        const copy = root.querySelectorAll('.card')[1]
+        const grab = copy.querySelector('span')
+        expect(grab.hasAttribute('x-edit.grab')).toBe(true)
+        expect(grab.hasAttribute('data-edit-piece')).toBe(false)
+        expect(grab.isContentEditable).toBe(false)
+        expect(copy.hasAttribute('data-edit-grabbable')).toBe(true)
     })
 });
 
@@ -744,7 +761,11 @@ describe('size variables', () => {
         moveTo(-100)                                                  // raw 200px: open again
         expect(data.sidebar).toBe(true)
         moveTo(-260)
+        await flush()                                                 // Alpine hides it while still held
+        expect(aside.style.display).toBe('none')
         document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        await flush()
+        expect(aside.style.display).toBe('none')                      // and it stays hidden once released
         expect(data.sidebar).toBe(false)
         expect(last()).toMatchObject({ kind: 'show', expr: 'sidebar', before: true, value: false, join: true })
         await store().undo()

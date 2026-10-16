@@ -184,7 +184,9 @@
             if ((shutX || shutY) && showExpr) {
                 // Closed at the minimum it can have; with none, at the size it had, so it reopens sensibly.
                 const atMin = (shutX ? minW : 0) > 0 || (shutY ? minH : 0) > 0;
+                const hidden = el.style.display;                         // x-show's own hide, applied while held
                 restore();
+                if (hidden === 'none') el.style.display = 'none';
                 if (atMin) {
                     if (shutX && minW > 0) el.style.width = toUnit(minW, wu, el, el.parentElement, 'w') + wu;
                     if (shutY && minH > 0) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;

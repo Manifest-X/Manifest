@@ -472,6 +472,17 @@ describe('line breaks in leaves', () => {
         expect(p.innerHTML).toBe('1 Main St<br>Springfield<br>USA')
     })
 
+    it('Shift+Enter in a leaf makes a line break, as Enter does', async () => {
+        const root = await mount(`<section x-edit="br1s"><p>One</p></section>`)
+        const p = root.querySelector('p'), heard = []
+        p.addEventListener('rich-text:enter', () => heard.push(1))
+        await enter(p)
+        select(p.firstChild, 3)
+        expect(key(p, { key: 'Enter', shiftKey: true }).defaultPrevented).toBe(true)
+        expect(heard).toEqual([])
+        expect(p.innerHTML).toBe('One<br><br>')
+    })
+
     it('a trailing <br> inside an inline element is not logged; the element it empties goes too', async () => {
         const root = await mount(`<section x-edit="br5"><h1>Hello <strong>world</strong></h1><p>Read the <a href="/g">guide</a></p></section>`)
         const h1 = root.querySelector('h1'), p = root.querySelector('p'), at = cursor()

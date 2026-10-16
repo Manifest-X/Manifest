@@ -26,11 +26,11 @@
     }
 
     /* A piece with its own grab handle drags only from it */
-    :where([data-edit-piece]:has([data-edit-grab])) {
+    :where([data-edit-piece][data-edit-grabbable]) {
         cursor: auto;
     }
 
-    :where([data-edit-grab]) {
+    :where([x-edit\.grab]) {
         cursor: grab;
         touch-action: none;
         user-select: none;

@@ -259,6 +259,7 @@
     function registerEdit(el, modifiers, expression) {
         if (modifiers.includes('cssvar')) return registerCssVar(el, expression, modifiers);
         modifiers.forEach(m => { if (RETIRED[m] && !warnedRetired.has(m)) { warnedRetired.add(m); console.warn(`[edit] x-edit.${m} was removed — use ${RETIRED[m]}`); } });
+        if (modifiers.includes('grab')) return;                        // a piece's own drag handle, not a region
         if (modifiers.includes('lock')) {
             const actions = modifiers.filter(m => LOCK_ACTIONS.includes(m));
             el._editLock = new Set(actions.length ? actions : ['*']);

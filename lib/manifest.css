@@ -2946,11 +2946,11 @@
     }
 
     /* A piece with its own grab handle drags only from it */
-    :where([data-edit-piece]:has([data-edit-grab])) {
+    :where([data-edit-piece][data-edit-grabbable]) {
         cursor: auto;
     }
 
-    :where([data-edit-grab]) {
+    :where([x-edit\.grab]) {
         cursor: grab;
         touch-action: none;
         user-select: none;
@@ -4036,11 +4036,25 @@
         & table {
             width: 100%;
             table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            border: 1px solid var(--color-line);
 
+            /* Inner dividers only: the table's own border draws the rounded edge */
             & :where(td, th) {
                 padding: 0.35em 0.5em;
-                border: 1px solid var(--color-line);
+                border: 0 none;
+                border-inline-end: 1px solid var(--color-line);
+                border-block-end: 1px solid var(--color-line);
                 vertical-align: top;
+            }
+
+            & :where(tr > :last-child) {
+                border-inline-end: 0 none;
+            }
+
+            & :where(tr:last-child > *) {
+                border-block-end: 0 none;
             }
 
             & th {
