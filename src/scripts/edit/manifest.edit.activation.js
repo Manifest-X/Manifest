@@ -54,8 +54,9 @@
         };
         walk(area, '');
     }
-    const warnedRendered = new Set();
+    const warnedRendered = new Set(), renderedRegions = new Set();
     function armArea(area) {
+        if (area._edit.rendered) renderedRegions.add(key(area));
         if (area._edit.rendered && !warnedRendered.has(key(area))) { warnedRendered.add(key(area)); console.warn(`[edit] x-edit="${key(area)}" is inside content ${area._edit.rendered} renders: it edits on the page (and reaches onPublish), but mnfst-run cannot write it to a source file`); }
         uneditIn(null);
         const kind = classify(area);
@@ -312,19 +313,49 @@
         f._commitText(); restartRich(f); f._preEdit = leafText(f);
         return true;
     }
-    function reloadSafe() {
-        if (!commitFocused(false)) return false;
-        // Unpersisted edits exist only for regions of this document (mounted or not): they hold it
-        return log.slice(0, cursor).every(d => d.kind === 'lock' || persisted.has(d));
+    // Grows a set of held regions by the regions moves tie to them (`via`: held -> the region it is tied to).
+    function tie(held) {
+        const via = new Map();
+        for (let grew = true; grew;) {
+            grew = false;
+            log.slice(0, cursor).forEach(d => {
+                if (d.kind !== 'st-move' || held.has(d.from) === held.has(d.to)) return;
+                const [had, add] = held.has(d.from) ? [d.from, d.to] : [d.to, d.from];
+                held.add(add); via.set(add, via.get(had) || had); grew = true;
+            });
+        }
+        held.via = via;
+        return held;
     }
+    // Regions inside generated content, and those moves tie to them, are in no file mnfst-run
+    // can write: a reload regenerates them, so their edits never hold it (kept if .persist)
+    const touches = (d, set) => set.has(d.region) || set.has(d.from) || set.has(d.to);
+    const regionsOf = (ds, set) => [...new Set(ds.flatMap(d => [d.region, d.from, d.to]).filter(r => r && (!set || set.has(r))))];
+    const unsaved = () => log.slice(0, cursor).filter(d => d.kind !== 'lock' && !persisted.has(d));
+    function focusedRegion() { const f = document.activeElement, a = f && f._commitText && regionOf(f); return a ? key(a) : null; }
+    function reloadSafe() {
+        const off = tie(new Set(renderedRegions));
+        if (!commitFocused(false) && !off.has(focusedRegion())) return false;
+        // Unpersisted edits exist only for regions of this document (mounted or not): they hold it
+        return unsaved().every(d => touches(d, off));
+    }
+    function warnDiscarded() {
+        const off = tie(new Set(renderedRegions)), f = focusedRegion();
+        const lost = regionsOf(unsaved().filter(d => touches(d, off)), off);
+        if (f && off.has(f) && !commitFocused(false) && !lost.includes(f)) lost.push(f);
+        if (lost.length) console.warn(`[edit] the source changed: reloading discards the unpublished edits of ${lost.map(r => `x-edit="${r}"`).join(', ')}, which mnfst-run can't write (generated content, or tied to it by a move); .persist keeps them`);
+    }
+    function reloadNow() { warnDiscarded(); location.reload(); }
     // A held reload is taken as soon as nothing it would lose remains
-    function takeHeldReload() { if (heldReload && reloadSafe()) { heldReload = null; location.reload(); } }
+    function takeHeldReload() { if (heldReload && reloadSafe()) { heldReload = null; reloadNow(); } }
     function reloadIfSafe(files) {
-        if (reloadSafe()) return location.reload();
+        if (reloadSafe()) return reloadNow();
         heldReload = files;
         const changed = files.map(f => f && f.rel).filter(Boolean);
         if (estore) estore.stale = [...new Set([...(estore.stale || []), ...changed])];
-        console.warn('[edit] the source changed, but a reload would lose unpublished edits: publish (with rebase), then reload');
+        const off = tie(new Set(renderedRegions)), holding = regionsOf(unsaved().filter(d => !touches(d, off)));
+        const f = focusedRegion(); if (f && !off.has(f) && !holding.includes(f) && !commitFocused(false)) holding.push(f);
+        console.warn(`[edit] the source changed, but a reload would lose unpublished edits${holding.length ? ' to ' + holding.map(r => `x-edit="${r}"`).join(', ') : ''}: publish (with rebase), then reload`);
         document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: changed } }));
     }
     window.addEventListener('manifest:live-reload', (e) => {
@@ -332,6 +363,7 @@
         if (inFlight) { e.preventDefault(); held.push(files); return; }
         if (ours(files)) { e.preventDefault(); return; }
         if (!reloadSafe()) { e.preventDefault(); reloadIfSafe(files); }
+        else warnDiscarded();
     });
     function settled(r, rebased) {
         inFlight = Math.max(0, inFlight - 1);
@@ -375,20 +407,6 @@
             if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
             tie(failed);
             return patches.some(p => !failed.has(p.region)) ? failed : null;
-        };
-        // Grows a set of held regions by the regions moves tie to them (`via`: held -> the region it is tied to).
-        const tie = (held) => {
-            const via = new Map();
-            for (let grew = true; grew;) {
-                grew = false;
-                log.slice(0, cursor).forEach(d => {
-                    if (d.kind !== 'st-move' || held.has(d.from) === held.has(d.to)) return;
-                    const [had, add] = held.has(d.from) ? [d.from, d.to] : [d.to, d.from];
-                    held.add(add); via.set(add, via.get(had) || had); grew = true;
-                });
-            }
-            held.via = via;
-            return held;
         };
         // An area inside generated content (x-markdown output and the like) edits on the page,
         // but its markup is in no file mnfst-run can write: it is refused by name, not sent.

@@ -158,6 +158,37 @@ describe('live reload around our own publishes', () => {
         await store().publish()
     })
 
+    it('edits mnfst-run cannot write (generated content, or tied to it by a move) never hold a reload: it warns, naming them', async () => {
+        const root = await mount(`<article x-markdown="page"><section x-edit="gr1"><p>Gen</p></section><section x-edit.persist="gr4"><p>Kept</p></section></article><section x-edit="gr2"><p>Authored</p></section><section x-edit="gr3"><p>Plain</p></section>`)
+        const gen = root.querySelector('[x-edit="gr1"]')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        editText(root.querySelector('[x-edit\\.persist="gr4"] p'), 'Kept edited')
+        expect(reloadEvent([{ rel: 'index.html', hash: 'g0' }])).toBe(false)          // persisted: comes back, nothing said
+        expect(warn.mock.calls.some(c => /source changed/.test(String(c[0])))).toBe(false)
+        editText(gen.querySelector('p'), 'Gen edited')
+        store().move(root.querySelector('[x-edit="gr2"] p'), gen, gen.querySelector('p'))
+        await flush()
+        expect(reloadEvent([{ rel: 'index.html', hash: 'g1' }])).toBe(false)          // a reload regenerates them: not held
+        let said = warn.mock.calls.map(c => String(c[0])).filter(t => /source changed/.test(t))
+        expect(said).toEqual([`[edit] the source changed: reloading discards the unpublished edits of x-edit="gr1", x-edit="gr2", which mnfst-run can't write (generated content, or tied to it by a move); .persist keeps them`])
+        warn.mockClear()
+        editText(root.querySelector('[x-edit="gr3"] p'), 'Plain edited')
+        expect(reloadEvent([{ rel: 'index.html', hash: 'g2' }])).toBe(true)           // a writable region's edit holds it
+        said = warn.mock.calls.map(c => String(c[0])).filter(t => /source changed/.test(t))
+        expect(said[0]).toBe('[edit] the source changed, but a reload would lose unpublished edits to x-edit="gr3": publish (with rebase), then reload')
+        // Publishing writes gr3 and refuses the others again: the held reload goes all the same
+        store().onPublish = null
+        window.fetch = vi.fn(async () => ({ json: async () => ({ results: [{ region: 'gr3', status: 'written', file: 'index.html' }] }) }))
+        const r = await store().publish()
+        await flush()
+        warn.mockRestore()
+        expect(r.results.map(x => x.region + ':' + x.status).sort()).toEqual(['gr1:error', 'gr2:error', 'gr3:written', 'gr4:error'])
+        expect(reload).toHaveBeenCalledTimes(1)
+        store().onPublish = (patches) => ({ results: patches.map(p => ({ region: p.region, status: 'written' })) })
+        await store().publish()
+        store().stale = []
+    })
+
     it('typing in a focused leaf holds a reload (unpersisted) or is committed first (persisted); a publish takes it along', async () => {
         const root = await mount(`<section x-edit="lr6"><p>One</p></section><section x-edit.persist="lr7"><p>Two</p></section>`)
         const [one, two] = root.querySelectorAll('p')
