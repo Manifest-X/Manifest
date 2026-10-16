@@ -487,6 +487,25 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('$rich bindings follow the value and selection as they change', async () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data="{ md: 'Hi **there**' }"><p id="s" x-text="'can=' + $rich.can('strong') + ' v=' + $rich.value + ' on=' + $rich.active('strong')"></p><div x-rich-text="md" id="f"></div></div>`)
+        await new Promise(r => setTimeout(r, 0))
+        const el = root.querySelector('#f'), s = root.querySelector('#s'), flush = () => new Promise(r => setTimeout(r, 0))
+        focusin(el)
+        const t = el.querySelector('p').firstChild
+        t.nodeValue = 'Hi X'; select(t, 4)
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'X' }))
+        await flush()
+        expect(s.textContent).toBe('can=true v=Hi X**there** on=false')
+        select(el.querySelector('strong').firstChild, 2)
+        document.dispatchEvent(new Event('selectionchange'))
+        await flush()
+        expect(s.textContent).toBe('can=true v=Hi X**there** on=true')
+        Alpine.$data(el).md = 'From code'
+        await flush(); await flush()
+        expect(s.textContent).toMatch(/ v=From code on=false$/)
+    })
     it('selection geometry follows scrolling and resizing with no built-in menu, while a field holds a selection', async () => {
         document.body.innerHTML = ''
         const root = mount(`<div x-rich-text.html id="g"><p>Select some words here.</p></div>`)
