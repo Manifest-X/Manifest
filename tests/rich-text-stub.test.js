@@ -17,6 +17,26 @@ const LOADER = readFileSync(path.join(__dirname, '../src/scripts/manifest.js'), 
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms))
 
 describe('$rich before Rich Text loads', () => {
+    it('keeps only the latest write per element and key, and lets go of elements that left', async () => {
+        new Function(LOADER)()
+        window.Alpine = Alpine; globalThis.Alpine = Alpine
+        if (!window.__manifestRichStub) Alpine.start()
+        const host = document.createElement('div'); host.setAttribute('x-data', ''); document.body.appendChild(host)
+        const a = document.createElement('i'), b = document.createElement('i'); host.append(a, b)
+        const rich = (el) => Alpine.evaluate(el, '$rich')
+        const writes = () => window.__manifestRichStubWrites
+        expect(Array.isArray(writes())).toBe(true)
+        const before = writes().length
+        for (let i = 0; i < 100; i++) { rich(a).value = 'v' + i; rich(a).all = { n: i } }
+        expect(writes().length - before).toBe(2)
+        expect(rich(a).value).toBe('v99')
+        rich(b).value = 'b'
+        b.remove()
+        rich(a).value = 'last'                                                           // a write prunes the departed element's
+        expect(writes().length - before).toBe(2)
+        host.remove()
+    })
+
     it('never throws, and effects that read it apply once the plugin arrives', async () => {
         vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })))
         if (!window.requestIdleCallback) window.requestIdleCallback = (fn) => setTimeout(fn, 0)
@@ -38,6 +58,7 @@ describe('$rich before Rich Text loads', () => {
         await tick(); await tick()
         expect(document.querySelector('#f').getAttribute('data-rich-text')).toBe('html')
         expect(window.__manifestRichStub.v).toBe(1)
+        expect(window.__manifestRichStubWrites.length).toBe(0)                           // handed over
         expect(document.querySelector('#f').getAttribute('style')).toContain('--rich-text-align: center')
         expect(window.__early).toBe('<p>Set early</p>')                                  // the stand-in reads back what was written
         expect(document.querySelector('#g').innerHTML).toBe('<p>Set early</p>')          // and hands it to the field

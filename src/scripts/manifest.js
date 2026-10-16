@@ -599,11 +599,17 @@
 			const state = window.__manifestRichStub = A.reactive({ v: 0 });
 			// Writes ($rich.value = …, $rich.all = …) are kept per element and applied to its field at handover
 			const writes = window.__manifestRichStubWrites = [], perEl = new WeakMap();
+			const deref = (r) => r && typeof r.deref === 'function' ? r.deref() : r;
 			const base = { value: '', link: '', selection: null, all: {}, active: () => false, can: () => false, markdown: () => '', html: () => '' };
 			const idleFor = (el) => {
 				if (!perEl.has(el)) perEl.set(el, new Proxy(base, {
-					get: (t, k) => { for (let i = writes.length - 1; i >= 0; i--) if (writes[i][0] === el && writes[i][1] === k) return writes[i][2]; return k in t ? t[k] : (typeof k === 'string' ? () => { } : undefined); },
-					set: (t, k, v) => { writes.push([el, k, v]); return true; }
+					get: (t, k) => { const w = writes.find(x => deref(x[0]) === el && x[1] === k); return w ? w[2] : k in t ? t[k] : (typeof k === 'string' ? () => { } : undefined); },
+					// The latest write per element and key; elements gone from the page are let go
+					set: (t, k, v) => {
+						for (let i = writes.length - 1; i >= 0; i--) { const e = deref(writes[i][0]); if (!e || !e.isConnected || (e === el && writes[i][1] === k)) writes.splice(i, 1); }
+						writes.push([typeof WeakRef === 'function' ? new WeakRef(el) : el, k, v]);
+						return true;
+					}
 				}));
 				return perEl.get(el);
 			};

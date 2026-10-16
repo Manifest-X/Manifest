@@ -2512,8 +2512,9 @@
     function flushStubWrites() {
         const w = window.__manifestRichStubWrites; if (!w || !w.length) return;
         for (let i = 0; i < w.length;) {
-            const [el, k, v] = w[i], a = el.isConnected ? fieldFor(el) : null;
-            if (!el.isConnected) { w.splice(i, 1); continue; }
+            const [ref, k, v] = w[i], el = ref && typeof ref.deref === 'function' ? ref.deref() : ref;
+            if (!el || !el.isConnected) { w.splice(i, 1); continue; }
+            const a = fieldFor(el);
             if (!a) { i++; continue; }
             w.splice(i, 1);
             try { a._rt.api[k] = v; } catch { }
