@@ -401,11 +401,11 @@
 
         /* Preview frames */
         :where(aside.frame) {
-            font-size: unset;
-            line-height: unset;
-            font-family: unset;
-            font-weight: unset;
-            color: unset;
+            font-size: 1rem;
+            line-height: 1.5;
+            font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji');
+            font-weight: normal;
+            color: var(--color-content-stark, inherit);
             background: unset;
             box-shadow: unset;
             border: 0 none;

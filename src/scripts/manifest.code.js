@@ -311,8 +311,8 @@ async function setupBlock(pre, hljs) {
     if (title && !pre.hasAttribute('aria-label')) pre.setAttribute('aria-label', title);
     if (!pre.hasAttribute('role')) pre.setAttribute('role', 'region');
 
-    // Title bar — skipped inside a code-group (the tab strip already shows [name]).
-    const inGroup = !!pre.closest('[x-code-group]');
+    // Title bar — skipped for a group panel (the tab strip already shows [name]).
+    const inGroup = !!pre.parentElement?.hasAttribute('x-code-group');
     if (title && !inGroup) {
         const header = document.createElement('header');
         const titleEl = document.createElement('div');
