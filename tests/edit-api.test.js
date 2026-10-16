@@ -818,8 +818,17 @@ describe('size variables', () => {
 
     it('a close is not persisted or published', async () => {
         const root = await mount(`<div x-data="{ open: true }"><aside x-show="open" x-edit.size.persist="side-p" style="width: 300px; --edit-size-close: 100px">Side</aside></div>`)
-        pull(root.querySelector('[data-edit-handle="right"]'), -250)
-        expect(LS().log.some(d => d.kind === 'show')).toBe(false)
+        const h = root.querySelector('[data-edit-handle="right"]')
+        h.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: -250, clientY: 0 }))
+        await flush()                                                 // x-show's display: none is on the element when released
+        document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        await flush()
+        expect(root.querySelector('aside').style.display).toBe('none')
+        expect((LS() || { log: [] }).log.some(d => d.kind === 'st-node' && d.prop === 'style')).toBe(false)   // nothing but the close changed
+        expect(JSON.stringify(store().patches())).not.toContain('display')
+        expect(store().export().log.filter(d => d.kind === 'st-node').some(d => /display/.test(d.value || ''))).toBe(false)
+        expect((LS() || { log: [] }).log.some(d => d.kind === 'show')).toBe(false)
         expect(store().patches().some(p => p.kind === 'show')).toBe(false)
     })
 
