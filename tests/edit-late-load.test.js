@@ -26,7 +26,7 @@ describe('Edit loaded after Alpine started', () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
         new Function(LOADER)()
         window.Alpine = Alpine; globalThis.Alpine = Alpine
-        document.body.innerHTML = `<div x-data x-init="$edit.onPublish = (patches) => ({ results: [], early: patches.length })"><p id="s" x-text="'active=' + $edit.active + ' can=' + $edit.can('text')"></p><section x-edit="inside"><h2>In</h2></section></div>
+        document.body.innerHTML = `<div x-data x-init="$edit.onPublish = (patches = []) => ({ results: [], early: patches.length })"><p id="s" x-text="'active=' + $edit.active + ' can=' + $edit.can('text')"></p><section x-edit="inside"><h2>In</h2></section></div>
             <section x-edit="open"><h2>Always</h2></section><section x-edit.gated="adopt"><h2>Gated</h2></section>`
         Alpine.start()
         await tick()

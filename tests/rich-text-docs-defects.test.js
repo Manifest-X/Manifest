@@ -161,7 +161,7 @@ describe('typed and pending marks', () => {
         el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }))
     }
     it('typing a space and text after any converted mark, as Chrome sends the keys, lands outside the mark', () => {
-        const cases = [['Use `code', '`', 'code'], ['A **bold*', '*', 'strong'], ['An *em', '*', 'em'], ['A ~~del~', '~', 'del'], ['See [l](https://x.dev', ')', 'a']]
+        const cases = [['Use `code', '`', 'code'], ['A **bold*', '*', 'strong'], ['An *em', '*', 'em'], ['A ~~del~', '~', 's'], ['See [l](https://x.dev', ')', 'a']]
         for (const [typed, closer, tag] of cases) {
             document.body.innerHTML = ''
             const root = mount(`<div x-rich-text id="m"></div>`)
@@ -173,7 +173,7 @@ describe('typed and pending marks', () => {
             const mark = el.querySelector(tag)
             expect(mark, typed).toBeTruthy()
             for (const ch of ' then more') chromeType(el, ch)
-            expect(mark.textContent, typed).toBe({ code: 'code', strong: 'bold', em: 'em', del: 'del', a: 'l' }[tag])
+            expect(mark.textContent, typed).toBe({ code: 'code', strong: 'bold', em: 'em', s: 'del', a: 'l' }[tag])
             expect(el.querySelector('p').lastChild.nodeValue, typed).toBe(' then more')
             expect(el._rt.api.value, typed).toBe(typed + closer + ' then more')
         }
@@ -203,6 +203,23 @@ describe('typed and pending marks', () => {
         chromeType(el, closer)
         return el
     }
+
+    it('markdown typed key by key converts to what the reader makes of it', () => {
+        const RT = window.ManifestRichText
+        const cases = ['A **bold** x', 'A *em* x', 'A _em_ x', 'A __strong__ x', 'A ~~s~~ x', 'A `c` x', 'A [t](https://u.example) x', 'A [w](https://en.wikipedia.org/wiki/Foo_(bar)) x',
+            'snake_case_word x', '2*3*4 x', 'A ***both*** x', 'a ** b ** c', 'A **b *nested* c** x', 'A *em **and bold*** x', 'path/to/__init__.py x']
+        for (const text of cases) {
+            document.body.innerHTML = ''
+            const root = mount(`<div x-rich-text id="m"></div>`)
+            const el = root.querySelector('#m')
+            focusin(el)
+            const start = document.createTextNode(''); el.firstElementChild.replaceChildren(start)
+            window.getSelection().collapse(start, 0)
+            for (const ch of text) chromeType(el, ch)
+            expect(el.innerHTML.replace(/\u00a0/g, ' ').replace(/&nbsp;/g, ' '), text).toBe(RT.fromMarkdown(text))
+            expect(el._rt.api.value.replace(/\u00a0/g, ' '), text).toBe(RT.toMarkdown((() => { const d = document.createElement('div'); d.innerHTML = RT.fromMarkdown(text); return d })()))
+        }
+    })
 
     it('a space then Backspace keeps the caret after the mark; a second Backspace goes into it', () => {
         let el = converted('Use `code')
