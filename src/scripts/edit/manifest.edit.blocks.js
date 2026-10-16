@@ -121,7 +121,8 @@
         if (kind === 'component') return false;
         const block = asPiece(el);
         if (!block) return false;
-        if (action === 'copy' || action === 'cut') return !isHostEl(block);
+        if (action === 'copy') return !isHostEl(block);
+        if (action === 'cut') return canDo('copy', block) && canDo('remove', block);   // a cut is a copy and a remove
         if (action === 'move') return movable(block);
         const lockAs = action === 'duplicate' ? 'duplicate' : 'remove';
         return capOf(block.parentElement, 'move') && !lockedFor(block, lockAs);

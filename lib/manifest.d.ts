@@ -433,11 +433,13 @@ export interface ManifestEdit {
     /** Set an attribute: a string sets it, `true` sets it empty, `null`/`false` removes it. */
     attr(name: string, value: string | boolean | null, el?: Element): boolean;
     classes: ManifestEditClasses;
-    /** Component scope of the target's area: read with no value, set 'instance' or 'main'.
+    /** Component scope of `el`'s area (default `$edit.target`): `scope(el)` reads it.
      *  Instance overrides apply to an area that wraps exactly one component with no x-edit region
      *  of its own; a component among other content is a host piece of a static area instead, and
      *  a component's own region is edited in its own file. */
-    scope(value?: 'instance' | 'main', el?: Element): 'instance' | 'main' | null | boolean;
+    scope(el?: Element | null): 'instance' | 'main' | null;
+    /** Set the component scope of `el`'s area (default `$edit.target`); false if it has none. */
+    scope(value: 'instance' | 'main', el?: Element | null): boolean;
     /** Revert a component element's instance overrides (the area element reverts all). */
     revert(el?: Element): boolean;
 }

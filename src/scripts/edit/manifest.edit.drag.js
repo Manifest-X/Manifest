@@ -75,6 +75,8 @@
         const region = s.crossOK ? dropArea(x, y, s.area) : s.area;
         if (!region) return null;
         const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+        // Over the stand-in itself: it stays where it is
+        if (hit && s.ghost && (hit === s.ghost || s.ghost.contains(hit))) return null;
         if (hit && hit !== region && region.contains(hit)) {
             // Inside a component host: the host is what is hit (its markup is another file's)
             let from = hit;
@@ -84,6 +86,9 @@
                 const parent = el.parentElement;
                 if (!isContainer(parent)) continue;
                 if (isHostEl(el)) { if (accepts(parent) && fits(s.item, parent) && !s.item.contains(parent)) return beside(el, x, y, parent); continue; }
+                // Over the container the piece came from, or one holding the stand-in (a gap, its padding):
+                // it stays in, placed by reading order; it leaves only when the pointer does
+                if (s.ghost && (el === s.home || el.contains(s.ghost)) && accepts(el) && fits(s.item, el)) return { container: el, ref: afterElement(el, x, y) };
                 if (isContainer(el) && accepts(el) && fits(s.item, el) && inMiddle(el, x, y, parent)) {
                     if (s.ghost && s.ghost.parentElement !== el) s.nested = { el, rect: el.getBoundingClientRect(), horiz: flowAxis(parent) === 'x' };
                     return { container: el, ref: afterElement(el, x, y) };
@@ -96,9 +101,12 @@
     }
     // Reading-order insertion: the first sibling past the pointer.
     function afterElement(c, x, y) {
+        const column = flowAxis(c) === 'y';
         for (const el of sortableChildren(c)) {
             if (el === dragged || el.hasAttribute('data-edit-dragging') || lockedFor(el, 'move')) continue;
             const b = el.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+            // Stacked rows: past a row once the pointer is past its middle (wherever it is across)
+            if (column && !/inline/.test(getComputedStyle(el).display)) { if (cy > y) return el; continue; }
             const sameRow = Math.abs(cy - y) < b.height / 2;
             if (cy - y > b.height / 2 || (sameRow && cx > x)) return el;
         }

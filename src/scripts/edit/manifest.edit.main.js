@@ -58,7 +58,7 @@
             block(node) { return pieceOf(node); },
             attr(name, value, el) { return setAttr(name, value, el); },
             classes: classesApi,
-            scope(value, el) { void this.version; return value === undefined ? scopeOf(el) : setScope(value, el); },
+            scope(value, el) { void this.version; if (value && value.nodeType === 1) return scopeOf(value); return value == null ? scopeOf(el) : setScope(value, el); },
             revert(el) { return revert(el); },
             clearConflicts() { conflicts = []; this.conflicts = []; saveState(); }
         });

@@ -794,11 +794,15 @@ function parseCsvLine(line) {
   out.push(cur); return out;
 }
 const csvCell = (v) => /[",\n]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+// Why a data source is not a file mnfst-run writes.
+const dataSourceRefusal = (name, manifest) => (manifest.data || {})[name] == null
+  ? `data source '${name}' is not declared in manifest.json: mnfst-run writes data only to CSV/JSON/YAML files declared there`
+  : `data source '${name}' is not a file (a cloud or remote source): save it with $x.${name}.$update, not mnfst-run`;
 // Data-value write-back (local CSV/JSON cell). Cloud sources are not files → caller should
 // persist via $x.<source>.$update(id,{field}) instead.
 function writeDataValue(p, manifest) {
   const src = (manifest.data || {})[p.source], rel = typeof src === 'string' ? src : null;
-  if (!rel) return { kind: 'data-val', source: p.source, status: 'skipped', reason: 'not a file source (cloud → use $x.$update)' };
+  if (!rel) return { kind: 'data-val', source: p.source, status: 'error', reason: dataSourceRefusal(p.source, manifest) };
   const file = resolveRel(rel); if (!file || !isFile(file)) return { kind: 'data-val', source: p.source, status: 'error', reason: `file not found: ${rel}` };
   const refused = writeRefusal(file, 'data'); if (refused) return { kind: 'data-val', source: p.source, status: 'error', reason: `refused: ${refused}` };
   const ext = extname(file).toLowerCase(), text = vread(file);
@@ -1592,8 +1596,20 @@ function themeValueRefusal(v) {
 }
 // Stylesheets a theme edit may write: the default theme file, stylesheets index.html
 // links, and files it names in data-edit-theme-file (what the client sends).
+// The theme stylesheet index.html links (manifest.theme.css, wherever it lives), else the framework's default path.
+function defaultThemeFile() {
+  let html = '';
+  try { html = readFileSync(join(root, 'index.html'), 'utf8'); } catch { return DEFAULT_THEME_FILE; }
+  for (const n of allElements(parseHTML(html))) {
+    if (n.implied || n.name !== 'link') continue;
+    const open = openOf(html, n), href = String(attrOf(open, 'href') || '').trim().split(/[?#]/)[0];
+    if (!/(^|\s)stylesheet(\s|$)/i.test(attrOf(open, 'rel') || '') || /^[a-z][\w+.-]*:|^\/\//i.test(href)) continue;
+    if (basename(href) === 'manifest.theme.css') { const rel = posix.normalize(href.replace(/^\/+/, '')); if (!rel.startsWith('..')) return rel; }
+  }
+  return DEFAULT_THEME_FILE;
+}
 function themeTargets() {
-  const out = new Set([DEFAULT_THEME_FILE]);
+  const out = new Set([DEFAULT_THEME_FILE, defaultThemeFile()]);
   let html = '';
   try { html = readFileSync(join(root, 'index.html'), 'utf8'); } catch { return out; }   // read off-batch: not a base-checked input
   const add = (href) => {
@@ -1612,7 +1628,10 @@ function themeTargets() {
 }
 function writeThemeVar(p) {
   if (!/^--[\w-]+$/.test(p.var || '')) return { region: p.var, status: 'error', reason: 'bad var name' };
-  const rel = posix.normalize(String(p.file || DEFAULT_THEME_FILE).replace(/^\/+/, ''));
+  // A scoped value applies on its scope element: the page writes it there (its inline style).
+  // One sent here has no element mnfst-run can address; a stylesheet would apply it site-wide.
+  if (p.scope) return { region: `${p.scope}:${p.var}`, status: 'error', reason: `scoped value ${p.scope}:${p.var}: its scope element is not in a source file mnfst-run can write (generated content), and a stylesheet would apply it site-wide` };
+  const rel = posix.normalize(String(p.file || defaultThemeFile()).replace(/^\/+/, ''));
   if (!themeTargets().has(rel)) return { region: p.var, status: 'error', reason: `${rel} is not a stylesheet this page uses (link it, or name it in data-edit-theme-file)` };
   const file = safeResolve('/' + rel);
   if (!file) return { region: p.var, status: 'error', reason: `path outside root: ${rel}` };
@@ -1666,7 +1685,7 @@ function writeComponentEdits(p, manifest) {
     const seg = ed.path === '' ? 'root' : ed.path.replace(/\./g, '_');
 
     if (prop === 'style') {
-      if (p.scope !== 'main') { applied.push({ path: ed.path, prop, status: 'skipped', reason: 'instance styles are not written' }); continue; }
+      if (p.scope !== 'main') { applied.push({ path: ed.path, prop, status: 'error', reason: 'instance styles are not written (only the component\'s own, in main scope)' }); continue; }
       const why = attrRefusal('style', ed.value, node.tag);
       if (why) { applied.push({ path: ed.path, prop, status: 'error', reason: why }); continue; }
       vwrite(compFile, html.slice(0, node.tagStart) + setAttr(openTag, 'style', ed.value ? String(ed.value) : null) + html.slice(node.openEnd + 1));
@@ -2057,7 +2076,7 @@ const server = createServer((req, res) => {
             if (p.kind === 'data') {
               const src = (manifest.data || {})[p.source];
               const rel = typeof src === 'string' ? src : null;
-              if (!rel) return { region: p.region, status: 'error', reason: `data source '${p.source}' is not a plain file path` };
+              if (!rel) return { region: p.region, status: 'error', reason: dataSourceRefusal(p.source, manifest) };
               const file = resolveRel(rel);
               if (!file || !isFile(file)) return { region: p.region, status: 'error', reason: `file not found: ${rel}` };
               const refused = writeRefusal(file, 'data'); if (refused) return { region: p.region, status: 'error', reason: `refused: ${refused}` };

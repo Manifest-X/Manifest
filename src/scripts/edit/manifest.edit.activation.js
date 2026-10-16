@@ -54,8 +54,21 @@
         };
         walk(area, '');
     }
-    const warnedRendered = new Set(), renderedRegions = new Set();
+    const warnedRendered = new Set(), renderedRegions = new Set(), unwritableWhy = new Map();
+    // A list whose records mnfst-run can't write: inline x-data, or a source manifest.json does not declare as a file.
+    function dataUnwritable(area) {
+        if (classify(area) !== 'data') return null;
+        const m = (dataSourceExpr(area) || '').match(/\$x\.([\w$]+)/);
+        if (!m) return 'inline x-data list: mnfst-run writes data only to CSV/JSON/YAML sources declared in manifest.json';
+        const mf = window.ManifestComponentsRegistry && window.ManifestComponentsRegistry.manifest;
+        if (!mf) return null;
+        const src = (mf.data || {})[m[1]];
+        if (src == null) return `data source '${m[1]}' is not declared in manifest.json: mnfst-run writes data only to CSV/JSON/YAML files declared there`;
+        return typeof src === 'string' ? null : `data source '${m[1]}' is not a file (a cloud or remote source): save it with $x.${m[1]}.$update, not mnfst-run`;
+    }
     function armArea(area) {
+        const dw = dataUnwritable(area);
+        if (dw) { renderedRegions.add(key(area)); unwritableWhy.set(key(area), dw); if (!warnedRendered.has(key(area))) { warnedRendered.add(key(area)); console.warn(`[edit] x-edit="${key(area)}": ${dw}; its edits stay on the page (and reach onPublish)`); } }
         if (area._edit.rendered) renderedRegions.add(key(area));
         if (area._edit.rendered && !warnedRendered.has(key(area))) { warnedRendered.add(key(area)); console.warn(`[edit] x-edit="${key(area)}" is inside content ${area._edit.rendered} renders: it edits on the page (and reaches onPublish), but mnfst-run cannot write it to a source file`); }
         uneditIn(null);
@@ -151,7 +164,7 @@
             return Object.keys(e).length ? e : null;
         };
         const nontrivial = (n) => n.edits || n.children || n.key[0] === '~';
-        const live = keyMap(staticAreas());
+        const live = keyMap(staticAreas()), scoped = inlineScoped();
         staticAreas().forEach(area => {
             const region = key(area), comp = sourceComponent(area);
             const ids = new Proxy({}, { get: (_, k) => { const o = originOf(String(k)), a = areaByKey(decodeURIComponent(o.slice(1, o.indexOf('@', 1)))); const m = baseIds && a && baseIds[sourceFile(a)]; return m ? m[o] : undefined; } });
@@ -171,6 +184,7 @@
                 const at = originAt.get(originOf(id)); if (at != null) n.at = at;
                 if (ids && ids[originOf(id)]) n.fp = ids[originOf(id)];
                 const e = editsFor(id); if (e) n.edits = e;
+                if (scoped.has(el)) n.edits = Object.assign({}, n.edits, { style: ownStyle(el) || null });
                 if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
                     const structural = ss.touched.has(isRoot ? '#' + region : id);
@@ -212,7 +226,8 @@
             return e;
         };
         const dv = dataValueState();
-        Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', source, id, field, value }))));
+        const dvRegion = {}; log.slice(0, cursor).forEach(d => { if (d.kind === 'data-val') dvRegion[d.source] = d.region; });
+        Object.entries(dv).forEach(([source, recs]) => Object.entries(recs).forEach(([id, fields]) => Object.entries(fields).forEach(([field, value]) => patches.push({ kind: 'data-val', region: dvRegion[source], source, id, field, value }))));
         const { main, inst, reverts } = componentState();
         Object.entries(main).forEach(([component, paths]) => { const edits = toEdits(paths); if (edits.length) patches.push({ kind: 'component', scope: 'main', component, edits }); });
         new Set([...Object.keys(inst), ...Object.keys(reverts)]).forEach(region => {
@@ -229,7 +244,7 @@
     // `keep` (areas a publish left out), whose identities are left as they are.
     function rebase(keep) {
         const mounted = (r) => r == null || (!!areaByKey(r) && !(keep && keep.has(r)));
-        const pending = (d) => (d.kind === 'st-move' ? [d.from, d.to] : [d.region]).some(r => !mounted(r));
+        const pending = (d) => d.kind === 'theme' ? !!keep && (keep.has('theme|' + (d.scope || '') + '|' + d.var) || keep.has(d.scope)) : (d.kind === 'st-move' ? [d.from, d.to] : [d.region]).some(r => !mounted(r));
         // Runtime locks are app state, not source: carried over by element.
         const locks = [];
         const lockState = lockStateNow();
@@ -263,7 +278,7 @@
             if (kind === 'component' && a._armed) armComponent(a);
             lastSnap[key(a)] = snapshot(a, kind);
         });
-        rebaseTheme();
+        rebaseTheme(keep);
         relock();
         saveState(); refresh();
     }
@@ -389,7 +404,7 @@
     // fingerprints of keys with twins there (which may not be the elements this page shows).
     let overNewer = false;
     function publishNow(opts) {
-        const done = (r, keep) => {
+        const done = (r, keep, heldRes) => {
             if (r && r.base && baseFiles) Object.entries(r.base).forEach(([f, h]) => { if (!overNewer || !/\.html?$/i.test(f)) baseFiles[f] = h; });
             if (r && r.ids && baseIds) {
                 if (!overNewer) baseIds = r.ids;
@@ -398,7 +413,7 @@
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;
             if (stale.length) document.dispatchEvent(new CustomEvent('edit:stale', { detail: { files: stale } }));
-            if (published(keep ? { results: r.results.filter(x => !(x && keep.has(x.region))) } : r)) rebase(keep);
+            if (published(keep ? { results: r.results.filter(x => !(x && (keep.has(x.region) || (heldRes && heldRes.has(x))))) } : r)) rebase(keep);
             takeHeldReload();
             return r;
         };
@@ -407,14 +422,19 @@
         const leftOut = (r, patches) => {
             if (!r || !Array.isArray(r.results) || (Array.isArray(r.stale) && r.stale.length)) return null;
             const failed = new Set(r.results.filter(x => x && x.failed != null).map(x => x.failed));
-            if (!failed.size || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region))) return null;
+            const own = new Set(patches.filter((p, i) => r.results[i] && r.results[i].status === 'error' && r.results[i].failed == null && p.kind !== 'static-tree'));
+            if ((!failed.size && !own.size) || r.results.some((x, i) => x && x.status === 'error' && !failed.has(patches[i] && patches[i].region) && !own.has(patches[i]))) return null;
             tie(failed);
-            return patches.some(p => !failed.has(p.region)) ? failed : null;
+            const out = (p) => own.has(p) || (p.region != null && failed.has(p.region));
+            if (!patches.some(p => !out(p))) return null;
+            return Object.assign(failed, { own, out });
         };
+        // What a held-back patch keeps in the log: its region's edits, or its theme value.
+        const keepOf = (p) => p.kind === 'theme' ? 'theme|' + (p.scope || '') + '|' + p.var : p.region;
         // An area inside generated content (x-markdown output and the like) edits on the page,
         // but its markup is in no file mnfst-run can write: it is refused by name, not sent.
         const renderedBy = (region) => { const a = areaByKey(region); return a && a._edit.rendered; };
-        const unwritable = (p) => (p.kind === 'static-tree' || (p.kind === 'component' && p.scope === 'instance')) && !!renderedBy(p.region);
+        const unwritable = (p) => p.region != null && p.kind !== 'theme' && renderedRegions.has(p.region);
         const send = () => {
             commitFocused(true);   // typing under way publishes with the rest (identities are re-derived from the page after)
             const patches = buildPatches();
@@ -422,24 +442,25 @@
             if (!patches.length) { takeHeldReload(); return Promise.resolve({ results: [] }); }   // nothing to send: a held reload goes now
             const post = (ps) => { inFlight++; return fetch('/__edit/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patches: ps, base: baseFiles }) }).then(r => r.json()).catch(err => { settled(null); throw err; }); };
             const off = tie(new Set(patches.filter(unwritable).map(p => p.region)));
-            const offResult = (p) => ({ region: p.region, status: 'error', reason: renderedBy(p.region) && unwritable(p)
-                ? `x-edit="${p.region}" is inside content ${renderedBy(p.region)} renders, so mnfst-run can't write it to a source file`
+            const offResult = (p) => ({ region: p.region, status: 'error', reason: unwritableWhy.has(p.region) && unwritable(p) ? `x-edit="${p.region}": ${unwritableWhy.get(p.region)}`
+                : renderedBy(p.region) && unwritable(p) ? `x-edit="${p.region}" is inside content ${renderedBy(p.region)} renders, so mnfst-run can't write it to a source file`
                 : `not published: tied by a move to x-edit="${off.via.get(p.region)}", which mnfst-run can't write` });
             const sendable = patches.filter(p => !off.has(p.region));
             // The sent part's answer, merged with what was held back, as one result per patch.
             const finish = (r, held, sent) => {
-                const keep = new Set([...off, ...(held || [])]);
-                const results = patches.map(p => off.has(p.region) ? offResult(p) : r.results[sent.indexOf(p)]);
-                const o = done(Object.assign({}, r, { results }), keep.size ? keep : undefined); settled(r, !!(opts && opts.rebase)); return o;
+                const keep = new Set([...off, ...(held || []), ...(held ? sent.filter(held.out).map(keepOf) : [])]);
+                const heldRes = new Set();
+                const results = patches.map(p => { if (off.has(p.region)) { const x = offResult(p); heldRes.add(x); return x; } const x = r.results[sent.indexOf(p)]; if (held && held.out(p)) heldRes.add(x); return x; });
+                const o = done(Object.assign({}, r, { results }), keep.size ? keep : undefined, heldRes); settled(r, !!(opts && opts.rebase)); return o;
             };
             if (!sendable.length) { const o = done({ results: patches.map(offResult) }, off); return Promise.resolve(o); }
             return post(sendable).then(r => {
                 const out = leftOut(r, sendable);
                 if (!out) return finish(r, null, sendable);
                 settled(r, false);
-                const rest = sendable.filter(p => !out.has(p.region));
+                const rest = sendable.filter(p => !out.out(p));
                 return post(rest).then(r2 => {
-                    const results = sendable.map((p, i) => out.has(p.region)
+                    const results = sendable.map((p, i) => out.out(p)
                         ? (r.results[i] && r.results[i].status === 'error' ? r.results[i] : { region: p.region, status: 'error', reason: `not published: tied by a move to x-edit="${out.via.get(p.region) || [...out].find(x => !out.via.has(x))}", which failed` })
                         : r2.results[rest.indexOf(p)]);
                     return finish(Object.assign({}, r2, { results }), out, sendable);
