@@ -238,12 +238,12 @@
         }
     }
 
-    /* Pre code blocks (individual or tab grouped) */
+    /* Pre code blocks (individual or tab grouped); direct children only */
     :where([x-code], [x-code-group]):not(.unstyle) {
         position: relative;
 
         /* Header */
-        :where(header):not(:where(:is(aside.frame) header)) {
+        &>:where(header) {
 
             display: flex;
             flex-direction: row;
@@ -299,7 +299,7 @@
         }
 
         /* Copy code button */
-        & button.copy {
+        &>button.copy {
             position: absolute;
             top: 0;
             inset-inline-end: 0;
@@ -330,12 +330,12 @@
             }
         }
 
-        :where(header)::-webkit-scrollbar {
+        &>:where(header)::-webkit-scrollbar {
             display: none
         }
 
         /* Line numbers overlay */
-        & .lines {
+        &>.lines {
             position: absolute;
             inset-inline-start: 0;
             display: inline-flex;
@@ -352,12 +352,12 @@
         }
 
         /* Indent code when line numbers present */
-        &:has(.lines) code {
+        &:has(>.lines)>code {
             padding-inline-start: calc(calc(var(--spacing, 0.25rem) * 8) + 2ch)
         }
 
         /* Code */
-        :where(code) {
+        &>:where(code) {
             flex: 1 1 100%;
             min-width: 0;
             white-space: pre;
@@ -365,7 +365,7 @@
         }
 
         /* Expand / collapse toggle */
-        & button.expand {
+        &>button.expand {
             order: 99;
             display: flex;
             align-items: center;
@@ -388,8 +388,8 @@
             }
         }
 
-        &[data-collapsed] code,
-        &[data-collapsed] .lines {
+        &[data-collapsed]>code,
+        &[data-collapsed]>.lines {
             max-height: calc(var(--collapse-lines, 20) * 1.7em + calc(var(--spacing, 0.25rem) * 8));
             overflow: hidden;
             mask-image: linear-gradient(to bottom,
@@ -417,7 +417,7 @@
     :where([x-code-group]) {
         flex-flow: column;
 
-        :where([x-code]) {
+        &>:where([x-code]) {
             border: 0 none;
             border-radius: 0;
             background: transparent
@@ -425,7 +425,7 @@
     }
 
     :where([x-code]):has(>header) {
-        & .lines {
+        &>.lines {
             top: var(--spacing-field-height, 2.25rem)
         }
     }
