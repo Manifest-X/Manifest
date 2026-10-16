@@ -487,6 +487,30 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('selection geometry follows scrolling and resizing with no built-in menu, while a field holds a selection', async () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-rich-text.html id="g"><p>Select some words here.</p></div>`)
+        const el = root.querySelector('#g'), t = el.querySelector('p').firstChild
+        let y = 100
+        const rect = vi.spyOn(Range.prototype, 'getBoundingClientRect').mockImplementation(() => ({ left: 10, top: y, width: 50, height: 20, right: 60, bottom: y + 20, x: 10, y }))
+        const events = []
+        el.addEventListener('rich-text:selection', (e) => events.push(e.detail && e.detail.y))
+        focusin(el); select(t, 12, 17)
+        const v = () => document.documentElement.style.getPropertyValue('--rich-text-selection-y')
+        expect([v(), el._rt.api.selection.y]).toEqual(['100px', 100])
+        y = 40; window.dispatchEvent(new Event('scroll'))
+        await new Promise(r => setTimeout(r, 50))
+        expect([v(), el._rt.api.selection.y, events.at(-1)]).toEqual(['40px', 40, 40])
+        y = 70; window.dispatchEvent(new Event('resize'))
+        await new Promise(r => setTimeout(r, 50))
+        expect([v(), el._rt.api.selection.y]).toEqual(['70px', 70])
+        select(t, 3)                                                              // collapsed: no longer followed
+        const n = events.length
+        y = 5; window.dispatchEvent(new Event('scroll'))
+        await new Promise(r => setTimeout(r, 50))
+        expect(events.length).toBe(n)
+        rect.mockRestore()
+    })
     it('a block style picked from a dropdown keeps the selection, so the selection controls stay usable', () => {
         document.body.innerHTML = ''
         const root = mount(`<div x-data><select x-rich-text.block id="blk"><option value="p">P</option><option value="h2">H2</option></select><select x-rich-text.font id="fnt"><option value="">-</option><option value="Georgia">G</option></select><div x-rich-text.html id="d"><p>Select some words, then pick.</p></div></div>`)
