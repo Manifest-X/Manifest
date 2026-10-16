@@ -200,8 +200,12 @@ async function runAssertions() {
     // Record removals of the late-settling x-if clone (flicker check).
     await page.evaluateOnNewDocument(() => {
       window.__xifLateRemoved = 0;
+      window.__xifGuardRemoved = 0;
       new MutationObserver((recs) => {
-        for (const r of recs) for (const n of r.removedNodes) if (n.id === 'xif-late') window.__xifLateRemoved++;
+        for (const r of recs) for (const n of r.removedNodes) {
+          if (n.id === 'xif-late') window.__xifLateRemoved++;
+          if (n.id === 'xif-guard') window.__xifGuardRemoved++;
+        }
       }).observe(document, { childList: true, subtree: true });
     });
     await page.goto(`http://localhost:${STATIC_PORT}/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -533,6 +537,39 @@ async function runAssertions() {
     assert(xifLate.count === 1 && xifLate.removed === 0,
       'x-if briefly false at boot keeps the baked clone (no blank frame)',
       `got: ${JSON.stringify(xifLate)}`);
+    const guardErrors = consoleErrors.filter((e) => /page\.next|reading 'next'|reading 'href'|reading 'name'/.test(e));
+    assert(guardErrors.length === 0,
+      'bindings inside an adopted x-if clone never evaluate while its guard is false',
+      guardErrors.slice(0, 2).join(' | '));
+    await click('#xif-guard-next');
+    await new Promise((r) => setTimeout(r, 200));
+    const xifGuard = await page.evaluate(() => ({
+      navs: document.querySelectorAll('#xif-guard').length,
+      links: document.querySelectorAll('#xif-guard-next').length,
+      href: document.querySelector('#xif-guard-next')?.getAttribute('href') ?? null,
+      clicks: document.querySelector('#xif-guard-clicks')?.textContent.trim() ?? null,
+      removed: window.__xifGuardRemoved,
+    }));
+    assert(xifGuard.navs === 1 && xifGuard.links === 1 && xifGuard.href === '#next' && xifGuard.clicks === '1' && xifGuard.removed === 0,
+      'nested adopted x-if clones bind live once their guards hold',
+      `got: ${JSON.stringify(xifGuard)}`);
+    assert(/id="xif-defer-btn"/.test(xifHtml), 'x-if clone inside <details> is baked');
+    await page.evaluate(() => { document.querySelector('#xif-defer').open = true; });
+    await new Promise((r) => setTimeout(r, 300));
+    await click('#xif-defer-btn');
+    await new Promise((r) => setTimeout(r, 200));
+    const xifDefer = await page.evaluate(() => ({
+      btns: document.querySelectorAll('#xif-defer-btn').length,
+      n: document.querySelector('#xif-defer-n')?.textContent.trim() ?? null,
+    }));
+    assert(xifDefer.btns === 1 && xifDefer.n === '1',
+      'adopted x-if clone inside a deferred subtree binds when it opens',
+      `got: ${JSON.stringify(xifDefer)}`);
+    const dropErrors = consoleErrors.filter((e) => /reading 'a'/.test(e));
+    const xifDrop = await page.evaluate(() => document.querySelectorAll('#xif-drop').length);
+    assert(dropErrors.length === 0 && xifDrop === 0,
+      'outer guard dropping before ready never evaluates the inner guard, and the clone leaves',
+      `errors ${dropErrors.length}, clones ${xifDrop}`);
 
     // ------- Test: $x-driven x-for keeps template, no duplicate clones --------
     // Regression: x-for templates over $x data were removed by the static-template

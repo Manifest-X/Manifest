@@ -174,6 +174,41 @@
     </template>
   </div>
 
+  <!-- Nested x-if guards false at boot: baked clones must not bind until their
+       guard holds, then bind live. -->
+  <div id="xif-guard-test" x-data="{ page: null, clicks: 0 }" x-init="setTimeout(() => page = { next: { href: '#next', name: 'Next' } }, 50)">
+    <template x-if="page && page.next">
+      <nav id="xif-guard">
+        <template x-if="page.next">
+          <a id="xif-guard-next" :href="page.next.href" @click.prevent="clicks++"><span x-text="page.next.name"></span></a>
+        </template>
+      </nav>
+    </template>
+    <span id="xif-guard-clicks" x-text="clicks"></span>
+  </div>
+
+  <!-- Adopted x-if clone inside a deferred <details> binds once it opens. -->
+  <div id="xif-defer-test" x-data="{ ok: true, n: 0 }">
+    <details id="xif-defer"><summary>More</summary>
+      <template x-if="ok">
+        <button id="xif-defer-btn" @click="n++">Inc</button>
+      </template>
+    </details>
+    <span id="xif-defer-n" x-text="n"></span>
+  </div>
+
+  <!-- Outer guard drops before ready: the inner guard it protects is never
+       evaluated, and the clone leaves at ready. -->
+  <div id="xif-drop-test" x-data="{ u: { a: 'A' } }" x-init="if (!window.__manifestRender) setTimeout(() => u = null, 20)">
+    <template x-if="u">
+      <div id="xif-drop">
+        <template x-if="u.a">
+          <span x-text="u.a"></span>
+        </template>
+      </div>
+    </template>
+  </div>
+
   <!-- x-for over $x data: template must survive prerender so Alpine can re-render
        the list at runtime (for locale changes, filtering, etc).  Static clones
        must NOT duplicate when Alpine boots. -->
