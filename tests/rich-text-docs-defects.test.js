@@ -174,9 +174,84 @@ describe('typed and pending marks', () => {
             expect(mark, typed).toBeTruthy()
             for (const ch of ' then more') chromeType(el, ch)
             expect(mark.textContent, typed).toBe({ code: 'code', strong: 'bold', em: 'em', del: 'del', a: 'l' }[tag])
-            expect(el.querySelector('p').lastChild.nodeValue, typed).toBe('\u00a0then more')
-            expect(el._rt.api.value.replace(/\u00a0/g, ' '), typed).toBe(typed + closer + ' then more')
+            expect(el.querySelector('p').lastChild.nodeValue, typed).toBe(' then more')
+            expect(el._rt.api.value, typed).toBe(typed + closer + ' then more')
         }
+    })
+
+    const chromeKey = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }))
+    // Backspace as Chrome runs it: keydown, beforeinput, the character before the caret removed, input
+    const chromeBackspace = (el) => {
+        chromeKey(el, 'Backspace')
+        const bi = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'deleteContentBackward' })
+        el.dispatchEvent(bi)
+        if (bi.defaultPrevented) return
+        const r = window.getSelection().getRangeAt(0)
+        let t = r.startContainer, o = r.startOffset
+        if (t.nodeType === 3 && o === 0 && t.previousSibling) { const w = document.createTreeWalker(t.previousSibling, NodeFilter.SHOW_TEXT); let l = null; for (let x = w.nextNode(); x; x = w.nextNode()) l = x; t = l; o = l.length }
+        t.deleteData(o - 1, 1)
+        window.getSelection().collapse(t, o - 1)
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }))
+    }
+    const converted = (src, closer = '`') => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-rich-text.html id="h"></div>`)
+        const el = root.querySelector('#h')
+        focusin(el)
+        el.innerHTML = `<p>${src}</p>`
+        window.getSelection().collapse(el.firstElementChild.firstChild, src.length)
+        chromeType(el, closer)
+        return el
+    }
+
+    it('a space then Backspace keeps the caret after the mark; a second Backspace goes into it', () => {
+        let el = converted('Use `code')
+        chromeType(el, ' '); chromeBackspace(el); chromeType(el, 'Z')
+        expect(el.innerHTML).toBe('<p>Use <code>code</code>Z</p>')
+        el = converted('Use `code')
+        chromeType(el, ' '); chromeType(el, 'a'); chromeBackspace(el); chromeBackspace(el); chromeType(el, 'Z')
+        expect(el.innerHTML).toBe('<p>Use <code>code</code>Z</p>')
+        el = converted('Use `code')
+        chromeType(el, ' '); chromeBackspace(el); chromeBackspace(el); chromeType(el, 'Z')
+        expect(el.innerHTML).toBe('<p>Use <code>codZ</code></p>')
+        el = converted('Use `code')
+        chromeType(el, ' '); chromeBackspace(el); chromeKey(el, 'ArrowLeft'); chromeKey(el, 'ArrowRight'); chromeType(el, 'Z')
+        expect(el.innerHTML).toBe('<p>Use <code>codeZ</code></p>')            // moved by arrow: the usual edge behaviour
+    })
+
+    it('IME text composed right after a conversion is moved out of the mark, the caret after it', () => {
+        const el = converted('Use **bold*', '*')
+        const t = el.querySelector('strong').firstChild                      // Chrome composes into the mark's text
+        const composing = (data) => { const e = new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data }); Object.defineProperty(e, 'isComposing', { value: true }); return e }
+        el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
+        t.insertData(t.length, 'かな'); window.getSelection().collapse(t, t.length)
+        el.dispatchEvent(composing('かな'))
+        t.replaceData(t.length - 2, 2, '仮名'); window.getSelection().collapse(t, t.length)
+        el.dispatchEvent(composing('仮名'))
+        const end = new CompositionEvent('compositionend', { bubbles: true, data: '仮名' }); Object.defineProperty(end, 'data', { value: '仮名' })
+        el.dispatchEvent(end)
+        expect(el.innerHTML).toBe('<p>Use <strong>bold</strong>仮名</p>')
+        chromeType(el, ' '); chromeType(el, 'ok')
+        expect(el.innerHTML).toBe('<p>Use <strong>bold</strong>仮名 ok</p>')
+    })
+
+    it('the space typed after a mark is a plain space once text follows; two spaces and authored U+00A0 stay', () => {
+        let el = converted('Use `code')
+        for (const ch of ' then') chromeType(el, ch)
+        expect(el._rt.api.value).toBe('<p>Use <code>code</code> then</p>')
+        el = converted('Use `code')
+        for (const ch of '  x') chromeType(el, ch)
+        expect(el.innerHTML).toBe('<p>Use <code>code</code>&nbsp; x</p>')     // the first of two spaces must stay visible
+        el = converted('Use `code')
+        chromeType(el, ' ')
+        expect(el.innerHTML).toBe('<p>Use <code>code</code>&nbsp;</p>')        // trailing: kept until text follows
+        document.body.innerHTML = ''
+        const root = mount(`<div x-rich-text.html id="a"><p>Mr.&nbsp;Smith</p></div>`)
+        el = root.querySelector('#a'); focusin(el)
+        const t = el.querySelector('p').firstChild
+        window.getSelection().collapse(t, t.length)
+        for (const ch of ' ok') chromeType(el, ch)
+        expect(el._rt.api.value).toBe('<p>Mr.&nbsp;Smith ok</p>')
     })
 
     it('an armed mark wraps what is typed, a leading space included', () => {

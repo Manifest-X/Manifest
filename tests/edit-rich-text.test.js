@@ -862,3 +862,28 @@ describe('x-rich-text blocks inside an area', () => {
         expect(log().at(-1).value).toContain('<h2>Head</h2>')
     })
 })
+
+describe('typing after a converted mark in a leaf', () => {
+    it('logs and publishes a plain space after the mark; the author\'s U+00A0 stays', async () => {
+        const root = await mount(`<section x-edit="nb1"><p>Cell&nbsp;2</p></section>`)
+        const p = root.querySelector('p')
+        await enter(p)
+        const type = (ch) => {
+            const bi = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: ch })
+            p.dispatchEvent(bi)
+            if (bi.defaultPrevented) return
+            const r = window.getSelection().getRangeAt(0), t = r.startContainer, o = r.startOffset
+            t.insertData(o, ch); window.getSelection().collapse(t, o + ch.length)
+            p.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }))
+        }
+        p.firstChild.nodeValue = 'Cell 2 **b*'; window.getSelection().collapse(p.firstChild, p.firstChild.length)
+        type('*')
+        expect(p.innerHTML).toBe('Cell&nbsp;2 <strong>b</strong>')
+        for (const ch of ' more') type(ch)
+        await blur(p)
+        expect(log().pop()).toMatchObject({ prop: 'text', value: 'Cell&nbsp;2 <strong>b</strong> more' })
+        const sent = JSON.stringify(store().patches())
+        expect(sent).toContain('<strong>b</strong> more')
+        expect(sent).toContain('Cell&nbsp;2')
+    })
+})
