@@ -1019,14 +1019,26 @@ describe('column widths as columns change', () => {
     }
     const sum = (a) => Math.round(a.reduce((x, y) => x + y, 0) * 100) / 100
 
-    it("an added column takes an equal share, the others scale down; a removed one's share goes to its neighbours", async () => {
+    it("an added column takes an equal share, the others scale down; a removed one's share goes to all the others", async () => {
         const t = await setup([50, 30, 20])
         t.into(0); t.api['column-after']()
         expect(t.widths()).toEqual([37.5, 25, 22.5, 15])
         expect(t.table.rows[0].cells.length).toBe(4)
         t.into(1); t.api['column-remove']()
-        expect(t.widths()).toEqual([53.13, 31.87, 15])
+        expect(t.widths()).toEqual([50, 30, 20])                                         // spread over all the others, in proportion
         expect(sum(t.widths())).toBe(100)
+    })
+
+    it('many adds and removes never pile width onto a few columns', async () => {
+        const t = await setup([25, 25, 25, 25])
+        for (let i = 0; i < 15; i++) {
+            t.into(t.table.rows[0].cells.length - 1); t.api['column-after']()
+            t.into(1); t.api["column-remove"]()
+        }
+        const w = t.widths()
+        expect(w.length).toBe(4)
+        expect(sum(w)).toBe(100)
+        expect(Math.max(...w) / Math.min(...w)).toBeLessThan(2.5)
     })
 
     it('no column falls under the minimum; a table without widths is left alone', async () => {
