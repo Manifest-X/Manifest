@@ -196,10 +196,10 @@ const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.claude']);
 const SECRET_DIRS = new Set(['.ssh', '.aws', '.wrangler']);
 const SECRET_FILES = new Set([
   '.npmrc', '.yarnrc', '.yarnrc.yml', '.pypirc', '.netrc', '_netrc', '.git-credentials', '.htpasswd',
-  '.dev.vars', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.DS_Store',
+  '.dev.vars', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.ds_store',
 ]);
 export function isExcludedPath(rel) {
-  const parts = rel.split('/');
+  const parts = rel.toLowerCase().split('/');
   if (parts.some((p) => EXCLUDED_DIRS.has(p) || SECRET_DIRS.has(p))) return true;
   const base = parts[parts.length - 1];
   if (base === '.env' || base.startsWith('.env.')) return true; // .env, .env.local, .env.prod …

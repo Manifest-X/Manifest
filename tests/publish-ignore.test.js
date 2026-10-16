@@ -64,6 +64,12 @@ describe('isExcludedPath (secret guard — regression)', () => {
             expect(isExcludedPath(p)).toBe(true)
         }
     })
+    it('matches secrets regardless of case', () => {
+        for (const p of ['.ENV', '.Env.production', '.NPMRC', 'ID_RSA', 'ENV.LOCAL.js', '.Dev.Vars', '.SSH/config',
+            'x/.AWS/credentials', '.Claude/settings.json', '.GIT/config']) {
+            expect(isExcludedPath(p)).toBe(true)
+        }
+    })
     it('keeps ordinary project files, agent files and non-secret dotfiles', () => {
         for (const p of ['index.html', 'src/app.js', 'data/products.csv', 'manifest.json', 'README.md',
             'CLAUDE.md', 'AGENTS.md', '.mcp.json', '.gitignore', '.manifestignore', '.vscode/settings.json',
