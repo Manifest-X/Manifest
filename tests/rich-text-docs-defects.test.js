@@ -496,6 +496,22 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('effects that read and write $rich.all, .value and .link settle (no write of an unchanged value, no beat without a change)', async () => {
+        document.body.innerHTML = ''
+        window.__runs = { all: 0, value: 0, link: 0 }
+        const guard = (k) => `++window.__runs.${k} < 50 && `
+        const root = mount(`<div x-data><div x-rich-text.html id="h" x-effect="${guard('all')}($rich.all = { color: ($rich.all && $rich.all.color) || 'red' })"><p>Text <a href="/x">link</a></p></div>
+            <i x-effect="${guard('value')}($rich.value = $rich.value)"></i><b x-effect="${guard('link')}($rich.link = $rich.link)"></b></div>`)
+        const el = root.querySelector('#h')
+        for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+        focusin(el); select(el.querySelector('a').firstChild, 2)
+        for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+        expect(el._rt.api.all).toEqual({ color: 'red' })
+        expect(window.__runs.all).toBeLessThan(6)
+        expect(window.__runs.value).toBeLessThan(6)
+        expect(window.__runs.link).toBeLessThan(6)
+        expect(el._rt.api.can('undo')).toBe(false)
+    })
     it('undo and redo controls follow a value set from code, the field unfocused', async () => {
         document.body.innerHTML = ''
         const root = mount(`<div x-data="{ doc: '<p>One</p>' }"><button x-rich-text.undo id="u">U</button><div x-rich-text.html="doc" id="h"></div></div>`)
@@ -525,9 +541,23 @@ describe('docs certifier defects', () => {
         expect(el.style.getPropertyValue('--rich-text-font')).toBe('')
         el._rt.api.redo()
         expect(el.style.getPropertyValue('--rich-text-font')).toBe('Georgia')
-        el._rt.api.all = { font: 'serif', align: 'center' }
+    })
+
+    it('.all set from code is page styling, not a step: undo never removes it, nor lights up', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data="{ look: { align: 'center' } }"><button x-rich-text.undo id="u">U</button><select x-rich-text.font.all id="fa"><option value="">-</option><option value="Georgia">G</option></select><div x-rich-text.html id="h" x-effect="$rich.all = look"><p>Text</p></div></div>`)
+        const el = root.querySelector('#h'), fa = root.querySelector('#fa'), u = root.querySelector('#u')
+        expect(el._rt.api.all).toEqual({ align: 'center' })
+        focusin(el); select(el.querySelector('p').firstChild, 2)
+        expect(el._rt.api.can('undo')).toBe(false)
+        expect(u.getAttribute('aria-disabled')).toBe('true')
+        fa.value = 'Georgia'; fa.dispatchEvent(new Event('change', { bubbles: true }))   // the user's step
+        el._rt.api.all = { font: 'Georgia', align: 'center', color: 'red' }                // code, after it
         el._rt.api.undo()
-        expect(el._rt.api.all).toEqual({ font: 'Georgia' })
+        expect(el._rt.api.all).toEqual({ align: 'center', color: 'red' })                 // only the user's step is undone
+        expect(el._rt.api.can('undo')).toBe(false)
+        el._rt.api.all = { align: 'center', color: 'red' }                                 // unchanged: nothing happens
+        expect(el._rt.api.can('undo')).toBe(false)
     })
     it('an inserted table takes the caret into its first cell; a merged header cell splits into header cells', () => {
         document.body.innerHTML = ''

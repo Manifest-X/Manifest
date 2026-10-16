@@ -1615,6 +1615,16 @@
         if (next) area.style.setProperty(v, next); else area.style.removeProperty(v);
     });
     const allKey = (area) => JSON.stringify(allStyle(area));
+    // .all styles set from code: every history entry takes the change, so undo never removes it
+    function rebaseAll(area, was, now) {
+        const h = area._history; if (!h) return;
+        const keys = [...new Set([...Object.keys(was), ...Object.keys(now)])].filter(k => was[k] !== now[k]);
+        h.stack.forEach(e => {
+            const o = e.all ? JSON.parse(e.all) : {};
+            keys.forEach(k => { if (now[k]) o[k] = now[k]; else delete o[k]; });
+            e.all = JSON.stringify(Object.fromEntries(Object.keys(ALL_VARS).filter(k => o[k]).map(k => [k, o[k]])));
+        });
+    }
 
     /* ---- Command table ---- */
     const COMMANDS = Object.create(null);
@@ -2375,7 +2385,15 @@
     // (once a microtask) whenever the selection, value or formatting may have changed
     let pulse = null, beating = false;
     const watch = () => { if (pulse) void pulse.n; };
-    const beat = () => { if (!pulse || beating) return; beating = true; queueMicrotask(() => { beating = false; pulse.n++; }); };
+    // Bumped only when what $rich reports changed, so an effect that reads and writes it settles
+    let lastSurface = null;
+    const selKey = (x) => x ? [x.collapsed, x.text, x.x, x.y, x.width, x.height].join() : '';
+    const surface = () => [...areas].map(a => [a === lastFocused, a === lastFocused ? String(textSpan(a)) : '', a.innerHTML, allKey(a), selKey(a._selection), a._pending ? [...a._pending.tags].join() : ''].join('\u0001')).join('\u0002');
+    const beat = () => {
+        if (!pulse || beating) return;
+        beating = true;
+        queueMicrotask(() => { beating = false; const now = surface(); if (now === lastSurface) return; lastSurface = now; pulse.n++; });
+    };
 
     // Reflect caret state onto every control
     function sync() {
@@ -3021,10 +3039,20 @@
                 el._history.restoring = false;
             },
             get all() { watch(); return allStyle(el); },
-            set all(v) { if (!allStyles) return; record(el); setAllStyle(el, v); record(el); sync(); },
+            // Page styling, not an edit: no history step (the history takes it as its baseline)
+            set all(v) {
+                if (!allStyles) return;
+                const was = allStyle(el);
+                setAllStyle(el, v);
+                const now = allStyle(el);
+                if (JSON.stringify(now) === JSON.stringify(was)) return;
+                rebaseAll(el, was, now);
+                el.dispatchEvent(new CustomEvent('rich-text:all', { bubbles: true, detail: now }));
+                sync();
+            },
             get selection() { watch(); return el._selection || null; },
             get link() { watch(); return linkHref(); },
-            set link(v) { run(el, 'a', v); },
+            set link(v) { if ((v == null ? '' : String(v)) === (linkHref() || '')) return; run(el, 'a', v); },
             focus: () => el.focus(),
             run: (id, arg) => run(el, id, arg),
             active: (id) => { watch(); return allows(el, id) && COMMANDS[id].active(undefined, el); },
