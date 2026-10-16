@@ -259,9 +259,10 @@ describe('source writer allowlist', () => {
             + '<a href="javascript:alert(1)" onmouseover="x()">a</a><abbr title="ok" class="c" style="color: red">ab</abbr>'
             + '<bdo dir="sideways">bd</bdo><data value="javascript:x" id="i">da</data><time datetime="1" title="no">t</time>'
             + '<img src="x" onerror="alert(1)"><svg><script>bad()</script></svg><form action="/x">f</form><dfn data-x="1">df</dfn>'
+            + '<a href="/ok" title="ok" title="&quot; onclick=&quot;x" href="/dup">t</a>'
         const res = await send(hostile)
         expect(statuses(res), JSON.stringify(res)).toEqual(['written'])
-        expect(regionSource()).toBe('<section x-edit="f2"><p>d<a>a</a><abbr title="ok" style="color: red">ab</abbr><bdo>bd</bdo><data>da</data><time datetime="1">t</time><img src="x"><dfn>df</dfn></p></section>')
+        expect(regionSource()).toBe('<section x-edit="f2"><p>d<a>a</a><abbr title="ok" style="color: red">ab</abbr><bdo>bd</bdo><data>da</data><time datetime="1">t</time><img src="x"><dfn>df</dfn><a href="/ok" title="ok">t</a></p></section>')
         // A block that cannot sit in the leaf: nothing is written
         writeFileSync(path.join(dir, 'index.html'), page(body))
         const block = await send('<h1>Big</h1>')

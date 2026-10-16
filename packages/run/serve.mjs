@@ -1121,7 +1121,10 @@ function sanitizeHTML(html) {
     if (!SAN_OK.has(name)) continue;
     if (closing) { out += `</${name}>`; continue; }
     let tag = '<' + name;
+    const seen = new Set();
     for (const a of scanTag(s.slice(lt, end + 1)).attrs) {
+      if (seen.has(a.lower)) continue;   // the first of a repeated attribute wins, as in the browser
+      seen.add(a.lower);
       const v = a.value == null ? '' : decodeEntities(a.value, true);
       if (textAttrOk(name, a.lower, v)) tag += a.lower === 'checked' ? ' checked' : ` ${a.lower}="${escAttr(v)}"`;
     }
