@@ -194,7 +194,7 @@
                 border-inline-end: 0 none;
             }
 
-            & :where(tbody:last-child > tr:last-child > *, tfoot > tr:last-child > *, :scope > tr:last-child > *) {
+            & :where(tbody:last-child > tr:last-child > *, tfoot > tr:last-child > *) {
                 border-block-end: 0 none;
             }
 

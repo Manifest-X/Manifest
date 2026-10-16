@@ -46,7 +46,7 @@
             text-align: start;
 
             /* Make elements within cell inline; text-level elements stay in the text flow */
-            &>*:not(template, a, abbr, b, cite, code, data, del, dfn, em, i, ins, kbd, mark, q, s, samp, small, strong, sub, sup, time, u, var, br) {
+            &>*:not(template, br, :is(a, abbr, b, cite, code, data, del, dfn, em, i, ins, kbd, mark, q, s, samp, small, strong, sub, sup, time, u, var):not([role=button], [x-icon], .badge)) {
                 display: inline-flex;
                 vertical-align: middle;
 

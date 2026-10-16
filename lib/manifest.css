@@ -4053,7 +4053,7 @@
                 border-inline-end: 0 none;
             }
 
-            & :where(tbody:last-child > tr:last-child > *, tfoot > tr:last-child > *, :scope > tr:last-child > *) {
+            & :where(tbody:last-child > tr:last-child > *, tfoot > tr:last-child > *) {
                 border-block-end: 0 none;
             }
 
@@ -4383,7 +4383,7 @@
             text-align: start;
 
             /* Make elements within cell inline; text-level elements stay in the text flow */
-            &>*:not(template, a, abbr, b, cite, code, data, del, dfn, em, i, ins, kbd, mark, q, s, samp, small, strong, sub, sup, time, u, var, br) {
+            &>*:not(template, br, :is(a, abbr, b, cite, code, data, del, dfn, em, i, ins, kbd, mark, q, s, samp, small, strong, sub, sup, time, u, var):not([role=button], [x-icon], .badge)) {
                 display: inline-flex;
                 vertical-align: middle;
 
