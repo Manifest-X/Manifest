@@ -49,7 +49,53 @@ function shape(html) {
     return out.join('\n')
 }
 
+// A README as people write it. Saved back byte for byte, but for the documented normalisations:
+// _em_ / __strong__ are written *em* / **strong**; a lone * between characters is escaped;
+// inline HTML for marks markdown has (<b>, <i>, …) is written as markdown.
+const README = [
+    '# Project *Name*',
+    '',
+    '[![Build](https://img.shields.io/badge/build-passing-green.svg)](https://ci.example/build) ![Logo](https://x.example/logo.png)',
+    '',
+    'A **fast** library for `parsing` things. See [the docs](https://docs.example/guide_(v2)) or <https://autolink.example>.',
+    '',
+    '## Install',
+    '',
+    '```bash',
+    'npm install my_lib --save',
+    '```',
+    '',
+    '## Usage',
+    '',
+    '1. Import it: `import { x } from \'lib\'`',
+    '2. Call `x()` with **options**:',
+    '    - `debug` (*boolean*): logs to __stderr__',
+    '    - `max_size`: defaults to 2*1024',
+    '3. Done!',
+    '',
+    '> **Note:** this is _experimental_ and may change.',
+    '',
+    'Escapes: \\*not em\\*, \\_not em\\_, 5 \\* 3 = 15, a_b_c, C# and F#, 100% of <b>html</b>.',
+    '',
+    'Emphasis: ***all***, **bold *and em***, *em **and bold***, ~~old~~ new.',
+    '',
+    '---',
+    '',
+    'MIT © 2026'
+].join('\n')
+
 describe('markdown round trip', () => {
+    it('a README saves back as written, but for the documented normalisations', () => {
+        const RT = window.ManifestRichText
+        const d = document.createElement('div'); d.innerHTML = RT.fromMarkdown(README)
+        const saved = RT.toMarkdown(d)
+        expect(saved).toBe(README
+            .replace('__stderr__', '**stderr**').replace('_experimental_', '*experimental*')
+            .replace('2*1024', '2\\*1024').replace('<b>html</b>', '**html**'))
+        const again = document.createElement('div'); again.innerHTML = RT.fromMarkdown(saved)
+        expect(RT.toMarkdown(again)).toBe(saved)                                         // and is stable from there
+    })
+
     it('link destinations: balanced parentheses, <…>, a title; written back unchanged', () => {
         const RT = window.ManifestRichText
         const md = (html) => { const d = document.createElement('div'); d.innerHTML = html; return RT.toMarkdown(d) }

@@ -290,16 +290,17 @@ describe('typed and pending marks', () => {
         const cases = [
             ['<p>Make <em>this</em><em> stand</em> out.</p>', 'Make *this stand* out.', '<p>Make <em>this stand</em> out.</p>'],
             ['<p><strong>b</strong><b>x</b></p>', '**bx**', '<p><strong>bx</strong></p>'],
-            ['<p><em>a</em><strong>b</strong></p>', '_a_**b**', '<p><em>a</em><strong>b</strong></p>'],
-            ['<p><strong>a</strong><em>b</em></p>', '__a__*b*', '<p><strong>a</strong><em>b</em></p>'],
-            ['<p><strong>x</strong><em>y</em>z</p>', '__x__*y*z', '<p><strong>x</strong><em>y</em>z</p>'],
-            ['<p><em>a</em><strong>b</strong>c</p>', '_a_**b**c', '<p><em>a</em><strong>b</strong>c</p>'],
+            ['<p><em>a</em><strong>b</strong></p>', '*a*__b__', '<p><em>a</em><strong>b</strong></p>'],
+            ['<p><strong>a</strong><em>b</em></p>', '**a**_b_', '<p><strong>a</strong><em>b</em></p>'],
+            ['<p><strong>x</strong><em>y</em>z</p>', '**x***y*z', '<p><strong>x</strong><em>y</em>z</p>'],
+            ['<p><em>a</em><strong>b</strong>c</p>', '*a***b**c', '<p><em>a</em><strong>b</strong>c</p>'],
+            ['<p>with <strong>options</strong>: (<em>boolean</em>)</p>', 'with **options**: (*boolean*)', '<p>with <strong>options</strong>: (<em>boolean</em>)</p>'],
             ['<p>w<strong>x</strong><em>y</em>z</p>', 'w**x***y*z', '<p>w<strong>x</strong><em>y</em>z</p>'],
             ['<p><strong>bold <em>nested</em> more</strong></p>', '**bold *nested* more**', '<p><strong>bold <em>nested</em> more</strong></p>'],
             ['<p><em>a <strong>b</strong> c</em></p>', '*a **b** c*', '<p><em>a <strong>b</strong> c</em></p>'],
             ['<p>a<em> b </em>c</p>', 'a *b* c', '<p>a <em>b</em> c</p>'],
             ['<p><code>x</code><code>y</code> <s>p</s><del>q</del></p>', '`xy` ~~pq~~', '<p><code>xy</code> <s>pq</s></p>'],
-            ['<p>snake_case and 2*3*4</p>', 'snake\\_case and 2\\*3\\*4', '<p>snake_case and 2*3*4</p>']
+            ['<p>snake_case and 2*3*4</p>', 'snake_case and 2\\*3\\*4', '<p>snake_case and 2*3*4</p>']
         ]
         for (const [html, want, back] of cases) {
             expect(md(html), html).toBe(want)
