@@ -1004,3 +1004,39 @@ describe('column resizing', () => {
         expect(table.style.width).toBe('100%')
     })
 })
+
+describe('column widths as columns change', () => {
+    const setup = async (cols, tableWidth = 600) => {
+        const group = cols ? `<colgroup>${cols.map(w => `<col style="width: ${w}%;">`).join('')}</colgroup>` : ''
+        const n = cols ? cols.length : 3
+        const root = await mount(`<div id="cw" x-rich-text.html><table${cols ? ' style="width: 100%; table-layout: fixed;"' : ''}>${group}<tbody><tr>${'<td>x</td>'.repeat(n)}</tr><tr>${'<td>y</td>'.repeat(n)}</tr></tbody></table></div>`)
+        const fld = root.querySelector('#cw'), table = fld.querySelector('table')
+        vi.spyOn(table, 'getBoundingClientRect').mockImplementation(() => ({ width: tableWidth, height: 40, left: 0, top: 0, right: tableWidth, bottom: 40, x: 0, y: 0 }))
+        fld.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+        const widths = () => [...table.querySelectorAll('col')].map(c => parseFloat(c.style.width))
+        const into = (i) => { const td = table.rows[0].cells[i]; select(td.firstChild || td, 0); document.dispatchEvent(new Event('selectionchange')) }
+        return { fld, table, widths, into, api: fld._rt.api }
+    }
+    const sum = (a) => Math.round(a.reduce((x, y) => x + y, 0) * 100) / 100
+
+    it("an added column takes an equal share, the others scale down; a removed one's share goes to its neighbours", async () => {
+        const t = await setup([50, 30, 20])
+        t.into(0); t.api['column-after']()
+        expect(t.widths()).toEqual([37.5, 25, 22.5, 15])
+        expect(t.table.rows[0].cells.length).toBe(4)
+        t.into(1); t.api['column-remove']()
+        expect(t.widths()).toEqual([53.13, 31.87, 15])
+        expect(sum(t.widths())).toBe(100)
+    })
+
+    it('no column falls under the minimum; a table without widths is left alone', async () => {
+        let t = await setup([70, 20, 10], 200)                                              // 28px is 14% here
+        t.into(0); t.api['column-before']()
+        expect(t.widths().every(w => w >= 14 - 0.01)).toBe(true)
+        expect(sum(t.widths())).toBe(100)
+        t = await setup(null)
+        t.into(0); t.api['column-after']()
+        expect(t.table.querySelector('colgroup')).toBe(null)
+        expect(t.table.getAttribute('style')).toBe(null)
+    })
+})

@@ -987,12 +987,51 @@
                 const have = (grid[r] || []).filter(Boolean).length;
                 for (let i = have; i < width; i++) row.appendChild(emptyCell(rowCellTag(row)));
             });
+            const group = table.querySelector(':scope > colgroup');
+            if (group && group.children.length !== width) rebalanceCols(table);
             if (!table.querySelector('tbody, thead')) {
                 const body = document.createElement('tbody');
                 while (table.firstChild) body.appendChild(table.firstChild);
                 table.appendChild(body);
             }
         });
+    }
+
+    // A table whose column widths were set by resizing keeps them adding up to 100% as its columns
+    // change: an added column takes an equal share (the others scale down), a removed one's share
+    // goes to its neighbours, and no column falls under the minimum. Tables without widths are left alone.
+    function rebalanceCols(table, change) {
+        const group = table.querySelector(':scope > colgroup'); if (!group) return;
+        let w = [...group.children].map(c => /%$/.test(c.style.width) ? parseFloat(c.style.width) : NaN);
+        if (!w.length || w.some(isNaN)) return;
+        const n = columnCount(table);
+        if (change && change.add != null) {
+            const share = 100 / (w.length + 1);
+            w = w.map(v => v * (100 - share) / 100);
+            w.splice(Math.min(change.add, w.length), 0, share);
+        } else if (change && change.remove != null && change.remove < w.length) {
+            const [gone] = w.splice(change.remove, 1), near = [change.remove - 1, change.remove].filter(i => i >= 0 && i < w.length);
+            const base = near.reduce((a, i) => a + w[i], 0) || near.length;
+            near.forEach(i => { w[i] += gone * (w[i] || 1) / base; });
+        }
+        // Any other mismatch (merges, splits, padding): columns added at the end take equal shares, extras go
+        while (w.length < n) { const share = 100 / (w.length + 1); w = w.map(v => v * (100 - share) / 100); w.push(share); }
+        if (w.length > n) { const extra = w.splice(n).reduce((a, b) => a + b, 0); if (w.length) w[w.length - 1] += extra; }
+        if (!w.length) return;
+        // The minimum, taken from the widest columns
+        const px = table.getBoundingClientRect().width, min = px ? MIN_COL / px * 100 : 0;
+        if (min && min * w.length > 100) w = w.map(() => 100 / w.length);   // too narrow for the minimum: equal shares
+        else if (min) {
+            for (let guard = 0; guard < 20 && w.some(v => v < min - 1e-6); guard++) {
+                const need = w.reduce((a, v) => a + Math.max(0, min - v), 0), room = w.reduce((a, v) => a + Math.max(0, v - min), 0);
+                w = w.map(v => v < min ? min : v - (v - min) / room * need);
+            }
+        }
+        const total = w.reduce((a, b) => a + b, 0), pct = (v) => Math.round(v * 100) / 100;
+        while (group.children.length < w.length) group.appendChild(document.createElement('col'));
+        while (group.children.length > w.length) group.lastElementChild.remove();
+        let used = 0;
+        [...group.children].forEach((col, i) => { const v = i === w.length - 1 ? pct(100 - used) : pct(w[i] / total * 100); used += v; col.style.width = v + '%'; });
     }
 
     function addRow(where) {
@@ -1016,6 +1055,7 @@
             fresh.appendChild(document.createElement('br'));
             if (where < 0) at.before(fresh); else at.after(fresh);
         });
+        rebalanceCols(table, { add: where < 0 ? col : col + 1 });
         normalizeTables(table.parentElement || table);
         caretIn(cellCovering(rowsOf(table)[gridPosition(cell).row], where < 0 ? col : col + 1), 0);
     }
@@ -1035,6 +1075,7 @@
         if (columnCount(table) <= 1) return removeTable();
         const seen = new Set();
         grid.forEach(row => { const at = row[col]; if (!at || seen.has(at)) return; seen.add(at); at.remove(); });
+        rebalanceCols(table, { remove: col });
         normalizeTables(table.parentElement || table);
         caretIn(cellCovering(rowsOf(table)[0], Math.max(0, col - 1)), 0);
     }
