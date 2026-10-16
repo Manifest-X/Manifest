@@ -11,7 +11,8 @@
        ancestor opts it out. Text that is still being typed keeps the browser's own
        undo until it commits on blur; fields and x-rich-text keep theirs always. A leaf
        on Rich Text uses Rich Text's history while it has steps (richHistoryKey). */
-    const leafText = (el) => el._editField && !el._editRich ? el.textContent : el._editRt ? sanitizeFor(el, el.innerHTML.trim()) : el.innerHTML.trim();
+    // Text as it would be logged: every baseline and comparison goes through the same sanitizer
+    const leafText = (el) => el._editField && !el._editRich ? el.textContent : sanitizeFor(el, el.innerHTML.trim());
     const hotkeysOff = (el) => !!el.closest('[data-edit-hotkeys="off"]');
     // A focused leaf's baseline follows history rewrites under the caret.
     function rebaseFocused() {

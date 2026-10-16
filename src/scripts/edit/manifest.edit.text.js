@@ -115,7 +115,7 @@
         area.querySelectorAll('[data-rich-text]:not([data-rich-text-bound])').forEach(el => {
             if (el._editRt || !capOf(el, 'text') || !/^[@~]/.test(el.getAttribute('data-edit-key') || '')) return;
             if (el._richBound) return; el._richBound = true;
-            el.addEventListener('focusin', () => { el._preEdit = el.innerHTML.trim(); });
+            el.addEventListener('focusin', () => { el._preEdit = leafText(el); });
             el.addEventListener('blur', () => {
                 const a = regionOf(el) || area;   // the region the element sits in NOW, not where it was armed
                 const commit = classify(a) === 'component' ? commitComponentNode : commitStaticNode;

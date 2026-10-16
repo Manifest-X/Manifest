@@ -911,3 +911,34 @@ describe('theme colour controls', () => {
         document.documentElement.style.removeProperty('--tc-x')
     })
 })
+
+describe('focus and blur without a change', () => {
+    it('log nothing, for every kind of field, and leave a rich field its editing line', async () => {
+        const root = await mount(`<div x-data="{ rows: [{ id: 1, name: 'Rose' }] }">
+            <section x-edit="nb1">
+                <p id="leaf">Plain <b>leaf</b></p>
+                <div id="r1" x-rich-text.html><p>Block intro</p><ul><li>Item</li></ul></div>
+                <div id="r2" x-rich-text.html><p>Grid</p><table><tbody><tr><td>x</td></tr></tbody></table></div>
+                <div id="r3" x-rich-text.html><pre><code>let x</code></pre></div>
+                <div id="r4" x-rich-text><p>Markdown <strong>field</strong></p><ul><li>a</li></ul></div>
+                <div id="r5" x-rich-text.plain>Plain field</div>
+                <p><span id="r6" x-rich-text.html.inline>Inline <b>rich</b></span></p>
+            </section>
+            <ul x-edit.data="nb2"><template x-for="r in rows" :key="r.id"><li :data-key="r.id" x-text="r.name"></li></template></ul></div>`)
+        await new Promise(r => setTimeout(r, 0))
+        const at = cursor()
+        const shown = (el) => el.innerHTML
+        const targets = ['#leaf', '#r1', '#r2', '#r3', '#r4', '#r5', '#r6', 'ul li'].map(s => root.querySelector(s))
+        const before = targets.map(shown)
+        for (const el of targets) {
+            el.focus(); el.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); el.dispatchEvent(new FocusEvent('focus'))
+            await frame()
+            el.dispatchEvent(new FocusEvent('blur')); el.blur(); el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+            await flush()
+        }
+        expect(cursor()).toBe(at)
+        expect(log().length).toBe(at)
+        expect(targets.map(shown)).toEqual(before)                                       // nothing written back into them
+        expect(root.querySelector('#r1').lastElementChild.tagName).toBe('P')            // the line after the list stays
+    })
+})

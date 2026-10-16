@@ -182,6 +182,14 @@
     }
     const sanitizeFor = (el, html) => !window.ManifestRichText ? sanitizeHTML(html)
         : authoredRich(el) ? window.ManifestRichText.sanitize(html, true, true) : leafClean(html, el);
+    // Text written into an element. A leaf shows exactly what is logged; a rich field owns its markup:
+    // it is written only when it differs as logged, then settles (keeping its editing affordances)
+    function writeText(el, html) {
+        const safe = sanitizeFor(el, html);
+        if (el.innerHTML === safe || (authoredRich(el) && sanitizeFor(el, el.innerHTML.trim()) === safe)) return;
+        el.innerHTML = safe;
+        if (el._rt && typeof el._rt.settle === 'function') el._rt.settle();
+    }
 
     function sanitizeHTML(html) {
         const t = document.createElement('template'); t.innerHTML = String(html == null ? '' : html);

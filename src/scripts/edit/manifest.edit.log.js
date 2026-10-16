@@ -73,7 +73,7 @@
                 const base = area._baseText || {}, baseC = area._baseClass || {}, baseS = area._baseStyle || {};
                 const pick = (prop, fallback) => iv[prop] !== undefined ? iv[prop] : (mv[prop] !== undefined ? mv[prop] : fallback);
                 const text = pick('text', base[p]), cls = pick('class', baseC[p]), sty = pick('style', baseS[p]);
-                if (text !== undefined) { const safe = sanitizeFor(el, text); if (el.innerHTML !== safe) el.innerHTML = safe; }
+                if (text !== undefined) writeText(el, text);
                 if (cls !== undefined) writeClass(el, cls);
                 if (sty !== undefined && el.getAttribute('style') !== sty) { if (sty === '') el.removeAttribute('style'); else el.setAttribute('style', sty); }
             });
@@ -84,7 +84,7 @@
         if (path == null) return false;
         if (prop === 'text') value = sanitizeFor(el, value);
         if (before === undefined) before = prop === 'text' ? el._preEdit : prop === 'style' ? el._preStyle : el._preClass;
-        if (before === value) return false;
+        if (before === value || (prop === 'text' && before != null && sanitizeFor(el, before) === value)) return false;
         const sig = nodeSig(el);
         pushDelta(scope === 'main' ? { kind: 'cmp-main', component, path, prop, value, before, sig, region } : { kind: 'cmp-inst', component, region, path, prop, value, before, sig });
         applyComponentState();
@@ -184,7 +184,7 @@
 
     function applyStaticProp(el, prop, v) {
         if (v === undefined) return;
-        if (prop === 'text') { const safe = sanitizeFor(el, v); if (el.innerHTML !== safe) el.innerHTML = safe; return; }
+        if (prop === 'text') return writeText(el, v);
         if (attrRefusal(prop, v, el.tagName)) return;
         if (prop === 'class') return writeClass(el, v);
         if (prop === 'style') return writeStyle(el, v);
@@ -406,8 +406,9 @@
             const pre = prop === 'text' ? el._preEdit : prop === 'class' ? el._preClass : prop === 'style' ? el._preStyle : undefined;
             before = pre !== undefined ? pre : fallback;
         }
-        if (before === value) return false;
-        if (prop === 'text' && document.activeElement !== el && el.innerHTML.trim() !== value) el.innerHTML = value;
+        if (before === value || (prop === 'text' && before != null && sanitizeFor(el, before) === value)) return false;
+        // A rich field owns its markup: the logged value is never written back into it
+        if (prop === 'text' && document.activeElement !== el && !authoredRich(el)) writeText(el, value);
         const last = log[cursor - 1];
         if (opts.coalesce && last && cursor === log.length && last.kind === 'st-node' && last.region === region && last.path === path && last.prop === prop && Date.now() - (stamps.get(last) || 0) < COALESCE_MS) {
             if (last.before === value) { log.pop(); cursor--; } else { last.value = value; stamps.set(last, Date.now()); }
@@ -445,7 +446,7 @@
         value = String(value);
         if (el && el._editRich) value = sanitizeFor(el, value);
         const before = el ? el._preEdit : undefined;
-        if (before === value) return false;
+        if (before === value || (el && el._editRich && before != null && sanitizeFor(el, before) === value)) return false;
         pushDelta({ kind: 'data-val', region: key(area), source, id, field, value, before });
         applyDataValues();
         return true;
