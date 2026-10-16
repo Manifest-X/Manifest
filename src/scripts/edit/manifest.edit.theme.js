@@ -48,10 +48,24 @@
         });
         cssvarControls.forEach(syncCssVarInput);
     }
-    function rebaseTheme() {
-        Object.keys(themeBaseline).forEach(kk => { const sep = kk.indexOf('|'); themeBaseline[kk] = themeTargetEl(kk.slice(0, sep) || null).style.getPropertyValue(kk.slice(sep + 1)); });
-        themeTouched.clear();
+    function rebaseTheme(keep) {
+        Object.keys(themeBaseline).forEach(kk => { if (keep && keep.has('theme|' + kk)) return; const sep = kk.indexOf('|'); themeBaseline[kk] = themeTargetEl(kk.slice(0, sep) || null).style.getPropertyValue(kk.slice(sep + 1)); });
+        [...themeTouched].forEach(kk => { if (!(keep && keep.has('theme|' + kk))) themeTouched.delete(kk); });
     }
+    // A scoped value lives in its scope element's inline style, and is written there, never to a
+    // stylesheet: with its x-edit area's tree when the element is a static piece of one ('area'),
+    // else found by its own x-edit.theme name ('own'). Inside generated content it can't be (null).
+    function inlineScope(scope) {
+        const el = scope && themeScopes[scope]; if (!el || generatedBy(el)) return null;
+        const a = regionOf(el), k = el.getAttribute('data-edit-key');
+        if (a && classify(a) === 'static' && !sharedKey(a) && k && /^[@~]/.test(k)) return 'area';
+        if (a && a !== el) return null;
+        const named = areaByKey(scope);
+        return !named || named === el ? 'own' : null;
+    }
+    const inlineScoped = () => new Set(Object.values(themeState()).filter(d => d.scope && inlineScope(d.scope) === 'area').map(d => themeScopes[d.scope]));
+    // The component file a scope element is authored in, if any.
+    const scopeComponent = (el) => { for (let n = el; n; n = n.parentElement) if (n._manifestComponent) return n._manifestComponent; return null; };
     // A custom-property value must stay inside its declaration (same tokenizer as the
     // source writer): strings and url(...) are opaque; script schemes in url() and
     // expression() are refused anywhere; data: urls only as images.
@@ -101,8 +115,15 @@
     }
     // Each var → its scope's data-edit-theme-file, else the server's theme file.
     function themePatches() {
-        return Object.values(themeState()).map(d => {
+        const st = Object.values(themeState()), out = [];
+        st.filter(d => !inlineScope(d.scope)).forEach(d => {
             const el = d.scope ? themeScopes[d.scope] : null;
-            return { kind: 'theme', scope: d.scope || null, var: d.var, value: d.value, file: el ? el.getAttribute('data-edit-theme-file') || null : null };
+            out.push({ kind: 'theme', scope: d.scope || null, var: d.var, value: d.value, file: el ? el.getAttribute('data-edit-theme-file') || null : null });
         });
+        // A scope element of its own: its style attribute, as the page has it now
+        new Set(st.filter(d => d.scope && inlineScope(d.scope) === 'own').map(d => d.scope)).forEach(scope => {
+            const el = themeScopes[scope], comp = scopeComponent(el), tree = { key: '', edits: { style: ownStyle(el) || null } };
+            out.push(comp ? { kind: 'static-tree', region: scope, component: comp, tree } : { kind: 'static-tree', region: scope, tree });
+        });
+        return out;
     }

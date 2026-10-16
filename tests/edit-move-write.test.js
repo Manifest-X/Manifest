@@ -510,6 +510,33 @@ describe('/__edit/save static areas in component files', () => {
     })
 })
 
+describe('/__edit/save never skips silently', () => {
+    it('a data value for a source that is not a declared file is an error, by name', async () => {
+        writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ data: { cloud: { appwrite: 'x' } } }))
+        try {
+            const undeclared = (await save([{ kind: 'data-val', source: 'pets', id: '1', field: 'name', value: 'b' }])).results[0]
+            expect(undeclared.status).toBe('error')
+            expect(undeclared.reason).toBe(`data source 'pets' is not declared in manifest.json: mnfst-run writes data only to CSV/JSON/YAML files declared there`)
+            const cloud = (await save([{ kind: 'data-val', source: 'cloud', id: '1', field: 'name', value: 'b' }])).results[0]
+            expect(cloud.status).toBe('error')
+            expect(cloud.reason).toContain('is not a file')
+        } finally { writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'tree-test' })) }
+    })
+
+    it('the default theme target is the manifest.theme.css index.html links; a scoped value is never written to a stylesheet', async () => {
+        writeFileSync(path.join(dir, 'manifest.theme.css'), `:root {\n    --a: 1px;\n}\n.card {\n    --a: 2px;\n}\n`)
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/manifest.theme.css?v=2"><section x-edit="t"><p>T</p></section>`)
+        try {
+            const ok = (await save([{ kind: 'theme', scope: null, var: '--a', value: '3px' }])).results[0]
+            expect(ok.status, JSON.stringify(ok)).toBe('written')
+            expect(ok.file).toBe('manifest.theme.css')
+            const scoped = (await save([{ kind: 'theme', scope: 'card', var: '--a', value: '9px', file: 'manifest.theme.css' }])).results[0]
+            expect(scoped.status).toBe('error')
+            expect(readFileSync(path.join(dir, 'manifest.theme.css'), 'utf8')).toBe(`:root {\n    --a: 3px;\n}\n.card {\n    --a: 2px;\n}\n`)
+        } finally { rmSync(path.join(dir, 'manifest.theme.css'), { force: true }) }
+    })
+})
+
 describe('/__edit/save component hosts', () => {
     const comp = (rel, text) => { mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); writeFileSync(path.join(dir, rel), text) }
     const st = (region, children, base, extra = {}) => ({ kind: 'static-tree', region, ...extra, tree: { key: '', children, base } })
