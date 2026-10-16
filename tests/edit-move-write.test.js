@@ -525,13 +525,18 @@ describe('/__edit/save never skips silently', () => {
 
     it('the default theme target is the manifest.theme.css index.html links; a scoped value is never written to a stylesheet', async () => {
         writeFileSync(path.join(dir, 'manifest.theme.css'), `:root {\n    --a: 1px;\n}\n.card {\n    --a: 2px;\n}\n`)
-        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/manifest.theme.css?v=2"><section x-edit="t"><p>T</p></section>`)
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/manifest.theme.css?v=2"><section x-edit="t"><p>T</p></section><div x-edit.theme="card" style="--a: 2px"><p>C</p></div>`)
         try {
             const ok = (await save([{ kind: 'theme', scope: null, var: '--a', value: '3px' }])).results[0]
             expect(ok.status, JSON.stringify(ok)).toBe('written')
             expect(ok.file).toBe('manifest.theme.css')
             const scoped = (await save([{ kind: 'theme', scope: 'card', var: '--a', value: '9px', file: 'manifest.theme.css' }])).results[0]
             expect(scoped.status).toBe('error')
+            // The reason fits the case: a scope element in a source file is written inline; none is generated content
+            expect(scoped.reason).toContain('applies on its scope element (x-edit="card" in index.html)')
+            expect(scoped.reason).not.toContain('generated')
+            const gone = (await save([{ kind: 'theme', scope: 'nowhere', var: '--a', value: '9px' }])).results[0]
+            expect(gone.reason).toContain('no source file mnfst-run can write holds x-edit="nowhere"')
             expect(readFileSync(path.join(dir, 'manifest.theme.css'), 'utf8')).toBe(`:root {\n    --a: 3px;\n}\n.card {\n    --a: 2px;\n}\n`)
         } finally { rmSync(path.join(dir, 'manifest.theme.css'), { force: true }) }
     })

@@ -1624,11 +1624,21 @@ function themeTargets() {
   }
   return out;
 }
+// Why a scoped theme value is not written to a stylesheet, for the case at hand
+function scopedThemeRefusal(p) {
+  const what = `scoped value ${p.scope}:${p.var}`;
+  for (const rel of Object.keys(baseHashes()).filter(f => /\.html?$/i.test(f))) {
+    const file = safeResolve('/' + rel); if (!file) continue;
+    let html = ''; try { html = readFileSync(file, 'utf8'); } catch { continue; }
+    if (locateEditEl(html, p.scope)) return `${what} applies on its scope element (x-edit="${p.scope}" in ${rel}): it is written there as an inline style edit, not to a stylesheet, which would apply it site-wide`;
+  }
+  return `${what}: no source file mnfst-run can write holds x-edit="${p.scope}" (generated content, or not on any page), and a stylesheet would apply it site-wide`;
+}
 function writeThemeVar(p) {
   if (!/^--[\w-]+$/.test(p.var || '')) return { region: p.var, status: 'error', reason: 'bad var name' };
   // A scoped value applies on its scope element: the page writes it there (its inline style).
   // One sent here has no element mnfst-run can address; a stylesheet would apply it site-wide.
-  if (p.scope) return { region: `${p.scope}:${p.var}`, status: 'error', reason: `scoped value ${p.scope}:${p.var}: its scope element is not in a source file mnfst-run can write (generated content), and a stylesheet would apply it site-wide` };
+  if (p.scope) return { region: `${p.scope}:${p.var}`, status: 'error', reason: scopedThemeRefusal(p) };
   const rel = posix.normalize(String(p.file || defaultThemeFile()).replace(/^\/+/, ''));
   if (!themeTargets().has(rel)) return { region: p.var, status: 'error', reason: `${rel} is not a stylesheet this page links` };
   const file = safeResolve('/' + rel);
