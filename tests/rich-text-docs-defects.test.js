@@ -487,6 +487,39 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('undo and redo controls follow a value set from code, the field unfocused', async () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data="{ doc: '<p>One</p>' }"><button x-rich-text.undo id="u">U</button><div x-rich-text.html="doc" id="h"></div></div>`)
+        const el = root.querySelector('#h'), u = root.querySelector('#u')
+        focusin(el)
+        const t = el.querySelector('p').firstChild
+        t.nodeValue = 'Onex'; select(t, 4)
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'x' }))
+        el._rt.api.newest()
+        el.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); el.blur()
+        await new Promise(r => setTimeout(r, 0))
+        expect(u.getAttribute('aria-disabled')).toBe('false')
+        Alpine.$data(el).doc = '<p>From code</p>'
+        await new Promise(r => setTimeout(r, 0))
+        expect(el.innerHTML).toBe('<p>From code</p>')
+        expect(u.getAttribute('aria-disabled')).toBe('true')                   // a new value starts a new history
+    })
+
+    it('.all changes are history steps: undo and redo restore them', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data><select x-rich-text.font.all id="fa"><option value="">-</option><option value="Georgia">G</option></select><div x-rich-text.html id="h"><p>Text</p></div></div>`)
+        const el = root.querySelector('#h'), fa = root.querySelector('#fa')
+        focusin(el); select(el.querySelector('p').firstChild, 2)
+        fa.value = 'Georgia'; fa.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(el.style.getPropertyValue('--rich-text-font')).toBe('Georgia')
+        el._rt.api.undo()
+        expect(el.style.getPropertyValue('--rich-text-font')).toBe('')
+        el._rt.api.redo()
+        expect(el.style.getPropertyValue('--rich-text-font')).toBe('Georgia')
+        el._rt.api.all = { font: 'serif', align: 'center' }
+        el._rt.api.undo()
+        expect(el._rt.api.all).toEqual({ font: 'Georgia' })
+    })
     it('an inserted table takes the caret into its first cell; a merged header cell splits into header cells', () => {
         document.body.innerHTML = ''
         const exec = document.execCommand

@@ -1480,6 +1480,7 @@
         const next = values && values[k];
         if (next) area.style.setProperty(v, next); else area.style.removeProperty(v);
     });
+    const allKey = (area) => JSON.stringify(allStyle(area));
 
     /* ---- Command table ---- */
     const COMMANDS = Object.create(null);
@@ -2040,16 +2041,16 @@
         const h = area._history; if (!h || h.restoring) return;
         clearTimeout(h.timer); h.timer = null;
         if (area._rt && area._rt.settle) area._rt.settle();
-        const html = area.innerHTML;
+        const html = area.innerHTML, all = allKey(area);
         // Unchanged: the entry learns where the next edit starts (`before`, for undo);
         // `caret` stays where the edit that produced it ended (for redo)
-        if (h.stack[h.at] && h.stack[h.at].html === html) {
+        if (h.stack[h.at] && h.stack[h.at].html === html && h.stack[h.at].all === all) {
             const caret = offsetIn(area);
             if (caret != null) h.stack[h.at].before = caret;
             return;
         }
         h.stack.length = h.at + 1;
-        h.stack.push({ html, caret: offsetIn(area) });
+        h.stack.push({ html, caret: offsetIn(area), all });
         if (h.stack.length > HISTORY_CAP) h.stack.shift();
         h.at = h.stack.length - 1;
     }
@@ -2071,12 +2072,14 @@
     function step(area, by) {
         const h = area._history; if (!h) return;
         // Land a pending burst; walking history alone leaves each entry's carets as recorded
-        if (h.timer || !h.stack[h.at] || h.stack[h.at].html !== area.innerHTML) record(area);
+        if (h.timer || !h.stack[h.at] || h.stack[h.at].html !== area.innerHTML || h.stack[h.at].all !== allKey(area)) record(area);
         const next = h.at + by;
         if (next < 0 || next >= h.stack.length) return;
         h.at = next; h.restoring = true;
         const entry = h.stack[next];
         area.innerHTML = entry.html;
+        // .all styles are steps too
+        if (entry.all != null && entry.all !== allKey(area)) { setAllStyle(area, JSON.parse(entry.all)); area.dispatchEvent(new CustomEvent('rich-text:all', { bubbles: true, detail: allStyle(area) })); }
         if (area._rt && area._rt.settle) { area._rt.settle(); entry.html = area.innerHTML; }
         area.focus();
         caretIn(area, by < 0 && entry.before != null ? entry.before : entry.caret);
@@ -2210,8 +2213,10 @@
         }
         if (!allows(area, id, ctrl)) return;
         if (all) {
+            record(area);
             area.style.setProperty(ALL_VARS[id], id === 'size' ? px(arg) : arg);
             if (!arg) area.style.removeProperty(ALL_VARS[id]);
+            record(area);
             area.dispatchEvent(new CustomEvent('rich-text:all', { bubbles: true, detail: allStyle(area) }));
             sync();
             return;
@@ -2614,8 +2619,8 @@
             }
         }
 
-        el._history = { stack: [{ html: el.innerHTML, caret: 0 }], at: 0, timer: null, restoring: false };
-        const resetHistory = () => { clearTimeout(el._history.timer); el._history.timer = null; el._history.stack = [{ html: el.innerHTML, caret: 0 }]; el._history.at = 0; };
+        el._history = { stack: [{ html: el.innerHTML, caret: 0, all: allKey(el) }], at: 0, timer: null, restoring: false };
+        const resetHistory = () => { clearTimeout(el._history.timer); el._history.timer = null; el._history.stack = [{ html: el.innerHTML, caret: 0, all: allKey(el) }]; el._history.at = 0; };
 
         // Empty flag for the placeholder; a wiped document restarts as a paragraph
         function settle() {
@@ -2649,7 +2654,7 @@
             resetHistory();
             settle();
             el._selection = selectionOf(el);
-            beat();
+            sync();
         };
 
         const lineBreak = () => { record(el); insertBreak(el); record(el); el.dispatchEvent(new Event('input', { bubbles: true })); };
@@ -2868,7 +2873,7 @@
                 el._history.restoring = false;
             },
             get all() { watch(); return allStyle(el); },
-            set all(v) { if (!allStyles) return; setAllStyle(el, v); sync(); },
+            set all(v) { if (!allStyles) return; record(el); setAllStyle(el, v); record(el); sync(); },
             get selection() { watch(); return el._selection || null; },
             get link() { watch(); return linkHref(); },
             set link(v) { run(el, 'a', v); },
@@ -2888,7 +2893,7 @@
         el._rt = { format, inline: single, breaks: lines, noAll: !allStyles, api, settle };
         areas.add(el);
         settle();
-        el._history.stack[0].html = el.innerHTML;
+        el._history.stack[0].html = el.innerHTML; el._history.stack[0].all = allKey(el);
         setTimeout(sync, 0);
 
         const destroy = () => {
