@@ -1646,6 +1646,9 @@ function writeThemeVar(p) {
   if (!themeTargets().has(rel)) return { region: p.var, status: 'error', reason: `${rel} is not a stylesheet this page links` };
   const file = safeResolve('/' + rel);
   if (!file) return { region: p.var, status: 'error', reason: `path outside root: ${rel}` };
+  // No theme stylesheet of the project's own: the fallback path is written only when it exists
+  if (!p.file && rel === DEFAULT_THEME_FILE && defaultThemeFile() === DEFAULT_THEME_FILE && !vexists(file))
+    return { region: p.var, status: 'error', reason: `theme value ${p.var}: no local manifest.theme.css is linked from index.html (a CDN copy can't be written); link your project's own manifest.theme.css` };
   const refused = writeRefusal(file, 'css'); if (refused) return { region: p.var, status: 'error', reason: `refused: ${refused}` };
   const why = themeValueRefusal(p.value);
   if (why) return { region: p.var, status: 'error', reason: `value refused (${why})` };

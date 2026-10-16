@@ -523,6 +523,21 @@ describe('/__edit/save never skips silently', () => {
         } finally { writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ name: 'tree-test' })) }
     })
 
+    it('with no local manifest.theme.css linked, a global theme value says what to do; the fallback path is written when it exists', async () => {
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="https://cdn.example/mnfst/manifest.theme.css"><section x-edit="t"><p>T</p></section>`)
+        rmSync(path.join(dir, 'styles'), { force: true, recursive: true })
+        try {
+            const r = (await save([{ kind: 'theme', scope: null, var: '--x', value: 'red' }])).results[0]
+            expect(r.status).toBe('error')
+            expect(r.reason).toBe("theme value --x: no local manifest.theme.css is linked from index.html (a CDN copy can't be written); link your project's own manifest.theme.css")
+            mkdirSync(path.join(dir, 'styles/core'), { recursive: true })
+            writeFileSync(path.join(dir, 'styles/core/manifest.theme.css'), `:root {\n    --x: blue;\n}\n`)
+            const ok = (await save([{ kind: 'theme', scope: null, var: '--x', value: 'red' }])).results[0]
+            expect(ok.status, JSON.stringify(ok)).toBe('written')
+            expect(readFileSync(path.join(dir, 'styles/core/manifest.theme.css'), 'utf8')).toBe(`:root {\n    --x: red;\n}\n`)
+        } finally { rmSync(path.join(dir, 'styles'), { force: true, recursive: true }) }
+    })
+
     it('the default theme target is the manifest.theme.css index.html links; a scoped value is never written to a stylesheet', async () => {
         writeFileSync(path.join(dir, 'manifest.theme.css'), `:root {\n    --a: 1px;\n}\n.card {\n    --a: 2px;\n}\n`)
         writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/manifest.theme.css?v=2"><section x-edit="t"><p>T</p></section><div x-edit.theme="card" style="--a: 2px"><p>C</p></div>`)
