@@ -45,8 +45,8 @@
             text-align: left;
             text-align: start;
 
-            /* Make elements within cell inline */
-            &>*:not(template) {
+            /* Make elements within cell inline; text-level elements stay in the text flow */
+            &>*:not(template, a, abbr, b, cite, code, data, del, dfn, em, i, ins, kbd, mark, q, s, samp, small, strong, sub, sup, time, u, var, br) {
                 display: inline-flex;
                 vertical-align: middle;
 
