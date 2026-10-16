@@ -1570,6 +1570,13 @@
         if (!frag.lastChild) return;
         record(area);
         r.deleteContents();
+        // A caret between a block field's blocks (an empty field clicked) goes into the block beside it
+        const c0 = range();
+        if (c0 && c0.startContainer === area && !(area._rt && area._rt.inline)) {
+            const into = (b) => b && b.nodeType === 1 && /^(P|H[1-6]|BLOCKQUOTE|PRE)$/.test(b.tagName);
+            const before = area.childNodes[c0.startOffset - 1], after = area.childNodes[c0.startOffset];
+            if (into(before)) caretIn(before, before.textContent.length); else if (into(after)) caretIn(after, 0);
+        }
         // An empty block's placeholder <br> goes; at a block's start, so does the content's leading space
         const holder = blockEl() || area;
         if (!holder.textContent.length && !holder.querySelector('img')) holder.querySelectorAll('br').forEach(b => b.remove());
@@ -1579,7 +1586,16 @@
         }
         let end = frag.lastChild;
         if (!end) return;
+        const lastTop = end;
         const cr = range(); if (cr && area.contains(cr.startContainer)) cr.insertNode(frag); else area.appendChild(frag);
+        // Pasted content ending in a mark: the caret sits after it, as after a conversion
+        if (lastTop.nodeType === 1 && INLINE_OK.has(lastTop.tagName) && !/^(BR|WBR|IMG)$/.test(lastTop.tagName) && lastTop.isConnected) {
+            caretAt(tailOf(lastTop), 0);
+            area._exit = lastTop;
+            record(area);
+            area.dispatchEvent(new Event('input', { bubbles: true }));
+            return;
+        }
         // The caret ends inside the last text, never at an element boundary (an IME composition there is left behind)
         const s = sel(), nr = document.createRange();
         if (end.nodeType === 1) { const w = document.createTreeWalker(end, NodeFilter.SHOW_TEXT); let t = null; for (let n = w.nextNode(); n; n = w.nextNode()) t = n; if (t) end = t; }

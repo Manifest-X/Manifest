@@ -221,6 +221,24 @@ describe('typed and pending marks', () => {
         }
     })
 
+    it('typing after a paste that ends in a mark lands after it; a one-line paste into an empty field leaves no empty paragraph', () => {
+        const paste = (el, text) => { const e = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(e, 'clipboardData', { value: { getData: (t) => t === 'text/plain' ? text : '' } }); el.dispatchEvent(e) }
+        for (const attr of ['x-rich-text', 'x-rich-text.html']) {
+            document.body.innerHTML = ''
+            let root = mount(`<div ${attr} id="f"></div>`), el = root.querySelector('#f')
+            focusin(el); window.getSelection().collapse(el, 0)                          // an empty field, clicked
+            paste(el, 'pasted **bold** and *em*')
+            chromeType(el, 'Z')
+            expect(el.innerHTML, attr).toBe('<p>pasted <strong>bold</strong> and <em>em</em>Z</p>')
+            document.body.innerHTML = ''
+            root = mount(`<div ${attr} id="g"></div>`); el = root.querySelector('#g')
+            focusin(el); window.getSelection().collapse(el, 0)
+            paste(el, 'one line plain')
+            expect(el.innerHTML, attr).toBe('<p>one line plain</p>')
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? 'one line plain' : '<p>one line plain</p>')
+        }
+    })
+
     it('a space then Backspace keeps the caret after the mark; a second Backspace goes into it', () => {
         let el = converted('Use `code')
         chromeType(el, ' '); chromeBackspace(el); chromeType(el, 'Z')
@@ -473,7 +491,7 @@ describe('paste over a selection across blocks', () => {
         expect([...el.children].map(c => c.tagName)).toEqual(['H2', 'P', 'P', 'UL', 'TABLE', 'P'])
     })
 
-    it('the caret ends inside the last pasted text, and an empty field loses its placeholder and leading space', () => {
+    it('the caret ends after the last pasted mark (as after a conversion), and an empty field loses its placeholder and leading space', () => {
         const root = mount(`<div x-rich-text.html id="e"></div>`)
         const el = root.querySelector('#e')
         expect(el.innerHTML).toBe('<p><br></p>')
@@ -482,8 +500,9 @@ describe('paste over a selection across blocks', () => {
         expect(el.innerHTML).toBe('<p><u>u</u> <em>em</em></p>')
         const r = window.getSelection().getRangeAt(0)
         expect(r.startContainer.nodeType).toBe(3)
-        expect(r.startContainer.nodeValue).toBe('em')
-        expect(r.startOffset).toBe(2)
+        expect(r.startContainer.previousSibling).toBe(el.querySelector('em'))       // in the text after it
+        expect(r.startOffset).toBe(0)
+        expect(el._exit).toBe(el.querySelector('em'))                                // typed text (IME too) goes after it
     })
 
     it('loose inline content at a block field\'s root is wrapped in a paragraph on settle', () => {
