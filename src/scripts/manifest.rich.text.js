@@ -19,6 +19,37 @@
     const MARKS = { STRONG: '**', B: '**', EM: '*', I: '*', S: '~~', DEL: '~~', CODE: '`' };
     const INLINE_OK = new Set([...Object.keys(INLINE_TAGS).map(t => t.toUpperCase()), 'BR', 'WBR', 'A', 'IMG']);
 
+    /* ---- Adjacent marks ----
+       Neighbouring inline elements alike (same tag and attributes; for markdown, the same
+       delimiter) are one: merged, children first, the selection kept on the nodes it was in. */
+    const sameInline = (a, b) => !!b && b.nodeType === 1 && a.tagName === b.tagName
+        && a.attributes.length === b.attributes.length && [...a.attributes].every(x => b.getAttribute(x.name) === x.value);
+    const sameDelimiter = (a, b) => !!b && b.nodeType === 1 && (a.tagName === 'A' ? sameInline(a, b) : !!MARKS[a.tagName] && MARKS[a.tagName] === MARKS[b.tagName]);
+    function mergeAdjacent(root, same = sameInline) {
+        const r = root.ownerDocument === document && root.isConnected ? range() : null;
+        const keep = r && root.contains(r.startContainer) ? [r.startContainer, r.startOffset, r.endContainer, r.endOffset] : null;
+        let any = false;
+        const walk = (p) => {
+            let merged = false;
+            [...p.children].forEach(walk);
+            for (let c = p.firstChild; c; c = c.nextSibling) {
+                while (c.nodeType === 1 && INLINE_OK.has(c.tagName) && !/^(BR|WBR|IMG)$/.test(c.tagName)) {
+                    const gaps = [];
+                    let n = c.nextSibling;
+                    while (n && n.nodeType === 3 && !n.length) { gaps.push(n); n = n.nextSibling; }   // empty text between them is nothing
+                    if (!same(c, n)) break;
+                    const base = c.childNodes.length;
+                    if (keep) for (const i of [0, 2]) { if (gaps.includes(keep[i])) { keep[i] = c; keep[i + 1] = base; } else if (keep[i] === n) { keep[i] = c; keep[i + 1] += base; } }
+                    gaps.forEach(g => g.remove()); c.append(...n.childNodes); n.remove(); merged = any = true;
+                }
+            }
+            if (merged) walk(p);
+        };
+        walk(root);
+        if (any && keep && keep[0].isConnected && keep[2].isConnected) try { const nr = document.createRange(); nr.setStart(keep[0], keep[1]); nr.setEnd(keep[2], keep[3]); const s = sel(); s.removeAllRanges(); s.addRange(nr); } catch { }
+        return any;
+    }
+
     /* ---- URL policy ---- */
     // No script schemes; data: only as an image.
     function unsafeUrl(url, image) {
@@ -50,10 +81,14 @@
             if (tag === 'BR') { out += '  \n'; return; }
             if (tag === 'IMG') { const src = n.getAttribute('src') || ''; out += src && !unsafeUrl(src, true) ? `![${esc(n.getAttribute('alt') || '')}](${mdUrl(src)})` : ''; return; }
             if (tag === 'A') { const h = n.getAttribute('href') || ''; out += h && !unsafeUrl(h) ? `[${inline(n)}](${mdUrl(h)})` : inline(n); return; }
-            const m = MARKS[tag];
+            let m = MARKS[tag];
             if (!m) { out += inline(n); return; }
             const body = tag === 'CODE' ? n.textContent : inline(n);
-            out += body.trim() ? m + body + m : body;
+            if (!body.trim()) { out += body; return; }
+            // Delimiters hug the text (spaces go outside), and never run into a neighbour's
+            const [, lead, core, trail] = tag === 'CODE' ? ['', '', body, ''] : body.match(/^(\s*)([\s\S]*?)(\s*)$/);
+            if (m[0] === '*' && !lead && out.endsWith('*')) m = m.replace(/\*/g, '_');
+            out += lead + m + core + m + trail;
         });
         return out;
     }
@@ -110,11 +145,13 @@
         return parts.join('\n\n');
     }
 
-    const toMarkdown = (root) => blocks(root, 0).replace(/\n{3,}/g, '\n\n').trim();
+    const mdCopy = (root) => { const c = root.cloneNode(true); mergeAdjacent(c, sameDelimiter); return c; };
+    const toMarkdown = (root) => blocks(mdCopy(root), 0).replace(/\n{3,}/g, '\n\n').trim();
     // Single-line values never parse block syntax, so line starts need no escape
     const inlineMarkdown = (root) => {
         const flat = document.createElement('div');
         flat.innerHTML = flattenLines(root.innerHTML, true);
+        mergeAdjacent(flat, sameDelimiter);
         return inline(flat).trim();
     };
 
@@ -188,8 +225,10 @@
         return escHtml(s)
             .replace(/\\(&lt;|&gt;|&amp;|[\\`*_~[\]#+.-])|`([^`]+)`/g, (_, c, code) => HOLD + (held.push(code != null ? `<code>${code}</code>` : c) - 1) + HOLD)
             .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/(^|[^\w_])__([^_]+)__(?![\w_])/g, '$1<strong>$2</strong>')
             .replace(/~~([^~]+)~~/g, '<s>$1</s>')
             .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+            .replace(/(^|[^\w_])_([^_\n]+)_(?![\w_])/g, '$1<em>$2</em>')
             .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, src) => unsafeUrl(src, true) ? '' : `<img src="${src}" alt="${alt}">`)
             .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_, t, h) => unsafeUrl(h) ? t : `<a href="${h}">${t}</a>`)
             .replace(/ {2}\n/g, '<br>')
@@ -278,6 +317,7 @@
             });
         });
         walk(t.content);
+        mergeAdjacent(t.content);
         return t.innerHTML;
     }
 
@@ -2152,6 +2192,7 @@
         if (arming) { spec.run(arg, area); sync(); return; }
         if (!spec.history) record(area);
         spec.run(arg, area);
+        mergeAdjacent(area);
         normalizeLists(area);
         if (!spec.history) record(area);
         saveRange(area);
@@ -2608,7 +2649,7 @@
         on('input', (e) => {
             // Mid-composition the IME owns the text
             if (!writing && e.data && !e.isComposing) {
-                if (applyPending(el, e.data)) commit();
+                if (applyPending(el, e.data)) { mergeAdjacent(el); commit(); }
                 if (leaveMark(el, e.data)) commit();
                 if (autoformat && convertInlineAtCaret(el)) commit();
             }

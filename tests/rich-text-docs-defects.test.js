@@ -254,6 +254,54 @@ describe('typed and pending marks', () => {
         expect(el._rt.api.value).toBe('<p>Mr.&nbsp;Smith ok</p>')
     })
 
+    it('a mark extended to the text beside it is one mark, in every format', () => {
+        for (const [attr, expected] of [['x-rich-text', 'Make *this stand* out.'], ['x-rich-text.html', '<p>Make <em>this stand</em> out.</p>']]) {
+            document.body.innerHTML = ''
+            const root = mount(`<div ${attr} id="f"></div>`)
+            const el = root.querySelector('#f')
+            el._rt.api.value = attr === 'x-rich-text' ? 'Make *this* stand out.' : '<p>Make <em>this</em> stand out.</p>'
+            focusin(el)
+            const t = el.querySelector('em').nextSibling
+            select(t, 0, 6)                                                          // " stand"
+            key(el, { key: 'i', metaKey: true, ctrlKey: !/Mac/.test(navigator.platform || '') })
+            expect(el.innerHTML, attr).toBe('<p>Make <em>this stand</em> out.</p>')
+            expect(el._rt.api.value, attr).toBe(expected)
+        }
+    })
+
+    it('typing on with a mark armed right after the same mark continues it', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-rich-text id="m"></div>`)
+        const el = root.querySelector('#m')
+        focusin(el)
+        el.firstElementChild.textContent = '**b*'
+        window.getSelection().collapse(el.firstElementChild.firstChild, 4)
+        chromeType(el, '*')
+        expect(el.innerHTML).toBe('<p><strong>b</strong></p>')
+        key(el, { key: 'b', metaKey: true, ctrlKey: !/Mac/.test(navigator.platform || '') })
+        chromeType(el, 'x')
+        expect(el.innerHTML).toBe('<p><strong>bx</strong></p>')
+        expect(el._rt.api.value).toBe('**bx**')
+    })
+
+    it('markdown never writes delimiters that read back differently', () => {
+        const RT = window.ManifestRichText
+        const md = (html) => { const d = document.createElement('div'); d.innerHTML = html; return RT.toMarkdown(d) }
+        const cases = [
+            ['<p>Make <em>this</em><em> stand</em> out.</p>', 'Make *this stand* out.', '<p>Make <em>this stand</em> out.</p>'],
+            ['<p><strong>b</strong><b>x</b></p>', '**bx**', '<p><strong>bx</strong></p>'],
+            ['<p><em>a</em><strong>b</strong></p>', '*a*__b__', '<p><em>a</em><strong>b</strong></p>'],
+            ['<p><strong>a</strong><em>b</em></p>', '**a**_b_', '<p><strong>a</strong><em>b</em></p>'],
+            ['<p>a<em> b </em>c</p>', 'a *b* c', '<p>a <em>b</em> c</p>'],
+            ['<p><code>x</code><code>y</code> <s>p</s><del>q</del></p>', '`xy` ~~pq~~', '<p><code>xy</code> <s>pq</s></p>'],
+            ['<p>snake_case and 2*3*4</p>', 'snake\\_case and 2\\*3\\*4', '<p>snake_case and 2*3*4</p>']
+        ]
+        for (const [html, want, back] of cases) {
+            expect(md(html), html).toBe(want)
+            expect(RT.fromMarkdown(want), want).toBe(back)
+        }
+    })
+
     it('an armed mark wraps what is typed, a leading space included', () => {
         const root = mount(`<div x-rich-text.html id="h"><p>Hello world</p></div>`)
         const el = root.querySelector('#h'), t = el.querySelector('p').firstChild
