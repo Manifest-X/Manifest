@@ -487,6 +487,22 @@ describe('authored empty blocks', () => {
 })
 
 describe('docs certifier defects', () => {
+    it('a block style picked from a dropdown keeps the selection, so the selection controls stay usable', () => {
+        document.body.innerHTML = ''
+        const root = mount(`<div x-data><select x-rich-text.block id="blk"><option value="p">P</option><option value="h2">H2</option></select><select x-rich-text.font id="fnt"><option value="">-</option><option value="Georgia">G</option></select><div x-rich-text.html id="d"><p>Select some words, then pick.</p></div></div>`)
+        const el = root.querySelector('#d'), blk = root.querySelector('#blk'), fnt = root.querySelector('#fnt')
+        focusin(el)
+        const t = el.querySelector('p').firstChild
+        select(t, 12, 17)                                                        // "words"
+        document.dispatchEvent(new Event('selectionchange'))
+        blk.focus(); blk.value = 'h2'; blk.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(el.innerHTML).toBe('<h2>Select some words, then pick.</h2>')
+        expect(window.getSelection().toString()).toBe('words')
+        expect(fnt.getAttribute('aria-disabled')).toBe('false')
+        fnt.focus(); fnt.value = 'Georgia'; fnt.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(el.innerHTML).toBe('<h2>Select some <span style="font-family: Georgia;">words</span>, then pick.</h2>')
+    })
+
     it('``` then Enter opens a code block as the first block of an empty field too', () => {
         for (const attr of ['x-rich-text', 'x-rich-text.html']) {
             document.body.innerHTML = ''
