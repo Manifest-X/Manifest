@@ -280,14 +280,14 @@ describe('.move nesting', () => {
         expect(names(area)).toEqual(['card', 'Loose', 'empty'])
     })
 
-    it('in text, Alt+Left/Right stay native; Escape leaves text with the piece focused', async () => {
+    it('in text, Alt+Left/Right stay native; Alt+Enter leaves text with the piece focused', async () => {
         const root = await mount(`<section x-edit="${id('esc')}"><div><p>Inside</p></div><p>Loose</p></section>`)
         const card = root.querySelector('div'), loose = root.querySelector('section > p')
         expect(loose.getAttribute('contenteditable')).toBe('true')
         loose.focus()
         expect(key(loose, { key: 'ArrowRight', altKey: true }).defaultPrevented).toBe(false)
         expect(loose.parentElement).not.toBe(card)
-        key(loose, { key: 'Escape' })
+        key(loose, { key: 'Enter', altKey: true })
         expect(document.activeElement).toBe(loose)
         expect(loose.isContentEditable).toBe(false)
         expect(key(loose, { key: 'ArrowRight', altKey: true }).defaultPrevented).toBe(true)
@@ -296,13 +296,24 @@ describe('.move nesting', () => {
         expect(loose.getAttribute('contenteditable')).toBe('true')
     })
 
-    it('Escape from a text leaf inside a piece focuses that piece', async () => {
+    it('Alt+Enter from a text leaf inside a piece focuses that piece', async () => {
         const root = await mount(`<section x-edit="${id('esc2')}"><div><h3>Title</h3></div><div></div></section>`)
         const [card] = root.querySelectorAll('section > div'), h3 = card.querySelector('h3')
         h3.focus()
-        key(h3, { key: 'Escape' })
+        key(h3, { key: 'Enter', altKey: true })
         expect(document.activeElement).toBe(h3)                        // h3 is itself a piece of the card
         expect(h3.isContentEditable).toBe(false)
+    })
+
+    it('Escape leaves the text entirely: nothing stays focused', async () => {
+        const root = await mount(`<section x-edit="${id('esc3')}"><div><h3>Title</h3></div><p>Loose</p></section>`)
+        const h3 = root.querySelector('h3'), loose = root.querySelector('section > p')
+        for (const el of [h3, loose]) {
+            el.focus()
+            key(el, { key: 'Escape' })
+            expect(document.activeElement).not.toBe(el)
+            expect(el.getAttribute('contenteditable')).toBe('true')
+        }
     })
 
     it('remove and duplicate work inside a nested container, and undo restores identity', async () => {
@@ -339,83 +350,80 @@ describe('.move nesting', () => {
     })
 })
 
-describe('grip for text pieces', () => {
-    const gripEl = () => document.querySelector('[data-edit-grip]')
-    const over = (el) => el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
-    const shown = () => !!gripEl() && !gripEl().hidden
+describe('dragging text pieces from their surface', () => {
+    const down = (el, x, y, pointerType = 'mouse') => el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerType, pointerId: 7 }))
+    const move = (x, y, pointerType = 'mouse') => document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType, pointerId: 7 }))
+    const up = (x, y, pointerType = 'mouse') => document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x, clientY: y, pointerType, pointerId: 7 }))
 
-    it('hovering a text piece shows a grip at its inline-start edge, outside the area', async () => {
-        const root = await mount(`<section x-edit="${id('grip')}"><p>Alpha</p><p>Beta</p></section>`)
-        const area = root.querySelector('section'), [alpha] = area.querySelectorAll('p')
-        rect(alpha, 40, 100, 400, 130)
-        over(alpha)
-        expect(shown()).toBe(true)
-        expect(gripEl().parentElement).toBe(document.body)
-        expect(gripEl().style.left).toBe('40px')
-        expect(gripEl().style.top).toBe('100px')
-        expect(area.contains(gripEl())).toBe(false)
-    })
-
-    it('mouse and touch drags on the grip move the piece', async () => {
-        const root = await mount(`<section x-edit="${id('grip-d')}"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`)
+    it('a text piece drags by its own surface, by mouse and touch; no grip is drawn', async () => {
+        const root = await mount(`<section x-edit="${id('surf')}"><p>Alpha</p><p>Beta</p><p>Gamma</p></section>`)
         const area = root.querySelector('section'), [alpha, beta, gamma] = area.querySelectorAll('p')
         rect(alpha, 0, 0, 400, 50); rect(beta, 0, 50, 400, 100); rect(gamma, 0, 100, 400, 150)
         for (const pointerType of ['mouse', 'touch']) {
-            over(alpha)
-            const g = gripEl()
             document.elementFromPoint = () => gamma
-            g.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: -5, clientY: 10, button: 0, pointerType, pointerId: 7 }))
-            document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 100, clientY: 140, pointerType, pointerId: 7 }))
-            expect(gripEl().hidden).toBe(true)
-            document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 100, clientY: 140, pointerType, pointerId: 7 }))
+            down(alpha, 20, 10, pointerType)
+            move(100, 140, pointerType)
+            expect(alpha.hasAttribute('data-edit-dragging')).toBe(true)
+            up(100, 140, pointerType)
             expect(area.lastElementChild).toBe(alpha)
             expect(last()).toMatchObject({ kind: 'st-order' })
-            area.insertBefore(alpha, area.firstElementChild)   // reset for the next pointer type
+            area.insertBefore(alpha, area.firstElementChild)
         }
+        expect(document.querySelector('[data-edit-grip]')).toBe(null)
     })
 
-    it('focusing a text piece shows the grip; blur hides it', async () => {
-        const root = await mount(`<section x-edit="${id('grip-f')}"><p>Alpha</p></section>`)
-        const p = root.querySelector('p')
-        p.focus()
-        expect(shown()).toBe(true)
-        p.blur()
-        expect(shown()).toBe(false)
+    it('a press that does not move leaves the text to edit; dragging a card blurs the text typed in it', async () => {
+        const root = await mount(`<section x-edit="${id('surf-c')}"><div class="card"><h3>Title</h3><p>Body</p></div><div class="card"><p>Other</p></div></section>`)
+        const area = root.querySelector('section'), [one, two] = area.querySelectorAll('.card'), h3 = one.querySelector('h3')
+        rect(one, 0, 0, 400, 80); rect(two, 0, 80, 400, 160); rect(h3, 10, 10, 390, 30)
+        down(h3, 20, 20); move(22, 21); up(22, 21)
+        expect(one.hasAttribute('data-edit-dragging')).toBe(false)
+        expect(area.firstElementChild).toBe(one)
+        h3.focus()
+        document.elementFromPoint = () => two
+        down(one, 200, 70); move(200, 150)
+        expect(one.hasAttribute('data-edit-dragging')).toBe(true)
+        expect(document.activeElement).not.toBe(h3)
+        up(200, 150)
+        expect(area.lastElementChild).toBe(one)
     })
 
-    it('non-text pieces get no grip and keep whole-element drag', async () => {
-        const root = await mount(`<section x-edit="${id('grip-n')}"><div><p>Card</p></div><div><p>Other</p></div></section>`)
-        const card = root.querySelector('div')
-        over(card)
-        expect(shown()).toBe(false)
-        over(card.querySelector('p'))                                  // the text inside is its own piece
-        expect(shown()).toBe(true)
+    it('while text is being typed in, dragging across it selects instead of moving', async () => {
+        const root = await mount(`<section x-edit="${id('surf-t')}"><p>Alpha</p><p>Beta</p></section>`)
+        const area = root.querySelector('section'), [alpha, beta] = area.querySelectorAll('p')
+        rect(alpha, 0, 0, 400, 50); rect(beta, 0, 50, 400, 100)
+        alpha.focus()
+        document.elementFromPoint = () => beta
+        down(alpha, 20, 10); move(20, 90)
+        expect(alpha.hasAttribute('data-edit-dragging')).toBe(false)
+        up(20, 90)
+        expect(area.firstElementChild).toBe(alpha)
     })
 
-    it('.bare areas show no grip; move-only areas drag text whole', async () => {
-        const root = await mount(`
-            <section x-edit.bare="${id('grip-b')}"><p>Bare</p></section>
-            <section x-edit.move="${id('grip-m')}"><p>Moves</p></section>`)
-        const [bare, moves] = root.querySelectorAll('p')
-        over(bare)
-        expect(shown()).toBe(false)
-        over(moves)
-        expect(shown()).toBe(false)
+    it('a piece with its own [data-edit-grab] drags only from it', async () => {
+        const root = await mount(`<section x-edit="${id('grab')}"><div class="card"><span data-edit-grab></span><p>Alpha</p></div><div class="card"><p>Beta</p></div></section>`)
+        const area = root.querySelector('section'), [one, two] = area.querySelectorAll('.card'), handle = one.querySelector('[data-edit-grab]')
+        rect(one, 0, 0, 400, 50); rect(two, 0, 50, 400, 100); rect(handle, 0, 0, 16, 16)
+        document.elementFromPoint = () => two
+        down(one, 200, 40); move(200, 90)                              // the card's own surface: not its handle
+        expect(one.hasAttribute('data-edit-dragging')).toBe(false)
+        up(40, 90)
+        down(handle, 8, 8); move(40, 90)
+        expect(one.hasAttribute('data-edit-dragging')).toBe(true)
+        up(40, 90)
+        expect(area.lastElementChild).toBe(one)
     })
 
-    it('the grip never reaches text, markup or patches', async () => {
-        const region = id('grip-p')
-        const root = await mount(`<section x-edit="${region}"><p>Alpha</p></section>`)
-        const p = root.querySelector('p')
-        over(p)
+    it('a grab handle is never editable text, and never reaches patches', async () => {
+        const region = id('grab-p')
+        const root = await mount(`<section x-edit="${region}"><div><span data-edit-grab>⠿</span><p>Alpha</p></div></section>`)
+        const handle = root.querySelector('[data-edit-grab]'), p = root.querySelector('p')
+        expect(handle.isContentEditable).toBe(false)
         editText(p, 'Edited')
-        expect(store().copy(p)).toBe(true)
-        expect(JSON.stringify(store().patches())).not.toContain('data-edit-grip')
-        expect(JSON.stringify(store().export())).not.toContain('data-edit-grip')
-        expect(root.innerHTML).not.toContain('data-edit-grip')
+        expect(JSON.stringify(store().patches())).not.toContain('Edited⠿')
         expect(p.innerHTML).toBe('Edited')
     })
-})
+});
 
 describe('identity', () => {
     it('duplicating a twin mints a unique key; undo/redo keep the copy', async () => {
@@ -720,6 +728,52 @@ describe('size variables', () => {
         const { log, cursor } = store().export()
         expect(log[cursor - 2]).toMatchObject({ kind: 'st-node', prop: 'style' })
         expect(log[cursor - 1]).toMatchObject({ kind: 'show', expr: 'sidebar', before: true, value: false, join: true })
+    })
+
+    it('closes live as the edge passes the close size, and reopens if dragged back out', async () => {
+        const root = await mount(`<div x-data="{ sidebar: true }"><aside x-show="sidebar" x-edit.size="${id('side-live')}" style="width: 300px; min-width: 120px; --edit-size: x; --edit-size-close: 100px">Side</aside></div>`)
+        const aside = root.querySelector('aside'), data = Alpine.$data(root.firstElementChild), h = aside.querySelector('[data-edit-handle="right"]')
+        const at = store().export().cursor
+        const moveTo = (x) => document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: x, clientY: 0 }))
+        h.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        moveTo(-150)                                                  // raw 150px: still open
+        expect(data.sidebar).toBe(true)
+        moveTo(-250)                                                  // raw 50px: closed while held
+        expect(data.sidebar).toBe(false)
+        expect(store().export().cursor).toBe(at)                      // nothing logged until release
+        moveTo(-100)                                                  // raw 200px: open again
+        expect(data.sidebar).toBe(true)
+        moveTo(-260)
+        document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        expect(data.sidebar).toBe(false)
+        expect(last()).toMatchObject({ kind: 'show', expr: 'sidebar', before: true, value: false, join: true })
+        await store().undo()
+        expect(data.sidebar).toBe(true)
+    })
+
+    it('a cancelled drag that closed live reopens', async () => {
+        const root = await mount(`<div x-data="{ sidebar: true }"><aside x-show="sidebar" x-edit.size="${id('side-cx')}" style="width: 300px; --edit-size: x; --edit-size-close: 100px">Side</aside></div>`)
+        const aside = root.querySelector('aside'), data = Alpine.$data(root.firstElementChild)
+        aside.querySelector('[data-edit-handle="right"]').dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: -250, clientY: 0 }))
+        expect(data.sidebar).toBe(false)
+        document.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true }))
+        expect(data.sidebar).toBe(true)
+        expect(aside.style.width).toBe('300px')
+    })
+
+    it('marks the element and its handle while an edge sits on a snap point', async () => {
+        const { el, handle } = await box('width: 200px; --edit-size-snap: 300px; --edit-size-snap-distance: 20px')
+        const h = handle('right')
+        h.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 0, clientY: 0, button: 0 }))
+        expect(h.hasAttribute('data-edit-resizing')).toBe(true)
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 50, clientY: 0 }))
+        expect([el.hasAttribute('data-edit-snapped'), h.hasAttribute('data-edit-snapped')]).toEqual([false, false])
+        document.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 92, clientY: 0 }))
+        expect(el.style.width).toBe('300px')
+        expect([el.hasAttribute('data-edit-snapped'), h.hasAttribute('data-edit-snapped')]).toEqual([true, true])
+        document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+        expect([el.hasAttribute('data-edit-snapped'), h.hasAttribute('data-edit-snapped'), h.hasAttribute('data-edit-resizing')]).toEqual([false, false, false])
     })
 
     it('one undo after a close restores the size and reopens; redo closes again', async () => {

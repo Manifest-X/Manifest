@@ -37,7 +37,7 @@
         if (el._editRt || el._pieceMode) return;                         // a focused piece re-attaches when it leaves piece mode
         const RT = rtEngine();
         el._editRtPrior = ['role', 'aria-multiline'].map(a => [a, el.getAttribute(a)]);
-        const h = RT && RT.attach(el, { mode: 'inline', breaks: true, all: false, format, onChange: () => { } });
+        const h = RT && RT.attach(el, { mode: 'inline', breaks: true, enter: 'break', all: false, format, onChange: () => { } });
         if (!h) { el.setAttribute('contenteditable', 'true'); return; }
         el._editRt = h;
         el.setAttribute('data-edit-text', '');
@@ -98,7 +98,11 @@
         if (el._textBound) return; el._textBound = true;
         el._commitText = commit;
         el.addEventListener('focus', () => { restartRich(el); el._preEdit = leafText(el); selectAllIn(el); });
-        el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.isContentEditable) { e.preventDefault(); e.stopImmediatePropagation(); leaveText(el); } });
+        el.addEventListener('keydown', (e) => {
+            if (!el.isContentEditable) return;
+            if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); el.blur(); }
+            else if (e.key === 'Enter' && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) { e.preventDefault(); e.stopImmediatePropagation(); leaveText(el); }
+        });
         el.addEventListener('keydown', richHistoryKey);
         noDrop(el);
         if (input) el.addEventListener('input', input);
@@ -131,7 +135,7 @@
         const nodes = [...area.querySelectorAll('*')];
         if (!realChildren(area).length || wholeLeaf(area)) nodes.unshift(area);   // size handles are children too
         nodes.forEach(el => {
-            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.hasAttribute('data-edit-handle')) return;
+            if ((realChildren(el).length && !wholeLeaf(el)) || !el.textContent.trim() || el.closest('template') || el.closest('[data-edit-handle], [data-edit-grab]')) return;
             if (el._manifestComponent && el !== area) return;          // a component host: its markup is another file's
             if (richOwned(el)) return;                                  // the rich editor owns this subtree
             if (el.closest('[contenteditable="false"]:not([data-edit-piece-mode])')) return;   // an authored non-editable island
@@ -210,7 +214,7 @@
             editable(el, 'html');
         });
     }
-    // Escape leaves text with the piece focused, so Alt+arrows move it.
+    // Alt+Enter leaves text with the piece focused, so Space picks it up and Alt+arrows move it.
     function leaveText(el) {
         el.blur();
         const piece = [el, ...ancestorsIn(el)].find(n => n.hasAttribute && n.hasAttribute('data-edit-piece'));

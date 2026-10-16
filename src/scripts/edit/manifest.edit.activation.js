@@ -82,10 +82,6 @@
             area._editBound = true;
             area.addEventListener('pointerdown', onAreaPointerDown);
             area.addEventListener('keydown', (e) => { if (isActive(area)) onPieceKeydown(e, area); });
-            area.addEventListener('pointerover', (e) => { if (isActive(area)) gripOver(e, area); });
-            area.addEventListener('pointerleave', (e) => gripLeave(e.relatedTarget));
-            area.addEventListener('focusin', (e) => { if (isActive(area)) gripFocus(e, area); });
-            area.addEventListener('focusout', (e) => gripBlur(e.relatedTarget));
             // Native HTML5 drag would drop selected text into neighbouring leaves.
             area.addEventListener('dragstart', (e) => { if (isActive(area)) e.preventDefault(); });
             area.addEventListener('drop', (e) => { if (isActive(area)) e.preventDefault(); });
@@ -100,7 +96,6 @@
         }
     }
     function disarmArea(area) {
-        if (gripFor && area.contains(gripFor)) hideGrip();
         [area, ...area.querySelectorAll('[data-edit-area]')].forEach(e => { if (e._editPos) { e.style.removeProperty('position'); e._editPos = false; } });
         area.querySelectorAll('[data-edit-handle]').forEach(h => h.remove());
         uneditIn(area);

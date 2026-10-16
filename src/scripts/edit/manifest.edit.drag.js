@@ -14,7 +14,7 @@
         if (kind === 'component') return [];
         if (kind === 'data') { const tpl = listTpl(area); return tpl ? sortableChildren(tpl.parentElement) : []; }
         const out = [];
-        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
+        const walk = (c) => sortableChildren(c).forEach(ch => { if (ch.closest('[data-edit-ghost], [data-edit-grab]')) return; if (ch._manifestComponent) { if (isHostEl(ch)) out.push(ch); return; } out.push(ch); if (isContainer(ch) && !isRendered(ch)) walk(ch); });
         if (isContainer(area)) walk(area);
         return out;
     }
@@ -130,86 +130,20 @@
         const area = this;
         if (!isActive(area) || (e.pointerType === 'mouse' && e.button !== 0) || e._editDrag) return;
         const t = e.target;
-        if (!t || t.nodeType !== 1 || t.isContentEditable || t.hasAttribute('data-edit-handle')) return;
+        if (!t || t.nodeType !== 1 || t.hasAttribute('data-edit-handle')) return;
         if (t._pieceMode) { exitPieceMode(t); return; }
         let item = null;
         for (let n = t; n && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece') && movable(n)) { item = n; break; }
         if (!item) return;
+        const grab = ownGrab(item);
+        if (grab) { if (!grab.contains(t)) return; e.preventDefault(); }
+        else if (typing(t)) return;                                     // in the text being typed: the drag selects
         e._editDrag = true;
         startDrag(e, item, area);
     }
-
-    /* ---- Grip: text pieces, whose surface is for typing, drag from a handle at their inline-start edge ---- */
-    let grip = null, gripFor = null, gripHovered = null, gripFocused = null, gripListening = false;
-    // Text pieces, and rows that are themselves a data field (their surface is for typing too)
-    const needsGrip = (p) => !!p && movable(p) && ((isTextEl(p) && capOf(p, 'text')) || p._editField != null);
-    function gripPiece(node, area) {
-        for (let n = node; n && n.nodeType === 1 && n !== area; n = n.parentElement) if (n.hasAttribute('data-edit-piece')) return needsGrip(n) ? n : null;
-        return null;
-    }
-    function ensureGrip() {
-        if (grip && grip.isConnected) return grip;
-        grip = document.createElement('span');
-        grip.setAttribute('data-edit-grip', '');
-        grip.setAttribute('aria-hidden', 'true');
-        grip.hidden = true;
-        grip.addEventListener('pointerdown', onGripDown);
-        grip.addEventListener('pointerleave', (e) => gripLeave(e.relatedTarget));
-        document.body.appendChild(grip);
-        if (!gripListening) {
-            gripListening = true;
-            window.addEventListener('scroll', placeGrip, { capture: true, passive: true });
-            window.addEventListener('resize', placeGrip, { passive: true });
-        }
-        return grip;
-    }
-    function placeGrip() {
-        if (!gripFor || !grip) return;
-        if (!gripFor.isConnected) return hideGrip();
-        const r = gripFor.getBoundingClientRect(), rtl = getComputedStyle(gripFor).direction === 'rtl';
-        grip.dir = rtl ? 'rtl' : 'ltr';
-        grip.style.top = r.top + 'px';
-        grip.style.left = (rtl ? r.right : r.left) + 'px';
-    }
-    function showGrip(piece) {
-        const area = regionOf(piece);
-        if (dragged || !area || area._edit.bare || piece.closest('[data-edit-area="bare"]')) return hideGrip();
-        const g = ensureGrip();
-        // The grip lives on <body>: it takes the piece's own accent and sizes
-        ['--edit-accent', '--edit-grip-size', '--edit-grip-offset'].forEach(v => { const x = rawVar(piece, v); if (x) g.style.setProperty(v, x); else g.style.removeProperty(v); });
-        gripFor = piece; placeGrip(); g.hidden = false;
-    }
-    function hideGrip() { gripFor = null; if (grip) grip.hidden = true; }
-    function gripOver(e, area) {
-        if (dragged) return;
-        const p = gripPiece(e.target, area);
-        gripHovered = p;
-        if (p) showGrip(p); else if (gripFocused) showGrip(gripFocused); else hideGrip();
-    }
-    function gripLeave(to) {
-        if (to && grip && (to === grip || (gripFor && gripFor.contains(to)))) return;
-        gripHovered = null;
-        if (gripFocused && gripFocused.isConnected) showGrip(gripFocused); else hideGrip();
-    }
-    function gripFocus(e, area) {
-        const p = gripPiece(e.target, area);
-        gripFocused = p;
-        if (p && !(gripHovered && gripHovered.isConnected)) showGrip(p);
-    }
-    function gripBlur(to) {
-        if (to && gripFocused && gripFocused.contains(to)) return;
-        gripFocused = null;
-        if (!(gripHovered && gripHovered.isConnected)) hideGrip();
-    }
-    function onGripDown(e) {
-        const piece = gripFor;
-        if (!piece || (e.pointerType === 'mouse' && e.button !== 0)) return;
-        const area = regionOf(piece);
-        if (!isActive(area) || !movable(piece)) return;
-        e.preventDefault(); e.stopPropagation();
-        hideGrip();
-        startDrag(e, piece, area);
-    }
+    // A [data-edit-grab] inside a piece, not a nested piece's: the only place that piece drags from.
+    const ownGrab = (item) => [...item.querySelectorAll('[data-edit-grab]')].find(g => g.closest('[data-edit-piece]') === item) || null;
+    const typing = (t) => { const a = document.activeElement; return !!a && a !== document.body && a.isContentEditable && (a === t || a.contains(t)); };
 
     function startDrag(e, item, area) {
         const home = item.parentElement, homeNext = groupOf(item).pop().nextElementSibling, rest = groupOf(item).slice(1);
@@ -226,6 +160,8 @@
         let active = false, frame = 0, px = sx, py = sy, last = null;
 
         const lift = (ev) => {
+            const a = document.activeElement; if (a && item.contains(a) && a.isContentEditable) a.blur();   // a text piece moves, it isn't typed in
+            try { window.getSelection().removeAllRanges(); } catch { }
             if (s.crossOK) areas().forEach(a => { if (a !== area && dropValid(a)) a.setAttribute('data-edit-drop-target', ''); });
             const ghost = s.ghost = item.cloneNode(true);
             unrich(item, ghost);
@@ -258,7 +194,7 @@
             px = ev.clientX; py = ev.clientY;
             if (!active) {
                 if (Math.hypot(px - sx, py - sy) < 5) return;
-                active = true; hideGrip(); lift(ev); paint();
+                active = true; lift(ev); paint();
             }
             ev.preventDefault();
             const drop = dropTarget(px, py, s);

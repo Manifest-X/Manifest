@@ -127,9 +127,9 @@
     const showable = (v) => { try { return JSON.stringify(v) !== undefined ? JSON.parse(JSON.stringify(v)) : true; } catch { return true; } };
     function setShow(el, expr, value) { window.Alpine.evaluate(el, `${expr} = ${JSON.stringify(value)}`); }
     // Closing is logged with the size change, so one undo reopens it.
-    function closeVia(area, el, expr, join) {
-        let before;
-        try { before = showable(window.Alpine.evaluate(el, expr)); setShow(el, expr, false); } catch (err) { console.warn('[edit] could not close via x-show:', err); return false; }
+    function closeVia(area, el, expr, join, prior) {
+        let before = prior;
+        try { if (before === undefined) before = showable(window.Alpine.evaluate(el, expr)); setShow(el, expr, false); } catch (err) { console.warn('[edit] could not close via x-show:', err); return false; }
         const id = identity(el, area);
         if (id != null) pushDelta(Object.assign({ kind: 'show', region: key(area), key: id, expr, before, value: false }, join ? { join: true } : {}));
         return true;
@@ -148,21 +148,36 @@
         const snapW = snapStops(el, 'x', 'w'), snapH = snapStops(el, 'y', 'h');
         const closeX = lengthVar(el, '--edit-size-close', 'x', 'w'), closeY = lengthVar(el, '--edit-size-close', 'y', 'h');
         const showExpr = closeX != null || closeY != null ? closable(el) : null;
-        try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch { }
+        let showBefore;
+        if (showExpr) { try { showBefore = showable(window.Alpine.evaluate(el, showExpr)); } catch { } }
+        const handle = e.target;
+        try { handle.setPointerCapture && handle.setPointerCapture(e.pointerId); } catch { }
+        handle.setAttribute('data-edit-resizing', '');
         showOverlay();
-        let rawW = baseW, rawH = baseH;
+        let rawW = baseW, rawH = baseH, closed = false;
+        const shut = () => ((right || left) && closeX != null && rawW < closeX) || ((top || bottom) && closeY != null && rawH < closeY);
+        // Closes live once past the close size, and reopens if dragged back out.
+        const setClosed = (v) => { if (v === closed || !showExpr) return; closed = v; try { setShow(el, showExpr, v ? false : showBefore); } catch { } };
         const move = (ev) => {
             const dx = ev.clientX - sx, dy = ev.clientY - sy;
-            if (right || left) { rawW = baseW + (right ? dx : -dx); el.style.width = toUnit(snapTo(clamp(rawW, minW, maxW), snapW, reachX), wu, el, el.parentElement, 'w') + wu; }
-            if (top || bottom) { rawH = baseH + (bottom ? dy : -dy); el.style.height = toUnit(snapTo(clamp(rawH, minH, maxH), snapH, reachY), hu, el, el.parentElement, 'h') + hu; }
+            if (right || left) rawW = baseW + (right ? dx : -dx);
+            if (top || bottom) rawH = baseH + (bottom ? dy : -dy);
+            setClosed(shut());
+            let snapped = false;
+            if (right || left) { const c = clamp(rawW, minW, maxW), v = snapTo(c, snapW, reachX); snapped = snapped || (snapW.length > 0 && v !== c); el.style.width = toUnit(v, wu, el, el.parentElement, 'w') + wu; }
+            if (top || bottom) { const c = clamp(rawH, minH, maxH), v = snapTo(c, snapH, reachY); snapped = snapped || (snapH.length > 0 && v !== c); el.style.height = toUnit(v, hu, el, el.parentElement, 'h') + hu; }
+            el.toggleAttribute('data-edit-snapped', snapped && !closed);
+            handle.toggleAttribute('data-edit-snapped', snapped && !closed);
             sizeEvent(el, false);
         };
         const end = () => {
             document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', cancel);
             hideOverlay();
+            ['data-edit-snapped', 'data-edit-resizing'].forEach(a => handle.removeAttribute(a));
+            el.removeAttribute('data-edit-snapped');
         };
         const restore = () => { if (preStyle == null) el.removeAttribute('style'); else el.setAttribute('style', preStyle); };
-        const cancel = () => { end(); restore(); sizeEvent(el, true); };
+        const cancel = () => { end(); setClosed(false); restore(); sizeEvent(el, true); };
         const up = () => {
             end();
             const shutX = (right || left) && closeX != null && rawW < closeX, shutY = (top || bottom) && closeY != null && rawH < closeY;
@@ -175,7 +190,7 @@
                     if (shutY && minH > 0) el.style.height = toUnit(minH, hu, el, el.parentElement, 'h') + hu;
                 }
                 const sized = commitStyle(area, el); sizeEvent(el, true);
-                closeVia(area, el, showExpr, sized);
+                closeVia(area, el, showExpr, sized, showBefore);
                 return;
             }
             if (shutX || shutY) { restore(); sizeEvent(el, true); return; }   // close configured but not possible here: leave it as it was

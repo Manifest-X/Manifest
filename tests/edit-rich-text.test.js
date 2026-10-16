@@ -134,7 +134,7 @@ describe('formatting page text', () => {
         expect(log().at(-1).value).toBe('<em>Two</em> <strong>words</strong>')
     })
 
-    it('Enter makes no paragraph; it fires rich-text:enter', async () => {
+    it('Enter makes a line break, not a paragraph, and fires no rich-text:enter', async () => {
         const root = await mount(`<section x-edit="b3"><p>Alpha</p><p>Beta</p></section>`)
         const p = root.querySelector('p')
         const heard = []
@@ -142,8 +142,9 @@ describe('formatting page text', () => {
         await enter(p)
         select(text(p), 5)
         expect(key(p, { key: 'Enter' }).defaultPrevented).toBe(true)
-        expect(p.innerHTML).toBe('Alpha')
-        expect(heard).toEqual(['Alpha'])
+        expect(p.innerHTML).toBe('Alpha<br><br>')                          // a trailing pair shows the new line
+        expect(root.querySelectorAll('p').length).toBe(2)
+        expect(heard).toEqual([])
         expect(p.hasAttribute('data-edit-dragging')).toBe(false)
         expect(key(p, { key: ' ' }).defaultPrevented).toBe(false)
     })
@@ -275,13 +276,13 @@ describe('whole leaves', () => {
 })
 
 describe('a leaf resting as a focused piece', () => {
-    it('Escape, then $edit.attr on its link, then undo and redo: one leaf, no keys inside, piece mode kept', async () => {
+    it('Alt+Enter, then $edit.attr on its link, then undo and redo: one leaf, no keys inside, piece mode kept', async () => {
         const root = await mount(`<section x-edit="pm1"><p>Read <a href="/x">guide</a> now</p><p>Other</p></section>`)
         const p = root.querySelector('p'), at = cursor()
         await enter(p)
         p.firstChild.nodeValue = 'Please read '
         p.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'd' }))
-        key(p, { key: 'Escape' })
+        key(p, { key: 'Enter', altKey: true })
         await flush()
         expect(document.activeElement).toBe(p)
         expect(p._pieceMode).toBe(true)
@@ -449,7 +450,7 @@ describe('selection geometry stays out of content', () => {
 })
 
 describe('line breaks in leaves', () => {
-    it('an address is one leaf: its <br>s stay, Shift+Enter adds one, Enter is swallowed', async () => {
+    it('an address is one leaf: its <br>s stay, and Enter or Shift+Enter adds one', async () => {
         const root = await mount(`<section x-edit="br1"><p>1 Main St<br>Springfield</p></section>`)
         const p = root.querySelector('p'), at = cursor()
         expect(p._editRt).toBeTruthy()
@@ -460,10 +461,7 @@ describe('line breaks in leaves', () => {
         const heard = []
         p.addEventListener('rich-text:enter', () => heard.push(1))
         expect(key(p, { key: 'Enter' }).defaultPrevented).toBe(true)
-        expect(heard.length).toBe(1)
-        expect(p.innerHTML).toBe('1 Main St<br>Springfield')
-        expect(key(p, { key: 'Enter', shiftKey: true }).defaultPrevented).toBe(true)
-        expect(heard.length).toBe(1)
+        expect(heard.length).toBe(0)
         expect(p.innerHTML).toBe('1 Main St<br>Springfield<br><br>')   // a trailing pair shows the new line
         const caret = window.getSelection().getRangeAt(0)
         caret.insertNode(document.createTextNode('USA'))
@@ -697,27 +695,34 @@ describe('data values', () => {
     })
 })
 
-describe('grip', () => {
-    it('takes the piece\'s --edit-accent, since it lives on <body>', async () => {
-        const root = await mount(`<section x-edit="gr1" style="--edit-accent: rgb(255, 0, 0)"><p>One</p><p>Two</p></section>`)
+describe('no floating grip', () => {
+    it('hovering or focusing a text piece adds nothing to the page', async () => {
+        const root = await mount(`<section x-edit="gr1"><p>One</p><p>Two</p></section>`)
         const p = root.querySelector('p')
         p.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
-        const g = document.querySelector('[data-edit-grip]')
-        expect(g).toBeTruthy()
-        expect(g.style.getPropertyValue('--edit-accent')).toBe('rgb(255, 0, 0)')
+        p.focus()
+        expect(document.querySelector('[data-edit-grip]')).toBe(null)
+        expect(document.body.lastElementChild).toBe(root)
     })
 })
 
 describe('data rows that are themselves the field', () => {
-    it('get the grip in a .move.data region, and drag by it', async () => {
+    it('drag by their own surface in a .move.data region', async () => {
         const root = await mount(`<div x-data="{ rows: [{ id: 1, n: 'One' }, { id: 2, n: 'Two' }] }"><ul x-edit.move.data="dr1"><template x-for="row in rows" :key="row.id"><li x-text="row.n"></li></template></ul><i id="o" x-text="rows.map(r => r.n).join()"></i></div>`)
         await frame()
-        const li = root.querySelector('li')
-        expect(li._editRt).toBeTruthy()
-        expect(li.hasAttribute('data-edit-piece')).toBe(true)
-        li.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
-        const g = document.querySelector('[data-edit-grip]')
-        expect(g && !g.hidden).toBe(true)
+        const [one, two] = root.querySelectorAll('li')
+        expect(one._editRt).toBeTruthy()
+        expect(one.hasAttribute('data-edit-piece')).toBe(true)
+        one.getBoundingClientRect = () => ({ left: 0, top: 0, right: 200, bottom: 20, width: 200, height: 20, x: 0, y: 0 })
+        two.getBoundingClientRect = () => ({ left: 0, top: 20, right: 200, bottom: 40, width: 200, height: 20, x: 0, y: 20 })
+        document.elementFromPoint = () => two
+        one.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 5, button: 0, pointerType: 'mouse', pointerId: 3 }))
+        document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: 10, clientY: 38, pointerId: 3 }))
+        expect(one.hasAttribute('data-edit-dragging')).toBe(true)
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 10, clientY: 38, pointerId: 3 }))
+        await frame()
+        expect(root.querySelector('#o').textContent).toBe('Two,One')
+        delete document.elementFromPoint
     })
 })
 
@@ -730,7 +735,7 @@ describe('links in active areas and fields are content', () => {
         const p = root.querySelector('section p')
         expect([p.hasAttribute('data-edit-piece'), !!p._editRt]).toEqual([true, true])
         expect(click(root.querySelector('section a'))).toBe(true)
-        await enter(p); key(p, { key: 'Escape' }); await flush()
+        await enter(p); key(p, { key: 'Enter', altKey: true }); await flush()
         expect(p.getAttribute('contenteditable')).toBe('false')
         expect(p.hasAttribute('data-edit-piece-mode')).toBe(true)
         expect(click(root.querySelector('section a'))).toBe(true)                            // a resting piece: still content
@@ -811,11 +816,11 @@ describe('arming and disarming', () => {
         expect(p.hasAttribute('contenteditable')).toBe(false)
     })
 
-    it('Escape leaves text with the piece focused, and Alt+ArrowDown moves it', async () => {
+    it('Alt+Enter leaves text with the piece focused, and Alt+ArrowDown moves it', async () => {
         const root = await mount(`<section x-edit="d3"><p>Alpha</p><p>Beta</p></section>`)
         const p = root.querySelector('p')
         await enter(p)
-        const e = key(p, { key: 'Escape' })
+        const e = key(p, { key: 'Enter', altKey: true })
         expect(e.defaultPrevented).toBe(true)
         expect(document.activeElement).toBe(p)
         expect(p.isContentEditable).toBe(false)

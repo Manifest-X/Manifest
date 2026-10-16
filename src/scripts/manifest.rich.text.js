@@ -2971,8 +2971,8 @@
 
     /* ---- Area engine ----
        Shared by the directive and ManifestRichText.attach(). */
-    function setup(el, { format = 'markdown', inline: single = false, breaks = false, all: allStyles = true, literal = false, bound = false, controlled = false, onChange = null } = {}) {
-        // .inline html with breaks: one block of lines; <br> kept, Shift+Enter makes one
+    function setup(el, { format = 'markdown', inline: single = false, breaks = false, enterBreaks = false, all: allStyles = true, literal = false, bound = false, controlled = false, onChange = null } = {}) {
+        // .inline html with breaks: one block of lines; <br> kept, Shift+Enter makes one (Enter too with enterBreaks)
         const lines = single && breaks && format === 'html';
         const flat = (html) => lines ? breakLines(html, true) : flattenLines(html, true);
         const ac = new AbortController();
@@ -3197,7 +3197,7 @@
             if (e.isComposing || e.keyCode === 229) return;
             if (e.key === 'Enter' && e.target !== el && e.target.matches && e.target.matches('a[href]') && e.target.closest('[contenteditable="false"]') && el.contains(e.target.closest('[contenteditable="false"]'))) return;
             if ((e.key || '').length > 1 && !/^(Shift|Alt|Control|Meta|CapsLock)$/.test(e.key)) { el._exit = null; if (!/^(Backspace|Delete)$/.test(e.key)) el._after = null; }
-            if (e.key === 'Enter' && single) { e.preventDefault(); if (lines && e.shiftKey) lineBreak(); else enter(e.shiftKey); return; }
+            if (e.key === 'Enter' && single) { e.preventDefault(); if (lines && (e.shiftKey || enterBreaks)) lineBreak(); else enter(e.shiftKey); return; }
             if (e.key === 'Enter' && format !== 'plain') {
                 if (!ownsEnter(e)) return;
                 e.preventDefault();
@@ -3358,7 +3358,7 @@
         const controlled = opts.value !== undefined;
         const core = setup(el, {
             format: FORMATS.has(opts.format) ? opts.format : 'markdown',
-            inline: opts.mode === 'inline', breaks: !!opts.breaks, all: opts.all !== false, literal: !!opts.literal,
+            inline: opts.mode === 'inline', breaks: !!opts.breaks, enterBreaks: opts.enter === 'break', all: opts.all !== false, literal: !!opts.literal,
             bound: typeof opts.onChange === 'function', controlled,
             onChange: typeof opts.onChange === 'function' ? opts.onChange : null
         });

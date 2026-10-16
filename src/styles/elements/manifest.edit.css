@@ -25,32 +25,15 @@
         outline-offset: 3px;
     }
 
-    /* Grip: drags a text piece; sits at its inline-start edge */
-    :where([data-edit-grip]) {
-        position: fixed;
-        z-index: 1001;
-        width: var(--edit-grip-size, 0.75rem);
-        height: calc(var(--edit-grip-size, 0.75rem) * 1.5);
-        translate: calc(-100% - var(--edit-grip-offset, 0.25rem)) 0;
-        border-radius: 3px;
-        color: var(--edit-accent, var(--color-brand-content));
-        background: radial-gradient(circle, currentColor 1px, transparent 1.5px) center / 6px 6px;
-        opacity: 0.6;
+    /* A piece with its own grab handle drags only from it */
+    :where([data-edit-piece]:has([data-edit-grab])) {
+        cursor: auto;
+    }
+
+    :where([data-edit-grab]) {
         cursor: grab;
         touch-action: none;
         user-select: none;
-
-        &:hover {
-            opacity: 1;
-        }
-    }
-
-    :where([data-edit-grip]:dir(rtl)) {
-        translate: var(--edit-grip-offset, 0.25rem) 0;
-    }
-
-    :where([data-edit-grip][hidden]) {
-        display: none;
     }
 
     /* Lifted, following the pointer */
@@ -162,6 +145,26 @@
         &:active::before {
             background-color: var(--edit-accent, var(--color-brand-content));
         }
+    }
+
+    /* While resizing, the edge stays drawn; at a snap point it thickens */
+    :where([data-edit-handle][data-edit-resizing]):where(:not([data-edit-area="bare"] *))::before {
+        opacity: 1;
+        background-color: var(--edit-accent, var(--color-brand-content));
+    }
+
+    :where([data-edit-handle="top"][data-edit-snapped], [data-edit-handle="bottom"][data-edit-snapped]):where(:not([data-edit-area="bare"] *))::before {
+        height: 3px;
+    }
+
+    :where([data-edit-handle="left"][data-edit-snapped], [data-edit-handle="right"][data-edit-snapped], [data-edit-handle="start"][data-edit-snapped], [data-edit-handle="end"][data-edit-snapped]):where(:not([data-edit-area="bare"] *))::before {
+        width: 3px;
+    }
+
+    :where([data-edit-handle*="-"][data-edit-snapped]):where(:not([data-edit-area="bare"] *))::before {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
     }
 
     :where([data-edit-handle]):focus-visible:where(:not([data-edit-area="bare"], [data-edit-area="bare"] *)) {

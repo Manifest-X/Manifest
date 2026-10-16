@@ -326,7 +326,7 @@
     };
     function dataSourceExpr(area) { const t = listTpl(area); const m = t && t.getAttribute('x-for').match(/\bin\s+(.+)$/); return m ? m[1].trim() : null; }
     const dataSourceName = (area) => { const e = dataSourceExpr(area); const m = e && e.match(/\$x\.(\w+)/); return m ? m[1] : (e || 'source'); };
-    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost') || x.hasAttribute('data-edit-grip');
+    const pluginNode = (x) => x.hasAttribute('data-edit-handle') || x.hasAttribute('data-edit-ghost');
     // A component's roots past its first follow that first one (its <x-name> host) everywhere.
     const groupOf = (el) => el && el._manifestHost && el._manifestHost.roots && el._manifestHost.roots[0] === el ? el._manifestHost.roots.slice() : [el];
     const extraRoot = (x) => !!x._manifestHost && !!x._manifestHost.roots && x._manifestHost.roots[0] !== x;
@@ -355,7 +355,7 @@
     function plainFormatted(el) {
         if (!window.ManifestRichText) return false;
         const c = el.cloneNode(true);
-        c.querySelectorAll('[data-edit-handle], [data-edit-ghost], [data-edit-grip]').forEach(n => n.remove());
+        c.querySelectorAll('[data-edit-handle], [data-edit-ghost]').forEach(n => n.remove());
         commentsIn(c).forEach(n => n.remove());
         if (!c.children.length) return true;
         c.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-')) n.removeAttribute(a.name); }));
