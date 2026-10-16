@@ -1,0 +1,152 @@
+/* Manifest Chat */
+
+@layer base, components, utilities;
+
+@layer utilities {
+
+    :where(.chat-wrapper) {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+
+        /* Chat log scroll container */
+        :where([role="log"]) {
+            display: flex;
+            flex-direction: column-reverse;
+            flex: 1;
+            font-size: 0.875rem;
+            overflow-y: auto;
+
+            /* Message column */
+            > :where(div) {
+                display: flex;
+                flex-direction: column;
+                justify-content: flex-end;
+                gap: 2rem;
+                min-height: 100%;
+                width: calc(var(--spacing-content-width, 74rem) - 4rem);
+                max-width: 100%;
+                margin-inline-start: auto;
+                margin-inline-end: auto;
+                padding-inline-start: 1rem;
+                padding-inline-end: 1rem;
+                padding-block-end: 3rem
+            }
+
+            /* Messages */
+            :where(div div) {
+
+                /* Markdown spacing */
+                :where(p) {
+                    margin-block: 0.5rem
+                }
+
+                :where(p:first-child) {
+                    margin-block-start: 0
+                }
+
+                :where(p:last-child) {
+                    margin-block-end: 0
+                }
+            }
+
+            /* Own messages */
+            :where(.own) {
+                width: 95%;
+                max-width: calc(var(--spacing-content-width, 74rem) - 10rem);
+                margin-inline-start: auto;
+                padding-block: 0.5rem;
+                padding-inline: 0.75rem;
+                background: color-mix(in oklch, var(--color-surface-2) 50%, transparent);
+                border-radius: var(--radius)
+            }
+
+            /* Attachments */
+            :where(img, video) {
+                display: block;
+                max-width: 20rem;
+                max-height: 15rem;
+                margin-block: 0.5rem;
+                border-radius: var(--radius)
+            }
+
+            :where(audio) {
+                display: block;
+                width: 18rem;
+                max-width: 100%;
+                margin-block: 0.5rem
+            }
+
+            :where(a[download]) {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.4rem;
+                margin-block: 0.5rem;
+                padding-block: 0.35rem;
+                padding-inline: 0.6rem;
+                background: var(--color-surface-2);
+                border-radius: var(--radius)
+            }
+        }
+
+        /* Chat input */
+        :where(form:not(.unstyle)) {
+            display: flex;
+            flex-flow: row wrap;
+            align-items: end;
+            gap: 0;
+            width: var(--spacing-content-width, 74rem);
+            max-width: 100%;
+            margin-inline-start: auto;
+            margin-inline-end: auto;
+
+            :where(textarea, .textarea):not(.unstyle) {
+                flex: 1;
+                width: auto;
+                min-height: var(--spacing-field-height, 2.5rem);
+                field-sizing: content;
+                resize: none
+            }
+        }
+
+        /* Pending attachments */
+        :where(output:not(.unstyle)) {
+            display: flex;
+            flex-flow: row wrap;
+            gap: 0.325rem;
+            width: 100%;
+            max-width: 100%;
+            height: fit-content;
+            padding: calc(var(--spacing) * 2);
+
+            > :where(:not(template)) {
+                position: relative;
+                flex: 0 0 auto
+            }
+
+            /* Images */
+            :where(img) {
+                display: block;
+                width: var(--spacing-field-height, 2.5rem);
+                height: var(--spacing-field-height, 2.5rem);
+                object-fit: cover;
+                border-radius: calc(var(--radius, 0.5rem) * 0.75)
+            }
+
+            /* File chips */
+            > :where(:not(template))> :where(span) {
+                display: flex;
+                align-items: center;
+                gap: 0.3rem;
+                height: fit-content;
+                padding-inline: 0.5rem;
+                font-size: 0.75rem;
+                white-space: nowrap;
+                background: var(--color-line);
+                border-radius: calc(var(--radius, 0.5rem) * 0.75)
+            }
+        }
+    }
+}

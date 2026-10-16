@@ -811,10 +811,12 @@ function copyFilesToDist() {
         { source: `scripts/${CONFIG.dependencies.TAILWIND_V4_FILE}`, dest: '../lib/manifest.tailwind.js' },
 
         // Individual CSS files
+        { source: 'styles/core/manifest.reset.css', dest: '../lib/manifest.reset.css' },
         { source: 'styles/elements/manifest.accordion.css', dest: '../lib/manifest.accordion.css' },
         { source: 'styles/elements/manifest.avatar.css', dest: '../lib/manifest.avatar.css' },
         { source: 'styles/elements/manifest.button.css', dest: '../lib/manifest.button.css' },
         { source: 'styles/elements/manifest.chart.css', dest: '../lib/manifest.chart.css' },
+        { source: 'styles/elements/manifest.chat.css', dest: '../lib/manifest.chat.css' },
         { source: 'styles/elements/manifest.checkbox.css', dest: '../lib/manifest.checkbox.css' },
         { source: 'styles/elements/manifest.combobox.css', dest: '../lib/manifest.combobox.css' },
         { source: 'styles/elements/manifest.colorpicker.css', dest: '../lib/manifest.colorpicker.css' },
