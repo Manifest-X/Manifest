@@ -92,18 +92,14 @@
         if (n.nodeType !== 1) return textEdge(last ? n.previousSibling : n.nextSibling, last);
         if (n.tagName === 'BR') return '\n';
         if (n.tagName === 'IMG') return last ? ')' : '!';
-        if (MARKS[n.tagName] || n.tagName === 'A') return last ? '*' : '*';   // a delimiter or bracket: punctuation
+        if (n.tagName === 'A') return last ? ')' : '[';
+        if (MARKS[n.tagName]) return MARKS[n.tagName][0];   // its delimiter
         const t = n.textContent; return t ? (last ? t[t.length - 1] : t[0]) : textEdge(last ? n.previousSibling : n.nextSibling, last);
     };
-    // A * mark inside with text right against it: its delimiters could close an enclosing * mark
-    const riskyInside = (n) => [...n.querySelectorAll('strong, b, em, i')].some(d => {
-        const before = d.previousSibling ? textEdge(d.previousSibling, true) : null, after = d.nextSibling ? textEdge(d.nextSibling, false) : null;
-        return (before != null && !/\s/.test(before)) || (after != null && !/\s/.test(after));
-    });
     function inlineRaw(node, ctx) {
         let out = '';
         node.childNodes.forEach(n => {
-            if (n.nodeType === 3) { out += esc(n.textContent); return; }
+            if (n.nodeType === 3) { out += ctx.link ? esc(n.textContent).replace(/[()]/g, '\\$&') : esc(n.textContent); return; }   // in link text, no "(" can start a destination
             if (n.nodeType !== 1) return;
             const tag = n.tagName;
             if (tag === 'BR') { out += '  \n'; return; }
@@ -112,8 +108,9 @@
             if (tag === 'A' && !n.hasAttribute('title') && n.children.length === 0 && /^[a-z][a-z0-9+.-]{1,31}:[^\s<>]*$/i.test(n.getAttribute('href') || '') && n.textContent === n.getAttribute('href') && !unsafeUrl(n.textContent)) { out += '<' + n.textContent + '>'; return; }
             if (tag === 'A') {
                 const h = n.getAttribute('href') || '', title = n.getAttribute('title');
-                const t = title != null ? ` "${title.replace(/[\\"]/g, '\\$&').replace(/\n/g, ' ')}"` : '';
-                out += h && !unsafeUrl(h) ? `[${inlineRaw(n, { ...ctx, prev: '[', next: ']', under: ctx.under, star: ctx.star })}](${mdUrl(h)}${t})` : inlineRaw(n, ctx);
+                const tt = title ? title.replace(/\n/g, ' ') : '';
+                const t = !tt ? '' : !tt.includes('"') ? ` "${tt.replace(/\\/g, '\\\\')}"` : !tt.includes("'") ? ` '${tt.replace(/\\/g, '\\\\')}'` : ` "${tt.replace(/[\\"]/g, '\\$&')}"`;
+                out += h && !unsafeUrl(h) ? `[${inlineRaw(n, { ...ctx, prev: '[', next: ']', link: true, trims: false })}](${mdUrl(h)}${t})` : inlineRaw(n, ctx);
                 return;
             }
             let m = MARKS[tag];
@@ -121,40 +118,46 @@
             if (tag === 'CODE') {
                 // A fence longer than any backtick run inside; padded where the code starts or ends with one
                 const code = n.textContent; if (!code) return;
+                // Code holding a backtick needs a longer fence, which renderers do not all read alike
+                // around emphasis or in link text: written as HTML
+                if (code.includes('`')) { out += '<code>' + esc(code) + '</code>'; return; }
                 const fence = '`'.repeat(Math.max(0, ...(code.match(/`+/g) || []).map(r => r.length)) + 1);
                 const pad = /^`|`$/.test(code) || (/^ /.test(code) && / $/.test(code) && code.trim()) ? ' ' : '';
                 out += fence + pad + code + pad + fence;
                 return;
             }
             if (!n.textContent.trim()) { out += inlineRaw(n, ctx); return; }
-            let body = inlineRaw(n, { ...ctx, prev: m[0], next: m[0], under: ctx.under });
+            let body = inlineRaw(n, { ...ctx, prev: m[0], next: m[0], trims: true });
             // Delimiters hug the text: spaces go outside
             let [, lead, core, trail] = body.match(/^(\s*)([\s\S]*?)(\s*)$/);
-            // _ where * would touch text (it could pair with an enclosing *), or encloses a mark that does
             const after = textEdge(n.nextSibling, false);
-            const prev = lead ? ' ' : (out ? out[out.length - 1] : ctx.prev), next = trail ? ' ' : (after == null ? ctx.next : after);
+            // What will be against the delimiters: a space moved out of a markdown parent's edge is
+            // not there, the parent's delimiter is
+            const prev = lead ? (!out && ctx.trims ? ctx.prev : ' ') : (out ? out[out.length - 1] : ctx.prev);
+            const next = trail ? (after == null && ctx.trims ? ctx.next : ' ') : (after == null ? ctx.next : after);
             const nonspace = /\S/.test(prev || '') || /\S/.test(next || '');
-            if (m[0] === '*' && (ctx.html === 'all' || (ctx.html === 'touch' && nonspace))) {
-                const t = tag === 'STRONG' || tag === 'B' ? 'strong' : 'em';
-                [, lead, core, trail] = inlineRaw(n, { ...ctx, prev: '>', next: '<', star: false }).match(/^(\s*)([\s\S]*?)(\s*)$/);
-                out += lead + `<${t}>` + core + `</${t}>` + trail;
+            // Delimiters every renderer reads the same way: whitespace or plain punctuation outside them
+            // (an enclosing mark's same delimiter too), text inside them that starts and ends plainly.
+            // Anything else (letters, another delimiter or an HTML tag against them) is written as HTML.
+            const isS = (c) => !c || /\s/.test(c), isD = (c) => c === '*' || c === '_' || c === '~';
+            // Punctuation outside only where text is inside: the delimiter can then only open (or close)
+            // Letters outside only between letters (intraword, as in foo**bar**), and only outside any other * mark
+            const wordy = (c) => !!c && !isS(c) && !MD_PUNCT.test(c);
+            const outside = (c, fromCtx, inner) => isS(c) || (fromCtx && c === m[0]) || (MD_PUNCT.test(c) && !isD(c) && c !== '<' && c !== '>' && c !== '`' && wordy(inner))
+                || (wordy(c) && wordy(inner) && !ctx.star && m[0] === '*' && !n.querySelector('strong, b, em, i'));
+            const f = core[0], l = core[core.length - 1], bare = core.replace(new RegExp('^\\' + m[0] + '+|\\' + m[0] + '+$', 'g'), '');
+            const clean = outside(prev, !lead && !out, bare[0]) && outside(next, !trail && after == null, bare[bare.length - 1])
+                && !isS(f) && !isS(l) && f !== '\\' && !/\\.$/.test(core) && f !== '<' && l !== '>'
+                && !(isD(f) && f !== m[0]) && !(isD(l) && l !== m[0])
+                // runs merged at both ends (***a* b *c***) only around one inner mark (***all***)
+                && !(f === m[0] && l === m[0] && [...n.childNodes].filter(c => c.nodeType === 1 || (c.nodeType === 3 && c.nodeValue.trim())).length > 1);
+            if ((m[0] === '*' || m[0] === '~') && (ctx.html === 'all' || (ctx.html === 'touch' && nonspace) || !clean)) {
+                const t = tag === 'STRONG' || tag === 'B' ? 'strong' : m[0] === '~' ? 's' : 'em';
+                // spaces stay inside a tag: what is against its children stays as computed
+                out += `<${t}>` + inlineRaw(n, { ...ctx, prev: '>', next: '<', trims: false }) + `</${t}>`;
                 return;
             }
-            const allowed = m[0] === '*' && !ctx.under && !wordChar(prev) && !wordChar(next) && (!!lead || !/(^|[^\\])_$/.test(out));
-            // * unless it would not read back: right after another * run, around a * mark with text
-            // against it, or with text against it inside a * mark
-            const touching = (!lead && /\S$/.test(out)) || (!trail && after != null && /\S/.test(after));
-            if (allowed && ((!lead && /(^|[^\\])\*$/.test(out)) || riskyInside(n) || (ctx.star && touching))) {
-                m = m.replace(/\*/g, '_');
-                [, lead, core, trail] = inlineRaw(n, { ...ctx, prev: '_', next: '_', under: true, star: ctx.star }).match(/^(\s*)([\s\S]*?)(\s*)$/);
-            } else if (m[0] === '*' && ctx.star && touching) {
-                // Inside a * mark with text against it, a * run could close the enclosing one: no
-                // markdown form says this, so it is written as HTML (which markdown carries)
-                const t = tag === 'STRONG' || tag === 'B' ? 'strong' : 'em';
-                [, lead, core, trail] = inlineRaw(n, { ...ctx, prev: '>', next: '<', under: ctx.under, star: false }).match(/^(\s*)([\s\S]*?)(\s*)$/);
-                out += lead + `<${t}>` + core + `</${t}>` + trail;
-                return;
-            } else if (m[0] === '*') [, lead, core, trail] = inlineRaw(n, { ...ctx, prev: '*', next: '*', under: ctx.under, star: true }).match(/^(\s*)([\s\S]*?)(\s*)$/);
+            if (m[0] === '*') [, lead, core, trail] = inlineRaw(n, { ...ctx, prev: '*', next: '*', star: true, trims: true }).match(/^(\s*)([\s\S]*?)(\s*)$/);
             out += lead + m + core + m + trail;
         });
         return out;
@@ -163,13 +166,15 @@
     // Inline markdown for a node, checked by reading it back: in the rare arrangement where a
     // * or _ run would pair differently, em/strong touching text go as HTML, else all of them
     function inline(node) {
-        const want = shapeOf(node), ctx = { prev: '', next: '', under: false, star: false, html: '' };
+        const want = shapeOf(node), ctx = { prev: '', next: '', star: false, link: false, html: '' };
         let first = null;
         for (const html of ['', 'touch', 'all']) {
             const md = inlineRaw(node, { ...ctx, html });
             if (first == null) first = md;
+            // Read back as this reader does and as other markdown renderers (x-markdown) do
             const t = document.createElement('template'); t.innerHTML = inlineHtml(md);
-            if (shapeOf(t.content) === want) return md;
+            const u = document.createElement('template'); u.innerHTML = inlineHtml(md, { strict: true });
+            if (shapeOf(t.content) === want && shapeOf(u.content) === want) return md;
         }
         return first;   // what no form can carry (an unsafe link, say) is not a reason to change notation
     }
@@ -403,7 +408,7 @@
                     const url = m.url, body = s.slice(open, close);
                     flush();
                     if (img) parts.push(unsafeUrl(url, true) ? '' : `<img src="${escHtml(url)}" alt="${escHtml(body.replace(/\\([!-\/:-@\[-`{-~])/g, '$1'))}">`);
-                    else parts.push(unsafeUrl(url) || !url ? inlineHtml(body, { raw: opts.raw }) : `<a href="${escHtml(url)}"${m.title != null ? ` title="${escHtml(m.title)}"` : ''}>${inlineHtml(body, { raw: opts.raw })}</a>`);
+                    else parts.push(unsafeUrl(url) || !url ? inlineHtml(body, { raw: opts.raw, strict: opts.strict }) : `<a href="${escHtml(url)}"${m.title != null ? ` title="${escHtml(m.title)}"` : ''}>${inlineHtml(body, { raw: opts.raw, strict: opts.strict })}</a>`);
                     i = m.end; continue;
                 }
             }
@@ -425,6 +430,10 @@
                     const left = !isSpace(after) && (!PUNCT.test(after) || isSpace(before) || PUNCT.test(before));
                     const right = !isSpace(before) && (!PUNCT.test(before) || isSpace(after) || PUNCT.test(after));
                     open = left && (!right || PUNCT.test(before)); close = right && (!left || PUNCT.test(after));
+                } else if (opts.strict) {
+                    // CommonMark's flanking, punctuation weighed (what other markdown renderers do)
+                    open = !isSpace(after) && (!PUNCT.test(after) || isSpace(before) || PUNCT.test(before));
+                    close = !isSpace(before) && (!PUNCT.test(before) || isSpace(after) || PUNCT.test(after));
                 } else { open = !isSpace(after); close = !isSpace(before); }
                 if (c === '~' && run.length !== 2) { open = close = false; }
                 if (!open && !close) { text += run; i += run.length; continue; }

@@ -344,12 +344,13 @@ describe('typed and pending marks', () => {
         const cases = [
             ['<p>Make <em>this</em><em> stand</em> out.</p>', 'Make *this stand* out.', '<p>Make <em>this stand</em> out.</p>'],
             ['<p><strong>b</strong><b>x</b></p>', '**bx**', '<p><strong>bx</strong></p>'],
-            ['<p><em>a</em><strong>b</strong></p>', '*a*__b__', '<p><em>a</em><strong>b</strong></p>'],
-            ['<p><strong>a</strong><em>b</em></p>', '**a**_b_', '<p><strong>a</strong><em>b</em></p>'],
-            ['<p><strong>x</strong><em>y</em>z</p>', '**x***y*z', '<p><strong>x</strong><em>y</em>z</p>'],
-            ['<p><em>a</em><strong>b</strong>c</p>', '*a***b**c', '<p><em>a</em><strong>b</strong>c</p>'],
+            // marks run into each other: written as HTML, which every renderer reads alike
+            ['<p><em>a</em><strong>b</strong></p>', '<em>a</em><strong>b</strong>', '<p><em>a</em><strong>b</strong></p>'],
+            ['<p><strong>a</strong><em>b</em></p>', '<strong>a</strong><em>b</em>', '<p><strong>a</strong><em>b</em></p>'],
+            ['<p><strong>x</strong><em>y</em>z</p>', '<strong>x</strong><em>y</em>z', '<p><strong>x</strong><em>y</em>z</p>'],
+            ['<p><em>a</em><strong>b</strong>c</p>', '<em>a</em><strong>b</strong>c', '<p><em>a</em><strong>b</strong>c</p>'],
             ['<p>with <strong>options</strong>: (<em>boolean</em>)</p>', 'with **options**: (*boolean*)', '<p>with <strong>options</strong>: (<em>boolean</em>)</p>'],
-            ['<p>w<strong>x</strong><em>y</em>z</p>', 'w**x***y*z', '<p>w<strong>x</strong><em>y</em>z</p>'],
+            ['<p>w<strong>x</strong><em>y</em>z</p>', 'w<strong>x</strong><em>y</em>z', '<p>w<strong>x</strong><em>y</em>z</p>'],
             ['<p><strong>bold <em>nested</em> more</strong></p>', '**bold *nested* more**', '<p><strong>bold <em>nested</em> more</strong></p>'],
             ['<p><em>a <strong>b</strong> c</em></p>', '*a **b** c*', '<p><em>a <strong>b</strong> c</em></p>'],
             ['<p>a<em> b </em>c</p>', 'a *b* c', '<p>a <em>b</em> c</p>'],

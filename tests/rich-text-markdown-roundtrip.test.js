@@ -7,6 +7,10 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { RICH_SRC } from './helpers/edit-setup.js'
+import { Marked } from 'marked'
+
+// x-markdown's renderer: marked, at the version and options manifest.markdown.js loads
+const markedLike = new Marked({ gfm: true, breaks: true })
 
 beforeAll(() => { if (!window.ManifestRichText) new Function(RICH_SRC)() })
 
@@ -36,6 +40,8 @@ function gen(r, depth, noLink) {
     return out
 }
 
+// marked percent-encodes hrefs; compared decoded
+const uri = (h) => { try { return decodeURI(h) } catch { return h } }
 // Every character with the formatting it shows; strong/em/strike on spaces shows nothing
 function shape(html) {
     const d = document.createElement('div'); d.innerHTML = html
@@ -44,7 +50,7 @@ function shape(html) {
         if (c.nodeType === 3) { for (const ch of c.nodeValue) out.push(ch + ' ' + f.filter(x => !/\s/.test(ch) || /^(c|a:)/.test(x)).sort().join(',')); return }
         if (c.nodeType !== 1) return
         const t = c.tagName, add = { STRONG: 'b', B: 'b', EM: 'i', I: 'i', S: 's', DEL: 's', CODE: 'c' }[t]
-        const href = t === 'A' ? 'a:' + (c.getAttribute('href') || '') + (c.hasAttribute('title') ? '|' + c.getAttribute('title') : '') : null
+        const href = t === 'A' ? 'a:' + uri(c.getAttribute('href') || '') + (c.getAttribute('title') ? '|' + c.getAttribute('title') : '') : null
         walk(c, [...new Set([...f, ...(add ? [add] : []), ...(href ? [href] : [])])])
     })
     walk(d.firstElementChild || d, [])
@@ -98,6 +104,18 @@ describe('markdown round trip', () => {
             .replace('2*1024', '2\\*1024').replace('<b>html</b>', '**html**'))
         const again = document.createElement('div'); again.innerHTML = RT.fromMarkdown(saved)
         expect(RT.toMarkdown(again)).toBe(saved)                                         // and is stable from there
+        for (const block of saved.split(/\n\n+/).filter(b => !/^(#|```|---|\d\.|>)/.test(b)))   // paragraphs read alike in x-markdown
+            expect(shape(markedLike.parse(block)), block).toBe(shape(RT.fromMarkdown(block)))
+    })
+
+    it('marks with letters or tags right outside them are written so x-markdown shows them too', () => {
+        const RT = window.ManifestRichText
+        for (const html of ['<p>x<em><strong>b</strong>c</em>y</p>', '<p><em>a<strong>b</strong></em>c</p>', '<p>x<strong><em>a</em>b</strong>y</p>', '<p>w<strong>x</strong><em>y</em>z</p>', '<p>2<em>3</em>4</p>']) {
+            const d = document.createElement('div'); d.innerHTML = html
+            const md = RT.toMarkdown(d)
+            expect(shape(RT.fromMarkdown(md)), md).toBe(shape(html))
+            expect(shape(markedLike.parse(md)), md).toBe(shape(html))
+        }
     })
 
     it('link destinations: balanced parentheses, <…>, a title; written back unchanged', () => {
@@ -107,7 +125,8 @@ describe('markdown round trip', () => {
         expect(RT.fromMarkdown('[t](<https://x.dev/a b>)')).toBe('<p><a href="https://x.dev/a b">t</a></p>')
         expect(RT.fromMarkdown('[t](https://x.example "title")')).toBe('<p><a href="https://x.example" title="title">t</a></p>')
         expect(RT.fromMarkdown('[t](https://x.example \'it\\\'s\')')).toBe('<p><a href="https://x.example" title="it\'s">t</a></p>')
-        expect(md('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>')).toBe('[t](https://x.example "say \\"hi\\" \\\\ now")')
+        expect(md('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>')).toBe('[t](https://x.example \'say "hi" \\\\ now\')')
+        expect(md('<p><a href="https://x.example" title="it\'s &quot;x&quot;">t</a></p>')).toBe('[t](https://x.example "it\'s \\"x\\"")')
         expect(RT.fromMarkdown(md('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>'))).toBe('<p><a href="https://x.example" title="say &quot;hi&quot; \\ now">t</a></p>')
         expect(RT.fromMarkdown('[t](https://x.dev/a\\)b)')).toBe('<p><a href="https://x.dev/a)b">t</a></p>')
         let v = '[x](https://en.wikipedia.org/wiki/Foo_(bar)) after'
@@ -121,8 +140,9 @@ describe('markdown round trip', () => {
         for (let seed = 1; seed <= 4000 && failures.length < 5; seed++) {
             const r = rng(seed), html = `<p>${gen(r, 0, false)}</p>`
             const d = document.createElement('div'); d.innerHTML = html
-            const md = RT.toMarkdown(d), back = RT.fromMarkdown(md)
+            const md = RT.toMarkdown(d), back = RT.fromMarkdown(md), shown = markedLike.parse(md)
             if (shape(back) !== shape(html)) failures.push({ seed, html, md, back })
+            else if (shape(shown) !== shape(html)) failures.push({ seed, html, md, shown })      // what x-markdown displays
         }
         expect(failures).toEqual([])
     }, 60000)

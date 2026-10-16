@@ -60,6 +60,7 @@
         "entities": "4.5.0",
         "glob": "^11.0.2",
         "happy-dom": "^20.11.6",
+        "marked": "15.0.12",
         "puppeteer": "^24.15.0",
         "rimraf": "^5.0.0",
         "rollup": "^4.24.2",
