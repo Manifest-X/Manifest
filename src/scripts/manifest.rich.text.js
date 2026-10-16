@@ -2340,8 +2340,7 @@
         // $rich: the area this element sits in, else the one controls would resolve to
         // Unresolved, it depends on the beat, so it resolves once a field is there
         const richMagic = (el) => {
-            const own = el.closest('[data-rich-text]');
-            const a = own && areas.has(own) ? own : resolve(el);
+            const a = fieldFor(el);
             if (!a) watch();
             return a ? a._rt.api : idleApi();
         };
@@ -2349,9 +2348,24 @@
         // The loader's stand-in answered $rich until now: it hands over, and effects that read it
         // run again once adopted areas exist
         window.__manifestRichMagic = richMagic;
-        if (window.__manifestRichStub) setTimeout(() => { window.__manifestRichStub.v++; }, 0);
+        if (window.__manifestRichStub) setTimeout(() => { flushStubWrites(); window.__manifestRichStub.v++; }, 0);
 
         adopt();
+    }
+
+    // $rich's field for an element: the one it sits in, else the one controls would resolve to
+    const fieldFor = (el) => { const own = el.closest('[data-rich-text]'); return own && areas.has(own) ? own : resolve(el); };
+    // Writes made on the loader's stand-in ($rich.value = … before Rich Text arrived) land on
+    // their element's field once it exists
+    function flushStubWrites() {
+        const w = window.__manifestRichStubWrites; if (!w || !w.length) return;
+        for (let i = 0; i < w.length;) {
+            const [el, k, v] = w[i], a = el.isConnected ? fieldFor(el) : null;
+            if (!el.isConnected) { w.splice(i, 1); continue; }
+            if (!a) { i++; continue; }
+            w.splice(i, 1);
+            try { a._rt.api[k] = v; } catch { }
+        }
     }
 
     // Loaded after Alpine started: elements it already walked get their x-rich-text*
@@ -2892,6 +2906,7 @@
 
         el._rt = { format, inline: single, breaks: lines, noAll: !allStyles, api, settle };
         areas.add(el);
+        if (window.__manifestRichStubWrites && window.__manifestRichStubWrites.length) setTimeout(flushStubWrites, 0);
         settle();
         el._history.stack[0].html = el.innerHTML; el._history.stack[0].all = allKey(el);
         setTimeout(sync, 0);

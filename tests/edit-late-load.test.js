@@ -26,7 +26,7 @@ describe('Edit loaded after Alpine started', () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
         new Function(LOADER)()
         window.Alpine = Alpine; globalThis.Alpine = Alpine
-        document.body.innerHTML = `<div x-data><p id="s" x-text="'active=' + $edit.active + ' can=' + $edit.can('text')"></p><section x-edit="inside"><h2>In</h2></section></div>
+        document.body.innerHTML = `<div x-data x-init="$edit.onPublish = (patches) => ({ results: [], early: patches.length })"><p id="s" x-text="'active=' + $edit.active + ' can=' + $edit.can('text')"></p><section x-edit="inside"><h2>In</h2></section></div>
             <section x-edit="open"><h2>Always</h2></section><section x-edit.gated="adopt"><h2>Gated</h2></section>`
         Alpine.start()
         await tick()
@@ -40,6 +40,8 @@ describe('Edit loaded after Alpine started', () => {
         expect(said).not.toMatch(/edit is not defined/)
         expect([...document.querySelectorAll('section')].map(s => s.hasAttribute('data-edit-area'))).toEqual([true, true, true])
         expect([...document.querySelectorAll('h2')].map(h => h.getAttribute('contenteditable'))).toEqual(['true', 'true', null])
+        expect(typeof Alpine.store('edit').onPublish).toBe('function')                 // written on the stand-in, kept
+        expect(await Alpine.store('edit').publish()).toMatchObject({ early: 0 })
         Alpine.store('edit').on()
         await tick(50)
         expect(document.querySelector('[x-edit\\.gated] h2').getAttribute('contenteditable')).toBe('true')

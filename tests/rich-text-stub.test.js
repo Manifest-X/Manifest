@@ -25,7 +25,7 @@ describe('$rich before Rich Text loads', () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
         new Function(LOADER)()
         window.Alpine = Alpine; globalThis.Alpine = Alpine
-        document.body.innerHTML = `<div x-data="{ look: { align: 'center' } }"><div id="f" x-rich-text.html><p>Text</p></div><span id="v" x-text="$rich.can('strong') ? 'yes' : 'no'"></span><i x-effect="$rich.all = look"></i></div>`
+        document.body.innerHTML = `<div x-data="{ look: { align: 'center' } }"><div id="f" x-rich-text.html><p>Text</p></div><span id="v" x-text="$rich.can('strong') ? 'yes' : 'no'"></span><i x-effect="$rich.all = look"></i></div><div x-data><b x-init="$rich.value = '<p>Set early</p>'; window.__early = $rich.value"></b><div id="g" x-rich-text.html><p>Old</p></div></div>`
         Alpine.start()
         await tick()
         const said = warn.mock.calls.map(c => String(c[0])).join('\n')
@@ -39,5 +39,7 @@ describe('$rich before Rich Text loads', () => {
         expect(document.querySelector('#f').getAttribute('data-rich-text')).toBe('html')
         expect(window.__manifestRichStub.v).toBe(1)
         expect(document.querySelector('#f').getAttribute('style')).toContain('--rich-text-align: center')
+        expect(window.__early).toBe('<p>Set early</p>')                                  // the stand-in reads back what was written
+        expect(document.querySelector('#g').innerHTML).toBe('<p>Set early</p>')          // and hands it to the field
     })
 })

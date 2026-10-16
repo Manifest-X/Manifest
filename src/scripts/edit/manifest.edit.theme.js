@@ -113,13 +113,10 @@
         const cur = themeState()[kk]; if (cur && cur.value === value) return;   // dedupe
         pushDelta({ kind: 'theme', scope: scope || null, var: v, value }, !!persist);
     }
-    // Each var → its scope's data-edit-theme-file, else the server's theme file.
+    // Global vars → the page's theme stylesheet (the server's choice); scoped ones inline
     function themePatches() {
         const st = Object.values(themeState()), out = [];
-        st.filter(d => !inlineScope(d.scope)).forEach(d => {
-            const el = d.scope ? themeScopes[d.scope] : null;
-            out.push({ kind: 'theme', scope: d.scope || null, var: d.var, value: d.value, file: el ? el.getAttribute('data-edit-theme-file') || null : null });
-        });
+        st.filter(d => !inlineScope(d.scope)).forEach(d => out.push({ kind: 'theme', scope: d.scope || null, var: d.var, value: d.value, file: null }));
         // A scope element of its own: its style attribute, as the page has it now
         new Set(st.filter(d => d.scope && inlineScope(d.scope) === 'own').map(d => d.scope)).forEach(scope => {
             const el = themeScopes[scope], comp = scopeComponent(el), tree = { key: '', edits: { style: ownStyle(el) || null } };

@@ -1551,8 +1551,8 @@ function resolveComponentFile(manifest, name) {
 }
 
 // Theme var write: rewrite (or append) a single `--var: value;` in the target CSS file.
-// Scoped vars carry their file (data-edit-theme-file); global vars fall back to the
-// standard theme file. Surgical — rewrites the existing declaration in place, else
+// Global vars go to the theme stylesheet the page links (else the default path);
+// a patch may name another stylesheet the page links. Surgical — rewrites the existing declaration in place, else
 // appends into the first :root{} block, else creates one.
 const DEFAULT_THEME_FILE = 'styles/core/manifest.theme.css';
 // A custom-property value must stay inside its declaration. A small tokenizer: strings
@@ -1594,8 +1594,7 @@ function themeValueRefusal(v) {
   }
   return stack.length ? 'unbalanced brackets' : null;
 }
-// Stylesheets a theme edit may write: the default theme file, stylesheets index.html
-// links, and files it names in data-edit-theme-file (what the client sends).
+// Stylesheets a theme edit may write: the default theme file and stylesheets index.html links.
 // The theme stylesheet index.html links (manifest.theme.css, wherever it lives), else the framework's default path.
 function defaultThemeFile() {
   let html = '';
@@ -1622,7 +1621,6 @@ function themeTargets() {
     if (n.implied) continue;
     const open = openOf(html, n);
     if (n.name === 'link' && /(^|\s)stylesheet(\s|$)/i.test(attrOf(open, 'rel') || '')) add(attrOf(open, 'href'));
-    const tf = attrOf(open, 'data-edit-theme-file'); if (tf != null) add(tf);
   }
   return out;
 }
@@ -1632,7 +1630,7 @@ function writeThemeVar(p) {
   // One sent here has no element mnfst-run can address; a stylesheet would apply it site-wide.
   if (p.scope) return { region: `${p.scope}:${p.var}`, status: 'error', reason: `scoped value ${p.scope}:${p.var}: its scope element is not in a source file mnfst-run can write (generated content), and a stylesheet would apply it site-wide` };
   const rel = posix.normalize(String(p.file || defaultThemeFile()).replace(/^\/+/, ''));
-  if (!themeTargets().has(rel)) return { region: p.var, status: 'error', reason: `${rel} is not a stylesheet this page uses (link it, or name it in data-edit-theme-file)` };
+  if (!themeTargets().has(rel)) return { region: p.var, status: 'error', reason: `${rel} is not a stylesheet this page links` };
   const file = safeResolve('/' + rel);
   if (!file) return { region: p.var, status: 'error', reason: `path outside root: ${rel}` };
   const refused = writeRefusal(file, 'css'); if (refused) return { region: p.var, status: 'error', reason: `refused: ${refused}` };

@@ -67,6 +67,8 @@
         Alpine.magic('edit', editMagic);
         // The loader's stand-in answered $edit until now: it hands over, and effects that read it run again
         window.__manifestEditMagic = editMagic;
+        const kept = window.__manifestEditStubWrites;   // writes made on the stand-in ($edit.onPublish = …)
+        if (kept) Object.keys(kept).forEach(k => { try { estore[k] = kept[k]; } catch { } delete kept[k]; });
         if (window.__manifestEditStub) setTimeout(() => { window.__manifestEditStub.v++; }, 0);
         loadState();
         if (window.__mnfstEdit) loadBase();   // only mnfst-run --edit serves the base

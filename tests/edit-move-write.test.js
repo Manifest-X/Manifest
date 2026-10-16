@@ -701,7 +701,7 @@ describe('startup sweep', () => {
         const hook = path.join(dir, '.husky/pre-commit'), hookSrc = '#!/bin/sh\necho ok\n'
         writeFileSync(hook, hookSrc); chmodSync(hook, 0o755)
         writeFileSync(path.join(dir, 'css/site.css'), css); writeFileSync(path.join(dir, 'css/unlinked.css'), css); writeFileSync(path.join(dir, 'styles/core/manifest.theme.css'), css)
-        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/css/site.css?v=2"><link rel="stylesheet" href="shared/x.css"><section x-edit="a" data-edit-theme-file="styles/core/manifest.theme.css"><p>One</p></section>`)
+        writeFileSync(path.join(dir, 'index.html'), `<link rel="stylesheet" href="/css/site.css?v=2"><link rel="stylesheet" href="shared/x.css"><section x-edit="a" data-edit-theme-file="css/unlinked.css"><p>One</p></section>`)
         const manifestBefore = readFileSync(path.join(dir, 'manifest.json'), 'utf8')
         try {
             for (const file of ['.husky/pre-commit', 'manifest.json', 'index.html', 'css/unlinked.css', 'shared/x.css', '../outside.css']) {
