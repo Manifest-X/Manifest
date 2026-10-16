@@ -189,22 +189,22 @@ async function callTool(url, key, name, args) {
 
 // --- File collection (gitignore-aware) -------------------------------------
 
-// Never ship local config, agent instructions or secrets — matched at ANY depth.
-// Mirrors the host's server-side list: dotfiles and dot-folders (except
-// .well-known), agent files, credentials.
+// Never ship local config or secrets — matched at ANY depth (by path segment /
+// basename), not just the project root. A nested `api/.env` or `sub/.claude/…`
+// must be excluded too. Mirrors the server's ingest drop list.
 const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.claude']);
-const AGENT_FILES = new Set([
-  'claude.md', 'claude.local.md', 'agents.md', 'gemini.md',
-  '.cursorrules', '.windsurfrules', '.mcp.json', '.manifestignore',
+const SECRET_DIRS = new Set(['.ssh', '.aws', '.wrangler']);
+const SECRET_FILES = new Set([
+  '.npmrc', '.yarnrc', '.yarnrc.yml', '.pypirc', '.netrc', '_netrc', '.git-credentials', '.htpasswd',
+  '.dev.vars', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.DS_Store',
 ]);
-const SECRET_FILES = new Set(['_netrc', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519']);
 export function isExcludedPath(rel) {
   const parts = rel.split('/');
-  if (parts.some((p) => EXCLUDED_DIRS.has(p))) return true;
-  if (parts.some((p) => p.startsWith('.') && p.toLowerCase() !== '.well-known')) return true;
-  const base = parts[parts.length - 1].toLowerCase();
-  if (AGENT_FILES.has(base) || SECRET_FILES.has(base) || base.startsWith('env.local.')) return true;
-  if (/\.(pem|key|p12|pfx|jks|keystore)$/.test(base)) return true;
+  if (parts.some((p) => EXCLUDED_DIRS.has(p) || SECRET_DIRS.has(p))) return true;
+  const base = parts[parts.length - 1];
+  if (base === '.env' || base.startsWith('.env.')) return true; // .env, .env.local, .env.prod …
+  if (SECRET_FILES.has(base) || base.startsWith('.dev.vars.') || base.startsWith('env.local.')) return true;
+  if (/\.(pem|key|p12|pfx|jks|keystore)$/i.test(base)) return true;
   return false;
 }
 

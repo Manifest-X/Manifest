@@ -58,16 +58,16 @@ describe('isExcludedPath (secret guard — regression)', () => {
             expect(isExcludedPath(p)).toBe(true)
         }
     })
-    it('drops agent files, dotfiles and dot-folders at any depth', () => {
-        for (const p of ['CLAUDE.md', 'sub/CLAUDE.md', 'claude.md', 'AGENTS.md', 'CLAUDE.local.md', 'GEMINI.md',
-            '.cursorrules', '.windsurfrules', '.mcp.json', '.manifestignore', '.gitignore', '.vscode/settings.json',
-            '.github/workflows/ci.yml', '.well-known/.env', 'env.local.js', 'id_ed25519']) {
+    it('drops credential files at any depth', () => {
+        for (const p of ['.npmrc', 'a/.git-credentials', '.ssh/id_ed25519', 'x/.aws/credentials', '.dev.vars.prod',
+            'env.local.js', 'store.jks']) {
             expect(isExcludedPath(p)).toBe(true)
         }
     })
-    it('keeps ordinary project files, README.md and .well-known', () => {
+    it('keeps ordinary project files, agent files and non-secret dotfiles', () => {
         for (const p of ['index.html', 'src/app.js', 'data/products.csv', 'manifest.json', 'README.md',
-            '.well-known/security.txt', 'website/.well-known/assetlinks.json', 'keyboard.js']) {
+            'CLAUDE.md', 'AGENTS.md', '.mcp.json', '.gitignore', '.manifestignore', '.vscode/settings.json',
+            '.well-known/security.txt', 'keyboard.js']) {
             expect(isExcludedPath(p)).toBe(false)
         }
     })
