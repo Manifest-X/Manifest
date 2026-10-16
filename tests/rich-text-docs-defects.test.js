@@ -679,6 +679,23 @@ describe('docs certifier defects', () => {
         expect(el.innerHTML).toBe('<h2>Select some <span style="font-family: Georgia;">words</span>, then pick.</h2>')
     })
 
+    it('```ts then Enter opens a code block with that language', () => {
+        for (const attr of ['x-rich-text', 'x-rich-text.html']) {
+            document.body.innerHTML = ''
+            const root = mount(`<div ${attr} id="f"><p>Intro</p><p></p></div>`)
+            const el = root.querySelector('#f'), p = el.querySelectorAll('p')[1]
+            focusin(el)
+            p.textContent = '```ts'; window.getSelection().collapse(p.firstChild, 5)
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 's' }))
+            key(el, { key: 'Enter' })
+            const pre = el.querySelector('pre')
+            expect(pre && pre.getAttribute('data-lang'), attr).toBe('ts')
+            pre.textContent = 'let y'; window.getSelection().collapse(pre.firstChild, 5)
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'y' }))
+            expect(el._rt.api.value, attr).toBe(attr === 'x-rich-text' ? 'Intro\n\n```ts\nlet y\n```' : '<p>Intro</p><pre data-lang="ts">let y</pre><p><br></p>')
+        }
+    })
+
     it('``` then Enter opens a code block as the first block of an empty field too', () => {
         for (const attr of ['x-rich-text', 'x-rich-text.html']) {
             document.body.innerHTML = ''
