@@ -17,6 +17,46 @@ function escapeForSingleQuotedJsString(s) {
 // Framework web components (not project components) — never fetched.
 const FRAMEWORK_COMPONENT_TAGS = new Set(['code', 'code-group']);
 
+// The <template x-if>/<template x-for> whose tracked clone is `el`, if any.
+function findOwningTemplate(el) {
+    if (!el._x_dataStack) return null;
+    for (let n = el.previousElementSibling; n; n = n.previousElementSibling) {
+        if (n.tagName !== 'TEMPLATE') continue;
+        if (n._x_currentIfEl === el) return { tpl: n, type: 'if' };
+        const lookup = el._x_refreshXForScope && n._x_lookup;
+        if (lookup) {
+            // Map since Alpine 3.16, plain object before
+            const entries = lookup instanceof Map ? lookup : Object.entries(lookup);
+            for (const [key, value] of entries) if (value === el) return { tpl: n, type: 'for', key };
+        }
+    }
+    return null;
+}
+
+// Point Alpine's clone bookkeeping at the swapped-in node.
+function repointTemplateClone(owner, placeholder, node) {
+    const { tpl } = owner;
+    if (owner.type === 'if') {
+        const undo = tpl._x_undoIf;
+        tpl._x_currentIfEl = node;
+        tpl._x_lastRenderedEl = node;
+        tpl._x_undoIf = () => {
+            const A = window.Alpine;
+            const teardown = () => {
+                if (A && A.destroyTree) A.destroyTree(node);
+                node.remove();
+            };
+            A && A.mutateDom ? A.mutateDom(teardown) : teardown();
+            if (undo) undo();
+        };
+    } else {
+        if (tpl._x_lookup instanceof Map) tpl._x_lookup.set(owner.key, node);
+        else tpl._x_lookup[owner.key] = node;
+        node._x_refreshXForScope = placeholder._x_refreshXForScope;
+        if (tpl._x_lastRenderedEl === placeholder) tpl._x_lastRenderedEl = node;
+    }
+}
+
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
@@ -50,7 +90,7 @@ window.ManifestComponentsProcessor = {
         }
         const container = document.createElement('div');
         container.innerHTML = content.trim();
-        const topLevelElements = Array.from(container.children);
+        let topLevelElements = Array.from(container.children);
         if (topLevelElements.length === 0) {
             console.debug('[Manifest Components] skipped: empty component template', element);
             element.replaceWith(document.createComment(` Empty component: ${name} `));
@@ -75,6 +115,7 @@ window.ManifestComponentsProcessor = {
             }
         };
         topLevelElements.forEach(processScripts);
+        topLevelElements = Array.from(container.children);
         // Collect properties from placeholder attributes
         const props = {};
         Array.from(element.attributes).forEach(attr => {
@@ -276,7 +317,23 @@ window.ManifestComponentsProcessor = {
         const fragment = document.createDocumentFragment();
         topLevelElements.forEach(el => fragment.appendChild(el));
 
-        parent.replaceChild(fragment, element);
+        // Sole child of x-if/x-for: Alpine tracks one node per clone, so a
+        // multi-root component keeps a host; the clone's scope carries over.
+        const owner = findOwningTemplate(element);
+        let swapped = fragment;
+        if (owner && topLevelElements.length) {
+            swapped = topLevelElements[0];
+            if (topLevelElements.length > 1) {
+                swapped = document.createElement(element.tagName.toLowerCase());
+                swapped.setAttribute('data-processed', '');
+                swapped.style.display = 'contents';
+                swapped.appendChild(fragment);
+            }
+            swapped._x_dataStack = element.hasAttribute('x-data') ? element._x_dataStack.slice(1) : element._x_dataStack;
+            repointTemplateClone(owner, element, swapped);
+        }
+
+        parent.replaceChild(swapped, element);
 
         // Manually init Alpine on the swapped-in elements once magic methods are
         // ready — prevents "i is not a function" errors.
