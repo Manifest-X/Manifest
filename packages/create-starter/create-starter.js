@@ -4,17 +4,17 @@ const fs = require('fs');
 const path = require('path');
 
 // Default Manifest MCP endpoint. Override via --mcp-url for staging/local dev.
-const DEFAULT_MCP_URL = 'https://manifest-mcp.manifest-c5f.workers.dev/mcp';
+const DEFAULT_MCP_URL = 'https://mcp.manifestx.dev/mcp';
 
 // Parse CLI args: extract flags first, then join remaining tokens as the project name.
 // Supports `--key=xxx` / `--key xxx`, `--mcp-url=xxx` / `--mcp-url xxx`.
-// Falls back to the MANIFEST_API_KEY env var when --key is not given.
 function parseArgs(argv) {
-  let apiKey = process.env.MANIFEST_API_KEY || null;
+  let apiKey = null;
   let mcpUrl = DEFAULT_MCP_URL;
   let projectId = null;    // --project-id: non-secret id for the committed .mcp.json
   let here = false;        // --here: install into the current directory, no subfolder
   let displayName = null;  // --name: project display name when using --here
+  let force = false;       // --force: overwrite same-named files in --here mode
   const remaining = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -40,6 +40,8 @@ function parseArgs(argv) {
       displayName = arg.slice('--name='.length);
     } else if (arg === '--here' || arg === '.') {
       here = true;
+    } else if (arg === '--force') {
+      force = true;
     } else if (arg === '--help' || arg === '-h') {
       printUsage();
       process.exit(0);
@@ -53,28 +55,30 @@ function parseArgs(argv) {
     mcpUrl: mcpUrl.trim(),
     projectId: projectId ? projectId.trim() : null,
     here,
+    force,
     displayName: displayName ? displayName.trim() : null,
     projectName: remaining.join(' ').trim(),
   };
 }
 
 function printUsage() {
-  console.log('Usage: npx mnfst-starter [<project-name> | --here] [--name "<name>"] [--key=<api-key>] [--mcp-url=<url>]');
+  console.log('Usage: npx mnfst-starter [<project-name> | --here [--force]] [--name "<name>"] [--project-id=<id>] [--key=<api-key>] [--mcp-url=<url>]');
   console.log('');
   console.log('Examples:');
   console.log('  npx mnfst-starter MyProject                 # scaffold into ./MyProject');
   console.log('  npx mnfst-starter "Playcom Platform"');
   console.log('  npx mnfst-starter --here                    # scaffold into the current folder');
   console.log('  npx mnfst-starter --here --name "My Site"   # current folder, explicit name');
-  console.log('  npx mnfst-starter MyProject --key=mfst_free_abc123');
   console.log('');
-  console.log('When --key (or MANIFEST_API_KEY env var) is provided, the project is');
-  console.log('initialised with .env (gitignored, holds the key) and .mcp.json');
-  console.log('(checked in, references ${MANIFEST_API_KEY}) so Claude Code can connect');
-  console.log('to the Manifest MCP server on first launch.');
+  console.log('--here never overwrites existing files unless --force is given.');
+  console.log('');
+  console.log('--project-id and/or --key (normally passed by Manifest\'s manifest_init)');
+  console.log('wire the project to the Manifest MCP server: .mcp.json and');
+  console.log('.claude/settings.json are merged, and --key is saved to .env (gitignored)');
+  console.log('for headless/CI publishing.');
 }
 
-const { apiKey, mcpUrl, projectId, here, displayName, projectName } = parseArgs(process.argv.slice(2));
+const { apiKey, mcpUrl, projectId, here, force, displayName, projectName } = parseArgs(process.argv.slice(2));
 
 // In --here mode the project name comes from --name or the current folder's name;
 // otherwise it's the positional argument (which also becomes the subfolder name).
@@ -95,17 +99,34 @@ if (!/^[a-zA-Z0-9._ -]+$/.test(name) || name.includes('..') || name.startsWith('
 // but a typo'd key looking like `--keymfst_xxx` would otherwise silently fail).
 if (apiKey && !/^mfst_(free|live|test)_[A-Za-z0-9]{20,}$/.test(apiKey)) {
   console.error('Error: API key does not look like a valid Manifest key (expected mfst_<env>_<chars>).');
-  console.error('Got: ' + apiKey.slice(0, 16) + '...');
   process.exit(1);
 }
+
+const starterDir = path.join(__dirname, 'templates');
+// Must match templates/starter; .gitignore is merged separately.
+const filesToCopy = [
+  'components',
+  'assets',
+  '_redirects',
+  'favicon.ico',
+  'index.html',
+  'LICENSE.md',
+  'locales.csv',
+  'manifest.json',
+  'manifest.theme.css',
+  'privacy.md',
+  'README.md'
+];
+const mcpWiring = Boolean(projectId || apiKey);
 
 const projectPath = here ? process.cwd() : path.resolve(process.cwd(), name);
 
 if (here) {
-  // In-place: refuse only if this is already a Manifest project, to avoid
-  // clobbering one. Otherwise scaffold into the (possibly non-empty) folder.
-  if (fs.existsSync(path.join(projectPath, 'manifest.json'))) {
-    console.error('Error: this folder already contains a manifest.json — it looks like a Manifest project already. Aborting to avoid overwriting it.');
+  const conflicts = filesToCopy.flatMap((f) => collisions(path.join(starterDir, f), path.join(projectPath, f), f));
+  if (conflicts.length && !force) {
+    console.error('Error: these files already exist in this folder and would be overwritten:');
+    conflicts.forEach((f) => console.error('  ' + f));
+    console.error('Move them aside, or re-run with --force to overwrite them.');
     process.exit(1);
   }
 } else if (fs.existsSync(projectPath)) {
@@ -113,29 +134,17 @@ if (here) {
   process.exit(1);
 }
 
+// Read existing JSON config up front so a malformed file aborts before any write.
+const mcpJsonPath = path.join(projectPath, '.mcp.json');
+const settingsPath = path.join(projectPath, '.claude', 'settings.json');
+const existingMcp = mcpWiring ? readJson(mcpJsonPath) : null;
+const existingSettings = mcpWiring ? readJson(settingsPath) : null;
+
 console.log(here ? `Creating Manifest project "${name}" in the current folder` : `Creating Manifest project: ${name}`);
 
 try {
   // Create project directory
   fs.mkdirSync(projectPath, { recursive: true });
-
-  // Copy all files from starter template (must match templates/starter; exclude local-only e.g. bs-config.js)
-  const starterDir = path.join(__dirname, 'templates');
-  const filesToCopy = [
-    'components',
-    'assets',
-    '_redirects',
-    // .gitignore is handled separately (merge-not-clobber) so --here into an
-    // existing repo preserves the user's own ignore rules.
-    'favicon.ico',
-    'index.html',
-    'LICENSE.md',
-    'locales.csv',
-    'manifest.json',
-    'manifest.theme.css',
-    'privacy.md',
-    'README.md'
-  ];
 
   filesToCopy.forEach(file => {
     const srcPath = path.join(starterDir, file);
@@ -277,63 +286,33 @@ jspm_packages/
     fs.writeFileSync(gitignorePath, gitignore);
   }
 
-  // Scaffold the Manifest MCP integration ONLY when this came through the
-  // MCP/AI flow — signalled by --project-id (preferred) or --key. A plain
-  // `npx mnfst-starter MyProject` (general framework users) writes none of this.
-  //
-  //   .mcp.json  — checked in. Carries the NON-SECRET project_id
-  //                (X-Manifest-Project); teammates connect via their own
-  //                sign-in + team membership, no shared key. (Legacy: if only a
-  //                key is given, falls back to the X-API-Key header form.)
-  //   .env       — gitignored, holds the actual key for headless/automation use
-  //                (scheduled agents, CI). Optional.
-  //   .claude/settings.json — pre-approves the manifest MCP tools.
-  const mcpWiring = Boolean(projectId || apiKey);
+  // MCP wiring only when called via manifest_init (--project-id and/or --key).
+  // .mcp.json and .claude/settings.json are merged, never replaced.
   if (mcpWiring) {
-    if (apiKey) {
-      const envContent = [
-        '# Manifest API key — for headless/automation use (scheduled agents, CI).',
-        '# Treat this like a password. Do NOT commit (already in .gitignore).',
-        '# Interactive contributors connect via sign-in + team membership instead.',
-        '',
-        '# Server-side only: NOT prefixed with PUBLIC_, so mnfst-run does NOT inject',
-        '# it into window.env. Only PUBLIC_* vars reach the browser — any other env',
-        '# var you add here stays server-side. To expose a value to manifest.json',
-        '# (e.g. a public API URL), name it PUBLIC_… and reference it as ${PUBLIC_…}.',
-        `MANIFEST_API_KEY=${apiKey}`,
-        '',
-      ].join('\n');
-      fs.writeFileSync(path.join(projectPath, '.env'), envContent);
-    }
+    if (apiKey) writeEnvKey(path.join(projectPath, '.env'), apiKey);
 
     const headers = projectId
       ? { 'X-Manifest-Project': projectId }
       : { 'X-API-Key': '${MANIFEST_API_KEY}' };
-    const mcpConfig = { mcpServers: { manifest: { type: 'http', url: mcpUrl, headers } } };
-    fs.writeFileSync(
-      path.join(projectPath, '.mcp.json'),
-      JSON.stringify(mcpConfig, null, 2) + '\n',
-    );
+    const mcpConfig = existingMcp || {};
+    mcpConfig.mcpServers = { ...(mcpConfig.mcpServers || {}), manifest: { type: 'http', url: mcpUrl, headers } };
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2) + '\n');
 
-    // Pre-approve the Manifest MCP tools, and wire the design-guard hook. The
-    // hook script (.claude/hooks/ui-guard.mjs) is delivered by
-    // manifest_install_skills; here we only register it (no-ops until present).
-    const claudeDir = path.join(projectPath, '.claude');
-    fs.mkdirSync(claudeDir, { recursive: true });
-    const guardCommand = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/ui-guard.mjs"';
-    const settings = {
-      permissions: { allow: ['mcp__manifest'] },
-      hooks: {
-        UserPromptSubmit: [{ hooks: [{ type: 'command', command: guardCommand }] }],
-        PreToolUse: [
-          { matcher: 'Write|Edit|MultiEdit', hooks: [{ type: 'command', command: guardCommand }] },
-        ],
-      },
-    };
-    fs.writeFileSync(
-      path.join(claudeDir, 'settings.json'),
-      JSON.stringify(settings, null, 2) + '\n',
-    );
+    // Pre-approve the Manifest tools. Guard hooks are registered by
+    // manifest_install_skills, which ships their scripts; only wire ui-guard
+    // here when its script is already present.
+    const settings = existingSettings || {};
+    settings.permissions = settings.permissions || {};
+    const allow = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
+    if (!allow.includes('mcp__manifest')) allow.push('mcp__manifest');
+    settings.permissions.allow = allow;
+    if (fs.existsSync(path.join(projectPath, '.claude', 'hooks', 'ui-guard.mjs'))) {
+      const hook = { type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/ui-guard.mjs"' };
+      addHook(settings, 'UserPromptSubmit', undefined, hook);
+      addHook(settings, 'PreToolUse', 'Write|Edit|MultiEdit', hook);
+    }
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   }
 
   console.log(`Project created successfully.`);
@@ -353,6 +332,58 @@ jspm_packages/
 } catch (error) {
   console.error('Error creating project:', error.message);
   process.exit(1);
+}
+
+// Template files (relative paths) that already exist at dest
+function collisions(src, dest, rel) {
+  if (!fs.existsSync(src) || !fs.existsSync(dest)) return [];
+  if (!fs.statSync(src).isDirectory()) return [rel];
+  if (!fs.statSync(dest).isDirectory()) return [rel];
+  return fs.readdirSync(src).flatMap((e) => collisions(path.join(src, e), path.join(dest, e), rel + '/' + e));
+}
+
+function readJson(file) {
+  if (!fs.existsSync(file)) return null;
+  try {
+    const v = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+  } catch {}
+  console.error(`Error: ${path.relative(process.cwd(), file) || file} is not a valid JSON object; fix or remove it, then re-run.`);
+  process.exit(1);
+}
+
+function addHook(settings, event, matcher, hook) {
+  settings.hooks = settings.hooks || {};
+  const entries = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [];
+  const present = entries.some((e) => (e.hooks || []).some((h) => h.command === hook.command) && e.matcher === matcher);
+  if (!present) entries.push(matcher ? { matcher, hooks: [hook] } : { hooks: [hook] });
+  settings.hooks[event] = entries;
+}
+
+// Set MANIFEST_API_KEY in .env, keeping any other variables
+function writeEnvKey(file, key) {
+  const line = `MANIFEST_API_KEY=${key}`;
+  if (fs.existsSync(file)) {
+    const existing = fs.readFileSync(file, 'utf8');
+    const re = /^\s*(export\s+)?MANIFEST_API_KEY\s*=.*$/m;
+    const next = re.test(existing)
+      ? existing.replace(re, line)
+      : existing + (existing === '' || existing.endsWith('\n') ? '' : '\n') + '\n# Manifest API key (headless/CI publishing). Do not commit.\n' + line + '\n';
+    fs.writeFileSync(file, next);
+    return;
+  }
+  fs.writeFileSync(file, [
+    '# Manifest API key — for headless/automation use (scheduled agents, CI).',
+    '# Treat this like a password. Do NOT commit (already in .gitignore).',
+    '# Interactive contributors connect via sign-in + team membership instead.',
+    '',
+    '# Server-side only: NOT prefixed with PUBLIC_, so mnfst-run does NOT inject',
+    '# it into window.env. Only PUBLIC_* vars reach the browser — any other env',
+    '# var you add here stays server-side. To expose a value to manifest.json',
+    '# (e.g. a public API URL), name it PUBLIC_… and reference it as ${PUBLIC_…}.',
+    line,
+    '',
+  ].join('\n'));
 }
 
 // Helper function to copy directories recursively
