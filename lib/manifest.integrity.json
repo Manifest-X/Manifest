@@ -9,7 +9,7 @@
   "manifest.color.js": "sha384-6Rv3LxyTcZNjrhtayQfqRdCx0uSZ4BiEbgEI98I62eTvp8Aw7LBIoNJ0Je1oktwL",
   "manifest.colorpicker.js": "sha384-BhcCe8cGcd0DTJNwzXWWY+FQNRfSFFl6XqfHIFP8yHg/aXFks1NIC6lVx0Sr1VkM",
   "manifest.combobox.js": "sha384-MILTkrgsTzsYUjGo4ZuADqV85Xs4GmfB4xexfe9vbJMIoQTZ42W4zs+DTaVSPEsx",
-  "manifest.components.js": "sha384-bahcOsQCxJ+3ArNDUsoiQAQ47+BhzWGgRuf8wlG3ajCTzdlHO3VmLSveXpn1fr7o",
+  "manifest.components.js": "sha384-BUFA8h+G5Plr82sV7bKzO42pPoiRZwRQcKj1lt2ROFiKjjlkayU/vmkAFqEsdBA+",
   "manifest.computed.js": "sha384-GYML/e81gQfN+iDbqhPUgny8bINCyL+SrbTofoGk4hlCnLLjv51mCv42JMqq+ku5",
   "manifest.data.js": "sha384-6nLBNxkEYmZKAbyRSNyvjmq5ClExrj0unbFATBQ/SkiA3Odxz/mVEWJXyGAM6xFK",
   "manifest.datepicker.js": "sha384-XnbeURni2X91ozVzatQcSjYYIS4MoW12dBRJnYAGBr0nCQ624heH5s+xtQSpLZX6",
@@ -36,5 +36,5 @@
   "manifest.url.parameters.js": "sha384-J2aSVBOPsoqsbafHndrWLHEDpKb4AKJAoQnVmKA4gZh5P/8HHjFWHO/lkusmG84l",
   "manifest.utilities.js": "sha384-L5uXMLFBIF6LUM1haRjd4eGjHSWuqsCYSpPZRPYosNfJsMC5U5TnmjBxIhrZRe2d",
   "manifest.virtual.js": "sha384-ZDNoF9QVhVcVpkjIK6NH15S6I5c6OBshiJpXSOYjNsIB+298I0a7g3aFO+jyq4Vb",
-  "manifest.js": "sha384-awBD5RsuSptlguWJ5H1+89A9coKlT3lx4+i2PLZdRxeCymaG7SYBeQ7OhbCCnZGA"
+  "manifest.js": "sha384-AvD8QPahsOp5hmdBGJtfu2jp/dYrxLgapvAzx0oc2POlfb/Gj1tvFBHG+ct76p3d"
 }

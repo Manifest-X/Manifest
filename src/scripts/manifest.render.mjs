@@ -1480,7 +1480,15 @@ function stripResolvedXIconDirectives(html) {
 }
 
 function markPrerenderedManifestComponents(html) {
-  return html.replace(/<(x-[a-z][\w-]*)([^>]*)>/gi, (full, tag, attrs) => {
+  // x-if/x-for template content is authored source Alpine clones at runtime — never mark it.
+  const templates = [];
+  return html.replace(/<(\/?)template(?=[\s>])([^>]*)>|<(x-[a-z][\w-]*)([^>]*)>/gi, (full, close, tplAttrs, tag, attrs) => {
+    if (!tag) {
+      if (close) templates.pop();
+      else templates.push(/\sx-(?:if|for)\s*=/i.test(tplAttrs || ''));
+      return full;
+    }
+    if (templates.includes(true)) return full;
     const a = attrs || '';
     if (/\bdata-pre-rendered\s*=/i.test(a) || /\bdata-processed\s*=/i.test(a)) return full;
     // Inside an explicit hydrate island — the runtime will restore its

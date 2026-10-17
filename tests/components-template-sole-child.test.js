@@ -16,6 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const COMPONENTS = {
     support: '<div class="support"><span>help</span></div>',
     card: '<article class="card"><h3 x-text="item.name"></h3></article>',
+    scripted: '<div class="scripted">x</div><script>window.__scriptedRuns = (window.__scriptedRuns || 0) + 1</script>',
     pair: '<p class="first">a</p><p class="second" x-text="typeof item === \'undefined\' ? \'b\' : item.name"></p>'
 }
 window.Alpine = Alpine
@@ -88,6 +89,21 @@ describe('component as sole child of x-if', () => {
         state().show = false
         await settle()
         expect(host.querySelectorAll('.first, .second')).toHaveLength(0)
+    })
+})
+
+describe('component with a trailing script', () => {
+    it('counts as single-root: no host, script runs, not re-inserted', async () => {
+        const host = await mount('<template x-if="show"><x-scripted></x-scripted></template>', { show: true })
+        await settle()
+        const tpl = host.querySelector('template')
+        expect(host.querySelector('x-scripted')).toBeNull()
+        expect(tpl._x_currentIfEl).toBe(host.querySelector('.scripted'))
+        expect(host.querySelector('script')).toBeNull()
+        expect(window.__scriptedRuns).toBe(1)
+        state().show = false
+        await settle()
+        expect(host.querySelector('.scripted')).toBeNull()
     })
 })
 
