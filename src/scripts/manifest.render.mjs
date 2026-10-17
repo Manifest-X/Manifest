@@ -5188,7 +5188,7 @@ async function runPrerender(config) {
           let tagged = false;
           const lookup = tpl._x_lookup;
           if (lookup) {
-            try { Object.values(lookup).forEach((el) => { if (el) { tag(el); tagged = true; } }); } catch { /* not iterable */ }
+            try { (lookup instanceof Map ? [...lookup.values()] : Object.values(lookup)).forEach((el) => { if (el) { tag(el); tagged = true; } }); } catch { /* not iterable */ }
           }
           if (tagged) return;
           const first = tpl.content && tpl.content.firstElementChild;
