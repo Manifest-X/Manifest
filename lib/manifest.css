@@ -781,6 +781,15 @@
             opacity: 0.85
         }
 
+        /* Dense line hover: transparent columns + focus dot */
+        & rect.hit {
+            fill: transparent
+        }
+
+        & circle.focus {
+            pointer-events: none
+        }
+
         /* Bars */
         & rect {
             fill: var(--color-chart-color, var(--color-chart-1));
@@ -977,6 +986,10 @@
 
             &.active {
                 opacity: 1
+            }
+
+            & strong {
+                font-weight: 600
             }
         }
 
