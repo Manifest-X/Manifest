@@ -409,6 +409,11 @@ function interceptLinkClicks() {
         const link = event.target.closest('a');
         if (!link) return;
 
+        // New tab or window: modifier keys, middle click, or a non-self target
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const target = link.getAttribute('target');
+        if (target && target !== '_self') return;
+
         // A link inside editable text (x-rich-text, x-edit page text) is content: the click
         // places the caret, as the browser does natively, and never navigates
         const host = link.closest('[contenteditable]');
