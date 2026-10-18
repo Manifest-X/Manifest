@@ -9,7 +9,10 @@
 #
 # Trigger it two ways:
 #   - Actions tab -> "Release (npm OIDC)" -> Run workflow -> pick a package / "all".
-#   - Push a tag:  v*  publishes mnfst,  render-v*  publishes mnfst-render.
+#   - Push a tag:  v* -> mnfst, render-v* -> mnfst-render, run-v* -> mnfst-run,
+#     publish-v* -> mnfst-publish, starter-v* -> mnfst-starter,
+#     types-v* -> mnfst-types, test-v* -> mnfst-test, export-v* -> mnfst-export,
+#     docs-v* -> mnfst-docs.
 #     (Tags let an agent trigger a release over git without the GitHub UI.)
 # Version numbers are derived from the npm registry by scripts/release-bump.mjs;
 # the tag name is only a trigger, it does not set the version.
@@ -40,6 +43,11 @@ on:
       - 'render-v*'   # publishes mnfst-render
       - 'run-v*'      # publishes mnfst-run
       - 'publish-v*'  # publishes mnfst-publish
+      - 'starter-v*'  # publishes mnfst-starter
+      - 'types-v*'    # publishes mnfst-types
+      - 'test-v*'     # publishes mnfst-test
+      - 'export-v*'   # publishes mnfst-export
+      - 'docs-v*'     # publishes mnfst-docs
 
 permissions:
   contents: read
@@ -85,6 +93,11 @@ jobs:
               refs/tags/render-v*) [ "$PKG" = "mnfst-render" ] && run=true ;;
               refs/tags/run-v*)     [ "$PKG" = "mnfst-run" ] && run=true ;;
               refs/tags/publish-v*) [ "$PKG" = "mnfst-publish" ] && run=true ;;
+              refs/tags/starter-v*) [ "$PKG" = "mnfst-starter" ] && run=true ;;
+              refs/tags/types-v*)   [ "$PKG" = "mnfst-types" ] && run=true ;;
+              refs/tags/test-v*)    [ "$PKG" = "mnfst-test" ] && run=true ;;
+              refs/tags/export-v*)  [ "$PKG" = "mnfst-export" ] && run=true ;;
+              refs/tags/docs-v*)    [ "$PKG" = "mnfst-docs" ] && run=true ;;
               refs/tags/v*)        [ "$PKG" = "mnfst" ] && run=true ;;
             esac
           elif [ "${{ inputs.package }}" = "all" ] || [ "${{ inputs.package }}" = "$PKG" ]; then
