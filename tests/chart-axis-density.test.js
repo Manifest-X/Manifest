@@ -158,4 +158,54 @@ describe('dense points + tooltip heading', () => {
         expect(tip.querySelector('strong').textContent).toBe('Tue')
         expect(tip.textContent).toContain('Sales: 2')
     })
+
+    it('omits the heading when the chart has no labels', async () => {
+        const el = await render({ type: 'line', series: [{ name: 'Sales', data: [1, 2, 3] }] })
+        const dot = el.querySelectorAll('circle')[1]
+        expect(dot.getAttribute('aria-label')).toBe('Sales: 2')
+        dot.dispatchEvent(new MouseEvent('mouseenter', { clientX: 100, clientY: 50 }))
+        const tip = el.querySelector('.tooltip')
+        expect(tip.querySelector('strong')).toBeNull()
+        expect(tip.textContent).toBe('Sales: 2')
+    })
+
+    it('mousemove over the same target repositions without rebuilding', async () => {
+        const labels = days(365)
+        const el = await render({ type: 'line', labels, series: [{ data: labels.map((_, i) => i) }] })
+        const hit = el.querySelectorAll('rect.hit')[5]
+        hit.dispatchEvent(new MouseEvent('mouseenter', { clientX: 10, clientY: 50 }))
+        const head = el.querySelector('.tooltip strong')
+        hit.dispatchEvent(new MouseEvent('mousemove', { clientX: 12, clientY: 60 }))
+        expect(el.querySelector('.tooltip strong')).toBe(head)
+        expect(el.querySelector('.tooltip').style.top).toBe('60px')
+    })
+
+    it('hover columns are transparent inline, so unlayered rect fills cannot paint them', async () => {
+        const labels = days(200)
+        const el = await render({ type: 'area', labels, series: [{ data: labels.map(() => 1) }] })
+        const hit = el.querySelector('rect.hit')
+        expect(hit.getAttribute('style')).toContain('fill:transparent')
+    })
+
+    it('dense combo: one tooltip lists bar and line values, and highlights the bars', async () => {
+        const labels = days(365)
+        const el = await render({
+            type: 'combo', labels, series: [
+                { name: 'Orders', type: 'bar', data: labels.map((_, i) => i) },
+                { name: 'Trend', type: 'line', data: labels.map((_, i) => i * 2) }
+            ]
+        })
+        const hit = el.querySelectorAll('rect.hit')[10]
+        hit.dispatchEvent(new MouseEvent('mouseenter', { clientX: 50, clientY: 50 }))
+        const tip = el.querySelector('.tooltip')
+        expect(tip.querySelector('strong').textContent).toBe(labels[10])
+        expect(tip.textContent).toContain('Orders: 10')
+        expect(tip.textContent).toContain('Trend: 20')
+        expect(el.querySelectorAll('circle.focus').length).toBe(1)
+        const active = el.querySelectorAll('rect.active')
+        expect(active.length).toBe(1)
+        expect(active[0].getAttribute('aria-label')).toBe(labels[10] + ' · Orders: 10')
+        hit.dispatchEvent(new MouseEvent('mouseleave'))
+        expect(el.querySelectorAll('rect.active').length).toBe(0)
+    })
 })

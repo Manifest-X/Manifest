@@ -84,11 +84,7 @@
             opacity: 0.85
         }
 
-        /* Dense line hover: transparent columns + focus dot */
-        & rect.hit {
-            fill: transparent
-        }
-
+        /* Dense line hover dot */
         & circle.focus {
             pointer-events: none
         }
@@ -98,7 +94,8 @@
             fill: var(--color-chart-color, var(--color-chart-1));
             transition: opacity var(--transition-duration, .1s) ease;
 
-            &:hover {
+            &:hover,
+            &.active {
                 opacity: 0.82
             }
         }
