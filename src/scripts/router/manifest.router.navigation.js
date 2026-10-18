@@ -361,6 +361,8 @@ function installMpaStickyLocaleLinks() {
 
         const link = event.target.closest('a');
         if (!link || link.closest('[data-manifest-skip-locale-sticky]')) return;
+        const target = (link.getAttribute('target') || '').toLowerCase();
+        if (target && target !== '_self' && target !== '_blank') return;
         const editable = link.closest('[contenteditable]');
         if (link.isContentEditable || (editable && editable.getAttribute('contenteditable') !== 'false')) return;   // content in editable text
         if (link.hasAttribute('download')) return;
@@ -390,11 +392,8 @@ function installMpaStickyLocaleLinks() {
             : adjusted;
 
         const dest = url.toString();
-        if (link.target === '_blank') {
-            const features = link.relList?.contains('noopener') || link.relList?.contains('noreferrer')
-                ? 'noopener,noreferrer'
-                : undefined;
-            window.open(dest, '_blank', features);
+        if (target === '_blank') {
+            window.open(dest, '_blank', link.relList?.contains('noreferrer') ? 'noopener,noreferrer' : 'noopener');
         } else {
             window.location.assign(dest);
         }
@@ -409,10 +408,10 @@ function interceptLinkClicks() {
         const link = event.target.closest('a');
         if (!link) return;
 
-        // New tab or window: modifier keys, middle click, or a non-self target
-        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        const target = link.getAttribute('target');
-        if (target && target !== '_self') return;
+        // New tab or window: modifier keys, middle click, or a frame target stay with the browser
+        if (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const target = (link.getAttribute('target') || '').toLowerCase();
+        if (target && target !== '_self' && target !== '_blank') return;
 
         // A link inside editable text (x-rich-text, x-edit page text) is content: the click
         // places the caret, as the browser does natively, and never navigates
@@ -445,6 +444,16 @@ function interceptLinkClicks() {
 
         // If it's an external link, don't intercept it
         if (isExternalLink) {
+            return;
+        }
+
+        // target=_blank: open the resolved URL (base path, locale) in a new tab
+        if (target === '_blank') {
+            const [path, hash] = href.split('#');
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            window.open(resolveHref(path) + (hash ? '#' + hash : ''), '_blank', 'noopener');
             return;
         }
 

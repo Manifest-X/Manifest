@@ -13,6 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 let onClick
 const pushed = []
+const opened = []
 
 beforeAll(() => {
     const source = readFileSync(path.resolve(__dirname, '../src/scripts/router/manifest.router.navigation.js'), 'utf-8')
@@ -28,6 +29,7 @@ beforeAll(() => {
             addEventListener: () => {},
             scrollTo: () => {},
             getComputedStyle: () => ({ overflowY: 'visible', overflow: 'visible' }),
+            open: (url, name, features) => opened.push([url, name, features]),
         },
         document: {
             querySelector: () => null,
@@ -72,12 +74,26 @@ describe('router link interception', () => {
         expect(click({ href: '/docs' })).toBe(true)
     })
 
-    it('leaves target="_blank" to the browser', () => {
-        expect(click({ href: '/docs', target: '_blank' })).toBe(false)
+    it('opens target="_blank" at the resolved URL in a new tab, without routing here', () => {
+        const before = pushed.length
+        expect(click({ href: '/docs#setup', target: '_blank' })).toBe(true)
+        expect(opened.at(-1)).toEqual(['/docs#setup', '_blank', 'noopener'])
+        expect(pushed.length).toBe(before)
     })
 
-    it('still intercepts target="_self"', () => {
+    it('leaves external and frame targets to the browser', () => {
+        expect(click({ href: 'https://github.com/x', target: '_blank' })).toBe(false)
+        expect(click({ href: '/docs', target: 'preview' })).toBe(false)
+        expect(click({ href: '/docs', target: '_top' })).toBe(false)
+    })
+
+    it('still intercepts target="_self" in any case', () => {
         expect(click({ href: '/docs', target: '_self' })).toBe(true)
+        expect(click({ href: '/docs', target: '_SELF' })).toBe(true)
+    })
+
+    it('routes synthetic clicks with no button', () => {
+        expect(click({ href: '/docs' }, { button: undefined })).toBe(true)
     })
 
     it('leaves modifier and middle clicks to the browser', () => {
