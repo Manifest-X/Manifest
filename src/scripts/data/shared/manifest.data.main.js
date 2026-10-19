@@ -84,7 +84,7 @@ function authSettledUnresolvable(manifest) {
 }
 
 // Rows depend on who reads them: scope / $auth. queries, or any Appwrite table/bucket (row/file permissions).
-// Reset on identity change only; whether a read needs an identity is buildAppwriteQueries' call (null = wait).
+// Reset on identity change only; requiresIdentity gates the auth pre-flight.
 function isIdentityBound(config) {
     if (!config || typeof config !== 'object') return false;
     if (window.ManifestDataConfig?.isAppwriteCollection?.(config)) return true;
@@ -1143,7 +1143,8 @@ async function initializeDataSourcesPlugin() {
         loadDataSource,
         reloadDataSource,
         _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
-        filterFilesByScope // Export for use by getFilesForEntry
+        filterFilesByScope, // Export for use by getFilesForEntry
+        requiresIdentity
     };
 
     // Listen for manifest:dev-reload (fired by mnfst-run when a data file changes).
