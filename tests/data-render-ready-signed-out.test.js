@@ -45,9 +45,9 @@ async function load(auth, scope = ['user', 'teams'], source, appwriteAuth) {
         appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db', ...(appwriteAuth ? { auth: appwriteAuth } : {}) },
         data: { projects: source || { appwriteTableId: 'projects', appwriteDatabaseId: 'db', scope } }
     }
-    const net = { tableCalls: 0, fileCalls: 0 }
+    const net = { tableCalls: 0, fileCalls: 0, opts: [] }
     window.ManifestDataAppwrite = {
-        loadTableRows: async () => { net.tableCalls++; return rows('p', 2) },
+        loadTableRows: async (db, t, q, opts) => { net.tableCalls++; net.opts.push(opts); return rows('p', 2) },
         listBucketFiles: async () => { net.fileCalls++; return rows('f', 2) }
     }
     delete window.ManifestDataRealtime
@@ -170,6 +170,35 @@ describe('render-ready with a signed-out scoped Appwrite source', () => {
         await settle(80)
         expect(net.tableCalls).toBe(1)
         expect(data().projects?.map(r => r.$id)).toEqual(['p0', 'p1'])
+    })
+})
+
+describe('pre-flight only for identity-requiring sources', () => {
+    const signedOut = { _initialized: true, isAuthenticated: false, user: null, currentTeam: null, teams: [] }
+
+    it('a public table loads its rows signed out without the pre-flight', async () => {
+        const { net, main, data } = await load(signedOut, null, { appwriteTableId: 'posts', appwriteDatabaseId: 'db' })
+        await main.loadDataSource('projects')
+        await settle(50)
+        expect(net.tableCalls).toBe(1)
+        expect(net.opts[0]?.requireAuth).toBe(false)
+        expect(data().projects?.map(r => r.$id)).toEqual(['p0', 'p1'])
+        expect(data()._projects_state?.error ?? null).toBeNull()
+    })
+
+    it('a scoped table signed in keeps the pre-flight', async () => {
+        const { net, main } = await load({ ...signedOut, isAuthenticated: true, user: { $id: 'u1' } }, 'user')
+        await main.loadDataSource('projects')
+        await settle(50)
+        expect(net.opts[0]?.requireAuth).toBe(true)
+    })
+
+    it('an $auth. query keeps the pre-flight', async () => {
+        const { net, main } = await load({ ...signedOut, isAuthenticated: true, user: { $id: 'u1' } }, null,
+            { appwriteTableId: 'mine', appwriteDatabaseId: 'db', queries: [['equal', 'ownerId', '$auth.user.$id']] })
+        await main.loadDataSource('projects')
+        await settle(50)
+        expect(net.opts[0]?.requireAuth).toBe(true)
     })
 })
 

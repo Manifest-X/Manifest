@@ -17,8 +17,8 @@ const SRC = readFileSync(
     'utf8'
 )
 
-function load({ authPlugin = true, unauthorized = false } = {}) {
-    const state = { accountGets: 0, unauthorized }
+function load({ authPlugin = true, unauthorized = false, listDenied = false } = {}) {
+    const state = { accountGets: 0, unauthorized, listDenied }
     const listeners = {}
     const ctx = { console, setTimeout, Promise }
     ctx.window = {
@@ -34,7 +34,12 @@ function load({ authPlugin = true, unauthorized = false } = {}) {
                     return { $id: 'u1' }
                 }
             },
-            TablesDB: class { async listRows() { return { rows: [{ $id: 'r1' }] } } },
+            TablesDB: class {
+                async listRows() {
+                    if (state.listDenied) { const e = new Error('Unauthorized'); e.code = 401; throw e }
+                    return { rows: [{ $id: 'r1' }] }
+                }
+            },
         },
         ManifestDataConfig: {
             ensureManifest: async () => ({ appwrite: { projectId: 'p', endpoint: 'e' } }),
@@ -83,5 +88,19 @@ describe('data plugin auth pre-flight dedupe', () => {
         const { api, state } = load({ authPlugin: false })
         await api.loadTableRows('db', 'x')
         expect(state.accountGets).toBe(0)
+    })
+})
+
+describe('public tables skip the pre-flight', () => {
+    it('requireAuth false with no session reads rows, no account.get()', async () => {
+        const { api, state } = load({ unauthorized: true })
+        const rows = await api.loadTableRows('db', 'posts', [], { requireAuth: false })
+        expect(rows[0].$id).toBe('r1')
+        expect(state.accountGets).toBe(0)
+    })
+
+    it("Appwrite's own permission error still surfaces", async () => {
+        const { api } = load({ unauthorized: true, listDenied: true })
+        await expect(api.loadTableRows('db', 'private', [], { requireAuth: false })).rejects.toThrow(/Authentication required/)
     })
 })
