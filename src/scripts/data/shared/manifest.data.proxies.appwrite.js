@@ -401,11 +401,13 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
                     const { runDeduped, landRows, sourceGeneration } = window.ManifestDataStore || {};
                     const generation = sourceGeneration?.(dataSourceName);
+                    const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
                     const run = async () => {
                         const result = await window.ManifestDataAppwrite.loadTableRows(
                             appwriteConfig.databaseId,
                             tableId,
-                            appwriteQueries
+                            appwriteQueries,
+                            { requireAuth }
                         );
                         // Network landing: query result replaces the source (coalesced, identity-preserving)
                         if (result !== undefined && landRows) {

@@ -84,10 +84,16 @@ function authSettledUnresolvable(manifest) {
 }
 
 // Rows depend on who reads them: scope / $auth. queries, or any Appwrite table/bucket (row/file permissions).
-// Reset on identity change only; whether a read needs an identity is buildAppwriteQueries' call (null = wait).
+// Reset on identity change only; requiresIdentity gates the auth pre-flight.
 function isIdentityBound(config) {
     if (!config || typeof config !== 'object') return false;
     if (window.ManifestDataConfig?.isAppwriteCollection?.(config)) return true;
+    return requiresIdentity(config);
+}
+
+// Reads that need a signed-in identity (scope / $auth. queries); others read with whatever session exists
+function requiresIdentity(config) {
+    if (!config || typeof config !== 'object') return false;
     if (window.ManifestDataConfig?.getScope?.(config)) return true;
     try { return JSON.stringify(config.queries || '').includes('$auth.'); } catch { return false; }
 }
@@ -763,7 +769,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     data = await window.ManifestDataAppwrite.loadTableRows(
                         appwriteConfig.databaseId,
                         tableId,
-                        queries
+                        queries,
+                        { requireAuth: requiresIdentity(dataSource) }
                     );
                     if (superseded()) { landed = true; return null; }
 
@@ -1136,7 +1143,8 @@ async function initializeDataSourcesPlugin() {
         loadDataSource,
         reloadDataSource,
         _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
-        filterFilesByScope // Export for use by getFilesForEntry
+        filterFilesByScope, // Export for use by getFilesForEntry
+        requiresIdentity
     };
 
     // Listen for manifest:dev-reload (fired by mnfst-run when a data file changes).

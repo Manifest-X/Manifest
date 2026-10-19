@@ -126,14 +126,14 @@ async function verifyAuthenticated() {
     }
 }
 
-// Load rows from Appwrite table
-async function loadTableRows(databaseId, tableId, queries = []) {
+// Load rows from Appwrite table (requireAuth false: no pre-flight, Appwrite permissions decide)
+async function loadTableRows(databaseId, tableId, queries = [], { requireAuth = true } = {}) {
     const services = await getAppwriteDataServices();
     if (!services?.tablesDB) {
         throw new Error('[Manifest Data] Appwrite TablesDB service not available');
     }
 
-    await verifyAuthenticated();
+    if (requireAuth) await verifyAuthenticated();
 
     try {
         const response = await services.tablesDB.listRows({
