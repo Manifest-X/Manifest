@@ -507,9 +507,22 @@
 		function drawCartesian(state, root, width, height) {
 			const cfg = state.config, d3 = state.d3;
 			const m = { top: 10, right: 14, bottom: 26, left: 40 };
-			const iw = width - m.left - m.right;
-			const ih = height - m.top - m.bottom;
 			const labels = cfg.labels.length ? cfg.labels : cfg.series[0].data.map((_, i) => i + 1);
+			const xBand = w => d3.scaleBand().domain(labels.map((_, i) => i)).range([0, w]).padding(0.1);
+			const marks = cfg.axis ? axisMarks(cfg, labels) : [];
+			let iw = width - m.left - m.right;
+			// Widen margins so end labels sit centred on their points inside the frame.
+			if (marks.length) {
+				const f = marks[0], l = marks[marks.length - 1];
+				const hf = labelWidth(root, [f.label]) / 2, hl = labelWidth(root, [l.label]) / 2;
+				for (let pass = 0; pass < 2; pass++) {
+					const xb = xBand(iw), c = i => xb(i) + xb.bandwidth() / 2;
+					m.left = Math.max(m.left, Math.ceil(hf - c(f.at)) + 1);
+					m.right = Math.max(m.right, Math.ceil(hl - (iw - c(l.at))) + 1);
+					iw = width - m.left - m.right;
+				}
+			}
+			const ih = height - m.top - m.bottom;
 			const locale = (() => { try { return Alpine.store('locale')?.current || document.documentElement.lang || 'en'; } catch (_) { return 'en'; } })();
 			const nf = (() => { try { return new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }); } catch (_) { return { format: String }; } })();
 
@@ -551,41 +564,53 @@
 			else if (cfg.type === 'scatter') drawScatter(state, plot, labels, iw, ih, y);
 			else drawLines(state, plot, labels, iw, ih, y); // line + area
 
-			// x axis labels (banded), thinned so they never overlap
+			// x axis labels (banded), evenly thinned so they never overlap
 			if (cfg.axis) {
-				const xb = d3.scaleBand().domain(labels.map(String)).range([0, iw]).padding(0.1);
-				xAxisTicks(root, labels, xb, iw, m).forEach(([i, cx]) => {
-					text(plot, labels[i], { x: cx, y: ih + 16, 'text-anchor': 'middle' });
+				xAxisTicks(root, marks, xBand(iw), iw, m).forEach(([t, cx]) => {
+					text(plot, t.label, { x: cx, y: ih + 16, 'text-anchor': 'middle' });
 				});
 			}
 			if (cfg.legend && cfg.series.length > 1) drawLegend(state);
 		}
 
-		// Indices + x of the category labels to draw: every Nth by measured width,
-		// first and last kept where they fit, ends clamped inside the svg.
-		function xAxisTicks(root, labels, xb, iw, m) {
+		// Axis label candidates: author `ticks` ([index] or [{ at, label }]) or every label.
+		function axisMarks(cfg, labels) {
 			const n = labels.length;
-			if (!n) return [];
-			const step = typeof xb.step === 'function' ? xb.step() : iw / n;
-			const center = i => xb(String(labels[i])) + xb.bandwidth() / 2;
-			const sample = n <= 60 ? labels : [labels[0], labels[n - 1]].concat(labels.slice().sort((a, b) => String(b).length - String(a).length).slice(0, 30));
-			const minSep = labelWidth(root, sample) + 6;
-			const every = Math.max(1, Math.ceil(minSep / step));
-			const edgeHalf = {};
-			const xAt = i => {
-				if (i !== 0 && i !== n - 1) return center(i);
-				if (edgeHalf[i] == null) edgeHalf[i] = labelWidth(root, [labels[i]]) / 2;
-				return Math.min(Math.max(center(i), -m.left + edgeHalf[i]), iw + m.right - edgeHalf[i]);
-			};
-			const fits = (a, b) => Math.abs(xAt(b) - xAt(a)) >= minSep;
-			const keep = [];
-			for (let i = 0; i < n - 1; i += every) keep.push(i);
-			if (n > 1) {
-				while (keep.length > 1 && !fits(keep[keep.length - 1], n - 1)) keep.pop();
-				if (!keep.length || fits(keep[keep.length - 1], n - 1)) keep.push(n - 1);
-			} else keep.push(0);
-			while (keep.length > 2 && !fits(keep[0], keep[1])) keep.splice(1, 1);
-			return keep.map(i => [i, xAt(i)]);
+			if (!Array.isArray(cfg.ticks)) return labels.map((l, i) => ({ at: i, label: l }));
+			const seen = new Set();
+			return cfg.ticks
+				.map(t => t && typeof t === 'object' ? { at: Math.round(num(t.at, -1)), label: t.label } : { at: Math.round(num(t, -1)) })
+				.filter(t => t.at >= 0 && t.at < n && !seen.has(t.at) && seen.add(t.at))
+				.map(t => ({ at: t.at, label: t.label != null ? t.label : labels[t.at] }))
+				.sort((a, b) => a.at - b.at);
+		}
+
+		// Marks + x to draw: the most evenly spaced subset (first and last kept)
+		// whose measured labels don't overlap; ends clamped inside the svg.
+		function xAxisTicks(root, marks, xb, iw, m) {
+			const N = marks.length;
+			if (!N) return [];
+			const GAP = 6;
+			let half;
+			if (N <= 60) {
+				const ws = labelWidths(root, marks.map(t => t.label));
+				half = k => ws[k] / 2;
+			} else {
+				const sample = [marks[0], marks[N - 1]].concat(marks.slice().sort((a, b) => String(b.label).length - String(a.label).length).slice(0, 30));
+				const w = labelWidth(root, sample.map(t => t.label));
+				half = () => w / 2;
+			}
+			const center = k => xb(marks[k].at) + xb.bandwidth() / 2;
+			const xAt = k => Math.min(Math.max(center(k), -m.left + half(k)), iw + m.right - half(k));
+			const pick = c => Array.from({ length: c }, (_, j) => Math.round(j * (N - 1) / (c - 1)));
+			const fits = ks => ks.every((k, j) => !j || xAt(k) - xAt(ks[j - 1]) >= half(k) + half(ks[j - 1]) + GAP);
+			const span = center(N - 1) - center(0);
+			const minW = N <= 60 ? Math.min(...marks.map((_, k) => half(k) * 2)) : half(0) * 2;
+			for (let c = Math.min(N, Math.floor(span / (minW + GAP)) + 1); c > 1; c--) {
+				const ks = pick(c);
+				if (fits(ks)) return ks.map(k => [marks[k], xAt(k)]);
+			}
+			return [[marks[0], xAt(0)]];
 		}
 
 		// `list` lets combo pass a subset of series with their original indices
@@ -752,11 +777,13 @@
 		// fallback). Sizes axis gutters to their content so charts sit balanced.
 		function labelWidth(root, items, cls) {
 			if (!items || !items.length) return 0;
+			return Math.max(...labelWidths(root, items, cls));
+		}
+		function labelWidths(root, items, cls) {
 			const probe = svg('text', cls ? { class: cls, x: -9999, y: -9999 } : { x: -9999, y: -9999 }, root);
-			let max = 0;
-			for (const s of items) { probe.textContent = String(s); let w = 0; try { w = probe.getComputedTextLength(); } catch (_) { } if (!w) w = String(s).length * 7; if (w > max) max = w; }
+			const out = items.map(s => { probe.textContent = String(s == null ? '' : s); let w = 0; try { w = probe.getComputedTextLength(); } catch (_) { } return Math.ceil(w || String(s == null ? '' : s).length * 7); });
 			root.removeChild(probe);
-			return Math.ceil(max);
+			return out;
 		}
 
 		function drawGauge(state, root, width, height) {

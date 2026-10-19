@@ -2,9 +2,10 @@
  * @vitest-environment happy-dom
  *
  * Category x-axis density: long daily ranges (90/365/900 points) drew one label
- * per point and overlapped into a smear. Labels are now thinned to fit the
- * measured width (first + last kept), dense line/area charts drop per-point dots
- * for hover columns, and tooltips carry the point's label as a heading.
+ * per point and overlapped into a smear. Labels are now thinned evenly to fit the
+ * measured width (first + last kept, equal gaps), authors can pick their own
+ * `ticks`, dense line/area charts drop per-point dots for hover columns, and
+ * tooltips carry the point's full label as a heading.
  *
  * d3 is stubbed with minimal scale/shape implementations (loadD3 short-circuits
  * on window.__manifestD3). happy-dom has no text metrics, so labelWidth falls
@@ -107,6 +108,18 @@ describe('category x-axis thinning', () => {
         }
     })
 
+    it('365 daily labels at 800px: gaps are equal to within one point step', async () => {
+        const labels = days(365)
+        const el = await render({ type: 'line', labels, series: [{ data: labels.map((_, i) => i) }] })
+        const xs = xLabels(el)
+        expect(xs[0].s).toBe(labels[0])
+        expect(xs[xs.length - 1].s).toBe(labels[364])
+        const step = (xs[xs.length - 1].x - xs[0].x) / 364
+        const gaps = xs.slice(1).map((l, i) => l.x - xs[i].x)
+        expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThanOrEqual(step + 1e-6)
+        for (const l of xs) expect(l.x + 40 + l.s.length * 3.5).toBeLessThanOrEqual(800)
+    })
+
     it('900+ points stays bounded and the line still draws every value', async () => {
         const labels = days(930)
         const el = await render({ type: 'line', labels, series: [{ data: labels.map((_, i) => i) }] })
@@ -129,6 +142,65 @@ describe('category x-axis thinning', () => {
         expect(xs.length).toBeLessThan(90)
         expect(xs[0].s).toBe(labels[0])
         expect(el.querySelectorAll('rect').length).toBe(90)
+    })
+})
+
+const monthStarts = (labels) => {
+    const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    return labels.flatMap((d, i) => d.endsWith('-01') ? [{ at: i, label: names[Number(d.slice(5, 7)) - 1] }] : [])
+}
+
+describe('author ticks', () => {
+    it('draws only the given ticks with their labels, at their points', async () => {
+        const labels = days(365)
+        const ticks = monthStarts(labels)
+        const el = await render({ type: 'area', labels, ticks, series: [{ name: 'Visitors', data: labels.map((_, i) => i) }] })
+        const xs = xLabels(el)
+        expect(xs.map(l => l.s)).toEqual(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])
+        const step = (xs[11].x - xs[0].x) / (ticks[11].at - ticks[0].at)
+        xs.forEach((l, k) => expect(l.x - xs[0].x).toBeCloseTo((ticks[k].at - ticks[0].at) * step, 6))
+    })
+
+    it('tooltip heading is still the full label', async () => {
+        const labels = days(365)
+        const el = await render({ type: 'line', labels, ticks: monthStarts(labels), series: [{ name: 'Visitors', data: labels.map((_, i) => i) }] })
+        el.querySelectorAll('rect.hit')[45].dispatchEvent(new MouseEvent('mouseenter', { clientX: 100, clientY: 50 }))
+        expect(el.querySelector('.tooltip strong').textContent).toBe(labels[45])
+    })
+
+    it('plain indices use labels[at]; out-of-range and duplicates are ignored', async () => {
+        const labels = days(30)
+        const el = await render({ type: 'bar', labels, ticks: [20, 0, 10, 10, 99, -1], series: [{ data: labels.map(() => 1) }] })
+        expect(xLabels(el).map(l => l.s)).toEqual([labels[0], labels[10], labels[20]])
+    })
+
+    it('dense ticks are thinned evenly without overlap, first and last kept', async () => {
+        const labels = days(365)
+        const ticks = labels.map((d, i) => ({ at: i, label: i % 2 ? d : 'W' + i }))
+        const el = await render({ type: 'line', labels, ticks, series: [{ data: labels.map((_, i) => i) }] })
+        const xs = xLabels(el)
+        expect(xs.length).toBeGreaterThan(2)
+        expect(xs.length).toBeLessThan(365)
+        expect(xs[0].s).toBe('W0')
+        expect(xs[xs.length - 1].s).toBe('W364')
+        for (let i = 1; i < xs.length; i++) {
+            expect(xs[i].x - xs[i - 1].x).toBeGreaterThanOrEqual((xs[i].s.length + xs[i - 1].s.length) * 7 / 2)
+        }
+    })
+
+    it('applies to bar and combo charts', async () => {
+        const labels = days(365)
+        const ticks = monthStarts(labels)
+        const bar = await render({ type: 'bar', labels, ticks, series: [{ data: labels.map(() => 1) }] })
+        expect(xLabels(bar).map(l => l.s)[0]).toBe('Jan')
+        expect(xLabels(bar).length).toBe(12)
+        const combo = await render({
+            type: 'combo', labels, ticks, series: [
+                { name: 'Orders', type: 'bar', data: labels.map(() => 1) },
+                { name: 'Trend', type: 'line', data: labels.map(() => 2) }
+            ]
+        })
+        expect(xLabels(combo).map(l => l.s)).toEqual(ticks.map(t => t.label))
     })
 })
 
