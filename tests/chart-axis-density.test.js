@@ -204,6 +204,14 @@ describe('author ticks', () => {
     })
 })
 
+describe('height default', () => {
+    it('missing height falls back to 240', async () => {
+        const el = await render({ type: 'bar', labels: ['a', 'b'], series: [{ data: [1, 2] }] })
+        expect(el.querySelector('svg').getAttribute('height')).toBe('240')
+        for (const r of el.querySelectorAll('rect')) expect(Number(r.getAttribute('height') || 0)).toBeGreaterThanOrEqual(0)
+    })
+})
+
 describe('dense points + tooltip heading', () => {
     it('drops per-point dots when spacing is tight, hover columns still tooltip', async () => {
         const labels = days(365)

@@ -190,7 +190,7 @@
 		function normalize(raw, el, typeFromModifier) {
 			const cfg = Object.assign({}, raw || {});
 			cfg.type = (cfg.type || typeFromModifier || 'line').toLowerCase();
-			cfg.height = num(cfg.height || el.getAttribute('height'), 240);
+			cfg.height = num(cfg.height || el.getAttribute('height') || undefined, 240);
 			cfg.stacked = !!cfg.stacked;
 			cfg.legend = cfg.legend !== false;
 			cfg.axis = cfg.axis !== false;
