@@ -190,7 +190,7 @@
 		function normalize(raw, el, typeFromModifier) {
 			const cfg = Object.assign({}, raw || {});
 			cfg.type = (cfg.type || typeFromModifier || 'line').toLowerCase();
-			cfg.height = num(cfg.height || el.getAttribute('height') || undefined, 240);
+			cfg.height = num(cfg.height || el.getAttribute('height') || undefined, cfg.type === 'map' ? 0 : 240); // maps size from width
 			cfg.stacked = !!cfg.stacked;
 			cfg.legend = cfg.legend !== false;
 			cfg.axis = cfg.axis !== false;
@@ -508,17 +508,18 @@
 			const cfg = state.config, d3 = state.d3;
 			const m = { top: 10, right: 14, bottom: 26, left: 40 };
 			const labels = cfg.labels.length ? cfg.labels : cfg.series[0].data.map((_, i) => i + 1);
-			const xBand = w => d3.scaleBand().domain(labels.map((_, i) => i)).range([0, w]).padding(0.1);
 			const marks = cfg.axis ? axisMarks(cfg, labels) : [];
 			let iw = width - m.left - m.right;
-			// Widen margins so end labels sit centred on their points inside the frame.
+			// Widen margins (each side capped at 20% of width) so end labels sit
+			// centred on their points; past the cap, ends clamp inside the frame.
 			if (marks.length) {
 				const f = marks[0], l = marks[marks.length - 1];
 				const hf = labelWidth(root, [f.label]) / 2, hl = labelWidth(root, [l.label]) / 2;
+				const base = { left: m.left, right: m.right }, cap = width * 0.2;
 				for (let pass = 0; pass < 2; pass++) {
-					const xb = xBand(iw), c = i => xb(i) + xb.bandwidth() / 2;
-					m.left = Math.max(m.left, Math.ceil(hf - c(f.at)) + 1);
-					m.right = Math.max(m.right, Math.ceil(hl - (iw - c(l.at))) + 1);
+					const c = xScheme(cfg, d3, labels.length, iw).x;
+					m.left = Math.max(base.left, Math.min(cap, Math.ceil(hf - c(f.at)) + 1));
+					m.right = Math.max(base.right, Math.min(cap, Math.ceil(hl - (iw - c(l.at))) + 1));
 					iw = width - m.left - m.right;
 				}
 			}
@@ -566,11 +567,26 @@
 
 			// x axis labels (banded), evenly thinned so they never overlap
 			if (cfg.axis) {
-				xAxisTicks(root, marks, xBand(iw), iw, m).forEach(([t, cx]) => {
+				xAxisTicks(root, marks, xScheme(cfg, d3, labels.length, iw).x, iw, m).forEach(([t, cx]) => {
 					text(plot, t.label, { x: cx, y: ih + 16, 'text-anchor': 'middle' });
 				});
 			}
 			if (cfg.legend && cfg.series.length > 1) drawLegend(state);
+		}
+
+		// One index-keyed x scheme per chart (duplicate labels stay distinct), shared
+		// by marks and axis. Bars (and combo lines over bars) use band centres.
+		function xScheme(cfg, d3, n, w) {
+			const idx = Array.from({ length: n }, (_, i) => i);
+			const candle = cfg.type === 'candlestick' || cfg.type === 'ohlc';
+			const banded = candle || cfg.type === 'bar' || (cfg.type === 'combo' && cfg.series.some(s => { const t = seriesType(cfg, s); return t !== 'line' && t !== 'area'; }));
+			if (banded) {
+				const band = d3.scaleBand().domain(idx).range([0, w]).padding(candle ? 0.3 : 0.2);
+				const bw = band.bandwidth();
+				return { band, step: band.step(), x: i => band(i) + bw / 2 };
+			}
+			const p = d3.scalePoint().domain(idx).range([0, w]).padding(0.5);
+			return { step: typeof p.step === 'function' ? p.step() : w / Math.max(1, n), x: i => p(i) };
 		}
 
 		// Axis label candidates: author `ticks` ([index] or [{ at, label }]) or every label.
@@ -579,15 +595,20 @@
 			if (!Array.isArray(cfg.ticks)) return labels.map((l, i) => ({ at: i, label: l }));
 			const seen = new Set();
 			return cfg.ticks
-				.map(t => t && typeof t === 'object' ? { at: Math.round(num(t.at, -1)), label: t.label } : { at: Math.round(num(t, -1)) })
+				.map(t => t && typeof t === 'object' && !Array.isArray(t) ? { at: tickIndex(t.at), label: t.label } : { at: tickIndex(t) })
 				.filter(t => t.at >= 0 && t.at < n && !seen.has(t.at) && seen.add(t.at))
 				.map(t => ({ at: t.at, label: t.label != null ? t.label : labels[t.at] }))
 				.sort((a, b) => a.at - b.at);
 		}
 
+		function tickIndex(v) {
+			const ok = (typeof v === 'number' && isFinite(v)) || (typeof v === 'string' && v.trim() !== '' && isFinite(+v));
+			return ok ? Math.round(+v) : -1;
+		}
+
 		// Marks + x to draw: the most evenly spaced subset (first and last kept)
 		// whose measured labels don't overlap; ends clamped inside the svg.
-		function xAxisTicks(root, marks, xb, iw, m) {
+		function xAxisTicks(root, marks, xc, iw, m) {
 			const N = marks.length;
 			if (!N) return [];
 			const GAP = 6;
@@ -600,7 +621,7 @@
 				const w = labelWidth(root, sample.map(t => t.label));
 				half = () => w / 2;
 			}
-			const center = k => xb(marks[k].at) + xb.bandwidth() / 2;
+			const center = k => xc(marks[k].at);
 			const xAt = k => Math.min(Math.max(center(k), -m.left + half(k)), iw + m.right - half(k));
 			const pick = c => Array.from({ length: c }, (_, j) => Math.round(j * (N - 1) / (c - 1)));
 			const fits = ks => ks.every((k, j) => !j || xAt(k) - xAt(ks[j - 1]) >= half(k) + half(ks[j - 1]) + GAP);
@@ -618,15 +639,14 @@
 		// bar rects per index, highlighted from the dense hover columns.
 		function drawLines(state, plot, labels, iw, ih, y, list, barsAt) {
 			const cfg = state.config, d3 = state.d3;
-			const x = d3.scalePoint().domain(labels.map(String)).range([0, iw]).padding(0.5);
+			const X = xScheme(cfg, d3, labels.length, iw), x = X.x, step = X.step;
 			const curve = curveFor(d3, cfg.curve);
 			const items = list || cfg.series.map((s, i) => ({ s, i, area: cfg.type === 'area' }));
 			// Dense: no per-point dots; hover columns carry the tooltip instead.
-			const step = typeof x.step === 'function' ? x.step() : iw / Math.max(1, labels.length);
 			const dense = labels.length > 1 && step < 10;
 			items.forEach(({ s, i: si, area }) => {
 				const color = seriesColorVar(si, s.color);
-				const points = labels.map((l, i) => [x(String(l)), y(num(s.data[i], 0))]);
+				const points = labels.map((l, i) => [x(i), y(num(s.data[i], 0))]);
 				if (area) {
 					const areaGen = d3.area().x(p => p[0]).y0(ih).y1(p => p[1]).curve(curve);
 					const ap = svg('path', { class: 'area', d: areaGen(points), style: `--color-chart-color:${color}` }, plot);
@@ -648,7 +668,7 @@
 				const g = svg('g', { class: 'hover' }, plot);
 				const focus = items.map(({ s, i: si }) => svg('circle', { class: 'focus', r: 3, display: 'none', style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, g));
 				labels.forEach((l, i) => {
-					const cx = x(String(l));
+					const cx = x(i);
 					const hit = svg('rect', { class: 'hit', x: cx - step / 2, y: 0, width: step, height: ih, style: 'fill:transparent' }, g);
 					applyTip(hit, cfg.series.map(s => (s.name ? s.name + ': ' : '') + num(s.data[i], 0)), cfg, tipHead(cfg, l));
 					const bars = (barsAt && barsAt[i]) || [];
@@ -668,17 +688,17 @@
 		// only applies to the full-series bar chart, not combo.
 		function drawBars(state, plot, labels, iw, ih, y, list) {
 			const cfg = state.config, d3 = state.d3;
-			const x0 = d3.scaleBand().domain(labels.map(String)).range([0, iw]).padding(0.2);
+			const x0 = xScheme(cfg, d3, labels.length, iw).band;
 			if (cfg.stacked && !list) {
 				labels.forEach((l, i) => {
 					let acc = 0;
 					cfg.series.forEach((s, si) => {
 						const v = num(s.data[i], 0);
 						const yTop = y(acc + v), yBot = y(acc);
-						const rect = svg('rect', { x: x0(String(l)), y: yTop, width: x0.bandwidth(), height: Math.max(0, yBot - yTop), style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, plot);
+						const rect = svg('rect', { x: x0(i), y: yTop, width: x0.bandwidth(), height: Math.max(0, yBot - yTop), style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, plot);
 						applyTip(rect, (s.name ? s.name + ': ' : '') + v, cfg, tipHead(cfg, l));
 						animateBar(rect, ih);
-						if (cfg.dataLabels && (yBot - yTop) > 14) dataLabel(plot, v, x0(String(l)) + x0.bandwidth() / 2, (yTop + yBot) / 2, 'middle', 'central', 'inverse');
+						if (cfg.dataLabels && (yBot - yTop) > 14) dataLabel(plot, v, x0(i) + x0.bandwidth() / 2, (yTop + yBot) / 2, 'middle', 'central', 'inverse');
 						acc += v;
 					});
 				});
@@ -691,11 +711,11 @@
 						const s = o.s, si = o.i;
 						const v = num(s.data[i], 0);
 						const yy = y(Math.max(0, v));
-						const rect = svg('rect', { x: x0(String(l)) + x1(String(k)), y: yy, width: x1.bandwidth(), height: Math.abs(y(v) - y(0)), style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, plot);
+						const rect = svg('rect', { x: x0(i) + x1(String(k)), y: yy, width: x1.bandwidth(), height: Math.abs(y(v) - y(0)), style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, plot);
 						byIndex[i].push(rect);
 						applyTip(rect, (s.name ? s.name + ': ' : '') + v, cfg, tipHead(cfg, l));
 						animateBar(rect, ih);
-						if (cfg.dataLabels) dataLabel(plot, v, x0(String(l)) + x1(String(k)) + x1.bandwidth() / 2, yy - 4);
+						if (cfg.dataLabels) dataLabel(plot, v, x0(i) + x1(String(k)) + x1.bandwidth() / 2, yy - 4);
 					});
 				});
 				return byIndex;
@@ -719,10 +739,9 @@
 		function drawCandles(state, plot, labels, iw, ih, y) {
 			const cfg = state.config, d3 = state.d3;
 			const cs = candleData(cfg.series[0].data);
-			const x0 = d3.scaleBand().domain(labels.map(String)).range([0, iw]).padding(0.3);
-			const bw = x0.bandwidth();
+			const X = xScheme(cfg, d3, labels.length, iw), bw = X.band.bandwidth();
 			cs.forEach((c, i) => {
-				const cx = x0(String(labels[i])) + bw / 2;
+				const cx = X.x(i);
 				const up = c.c >= c.o;
 				const g = svg('g', { class: up ? 'positive' : 'negative' }, plot);
 				svg('line', { x1: cx, x2: cx, y1: y(c.h), y2: y(c.l) }, g);
@@ -740,14 +759,14 @@
 
 		function drawScatter(state, plot, labels, iw, ih, y) {
 			const cfg = state.config, d3 = state.d3;
-			const x = d3.scalePoint().domain(labels.map(String)).range([0, iw]).padding(0.5);
+			const x = xScheme(cfg, d3, labels.length, iw).x;
 			cfg.series.forEach((s, si) => {
 				labels.forEach((l, i) => {
 					const v = num(s.data[i], 0);
-					const dot = svg('circle', { class: 'scatter', cx: x(String(l)), cy: y(v), r: 5, style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, plot);
+					const dot = svg('circle', { class: 'scatter', cx: x(i), cy: y(v), r: 5, style: `--color-chart-color:${seriesColorVar(si, s.color)}` }, plot);
 					applyTip(dot, (s.name ? s.name + ': ' : '') + v, cfg, tipHead(cfg, l));
 					animate(dot, [{ opacity: 0, transform: 'scale(0)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 350, delay: i * 25 });
-					if (cfg.dataLabels) dataLabel(plot, v, x(String(l)), y(v) - 9);
+					if (cfg.dataLabels) dataLabel(plot, v, x(i), y(v) - 9);
 				});
 			});
 		}

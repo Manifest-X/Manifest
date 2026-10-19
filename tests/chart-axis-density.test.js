@@ -204,6 +204,96 @@ describe('author ticks', () => {
     })
 })
 
+describe('index-keyed x scheme', () => {
+    const dup = ['Mon', 'Tue', 'Wed', 'Mon', 'Tue', 'Wed']
+    const centres = (els) => [...els].map(r => Number(r.getAttribute('x')) + Number(r.getAttribute('width')) / 2)
+
+    it('bar: duplicate labels get distinct bars, each labelled at its centre', async () => {
+        const el = await render({ type: 'bar', labels: dup, series: [{ data: [1, 2, 3, 4, 5, 6] }] })
+        const cx = centres(el.querySelectorAll('rect'))
+        expect(new Set(cx).size).toBe(6)
+        const xs = xLabels(el)
+        expect(xs.map(l => l.s)).toEqual(dup)
+        xs.forEach((l, i) => expect(l.x).toBeCloseTo(cx[i], 6))
+    })
+
+    it('line and scatter: axis labels sit on the points', async () => {
+        for (const type of ['line', 'scatter']) {
+            const el = await render({ type, labels: dup, series: [{ data: [1, 2, 3, 4, 5, 6] }] })
+            const cx = [...el.querySelectorAll('circle:not(.focus)')].map(c => Number(c.getAttribute('cx')))
+            expect(new Set(cx).size).toBe(6)
+            xLabels(el).forEach((l, i) => expect(l.x).toBeCloseTo(cx[i], 6))
+        }
+    })
+
+    it('candlestick: axis labels sit on the candles', async () => {
+        const el = await render({ type: 'candlestick', labels: dup, series: [{ data: dup.map((_, i) => [i, i + 2, i - 1, i + 1]) }] })
+        const cx = centres(el.querySelectorAll('rect'))
+        expect(new Set(cx).size).toBe(6)
+        xLabels(el).forEach((l, i) => expect(l.x).toBeCloseTo(cx[i], 6))
+    })
+
+    it('combo: line points sit on the bar centres and the axis labels', async () => {
+        const el = await render({
+            type: 'combo', labels: dup, series: [
+                { name: 'Orders', type: 'bar', data: [1, 2, 3, 4, 5, 6] },
+                { name: 'Trend', type: 'line', data: [2, 3, 4, 5, 6, 7] }
+            ]
+        })
+        const bars = centres(el.querySelectorAll('rect'))
+        const pts = [...el.querySelectorAll('circle:not(.focus)')].map(c => Number(c.getAttribute('cx')))
+        pts.forEach((x, i) => expect(x).toBeCloseTo(bars[i], 6))
+        xLabels(el).forEach((l, i) => expect(l.x).toBeCloseTo(bars[i], 6))
+    })
+})
+
+describe('narrow charts with long end labels', () => {
+    const long = Array.from({ length: 12 }, (_, i) => 'Wednesday, September ' + (10 + i) + ', 2026')
+    for (const width of [120, 200, 300]) {
+        it(`${width}px: no negative widths, plot keeps a positive width`, async () => {
+            const bar = await render({ type: 'bar', labels: long, series: [{ data: long.map((_, i) => i + 1) }] }, width)
+            for (const r of bar.querySelectorAll('rect')) {
+                expect(Number(r.getAttribute('width'))).toBeGreaterThanOrEqual(0)
+                expect(Number(r.getAttribute('height'))).toBeGreaterThanOrEqual(0)
+            }
+            const line = await render({ type: 'line', labels: long, series: [{ data: long.map((_, i) => i + 1) }] }, width)
+            const xs = line.querySelector('path.line').getAttribute('d').slice(1).split('L').map(p => Number(p.split(',')[0]))
+            expect(xs[xs.length - 1] - xs[0]).toBeGreaterThan(0)
+            expect(xLabels(line).length).toBeGreaterThanOrEqual(1)
+        })
+    }
+})
+
+describe('ticks validation', () => {
+    it('accepts only finite numbers and numeric strings', async () => {
+        const labels = ['a', 'b', 'c', 'd', 'e']
+        const el = await render({ type: 'bar', labels, ticks: [null, false, '', [], true, '2', 3, NaN, { at: null }], series: [{ data: [1, 2, 3, 4, 5] }] })
+        expect(xLabels(el).map(l => l.s)).toEqual(['c', 'd'])
+    })
+
+    it('an empty ticks array hides the x labels', async () => {
+        const el = await render({ type: 'line', labels: ['a', 'b', 'c'], ticks: [], series: [{ data: [1, 2, 3] }] })
+        expect(xLabels(el).length).toBe(0)
+    })
+})
+
+describe('map height default', () => {
+    it('800px map without height sizes from width (416px)', async () => {
+        const proj = () => null
+        window.__manifestGeo = {
+            world: { objects: { countries: {} } }, meta: {},
+            topojson: { feature: () => ({ features: [] }) },
+            geoNaturalEarth1: () => ({ fitSize: () => proj }),
+            geoPath: () => () => ''
+        }
+        try {
+            const el = await render({ type: 'map', data: {} })
+            expect(el.style.minHeight).toBe('416px')
+            expect(el.querySelector('svg').getAttribute('height')).toBe('416')
+        } finally { delete window.__manifestGeo }
+    })
+})
+
 describe('height default', () => {
     it('missing height falls back to 240', async () => {
         const el = await render({ type: 'bar', labels: ['a', 'b'], series: [{ data: [1, 2] }] })
