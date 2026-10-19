@@ -3,7 +3,7 @@
  *
  * Category x-axis density: long daily ranges (90/365/900 points) drew one label
  * per point and overlapped into a smear. Labels are now thinned evenly to fit the
- * measured width (first + last kept, equal gaps), authors can pick their own
+ * measured width by a whole step (every s-th label from `tickAnchor`), authors can pick their own
  * `ticks`, dense line/area charts drop per-point dots for hover columns, and
  * tooltips carry the point's full label as a heading.
  *
@@ -89,14 +89,13 @@ const xLabels = (el) => [...el.querySelectorAll('svg text[text-anchor="middle"]'
 beforeAll(() => { Alpine.start() })
 
 describe('category x-axis thinning', () => {
-    it('365 daily labels at 800px: bounded, non-overlapping, first and last included', async () => {
+    it('365 daily labels at 800px: bounded, non-overlapping, first included', async () => {
         const labels = days(365)
         const el = await render({ type: 'area', labels, series: [{ name: 'Visitors', data: labels.map((_, i) => i % 50) }], height: 220 })
         const xs = xLabels(el)
         expect(xs.length).toBeGreaterThan(2)
         expect(xs.length).toBeLessThanOrEqual(12)
         expect(xs[0].s).toBe(labels[0])
-        expect(xs[xs.length - 1].s).toBe(labels[364])
         for (let i = 1; i < xs.length; i++) {
             const gap = xs[i].x - xs[i - 1].x
             expect(gap).toBeGreaterThanOrEqual((xs[i].s.length + xs[i - 1].s.length) * 7 / 2)
@@ -108,15 +107,17 @@ describe('category x-axis thinning', () => {
         }
     })
 
-    it('365 daily labels at 800px: gaps are equal to within one point step', async () => {
+    it('365 daily labels at 800px: every s-th label, equal gaps', async () => {
         const labels = days(365)
         const el = await render({ type: 'line', labels, series: [{ data: labels.map((_, i) => i) }] })
         const xs = xLabels(el)
         expect(xs[0].s).toBe(labels[0])
-        expect(xs[xs.length - 1].s).toBe(labels[364])
-        const step = (xs[xs.length - 1].x - xs[0].x) / 364
+        const at = xs.map(l => labels.indexOf(l.s))
+        const s = at[1] - at[0]
+        at.forEach((a, k) => expect(a).toBe(k * s))
+        expect(364 - at[at.length - 1]).toBeLessThan(s)
         const gaps = xs.slice(1).map((l, i) => l.x - xs[i].x)
-        expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThanOrEqual(step + 1e-6)
+        expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThan(1e-6)
         for (const l of xs) expect(l.x + 40 + l.s.length * 3.5).toBeLessThanOrEqual(800)
     })
 
@@ -142,6 +143,62 @@ describe('category x-axis thinning', () => {
         expect(xs.length).toBeLessThan(90)
         expect(xs[0].s).toBe(labels[0])
         expect(el.querySelectorAll('rect').length).toBe(90)
+    })
+})
+
+const short = (n) => Array.from({ length: n }, (_, i) => {
+    const d = new Date(Date.UTC(2026, 8, 20 + i))
+    return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()] + ' ' + d.getUTCDate()
+})
+
+describe('whole-step thinning and tickAnchor', () => {
+    const steps = (xs, labels) => {
+        const at = xs.map(l => labels.indexOf(l.s))
+        return { at, gaps: at.slice(1).map((a, i) => a - at[i]), px: xs.slice(1).map((l, i) => l.x - xs[i].x) }
+    }
+
+    it("30 daily labels at dashboard width, 'end': equal gaps, last included", async () => {
+        const labels = short(30)
+        const el = await render({ type: 'area', labels, tickAnchor: 'end', series: [{ data: labels.map((_, i) => i) }] }, 1100)
+        const xs = xLabels(el)
+        const { at, gaps, px } = steps(xs, labels)
+        expect(at[at.length - 1]).toBe(29)
+        expect(gaps[0]).toBeGreaterThan(1)
+        expect(new Set(gaps).size).toBe(1)
+        expect(at[0]).toBeLessThan(gaps[0])
+        expect(Math.max(...px) - Math.min(...px)).toBeLessThan(1e-6)
+        for (const l of xs) expect(l.x + 40 + l.s.length * 3.5).toBeLessThanOrEqual(1100)
+    })
+
+    it("30 daily labels, default 'start': equal gaps, first included", async () => {
+        const labels = short(30)
+        const el = await render({ type: 'area', labels, series: [{ data: labels.map((_, i) => i) }] }, 1100)
+        const { at, gaps } = steps(xLabels(el), labels)
+        expect(at[0]).toBe(0)
+        expect(gaps[0]).toBeGreaterThan(1)
+        expect(new Set(gaps).size).toBe(1)
+        expect(29 - at[at.length - 1]).toBeLessThan(gaps[0])
+    })
+
+    it("7 labels that fit are unchanged by 'end'", async () => {
+        const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        const el = await render({ type: 'bar', labels, tickAnchor: 'end', series: [{ data: [3, 5, 2, 8, 6, 4, 7] }] })
+        expect(xLabels(el).map(l => l.s)).toEqual(labels)
+    })
+
+    it("dense ticks step over the ticks array, 'end' keeps the last tick", async () => {
+        const labels = days(365)
+        const ticks = labels.flatMap((d, i) => i % 7 ? [] : [{ at: i, label: d }])
+        const el = await render({ type: 'line', labels, ticks, tickAnchor: 'end', series: [{ data: labels.map((_, i) => i) }] })
+        const xs = xLabels(el)
+        const at = xs.map(l => ticks.findIndex(t => t.label === l.s))
+        const gaps = at.slice(1).map((a, i) => a - at[i])
+        expect(at[at.length - 1]).toBe(ticks.length - 1)
+        expect(gaps[0]).toBeGreaterThan(1)
+        expect(new Set(gaps).size).toBe(1)
+        for (let i = 1; i < xs.length; i++) {
+            expect(xs[i].x - xs[i - 1].x).toBeGreaterThanOrEqual((xs[i].s.length + xs[i - 1].s.length) * 7 / 2)
+        }
     })
 })
 
@@ -174,7 +231,7 @@ describe('author ticks', () => {
         expect(xLabels(el).map(l => l.s)).toEqual([labels[0], labels[10], labels[20]])
     })
 
-    it('dense ticks are thinned evenly without overlap, first and last kept', async () => {
+    it('dense ticks are thinned by a whole step without overlap, first kept', async () => {
         const labels = days(365)
         const ticks = labels.map((d, i) => ({ at: i, label: i % 2 ? d : 'W' + i }))
         const el = await render({ type: 'line', labels, ticks, series: [{ data: labels.map((_, i) => i) }] })
@@ -182,7 +239,9 @@ describe('author ticks', () => {
         expect(xs.length).toBeGreaterThan(2)
         expect(xs.length).toBeLessThan(365)
         expect(xs[0].s).toBe('W0')
-        expect(xs[xs.length - 1].s).toBe('W364')
+        const at = xs.map(l => ticks.findIndex(t => t.label === l.s))
+        const s = at[1] - at[0]
+        at.forEach((a, k) => expect(a).toBe(k * s))
         for (let i = 1; i < xs.length; i++) {
             expect(xs[i].x - xs[i - 1].x).toBeGreaterThanOrEqual((xs[i].s.length + xs[i - 1].s.length) * 7 / 2)
         }

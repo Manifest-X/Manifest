@@ -444,6 +444,21 @@
 						const d = iso ? D.fromISO(iso) : null;
 						if (d) { this.selected = d; this.view = { y: d.getFullYear(), m: d.getMonth() + 1 }; }
 					}
+					this.fitView();
+				},
+
+				// Initial view: shift so no panel lies past max's month (max last) or before min's.
+				fitView() {
+					const c = Math.max(1, Math.min(4, this.monthCount || 1));
+					const mi = d => d.getFullYear() * 12 + d.getMonth();
+					const sel = this.selectionMode === 'range' ? [this.rangeStart, this.rangeEnd || this.rangeStart]
+						: this.selectionMode === 'multiple' ? [this.selectedDates[0], this.selectedDates[this.selectedDates.length - 1]]
+							: [this.selected, this.selected];
+					const lo = sel[0] ? mi(sel[0]) : null, hi = sel[1] ? mi(sel[1]) : null;
+					let first = this.view.y * 12 + this.view.m - 1;
+					if (this.max) { const mx = mi(this.max); if (first + c - 1 > mx && (hi == null || hi <= mx)) first = mx - c + 1; }
+					if (this.min) { const mn = mi(this.min); if (first < mn && (lo == null || lo >= mn)) first = mn; }
+					this.view = { y: Math.floor(first / 12), m: first % 12 + 1 };
 				},
 
 				// Only the plugin-generated dropdown opens here; native showPopover() rides
