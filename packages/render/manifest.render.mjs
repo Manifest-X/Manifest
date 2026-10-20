@@ -3489,12 +3489,22 @@ function resolveStaticRequestFile(rootDir, pathname) {
 
 const PINNED_VERSION_RE = /@\d+\.\d+\.\d+/;
 
-const isPinnedExternalUrl = (url) => {
-  try { return PINNED_VERSION_RE.test(new URL(url).pathname); } catch { return false; }
-};
+// Bodies above this are never fingerprinted — the route renders instead.
+const EXTERNAL_BODY_HASH_LIMIT = 8 * 1024 * 1024;
 
 const externalValidatorToken = (url, v) =>
   `${url}#etag:${v?.etag || ''}|lm:${v?.lastModified || ''}|ch:${v?.contentHash || ''}`;
+
+/** Post-drain settlement: an unpinned cross-origin request that never got a
+ *  processed response (memory-cache hit, late/unreadable body) is an
+ *  UNVERIFIED external dependency — the route must render. */
+function settleCaptureAwaiting(capture) {
+  if (capture.awaiting && capture.awaiting.size > 0 && !capture.nonCacheable) {
+    capture.nonCacheable = true;
+    capture.reason = `unverified external: ${[...capture.awaiting][0]}`;
+  }
+  return capture;
+}
 
 /** Re-check a recorded cross-origin validator.  ETag/Last-Modified go out as
  *  a conditional request where only a 304 counts as unchanged; a validator-less
@@ -3517,6 +3527,7 @@ function createExternalRevalidator({ request, download } = {}) {
     try {
       const res = await fetch(url, { method: 'GET', redirect: 'manual', signal: ctrl.signal });
       if (res.status < 200 || res.status >= 300) return null;
+      if (Number(res.headers.get('content-length') || 0) > EXTERNAL_BODY_HASH_LIMIT) return null;
       return Buffer.from(await res.arrayBuffer());
     } finally { clearTimeout(t); }
   });
@@ -3532,7 +3543,8 @@ function createExternalRevalidator({ request, download } = {}) {
         check = Promise.resolve().then(() => requestFn(url, headers)).then((status) => status === 304);
       } else if (validator?.contentHash) {
         check = Promise.resolve().then(() => downloadFn(url))
-          .then((body) => !!body && sha256Full(body) === validator.contentHash);
+          .then((body) => !!body && body.length <= EXTERNAL_BODY_HASH_LIMIT
+            && sha256Full(body) === validator.contentHash);
       } else {
         check = Promise.resolve(false);
       }
@@ -3659,11 +3671,27 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
   };
   const captures = new Map(); // routeKey → capture record of a route rendered this run
   const carried = new Map();  // routeKey → previous entry revalidated and reused this run
-  const state = { disabled: false, skipped: 0 };
+  const state = { disabled: false, skipped: 0, reasons: {} };
   const disable = (reason) => {
     if (state.disabled) return;
     state.disabled = true;
     process.stdout.write(`prerender: incremental disabled for this run (${reason}) — rendering everything\n`);
+  };
+  // Why-rendered buckets for the run summary.
+  const noteRender = (reason, entry) => {
+    const r = String(reason || '');
+    let bucket;
+    if (r === 'non-cacheable') {
+      const detail = String(entry?.reason || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim().replace(/[:\s]+$/, '');
+      bucket = detail ? `non-cacheable: ${detail}` : 'non-cacheable';
+    } else if (r.startsWith('no ledger entry')) bucket = 'new';
+    else if (r.startsWith('input ')) bucket = 'changed inputs';
+    else if (r.startsWith('resolution changed')) bucket = 'changed resolution';
+    else if (r.startsWith('external changed')) bucket = 'changed externals';
+    else if (r.startsWith('signature mismatch')) bucket = 'changed signature';
+    else if (r.startsWith('previous output')) bucket = 'previous output missing/changed';
+    else bucket = r.slice(0, 48) || 'unknown';
+    state.reasons[bucket] = (state.reasons[bucket] || 0) + 1;
   };
 
   return {
@@ -3674,10 +3702,13 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
     /** Skip pass: returns the subset of `paths` that must render; copies the
      *  previous outputs of the rest into staging and carries their entries. */
     async partition(paths) {
-      if (!ledger) return paths;
+      if (!ledger) {
+        for (let i = 0; i < paths.length; i++) noteRender('no ledger entry');
+        return paths;
+      }
       const toRender = [];
       for (const seg of paths) {
-        if (state.disabled) { toRender.push(seg); continue; }
+        if (state.disabled) { noteRender('incremental disabled'); toRender.push(seg); continue; }
         const entry = ledger.routes[seg];
         let verdict;
         try {
@@ -3689,6 +3720,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
           });
         } catch (err) {
           disable(`skip evaluation failed: ${err?.message || err}`);
+          noteRender('incremental disabled');
           toRender.push(seg);
           continue;
         }
@@ -3711,7 +3743,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
             verdict = { skip: false, reason: `copy failed: ${err?.message || err}` };
           }
         }
-        if (!verdict.skip) { toRender.push(seg); continue; }
+        if (!verdict.skip) { noteRender(verdict.reason, entry); toRender.push(seg); continue; }
         if (entry.promoted) deps.promoteVariants(seg);
         else if (rawHtml) deps.cacheRawHtml(seg, rawHtml);
         if (Array.isArray(entry.utility)) for (const b of entry.utility) deps.pushUtilityBlock(b);
@@ -4503,7 +4535,7 @@ async function runPrerender(config) {
       capture = {
         requested: new Map(), files: new Set(),
         externalPinned: new Set(), externalValidated: new Map(),
-        pending: [], nonCacheable: false, reason: null,
+        awaiting: new Set(), pending: [], nonCacheable: false, reason: null,
       };
       const localOrigin = new URL(config.localUrl).origin;
       const flag = (reason) => {
@@ -4516,8 +4548,10 @@ async function runPrerender(config) {
           if (req.method() !== 'GET') { flag(`non-GET ${req.method()} ${u.href}`); return; }
           if (u.origin !== localOrigin) {
             // Pinned-version URL: the URL is its own identity.  Anything else
-            // must hand back a validator in its response or the route renders.
+            // must get a PROCESSED response (validator or content hash) by the
+            // end of the route or it stays in `awaiting` → route renders.
             if (PINNED_VERSION_RE.test(u.pathname)) capture.externalPinned.add(u.href);
+            else capture.awaiting.add(u.href);
             return;
           }
           const rel = resolveStaticRequestFile(rootResolved, u.pathname);
@@ -4525,7 +4559,10 @@ async function runPrerender(config) {
           else flag(`unresolvable request ${u.pathname}`);
         } catch { flag('unparseable request URL'); }
       });
-      page.on('requestfailed', (req) => flag(`request failed: ${req.url()}`));
+      page.on('requestfailed', (req) => {
+        try { capture.awaiting.delete(new URL(req.url()).href); } catch { /* flagged below */ }
+        flag(`request failed: ${req.url()}`);
+      });
       page.on('response', (res) => {
         try {
           const u = new URL(res.url());
@@ -4535,19 +4572,25 @@ async function runPrerender(config) {
             if (status >= 400) flag(`${status} ${u.href}`);
             return;
           }
-          if (status < 200 || status >= 300) { flag(`external ${status} ${u.href}`); return; }
+          if (status < 200 || status >= 300) { flag(`external ${status} ${u.href}`); capture.awaiting.delete(u.href); return; }
           const headers = res.headers();
           const etag = headers['etag'];
           const lastModified = headers['last-modified'];
           if (etag || lastModified) {
             capture.externalValidated.set(u.href, etag ? { etag } : { lastModified });
+            capture.awaiting.delete(u.href);
             return;
           }
           // No validator (e.g. cdn.manifestx.dev): content-address the bytes;
-          // revalidation re-downloads and compares.  Unreadable body → render.
+          // revalidation re-downloads and compares.  Unreadable or oversized
+          // body → render.  `awaiting` clears only once the hash is recorded.
           capture.pending.push(
             res.buffer()
-              .then((body) => { capture.externalValidated.set(u.href, { contentHash: sha256Full(body) }); })
+              .then((body) => {
+                if (body.length > EXTERNAL_BODY_HASH_LIMIT) { flag(`external response too large to fingerprint: ${u.href}`); return; }
+                capture.externalValidated.set(u.href, { contentHash: sha256Full(body) });
+                capture.awaiting.delete(u.href);
+              })
               .catch(() => flag(`external response unreadable: ${u.href}`))
           );
         } catch { flag('unparseable response URL'); }
@@ -5892,6 +5935,7 @@ async function runPrerender(config) {
       writeFileSync(outFile, html, 'utf8');
       if (capture) {
         await Promise.allSettled(capture.pending); // drain in-flight body hashes
+        settleCaptureAwaiting(capture);            // anything still pending → render
         const outputs = [relative(config.output, outFile).split(sep).join('/')];
         if (earlySnapshotUrl) outputs.push(String(earlySnapshotUrl).replace(/^\//, ''));
         // Node-side head/meta inputs the page never fetches.
@@ -6015,7 +6059,8 @@ async function runPrerender(config) {
   }
 
   if (inc) {
-    process.stdout.write(`prerender: skipped ${inc.state.skipped} unchanged, rendered ${incRendered}\n`);
+    const why = Object.entries(inc.state.reasons).sort((a, b) => b[1] - a[1]).map(([r, c]) => `${c} ${r}`);
+    process.stdout.write(`prerender: skipped ${inc.state.skipped} unchanged, rendered ${incRendered}${why.length ? ` (${why.join(', ')})` : ''}\n`);
   }
 
   if (config.debugPrerender) {
@@ -6140,4 +6185,6 @@ export {
   createExternalRevalidator,
   contentFilesForPrerender,
   isSafeRelPath,
+  settleCaptureAwaiting,
+  EXTERNAL_BODY_HASH_LIMIT,
 };

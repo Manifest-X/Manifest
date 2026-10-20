@@ -12,6 +12,8 @@ import {
   createExternalRevalidator,
   contentFilesForPrerender,
   isSafeRelPath,
+  settleCaptureAwaiting,
+  EXTERNAL_BODY_HASH_LIMIT,
 } from '../src/scripts/manifest.render.mjs';
 
 let dir;
@@ -227,6 +229,13 @@ describe('createExternalRevalidator', () => {
     const revalidate = createExternalRevalidator({ request: async () => 304, download: async () => Buffer.from('x') });
     expect(await revalidate('https://api.test/rows', {})).toBe(false);
   });
+  it('never trusts a body above the hash limit', async () => {
+    const { createHash } = await import('node:crypto');
+    const big = Buffer.alloc(EXTERNAL_BODY_HASH_LIMIT + 1);
+    const hash = createHash('sha256').update(big).digest('hex');
+    const revalidate = createExternalRevalidator({ download: async () => big });
+    expect(await revalidate('https://api.test/blob', { contentHash: hash })).toBe(false);
+  });
   it('sends the recorded validator as a conditional header', async () => {
     const seen = [];
     const revalidate = createExternalRevalidator({ request: async (url, headers) => { seen.push(headers); return 304; } });
@@ -245,6 +254,23 @@ describe('createExternalRevalidator', () => {
     expect(calls).toBe(2);
     const failing = createExternalRevalidator({ request: async () => { throw new Error('offline'); } });
     expect(await failing('https://a.test/x', { etag: 'e1' })).toBe(false);
+  });
+});
+
+describe('settleCaptureAwaiting', () => {
+  it('flags the route when an unpinned cross-origin request never got a processed response', () => {
+    const capture = { awaiting: new Set(['https://api.test/cached']), nonCacheable: false, reason: null };
+    settleCaptureAwaiting(capture);
+    expect(capture.nonCacheable).toBe(true);
+    expect(capture.reason).toMatch(/unverified external: https:\/\/api\.test\/cached/);
+  });
+  it('leaves a fully settled capture cacheable and an existing flag untouched', () => {
+    const settled = { awaiting: new Set(), nonCacheable: false, reason: null };
+    settleCaptureAwaiting(settled);
+    expect(settled.nonCacheable).toBe(false);
+    const flagged = { awaiting: new Set(['https://a.test/x']), nonCacheable: true, reason: 'non-GET POST' };
+    settleCaptureAwaiting(flagged);
+    expect(flagged.reason).toBe('non-GET POST');
   });
 });
 

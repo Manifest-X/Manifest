@@ -478,19 +478,27 @@ async function runAssertions() {
       'x-show="variable" initially-false element stays hidden after hydration',
       `display: ${xshowState.togglableDisplay}`);
 
-    // Toggle x-show on; the show waits for a frame, so poll rather than sleep
-    await click('#xshow-toggle');
-    await page.waitForFunction(
-      () => { const el = document.querySelector('#xshow-togglable'); return el && getComputedStyle(el).display !== 'none'; },
-      { polling: 50, timeout: 5000 },
-    ).catch(() => {});
-    const xshowToggled = await page.evaluate(() => {
-      const el = document.querySelector('#xshow-togglable');
-      return el ? window.getComputedStyle(el).display : 'MISSING';
-    });
-    assert(xshowToggled !== 'none',
-      'x-show toggled element becomes visible after click',
-      `display: ${xshowToggled}`);
+    // Toggle x-show on; Alpine routes the show through x-transition's
+    // nextTick, which is requestAnimationFrame whenever visibilityState is
+    // 'visible' — in a frameless headless environment that rAF never fires,
+    // so the toggle is only assertable when the compositor produces frames
+    // (same environment split as the click fallback above).
+    if (!framesWork) {
+      log.note('skipping x-show toggle assertion (no frames: Alpine defers x-show to rAF)');
+    } else {
+      await click('#xshow-toggle');
+      await page.waitForFunction(
+        () => { const el = document.querySelector('#xshow-togglable'); return el && getComputedStyle(el).display !== 'none'; },
+        { polling: 50, timeout: 5000 },
+      ).catch(() => {});
+      const xshowToggled = await page.evaluate(() => {
+        const el = document.querySelector('#xshow-togglable');
+        return el ? window.getComputedStyle(el).display : 'MISSING';
+      });
+      assert(xshowToggled !== 'none',
+        'x-show toggled element becomes visible after click',
+        `display: ${xshowToggled}`);
+    }
 
     // ------- Test: adopted x-if clones are live -----------------------------
     // Regression: reconcilePrerenderClones adopted the baked clone via
@@ -767,6 +775,9 @@ async function runIncrementalTests() {
   assert(a && a.rendered > 0 && a.skipped === 0,
     'first --incremental run renders every Puppeteer route',
     `summary: ${JSON.stringify(a)}`);
+  assert(new RegExp(`rendered ${a?.rendered} \\(${a?.rendered} new\\)`).test(runA.stdout),
+    'summary explains first-run renders as new routes',
+    runA.stdout.match(/prerender: skipped[^\n]*/)?.[0]);
   assert(existsSync(ledgerPath), 'route ledger written after a successful incremental run');
   const total = a ? a.rendered : 0;
   const treeA = await hashTree(FIXTURE_OUT_DIR);
@@ -789,6 +800,9 @@ async function runIncrementalTests() {
   assert(c && c.rendered === 1 && c.skipped === total - 1,
     'touched data file re-renders only the route that fetched it',
     `summary: ${JSON.stringify(c)} (expected rendered 1, skipped ${total - 1})`);
+  assert(/rendered 1 \(1 changed inputs\)/.test(runC.stdout),
+    'summary explains the re-render as changed inputs',
+    runC.stdout.match(/prerender: skipped[^\n]*/)?.[0]);
   const aboutHtml = await readFile(join(FIXTURE_OUT_DIR, 'about', 'index.html'), 'utf8');
   assert(aboutHtml.includes('Touched once more.'),
     're-rendered /about carries the touched markdown content');
