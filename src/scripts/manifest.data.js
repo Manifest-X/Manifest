@@ -11502,6 +11502,11 @@ function dropSubscription(dataSourceName, unsubscribe) {
     if (subs?.get?.(dataSourceName) === unsubscribe) subs.delete(dataSourceName);
 }
 
+// Init couldn't reach Appwrite: signed out locally until the recheck confirms or clears the session
+function sessionUnverified(auth) {
+    return auth?._sessionUnverified === true && auth.isAuthenticated !== true;
+}
+
 // Auth settled with no identity (or no auth plugin): a scoped read can't resolve until sign-in
 function authSettledSignedOut() {
     const auth = currentAuth();
@@ -12117,6 +12122,11 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             return false;
         }
         if (!authSettledUnresolvable(manifest)) return false;
+        // Offline/unverified: restored rows of the last-known identity stay (logout and identity changes still reset)
+        if (sessionUnverified(currentAuth()) && hasLiveRows(dataSourceName)) {
+            setSourceState(dataSourceName, { loading: false, error: null, ready: true });
+            return true;
+        }
         updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
         return true;
     };

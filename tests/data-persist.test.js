@@ -818,17 +818,17 @@ describe('offline boot: guest-auto deadline and same-user recovery', () => {
     })
     afterEach(() => { delete window.ManifestDataQueries; delete window.ManifestDataAppwrite; window.localStorage.removeItem('manifest:auth:state') })
 
-    it("offline with a guest-auto deadline: a scoped source does not keep the last-known user's rows past it", async () => {
+    it("offline with a guest-auto deadline: a scoped source keeps the last-known user's rows, settled, past it", async () => {
         lastKnown('u1')
         idb.seed(DB(), record('', 'items', rows('m', 2), { identity: 'u1' }))
         window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
         const { data, main, records } = await load({ manifest: scoped(), auth: { ...offline(), _guestAuto: true, _signInPendingUntil: Date.now() + 300 } })
         main.loadDataSource('items')
         await settle(600)
-        expect(ids(data().items)).toEqual([])
+        expect(ids(data().items)).toEqual(['m0', 'm1'])
         expect(data()._items_state.ready).toBe(true)
+        expect(data()._items_state.loading).toBe(false)
         expect(calls).toEqual([])
-        // the snapshot stays on the device for the session check (hydrates again once verified as u1)
         expect(records().map(r => r.identity)).toEqual(['u1'])
     })
 
@@ -898,6 +898,118 @@ describe('offline boot: guest-auto deadline and same-user recovery', () => {
         dispatch('manifest:auth:login')
         await settle(80)
         expect(ids(data().items)).toEqual(['u2-0'])
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+})
+
+describe('offline/unverified: last-known identity rows stay for every source kind', () => {
+    // Own table ids: stale reset/retry listeners from earlier page-loads only reload sources by name
+    const pub = () => ({ data: { kept: { appwriteTableId: 'kept', persist: { tier: 'boot' } } } })
+    const scoped = () => ({ data: { kept: { appwriteTableId: 'kept', scope: 'user', persist: { tier: 'boot' } } } })
+    const signedIn = id => ({ _initialized: true, isAuthenticated: true, user: { $id: id } })
+    const offline = () => ({ _initialized: true, isAuthenticated: false, user: null, _sessionUnverified: true })
+    const lastKnown = (id) => window.localStorage.setItem('manifest:auth:state', JSON.stringify(id ? { isAuthenticated: true, user: { $id: id } } : { isAuthenticated: false, user: null }))
+    const netDown = () => Object.assign(new Error('Failed to fetch'), { code: 0, type: '' })
+    let down, calls
+    beforeEach(() => {
+        down = true
+        calls = []
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => [] }
+        window.ManifestDataAppwrite = {
+            loadTableRows: async (db, tableId) => {
+                const who = Alpine.store('auth')?.user?.$id || 'anon'
+                if (tableId === 'kept' || tableId === 'keptq') calls.push(who)
+                if (down) throw netDown()
+                return rows(`${who}-`, 1)
+            }
+        }
+    })
+    afterEach(() => { delete window.ManifestDataQueries; delete window.ManifestDataAppwrite; window.localStorage.removeItem('manifest:auth:state') })
+
+    it("offline boot: a scoped source shows the last-known user's snapshot and never empties it", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'kept', rows('m', 2), { identity: 'u1' }))
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
+        const { data, main } = await load({ manifest: scoped(), auth: offline() })
+        const seen = []
+        const stop = Alpine.effect(() => { seen.push(ids(data().kept).join(',')) })
+        await main.loadDataSource('kept')
+        await settle(80)
+        Alpine.release(stop)
+        expect(ids(data().kept)).toEqual(['m0', 'm1'])
+        expect(data()._kept_state.ready).toBe(true)
+        expect(seen.filter(s => s === '').length).toBeLessThanOrEqual(1)
+        expect(seen.slice(seen.indexOf('m0,m1'))).not.toContain('')
+        expect(calls).toEqual([])
+    })
+
+    it("offline boot: an $auth.-query source shows the last-known user's snapshot and keeps it", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'keptMine', rows('q', 2), { identity: 'u1' }))
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
+        const manifest = { data: { keptMine: { appwriteTableId: 'keptq', queries: [{ equal: ['ownerId', '$auth.$id'] }], persist: { tier: 'boot' } } } }
+        const { data, main } = await load({ manifest, auth: offline() })
+        await main.loadDataSource('keptMine')
+        await settle(80)
+        expect(ids(data().keptMine)).toEqual(['q0', 'q1'])
+        expect(data()._keptMine_state.ready).toBe(true)
+        expect(calls).toEqual([])
+    })
+
+    it('offline boot: a permission-only source keeps the snapshot after its read fails', async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'kept', rows('p', 2), { identity: 'u1' }))
+        const { data, main } = await load({ manifest: pub(), auth: offline() })
+        await main.loadDataSource('kept').catch(() => {})
+        await settle(80)
+        expect(ids(data().kept)).toEqual(['p0', 'p1'])
+    })
+
+    it("offline scoped source: the session check finding no session drops the rows and the snapshot", async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'kept', rows('m', 2), { identity: 'u1' }))
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
+        const { data, main, auth, dispatch, records } = await load({ manifest: scoped(), auth: offline() })
+        await main.loadDataSource('kept')
+        await settle(80)
+        expect(ids(data().kept)).toEqual(['m0', 'm1'])
+        Object.assign(auth(), { _sessionUnverified: false, isAuthenticated: false, user: null })
+        lastKnown(null)
+        dispatch('manifest:auth:session-cleared')
+        await settle(80)
+        expect(ids(data().kept)).not.toContain('m0')
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+
+    it('offline scoped source: an explicit logout drops the rows and the snapshot', async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'kept', rows('m', 2), { identity: 'u1' }))
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
+        const { data, main, auth, dispatch, records } = await load({ manifest: scoped(), auth: offline() })
+        await main.loadDataSource('kept')
+        await settle(80)
+        expect(ids(data().kept)).toEqual(['m0', 'm1'])
+        Object.assign(auth(), { _sessionUnverified: false, isAuthenticated: false, user: null })
+        lastKnown(null)
+        dispatch('manifest:auth:logout')
+        await settle(80)
+        expect(ids(data().kept)).not.toContain('m0')
+        expect(records().filter(r => r.identity === 'u1')).toEqual([])
+    })
+
+    it('offline scoped source: recovery as a different user drops the rows and loads as them', async () => {
+        lastKnown('u1')
+        idb.seed(DB(), record('', 'kept', rows('m', 2), { identity: 'u1' }))
+        window.ManifestDataQueries = { buildAppwriteQueries: async () => (Alpine.store('auth')?.isAuthenticated ? [] : null) }
+        const { data, main, auth, dispatch, records } = await load({ manifest: scoped(), auth: offline() })
+        await main.loadDataSource('kept')
+        await settle(80)
+        expect(ids(data().kept)).toEqual(['m0', 'm1'])
+        down = false
+        Object.assign(auth(), signedIn('u2'), { _sessionUnverified: false })
+        dispatch('manifest:auth:login')
+        await settle(80)
+        expect(ids(data().kept)).toEqual(['u2-0'])
         expect(records().filter(r => r.identity === 'u1')).toEqual([])
     })
 })
