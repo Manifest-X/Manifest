@@ -420,6 +420,11 @@
                 "liveUrl": { "type": "string", "format": "uri" },
                 "output": { "type": "string", "default": "dist" },
                 "routerBase": { "type": "string", "default": "" },
+                "incremental": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). Anything uncertain renders."
+                },
                 "locales": {
                     "type": "array",
                     "items": { "type": "string" }

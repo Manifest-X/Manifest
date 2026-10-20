@@ -90,6 +90,12 @@
     <template data-head><meta name="fixture-route-head" content="about"></template>
     <h1 id="about-heading">About</h1>
     <p>About body.</p>
+    <!-- Route-exclusive fetch: only the /about render requests this file, so the
+         incremental e2e can prove a touched data file re-renders ONLY the routes
+         that actually fetched it. -->
+    <template x-if="location.pathname.includes('about')">
+      <div id="about-extra" x-markdown="data/about-extra.md"></div>
+    </template>
   </section>
 
   <!-- Explicit data-hydrate island: counter that must work at runtime -->
