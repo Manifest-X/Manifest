@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
@@ -80,5 +80,22 @@ describe('manifest.render.page.mjs (Worker-safe page module)', () => {
     )
     expect(llms).toContain('- [Docs — Site](https://d.example/guides/intro): About things')
     expect(llmsFull).toContain('Hello World')
+  })
+
+  it('discovers routes and content from any reader, same as the fs walk', () => {
+    const root = join(here, '../packages/render/test/e2e/fixture')
+    const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'))
+    const files = new Map()
+    const read = (rel) => {
+      const p = join(root, String(rel).replace(/^\/+/, ''))
+      if (!files.has(p)) files.set(p, existsSync(p) ? readFileSync(p, 'utf8') : null)
+      return files.get(p)
+    }
+    const routes = page.discoverRoutesFrom(manifest, read)
+    expect(routes).toEqual(render.discoverRoutes(manifest, root))
+    expect(routes).toContain('about')
+    expect(page.discoverLocalesFrom(manifest, read).sort()).toEqual(['en', 'fr'])
+    const content = page.loadContentFrom(manifest, read, 'en', (raw) => ({ raw: raw.length }))
+    expect(content.raw).toBeGreaterThan(0)
   })
 })

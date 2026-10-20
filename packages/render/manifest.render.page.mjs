@@ -2944,6 +2944,381 @@ function buildLlmsFiles(entries, { siteName = 'Site', siteDescription = '' } = {
   return { llms, llmsFull };
 }
 
+// --- Discovery: locales from manifest.data -----------------------------------
+// Picks up (1) object keys that are locale codes (e.g. "en", "fr" in data.features)
+// and (2) "locales" properties that point to CSV (or array of CSVs); locale codes from CSV header row.
+
+const LOCALE_CODE_RE = /^[a-z]{2}(-[A-Z]{2})?$/i;
+
+function localeCodesFromCsvHeader(read, filePath) {
+  const text = read(filePath);
+  if (text == null) return [];
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length === 0) return [];
+  const header = splitCsvLine(lines[0]);
+  if (header.length < 2) return [];
+  // First column is key; rest are locale columns (per localization docs)
+  return header.slice(1).filter((col) => LOCALE_CODE_RE.test(String(col).trim())).map((c) => String(c).trim().toLowerCase());
+}
+
+function discoverLocalesFrom(manifest, read) {
+  const codes = new Set();
+  const data = manifest.data;
+  if (!data || typeof data !== 'object') return [];
+  for (const v of Object.values(data)) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    // Object keys that are locale codes (JSON/YAML per-locale files)
+    for (const k of Object.keys(v)) {
+      if (LOCALE_CODE_RE.test(k)) codes.add(k.toLowerCase());
+    }
+    // "locales" → single CSV path or array of CSV paths; locale codes from CSV headers
+    const localesRef = v.locales;
+    if (localesRef != null) {
+      const files = Array.isArray(localesRef) ? localesRef : [localesRef];
+      for (const filePath of files) {
+        if (typeof filePath !== 'string') continue;
+        localeCodesFromCsvHeader(read, filePath).forEach((c) => codes.add(c));
+      }
+    }
+  }
+  return [...codes];
+}
+
+// --- Discovery: x-route from HTML --------------------------------------------
+
+// --- Discovery: data-driven paths (docs-style YAML group/items[].path) ------
+
+function parseYamlPaths(text) {
+  if (text == null) return [];
+  const paths = [];
+  let currentGroup = '';
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const groupMatch = line.match(/^\s*-?\s*group:\s*["']?([^"'\n]+)["']?/);
+    if (groupMatch) {
+      currentGroup = groupMatch[1].trim().toLowerCase().replace(/\s+/g, '-');
+      continue;
+    }
+    const pathMatch = line.match(/path:\s*["']?([^"'\n]+)["']?/);
+    if (pathMatch && currentGroup) {
+      const segment = pathMatch[1].trim();
+      paths.push(`${currentGroup}/${segment}`);
+    } else {
+      // No group context — fall back to a bare path/slug.  Used by data files
+      // whose entries are flat (e.g. articles list with `path:` per item).
+      const genericPathMatch = line.match(/^\s*(?:-\s*)?(?:path|slug):\s*["']?([^"'\n#]+)["']?/);
+      if (genericPathMatch) {
+        const v = genericPathMatch[1].trim().replace(/^\/+|\/+$/g, '');
+        if (v && !v.includes('*') && !/\.[a-z0-9]+$/i.test(v)) {
+          paths.push(v);
+        }
+      }
+    }
+  }
+  return paths;
+}
+
+function parseJsonPaths(raw) {
+  if (raw == null) return [];
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const paths = [];
+  function collectPathSlug(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      obj.forEach((item) => {
+        if (item && typeof item === 'object') {
+          if (typeof item.path === 'string') paths.push(item.path);
+          else if (typeof item.slug === 'string') paths.push(item.slug);
+          if (item.group && Array.isArray(item.items)) {
+            const group = String(item.group).toLowerCase().replace(/\s+/g, '-');
+            item.items.forEach((i) => {
+              if (i && typeof i.path === 'string') paths.push(`${group}/${i.path}`);
+            });
+          }
+        }
+      });
+      return;
+    }
+    for (const v of Object.values(obj)) collectPathSlug(v);
+  }
+  collectPathSlug(data);
+  return paths;
+}
+
+function splitCsvLine(line) {
+  const out = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') inQuotes = !inQuotes;
+    else if (c === ',' && !inQuotes) {
+      out.push(cur.trim().replace(/^["']|["']$/g, ''));
+      cur = '';
+    } else cur += c;
+  }
+  out.push(cur.trim().replace(/^["']|["']$/g, ''));
+  return out;
+}
+
+function parseCsvPaths(text) {
+  if (text == null) return [];
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return [];
+  const paths = [];
+  const header = splitCsvLine(lines[0]).map((c) => c.toLowerCase());
+  const pathIdx = header.indexOf('path');
+  const slugIdx = header.indexOf('slug');
+  const keyIdx = header.indexOf('key');
+  const valIdx = header.indexOf('value');
+  if (pathIdx >= 0 || slugIdx >= 0) {
+    const col = pathIdx >= 0 ? pathIdx : slugIdx;
+    for (let i = 1; i < lines.length; i++) {
+      const row = splitCsvLine(lines[i]);
+      const v = row[col];
+      if (v) paths.push(v);
+    }
+  }
+  if (keyIdx >= 0 && valIdx >= 0) {
+    for (let i = 1; i < lines.length; i++) {
+      const row = splitCsvLine(lines[i]);
+      const key = row[keyIdx];
+      const val = row[valIdx];
+      if (key && (key === 'path' || key.endsWith('.path')) && val) paths.push(val);
+    }
+  }
+  return paths;
+}
+
+function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], warn = () => {}) {
+  const paths = new Set();
+  const data = manifest.data;
+  if (!data || typeof data !== 'object') return paths;
+  const localeSet = new Set((locales || []).map((l) => String(l).toLowerCase()));
+
+  function shouldIncludeDataPath(rawPath) {
+    const p = String(rawPath || '').replace(/^\/+|\/+$/g, '');
+    if (!p || p.includes('#') || p.includes('?') || p.includes('*')) return false;
+    if (wildcardBases.length === 0) return true;
+    const segs = p.split('/');
+    const rest = segs.length > 1 && localeSet.has(segs[0].toLowerCase()) ? segs.slice(1).join('/') : p;
+    return wildcardBases.some((base) => rest.startsWith(base + '/'));
+  }
+
+  // A source mounts under the wildcard route named after it: `docs/*` for key
+  // `docs`, or a nested base ending in the key (`docs/framework/*` for key
+  // `framework`).
+  const mounts = new Map();
+  function mountFor(sourceKey) {
+    if (!sourceKey) return null;
+    if (mounts.has(sourceKey)) return mounts.get(sourceKey);
+    let mount = null;
+    if (wildcardBases.includes(sourceKey)) mount = sourceKey;
+    else {
+      const nested = wildcardBases.filter((b) => b.split('/').pop() === sourceKey);
+      if (nested.length === 1) {
+        mount = nested[0];
+        warn(`prerender: data source "${sourceKey}" mounts under ${mount}/*\n`);
+      } else if (nested.length > 1) {
+        warn(`prerender: data source "${sourceKey}" matches ${nested.map((b) => b + '/*').join(', ')}; not mounted (ambiguous)\n`);
+      }
+    }
+    mounts.set(sourceKey, mount);
+    return mount;
+  }
+
+  function expandCandidates(rawPath, sourceKey) {
+    const p = String(rawPath || '').replace(/^\/+|\/+$/g, '');
+    if (!p) return [];
+    const candidates = [p];
+    if (wildcardBases.length === 0) return candidates;
+    const mount = mountFor(sourceKey);
+    if (!mount) return candidates;
+    const parts = p.split('/');
+    const hasLocalePrefix = parts.length > 1 && localeSet.has(parts[0].toLowerCase());
+    if (hasLocalePrefix) {
+      const locale = parts[0];
+      const rest = parts.slice(1).join('/');
+      if (rest && !rest.startsWith(mount + '/')) candidates.push(`${locale}/${mount}/${rest}`);
+    } else if (!p.startsWith(mount + '/')) {
+      candidates.push(`${mount}/${p}`);
+    }
+    return candidates;
+  }
+
+  function addFilePaths(value, sourceKey) {
+    if (typeof value !== 'string' || !value.startsWith('/')) return;
+    const filePath = value;
+    if (filePath.endsWith('.yaml') || filePath.endsWith('.yml')) {
+      parseYamlPaths(read(filePath)).forEach((p) => {
+        for (const c of expandCandidates(p, sourceKey)) {
+          if (shouldIncludeDataPath(c)) paths.add('/' + c);
+        }
+      });
+    } else if (filePath.endsWith('.json')) {
+      parseJsonPaths(read(filePath)).forEach((p) => {
+        const normalized = p.startsWith('/') ? p.slice(1) : p;
+        for (const c of expandCandidates(normalized, sourceKey)) {
+          if (shouldIncludeDataPath(c)) paths.add('/' + c);
+        }
+      });
+    } else if (filePath.endsWith('.csv')) {
+      parseCsvPaths(read(filePath)).forEach((p) => {
+        const normalized = p.startsWith('/') ? p.slice(1) : p;
+        for (const c of expandCandidates(normalized, sourceKey)) {
+          if (shouldIncludeDataPath(c)) paths.add('/' + c);
+        }
+      });
+    }
+  }
+
+  for (const [sourceKey, value] of Object.entries(data)) {
+    if (typeof value === 'string') addFilePaths(value, sourceKey);
+    else if (value && typeof value === 'object') {
+      for (const v of Object.values(value)) {
+        if (typeof v === 'string') addFilePaths(v, sourceKey);
+      }
+    }
+  }
+  return paths;
+}
+
+// --- Collect all paths from index + components -------------------------------
+
+function discoverRoutesFrom(manifest, read, warn = () => {}) {
+  const pathSet = new Set();
+  pathSet.add('/');
+  const allConditions = new Set();
+  const locales = discoverLocalesFrom(manifest, read);
+
+  const indexHtml = read('index.html');
+  if (indexHtml != null) {
+    const conditions = extractXRouteConditions(indexHtml);
+    conditions.forEach((c) => allConditions.add(c));
+    conditionsToPaths(conditions).forEach((p) => pathSet.add(p));
+  }
+
+  const componentDirs = [
+    ...(manifest.preloadedComponents || []),
+    ...(manifest.components || []),
+  ];
+  for (const rel of componentDirs) {
+    const html = read(rel);
+    if (html != null) {
+      const conditions = extractXRouteConditions(html);
+      conditions.forEach((c) => allConditions.add(c));
+      conditionsToPaths(conditions).forEach((p) => pathSet.add(p));
+    }
+  }
+
+  const wildcardBases = getWildcardBasesFromConditions(allConditions);
+  discoverDataPaths(manifest, read, wildcardBases, locales, warn).forEach((p) => pathSet.add(p));
+
+  const arr = [...pathSet].map((p) => (p === '/' ? '' : p.replace(/^\//, '').replace(/\/$/, '') || ''));
+  return arr.includes('') ? arr : ['', ...arr.filter(Boolean)];
+}
+
+/** Head-binding content for a locale (manifest.data.content). parseYaml: optional YAML parser. */
+function loadContentFrom(manifest, read, locale, parseYaml = null) {
+  const data = manifest?.data?.content;
+  if (!data) return {};
+  const loc = locale || 'en';
+  let content = {};
+  if (typeof data === 'string' && data.endsWith('.csv')) {
+    content = csvToKeyValue(read(data), loc);
+  } else if (data && typeof data === 'object' && data.locales && typeof data.locales === 'string') {
+    content = csvToKeyValue(read(data.locales), loc);
+  } else if (data && typeof data === 'object' && !Array.isArray(data)) {
+    // Per-locale files: { "en": "/data/content.en.yaml", "fr": "/data/content.fr.yaml", ... }
+    const filePath = data[loc] || data[Object.keys(data)[0]];
+    if (typeof filePath === 'string') {
+      const raw = read(filePath);
+      if (raw != null) {
+        try {
+          if (filePath.endsWith('.yaml') || filePath.endsWith('.yml')) {
+            if (parseYaml) content = parseYaml(raw) || {};
+          } else if (filePath.endsWith('.json')) {
+            content = JSON.parse(raw);
+          } else if (filePath.endsWith('.csv')) {
+            content = csvToKeyValue(raw, loc);
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+  }
+  if (manifest.description !== undefined && content.description === undefined) {
+    content.description = manifest.description;
+  }
+  return content;
+}
+
+function csvToKeyValue(text, valueLocale) {
+  if (text == null) return {};
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return {};
+  const header = splitCsvLine(lines[0]);
+  const keyCol = header[0];
+  const valueCol = header.includes(valueLocale) ? valueLocale : (header[1] || header[0]);
+  const keyIdx = 0;
+  const valueIdx = header.indexOf(valueCol);
+  if (valueIdx === -1) return {};
+  const result = {};
+  for (let i = 1; i < lines.length; i++) {
+    const row = splitCsvLine(lines[i]);
+    const key = row[keyIdx];
+    const value = row[valueIdx];
+    if (key == null) continue;
+    setNestedKey(result, key.trim(), value != null ? String(value).trim() : '');
+  }
+  return result;
+}
+
+function setNestedKey(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i];
+    const next = parts[i + 1];
+    const nextIsIndex = /^\d+$/.test(next);
+    if (!(p in cur) || typeof cur[p] !== 'object') {
+      cur[p] = nextIsIndex ? [] : {};
+    } else if (nextIsIndex && !Array.isArray(cur[p]) && cur[p] && typeof cur[p] === 'object') {
+      const existing = cur[p];
+      const keys = Object.keys(existing);
+      const numericOnly = keys.every((k) => /^\d+$/.test(k));
+      if (numericOnly) {
+        const arr = [];
+        keys.forEach((k) => {
+          arr[parseInt(k, 10)] = existing[k];
+        });
+        cur[p] = arr;
+      }
+    }
+    cur = cur[p];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+/** SEO / AEO meta config from manifest.json (render.meta, render.structuredData, PWA fields). */
+function seoConfigFromManifest(manifest) {
+  const pre = manifest.render ?? manifest.prerender ?? {};
+  return {
+    siteName: manifest.name || null,
+    siteDescription: manifest.description || null,
+    siteAuthor: manifest.author || null,
+    icons: Array.isArray(manifest.icons) ? manifest.icons : [],
+    meta: pre.meta || null,
+    structuredData: pre.structuredData || null,
+    imageSnapshots: pre.meta?.imageSnapshots !== false, // default true
+    defaults: pre.meta?.defaults !== false,             // default true
+  };
+}
+
 export {
   NOT_FOUND_PATH,
   scriptSrcSet,
@@ -3001,4 +3376,11 @@ export {
   buildRobotsTxt,
   buildSitemapXml,
   buildLlmsFiles,
+  splitCsvLine,
+  setNestedKey,
+  csvToKeyValue,
+  discoverLocalesFrom,
+  discoverRoutesFrom,
+  loadContentFrom,
+  seoConfigFromManifest,
 };
