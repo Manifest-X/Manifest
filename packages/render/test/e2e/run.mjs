@@ -712,6 +712,24 @@ async function runAssertions() {
 }
 
 // ---- incremental rendering tests ---------------------------------------------
+const EXTERNAL_PORT = 5101; // fixture's #external-note fetches this origin
+
+// Cross-origin resource with switchable validator behavior: mode 'etag'
+// serves an ETag and answers matching If-None-Match with 304; mode
+// 'no-validator' serves plain 200s with no validator at all.
+const externalState = { mode: 'etag', etag: 'W/"v1"', body: 'external note v1' };
+function startExternalServer(port, state) {
+  const server = createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (state.mode === 'etag') {
+      res.setHeader('ETag', state.etag);
+      if (req.headers['if-none-match'] === state.etag) { res.statusCode = 304; res.end(); return; }
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(state.body);
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
 async function hashTree(dir) {
   const out = new Map();
   const walk = async (d, rel) => {
@@ -783,6 +801,58 @@ async function runIncrementalTests() {
     'touched component mounted by all routes re-renders everything',
     `summary: ${JSON.stringify(d)}`);
 
+  // Cross-origin validator changes: new ETag + body → only /external re-renders
+  externalState.etag = 'W/"v2"';
+  externalState.body = 'external note v2';
+  const runX1 = await runPrerender(['--incremental'], true);
+  const x1 = summaryOf(runX1.stdout);
+  assert(x1 && x1.rendered === 1 && x1.skipped === total - 1,
+    'changed cross-origin ETag re-renders only the route that fetched it',
+    `summary: ${JSON.stringify(x1)}`);
+  const externalHtml1 = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtml1.includes('external note v2'),
+    're-rendered /external carries the new cross-origin content');
+
+  // Validator disappears: conditional request no longer answers 304 → render;
+  // the new response is content-addressed instead (hash of its bytes)
+  externalState.mode = 'no-validator';
+  externalState.body = 'external note without validator';
+  const runX2 = await runPrerender(['--incremental'], true);
+  const x2 = summaryOf(runX2.stdout);
+  assert(x2 && x2.rendered === 1 && x2.skipped === total - 1,
+    'cross-origin response losing its validator re-renders the route',
+    `summary: ${JSON.stringify(x2)}`);
+  const runX3 = await runPrerender(['--incremental'], true);
+  const x3 = summaryOf(runX3.stdout);
+  assert(x3 && x3.rendered === 0 && x3.skipped === total,
+    'validator-less cross-origin resource skips only while its bytes are identical',
+    `summary: ${JSON.stringify(x3)}`);
+  // The Appwrite-edit case: data changes with no validator anywhere → render
+  externalState.body = 'external note without validator EDITED';
+  const runX3b = await runPrerender(['--incremental'], true);
+  const x3b = summaryOf(runX3b.stdout);
+  assert(x3b && x3b.rendered === 1 && x3b.skipped === total - 1,
+    'validator-less cross-origin content change re-renders the route',
+    `summary: ${JSON.stringify(x3b)}`);
+  const externalHtmlNv = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtmlNv.includes('external note without validator EDITED'),
+    're-rendered /external carries the edited validator-less content');
+
+  // Validator returns: one more render records it, then the route skips again
+  externalState.mode = 'etag';
+  externalState.etag = 'W/"v3"';
+  externalState.body = 'external note v3';
+  const runX4 = await runPrerender(['--incremental'], true);
+  const x4 = summaryOf(runX4.stdout);
+  assert(x4 && x4.rendered === 1 && x4.skipped === total - 1,
+    'restored validator renders once to re-record it',
+    `summary: ${JSON.stringify(x4)}`);
+  const runX5 = await runPrerender(['--incremental'], true);
+  const x5 = summaryOf(runX5.stdout);
+  assert(x5 && x5.rendered === 0 && x5.skipped === total,
+    'unchanged validated cross-origin resource (304) lets the route skip again',
+    `summary: ${JSON.stringify(x5)}`);
+
   // Without the flag: full render, no skip accounting, ledger untouched
   const ledgerBefore = await readFile(ledgerPath, 'utf8');
   const runE = await runPrerender([], true);
@@ -810,6 +880,18 @@ async function runIncrementalTests() {
     `summary: ${JSON.stringify(g)}`);
   assert(existsSync(join(FIXTURE_OUT_DIR, 'about', 'index.html')),
     'missing output file regenerated');
+
+  // SPA-fallback shadowing: /data/ghost.txt resolved to index.html so far;
+  // creating the physical file must re-render the route that requested it.
+  await writeFile(join(FIXTURE_DIR, 'data', 'ghost.txt'), 'ghost file now exists');
+  const runY = await runPrerender(['--incremental'], true);
+  const y = summaryOf(runY.stdout);
+  assert(y && y.rendered === 1 && y.skipped === total - 1,
+    'new physical file shadowing a prior SPA-fallback resolution re-renders its route',
+    `summary: ${JSON.stringify(y)}`);
+  const externalHtml2 = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtml2.includes('ghost file now exists'),
+    're-rendered route carries the shadowing file content');
 }
 
 // ---- main -------------------------------------------------------------------
@@ -819,6 +901,11 @@ async function main() {
   log.head(`Starting dev server on ${DEV_PORT}`);
   const devServer = await startStaticServer(FIXTURE_DIR, DEV_PORT);
   log.note(`dev server up`);
+
+  // Cross-origin validator server, up for the whole harness so every render
+  // (baseline included) sees the same external resource.
+  const externalServer = await startExternalServer(EXTERNAL_PORT, externalState);
+  log.note(`external validator server up on ${EXTERNAL_PORT}`);
 
   try {
     await runPrerender();
@@ -838,7 +925,12 @@ async function main() {
     log.note('static server stopped');
   }
 
-  await runIncrementalTests();
+  try {
+    await runIncrementalTests();
+  } finally {
+    externalServer.close();
+    log.note('external validator server stopped');
+  }
 
   log.head(`Results: ${passed} passed, ${failed} failed`);
   return failed > 0 ? 1 : 0;

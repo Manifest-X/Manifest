@@ -9,7 +9,9 @@ import {
   evaluateRouteSkip,
   loadRouteLedger,
   resolveStaticRequestFile,
-  createExternalTokenizer,
+  createExternalRevalidator,
+  contentFilesForPrerender,
+  isSafeRelPath,
 } from '../src/scripts/manifest.render.mjs';
 
 let dir;
@@ -33,15 +35,17 @@ describe('stableStringify', () => {
 
 describe('computeRouteSignature', () => {
   const base = {
-    globalKey: 'v1|mnfst-render@0.0.0|salt|manifesthash',
+    globalKey: 'v2|mnfst-render@0.0.0|salt|manifesthash',
     inputPairs: ['index.html:aaa', 'data/a.json:bbb'],
-    externalTokens: ['https://cdn.test/x@1.2.3/x.js'],
+    requestedPairs: ['/=>index.html', '/data/a.json=>data/a.json'],
+    externalTokens: ['https://cdn.test/x@1.2.3/x.js', 'https://api.test/rows#etag:W/"v1"|lm:'],
   };
-  it('is order-independent for input pairs and external tokens', () => {
+  it('is order-independent for pairs and tokens', () => {
     const a = computeRouteSignature(base);
     const b = computeRouteSignature({
       ...base,
       inputPairs: [...base.inputPairs].reverse(),
+      requestedPairs: [...base.requestedPairs].reverse(),
       externalTokens: [...base.externalTokens].reverse(),
     });
     expect(a).toBe(b);
@@ -50,34 +54,41 @@ describe('computeRouteSignature', () => {
     const a = computeRouteSignature(base);
     expect(computeRouteSignature({ ...base, globalKey: 'other' })).not.toBe(a);
     expect(computeRouteSignature({ ...base, inputPairs: ['index.html:zzz', 'data/a.json:bbb'] })).not.toBe(a);
-    expect(computeRouteSignature({ ...base, externalTokens: ['https://cdn.test/x@1.2.4/x.js'] })).not.toBe(a);
+    expect(computeRouteSignature({ ...base, requestedPairs: ['/=>other.html', '/data/a.json=>data/a.json'] })).not.toBe(a);
+    expect(computeRouteSignature({ ...base, externalTokens: ['https://cdn.test/x@1.2.4/x.js', base.externalTokens[1]] })).not.toBe(a);
+    expect(computeRouteSignature({ ...base, externalTokens: [base.externalTokens[0], 'https://api.test/rows#etag:W/"v2"|lm:'] })).not.toBe(a);
   });
 });
 
 describe('evaluateRouteSkip', () => {
   const globalKey = 'gk';
   const hashes = { 'index.html': 'h1', 'data/a.json': 'h2' };
-  const tokenize = async (u) => u;
+  const resolution = { '/': 'index.html', '/data/a.json': 'data/a.json', '/ghost': 'index.html' };
+  const validator = { etag: 'W/"v7"' };
   const goodEntry = () => ({
     sig: computeRouteSignature({
       globalKey,
       inputPairs: ['index.html:h1', 'data/a.json:h2'],
-      externalTokens: ['https://cdn.test/a@1.0.0/a.js'],
+      requestedPairs: ['/=>index.html', '/data/a.json=>data/a.json', '/ghost=>index.html'],
+      externalTokens: ['https://cdn.test/a@1.0.0/a.js', 'https://api.test/rows#etag:W/"v7"|lm:|ch:'],
     }),
     inputs: { 'index.html': 'h1', 'data/a.json': 'h2' },
+    requested: { '/': 'index.html', '/data/a.json': 'data/a.json', '/ghost': 'index.html' },
     external: ['https://cdn.test/a@1.0.0/a.js'],
+    externalValidated: { 'https://api.test/rows': validator },
     outputs: { 'about/index.html': 'o1' },
   });
   const deps = (over = {}) => ({
     entry: goodEntry(),
-    hashInput: (p) => hashes[p] || null,
-    tokenizeExternal: tokenize,
+    hashInput: (p) => hashes[p] || 'absent',
+    resolveRequest: (p) => resolution[p] ?? null,
+    revalidateExternal: async () => true,
     globalKey,
     outputHash: (p) => (p === 'about/index.html' ? 'o1' : null),
     ...over,
   });
 
-  it('skips when inputs, signature and outputs all match', async () => {
+  it('skips when requests, inputs, signature, outputs and validators all match', async () => {
     expect((await evaluateRouteSkip(deps())).skip).toBe(true);
   });
   it('renders when there is no ledger entry', async () => {
@@ -87,15 +98,28 @@ describe('evaluateRouteSkip', () => {
     const entry = { ...goodEntry(), nonCacheable: true };
     expect((await evaluateRouteSkip(deps({ entry }))).skip).toBe(false);
   });
-  it('renders when the entry is malformed', async () => {
-    for (const entry of [{}, { sig: 'x' }, { sig: 'x', inputs: {}, external: [], outputs: {} }]) {
+  it('renders when the entry is malformed (incl. pre-v2 shapes)', async () => {
+    for (const entry of [
+      {},
+      { sig: 'x' },
+      { sig: 'x', inputs: {}, external: [], outputs: { a: 'b' } }, // v1 shape: no requested/externalValidated
+      { sig: 'x', inputs: {}, requested: {}, external: [], externalValidated: {}, outputs: {} },
+    ]) {
       expect((await evaluateRouteSkip(deps({ entry }))).skip).toBe(false);
     }
   });
-  it('renders when a recorded input file is missing', async () => {
-    const r = await evaluateRouteSkip(deps({ hashInput: (p) => (p === 'index.html' ? 'h1' : null) }));
+  it('renders when a requested pathname resolves to a different file now', async () => {
+    // SPA-fallback shadowing: /ghost used to fall back to index.html, now a real file serves it.
+    const r = await evaluateRouteSkip(deps({
+      resolveRequest: (p) => (p === '/ghost' ? 'ghost/index.html' : resolution[p] ?? null),
+    }));
     expect(r.skip).toBe(false);
-    expect(r.reason).toMatch(/input missing/);
+    expect(r.reason).toMatch(/resolution changed: \/ghost/);
+  });
+  it('renders when a recorded input file is missing', async () => {
+    const r = await evaluateRouteSkip(deps({ hashInput: (p) => (p === 'index.html' ? 'h1' : 'absent') }));
+    expect(r.skip).toBe(false);
+    expect(r.reason).toMatch(/input changed/);
   });
   it('renders when a recorded input re-hashes differently', async () => {
     const r = await evaluateRouteSkip(deps({ hashInput: (p) => (p === 'index.html' ? 'CHANGED' : hashes[p]) }));
@@ -107,10 +131,10 @@ describe('evaluateRouteSkip', () => {
     expect(r.skip).toBe(false);
     expect(r.reason).toMatch(/signature/);
   });
-  it('renders when an external identity resolves differently', async () => {
-    const r = await evaluateRouteSkip(deps({ tokenizeExternal: async (u) => `${u}#new-etag` }));
+  it('renders when a cross-origin validator fails conditional revalidation', async () => {
+    const r = await evaluateRouteSkip(deps({ revalidateExternal: async () => false }));
     expect(r.skip).toBe(false);
-    expect(r.reason).toMatch(/signature/);
+    expect(r.reason).toMatch(/external changed: https:\/\/api\.test\/rows/);
   });
   it('renders when a previous output file is missing or altered', async () => {
     const missing = await evaluateRouteSkip(deps({ outputHash: () => null }));
@@ -118,9 +142,27 @@ describe('evaluateRouteSkip', () => {
     const altered = await evaluateRouteSkip(deps({ outputHash: () => 'tampered' }));
     expect(altered.skip).toBe(false);
   });
-  it('propagates tokenizer failure (caller disables incremental)', async () => {
-    await expect(evaluateRouteSkip(deps({ tokenizeExternal: async () => { throw new Error('HEAD failed'); } })))
-      .rejects.toThrow('HEAD failed');
+  it('renders when any entry path would escape its base dir', async () => {
+    for (const bad of ['../secrets.txt', '/etc/passwd', 'a/../../b', 'a\\b']) {
+      const entry = goodEntry();
+      entry.outputs = { [bad]: 'o1' };
+      const r = await evaluateRouteSkip(deps({ entry }));
+      expect(r.skip).toBe(false);
+      expect(r.reason).toMatch(/unsafe path/);
+    }
+  });
+});
+
+describe('isSafeRelPath', () => {
+  it('accepts plain relative paths and rejects escapes', () => {
+    expect(isSafeRelPath('about/index.html')).toBe(true);
+    expect(isSafeRelPath('og/x.png')).toBe(true);
+    expect(isSafeRelPath('../x')).toBe(false);
+    expect(isSafeRelPath('a/../x')).toBe(false);
+    expect(isSafeRelPath('/abs')).toBe(false);
+    expect(isSafeRelPath('C:/x')).toBe(false);
+    expect(isSafeRelPath('a//b')).toBe(false);
+    expect(isSafeRelPath('')).toBe(false);
   });
 });
 
@@ -152,28 +194,67 @@ describe('resolveStaticRequestFile', () => {
     expect(resolveStaticRequestFile(dir, '/no/such/route')).toBe('index.html');
     expect(resolveStaticRequestFile(dir, '/../../etc/passwd')).toBe('index.html');
   });
+  it('resolution changes when a physical file appears where the fallback served', () => {
+    writeFileSync(join(dir, 'index.html'), 'root');
+    expect(resolveStaticRequestFile(dir, '/data/ghost.txt')).toBe('index.html');
+    mkdirSync(join(dir, 'data'));
+    writeFileSync(join(dir, 'data', 'ghost.txt'), 'now exists');
+    expect(resolveStaticRequestFile(dir, '/data/ghost.txt')).toBe('data/ghost.txt');
+  });
   it('returns null when nothing (not even index.html) can serve the path', () => {
     expect(resolveStaticRequestFile(dir, '/missing')).toBe(null);
   });
 });
 
-describe('createExternalTokenizer', () => {
-  it('passes pinned-version URLs through without resolution', async () => {
-    const tokenize = createExternalTokenizer({ head: async () => { throw new Error('must not resolve'); } });
-    expect(await tokenize('https://cdn.test/mnfst@1.2.3/manifest.js'))
-      .toBe('https://cdn.test/mnfst@1.2.3/manifest.js');
+describe('createExternalRevalidator', () => {
+  it('treats only 304 as unchanged', async () => {
+    const revalidate = createExternalRevalidator({ request: async () => 304 });
+    expect(await revalidate('https://api.test/rows', { etag: 'W/"v1"' })).toBe(true);
+    const changed = createExternalRevalidator({ request: async () => 200 });
+    expect(await changed('https://api.test/rows', { etag: 'W/"v1"' })).toBe(false);
   });
-  it('resolves unversioned URLs once per run (memoized)', async () => {
+  it('re-downloads and compares bytes for content-addressed validators', async () => {
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update('payload v1').digest('hex');
+    const same = createExternalRevalidator({ download: async () => Buffer.from('payload v1') });
+    expect(await same('https://api.test/rows', { contentHash: hash })).toBe(true);
+    const diff = createExternalRevalidator({ download: async () => Buffer.from('payload v2') });
+    expect(await diff('https://api.test/rows', { contentHash: hash })).toBe(false);
+    const gone = createExternalRevalidator({ download: async () => null });
+    expect(await gone('https://api.test/rows', { contentHash: hash })).toBe(false);
+  });
+  it('renders when the validator carries nothing usable', async () => {
+    const revalidate = createExternalRevalidator({ request: async () => 304, download: async () => Buffer.from('x') });
+    expect(await revalidate('https://api.test/rows', {})).toBe(false);
+  });
+  it('sends the recorded validator as a conditional header', async () => {
+    const seen = [];
+    const revalidate = createExternalRevalidator({ request: async (url, headers) => { seen.push(headers); return 304; } });
+    await revalidate('https://a.test/x', { etag: 'W/"e"' });
+    await revalidate('https://a.test/y', { lastModified: 'Tue, 01 Oct 2026 00:00:00 GMT' });
+    expect(seen[0]).toEqual({ 'If-None-Match': 'W/"e"' });
+    expect(seen[1]).toEqual({ 'If-Modified-Since': 'Tue, 01 Oct 2026 00:00:00 GMT' });
+  });
+  it('memoizes per url+validator and maps failure to "changed"', async () => {
     let calls = 0;
-    const tokenize = createExternalTokenizer({ head: async () => { calls++; return '200:etag-1'; } });
-    const a = await tokenize('https://cdn.test/mnfst@latest/manifest.js');
-    const b = await tokenize('https://cdn.test/mnfst@latest/manifest.js');
-    expect(a).toBe('https://cdn.test/mnfst@latest/manifest.js#200:etag-1');
-    expect(b).toBe(a);
+    const revalidate = createExternalRevalidator({ request: async () => { calls++; return 304; } });
+    await revalidate('https://a.test/x', { etag: 'e1' });
+    await revalidate('https://a.test/x', { etag: 'e1' });
     expect(calls).toBe(1);
+    await revalidate('https://a.test/x', { etag: 'e2' });
+    expect(calls).toBe(2);
+    const failing = createExternalRevalidator({ request: async () => { throw new Error('offline'); } });
+    expect(await failing('https://a.test/x', { etag: 'e1' })).toBe(false);
   });
-  it('propagates resolution failure', async () => {
-    const tokenize = createExternalTokenizer({ head: async () => { throw new Error('offline'); } });
-    await expect(tokenize('https://cdn.test/unpinned.js')).rejects.toThrow('offline');
+});
+
+describe('contentFilesForPrerender', () => {
+  it('resolves the per-locale content file loadContentForPrerender would read', () => {
+    const manifest = { data: { content: { en: '/data/content.en.yaml', fr: '/data/content.fr.yaml' } } };
+    expect(contentFilesForPrerender(manifest, 'fr')).toEqual(['data/content.fr.yaml']);
+    expect(contentFilesForPrerender(manifest, 'xx')).toEqual(['data/content.en.yaml']);
+    expect(contentFilesForPrerender({ data: { content: '/data/content.csv' } }, 'en')).toEqual(['data/content.csv']);
+    expect(contentFilesForPrerender({ data: { content: { locales: '/data/locales.csv' } } }, 'en')).toEqual(['data/locales.csv']);
+    expect(contentFilesForPrerender({}, 'en')).toEqual([]);
   });
 });

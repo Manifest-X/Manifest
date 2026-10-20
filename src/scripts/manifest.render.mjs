@@ -3434,7 +3434,7 @@ function startStaticServer(rootDir) {
 // uncertainty (missing file, failed resolution, parse error) falls back to
 // rendering, never to skipping.
 
-const LEDGER_SCHEMA_VERSION = 1;
+const LEDGER_SCHEMA_VERSION = 2;
 
 const sha256Full = (data) => createHash('sha256').update(data).digest('hex');
 
@@ -3448,15 +3448,22 @@ function stableStringify(value) {
 }
 
 /** Nearest package.json identity — part of every signature so a renderer
- *  upgrade invalidates the whole ledger. */
+ *  upgrade invalidates the whole ledger.  A run from the repo tree (not an
+ *  installed mnfst-render) also folds in the script's own content hash, since
+ *  the repo version doesn't bump per edit.  Unidentifiable → never skip. */
 function rendererPackageIdentity() {
+  let id = 'dev';
   for (const rel of ['package.json', '../package.json', '../../package.json']) {
     try {
       const pkg = JSON.parse(readFileSync(join(__dirname, rel), 'utf8'));
-      if (pkg && pkg.version) return `${pkg.name || 'mnfst-render'}@${pkg.version}`;
+      if (pkg && pkg.version) { id = `${pkg.name || 'mnfst-render'}@${pkg.version}`; break; }
     } catch { /* keep looking */ }
   }
-  return 'dev';
+  if (!id.startsWith('mnfst-render@')) {
+    try { id += '+' + sha256Full(readFileSync(fileURLToPath(import.meta.url))).slice(0, 16); }
+    catch { id += '+' + Date.now(); }
+  }
+  return id;
 }
 
 /** Same pathname → disk-file resolution as startStaticServer (incl. the SPA
@@ -3482,36 +3489,69 @@ function resolveStaticRequestFile(rootDir, pathname) {
 
 const PINNED_VERSION_RE = /@\d+\.\d+\.\d+/;
 
-/** Cross-origin URL → signature token.  A pinned-version URL is its own
- *  identity; an unversioned one resolves once per run via HEAD (ETag or final
- *  URL).  Resolution failure throws — the caller must disable incremental. */
-function createExternalTokenizer({ head } = {}) {
-  const headFn = head || (async (url) => {
+const isPinnedExternalUrl = (url) => {
+  try { return PINNED_VERSION_RE.test(new URL(url).pathname); } catch { return false; }
+};
+
+const externalValidatorToken = (url, v) =>
+  `${url}#etag:${v?.etag || ''}|lm:${v?.lastModified || ''}|ch:${v?.contentHash || ''}`;
+
+/** Re-check a recorded cross-origin validator.  ETag/Last-Modified go out as
+ *  a conditional request where only a 304 counts as unchanged; a validator-less
+ *  resource was content-addressed at capture, so it is re-downloaded and its
+ *  bytes re-hashed.  Any other status, a redirect, or a network failure means
+ *  render.  Memoized per run. */
+function createExternalRevalidator({ request, download } = {}) {
+  const requestFn = request || (async (url, headers) => {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10000);
     try {
-      const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
-      return `${res.status}:${res.headers.get('etag') || res.url}`;
+      const res = await fetch(url, { method: 'GET', headers, redirect: 'manual', signal: ctrl.signal });
+      try { await res.body?.cancel(); } catch { /* no body on 304 */ }
+      return res.status;
+    } finally { clearTimeout(t); }
+  });
+  const downloadFn = download || (async (url) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 20000);
+    try {
+      const res = await fetch(url, { method: 'GET', redirect: 'manual', signal: ctrl.signal });
+      if (res.status < 200 || res.status >= 300) return null;
+      return Buffer.from(await res.arrayBuffer());
     } finally { clearTimeout(t); }
   });
   const cache = new Map();
-  return (url) => {
-    if (PINNED_VERSION_RE.test(url)) return Promise.resolve(url);
-    if (!cache.has(url)) {
-      const p = Promise.resolve().then(() => headFn(url)).then((id) => `${url}#${id}`);
-      // A rejected memo entry would poison every later lookup with an
-      // unhandled-rejection crash; drop it so callers see the throw once each.
-      p.catch(() => cache.delete(url));
-      cache.set(url, p);
+  return (url, validator) => {
+    const key = externalValidatorToken(url, validator);
+    if (!cache.has(key)) {
+      let check;
+      if (validator?.etag || validator?.lastModified) {
+        const headers = validator.etag
+          ? { 'If-None-Match': validator.etag }
+          : { 'If-Modified-Since': validator.lastModified };
+        check = Promise.resolve().then(() => requestFn(url, headers)).then((status) => status === 304);
+      } else if (validator?.contentHash) {
+        check = Promise.resolve().then(() => downloadFn(url))
+          .then((body) => !!body && sha256Full(body) === validator.contentHash);
+      } else {
+        check = Promise.resolve(false);
+      }
+      cache.set(key, check.catch(() => false));
     }
-    return cache.get(url);
+    return cache.get(key);
   };
 }
 
-function computeRouteSignature({ globalKey, inputPairs, externalTokens }) {
+/** relPath acceptable for joining under a base dir. */
+const isSafeRelPath = (rel) =>
+  typeof rel === 'string' && rel.length > 0 && !rel.includes('\\') && rel[0] !== '/'
+  && !/^[A-Za-z]:/.test(rel) && !rel.split('/').some((s) => s === '..' || s === '');
+
+function computeRouteSignature({ globalKey, inputPairs, requestedPairs = [], externalTokens }) {
   return sha256Full([
     globalKey,
     [...inputPairs].sort().join('\n'),
+    [...requestedPairs].sort().join('\n'),
     [...externalTokens].sort().join('\n'),
   ].join('|'));
 }
@@ -3532,36 +3572,70 @@ function rawHtmlCachePath(rootDir, routeKey) {
   return join(rootDir, '.mnfst-cache', 'render-html', `${sha256Full(String(routeKey)).slice(0, 24)}.html.gz`);
 }
 
+/** Disk files loadContentForPrerender reads for `locale` — Node-side inputs
+ *  (head meta / x-binding resolution) that the page itself never fetches. */
+function contentFilesForPrerender(manifest, locale) {
+  const data = manifest?.data?.content;
+  if (!data) return [];
+  const loc = locale || 'en';
+  const strip = (p) => String(p).replace(/^\/+/, '');
+  if (typeof data === 'string' && data.endsWith('.csv')) return [strip(data)];
+  if (data && typeof data === 'object' && typeof data.locales === 'string') return [strip(data.locales)];
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const filePath = data[loc] || data[Object.keys(data)[0]];
+    if (typeof filePath === 'string') return [strip(filePath)];
+  }
+  return [];
+}
+
 /**
  * Per-route skip decision.  Skip requires: a well-formed entry, every recorded
- * input re-hashing to its recorded value NOW, the recomputed signature matching
- * (covers config/version/manifest/external identities), and every recorded
- * output byte-identical in the previous final output (`outputHash`) — the
- * output-hash check closes the edit→render-elsewhere→revert hole where inputs
- * match an old ledger but the previous output holds different content.
- * Dependency-injected for unit tests; tokenizer failures propagate.
+ * request pathname still resolving to the same file (a new physical file can
+ * shadow a prior SPA-fallback resolution), every recorded input re-hashing to
+ * its recorded value NOW, the recomputed signature matching (config/version/
+ * manifest/externals), every recorded output byte-identical in the previous
+ * final output (closes the edit→render-elsewhere→revert hole), and every
+ * cross-origin validator answering 304 to a conditional request NOW.
+ * Dependency-injected for unit tests.
  */
-async function evaluateRouteSkip({ entry, hashInput, tokenizeExternal, globalKey, outputHash }) {
+async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateExternal, globalKey, outputHash }) {
   if (!entry || typeof entry !== 'object') return { skip: false, reason: 'no ledger entry' };
   if (entry.nonCacheable) return { skip: false, reason: 'non-cacheable' };
   if (typeof entry.sig !== 'string' || !entry.inputs || typeof entry.inputs !== 'object'
-    || !Array.isArray(entry.external) || !entry.outputs || typeof entry.outputs !== 'object'
+    || !entry.requested || typeof entry.requested !== 'object'
+    || !Array.isArray(entry.external)
+    || !entry.externalValidated || typeof entry.externalValidated !== 'object'
+    || !entry.outputs || typeof entry.outputs !== 'object'
     || Object.keys(entry.outputs).length === 0) {
     return { skip: false, reason: 'malformed entry' };
   }
+  const requestedPairs = [];
+  for (const [pathname, relPath] of Object.entries(entry.requested)) {
+    if (!isSafeRelPath(relPath)) return { skip: false, reason: `unsafe path in entry: ${relPath}` };
+    if (resolveRequest(pathname) !== relPath) return { skip: false, reason: `resolution changed: ${pathname}` };
+    requestedPairs.push(`${pathname}=>${relPath}`);
+  }
   const inputPairs = [];
   for (const [relPath, recorded] of Object.entries(entry.inputs)) {
+    if (!isSafeRelPath(relPath)) return { skip: false, reason: `unsafe path in entry: ${relPath}` };
     const now = hashInput(relPath);
-    if (!now) return { skip: false, reason: `input missing: ${relPath}` };
     if (now !== recorded) return { skip: false, reason: `input changed: ${relPath}` };
     inputPairs.push(`${relPath}:${now}`);
   }
-  const externalTokens = await Promise.all(entry.external.map((u) => tokenizeExternal(u)));
-  if (computeRouteSignature({ globalKey, inputPairs, externalTokens }) !== entry.sig) {
+  const externalTokens = [
+    ...entry.external,
+    ...Object.entries(entry.externalValidated).map(([u, v]) => externalValidatorToken(u, v)),
+  ];
+  if (computeRouteSignature({ globalKey, inputPairs, requestedPairs, externalTokens }) !== entry.sig) {
     return { skip: false, reason: 'signature mismatch' };
   }
   for (const [relPath, recorded] of Object.entries(entry.outputs)) {
+    if (!isSafeRelPath(relPath)) return { skip: false, reason: `unsafe path in entry: ${relPath}` };
     if (outputHash(relPath) !== recorded) return { skip: false, reason: `previous output missing or changed: ${relPath}` };
+  }
+  // Network last: everything local must already agree.
+  for (const [url, validator] of Object.entries(entry.externalValidated)) {
+    if (!(await revalidateExternal(url, validator))) return { skip: false, reason: `external changed: ${url}` };
   }
   return { skip: true };
 }
@@ -3572,18 +3646,16 @@ async function evaluateRouteSkip({ entry, hashInput, tokenizeExternal, globalKey
  */
 function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, globalKey, deps }) {
   const ledger = loadRouteLedger(rootResolved);
-  const tokenize = createExternalTokenizer();
-  const fileHashes = new Map();
-  const hashInput = (relPath) => {
-    if (!fileHashes.has(relPath)) {
-      let h = null;
-      try { h = sha256Full(readFileSync(join(rootResolved, relPath))); } catch { h = null; }
-      fileHashes.set(relPath, h);
-    }
-    return fileHashes.get(relPath);
-  };
+  const revalidate = createExternalRevalidator();
   const hashFileAt = (base, relPath) => {
     try { return sha256Full(readFileSync(join(base, relPath))); } catch { return null; }
+  };
+  // 'absent' is a value, not a miss: a recorded-absent file that stays absent
+  // matches, one that appears mismatches.
+  const skipHashes = new Map();
+  const hashInput = (relPath) => {
+    if (!skipHashes.has(relPath)) skipHashes.set(relPath, hashFileAt(rootResolved, relPath) ?? 'absent');
+    return skipHashes.get(relPath);
   };
   const captures = new Map(); // routeKey → capture record of a route rendered this run
   const carried = new Map();  // routeKey → previous entry revalidated and reused this run
@@ -3610,11 +3682,13 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
         let verdict;
         try {
           verdict = await evaluateRouteSkip({
-            entry, hashInput, tokenizeExternal: tokenize, globalKey,
+            entry, hashInput, globalKey,
+            resolveRequest: (pathname) => resolveStaticRequestFile(rootResolved, pathname),
+            revalidateExternal: revalidate,
             outputHash: (rel) => hashFileAt(previousOutput, rel),
           });
         } catch (err) {
-          disable(`external URL resolution failed: ${err?.message || err}`);
+          disable(`skip evaluation failed: ${err?.message || err}`);
           toRender.push(seg);
           continue;
         }
@@ -3649,23 +3723,34 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
     },
 
     /** Written atomically, only after the staged output replaced the previous
-     *  one — covers exactly this run's skipped + successfully rendered routes. */
+     *  one — covers exactly this run's skipped + successfully rendered routes.
+     *  Inputs are re-hashed HERE, not from the skip pass's memo, so a mid-run
+     *  edit is recorded as it is now and a later revert can't skip-match. */
     async writeLedger(finalOutput) {
       if (state.disabled) return false;
+      const writeHashes = new Map();
+      const hashNow = (rel) => {
+        if (!writeHashes.has(rel)) writeHashes.set(rel, hashFileAt(rootResolved, rel) ?? 'absent');
+        return writeHashes.get(rel);
+      };
       const routes = {};
       for (const [key, entry] of carried) routes[key] = entry;
       for (const [key, cap] of captures) {
         if (cap.nonCacheable) { routes[key] = { nonCacheable: true, reason: cap.reason }; continue; }
+        const requested = {};
+        const requestedPairs = [];
+        for (const pathname of [...cap.requested.keys()].sort()) {
+          const rel = cap.requested.get(pathname);
+          requested[pathname] = rel;
+          requestedPairs.push(`${pathname}=>${rel}`);
+        }
         const inputs = {};
         const inputPairs = [];
-        let unreadable = null;
         for (const rel of [...cap.files].sort()) {
-          const h = hashInput(rel);
-          if (!h) { unreadable = rel; break; }
+          const h = hashNow(rel);
           inputs[rel] = h;
           inputPairs.push(`${rel}:${h}`);
         }
-        if (unreadable) { routes[key] = { nonCacheable: true, reason: `input unreadable: ${unreadable}` }; continue; }
         const outputs = {};
         let missingOut = null;
         for (const rel of cap.outputs) {
@@ -3674,11 +3759,17 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
           outputs[rel] = h;
         }
         if (missingOut) { routes[key] = { nonCacheable: true, reason: `output unreadable: ${missingOut}` }; continue; }
-        const external = [...cap.external].sort();
-        const externalTokens = await Promise.all(external.map((u) => tokenize(u)));
+        const external = [...cap.externalPinned].sort();
+        const externalValidated = {};
+        const externalTokens = [...external];
+        for (const url of [...cap.externalValidated.keys()].sort()) {
+          const v = cap.externalValidated.get(url);
+          externalValidated[url] = v;
+          externalTokens.push(externalValidatorToken(url, v));
+        }
         const entry = {
-          sig: computeRouteSignature({ globalKey, inputPairs, externalTokens }),
-          inputs, external, outputs,
+          sig: computeRouteSignature({ globalKey, inputPairs, requestedPairs, externalTokens }),
+          inputs, requested, external, externalValidated, outputs,
         };
         if (Array.isArray(cap.utility) && cap.utility.length) entry.utility = cap.utility;
         if (deps.isPromotedBase(key)) {
@@ -3701,6 +3792,21 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
         routes,
       }) + '\n', 'utf8');
       renameSync(tmp, target);
+      // GC: snapshots no route references, and orphaned ledger tmp files.
+      try {
+        const keep = new Set(Object.keys(routes).map((k) => basename(rawHtmlCachePath(rootResolved, k))));
+        const snapDir = join(rootResolved, '.mnfst-cache', 'render-html');
+        if (existsSync(snapDir)) {
+          for (const f of readdirSync(snapDir)) {
+            if (!keep.has(f)) { try { unlinkSync(join(snapDir, f)); } catch { /* in use elsewhere */ } }
+          }
+        }
+        for (const f of readdirSync(join(rootResolved, '.mnfst-cache'))) {
+          if (f.startsWith('routes.json.') && f.endsWith('.tmp')) {
+            try { unlinkSync(join(rootResolved, '.mnfst-cache', f)); } catch { /* best-effort */ }
+          }
+        }
+      } catch { /* GC is best-effort */ }
       return true;
     },
   };
@@ -4394,7 +4500,11 @@ async function runPrerender(config) {
     // route non-cacheable (it will always render).
     let capture = null;
     if (inc && !inc.state.disabled) {
-      capture = { files: new Set(), external: new Set(), nonCacheable: false, reason: null };
+      capture = {
+        requested: new Map(), files: new Set(),
+        externalPinned: new Set(), externalValidated: new Map(),
+        pending: [], nonCacheable: false, reason: null,
+      };
       const localOrigin = new URL(config.localUrl).origin;
       const flag = (reason) => {
         if (!capture.nonCacheable) { capture.nonCacheable = true; capture.reason = reason; }
@@ -4403,10 +4513,15 @@ async function runPrerender(config) {
         try {
           const u = new URL(req.url());
           if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
-          if (u.origin !== localOrigin) { capture.external.add(u.href); return; }
-          if (req.method() !== 'GET') { flag(`same-origin ${req.method()} ${u.pathname}`); return; }
+          if (req.method() !== 'GET') { flag(`non-GET ${req.method()} ${u.href}`); return; }
+          if (u.origin !== localOrigin) {
+            // Pinned-version URL: the URL is its own identity.  Anything else
+            // must hand back a validator in its response or the route renders.
+            if (PINNED_VERSION_RE.test(u.pathname)) capture.externalPinned.add(u.href);
+            return;
+          }
           const rel = resolveStaticRequestFile(rootResolved, u.pathname);
-          if (rel) capture.files.add(rel);
+          if (rel) { capture.requested.set(u.pathname, rel); capture.files.add(rel); }
           else flag(`unresolvable request ${u.pathname}`);
         } catch { flag('unparseable request URL'); }
       });
@@ -4414,8 +4529,28 @@ async function runPrerender(config) {
       page.on('response', (res) => {
         try {
           const u = new URL(res.url());
-          if (u.origin === localOrigin && res.status() >= 400) flag(`${res.status()} ${u.pathname}`);
-        } catch { /* already flagged by the request handler */ }
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+          const status = res.status();
+          if (u.origin === localOrigin || PINNED_VERSION_RE.test(u.pathname)) {
+            if (status >= 400) flag(`${status} ${u.href}`);
+            return;
+          }
+          if (status < 200 || status >= 300) { flag(`external ${status} ${u.href}`); return; }
+          const headers = res.headers();
+          const etag = headers['etag'];
+          const lastModified = headers['last-modified'];
+          if (etag || lastModified) {
+            capture.externalValidated.set(u.href, etag ? { etag } : { lastModified });
+            return;
+          }
+          // No validator (e.g. cdn.manifestx.dev): content-address the bytes;
+          // revalidation re-downloads and compares.  Unreadable body → render.
+          capture.pending.push(
+            res.buffer()
+              .then((body) => { capture.externalValidated.set(u.href, { contentHash: sha256Full(body) }); })
+              .catch(() => flag(`external response unreadable: ${u.href}`))
+          );
+        } catch { flag('unparseable response URL'); }
       });
     }
     // Render at a typical desktop viewport so layouts dependent on viewport
@@ -5756,11 +5891,16 @@ async function runPrerender(config) {
       mkdirSync(outDir, { recursive: true });
       writeFileSync(outFile, html, 'utf8');
       if (capture) {
+        await Promise.allSettled(capture.pending); // drain in-flight body hashes
         const outputs = [relative(config.output, outFile).split(sep).join('/')];
         if (earlySnapshotUrl) outputs.push(String(earlySnapshotUrl).replace(/^\//, ''));
+        // Node-side head/meta inputs the page never fetches.
+        for (const rel of contentFilesForPrerender(manifest, currentLocale)) capture.files.add(rel);
         inc.recordRoute(pathSeg, {
+          requested: capture.requested,
           files: capture.files,
-          external: capture.external,
+          externalPinned: capture.externalPinned,
+          externalValidated: capture.externalValidated,
           nonCacheable: capture.nonCacheable,
           reason: capture.reason,
           outputs,
@@ -5997,5 +6137,7 @@ export {
   evaluateRouteSkip,
   loadRouteLedger,
   resolveStaticRequestFile,
-  createExternalTokenizer,
+  createExternalRevalidator,
+  contentFilesForPrerender,
+  isSafeRelPath,
 };
