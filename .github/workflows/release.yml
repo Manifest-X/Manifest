@@ -59,28 +59,41 @@ jobs:
     permissions:
       contents: read
       id-token: write   # REQUIRED for OIDC trusted publishing + provenance
+    # One publish per package at a time; unselected matrix legs get a per-run group so they never displace a queued real one.
+    concurrency:
+      group: ${{ ((github.event_name == 'push' && startsWith(github.ref_name, matrix.tag)) || (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == matrix.pkg))) && format('release-{0}', matrix.pkg) || format('release-noop-{0}-{1}', github.run_id, matrix.pkg) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
         include:
           - pkg: mnfst
+            tag: v
             dir: .
             root: true
           - pkg: mnfst-render
+            tag: render-v
             dir: packages/render
           - pkg: mnfst-run
+            tag: run-v
             dir: packages/run
           - pkg: mnfst-types
+            tag: types-v
             dir: packages/types
           - pkg: mnfst-test
+            tag: test-v
             dir: packages/test
           - pkg: mnfst-export
+            tag: export-v
             dir: packages/export
           - pkg: mnfst-starter
+            tag: starter-v
             dir: packages/create-starter
           - pkg: mnfst-publish
+            tag: publish-v
             dir: packages/publish
           - pkg: mnfst-docs
+            tag: docs-v
             dir: packages/docs
     steps:
       - name: Decide whether this package is selected
