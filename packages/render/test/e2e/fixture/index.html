@@ -90,6 +90,26 @@
     <template data-head><meta name="fixture-route-head" content="about"></template>
     <h1 id="about-heading">About</h1>
     <p>About body.</p>
+    <!-- Route-exclusive fetch: only the /about render requests this file, so the
+         incremental e2e can prove a touched data file re-renders ONLY the routes
+         that actually fetched it. -->
+    <template x-if="location.pathname.includes('about')">
+      <div id="about-extra" x-markdown="data/about-extra.md"></div>
+    </template>
+  </section>
+
+  <!-- Route: external (incremental e2e) — cross-origin fetch against the
+       harness's validator server, plus a same-origin fetch that resolves via
+       the SPA fallback until the e2e creates the physical file.  Gated so no
+       other route (and no browser-assertion page) ever issues these requests. -->
+  <section x-route="external">
+    <h1 id="external-heading">External</h1>
+    <template x-if="location.pathname.includes('external')">
+      <div id="external-note" x-data x-init="fetch('http://127.0.0.1:5101/note.txt').then(r => r.text()).then(t => { $el.textContent = t }).catch(() => {})"></div>
+    </template>
+    <template x-if="location.pathname.includes('external')">
+      <div id="external-ghost" x-data x-init="fetch('/data/ghost.txt').then(r => r.text()).then(t => { $el.textContent = t.slice(0, 60) }).catch(() => {})"></div>
+    </template>
   </section>
 
   <!-- Explicit data-hydrate island: counter that must work at runtime -->
