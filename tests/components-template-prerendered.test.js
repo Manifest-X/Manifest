@@ -12,17 +12,12 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
+import { markPrerenderedManifestComponents } from '../src/scripts/manifest.render.page.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const src = (f) => readFileSync(path.join(__dirname, '../src/scripts/', f), 'utf8')
 const tick = () => new Promise((r) => setTimeout(r, 0))
 const settle = async (n = 5) => { for (let i = 0; i < n; i++) await tick() }
-// render.mjs has a shebang the happy-dom transform rejects; lift the function out.
-const renderSrc = src('manifest.render.mjs')
-const markStart = renderSrc.indexOf('function markPrerenderedManifestComponents(')
-const markPrerenderedManifestComponents = new Function(
-    renderSrc.slice(markStart, renderSrc.indexOf('\n}\n', markStart) + 2) + 'return markPrerenderedManifestComponents'
-)()
 
 const COMPONENTS = {
     support: '<div class="support"><span>help</span></div>',

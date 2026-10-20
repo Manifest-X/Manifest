@@ -9,6 +9,7 @@
   "files": [
     "bin",
     "manifest.render.mjs",
+    "manifest.render.page.mjs",
     "README.md"
   ],
   "scripts": {
