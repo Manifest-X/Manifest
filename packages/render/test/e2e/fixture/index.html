@@ -13,7 +13,7 @@
        at DOMContentLoaded, racing against async plugin loads — by the time
        Alpine starts walking the DOM, plugin directives may not yet be
        registered and `$colors`/`$locale` magics will be undefined. -->
-  <script src="/scripts/manifest.js" data-plugins="components,router,data,icons,localization,color,markdown,dropdowns,code" data-plugin-base="/scripts"></script>
+  <script src="/scripts/manifest.js" data-plugins="components,router,data,icons,localization,color,markdown,dropdowns,code" data-plugin-base="/scripts" data-alpine="/scripts/alpine.cdn.js"></script>
 
   <style>
     body {
@@ -109,6 +109,32 @@
     </template>
     <template x-if="location.pathname.includes('external')">
       <div id="external-ghost" x-data x-init="fetch('/data/ghost.txt').then(r => r.text()).then(t => { $el.textContent = t.slice(0, 60) }).catch(() => {})"></div>
+    </template>
+  </section>
+
+  <!-- Route: conditional (incremental e2e) — the page's OWN conditional
+       revalidation, the Playcom status-feed shape: the endpoint serves
+       ETag + Cache-Control: no-cache, so the second fetch revalidates via the
+       browser cache and the network layer sees a cross-origin 304.  Capture
+       must record it as a VALIDATED external (a hit), not non-cacheable.
+       (A hand-set If-None-Match would preflight an OPTIONS and poison capture.) -->
+  <section x-route="conditional">
+    <h1 id="conditional-heading">Conditional</h1>
+    <template x-if="location.pathname.includes('conditional')">
+      <div id="conditional-note" x-data x-init="fetch('http://127.0.0.1:5101/conditional').then(r => r.text()).then(() => fetch('http://127.0.0.1:5101/conditional')).then(r => { $el.textContent = 'revalidated ' + r.status }).catch(() => {})"></div>
+    </template>
+  </section>
+
+  <!-- Route: beacons (blocking e2e) — a telemetry POST matching a curated
+       collection pattern plus a GET matching render.blockRequests.  Both must
+       be aborted during prerender and stay invisible to capture. -->
+  <section x-route="beacons">
+    <h1 id="beacons-heading">Beacons</h1>
+    <template x-if="location.pathname.includes('beacons')">
+      <div id="beacons-fire" x-data x-init="
+        fetch('http://127.0.0.1:5102/api.mixpanel.com/track', { method: 'POST', body: 'fake page_view' }).catch(() => {});
+        fetch('http://127.0.0.1:5102/custom-tracker?e=render').catch(() => {});
+      "></div>
     </template>
   </section>
 

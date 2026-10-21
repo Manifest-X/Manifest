@@ -456,9 +456,9 @@
 		return getPluginUrlCandidates(pluginName, version)[0];
 	}
 
-	// Alpine URL candidates from a data-alpine value (version tag or full URL)
+	// Alpine URL candidates from a data-alpine value (version tag, full URL, or same-origin path)
 	function alpineUrlCandidates(dataAlpine) {
-		if (dataAlpine && dataAlpine.startsWith('http')) return [dataAlpine];
+		if (dataAlpine && (dataAlpine.startsWith('http') || dataAlpine.startsWith('/'))) return [dataAlpine];
 		const v = dataAlpine || '3';
 		return CDN_HOSTS.map(h => `${h}/alpinejs@${v}/dist/cdn.min.js`);
 	}
