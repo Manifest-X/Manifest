@@ -19,7 +19,7 @@
  *  - Hydration contract parse/apply errors
  */
 import { spawn } from 'node:child_process';
-import { cp, rm, mkdtemp, readFile, readdir, writeFile, appendFile } from 'node:fs/promises';
+import { cp, rm, mkdtemp, readFile, readdir, writeFile, appendFile, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -85,6 +85,8 @@ async function prepFixture() {
     filter: (p) => !['.out', 'scripts', 'styles'].includes(relative(FIXTURE_SRC_DIR, p).split('/')[0]),
   });
   await runNode(['scripts/build.mjs', '--scripts-out', join(FIXTURE_DIR, 'scripts')], REPO_SRC_DIR);
+  // Vendored Alpine beside the built scripts: e2e must not depend on CDN/DNS.
+  await copyFile(join(REPO_SRC_DIR, '..', 'node_modules', 'alpinejs', 'dist', 'cdn.min.js'), join(FIXTURE_DIR, 'scripts', 'alpine.cdn.js'));
   log.note(`fixture prepared in ${FIXTURE_DIR} (scripts built from src/)`);
 }
 
@@ -1006,6 +1008,17 @@ async function runPolicyAndBlockingTests(total) {
   assert(i && i.skipped === total && i.rendered === 0,
     'next --incremental run skips everything (one-render upgrade)',
     `summary: ${JSON.stringify(i)}`);
+
+  // Salt pin: the blocking regime is part of the signature — entries rendered
+  // under different blocking must never skip.
+  mf.render.blockRequests = ['salt-pin-never-matches'];
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runS = await runPrerender(['--incremental'], true);
+  const s = summaryOf(runS.stdout);
+  assert(s && s.rendered === total && s.skipped === 0,
+    'changed blockRequests forces a full render (blocking regime is in the signature)',
+    `summary: ${JSON.stringify(s)}`);
+  delete mf.render.blockRequests;
 
   // Explicit config false: fully off — no capture, no recording, no skipping,
   // even with a valid ledger present.

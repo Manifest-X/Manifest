@@ -358,9 +358,13 @@ describe('compileBlockMatcher', () => {
       'https://api.mixpanel.com/track/',
       'https://www.facebook.com/tr/',
     ]) expect(m(hit), hit).toBe(true);
+    expect(m('https://www.facebook.com/tr?id=123')).toBe(true);
     // Never script loads: blocking gtag.js could break page code; beacons cannot.
     expect(m('https://www.googletagmanager.com/gtag/js?id=G-X')).toBe(false);
     expect(m('https://plausible.io/js/script.js')).toBe(false);
+    // Prefix overmatch guard: /tr? and /tr/ only, never /tr-anything.
+    expect(m('https://www.facebook.com/tracking')).toBe(false);
+    expect(m('https://www.facebook.com/transparency')).toBe(false);
   });
 });
 

@@ -3533,7 +3533,8 @@ const TELEMETRY_BLOCK_PATTERNS = [
   'plausible.io/api/event',
   'api.segment.io/v1',
   'api.mixpanel.com/track',
-  '*.facebook.com/tr',
+  '.facebook.com/tr?',
+  '.facebook.com/tr/',
 ];
 
 /** URL predicate from block patterns: substring match, `*` globs within a
@@ -4596,6 +4597,9 @@ async function runPrerender(config) {
       process.stdout.write('prerender: incremental needs the built-in static server — ignoring it for this run\n');
     }
   } else if (config.incrementalRecord) {
+    if (!config.incrementalExplicit) {
+      process.stdout.write('prerender: incremental active from existing ledger (.mnfst-cache/routes.json; --no-incremental to disable)\n');
+    }
     let manifestContentHash = 'missing';
     try { manifestContentHash = sha256Full(readFileSync(join(config.root, 'manifest.json'))); } catch { /* missing */ }
     // Output-relevant resolved options (CLI included).  pathList is in here
@@ -4616,6 +4620,9 @@ async function runPrerender(config) {
       liveUrl: config.liveUrl,
       utilitiesBundle: bundleUtilities,
       tailwindBuilt,
+      // Blocking changes what a page loads; entries from another regime must not skip.
+      blockRequests: [...(config.blockRequests || [])].sort(),
+      blockTelemetry: config.blockTelemetry,
       pathList: [...pathList].sort(),
     }));
     inc = createIncrementalRun({
