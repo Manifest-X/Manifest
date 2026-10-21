@@ -766,6 +766,29 @@ function startTelemetryServer(port, state) {
   });
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
+
+// Shared cross-origin asset (a stand-in for a framework CDN file every page
+// loads) with a fixed validator and no-cache, so without the run cache every
+// page revalidates against the server — each request is counted.
+const ASSET_PORT = 5103;
+const assetState = { hits: [] };
+function startAssetServer(port, state) {
+  const server = createServer((req, res) => {
+    state.hits.push(`${req.method} ${req.url}`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.url.startsWith('/shared.txt')) {
+      res.setHeader('ETag', 'W/"shared-v1"');
+      res.setHeader('Cache-Control', 'no-cache');
+      if (req.headers['if-none-match'] === 'W/"shared-v1"') { res.statusCode = 304; res.end(); return; }
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('shared framework asset');
+      return;
+    }
+    res.statusCode = 204;
+    res.end();
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
 async function hashTree(dir) {
   const out = new Map();
   const walk = async (d, rel) => {
@@ -1034,6 +1057,104 @@ async function runPolicyAndBlockingTests(total) {
   await writeFile(manifestPath, manifestRaw);
 }
 
+// ---- run cache & non-cacheable causes ------------------------------------------
+const sharedAssetHits = () => assetState.hits.filter((h) => h.includes('/shared.txt')).length;
+const pagesRendered = (out) => (out.match(/^\s*\[ \d+\/\d+ \]/gm) || []).length;
+
+async function runRunCacheTests() {
+  log.head('Run-scoped cross-origin response cache');
+
+  // Fresh ledger so every route renders; the run cache is ON by default.
+  await rm(join(FIXTURE_DIR, '.mnfst-cache'), { recursive: true, force: true });
+  assetState.hits.length = 0;
+  const runOn = await runPrerender(['--incremental'], true);
+  const pagesOn = pagesRendered(runOn.stdout);
+  const hitsOn = sharedAssetHits();
+  assert(pagesOn > 1 && hitsOn === 1,
+    `shared cross-origin asset hit the server EXACTLY ONCE for ${pagesOn} pages (run cache on)`,
+    `hits ${hitsOn}: ${assetState.hits.slice(0, 8).join(' | ')}`);
+  const cacheLine = runOn.stdout.match(/prerender: run cache served (\d+) cross-origin requests \((\d+) unique\)/);
+  assert(cacheLine && Number(cacheLine[1]) >= pagesOn - 1 && Number(cacheLine[2]) >= 1,
+    'summary reports the run-cache served count',
+    runOn.stdout.split('\n').filter((l) => l.includes('run cache')).join(' | ') || '(no run-cache line)');
+
+  // Served and fetched responses look identical to capture: every route
+  // records the SAME validator for the shared asset.
+  const ledger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+  const sharedUrl = `http://127.0.0.1:${ASSET_PORT}/shared.txt`;
+  const withShared = Object.entries(ledger.routes)
+    .filter(([, e]) => e.externalValidated && e.externalValidated[sharedUrl]);
+  assert(withShared.length > 1
+    && withShared.every(([, e]) => e.externalValidated[sharedUrl].etag === 'W/"shared-v1"'),
+    `every route (${withShared.length}) records the same shared-asset validator, served or fetched`,
+    JSON.stringify(withShared.slice(0, 3).map(([k, e]) => [k || '/', e.externalValidated[sharedUrl]])));
+
+  // Off switch: every page fetches for itself.
+  await appendFile(join(FIXTURE_DIR, 'components', 'header.html'), '\n<!-- run-cache off touch -->\n');
+  assetState.hits.length = 0;
+  const runOff = await runPrerender(['--incremental', '--no-run-cache'], true);
+  const pagesOff = pagesRendered(runOff.stdout);
+  const hitsOff = sharedAssetHits();
+  assert(pagesOff > 1 && hitsOff === pagesOff,
+    `--no-run-cache: the shared asset is fetched once per page (${pagesOff} hits)`,
+    `hits ${hitsOff}, pages ${pagesOff}`);
+  assert(!/run cache served/.test(runOff.stdout),
+    '--no-run-cache prints no run-cache summary');
+  log.note(`shared-asset requests: ${hitsOn} with run cache vs ${hitsOff} without (${pagesOff} pages)`);
+  log.note(`wall time: run-cache run ${runOn.ms}ms, no-run-cache run ${runOff.ms}ms`);
+}
+
+async function runCausesTests() {
+  log.head('All non-cacheable causes, not just the first');
+  const indexPath = join(FIXTURE_DIR, 'index.html');
+  const indexRaw = await readFile(indexPath, 'utf8');
+  // Route with TWO distinct non-cacheable causes: a non-GET POST and a failed
+  // request (nothing listens on 5109) — both must land in the ledger entry
+  // and the end-of-run causes summary.
+  const causesSection = `
+  <section x-route="causes">
+    <h1 id="causes-heading">Causes</h1>
+    <template x-if="location.pathname.includes('causes')">
+      <div id="causes-fire" x-data x-init="
+        fetch('http://127.0.0.1:${ASSET_PORT}/cause-post', { method: 'POST', body: 'x' }).catch(() => {});
+        fetch('http://127.0.0.1:5109/down').catch(() => {});
+      "></div>
+    </template>
+  </section>
+  <section x-route="beacons"`;
+  await writeFile(indexPath, indexRaw.replace('  <section x-route="beacons"', causesSection));
+  try {
+    const run = await runPrerender(['--incremental'], true);
+    const ledger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+    const entry = ledger.routes['causes'];
+    // The POST may also surface follow-on causes (failed/unreadable as the
+    // page closes); both INTENDED causes must be present and distinct.
+    const wanted = [
+      `non-GET POST http://127.0.0.1:${ASSET_PORT}/cause-post`,
+      'request failed: http://127.0.0.1:5109/down',
+    ];
+    assert(entry && entry.nonCacheable === true && Array.isArray(entry.reasons)
+      && entry.reasons.length >= 2
+      && wanted.every((w) => entry.reasons.includes(w)),
+      'ledger entry carries BOTH distinct causes in entry.reasons',
+      JSON.stringify(entry));
+    assert(entry && entry.reason === entry.reasons?.[0],
+      'entry.reason stays the first cause (back-compat)',
+      JSON.stringify(entry && { reason: entry.reason, first: entry.reasons?.[0] }));
+    const summaryIdx = run.stdout.indexOf('prerender: non-cacheable causes');
+    assert(summaryIdx !== -1, 'run prints the non-cacheable causes summary');
+    const tail = run.stdout.slice(summaryIdx);
+    assert(/1× non-GET POST 127\.0\.0\.1:5103\/cause-post/.test(tail),
+      'summary aggregates the non-GET cause with host+path visible',
+      tail.split('\n').slice(0, 5).join(' | '));
+    assert(/1× request failed: 127\.0\.0\.1:5109\/down/.test(tail),
+      'summary aggregates the failed-request cause too',
+      tail.split('\n').slice(0, 5).join(' | '));
+  } finally {
+    await writeFile(indexPath, indexRaw);
+  }
+}
+
 // ---- main -------------------------------------------------------------------
 async function main() {
   await prepFixture();
@@ -1048,6 +1169,8 @@ async function main() {
   log.note(`external validator server up on ${EXTERNAL_PORT}`);
   const telemetryServer = await startTelemetryServer(TELEMETRY_PORT, telemetryState);
   log.note(`telemetry endpoint server up on ${TELEMETRY_PORT}`);
+  const assetServer = await startAssetServer(ASSET_PORT, assetState);
+  log.note(`shared-asset server up on ${ASSET_PORT}`);
 
   try {
     await runPrerender();
@@ -1070,10 +1193,13 @@ async function main() {
   try {
     const total = await runIncrementalTests();
     await runPolicyAndBlockingTests(total);
+    await runRunCacheTests();
+    await runCausesTests();
   } finally {
     externalServer.close();
     telemetryServer.close();
-    log.note('external validator + telemetry servers stopped');
+    assetServer.close();
+    log.note('external validator + telemetry + shared-asset servers stopped');
   }
 
   log.head(`Results: ${passed} passed, ${failed} failed`);

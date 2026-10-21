@@ -19,6 +19,13 @@ import {
   createCaptureHooks,
   compileBlockMatcher,
   TELEMETRY_BLOCK_PATTERNS,
+  createRunCache,
+  classifyRunCacheRequest,
+  runCacheReplayHeaders,
+  deriveNavTimeoutMs,
+  flagNonCacheable,
+  normalizeNonCacheableCause,
+  NONCACHEABLE_REASONS_CAP,
 } from '../src/scripts/manifest.render.mjs';
 
 let dir;
@@ -366,6 +373,27 @@ describe('compileBlockMatcher', () => {
     expect(m('https://www.facebook.com/tracking')).toBe(false);
     expect(m('https://www.facebook.com/transparency')).toBe(false);
   });
+  it('covers error/RUM collection endpoints, never their docs or SDK loads', () => {
+    const m = compileBlockMatcher(TELEMETRY_BLOCK_PATTERNS);
+    for (const hit of [
+      'https://o123456.ingest.sentry.io/api/123/envelope/',
+      'https://notify.bugsnag.com/',
+      'https://api.rollbar.com/api/1/item/',
+      'https://cloudflareinsights.com/cdn-cgi/rum',
+      'https://bam.nr-data.net/events/1/abc',
+      'https://browser-intake-datadoghq.com/api/v2/rum',
+    ]) expect(m(hit), hit).toBe(true);
+    for (const miss of [
+      'https://docs.sentry.io/platforms/javascript/',
+      'https://sentry.io/welcome/',
+      'https://browser.sentry-cdn.com/7.0.0/bundle.min.js',
+      'https://d2wy8f7a9ursnm.cloudfront.net/v7/bugsnag.min.js',
+      'https://cdn.rollbar.com/rollbarjs/refs/tags/v2/rollbar.min.js',
+      'https://static.cloudflareinsights.com/beacon.min.js',
+      'https://js-agent.newrelic.com/nr-loader-spa.min.js',
+      'https://www.datadoghq-browser-agent.com/us1/v5/datadog-rum.js',
+    ]) expect(m(miss), miss).toBe(false);
+  });
 });
 
 describe('createCaptureHooks', () => {
@@ -444,6 +472,173 @@ describe('createCaptureHooks', () => {
     await Promise.allSettled(capture.pending);
     expect(capture.externalValidated.get('https://cdn.test/app.js')?.contentHash).toMatch(/^[0-9a-f]{64}$/);
     expect(capture.awaiting.size).toBe(0);
+  });
+});
+
+describe('deriveNavTimeoutMs', () => {
+  it('caps navigation at min(pageTimeout, 60s)', () => {
+    expect(deriveNavTimeoutMs(120000)).toBe(60000);
+    expect(deriveNavTimeoutMs(45000)).toBe(45000);
+    expect(deriveNavTimeoutMs(60000)).toBe(60000);
+  });
+  it('keeps pageTimeout 0 = disabled semantics', () => {
+    expect(deriveNavTimeoutMs(0)).toBe(0);
+  });
+});
+
+describe('classifyRunCacheRequest', () => {
+  const localOrigin = 'http://localhost:5099';
+  const base = { method: 'GET', localOrigin, isBlocked: null };
+  it('blocked URLs abort first, even cacheable-looking ones', () => {
+    const isBlocked = compileBlockMatcher(['api.mixpanel.com/track']);
+    expect(classifyRunCacheRequest({ ...base, url: 'https://api.mixpanel.com/track?d=1', isBlocked })).toBe('block');
+    expect(classifyRunCacheRequest({ ...base, url: 'https://cdn.test/app.js', isBlocked })).toBe('cache');
+  });
+  it('same-origin, non-GET, and non-http(s) traffic passes through', () => {
+    expect(classifyRunCacheRequest({ ...base, url: `${localOrigin}/app.js` })).toBe('bypass');
+    expect(classifyRunCacheRequest({ ...base, url: 'https://cdn.test/x', method: 'POST' })).toBe('bypass');
+    expect(classifyRunCacheRequest({ ...base, url: 'data:text/plain,x' })).toBe('bypass');
+    expect(classifyRunCacheRequest({ ...base, url: 'not a url' })).toBe('bypass');
+  });
+  it('cross-origin http(s) GETs are cache-eligible', () => {
+    expect(classifyRunCacheRequest({ ...base, url: 'https://cdn.test/framework.css' })).toBe('cache');
+    expect(classifyRunCacheRequest({ ...base, url: 'http://127.0.0.1:5101/note.txt' })).toBe('cache');
+  });
+});
+
+describe('runCacheReplayHeaders', () => {
+  it('preserves etag/last-modified/content-type verbatim, drops transfer framing', () => {
+    const out = runCacheReplayHeaders({
+      etag: 'W/"v1"', 'last-modified': 'Tue, 01 Oct 2026 00:00:00 GMT',
+      'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache',
+      'content-encoding': 'br', 'content-length': '123',
+      'transfer-encoding': 'chunked', 'set-cookie': 'a=b',
+    });
+    expect(out).toEqual({
+      etag: 'W/"v1"', 'last-modified': 'Tue, 01 Oct 2026 00:00:00 GMT',
+      'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache',
+    });
+  });
+});
+
+describe('createRunCache', () => {
+  const entry = (status, bytes, headers = {}) =>
+    ({ status, headers, body: Buffer.alloc(bytes, 1) });
+  it('caches only 2xx responses', () => {
+    const c = createRunCache();
+    expect(c.set('https://a.test/404', entry(404, 10))).toBe(false);
+    expect(c.set('https://a.test/302', entry(302, 10))).toBe(false);
+    expect(c.set('https://a.test/500', entry(500, 10))).toBe(false);
+    expect(c.set('https://a.test/ok', entry(200, 10))).toBe(true);
+    expect(c.get('https://a.test/404')).toBe(null);
+    expect(c.get('https://a.test/ok')?.status).toBe(200);
+  });
+  it('never caches a body over the per-entry cap (passthrough)', () => {
+    const c = createRunCache({ maxEntryBytes: 100 });
+    expect(c.set('https://a.test/big', entry(200, 101))).toBe(false);
+    expect(c.get('https://a.test/big')).toBe(null);
+    expect(c.set('https://a.test/fit', entry(200, 100))).toBe(true);
+  });
+  it('first 2xx wins; headers come back verbatim', () => {
+    const c = createRunCache();
+    c.set('https://a.test/x', entry(200, 5, { etag: 'W/"first"' }));
+    c.set('https://a.test/x', entry(200, 5, { etag: 'W/"second"' }));
+    expect(c.get('https://a.test/x')?.headers).toEqual({ etag: 'W/"first"' });
+  });
+  it('evicts least-recently-used entries over the entry-count cap', () => {
+    const c = createRunCache({ maxEntries: 2 });
+    c.set('https://a.test/1', entry(200, 1));
+    c.set('https://a.test/2', entry(200, 1));
+    c.get('https://a.test/1'); // refresh recency: /2 is now oldest
+    c.set('https://a.test/3', entry(200, 1));
+    expect(c.get('https://a.test/2')).toBe(null);
+    expect(c.get('https://a.test/1')).not.toBe(null);
+    expect(c.get('https://a.test/3')).not.toBe(null);
+    expect(c.size).toBe(2);
+  });
+  it('evicts over the total-bytes cap and keeps the byte count honest', () => {
+    const c = createRunCache({ maxTotalBytes: 100 });
+    c.set('https://a.test/1', entry(200, 60));
+    c.set('https://a.test/2', entry(200, 60));
+    expect(c.get('https://a.test/1')).toBe(null);
+    expect(c.get('https://a.test/2')).not.toBe(null);
+    expect(c.totalBytes).toBe(60);
+  });
+  it('coalesces in-flight fetches and settles waiters', async () => {
+    const c = createRunCache();
+    const f = c.beginFlight('https://a.test/x');
+    expect(c.flight('https://a.test/x')).toBe(f);
+    const e = entry(200, 3);
+    c.set('https://a.test/x', e);
+    c.settleFlight('https://a.test/x', e);
+    expect(await f.promise).toBe(e);
+    expect(c.flight('https://a.test/x')).toBe(null);
+  });
+  it('a failed flight settles null so waiters retry the network', async () => {
+    const c = createRunCache();
+    const f = c.beginFlight('https://a.test/x');
+    c.settleFlight('https://a.test/x', null);
+    expect(await f.promise).toBe(null);
+    expect(c.get('https://a.test/x')).toBe(null);
+  });
+});
+
+describe('non-cacheable reasons list', () => {
+  const localOrigin = 'http://127.0.0.1:5099';
+  const make = () => {
+    const capture = {
+      requested: new Map(), files: new Set(),
+      externalPinned: new Set(), externalValidated: new Map(),
+      awaiting: new Set(), pending: [], nonCacheable: false, reason: null, reasons: [],
+    };
+    const hooks = createCaptureHooks({
+      capture, localOrigin, resolveRequest: () => null, isBlocked: null,
+    });
+    return { capture, hooks };
+  };
+  it('records every distinct cause, ordered; .reason stays the first', () => {
+    const { capture, hooks } = make();
+    hooks.request({ url: 'https://calendar.test/api', method: 'POST' });
+    hooks.requestFailed({ url: 'https://cdn.test/app.js' });
+    expect(capture.nonCacheable).toBe(true);
+    expect(capture.reason).toBe('non-GET POST https://calendar.test/api');
+    expect(capture.reasons).toEqual([
+      'non-GET POST https://calendar.test/api',
+      'request failed: https://cdn.test/app.js',
+    ]);
+  });
+  it('dedupes on the normalized form: per-page query strings collapse', () => {
+    const { capture, hooks } = make();
+    hooks.request({ url: 'https://ga.test/collect?page=1', method: 'POST' });
+    hooks.request({ url: 'https://ga.test/collect?page=2', method: 'POST' });
+    hooks.request({ url: 'https://ga.test/other?x=1', method: 'POST' });
+    expect(capture.reasons.length).toBe(2);
+    expect(capture.reasons[0]).toBe('non-GET POST https://ga.test/collect?page=1');
+  });
+  it('caps the list without losing the non-cacheable verdict', () => {
+    const { capture, hooks } = make();
+    for (let i = 0; i < NONCACHEABLE_REASONS_CAP + 5; i++) {
+      hooks.request({ url: `https://t${i}.test/beacon`, method: 'POST' });
+    }
+    expect(capture.reasons.length).toBe(NONCACHEABLE_REASONS_CAP);
+    expect(capture.nonCacheable).toBe(true);
+  });
+  it('settleCaptureAwaiting records its cause in the list too', () => {
+    const capture = { awaiting: new Set(['https://api.test/cached']), nonCacheable: false, reason: null };
+    settleCaptureAwaiting(capture);
+    expect(capture.reasons).toEqual(['unverified external: https://api.test/cached']);
+    expect(capture.reason).toBe(capture.reasons[0]);
+  });
+  it('flagNonCacheable tolerates captures without a reasons array', () => {
+    const capture = { nonCacheable: false, reason: null };
+    flagNonCacheable(capture, 'non-GET POST https://a.test/x');
+    expect(capture.reasons).toEqual(['non-GET POST https://a.test/x']);
+  });
+  it('normalizeNonCacheableCause keeps host+path, drops scheme and query', () => {
+    expect(normalizeNonCacheableCause('non-GET POST https://calendar.google.com/u/0/post?sid=1'))
+      .toBe('non-GET POST calendar.google.com/u/0/post');
+    expect(normalizeNonCacheableCause('unresolvable request /nope'))
+      .toBe('unresolvable request /nope');
   });
 });
 

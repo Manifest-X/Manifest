@@ -658,7 +658,12 @@
                 "blockTelemetry": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Block well-known analytics collection endpoints (GA, Plausible, Segment, Mixpanel, Meta) during prerender so renders don't register as visitors. Set false to allow."
+                    "description": "Block well-known analytics and error/RUM collection endpoints (GA, Plausible, Segment, Mixpanel, Meta, Sentry, Bugsnag, Rollbar, Cloudflare RUM, New Relic, Datadog) during prerender so renders don't register as visitors or crash reports. Collection endpoints only, never script loads. Set false to allow."
+                },
+                "runCache": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Fetch each cross-origin URL at most once per render run and replay the first 2xx response to every later page (a prerender is a point-in-time snapshot, so run-level consistency is intended). Failures are never cached and retry on the next page. Set false (or --no-run-cache) to fetch per page."
                 },
                 "locales": {
                     "type": "array",
