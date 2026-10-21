@@ -524,6 +524,25 @@ function expandLocaleRoutePaths({ routeSegments, locales, defaultLocale, localeR
   return paths;
 }
 
+/**
+ * Incremental participation policy.  Recording is on whenever the project
+ * PARTICIPATES: config `render.incremental: true`, the --incremental flag, or
+ * a valid ledger already on disk (so one opted-in render upgrades every later
+ * plain run).  --no-incremental disables skipping only — a participating run
+ * still records and refreshes the ledger.  Explicit config `incremental:
+ * false` is fully off, ledger or not.  Never-opted-in stays fully inert.
+ */
+function resolveIncrementalPolicy({ configValue, flagIncremental, flagNoIncremental, ledgerExists }) {
+  const participates = flagIncremental === true
+    ? true
+    : configValue === false ? false : (configValue === true || !!ledgerExists);
+  return {
+    record: participates,
+    skip: participates && flagNoIncremental !== true,
+    explicit: flagIncremental === true || configValue === true,
+  };
+}
+
 function resolveConfig() {
   const cli = parseArgs();
   const cwd = process.cwd();
@@ -580,9 +599,21 @@ function resolveConfig() {
     paths: Array.isArray(pre.paths)
       ? pre.paths.map((p) => String(p).replace(/^\/+|\/+$/g, '')).filter(Boolean)
       : [],
-    // Incremental renders (opt-in): skip Puppeteer routes whose fingerprinted
-    // inputs are unchanged since the last successful run. --no-incremental wins.
-    incremental: cli.noIncremental ? false : !!(cli.incremental ?? pre.incremental ?? false),
+    // Incremental renders: see resolveIncrementalPolicy.  `incremental` gates
+    // skipping; `incrementalRecord` gates capture + ledger writes.
+    ...(() => {
+      const p = resolveIncrementalPolicy({
+        configValue: pre.incremental,
+        flagIncremental: cli.incremental,
+        flagNoIncremental: cli.noIncremental,
+        ledgerExists: loadRouteLedger(root) !== null,
+      });
+      return { incremental: p.skip, incrementalRecord: p.record, incrementalExplicit: p.explicit };
+    })(),
+    // Requests ABORTED during prerender (substring match, `*` glob within a
+    // pattern).  blockTelemetry (default on) adds TELEMETRY_BLOCK_PATTERNS.
+    blockRequests: Array.isArray(pre.blockRequests) ? pre.blockRequests.map((p) => String(p)).filter(Boolean) : [],
+    blockTelemetry: pre.blockTelemetry !== false,
     dryRun: !!cli.dryRun,
     forceLock: !!cli.forceLock,
     debugPrerender: !!cli.debugPrerender,
@@ -3492,6 +3523,120 @@ const PINNED_VERSION_RE = /@\d+\.\d+\.\d+/;
 // Bodies above this are never fingerprinted — the route renders instead.
 const EXTERNAL_BODY_HASH_LIMIT = 8 * 1024 * 1024;
 
+// A prerender is not a visitor (Playcom measured 465 fake GA page_views per
+// render).  Collection endpoints only — never script loads.
+const TELEMETRY_BLOCK_PATTERNS = [
+  'google-analytics.com/g/collect',
+  '*.google-analytics.com/mp/collect',
+  'stats.g.doubleclick.net',
+  '*.analytics.google.com/g/collect',
+  'plausible.io/api/event',
+  'api.segment.io/v1',
+  'api.mixpanel.com/track',
+  '*.facebook.com/tr',
+];
+
+/** URL predicate from block patterns: substring match, `*` globs within a
+ *  pattern.  null when there is nothing to block. */
+function compileBlockMatcher(patterns) {
+  const regs = [];
+  for (const p of patterns || []) {
+    const src = String(p).split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    if (src) regs.push(new RegExp(src));
+  }
+  if (!regs.length) return null;
+  return (url) => regs.some((r) => r.test(String(url)));
+}
+
+/** Cross-origin response → { validator } | { flag } | {} (2xx without
+ *  validator: content-address the body).  A 304 is the page's OWN conditional
+ *  revalidation answered "unchanged" — a hit, not a failure: the validator
+ *  comes from the 304's headers, else the request's conditional values.
+ *  A 304 has no body, so it never falls through to buffer(). */
+function classifyExternalResponse(status, responseHeaders = {}, requestHeaders = {}) {
+  if (status === 304) {
+    const etag = responseHeaders['etag'] || requestHeaders['if-none-match'];
+    if (etag) return { validator: { etag } };
+    const lastModified = responseHeaders['last-modified'] || requestHeaders['if-modified-since'];
+    if (lastModified) return { validator: { lastModified } };
+    return { flag: 'external 304 without validator' };
+  }
+  if (status < 200 || status >= 300) return { flag: `external ${status}` };
+  const etag = responseHeaders['etag'];
+  const lastModified = responseHeaders['last-modified'];
+  if (etag || lastModified) return { validator: etag ? { etag } : { lastModified } };
+  return {};
+}
+
+/**
+ * Incremental input-capture hooks over plain request/response shapes
+ * (Puppeteer-independent for unit tests).  Same-origin GETs map to disk files
+ * via the static server's own resolution; anything un-fingerprintable marks
+ * the route non-cacheable.  A blocked request never happened: not an input,
+ * not a failure, never awaited.
+ */
+function createCaptureHooks({ capture, localOrigin, resolveRequest, isBlocked }) {
+  const flag = (reason) => {
+    if (!capture.nonCacheable) { capture.nonCacheable = true; capture.reason = reason; }
+  };
+  return {
+    request({ url, method }) {
+      try {
+        const u = new URL(url);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+        if (isBlocked && isBlocked(u.href)) return;
+        if (method !== 'GET') { flag(`non-GET ${method} ${u.href}`); return; }
+        if (u.origin !== localOrigin) {
+          // Pinned-version URL: the URL is its own identity.  Anything else
+          // must get a PROCESSED response (validator or content hash) by the
+          // end of the route or it stays in `awaiting` → route renders.
+          if (PINNED_VERSION_RE.test(u.pathname)) capture.externalPinned.add(u.href);
+          else capture.awaiting.add(u.href);
+          return;
+        }
+        const rel = resolveRequest(u.pathname);
+        if (rel) { capture.requested.set(u.pathname, rel); capture.files.add(rel); }
+        else flag(`unresolvable request ${u.pathname}`);
+      } catch { flag('unparseable request URL'); }
+    },
+    requestFailed({ url }) {
+      if (isBlocked && isBlocked(url)) return;
+      try { capture.awaiting.delete(new URL(url).href); } catch { /* flagged below */ }
+      flag(`request failed: ${url}`);
+    },
+    response({ url, status, headers, requestHeaders, buffer }) {
+      try {
+        const u = new URL(url);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+        if (isBlocked && isBlocked(u.href)) return;
+        if (u.origin === localOrigin || PINNED_VERSION_RE.test(u.pathname)) {
+          if (status >= 400) flag(`${status} ${u.href}`);
+          return;
+        }
+        const verdict = classifyExternalResponse(status, headers || {}, requestHeaders || {});
+        if (verdict.flag) { capture.awaiting.delete(u.href); flag(`${verdict.flag} ${u.href}`); return; }
+        if (verdict.validator) {
+          capture.externalValidated.set(u.href, verdict.validator);
+          capture.awaiting.delete(u.href);
+          return;
+        }
+        // No validator (e.g. cdn.manifestx.dev): content-address the bytes;
+        // revalidation re-downloads and compares.  Unreadable or oversized
+        // body → render.  `awaiting` clears only once the hash is recorded.
+        capture.pending.push(
+          Promise.resolve().then(buffer)
+            .then((body) => {
+              if (body.length > EXTERNAL_BODY_HASH_LIMIT) { flag(`external response too large to fingerprint: ${u.href}`); return; }
+              capture.externalValidated.set(u.href, { contentHash: sha256Full(body) });
+              capture.awaiting.delete(u.href);
+            })
+            .catch(() => flag(`external response unreadable: ${u.href}`))
+        );
+      } catch { flag('unparseable response URL'); }
+    },
+  };
+}
+
 const externalValidatorToken = (url, v) =>
   `${url}#etag:${v?.etag || ''}|lm:${v?.lastModified || ''}|ch:${v?.contentHash || ''}`;
 
@@ -3656,7 +3801,7 @@ async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateE
  * Run-scoped incremental state: ledger, memoized hashing/resolution, the skip
  * pass, per-route capture records, and the end-of-run ledger write.
  */
-function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, globalKey, deps }) {
+function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, globalKey, deps, skipEnabled = true }) {
   const ledger = loadRouteLedger(rootResolved);
   const revalidate = createExternalRevalidator();
   const hashFileAt = (base, relPath) => {
@@ -3671,7 +3816,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
   };
   const captures = new Map(); // routeKey → capture record of a route rendered this run
   const carried = new Map();  // routeKey → previous entry revalidated and reused this run
-  const state = { disabled: false, skipped: 0, reasons: {} };
+  const state = { disabled: false, skipped: 0, reasons: {}, skipEnabled };
   const disable = (reason) => {
     if (state.disabled) return;
     state.disabled = true;
@@ -3702,6 +3847,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
     /** Skip pass: returns the subset of `paths` that must render; copies the
      *  previous outputs of the rest into staging and carries their entries. */
     async partition(paths) {
+      if (!skipEnabled) return paths; // recording-only run: render all, refresh the ledger
       if (!ledger) {
         for (let i = 0; i < paths.length; i++) noteRender('no ledger entry');
         return paths;
@@ -4437,15 +4583,19 @@ async function runPrerender(config) {
   // baseHtmlCache: base path segment → raw DOM HTML captured before any Node.js transforms
   const baseHtmlCache = new Map();
 
-  // --- Incremental skip pass (opt-in; see the incremental-rendering section) --
+  // --- Incremental skip pass (see the incremental-rendering section) ----------
   // Skips reuse files from the PREVIOUS final output, which still exists while
-  // this run builds into staging.  Off → no capture, no ledger, no new work.
+  // this run builds into staging.  Recording runs whenever the project
+  // participates (incrementalRecord); skipping only when `incremental` is on.
+  // Never-opted-in → no capture, no ledger, no new work.
   let inc = null;
-  if (config.incremental && !config.serve) {
+  if (config.incrementalRecord && !config.serve) {
     // Input capture maps request pathnames to disk via the built-in server's
     // resolution; an external --local server voids that mapping.
-    process.stdout.write('prerender: incremental needs the built-in static server — ignoring it for this run\n');
-  } else if (config.incremental) {
+    if (config.incrementalExplicit) {
+      process.stdout.write('prerender: incremental needs the built-in static server — ignoring it for this run\n');
+    }
+  } else if (config.incrementalRecord) {
     let manifestContentHash = 'missing';
     try { manifestContentHash = sha256Full(readFileSync(join(config.root, 'manifest.json'))); } catch { /* missing */ }
     // Output-relevant resolved options (CLI included).  pathList is in here
@@ -4481,8 +4631,23 @@ async function runPrerender(config) {
         getRawHtml: (seg) => baseHtmlCache.get(seg),
         pushUtilityBlock: (b) => utilityBlocks.push(b),
       },
+      skipEnabled: config.incremental,
     });
   }
+
+  // --- Request blocking during prerender ---------------------------------------
+  // Telemetry collection endpoints are blocked by default (blockTelemetry:
+  // false opts out); render.blockRequests adds user patterns.  Blocked
+  // requests are aborted via CDP and are invisible to incremental capture.
+  const blockPatterns = [
+    ...(config.blockTelemetry ? TELEMETRY_BLOCK_PATTERNS : []),
+    ...(config.blockRequests || []),
+  ];
+  const blockMatcher = compileBlockMatcher(blockPatterns);
+  const telemetryMatcher = config.blockTelemetry ? compileBlockMatcher(TELEMETRY_BLOCK_PATTERNS) : null;
+  const cdpBlockedUrls = blockPatterns.map((p) => `*${p}*`);
+  let telemetryBlockedCount = 0;
+
   const puppeteerRenderPaths = inc ? await inc.partition(puppeteerPaths) : puppeteerPaths;
   let incRendered = puppeteerRenderPaths.length;
   const puppeteerTotal = puppeteerRenderPaths.length;
@@ -4537,64 +4702,22 @@ async function runPrerender(config) {
         externalPinned: new Set(), externalValidated: new Map(),
         awaiting: new Set(), pending: [], nonCacheable: false, reason: null,
       };
-      const localOrigin = new URL(config.localUrl).origin;
-      const flag = (reason) => {
-        if (!capture.nonCacheable) { capture.nonCacheable = true; capture.reason = reason; }
-      };
-      page.on('request', (req) => {
-        try {
-          const u = new URL(req.url());
-          if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
-          if (req.method() !== 'GET') { flag(`non-GET ${req.method()} ${u.href}`); return; }
-          if (u.origin !== localOrigin) {
-            // Pinned-version URL: the URL is its own identity.  Anything else
-            // must get a PROCESSED response (validator or content hash) by the
-            // end of the route or it stays in `awaiting` → route renders.
-            if (PINNED_VERSION_RE.test(u.pathname)) capture.externalPinned.add(u.href);
-            else capture.awaiting.add(u.href);
-            return;
-          }
-          const rel = resolveStaticRequestFile(rootResolved, u.pathname);
-          if (rel) { capture.requested.set(u.pathname, rel); capture.files.add(rel); }
-          else flag(`unresolvable request ${u.pathname}`);
-        } catch { flag('unparseable request URL'); }
+      const hooks = createCaptureHooks({
+        capture,
+        localOrigin: new URL(config.localUrl).origin,
+        resolveRequest: (pathname) => resolveStaticRequestFile(rootResolved, pathname),
+        isBlocked: blockMatcher,
       });
-      page.on('requestfailed', (req) => {
-        try { capture.awaiting.delete(new URL(req.url()).href); } catch { /* flagged below */ }
-        flag(`request failed: ${req.url()}`);
-      });
-      page.on('response', (res) => {
-        try {
-          const u = new URL(res.url());
-          if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
-          const status = res.status();
-          if (u.origin === localOrigin || PINNED_VERSION_RE.test(u.pathname)) {
-            if (status >= 400) flag(`${status} ${u.href}`);
-            return;
-          }
-          if (status < 200 || status >= 300) { flag(`external ${status} ${u.href}`); capture.awaiting.delete(u.href); return; }
-          const headers = res.headers();
-          const etag = headers['etag'];
-          const lastModified = headers['last-modified'];
-          if (etag || lastModified) {
-            capture.externalValidated.set(u.href, etag ? { etag } : { lastModified });
-            capture.awaiting.delete(u.href);
-            return;
-          }
-          // No validator (e.g. cdn.manifestx.dev): content-address the bytes;
-          // revalidation re-downloads and compares.  Unreadable or oversized
-          // body → render.  `awaiting` clears only once the hash is recorded.
-          capture.pending.push(
-            res.buffer()
-              .then((body) => {
-                if (body.length > EXTERNAL_BODY_HASH_LIMIT) { flag(`external response too large to fingerprint: ${u.href}`); return; }
-                capture.externalValidated.set(u.href, { contentHash: sha256Full(body) });
-                capture.awaiting.delete(u.href);
-              })
-              .catch(() => flag(`external response unreadable: ${u.href}`))
-          );
-        } catch { flag('unparseable response URL'); }
-      });
+      page.on('request', (req) => hooks.request({ url: req.url(), method: req.method() }));
+      page.on('requestfailed', (req) => hooks.requestFailed({ url: req.url() }));
+      page.on('response', (res) => hooks.response({
+        url: res.url(), status: res.status(), headers: res.headers(),
+        requestHeaders: res.request().headers(),
+        buffer: () => res.buffer(),
+      }));
+    }
+    if (telemetryMatcher) {
+      page.on('requestfailed', (req) => { if (telemetryMatcher(req.url())) telemetryBlockedCount++; });
     }
     // Render at a typical desktop viewport so layouts dependent on viewport
     // width (responsive flex/grid, container queries, media queries) settle
@@ -4604,6 +4727,13 @@ async function runPrerender(config) {
     // viewport-driven flex distribution.
     await page.setViewport({ width: 1200, height: 800, deviceScaleFactor: 1 });
     try {
+      // CDP URL blocking (telemetry + render.blockRequests): requests abort at
+      // the network layer; coexists with the page.on capture listeners above.
+      if (cdpBlockedUrls.length > 0) {
+        const cdp = await page.createCDPSession();
+        await cdp.send('Network.enable');
+        await cdp.send('Network.setBlockedURLs', { urls: cdpBlockedUrls });
+      }
       // Align <html lang> with the URL being prerendered before any app script runs.
       // initializeDataSourcesPlugin picks locale from document.documentElement.lang first; a mismatch
       // (e.g. headless default vs /en/...) leaves $x.* empty while x-route sections still render.
@@ -6059,8 +6189,15 @@ async function runPrerender(config) {
   }
 
   if (inc) {
-    const why = Object.entries(inc.state.reasons).sort((a, b) => b[1] - a[1]).map(([r, c]) => `${c} ${r}`);
-    process.stdout.write(`prerender: skipped ${inc.state.skipped} unchanged, rendered ${incRendered}${why.length ? ` (${why.join(', ')})` : ''}\n`);
+    if (!inc.state.skipEnabled) {
+      process.stdout.write(`prerender: rendered ${incRendered} (ledger refreshed, skipping off)\n`);
+    } else {
+      const why = Object.entries(inc.state.reasons).sort((a, b) => b[1] - a[1]).map(([r, c]) => `${c} ${r}`);
+      process.stdout.write(`prerender: skipped ${inc.state.skipped} unchanged, rendered ${incRendered}${why.length ? ` (${why.join(', ')})` : ''}\n`);
+    }
+  }
+  if (telemetryBlockedCount > 0) {
+    process.stdout.write(`prerender: blocked ${telemetryBlockedCount} telemetry requests (render.blockTelemetry: false to allow)\n`);
   }
 
   if (config.debugPrerender) {
@@ -6187,4 +6324,9 @@ export {
   isSafeRelPath,
   settleCaptureAwaiting,
   EXTERNAL_BODY_HASH_LIMIT,
+  resolveIncrementalPolicy,
+  classifyExternalResponse,
+  createCaptureHooks,
+  compileBlockMatcher,
+  TELEMETRY_BLOCK_PATTERNS,
 };

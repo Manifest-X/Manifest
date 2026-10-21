@@ -724,17 +724,43 @@ const EXTERNAL_PORT = 5101; // fixture's #external-note fetches this origin
 
 // Cross-origin resource with switchable validator behavior: mode 'etag'
 // serves an ETag and answers matching If-None-Match with 304; mode
-// 'no-validator' serves plain 200s with no validator at all.
+// 'no-validator' serves plain 200s with no validator at all.  /conditional is
+// independent of the mode: a fixed validator with Cache-Control: no-cache, so
+// the page's own second fetch revalidates and gets a 304 at capture time.
 const externalState = { mode: 'etag', etag: 'W/"v1"', body: 'external note v1' };
 function startExternalServer(port, state) {
   const server = createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.url.startsWith('/conditional')) {
+      res.setHeader('ETag', 'W/"pinned"');
+      res.setHeader('Cache-Control', 'no-cache');
+      if (req.headers['if-none-match'] === 'W/"pinned"') { res.statusCode = 304; res.end(); return; }
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('conditional body');
+      return;
+    }
     if (state.mode === 'etag') {
       res.setHeader('ETag', state.etag);
       if (req.headers['if-none-match'] === state.etag) { res.statusCode = 304; res.end(); return; }
     }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.end(state.body);
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
+// Telemetry endpoint stand-in: records every request that actually reaches it.
+// The fixture's beacons route fires a POST matching a curated telemetry
+// pattern and a GET matching render.blockRequests — both must be aborted
+// in-browser during prerender, so this server must see ZERO hits from renders.
+const TELEMETRY_PORT = 5102;
+const telemetryState = { hits: [] };
+function startTelemetryServer(port, state) {
+  const server = createServer((req, res) => {
+    state.hits.push(`${req.method} ${req.url}`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.statusCode = 204;
+    res.end();
   });
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
@@ -759,16 +785,21 @@ function treeDiff(a, b) {
   return diffs;
 }
 
+const LEDGER_PATH = join(FIXTURE_DIR, '.mnfst-cache', 'routes.json');
+const summaryOf = (out) => {
+  const m = out.match(/prerender: skipped (\d+) unchanged, rendered (\d+)/);
+  return m ? { skipped: Number(m[1]), rendered: Number(m[2]) } : null;
+};
+
 async function runIncrementalTests() {
   log.head('Incremental rendering (--incremental)');
-  const ledgerPath = join(FIXTURE_DIR, '.mnfst-cache', 'routes.json');
-  const summaryOf = (out) => {
-    const m = out.match(/prerender: skipped (\d+) unchanged, rendered (\d+)/);
-    return m ? { skipped: Number(m[1]), rendered: Number(m[2]) } : null;
-  };
+  const ledgerPath = LEDGER_PATH;
 
-  // The baseline render above ran WITHOUT the flag — capture must be off.
-  assert(!existsSync(ledgerPath), 'no route ledger written when --incremental is off');
+  // The baseline render above ran never-opted-in — fully inert: no capture,
+  // no ledger, no raw-DOM snapshots.  (.mnfst-cache/og is the OG snapshot
+  // cache, written by every render regardless of incremental.)
+  assert(!existsSync(ledgerPath) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
+    'never-opted-in run writes no ledger and no snapshots');
 
   const runA = await runPrerender(['--incremental'], true);
   const a = summaryOf(runA.stdout);
@@ -867,13 +898,13 @@ async function runIncrementalTests() {
     'unchanged validated cross-origin resource (304) lets the route skip again',
     `summary: ${JSON.stringify(x5)}`);
 
-  // Without the flag: full render, no skip accounting, ledger untouched
-  const ledgerBefore = await readFile(ledgerPath, 'utf8');
+  // Without the flag, with a ledger on disk: the project PARTICIPATES —
+  // a plain run skips and refreshes the ledger (the one-render upgrade).
   const runE = await runPrerender([], true);
-  assert(!/skipped \d+ unchanged/.test(runE.stdout),
-    'run without the flag prints no incremental summary');
-  assert((await readFile(ledgerPath, 'utf8')) === ledgerBefore,
-    'run without the flag leaves the ledger untouched');
+  const e = summaryOf(runE.stdout);
+  assert(e && e.skipped === total && e.rendered === 0,
+    'plain run with a ledger present participates and skips everything',
+    `summary: ${JSON.stringify(e)}`);
 
   // Corrupt ledger: full render, exit 0, ledger rebuilt
   await writeFile(ledgerPath, '{definitely not json');
@@ -906,6 +937,88 @@ async function runIncrementalTests() {
   const externalHtml2 = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
   assert(externalHtml2.includes('ghost file now exists'),
     're-rendered route carries the shadowing file content');
+  return total;
+}
+
+// ---- recording policy & request blocking --------------------------------------
+async function runPolicyAndBlockingTests(total) {
+  log.head('Recording policy & request blocking');
+  const manifestPath = join(FIXTURE_DIR, 'manifest.json');
+  const manifestRaw = await readFile(manifestPath, 'utf8');
+
+  // Change 2: the page's own cross-origin 304 was recorded as a VALIDATED
+  // external — the route is in every skip total above, and the ledger proves
+  // the validator came from the 304.
+  const ledger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+  const cond = ledger.routes['conditional'];
+  assert(cond && !cond.nonCacheable
+    && cond.externalValidated?.['http://127.0.0.1:5101/conditional']?.etag === 'W/"pinned"',
+    'cross-origin 304 at capture records a validated external (etag), not non-cacheable',
+    JSON.stringify(cond && (cond.reason || cond.externalValidated)));
+
+  // Change 3: the beacons route fired a telemetry POST and a blockRequests GET
+  // on every render so far; both were aborted in-browser and stayed invisible
+  // to capture, so the route is cacheable and the endpoint saw nothing.
+  const beac = ledger.routes['beacons'];
+  assert(beac && !beac.nonCacheable,
+    'route firing blocked beacons stays cacheable (blocked requests are invisible)',
+    JSON.stringify(beac && beac.reason));
+  assert(telemetryState.hits.length === 0,
+    'telemetry endpoint recorded zero hits across all renders',
+    telemetryState.hits.slice(0, 5).join(' | '));
+
+  // The blocked-count line prints once per run that actually blocked something.
+  await appendFile(join(FIXTURE_DIR, 'components', 'header.html'), '\n<!-- blocking test touch -->\n');
+  const runT = await runPrerender(['--incremental'], true);
+  const t = summaryOf(runT.stdout);
+  assert(t && t.rendered === total && t.skipped === 0,
+    'touched component re-renders everything (beacons fire and are blocked)',
+    `summary: ${JSON.stringify(t)}`);
+  const blockedLine = runT.stdout.match(/prerender: blocked (\d+) telemetry requests \(render\.blockTelemetry: false to allow\)/);
+  assert(blockedLine && Number(blockedLine[1]) >= 1,
+    'run prints the blocked-telemetry count once with the opt-out hint',
+    runT.stdout.split('\n').filter((l) => l.includes('blocked')).join(' | ') || '(no blocked line)');
+  assert(telemetryState.hits.length === 0,
+    'telemetry endpoint still at zero hits after a full re-render',
+    telemetryState.hits.slice(0, 5).join(' | '));
+
+  // Change 1: one-render upgrade path.  Never-opted-in first (also the
+  // overhead baseline), then a participating --no-incremental run must WRITE
+  // the ledger, and the next --incremental run skips.
+  log.head('One-render upgrade path (--no-incremental still records)');
+  await rm(join(FIXTURE_DIR, '.mnfst-cache'), { recursive: true, force: true });
+  const runPlain = await runPrerender([], true);
+  assert(!existsSync(LEDGER_PATH) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
+    'never-opted-in run (ledger deleted) writes no ledger and no snapshots');
+  const mf = JSON.parse(manifestRaw);
+  mf.render.incremental = true;
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runH = await runPrerender(['--no-incremental'], true);
+  assert(!/\[skip\]/.test(runH.stdout) && !/skipped \d+ unchanged/.test(runH.stdout),
+    'participating --no-incremental run skips nothing');
+  assert(new RegExp(`prerender: rendered ${total} \\(ledger refreshed, skipping off\\)`).test(runH.stdout),
+    'summary says the ledger was refreshed with skipping off',
+    runH.stdout.match(/prerender: rendered[^\n]*/)?.[0]);
+  assert(existsSync(LEDGER_PATH), 'participating --no-incremental run writes the ledger');
+  log.note(`wall time: never-opted-in run ${runPlain.ms}ms, recording-only (--no-incremental) run ${runH.ms}ms`);
+  const runI = await runPrerender(['--incremental'], true);
+  const i = summaryOf(runI.stdout);
+  assert(i && i.skipped === total && i.rendered === 0,
+    'next --incremental run skips everything (one-render upgrade)',
+    `summary: ${JSON.stringify(i)}`);
+
+  // Explicit config false: fully off — no capture, no recording, no skipping,
+  // even with a valid ledger present.
+  const ledgerBytes = await readFile(LEDGER_PATH, 'utf8');
+  mf.render.incremental = false;
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runJ = await runPrerender([], true);
+  assert(!/skipped \d+ unchanged|ledger refreshed|\[skip\]/.test(runJ.stdout),
+    'config incremental:false prints no incremental output despite the ledger');
+  assert((await readFile(LEDGER_PATH, 'utf8')) === ledgerBytes,
+    'config incremental:false leaves the ledger untouched');
+
+  await writeFile(manifestPath, manifestRaw);
 }
 
 // ---- main -------------------------------------------------------------------
@@ -920,6 +1033,8 @@ async function main() {
   // (baseline included) sees the same external resource.
   const externalServer = await startExternalServer(EXTERNAL_PORT, externalState);
   log.note(`external validator server up on ${EXTERNAL_PORT}`);
+  const telemetryServer = await startTelemetryServer(TELEMETRY_PORT, telemetryState);
+  log.note(`telemetry endpoint server up on ${TELEMETRY_PORT}`);
 
   try {
     await runPrerender();
@@ -940,10 +1055,12 @@ async function main() {
   }
 
   try {
-    await runIncrementalTests();
+    const total = await runIncrementalTests();
+    await runPolicyAndBlockingTests(total);
   } finally {
     externalServer.close();
-    log.note('external validator server stopped');
+    telemetryServer.close();
+    log.note('external validator + telemetry servers stopped');
   }
 
   log.head(`Results: ${passed} passed, ${failed} failed`);

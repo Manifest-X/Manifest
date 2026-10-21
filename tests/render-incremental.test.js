@@ -14,6 +14,11 @@ import {
   isSafeRelPath,
   settleCaptureAwaiting,
   EXTERNAL_BODY_HASH_LIMIT,
+  resolveIncrementalPolicy,
+  classifyExternalResponse,
+  createCaptureHooks,
+  compileBlockMatcher,
+  TELEMETRY_BLOCK_PATTERNS,
 } from '../src/scripts/manifest.render.mjs';
 
 let dir;
@@ -271,6 +276,170 @@ describe('settleCaptureAwaiting', () => {
     const flagged = { awaiting: new Set(['https://a.test/x']), nonCacheable: true, reason: 'non-GET POST' };
     settleCaptureAwaiting(flagged);
     expect(flagged.reason).toBe('non-GET POST');
+  });
+});
+
+describe('resolveIncrementalPolicy', () => {
+  const p = (over) => resolveIncrementalPolicy({
+    configValue: undefined, flagIncremental: undefined, flagNoIncremental: undefined, ledgerExists: false, ...over,
+  });
+  it('never-opted-in stays fully inert', () => {
+    expect(p({})).toEqual({ record: false, skip: false, explicit: false });
+    expect(p({ flagNoIncremental: true })).toEqual({ record: false, skip: false, explicit: false });
+  });
+  it('participates via config true, the flag, or an existing ledger', () => {
+    expect(p({ configValue: true })).toEqual({ record: true, skip: true, explicit: true });
+    expect(p({ flagIncremental: true })).toEqual({ record: true, skip: true, explicit: true });
+    expect(p({ ledgerExists: true })).toEqual({ record: true, skip: true, explicit: false });
+  });
+  it('--no-incremental disables skipping only, recording stays on', () => {
+    expect(p({ configValue: true, flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: true });
+    expect(p({ ledgerExists: true, flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: false });
+    expect(p({ flagIncremental: true, flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: true });
+  });
+  it('explicit config false is fully off, even with a ledger present', () => {
+    expect(p({ configValue: false, ledgerExists: true })).toEqual({ record: false, skip: false, explicit: false });
+    expect(p({ configValue: false, ledgerExists: true, flagNoIncremental: true }))
+      .toEqual({ record: false, skip: false, explicit: false });
+  });
+  it('the CLI flag overrides config false', () => {
+    expect(p({ configValue: false, flagIncremental: true }).record).toBe(true);
+  });
+});
+
+describe('classifyExternalResponse', () => {
+  it('records a cross-origin 304 as validated from its own headers', () => {
+    expect(classifyExternalResponse(304, { etag: 'W/"v1"' })).toEqual({ validator: { etag: 'W/"v1"' } });
+    expect(classifyExternalResponse(304, { 'last-modified': 'Tue, 01 Oct 2026 00:00:00 GMT' }))
+      .toEqual({ validator: { lastModified: 'Tue, 01 Oct 2026 00:00:00 GMT' } });
+  });
+  it('falls back to the request conditional values on a bare 304', () => {
+    expect(classifyExternalResponse(304, {}, { 'if-none-match': 'W/"req"' }))
+      .toEqual({ validator: { etag: 'W/"req"' } });
+    expect(classifyExternalResponse(304, {}, { 'if-modified-since': 'Mon, 05 Oct 2026 00:00:00 GMT' }))
+      .toEqual({ validator: { lastModified: 'Mon, 05 Oct 2026 00:00:00 GMT' } });
+  });
+  it('flags only a 304 with no extractable validator', () => {
+    expect(classifyExternalResponse(304, {}, {})).toEqual({ flag: 'external 304 without validator' });
+  });
+  it('keeps the non-2xx failure rule for other statuses', () => {
+    expect(classifyExternalResponse(404)).toEqual({ flag: 'external 404' });
+    expect(classifyExternalResponse(302)).toEqual({ flag: 'external 302' });
+    expect(classifyExternalResponse(500)).toEqual({ flag: 'external 500' });
+  });
+  it('2xx: validator from headers, else content-address fallthrough', () => {
+    expect(classifyExternalResponse(200, { etag: 'e' })).toEqual({ validator: { etag: 'e' } });
+    expect(classifyExternalResponse(200, { 'last-modified': 'lm' })).toEqual({ validator: { lastModified: 'lm' } });
+    expect(classifyExternalResponse(200, {})).toEqual({});
+  });
+});
+
+describe('compileBlockMatcher', () => {
+  it('matches by substring and supports * globs within a pattern', () => {
+    const m = compileBlockMatcher(['api.mixpanel.com/track', '*.facebook.com/tr']);
+    expect(m('https://api.mixpanel.com/track?data=x')).toBe(true);
+    expect(m('https://api.mixpanel.com/decide')).toBe(false);
+    expect(m('https://www.facebook.com/tr?id=1')).toBe(true);
+    expect(m('https://connect.facebook.net/en_US/fbevents.js')).toBe(false);
+  });
+  it('returns null with nothing to block', () => {
+    expect(compileBlockMatcher([])).toBe(null);
+    expect(compileBlockMatcher()).toBe(null);
+  });
+  it('covers every curated telemetry collection endpoint', () => {
+    const m = compileBlockMatcher(TELEMETRY_BLOCK_PATTERNS);
+    for (const hit of [
+      'https://www.google-analytics.com/g/collect?v=2',
+      'https://region1.google-analytics.com/mp/collect',
+      'https://stats.g.doubleclick.net/j/collect',
+      'https://www.analytics.google.com/g/collect',
+      'https://plausible.io/api/event',
+      'https://api.segment.io/v1/t',
+      'https://api.mixpanel.com/track/',
+      'https://www.facebook.com/tr/',
+    ]) expect(m(hit), hit).toBe(true);
+    // Never script loads: blocking gtag.js could break page code; beacons cannot.
+    expect(m('https://www.googletagmanager.com/gtag/js?id=G-X')).toBe(false);
+    expect(m('https://plausible.io/js/script.js')).toBe(false);
+  });
+});
+
+describe('createCaptureHooks', () => {
+  const localOrigin = 'http://127.0.0.1:5099';
+  const freshCapture = () => ({
+    requested: new Map(), files: new Set(),
+    externalPinned: new Set(), externalValidated: new Map(),
+    awaiting: new Set(), pending: [], nonCacheable: false, reason: null,
+  });
+  const make = (over = {}) => {
+    const capture = freshCapture();
+    const hooks = createCaptureHooks({
+      capture, localOrigin,
+      resolveRequest: (p) => (p === '/' ? 'index.html' : null),
+      isBlocked: null,
+      ...over,
+    });
+    return { capture, hooks };
+  };
+
+  it('a blocked request never happened: not an input, not a failure, not awaited', () => {
+    const isBlocked = compileBlockMatcher(['api.mixpanel.com/track', 'custom-tracker']);
+    const { capture, hooks } = make({ isBlocked });
+    hooks.request({ url: 'https://api.mixpanel.com/track?d=1', method: 'POST' });
+    hooks.request({ url: 'https://cdn.test/custom-tracker/ping', method: 'GET' });
+    hooks.requestFailed({ url: 'https://api.mixpanel.com/track?d=1' });
+    hooks.requestFailed({ url: 'https://cdn.test/custom-tracker/ping' });
+    expect(capture.nonCacheable).toBe(false);
+    expect(capture.awaiting.size).toBe(0);
+    expect(capture.files.size).toBe(0);
+    expect(capture.externalPinned.size).toBe(0);
+    expect(settleCaptureAwaiting(capture).nonCacheable).toBe(false);
+  });
+  it('unblocked traffic still captures and flags as before', () => {
+    const isBlocked = compileBlockMatcher(['api.mixpanel.com/track']);
+    const { capture, hooks } = make({ isBlocked });
+    hooks.request({ url: `${localOrigin}/`, method: 'GET' });
+    expect(capture.requested.get('/')).toBe('index.html');
+    hooks.request({ url: 'https://api.test/rows', method: 'GET' });
+    expect(capture.awaiting.has('https://api.test/rows')).toBe(true);
+    hooks.request({ url: 'https://other.test/beacon', method: 'POST' });
+    expect(capture.nonCacheable).toBe(true);
+    expect(capture.reason).toMatch(/non-GET POST/);
+  });
+  it('a cross-origin 304 records a validated external, not a failure', () => {
+    const { capture, hooks } = make();
+    hooks.request({ url: 'https://api.test/rows', method: 'GET' });
+    hooks.response({
+      url: 'https://api.test/rows', status: 304,
+      headers: { etag: 'W/"v9"' }, requestHeaders: { 'if-none-match': 'W/"v9"' },
+      buffer: () => { throw new Error('a 304 has no body'); },
+    });
+    expect(capture.externalValidated.get('https://api.test/rows')).toEqual({ etag: 'W/"v9"' });
+    expect(capture.awaiting.size).toBe(0);
+    expect(capture.nonCacheable).toBe(false);
+    expect(capture.pending.length).toBe(0);
+  });
+  it('a bare 304 (no validator anywhere) stays non-cacheable', () => {
+    const { capture, hooks } = make();
+    hooks.request({ url: 'https://api.test/rows', method: 'GET' });
+    hooks.response({
+      url: 'https://api.test/rows', status: 304, headers: {}, requestHeaders: {},
+      buffer: () => { throw new Error('a 304 has no body'); },
+    });
+    expect(capture.nonCacheable).toBe(true);
+    expect(capture.reason).toMatch(/external 304 without validator/);
+    expect(capture.awaiting.size).toBe(0);
+  });
+  it('content-addresses a validator-less 2xx body via the pending queue', async () => {
+    const { capture, hooks } = make();
+    hooks.request({ url: 'https://cdn.test/app.js', method: 'GET' });
+    hooks.response({
+      url: 'https://cdn.test/app.js', status: 200, headers: {}, requestHeaders: {},
+      buffer: async () => Buffer.from('bytes'),
+    });
+    await Promise.allSettled(capture.pending);
+    expect(capture.externalValidated.get('https://cdn.test/app.js')?.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(capture.awaiting.size).toBe(0);
   });
 });
 

@@ -423,7 +423,17 @@
                 "incremental": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). Anything uncertain renders."
+                    "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). Anything uncertain renders. Once a ledger exists, every full render refreshes it (participation); explicit false turns capture and recording fully off."
+                },
+                "blockRequests": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "URL patterns (substring match, * glob within a pattern) whose requests are aborted during prerender, e.g. a custom analytics tracker."
+                },
+                "blockTelemetry": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Block well-known analytics collection endpoints (GA, Plausible, Segment, Mixpanel, Meta) during prerender so renders don't register as visitors. Set false to allow."
                 },
                 "locales": {
                     "type": "array",
