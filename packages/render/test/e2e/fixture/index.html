@@ -126,13 +126,15 @@
   </section>
 
   <!-- Route: beacons (blocking e2e) — a telemetry POST matching a curated
-       collection pattern plus a GET matching render.blockRequests.  Both must
-       be aborted during prerender and stay invisible to capture. -->
+       collection pattern, a crash report matching a curated error/RUM pattern,
+       plus a GET matching render.blockRequests.  All must be aborted during
+       prerender and stay invisible to capture. -->
   <section x-route="beacons">
     <h1 id="beacons-heading">Beacons</h1>
     <template x-if="location.pathname.includes('beacons')">
       <div id="beacons-fire" x-data x-init="
         fetch('http://127.0.0.1:5102/api.mixpanel.com/track', { method: 'POST', body: 'fake page_view' }).catch(() => {});
+        fetch('http://127.0.0.1:5102/o123.ingest.sentry.io/api/1/envelope/', { method: 'POST', body: 'fake crash' }).catch(() => {});
         fetch('http://127.0.0.1:5102/custom-tracker?e=render').catch(() => {});
       "></div>
     </template>

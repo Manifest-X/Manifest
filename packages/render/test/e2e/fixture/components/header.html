@@ -1,5 +1,8 @@
-<!-- Preloaded component: exercises x-color, locale toggle, and baked $x text -->
+<!-- Preloaded component: exercises x-color, locale toggle, and baked $x text.
+     The shared-asset fetch stands in for a framework CDN asset loaded by
+     EVERY page: the run-cache e2e counts its server-side hits. -->
 <header>
+    <span id="shared-asset" x-data x-init="fetch('http://127.0.0.1:5103/shared.txt').then(r => r.text()).then(t => { $el.textContent = t }).catch(() => {})"></span>
     <span id="greeting" x-text="$x.content.greeting">Hello</span>
     <button id="theme-light" x-color="'light'" :class="{ 'active': $color.current === 'light' }">Light</button>
     <button id="theme-dark" x-color="'dark'" :class="{ 'active': $color.current === 'dark' }">Dark</button>

@@ -411,6 +411,8 @@ function parseArgs() {
     if (args[i] === '--retries' && args[i + 1]) { out.retries = parseInt(args[++i], 10); continue; }
     if (args[i] === '--incremental') { out.incremental = true; continue; }
     if (args[i] === '--no-incremental') { out.noIncremental = true; continue; }
+    if (args[i] === '--run-cache') { out.runCache = true; continue; }
+    if (args[i] === '--no-run-cache') { out.runCache = false; continue; }
     if (args[i] === '--dry-run') { out.dryRun = true; continue; }
     if (args[i] === '--force-lock') { out.forceLock = true; continue; }
     if (args[i] === '--debug-prerender') { out.debugPrerender = true; continue; }
@@ -614,6 +616,8 @@ function resolveConfig() {
     // pattern).  blockTelemetry (default on) adds TELEMETRY_BLOCK_PATTERNS.
     blockRequests: Array.isArray(pre.blockRequests) ? pre.blockRequests.map((p) => String(p)).filter(Boolean) : [],
     blockTelemetry: pre.blockTelemetry !== false,
+    // Run-scoped cross-origin response cache (render.runCache / --no-run-cache).
+    runCache: cli.runCache ?? pre.runCache !== false,
     dryRun: !!cli.dryRun,
     forceLock: !!cli.forceLock,
     debugPrerender: !!cli.debugPrerender,
@@ -3524,7 +3528,9 @@ const PINNED_VERSION_RE = /@\d+\.\d+\.\d+/;
 const EXTERNAL_BODY_HASH_LIMIT = 8 * 1024 * 1024;
 
 // A prerender is not a visitor (Playcom measured 465 fake GA page_views per
-// render).  Collection endpoints only — never script loads.
+// render), and error/RUM reporters phone home from headless too (a widget
+// crash in headless spams the site's production error tracker every render).
+// Analytics + error/RUM collection endpoints only — never script loads.
 const TELEMETRY_BLOCK_PATTERNS = [
   'google-analytics.com/g/collect',
   '*.google-analytics.com/mp/collect',
@@ -3535,6 +3541,12 @@ const TELEMETRY_BLOCK_PATTERNS = [
   'api.mixpanel.com/track',
   '.facebook.com/tr?',
   '.facebook.com/tr/',
+  'ingest.sentry.io',
+  'notify.bugsnag.com',
+  'api.rollbar.com',
+  'cloudflareinsights.com/cdn-cgi/rum',
+  'bam.nr-data.net',
+  'browser-intake-datadoghq.com',
 ];
 
 /** URL predicate from block patterns: substring match, `*` globs within a
@@ -3548,6 +3560,106 @@ function compileBlockMatcher(patterns) {
   if (!regs.length) return null;
   return (url) => regs.some((r) => r.test(String(url)));
 }
+
+// --- Run-scoped cross-origin response cache ------------------------------------
+// Within one run every cross-origin GET is fetched AT MOST ONCE: the first 2xx
+// body+headers are replayed to every later page.  A prerender is a point-in-
+// time snapshot, so run-level consistency is a feature — and N pages
+// re-fetching identical framework assets manufactures the burst that fails.
+const RUN_CACHE_MAX_ENTRY_BYTES = EXTERNAL_BODY_HASH_LIMIT;
+const RUN_CACHE_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+const RUN_CACHE_MAX_ENTRIES = 500;
+
+/** Interception verdict: blocked URLs abort FIRST (never cached/served); only
+ *  cross-origin http(s) GETs are cache-eligible; everything else passes. */
+function classifyRunCacheRequest({ url, method, localOrigin, isBlocked }) {
+  if (isBlocked && isBlocked(url)) return 'block';
+  let u;
+  try { u = new URL(url); } catch { return 'bypass'; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'bypass';
+  if (method !== 'GET' || u.origin === localOrigin) return 'bypass';
+  return 'cache';
+}
+
+/** Headers safe to replay via request.respond: the stored body is the decoded
+ *  bytes, so the original transfer's encoding/length no longer apply.  ETag,
+ *  Last-Modified and Content-Type pass through verbatim — capture must observe
+ *  identical metadata on served and fetched responses. */
+function runCacheReplayHeaders(headers) {
+  const out = {};
+  for (const [k, v] of Object.entries(headers || {})) {
+    const key = k.toLowerCase();
+    if (key === 'content-encoding' || key === 'content-length'
+      || key === 'transfer-encoding' || key === 'set-cookie') continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function createRunCache({
+  maxEntryBytes = RUN_CACHE_MAX_ENTRY_BYTES,
+  maxTotalBytes = RUN_CACHE_MAX_TOTAL_BYTES,
+  maxEntries = RUN_CACHE_MAX_ENTRIES,
+} = {}) {
+  const entries = new Map(); // url → { status, headers, body }; insertion = recency
+  const inflight = new Map(); // url → { promise, settle }
+  let totalBytes = 0;
+  const stats = { served: 0, servedUrls: new Set(), stored: 0 };
+  return {
+    stats,
+    get size() { return entries.size; },
+    get totalBytes() { return totalBytes; },
+    /** Hit refreshes LRU recency. */
+    get(url) {
+      const e = entries.get(url);
+      if (!e) return null;
+      entries.delete(url); entries.set(url, e);
+      return e;
+    },
+    peek: (url) => entries.get(url) || null,
+    /** First 2xx wins; failures and over-cap bodies are never cached. */
+    set(url, entry) {
+      const { status, body } = entry || {};
+      if (!(status >= 200 && status < 300)) return false;
+      if (!body || typeof body.length !== 'number' || body.length > maxEntryBytes) return false;
+      if (entries.has(url)) return true;
+      entries.set(url, entry);
+      totalBytes += body.length;
+      stats.stored++;
+      while (entries.size > maxEntries || totalBytes > maxTotalBytes) {
+        const oldest = entries.keys().next().value;
+        totalBytes -= entries.get(oldest).body.length;
+        entries.delete(oldest);
+      }
+      return true;
+    },
+    noteServed(url) { stats.served++; stats.servedUrls.add(url); },
+    flight: (url) => inflight.get(url) || null,
+    /** One network fetch per URL at a time: concurrent pages await the first.
+     *  The timer settles null if nothing ever answers (page died mid-flight). */
+    beginFlight(url, timeoutMs = 30000) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      const f = {
+        promise,
+        settle(entry) {
+          if (inflight.get(url) === f) inflight.delete(url);
+          clearTimeout(timer);
+          resolve(entry || null);
+        },
+      };
+      const timer = setTimeout(() => f.settle(null), timeoutMs);
+      timer.unref?.();
+      inflight.set(url, f);
+      return f;
+    },
+    settleFlight(url, entry) { inflight.get(url)?.settle(entry); },
+  };
+}
+
+/** Navigation budget: min(pageTimeout, 60s), keeping pageTimeout's 0=disabled. */
+const deriveNavTimeoutMs = (pageTimeoutMs) =>
+  (pageTimeoutMs > 0 ? Math.min(pageTimeoutMs, 60000) : 0);
 
 /** Cross-origin response → { validator } | { flag } | {} (2xx without
  *  validator: content-address the body).  A 304 is the page's OWN conditional
@@ -3577,9 +3689,7 @@ function classifyExternalResponse(status, responseHeaders = {}, requestHeaders =
  * not a failure, never awaited.
  */
 function createCaptureHooks({ capture, localOrigin, resolveRequest, isBlocked }) {
-  const flag = (reason) => {
-    if (!capture.nonCacheable) { capture.nonCacheable = true; capture.reason = reason; }
-  };
+  const flag = (reason) => flagNonCacheable(capture, reason);
   return {
     request({ url, method }) {
       try {
@@ -3638,6 +3748,28 @@ function createCaptureHooks({ capture, localOrigin, resolveRequest, isBlocked })
   };
 }
 
+// ALL distinct non-cacheable causes, not just the first: one render surfaces
+// every third party to block/fix instead of one per 65-minute run.
+const NONCACHEABLE_REASONS_CAP = 20;
+
+/** URLs in a cause reduced to host+path (no scheme/query) so per-page query
+ *  strings collapse into one actionable line. */
+function normalizeNonCacheableCause(reason) {
+  return String(reason).replace(/https?:\/\/[^\s]+/g, (m) => {
+    try { const u = new URL(m); return u.host + u.pathname; } catch { return m; }
+  });
+}
+
+/** `.reason` stays the first cause (ledger back-compat); `.reasons` collects
+ *  every distinct cause, ordered, deduped on the normalized form, capped. */
+function flagNonCacheable(capture, reason) {
+  if (!capture.nonCacheable) { capture.nonCacheable = true; capture.reason = reason; }
+  const list = capture.reasons || (capture.reasons = []);
+  if (list.length >= NONCACHEABLE_REASONS_CAP) return;
+  const key = normalizeNonCacheableCause(reason);
+  if (!list.some((r) => normalizeNonCacheableCause(r) === key)) list.push(reason);
+}
+
 const externalValidatorToken = (url, v) =>
   `${url}#etag:${v?.etag || ''}|lm:${v?.lastModified || ''}|ch:${v?.contentHash || ''}`;
 
@@ -3646,8 +3778,7 @@ const externalValidatorToken = (url, v) =>
  *  UNVERIFIED external dependency — the route must render. */
 function settleCaptureAwaiting(capture) {
   if (capture.awaiting && capture.awaiting.size > 0 && !capture.nonCacheable) {
-    capture.nonCacheable = true;
-    capture.reason = `unverified external: ${[...capture.awaiting][0]}`;
+    flagNonCacheable(capture, `unverified external: ${[...capture.awaiting][0]}`);
   }
   return capture;
 }
@@ -3915,7 +4046,13 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
       const routes = {};
       for (const [key, entry] of carried) routes[key] = entry;
       for (const [key, cap] of captures) {
-        if (cap.nonCacheable) { routes[key] = { nonCacheable: true, reason: cap.reason }; continue; }
+        if (cap.nonCacheable) {
+          routes[key] = { nonCacheable: true, reason: cap.reason };
+          // Additive: tolerated by the malformed-entry check (non-cacheable
+          // entries short-circuit before the shape test), so no schema bump.
+          if (Array.isArray(cap.reasons) && cap.reasons.length) routes[key].reasons = cap.reasons;
+          continue;
+        }
         const requested = {};
         const requestedPairs = [];
         for (const pathname of [...cap.requested.keys()].sort()) {
@@ -4422,6 +4559,9 @@ async function runPrerender(config) {
   // a wedged page.evaluate() may have poisoned the shared browser process.
   // pageTimeout is configurable via manifest.prerender.pageTimeout; 0 disables.
   const pageTimeoutMs = Math.max(0, pre.pageTimeout ?? Math.max(120000, (config.wait ?? 30000) * 4));
+  // Navigation shares the page budget up to 60s (was a hard 30s cap that
+  // failed runs while a 120s page budget sat unused); 0 stays disabled.
+  const navTimeoutMs = deriveNavTimeoutMs(pageTimeoutMs);
   // The recycle gate must never swap the browser out from under a live page,
   // so its drain wait has to outlast the per-page timeout above (every page
   // is guaranteed to release its slot by then). Configurable via
@@ -4655,6 +4795,12 @@ async function runPrerender(config) {
   const cdpBlockedUrls = blockPatterns.map((p) => `*${p}*`);
   let telemetryBlockedCount = 0;
 
+  // Run cache (render.runCache, default on): one cross-origin fetch per URL per
+  // run, replayed to every later page.  With it active, blocking folds into the
+  // same interception path (Network.setBlockedURLs does not layer under
+  // request interception).
+  const runCache = config.runCache ? createRunCache() : null;
+
   const puppeteerRenderPaths = inc ? await inc.partition(puppeteerPaths) : puppeteerPaths;
   let incRendered = puppeteerRenderPaths.length;
   const puppeteerTotal = puppeteerRenderPaths.length;
@@ -4707,7 +4853,7 @@ async function runPrerender(config) {
       capture = {
         requested: new Map(), files: new Set(),
         externalPinned: new Set(), externalValidated: new Map(),
-        awaiting: new Set(), pending: [], nonCacheable: false, reason: null,
+        awaiting: new Set(), pending: [], nonCacheable: false, reason: null, reasons: [],
       };
       const hooks = createCaptureHooks({
         capture,
@@ -4734,9 +4880,60 @@ async function runPrerender(config) {
     // viewport-driven flex distribution.
     await page.setViewport({ width: 1200, height: 800, deviceScaleFactor: 1 });
     try {
-      // CDP URL blocking (telemetry + render.blockRequests): requests abort at
-      // the network layer; coexists with the page.on capture listeners above.
-      if (cdpBlockedUrls.length > 0) {
+      if (runCache) {
+        // Run cache via request interception.  Blocked URLs abort FIRST and are
+        // never cached or served; same-origin and non-GET traffic passes
+        // through untouched.  A served response is a real fulfilled response:
+        // the page.on capture listeners above observe it like a network one.
+        const pageLocalOrigin = new URL(config.localUrl).origin;
+        const done = (p) => p.catch(() => { /* page/request gone */ });
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+          try {
+            const verdict = classifyRunCacheRequest({
+              url: req.url(), method: req.method(),
+              localOrigin: pageLocalOrigin, isBlocked: blockMatcher,
+            });
+            if (verdict === 'block') return done(req.abort('blockedbyclient'));
+            if (verdict === 'bypass') return done(req.continue());
+            const href = new URL(req.url()).href;
+            const hit = runCache.get(href);
+            if (hit) { runCache.noteServed(href); return done(req.respond(hit)); }
+            const flight = runCache.flight(href);
+            if (flight) {
+              return flight.promise.then((entry) => {
+                if (entry) { runCache.noteServed(href); return done(req.respond(entry)); }
+                return done(req.continue()); // first fetch failed: retry the network
+              });
+            }
+            runCache.beginFlight(href);
+            return done(req.continue());
+          } catch { return done(req.continue()); }
+        });
+        page.on('response', (res) => {
+          try {
+            if (res.request().method() !== 'GET') return;
+            const u = new URL(res.url());
+            if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin === pageLocalOrigin) return;
+            const prior = runCache.peek(u.href);
+            if (prior) return runCache.settleFlight(u.href, prior);
+            const status = res.status();
+            if (status < 200 || status >= 300) return runCache.settleFlight(u.href, null);
+            const headers = runCacheReplayHeaders(res.headers());
+            res.buffer()
+              .then((body) => {
+                const entry = { status, headers, body };
+                runCache.settleFlight(u.href, runCache.set(u.href, entry) ? entry : null);
+              })
+              .catch(() => runCache.settleFlight(u.href, null));
+          } catch { /* not a cacheable response */ }
+        });
+        page.on('requestfailed', (req) => {
+          try { runCache.settleFlight(new URL(req.url()).href, null); } catch { /* unparseable */ }
+        });
+      } else if (cdpBlockedUrls.length > 0) {
+        // CDP URL blocking (telemetry + render.blockRequests): requests abort at
+        // the network layer; coexists with the page.on capture listeners above.
         const cdp = await page.createCDPSession();
         await cdp.send('Network.enable');
         await cdp.send('Network.setBlockedURLs', { urls: cdpBlockedUrls });
@@ -4918,7 +5115,7 @@ async function runPrerender(config) {
       pushDebug({ path: displayPath, stage: 'start' });
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: Math.min(timeout, 30000),
+        timeout: navTimeoutMs,
       });
 
       // Settle waits.  These give Manifest plugins (especially the components
@@ -6084,6 +6281,7 @@ async function runPrerender(config) {
           externalValidated: capture.externalValidated,
           nonCacheable: capture.nonCacheable,
           reason: capture.reason,
+          reasons: capture.reasons,
           outputs,
           utility: routeUtilityBlocks,
         });
@@ -6202,6 +6400,27 @@ async function runPrerender(config) {
       const why = Object.entries(inc.state.reasons).sort((a, b) => b[1] - a[1]).map(([r, c]) => `${c} ${r}`);
       process.stdout.write(`prerender: skipped ${inc.state.skipped} unchanged, rendered ${incRendered}${why.length ? ` (${why.join(', ')})` : ''}\n`);
     }
+    // Every distinct non-cacheable cause across the run, host+path visible:
+    // what to block or fix, found in ONE render instead of serially.
+    const causes = new Map();
+    for (const cap of inc.captures.values()) {
+      if (!cap.nonCacheable) continue;
+      const list = Array.isArray(cap.reasons) && cap.reasons.length ? cap.reasons : [cap.reason];
+      for (const r of list) {
+        if (!r) continue;
+        const key = normalizeNonCacheableCause(r);
+        causes.set(key, (causes.get(key) || 0) + 1);
+      }
+    }
+    if (causes.size > 0) {
+      const rows = [...causes.entries()].sort((a, b) => b[1] - a[1]);
+      process.stdout.write('prerender: non-cacheable causes —\n');
+      for (const [cause, n] of rows.slice(0, 10)) process.stdout.write(`  ${n}× ${cause}\n`);
+      if (rows.length > 10) process.stdout.write(`  … +${rows.length - 10} more cause(s)\n`);
+    }
+  }
+  if (runCache && runCache.stats.served > 0) {
+    process.stdout.write(`prerender: run cache served ${runCache.stats.served} cross-origin requests (${runCache.stats.servedUrls.size} unique)\n`);
   }
   if (telemetryBlockedCount > 0) {
     process.stdout.write(`prerender: blocked ${telemetryBlockedCount} telemetry requests (render.blockTelemetry: false to allow)\n`);
@@ -6336,4 +6555,11 @@ export {
   createCaptureHooks,
   compileBlockMatcher,
   TELEMETRY_BLOCK_PATTERNS,
+  createRunCache,
+  classifyRunCacheRequest,
+  runCacheReplayHeaders,
+  deriveNavTimeoutMs,
+  flagNonCacheable,
+  normalizeNonCacheableCause,
+  NONCACHEABLE_REASONS_CAP,
 };
