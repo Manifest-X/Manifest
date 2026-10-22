@@ -312,6 +312,9 @@ function normalizeRouteCondition(cond) {
   return { kind: 'path', path: trimmed };
 }
 
+const BOUND_X_ROUTE = /(?:^|[\s<])(?::|x-bind:)x-route\s*=/;
+const X_TAG = /<x-([a-z][a-z0-9-]*)(?=[\s>/])/gi;
+
 /** ManifestRouting.matchesCondition for a locale-stripped path. */
 function routeConditionMatches(path, condition) {
   const p = String(path).replace(/^\/+|\/+$/g, '') || '/';
@@ -1440,6 +1443,7 @@ function groupLlmsSections(entries, siteName = '') {
 
 async function renderRouteDom(page, ctx) {
   const { url, pathSeg, is404, currentLocale, locales, timeout, displayPath } = ctx;
+  const navTimeoutMs = ctx.navTimeoutMs ?? Math.min(timeout, 30000);
   const debugOn = typeof ctx.onDebug === 'function';
   const pushDebug = (row) => { if (debugOn) ctx.onDebug(row); };
   // Render at a typical desktop viewport so layouts dependent on viewport
@@ -1626,7 +1630,7 @@ async function renderRouteDom(page, ctx) {
   pushDebug({ path: displayPath, stage: 'start' });
   await page.goto(url, {
     waitUntil: 'domcontentloaded',
-    timeout: Math.min(timeout, 30000),
+    timeout: navTimeoutMs,
   });
 
   // Settle waits.  These give Manifest plugins (especially the components
@@ -1722,10 +1726,12 @@ async function renderRouteDom(page, ctx) {
       || await page.evaluate(() => !!document.head.querySelector('meta[property="og:image"]'));
     if (!ogImageHandled) {
       // Bounded: a hung CDP call costs only this page's og image
+      let ogTimer;
       earlySnapshotUrl = await Promise.race([
         ctx.ogSnapshot ? ctx.ogSnapshot(page, is404 ? '__404__' : pathSeg) : null,
-        new Promise((resolve) => setTimeout(() => resolve(null), 30000)),
+        new Promise((resolve) => { ogTimer = setTimeout(() => resolve(null), 30000); }),
       ]);
+      clearTimeout(ogTimer);
     }
   }
 
@@ -2707,7 +2713,7 @@ async function renderRouteDom(page, ctx) {
     }).catch(() => null);
     pushDebug({ path: displayPath, stage: 'pre-serialize', metrics: post });
   }
-  return { html };
+  return { html, earlySnapshotUrl };
 }
 
 function finalizeRouteHtml(rawHtml, ctx) {
@@ -3223,13 +3229,18 @@ function discoverRoutesFrom(manifest, read, warn = () => {}) {
   pathSet.add('/');
   const allConditions = new Set();
   const locales = discoverLocalesFrom(manifest, read);
-
-  const indexHtml = read('index.html');
-  if (indexHtml != null) {
-    const conditions = extractXRouteConditions(indexHtml);
+  let boundRoute = false;
+  const tags = [];
+  const scan = (html) => {
+    const conditions = extractXRouteConditions(html);
     conditions.forEach((c) => allConditions.add(c));
     conditionsToPaths(conditions).forEach((p) => pathSet.add(p));
-  }
+    if (BOUND_X_ROUTE.test(html)) boundRoute = true;
+    for (const m of html.matchAll(X_TAG)) tags.push(m[1].toLowerCase());
+  };
+
+  const indexHtml = read('index.html');
+  if (indexHtml != null) scan(indexHtml);
 
   const componentDirs = [
     ...(manifest.preloadedComponents || []),
@@ -3237,15 +3248,22 @@ function discoverRoutesFrom(manifest, read, warn = () => {}) {
   ];
   for (const rel of componentDirs) {
     const html = read(rel);
-    if (html != null) {
-      const conditions = extractXRouteConditions(html);
-      conditions.forEach((c) => allConditions.add(c));
-      conditionsToPaths(conditions).forEach((p) => pathSet.add(p));
-    }
+    if (html != null) scan(html);
+  }
+
+  // Unlisted <x-name> tags load components/<name>.html (the components plugin's convention).
+  const seen = new Set(componentDirs.map((p) => String(p).split('/').pop().replace('.html', '')));
+  while (tags.length) {
+    const name = tags.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const html = read(`components/${name}.html`);
+    if (html != null) scan(html);
   }
 
   const wildcardBases = getWildcardBasesFromConditions(allConditions);
-  discoverDataPaths(manifest, read, wildcardBases, locales, warn, [...allConditions]).forEach((p) => pathSet.add(p));
+  // A bound x-route can show any path: keep every data path.
+  discoverDataPaths(manifest, read, wildcardBases, locales, warn, boundRoute ? ['*'] : [...allConditions]).forEach((p) => pathSet.add(p));
 
   const arr = [...pathSet].map((p) => (p === '/' ? '' : p.replace(/^\//, '').replace(/\/$/, '') || ''));
   return arr.includes('') ? arr : ['', ...arr.filter(Boolean)];

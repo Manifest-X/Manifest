@@ -48,6 +48,7 @@ describe('mnfst-starter', () => {
         expect(s.hooks).toBeUndefined()
         expect(read('.env')).toContain(`MANIFEST_API_KEY=${KEY}`)
         expect(read('.gitignore')).toMatch(/^\.env$/m)
+        expect(read('.gitignore').match(/^\*\.tgz$/gm)).toHaveLength(1)
     })
 
     it('honours --mcp-url', () => {

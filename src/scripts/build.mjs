@@ -219,6 +219,7 @@ const CONFIG = {
 
         'scripts/manifest.js',           // Dynamic loader (source)
         'scripts/manifest.render.mjs',   // CLI prerender source (not browser plugin)
+        'scripts/manifest.render.page.mjs',
         'scripts/manifest.code.js',
         'scripts/manifest/slides.js',
         '**/tailwind.*.js',
@@ -366,7 +367,7 @@ async function buildStylesheets() {
 
     // Step 6: Sync derived files into all publishable packages
     //   - templates/starter   → packages/create-starter/templates/
-    //   - src/scripts/manifest.render.mjs → packages/render/manifest.render.mjs
+    //   - src/scripts/manifest.render.mjs, manifest.render.page.mjs → packages/render/
     // Each package owns its own sync logic via scripts/sync-*.mjs and exposes
     // it as `npm run prepare:source`. Each also has a prepack hook as a safety
     // net for direct `npm publish`.

@@ -72,4 +72,21 @@ describe('data path discovery: only routes some x-route shows', () => {
     expect(routes).toContain('docs/getting-started/introduction');
     expect(routes.filter((r) => r && !r.startsWith('docs'))).toEqual([]);
   });
+
+  it('follows unlisted <x-name> tags to components/<name>.html, recursively', () => {
+    mkdirSync(join(dir, 'components'), { recursive: true });
+    writeFileSync(join(dir, 'components', 'shell.html'), '<x-blog></x-blog>');
+    writeFileSync(join(dir, 'components', 'blog.html'), '<section x-route="blog/*"></section>');
+    const routes = site('<x-shell></x-shell>', { blog: '/data/blog.yaml' }, { 'blog.yaml': yaml('Posts', 'hello') });
+    expect(routes).toContain('blog/posts/hello');
+    expect(routes).not.toContain('posts/hello');
+  });
+
+  it('keeps every data path when an x-route is bound', () => {
+    const routes = site('<div x-route="about"></div><div :x-route="page.route"></div>', { pages: '/data/pages.yaml' }, {
+      'pages.yaml': '- slug: "pricing"\n',
+    });
+    expect(routes).toContain('pricing');
+  });
 });
+

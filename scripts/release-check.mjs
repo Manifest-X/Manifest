@@ -17,8 +17,8 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Source paths whose commits should show up in each package's tarball
 const SOURCES = {
-  mnfst: ['src/scripts', 'src/styles', 'lib', 'README.md', ':(exclude)src/scripts/manifest.render.mjs', ':(exclude)src/scripts/build.mjs'],
-  'mnfst-render': ['packages/render', 'src/scripts/manifest.render.mjs'],
+  mnfst: ['src/scripts', 'src/styles', 'lib', 'README.md', ':(exclude)src/scripts/manifest.render.mjs', ':(exclude)src/scripts/manifest.render.page.mjs', ':(exclude)src/scripts/build.mjs'],
+  'mnfst-render': ['packages/render', 'src/scripts/manifest.render.mjs', 'src/scripts/manifest.render.page.mjs'],
 };
 
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 256 << 20, stdio: ['ignore', 'pipe', 'pipe'], ...opts });

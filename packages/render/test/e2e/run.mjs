@@ -19,8 +19,9 @@
  *  - Hydration contract parse/apply errors
  */
 import { spawn } from 'node:child_process';
-import { cp, rm, mkdtemp, readFile } from 'node:fs/promises';
+import { cp, rm, mkdtemp, readFile, readdir, writeFile, appendFile, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { join, dirname, extname, relative } from 'node:path';
@@ -84,6 +85,8 @@ async function prepFixture() {
     filter: (p) => !['.out', 'scripts', 'styles'].includes(relative(FIXTURE_SRC_DIR, p).split('/')[0]),
   });
   await runNode(['scripts/build.mjs', '--scripts-out', join(FIXTURE_DIR, 'scripts')], REPO_SRC_DIR);
+  // Vendored Alpine beside the built scripts: e2e must not depend on CDN/DNS.
+  await copyFile(join(REPO_SRC_DIR, '..', 'node_modules', 'alpinejs', 'dist', 'cdn.min.js'), join(FIXTURE_DIR, 'scripts', 'alpine.cdn.js'));
   log.note(`fixture prepared in ${FIXTURE_DIR} (scripts built from src/)`);
 }
 
@@ -136,14 +139,15 @@ function startStaticServer(rootDir, port) {
 }
 
 // ---- run prerender ----------------------------------------------------------
-async function runPrerender() {
-  log.head('Running prerender');
+async function runPrerender(extraArgs = [], quiet = false) {
+  if (!quiet) log.head('Running prerender');
   // Always run the SOURCE render script (src/scripts/manifest.render.mjs),
   // not the synced copy in packages/render/.  The sync script is separate
   // and may be stale.
   const sourceRenderScript = join(REPO_SRC_DIR, 'scripts', 'manifest.render.mjs');
+  const startedAt = Date.now();
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [sourceRenderScript, '--root', FIXTURE_DIR], {
+    const child = spawn('node', [sourceRenderScript, '--root', FIXTURE_DIR, ...extraArgs], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env },
     });
@@ -157,12 +161,14 @@ async function runPrerender() {
         process.stderr.write(stderr);
         reject(new Error(`prerender exited with code ${code}`));
       } else {
-        // Show all relevant prerender output for debugging.
-        const lines = stdout.split('\n').filter((l) =>
-          l.startsWith('prerender:') || l.includes('total time') || l.includes('hydrate')
-        );
-        lines.forEach((l) => log.note(l.trim()));
-        resolve();
+        if (!quiet) {
+          // Show all relevant prerender output for debugging.
+          const lines = stdout.split('\n').filter((l) =>
+            l.startsWith('prerender:') || l.includes('total time') || l.includes('hydrate')
+          );
+          lines.forEach((l) => log.note(l.trim()));
+        }
+        resolve({ stdout, stderr, ms: Date.now() - startedAt });
       }
     });
   });
@@ -474,19 +480,27 @@ async function runAssertions() {
       'x-show="variable" initially-false element stays hidden after hydration',
       `display: ${xshowState.togglableDisplay}`);
 
-    // Toggle x-show on; the show waits for a frame, so poll rather than sleep
-    await click('#xshow-toggle');
-    await page.waitForFunction(
-      () => { const el = document.querySelector('#xshow-togglable'); return el && getComputedStyle(el).display !== 'none'; },
-      { polling: 50, timeout: 5000 },
-    ).catch(() => {});
-    const xshowToggled = await page.evaluate(() => {
-      const el = document.querySelector('#xshow-togglable');
-      return el ? window.getComputedStyle(el).display : 'MISSING';
-    });
-    assert(xshowToggled !== 'none',
-      'x-show toggled element becomes visible after click',
-      `display: ${xshowToggled}`);
+    // Toggle x-show on; Alpine routes the show through x-transition's
+    // nextTick, which is requestAnimationFrame whenever visibilityState is
+    // 'visible' — in a frameless headless environment that rAF never fires,
+    // so the toggle is only assertable when the compositor produces frames
+    // (same environment split as the click fallback above).
+    if (!framesWork) {
+      log.note('skipping x-show toggle assertion (no frames: Alpine defers x-show to rAF)');
+    } else {
+      await click('#xshow-toggle');
+      await page.waitForFunction(
+        () => { const el = document.querySelector('#xshow-togglable'); return el && getComputedStyle(el).display !== 'none'; },
+        { polling: 50, timeout: 5000 },
+      ).catch(() => {});
+      const xshowToggled = await page.evaluate(() => {
+        const el = document.querySelector('#xshow-togglable');
+        return el ? window.getComputedStyle(el).display : 'MISSING';
+      });
+      assert(xshowToggled !== 'none',
+        'x-show toggled element becomes visible after click',
+        `display: ${xshowToggled}`);
+    }
 
     // ------- Test: adopted x-if clones are live -----------------------------
     // Regression: reconcilePrerenderClones adopted the baked clone via
@@ -707,6 +721,440 @@ async function runAssertions() {
   }
 }
 
+// ---- incremental rendering tests ---------------------------------------------
+const EXTERNAL_PORT = 5101; // fixture's #external-note fetches this origin
+
+// Cross-origin resource with switchable validator behavior: mode 'etag'
+// serves an ETag and answers matching If-None-Match with 304; mode
+// 'no-validator' serves plain 200s with no validator at all.  /conditional is
+// independent of the mode: a fixed validator with Cache-Control: no-cache, so
+// the page's own second fetch revalidates and gets a 304 at capture time.
+const externalState = { mode: 'etag', etag: 'W/"v1"', body: 'external note v1' };
+function startExternalServer(port, state) {
+  const server = createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.url.startsWith('/conditional')) {
+      res.setHeader('ETag', 'W/"pinned"');
+      res.setHeader('Cache-Control', 'no-cache');
+      if (req.headers['if-none-match'] === 'W/"pinned"') { res.statusCode = 304; res.end(); return; }
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('conditional body');
+      return;
+    }
+    if (state.mode === 'etag') {
+      res.setHeader('ETag', state.etag);
+      if (req.headers['if-none-match'] === state.etag) { res.statusCode = 304; res.end(); return; }
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(state.body);
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
+// Telemetry endpoint stand-in: records every request that actually reaches it.
+// The fixture's beacons route fires a POST matching a curated telemetry
+// pattern and a GET matching render.blockRequests — both must be aborted
+// in-browser during prerender, so this server must see ZERO hits from renders.
+const TELEMETRY_PORT = 5102;
+const telemetryState = { hits: [] };
+function startTelemetryServer(port, state) {
+  const server = createServer((req, res) => {
+    state.hits.push(`${req.method} ${req.url}`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.statusCode = 204;
+    res.end();
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
+// Shared cross-origin asset (a stand-in for a framework CDN file every page
+// loads) with a fixed validator and no-cache, so without the run cache every
+// page revalidates against the server — each request is counted.
+const ASSET_PORT = 5103;
+const assetState = { hits: [] };
+function startAssetServer(port, state) {
+  const server = createServer((req, res) => {
+    state.hits.push(`${req.method} ${req.url}`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.url.startsWith('/shared.txt')) {
+      res.setHeader('ETag', 'W/"shared-v1"');
+      res.setHeader('Cache-Control', 'no-cache');
+      if (req.headers['if-none-match'] === 'W/"shared-v1"') { res.statusCode = 304; res.end(); return; }
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('shared framework asset');
+      return;
+    }
+    res.statusCode = 204;
+    res.end();
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+async function hashTree(dir) {
+  const out = new Map();
+  const walk = async (d, rel) => {
+    for (const ent of await readdir(d, { withFileTypes: true })) {
+      const p = join(d, ent.name);
+      const r = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) await walk(p, r);
+      else out.set(r, createHash('sha256').update(await readFile(p)).digest('hex'));
+    }
+  };
+  await walk(dir, '');
+  return out;
+}
+
+function treeDiff(a, b) {
+  const diffs = [];
+  for (const [k, v] of a) { if (!b.has(k)) diffs.push(`only in A: ${k}`); else if (b.get(k) !== v) diffs.push(`differs: ${k}`); }
+  for (const k of b.keys()) { if (!a.has(k)) diffs.push(`only in B: ${k}`); }
+  return diffs;
+}
+
+const LEDGER_PATH = join(FIXTURE_DIR, '.mnfst-cache', 'routes.json');
+const summaryOf = (out) => {
+  const m = out.match(/prerender: skipped (\d+) unchanged, rendered (\d+)/);
+  return m ? { skipped: Number(m[1]), rendered: Number(m[2]) } : null;
+};
+
+async function runIncrementalTests() {
+  log.head('Incremental rendering (--incremental)');
+  const ledgerPath = LEDGER_PATH;
+
+  // The baseline render above ran never-opted-in — fully inert: no capture,
+  // no ledger, no raw-DOM snapshots.  (.mnfst-cache/og is the OG snapshot
+  // cache, written by every render regardless of incremental.)
+  assert(!existsSync(ledgerPath) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
+    'never-opted-in run writes no ledger and no snapshots');
+
+  const runA = await runPrerender(['--incremental'], true);
+  const a = summaryOf(runA.stdout);
+  assert(a && a.rendered > 0 && a.skipped === 0,
+    'first --incremental run renders every Puppeteer route',
+    `summary: ${JSON.stringify(a)}`);
+  assert(new RegExp(`rendered ${a?.rendered} \\(${a?.rendered} new\\)`).test(runA.stdout),
+    'summary explains first-run renders as new routes',
+    runA.stdout.match(/prerender: skipped[^\n]*/)?.[0]);
+  assert(existsSync(ledgerPath), 'route ledger written after a successful incremental run');
+  const total = a ? a.rendered : 0;
+  const treeA = await hashTree(FIXTURE_OUT_DIR);
+
+  const runB = await runPrerender(['--incremental'], true);
+  const b = summaryOf(runB.stdout);
+  assert(b && b.skipped === total && b.rendered === 0,
+    'unchanged second run skips every Puppeteer route',
+    `summary: ${JSON.stringify(b)} (expected skipped ${total}, rendered 0)`);
+  const treeB = await hashTree(FIXTURE_OUT_DIR);
+  const diffAB = treeDiff(treeA, treeB);
+  assert(diffAB.length === 0, 'all-skipped run output is byte-identical to the previous run',
+    diffAB.slice(0, 5).join(' | '));
+  log.note(`wall time: full incremental run ${runA.ms}ms, all-skipped run ${runB.ms}ms`);
+
+  // Data file fetched by exactly one route (the x-if guarded /about markdown)
+  await appendFile(join(FIXTURE_DIR, 'data', 'about-extra.md'), '\nTouched once more.\n');
+  const runC = await runPrerender(['--incremental'], true);
+  const c = summaryOf(runC.stdout);
+  assert(c && c.rendered === 1 && c.skipped === total - 1,
+    'touched data file re-renders only the route that fetched it',
+    `summary: ${JSON.stringify(c)} (expected rendered 1, skipped ${total - 1})`);
+  assert(/rendered 1 \(1 changed inputs\)/.test(runC.stdout),
+    'summary explains the re-render as changed inputs',
+    runC.stdout.match(/prerender: skipped[^\n]*/)?.[0]);
+  const aboutHtml = await readFile(join(FIXTURE_OUT_DIR, 'about', 'index.html'), 'utf8');
+  assert(aboutHtml.includes('Touched once more.'),
+    're-rendered /about carries the touched markdown content');
+
+  // Component fetched by every route
+  await appendFile(join(FIXTURE_DIR, 'components', 'header.html'), '\n<!-- header touched -->\n');
+  const runD = await runPrerender(['--incremental'], true);
+  const d = summaryOf(runD.stdout);
+  assert(d && d.rendered === total && d.skipped === 0,
+    'touched component mounted by all routes re-renders everything',
+    `summary: ${JSON.stringify(d)}`);
+
+  // Cross-origin validator changes: new ETag + body → only /external re-renders
+  externalState.etag = 'W/"v2"';
+  externalState.body = 'external note v2';
+  const runX1 = await runPrerender(['--incremental'], true);
+  const x1 = summaryOf(runX1.stdout);
+  assert(x1 && x1.rendered === 1 && x1.skipped === total - 1,
+    'changed cross-origin ETag re-renders only the route that fetched it',
+    `summary: ${JSON.stringify(x1)}`);
+  const externalHtml1 = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtml1.includes('external note v2'),
+    're-rendered /external carries the new cross-origin content');
+
+  // Validator disappears: conditional request no longer answers 304 → render;
+  // the new response is content-addressed instead (hash of its bytes)
+  externalState.mode = 'no-validator';
+  externalState.body = 'external note without validator';
+  const runX2 = await runPrerender(['--incremental'], true);
+  const x2 = summaryOf(runX2.stdout);
+  assert(x2 && x2.rendered === 1 && x2.skipped === total - 1,
+    'cross-origin response losing its validator re-renders the route',
+    `summary: ${JSON.stringify(x2)}`);
+  const runX3 = await runPrerender(['--incremental'], true);
+  const x3 = summaryOf(runX3.stdout);
+  assert(x3 && x3.rendered === 0 && x3.skipped === total,
+    'validator-less cross-origin resource skips only while its bytes are identical',
+    `summary: ${JSON.stringify(x3)}`);
+  // The Appwrite-edit case: data changes with no validator anywhere → render
+  externalState.body = 'external note without validator EDITED';
+  const runX3b = await runPrerender(['--incremental'], true);
+  const x3b = summaryOf(runX3b.stdout);
+  assert(x3b && x3b.rendered === 1 && x3b.skipped === total - 1,
+    'validator-less cross-origin content change re-renders the route',
+    `summary: ${JSON.stringify(x3b)}`);
+  const externalHtmlNv = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtmlNv.includes('external note without validator EDITED'),
+    're-rendered /external carries the edited validator-less content');
+
+  // Validator returns: one more render records it, then the route skips again
+  externalState.mode = 'etag';
+  externalState.etag = 'W/"v3"';
+  externalState.body = 'external note v3';
+  const runX4 = await runPrerender(['--incremental'], true);
+  const x4 = summaryOf(runX4.stdout);
+  assert(x4 && x4.rendered === 1 && x4.skipped === total - 1,
+    'restored validator renders once to re-record it',
+    `summary: ${JSON.stringify(x4)}`);
+  const runX5 = await runPrerender(['--incremental'], true);
+  const x5 = summaryOf(runX5.stdout);
+  assert(x5 && x5.rendered === 0 && x5.skipped === total,
+    'unchanged validated cross-origin resource (304) lets the route skip again',
+    `summary: ${JSON.stringify(x5)}`);
+
+  // Without the flag, with a ledger on disk: the project PARTICIPATES —
+  // a plain run skips and refreshes the ledger (the one-render upgrade).
+  const runE = await runPrerender([], true);
+  const e = summaryOf(runE.stdout);
+  assert(e && e.skipped === total && e.rendered === 0,
+    'plain run with a ledger present participates and skips everything',
+    `summary: ${JSON.stringify(e)}`);
+
+  // Corrupt ledger: full render, exit 0, ledger rebuilt
+  await writeFile(ledgerPath, '{definitely not json');
+  const runF = await runPrerender(['--incremental'], true);
+  const f = summaryOf(runF.stdout);
+  assert(f && f.skipped === 0 && f.rendered === total,
+    'corrupt ledger falls back to a full render without crashing',
+    `summary: ${JSON.stringify(f)}`);
+  assert(summaryOf(runF.stdout) !== null && JSON.parse(await readFile(ledgerPath, 'utf8')).routes,
+    'ledger rebuilt after the corrupt-ledger run');
+
+  // A skipped route's previous output goes missing → that route renders
+  await rm(join(FIXTURE_OUT_DIR, 'about', 'index.html'));
+  const runG = await runPrerender(['--incremental'], true);
+  const g = summaryOf(runG.stdout);
+  assert(g && g.rendered === 1 && g.skipped === total - 1,
+    'missing previous output re-renders exactly that route',
+    `summary: ${JSON.stringify(g)}`);
+  assert(existsSync(join(FIXTURE_OUT_DIR, 'about', 'index.html')),
+    'missing output file regenerated');
+
+  // SPA-fallback shadowing: /data/ghost.txt resolved to index.html so far;
+  // creating the physical file must re-render the route that requested it.
+  await writeFile(join(FIXTURE_DIR, 'data', 'ghost.txt'), 'ghost file now exists');
+  const runY = await runPrerender(['--incremental'], true);
+  const y = summaryOf(runY.stdout);
+  assert(y && y.rendered === 1 && y.skipped === total - 1,
+    'new physical file shadowing a prior SPA-fallback resolution re-renders its route',
+    `summary: ${JSON.stringify(y)}`);
+  const externalHtml2 = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtml2.includes('ghost file now exists'),
+    're-rendered route carries the shadowing file content');
+  return total;
+}
+
+// ---- recording policy & request blocking --------------------------------------
+async function runPolicyAndBlockingTests(total) {
+  log.head('Recording policy & request blocking');
+  const manifestPath = join(FIXTURE_DIR, 'manifest.json');
+  const manifestRaw = await readFile(manifestPath, 'utf8');
+
+  // Change 2: the page's own cross-origin 304 was recorded as a VALIDATED
+  // external — the route is in every skip total above, and the ledger proves
+  // the validator came from the 304.
+  const ledger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+  const cond = ledger.routes['conditional'];
+  assert(cond && !cond.nonCacheable
+    && cond.externalValidated?.['http://127.0.0.1:5101/conditional']?.etag === 'W/"pinned"',
+    'cross-origin 304 at capture records a validated external (etag), not non-cacheable',
+    JSON.stringify(cond && (cond.reason || cond.externalValidated)));
+
+  // Change 3: the beacons route fired a telemetry POST and a blockRequests GET
+  // on every render so far; both were aborted in-browser and stayed invisible
+  // to capture, so the route is cacheable and the endpoint saw nothing.
+  const beac = ledger.routes['beacons'];
+  assert(beac && !beac.nonCacheable,
+    'route firing blocked beacons stays cacheable (blocked requests are invisible)',
+    JSON.stringify(beac && beac.reason));
+  assert(telemetryState.hits.length === 0,
+    'telemetry endpoint recorded zero hits across all renders',
+    telemetryState.hits.slice(0, 5).join(' | '));
+
+  // The blocked-count line prints once per run that actually blocked something.
+  await appendFile(join(FIXTURE_DIR, 'components', 'header.html'), '\n<!-- blocking test touch -->\n');
+  const runT = await runPrerender(['--incremental'], true);
+  const t = summaryOf(runT.stdout);
+  assert(t && t.rendered === total && t.skipped === 0,
+    'touched component re-renders everything (beacons fire and are blocked)',
+    `summary: ${JSON.stringify(t)}`);
+  const blockedLine = runT.stdout.match(/prerender: blocked (\d+) telemetry requests \(render\.blockTelemetry: false to allow\)/);
+  assert(blockedLine && Number(blockedLine[1]) >= 1,
+    'run prints the blocked-telemetry count once with the opt-out hint',
+    runT.stdout.split('\n').filter((l) => l.includes('blocked')).join(' | ') || '(no blocked line)');
+  assert(telemetryState.hits.length === 0,
+    'telemetry endpoint still at zero hits after a full re-render',
+    telemetryState.hits.slice(0, 5).join(' | '));
+
+  // Change 1: one-render upgrade path.  Never-opted-in first (also the
+  // overhead baseline), then a participating --no-incremental run must WRITE
+  // the ledger, and the next --incremental run skips.
+  log.head('One-render upgrade path (--no-incremental still records)');
+  await rm(join(FIXTURE_DIR, '.mnfst-cache'), { recursive: true, force: true });
+  const runPlain = await runPrerender([], true);
+  assert(!existsSync(LEDGER_PATH) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
+    'never-opted-in run (ledger deleted) writes no ledger and no snapshots');
+  const mf = JSON.parse(manifestRaw);
+  mf.render.incremental = true;
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runH = await runPrerender(['--no-incremental'], true);
+  assert(!/\[skip\]/.test(runH.stdout) && !/skipped \d+ unchanged/.test(runH.stdout),
+    'participating --no-incremental run skips nothing');
+  assert(new RegExp(`prerender: rendered ${total} \\(ledger refreshed, skipping off\\)`).test(runH.stdout),
+    'summary says the ledger was refreshed with skipping off',
+    runH.stdout.match(/prerender: rendered[^\n]*/)?.[0]);
+  assert(existsSync(LEDGER_PATH), 'participating --no-incremental run writes the ledger');
+  log.note(`wall time: never-opted-in run ${runPlain.ms}ms, recording-only (--no-incremental) run ${runH.ms}ms`);
+  const runI = await runPrerender(['--incremental'], true);
+  const i = summaryOf(runI.stdout);
+  assert(i && i.skipped === total && i.rendered === 0,
+    'next --incremental run skips everything (one-render upgrade)',
+    `summary: ${JSON.stringify(i)}`);
+
+  // Salt pin: the blocking regime is part of the signature — entries rendered
+  // under different blocking must never skip.
+  mf.render.blockRequests = ['salt-pin-never-matches'];
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runS = await runPrerender(['--incremental'], true);
+  const s = summaryOf(runS.stdout);
+  assert(s && s.rendered === total && s.skipped === 0,
+    'changed blockRequests forces a full render (blocking regime is in the signature)',
+    `summary: ${JSON.stringify(s)}`);
+  delete mf.render.blockRequests;
+
+  // Explicit config false: fully off — no capture, no recording, no skipping,
+  // even with a valid ledger present.
+  const ledgerBytes = await readFile(LEDGER_PATH, 'utf8');
+  mf.render.incremental = false;
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runJ = await runPrerender([], true);
+  assert(!/skipped \d+ unchanged|ledger refreshed|\[skip\]/.test(runJ.stdout),
+    'config incremental:false prints no incremental output despite the ledger');
+  assert((await readFile(LEDGER_PATH, 'utf8')) === ledgerBytes,
+    'config incremental:false leaves the ledger untouched');
+
+  await writeFile(manifestPath, manifestRaw);
+}
+
+// ---- run cache & non-cacheable causes ------------------------------------------
+const sharedAssetHits = () => assetState.hits.filter((h) => h.includes('/shared.txt')).length;
+const pagesRendered = (out) => (out.match(/^\s*\[ \d+\/\d+ \]/gm) || []).length;
+
+async function runRunCacheTests() {
+  log.head('Run-scoped cross-origin response cache');
+
+  // Fresh ledger so every route renders; the run cache is ON by default.
+  await rm(join(FIXTURE_DIR, '.mnfst-cache'), { recursive: true, force: true });
+  assetState.hits.length = 0;
+  const runOn = await runPrerender(['--incremental'], true);
+  const pagesOn = pagesRendered(runOn.stdout);
+  const hitsOn = sharedAssetHits();
+  assert(pagesOn > 1 && hitsOn === 1,
+    `shared cross-origin asset hit the server EXACTLY ONCE for ${pagesOn} pages (run cache on)`,
+    `hits ${hitsOn}: ${assetState.hits.slice(0, 8).join(' | ')}`);
+  const cacheLine = runOn.stdout.match(/prerender: run cache served (\d+) cross-origin requests \((\d+) unique\)/);
+  assert(cacheLine && Number(cacheLine[1]) >= pagesOn - 1 && Number(cacheLine[2]) >= 1,
+    'summary reports the run-cache served count',
+    runOn.stdout.split('\n').filter((l) => l.includes('run cache')).join(' | ') || '(no run-cache line)');
+
+  // Served and fetched responses look identical to capture: every route
+  // records the SAME validator for the shared asset.
+  const ledger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+  const sharedUrl = `http://127.0.0.1:${ASSET_PORT}/shared.txt`;
+  const withShared = Object.entries(ledger.routes)
+    .filter(([, e]) => e.externalValidated && e.externalValidated[sharedUrl]);
+  assert(withShared.length > 1
+    && withShared.every(([, e]) => e.externalValidated[sharedUrl].etag === 'W/"shared-v1"'),
+    `every route (${withShared.length}) records the same shared-asset validator, served or fetched`,
+    JSON.stringify(withShared.slice(0, 3).map(([k, e]) => [k || '/', e.externalValidated[sharedUrl]])));
+
+  // Off switch: every page fetches for itself.
+  await appendFile(join(FIXTURE_DIR, 'components', 'header.html'), '\n<!-- run-cache off touch -->\n');
+  assetState.hits.length = 0;
+  const runOff = await runPrerender(['--incremental', '--no-run-cache'], true);
+  const pagesOff = pagesRendered(runOff.stdout);
+  const hitsOff = sharedAssetHits();
+  assert(pagesOff > 1 && hitsOff === pagesOff,
+    `--no-run-cache: the shared asset is fetched once per page (${pagesOff} hits)`,
+    `hits ${hitsOff}, pages ${pagesOff}`);
+  assert(!/run cache served/.test(runOff.stdout),
+    '--no-run-cache prints no run-cache summary');
+  log.note(`shared-asset requests: ${hitsOn} with run cache vs ${hitsOff} without (${pagesOff} pages)`);
+  log.note(`wall time: run-cache run ${runOn.ms}ms, no-run-cache run ${runOff.ms}ms`);
+}
+
+async function runCausesTests() {
+  log.head('All non-cacheable causes, not just the first');
+  const indexPath = join(FIXTURE_DIR, 'index.html');
+  const indexRaw = await readFile(indexPath, 'utf8');
+  // Route with TWO distinct non-cacheable causes: a non-GET POST and a failed
+  // request (nothing listens on 5109) — both must land in the ledger entry
+  // and the end-of-run causes summary.
+  const causesSection = `
+  <section x-route="causes">
+    <h1 id="causes-heading">Causes</h1>
+    <template x-if="location.pathname.includes('causes')">
+      <div id="causes-fire" x-data x-init="
+        fetch('http://127.0.0.1:${ASSET_PORT}/cause-post', { method: 'POST', body: 'x' }).catch(() => {});
+        fetch('http://127.0.0.1:5109/down').catch(() => {});
+      "></div>
+    </template>
+  </section>
+  <section x-route="beacons"`;
+  await writeFile(indexPath, indexRaw.replace('  <section x-route="beacons"', causesSection));
+  try {
+    const run = await runPrerender(['--incremental'], true);
+    const ledger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+    const entry = ledger.routes['causes'];
+    // The POST may also surface follow-on causes (failed/unreadable as the
+    // page closes); both INTENDED causes must be present and distinct.
+    const wanted = [
+      `non-GET POST http://127.0.0.1:${ASSET_PORT}/cause-post`,
+      'request failed: http://127.0.0.1:5109/down',
+    ];
+    assert(entry && entry.nonCacheable === true && Array.isArray(entry.reasons)
+      && entry.reasons.length >= 2
+      && wanted.every((w) => entry.reasons.includes(w)),
+      'ledger entry carries BOTH distinct causes in entry.reasons',
+      JSON.stringify(entry));
+    assert(entry && entry.reason === entry.reasons?.[0],
+      'entry.reason stays the first cause (back-compat)',
+      JSON.stringify(entry && { reason: entry.reason, first: entry.reasons?.[0] }));
+    const summaryIdx = run.stdout.indexOf('prerender: non-cacheable causes');
+    assert(summaryIdx !== -1, 'run prints the non-cacheable causes summary');
+    const tail = run.stdout.slice(summaryIdx);
+    assert(/1× non-GET POST 127\.0\.0\.1:5103\/cause-post/.test(tail),
+      'summary aggregates the non-GET cause with host+path visible',
+      tail.split('\n').slice(0, 5).join(' | '));
+    assert(/1× request failed: 127\.0\.0\.1:5109\/down/.test(tail),
+      'summary aggregates the failed-request cause too',
+      tail.split('\n').slice(0, 5).join(' | '));
+  } finally {
+    await writeFile(indexPath, indexRaw);
+  }
+}
+
 // ---- main -------------------------------------------------------------------
 async function main() {
   await prepFixture();
@@ -714,6 +1162,15 @@ async function main() {
   log.head(`Starting dev server on ${DEV_PORT}`);
   const devServer = await startStaticServer(FIXTURE_DIR, DEV_PORT);
   log.note(`dev server up`);
+
+  // Cross-origin validator server, up for the whole harness so every render
+  // (baseline included) sees the same external resource.
+  const externalServer = await startExternalServer(EXTERNAL_PORT, externalState);
+  log.note(`external validator server up on ${EXTERNAL_PORT}`);
+  const telemetryServer = await startTelemetryServer(TELEMETRY_PORT, telemetryState);
+  log.note(`telemetry endpoint server up on ${TELEMETRY_PORT}`);
+  const assetServer = await startAssetServer(ASSET_PORT, assetState);
+  log.note(`shared-asset server up on ${ASSET_PORT}`);
 
   try {
     await runPrerender();
@@ -731,6 +1188,18 @@ async function main() {
   } finally {
     staticServer.close();
     log.note('static server stopped');
+  }
+
+  try {
+    const total = await runIncrementalTests();
+    await runPolicyAndBlockingTests(total);
+    await runRunCacheTests();
+    await runCausesTests();
+  } finally {
+    externalServer.close();
+    telemetryServer.close();
+    assetServer.close();
+    log.note('external validator + telemetry + shared-asset servers stopped');
   }
 
   log.head(`Results: ${passed} passed, ${failed} failed`);

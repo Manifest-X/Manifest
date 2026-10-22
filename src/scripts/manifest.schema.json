@@ -31,7 +31,7 @@
         "live_url": {
             "type": "string",
             "format": "uri",
-            "description": "Production URL — used by the prerender pipeline for canonical/sitemap output."
+            "description": "Production URL \u2014 used by the prerender pipeline for canonical/sitemap output."
         },
         "start_url": {
             "type": "string",
@@ -43,11 +43,25 @@
         },
         "display": {
             "type": "string",
-            "enum": ["fullscreen", "standalone", "minimal-ui", "browser"]
+            "enum": [
+                "fullscreen",
+                "standalone",
+                "minimal-ui",
+                "browser"
+            ]
         },
         "orientation": {
             "type": "string",
-            "enum": ["any", "natural", "landscape", "landscape-primary", "landscape-secondary", "portrait", "portrait-primary", "portrait-secondary"]
+            "enum": [
+                "any",
+                "natural",
+                "landscape",
+                "landscape-primary",
+                "landscape-secondary",
+                "portrait",
+                "portrait-primary",
+                "portrait-secondary"
+            ]
         },
         "background_color": {
             "type": "string",
@@ -61,22 +75,37 @@
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["src"],
+                "required": [
+                    "src"
+                ],
                 "properties": {
-                    "src": { "type": "string" },
-                    "sizes": { "type": "string" },
-                    "type": { "type": "string" },
-                    "purpose": { "type": "string" }
+                    "src": {
+                        "type": "string"
+                    },
+                    "sizes": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "purpose": {
+                        "type": "string"
+                    }
                 }
             }
         },
         "components": {
             "type": "array",
             "description": "Component HTML files registered as <x-name> tags.",
-            "items": { "type": "string" }
+            "items": {
+                "type": "string"
+            }
         },
         "version": {
-            "type": ["string", "number"],
+            "type": [
+                "string",
+                "number"
+            ],
             "description": "Optional author-set release stamp. Appended as ?v= to component HTML fetches so browser caches bust on change. mnfst-publish injects a content-derived `deployment` stamp automatically, which takes precedence."
         },
         "deployment": {
@@ -90,17 +119,23 @@
         "preloadedComponents": {
             "type": "array",
             "description": "Components loaded eagerly on initial page load (header, logo, etc.).",
-            "items": { "type": "string" }
+            "items": {
+                "type": "string"
+            }
         },
         "publishIgnore": {
             "type": "array",
             "description": "Gitignore-style patterns for files to exclude from the published bundle, independent of git. Applied on top of .gitignore and the built-in secret guards. A .manifestignore file at the project root works the same way.",
-            "items": { "type": "string" }
+            "items": {
+                "type": "string"
+            }
         },
         "assets": {
             "type": "array",
             "description": "Paths or simple globs (e.g. \"sprites/*.png\") of files the hosting service worker precaches for offline use even when nothing in the HTML references them (dynamically loaded sprites, audio, fonts). Files referenced from HTML/CSS are precached automatically.",
-            "items": { "type": "string" }
+            "items": {
+                "type": "string"
+            }
         },
         "data": {
             "type": "object",
@@ -121,7 +156,9 @@
                             },
                             "headers": {
                                 "type": "object",
-                                "additionalProperties": { "type": "string" }
+                                "additionalProperties": {
+                                    "type": "string"
+                                }
                             },
                             "params": {
                                 "type": "object"
@@ -137,59 +174,117 @@
                                 "type": "string",
                                 "description": "Single CSV with locale columns; locale resolution happens internally."
                             },
-                            "appwriteTableId": { "type": "string" },
-                            "appwriteBucketId": { "type": "string" },
-                            "appwriteDatabaseId": { "type": "string" },
-                            "appwriteProjectId": { "type": "string" },
-                            "appwriteEndpoint": { "type": "string" },
-                            "appwriteDevKey": { "type": "string" },
+                            "appwriteTableId": {
+                                "type": "string"
+                            },
+                            "appwriteBucketId": {
+                                "type": "string"
+                            },
+                            "appwriteDatabaseId": {
+                                "type": "string"
+                            },
+                            "appwriteProjectId": {
+                                "type": "string"
+                            },
+                            "appwriteEndpoint": {
+                                "type": "string"
+                            },
+                            "appwriteDevKey": {
+                                "type": "string"
+                            },
                             "scope": {
                                 "oneOf": [
-                                    { "type": "string", "enum": ["user", "team"] },
-                                    { "type": "array", "items": { "type": "string", "enum": ["user", "team"] } }
+                                    {
+                                        "type": "string",
+                                        "enum": [
+                                            "user",
+                                            "team"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "enum": [
+                                                "user",
+                                                "team"
+                                            ]
+                                        }
+                                    }
                                 ]
                             },
                             "scopeColumn": {
                                 "description": "Column name(s) `scope` filters/writes on. Default teamId/userId. A string sets both; an object sets them independently.",
                                 "oneOf": [
-                                    { "type": "string" },
+                                    {
+                                        "type": "string"
+                                    },
                                     {
                                         "type": "object",
                                         "properties": {
-                                            "team": { "type": "string" },
-                                            "user": { "type": "string" }
+                                            "team": {
+                                                "type": "string"
+                                            },
+                                            "user": {
+                                                "type": "string"
+                                            }
                                         },
                                         "additionalProperties": false
                                     }
                                 ]
                             },
-                            "autoInjectUserId": { "type": "boolean" },
-                            "autoInjectTeamId": { "type": "boolean" },
+                            "autoInjectUserId": {
+                                "type": "boolean"
+                            },
+                            "autoInjectTeamId": {
+                                "type": "boolean"
+                            },
                             "queries": {
                                 "type": "array",
-                                "items": { "type": "string" }
+                                "items": {
+                                    "type": "string"
+                                }
                             },
                             "storage": {
                                 "type": "object",
                                 "description": "Map of storage-bucket source names to the column on this row that holds their file IDs.",
-                                "additionalProperties": { "type": "string" }
+                                "additionalProperties": {
+                                    "type": "string"
+                                }
                             },
-                            "throttle": { "type": "number" },
-                            "cleanupInterval": { "type": "number" },
-                            "minChangeThreshold": { "type": "number" },
-                            "idleThreshold": { "type": "number" },
-                            "enableVisualRendering": { "type": "boolean" },
-                            "includeVelocity": { "type": "boolean" },
+                            "throttle": {
+                                "type": "number"
+                            },
+                            "cleanupInterval": {
+                                "type": "number"
+                            },
+                            "minChangeThreshold": {
+                                "type": "number"
+                            },
+                            "idleThreshold": {
+                                "type": "number"
+                            },
+                            "enableVisualRendering": {
+                                "type": "boolean"
+                            },
+                            "includeVelocity": {
+                                "type": "boolean"
+                            },
                             "persist": {
                                 "description": "Persist this source's rows in IndexedDB and hydrate them before the network on the next visit (stale until the first fresh landing). `true` = boot tier with defaults.",
                                 "oneOf": [
-                                    { "type": "boolean" },
+                                    {
+                                        "type": "boolean"
+                                    },
                                     {
                                         "type": "object",
                                         "properties": {
                                             "tier": {
                                                 "type": "string",
-                                                "enum": ["boot", "lazy"],
+                                                "enum": [
+                                                    "boot",
+                                                    "lazy"
+                                                ],
                                                 "default": "boot",
                                                 "description": "boot: hydrate during data-plugin init, before the first paint; lazy: hydrate on the first $x.<source> read."
                                             },
@@ -204,13 +299,22 @@
                                                 "description": "Field that orders recency for `maxRows` (default $updatedAt if present, else insertion order)."
                                             },
                                             "ttl": {
-                                                "oneOf": [{ "type": "string" }, { "type": "number" }],
+                                                "oneOf": [
+                                                    {
+                                                        "type": "string"
+                                                    },
+                                                    {
+                                                        "type": "number"
+                                                    }
+                                                ],
                                                 "default": "7d",
                                                 "description": "Snapshot lifetime: a duration string (`7d`, `12h`, `30m`) or milliseconds. Expired entries are ignored and deleted."
                                             },
                                             "strip": {
                                                 "type": "array",
-                                                "items": { "type": "string" },
+                                                "items": {
+                                                    "type": "string"
+                                                },
                                                 "description": "Field names or glob patterns removed from every row before it is written. `*secret*`, `*token*`, `*password*` and `credentials*` are always stripped."
                                             }
                                         },
@@ -239,9 +343,16 @@
             "type": "object",
             "description": "Appwrite global configuration. Per-source overrides live on the data entry.",
             "properties": {
-                "projectId": { "type": "string" },
-                "endpoint": { "type": "string", "format": "uri" },
-                "databaseId": { "type": "string" },
+                "projectId": {
+                    "type": "string"
+                },
+                "endpoint": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "databaseId": {
+                    "type": "string"
+                },
                 "devKey": {
                     "type": "string",
                     "description": "May reference an env var via ${VAR_NAME}."
@@ -253,24 +364,54 @@
                             "type": "array",
                             "items": {
                                 "type": "string",
-                                "enum": ["guest", "guest-auto", "guest-manual", "magic", "otp", "oauth", "password"]
+                                "enum": [
+                                    "guest",
+                                    "guest-auto",
+                                    "guest-manual",
+                                    "magic",
+                                    "otp",
+                                    "oauth",
+                                    "password"
+                                ]
                             }
                         },
                         "teams": {
                             "type": "object",
                             "properties": {
-                                "permanent": { "type": "array", "items": { "type": "string" } },
-                                "template": { "type": "array", "items": { "type": "string" } },
-                                "guests": { "type": "boolean", "description": "Seed permanent/template teams for guest (anonymous) sessions too. Off by default." },
-                                "authenticated": { "type": "boolean", "description": "Seed permanent/template teams for authenticated (non-anonymous) sessions. On by default; set false (with guests:true) to make seeding guest-only." }
+                                "permanent": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "template": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "guests": {
+                                    "type": "boolean",
+                                    "description": "Seed permanent/template teams for guest (anonymous) sessions too. Off by default."
+                                },
+                                "authenticated": {
+                                    "type": "boolean",
+                                    "description": "Seed permanent/template teams for authenticated (non-anonymous) sessions. On by default; set false (with guests:true) to make seeding guest-only."
+                                }
                             }
                         },
-                        "guestUpgrade": { "type": "boolean", "description": "Preserve a guest's account (and its teams) when they sign in, instead of replacing it. Works with magic links and OAuth; email OTP cannot convert anonymous accounts (Appwrite limitation). Defaults to the value of teams.guests." },
+                        "guestUpgrade": {
+                            "type": "boolean",
+                            "description": "Preserve a guest's account (and its teams) when they sign in, instead of replacing it. Works with magic links and OAuth; email OTP cannot convert anonymous accounts (Appwrite limitation). Defaults to the value of teams.guests."
+                        },
                         "guestMigration": {
                             "type": "object",
-                            "description": "Carry a guest's teams over to the account they sign into via email OTP (which cannot convert in place). Requires the deployed guest-migration Appwrite Function — see templates/guest-migration-function.",
+                            "description": "Carry a guest's teams over to the account they sign into via email OTP (which cannot convert in place). Requires the deployed guest-migration Appwrite Function \u2014 see templates/guest-migration-function.",
                             "properties": {
-                                "functionId": { "type": "string", "description": "Id of the deployed guest-migration function." }
+                                "functionId": {
+                                    "type": "string",
+                                    "description": "Id of the deployed guest-migration function."
+                                }
                             }
                         },
                         "roles": {
@@ -279,17 +420,30 @@
                                 "type": "object",
                                 "additionalProperties": {
                                     "type": "array",
-                                    "items": { "type": "string" }
+                                    "items": {
+                                        "type": "string"
+                                    }
                                 }
                             }
                         },
-                        "creatorRole": { "type": "string" },
+                        "creatorRole": {
+                            "type": "string"
+                        },
                         "creatorRoles": {
                             "description": "Role(s) the team creator is assigned atomically at creation. null or [] = owner-only (creator holds just Appwrite's intrinsic owner; no template role). Takes precedence over creatorRole.",
                             "oneOf": [
-                                { "type": "string" },
-                                { "type": "array", "items": { "type": "string" } },
-                                { "type": "null" }
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                {
+                                    "type": "null"
+                                }
                             ]
                         }
                     }
@@ -298,7 +452,7 @@
         },
         "status": {
             "type": "object",
-            "description": "Named, top-level-addressable status signals exposed via $status.<name>. Each entry rolls up one or more underlying signals into a single health state. Signal layer only — the author renders their own UI.",
+            "description": "Named, top-level-addressable status signals exposed via $status.<name>. Each entry rolls up one or more underlying signals into a single health state. Signal layer only \u2014 the author renders their own UI.",
             "additionalProperties": {
                 "oneOf": [
                     {
@@ -308,7 +462,9 @@
                     {
                         "type": "array",
                         "description": "Multiple signals rolled up (worst-of by default).",
-                        "items": { "$ref": "#/definitions/statusSignal" }
+                        "items": {
+                            "$ref": "#/definitions/statusSignal"
+                        }
                     },
                     {
                         "type": "object",
@@ -316,11 +472,16 @@
                         "properties": {
                             "signals": {
                                 "type": "array",
-                                "items": { "$ref": "#/definitions/statusSignal" }
+                                "items": {
+                                    "$ref": "#/definitions/statusSignal"
+                                }
                             },
                             "rollup": {
                                 "type": "string",
-                                "enum": ["worst", "best"],
+                                "enum": [
+                                    "worst",
+                                    "best"
+                                ],
                                 "default": "worst"
                             },
                             "refresh": {
@@ -333,7 +494,7 @@
                             },
                             "staleAfter": {
                                 "type": "number",
-                                "description": "Milliseconds without a known signal before the entry reads as stale (default refresh × 3)."
+                                "description": "Milliseconds without a known signal before the entry reads as stale (default refresh \u00d7 3)."
                             }
                         },
                         "additionalProperties": true
@@ -359,7 +520,9 @@
         "ai": {
             "description": "Chat plugin config. Presence (object or bare true) auto-loads the chat plugin ($chat). Custom-adapter projects can use true with no config.",
             "oneOf": [
-                { "type": "boolean" },
+                {
+                    "type": "boolean"
+                },
                 {
                     "type": "object",
                     "additionalProperties": true,
@@ -367,15 +530,38 @@
                         "persist": {
                             "description": "Persisted conversation windows on the shared IndexedDB store: the last `messages` of the `conversations` most recently opened conversations, hydrated (stale) before the adapter load. Off by default; true = defaults.",
                             "oneOf": [
-                                { "type": "boolean" },
+                                {
+                                    "type": "boolean"
+                                },
                                 {
                                     "type": "object",
                                     "additionalProperties": false,
                                     "properties": {
-                                        "messages": { "type": "integer", "minimum": 1, "default": 50 },
-                                        "conversations": { "type": "integer", "minimum": 1, "default": 30 },
-                                        "ttl": { "type": ["string", "number"], "default": "7d", "description": "Duration string (ms|s|m|h|d|w) or milliseconds." },
-                                        "strip": { "type": "array", "items": { "type": "string" }, "description": "Message field names, globs or dotted paths removed before writing, on top of the always-on secret patterns." }
+                                        "messages": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "default": 50
+                                        },
+                                        "conversations": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "default": 30
+                                        },
+                                        "ttl": {
+                                            "type": [
+                                                "string",
+                                                "number"
+                                            ],
+                                            "default": "7d",
+                                            "description": "Duration string (ms|s|m|h|d|w) or milliseconds."
+                                        },
+                                        "strip": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Message field names, globs or dotted paths removed before writing, on top of the always-on secret patterns."
+                                        }
                                     }
                                 }
                             ]
@@ -385,9 +571,11 @@
             ]
         },
         "chat": {
-            "description": "Alias of ai — presence auto-loads the chat plugin ($chat).",
+            "description": "Alias of ai \u2014 presence auto-loads the chat plugin ($chat).",
             "oneOf": [
-                { "type": "boolean" },
+                {
+                    "type": "boolean"
+                },
                 {
                     "type": "object",
                     "additionalProperties": true,
@@ -395,15 +583,38 @@
                         "persist": {
                             "description": "Persisted conversation windows on the shared IndexedDB store: the last `messages` of the `conversations` most recently opened conversations, hydrated (stale) before the adapter load. Off by default; true = defaults.",
                             "oneOf": [
-                                { "type": "boolean" },
+                                {
+                                    "type": "boolean"
+                                },
                                 {
                                     "type": "object",
                                     "additionalProperties": false,
                                     "properties": {
-                                        "messages": { "type": "integer", "minimum": 1, "default": 50 },
-                                        "conversations": { "type": "integer", "minimum": 1, "default": 30 },
-                                        "ttl": { "type": ["string", "number"], "default": "7d", "description": "Duration string (ms|s|m|h|d|w) or milliseconds." },
-                                        "strip": { "type": "array", "items": { "type": "string" }, "description": "Message field names, globs or dotted paths removed before writing, on top of the always-on secret patterns." }
+                                        "messages": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "default": 50
+                                        },
+                                        "conversations": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "default": 30
+                                        },
+                                        "ttl": {
+                                            "type": [
+                                                "string",
+                                                "number"
+                                            ],
+                                            "default": "7d",
+                                            "description": "Duration string (ms|s|m|h|d|w) or milliseconds."
+                                        },
+                                        "strip": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Message field names, globs or dotted paths removed before writing, on top of the always-on secret patterns."
+                                        }
                                     }
                                 }
                             ]
@@ -416,13 +627,49 @@
             "type": "object",
             "description": "Static rendering configuration consumed by mnfst-render.",
             "properties": {
-                "localUrl": { "type": "string", "format": "uri" },
-                "liveUrl": { "type": "string", "format": "uri" },
-                "output": { "type": "string", "default": "dist" },
-                "routerBase": { "type": "string", "default": "" },
+                "localUrl": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "liveUrl": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "output": {
+                    "type": "string",
+                    "default": "dist"
+                },
+                "routerBase": {
+                    "type": "string",
+                    "default": ""
+                },
+                "incremental": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). Anything uncertain renders. Once a ledger exists, every full render refreshes it (participation); explicit false turns capture and recording fully off."
+                },
+                "blockRequests": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "URL patterns (substring match, * glob within a pattern) whose requests are aborted during prerender, e.g. a custom analytics tracker. Patterns are substring-matched \u2014 a short pattern can block more than intended."
+                },
+                "blockTelemetry": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Block well-known analytics and error/RUM collection endpoints (GA, Plausible, Segment, Mixpanel, Meta, Sentry, Bugsnag, Rollbar, Cloudflare RUM, New Relic, Datadog) during prerender so renders don't register as visitors or crash reports. Collection endpoints only, never script loads. Set false to allow."
+                },
+                "runCache": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Fetch each cross-origin URL at most once per render run and replay the first 2xx response to every later page (a prerender is a point-in-time snapshot, so run-level consistency is intended). Failures are never cached and retry on the next page. Set false (or --no-run-cache) to fetch per page."
+                },
                 "locales": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
             "additionalProperties": true
@@ -439,16 +686,20 @@
         },
         "utilities": {
             "type": "object",
-            "description": "Utilities-plugin overrides for classes a plain HTML/component scan can't find on its own — e.g. built from a runtime value (`:class=\"ok ? 'bg-green-500' : 'bg-amber-500'\"`). `safelist` classes are baked into the static utilities sheet (scanClasses/compileUtilities) and treated as covered by the runtime; `patterns` classes are trusted as covered by the runtime only (a regex can't be baked).",
+            "description": "Utilities-plugin overrides for classes a plain HTML/component scan can't find on its own \u2014 e.g. built from a runtime value (`:class=\"ok ? 'bg-green-500' : 'bg-amber-500'\"`). `safelist` classes are baked into the static utilities sheet (scanClasses/compileUtilities) and treated as covered by the runtime; `patterns` classes are trusted as covered by the runtime only (a regex can't be baked).",
             "properties": {
                 "safelist": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": {
+                        "type": "string"
+                    },
                     "description": "Exact utility class names, e.g. [\"bg-amber-500\", \"bg-green-500\"]."
                 },
                 "patterns": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": {
+                        "type": "string"
+                    },
                     "description": "Regex source strings matched against each class token, e.g. \"^bg-(red|green|blue)-[0-9]+$\"."
                 }
             },
@@ -467,21 +718,65 @@
                     "type": "object",
                     "additionalProperties": true,
                     "properties": {
-                        "label": { "type": "string" },
-                        "url": { "type": "string", "description": "HTTP probe target." },
-                        "expect": { "type": "number", "description": "Exact status code to treat as operational (default: any 2xx)." },
-                        "degradedAbove": { "type": "number", "description": "Latency in ms above which the probe reads as degraded." },
-                        "method": { "type": "string" },
-                        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-                        "timeout": { "type": "number" },
-                        "static": { "type": "string", "description": "Literal state (operational | degraded | partial_outage | major_outage | maintenance)." },
-                        "feed": { "type": "string", "description": "URL returning JSON whose state field is read." },
-                        "path": { "type": "string", "description": "Dot-path into a feed response to the state value." },
-                        "mirror": { "type": "string", "description": "Named upstream whose own status feed is reflected (e.g. 'appwrite')." },
-                        "appwriteService": { "type": "string", "description": "Resolves against the global appwrite endpoint's /health." },
-                        "mcp": { "type": "string", "description": "Hosted (Manifest MCP) signal; a feed URL when self-resolving." },
-                        "heartbeat": { "type": "string", "description": "Dead-man's-switch key; call $status.beat(key) to pulse." },
-                        "expectEvery": { "type": "number", "description": "Heartbeat window in ms before it reads as down." }
+                        "label": {
+                            "type": "string"
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "HTTP probe target."
+                        },
+                        "expect": {
+                            "type": "number",
+                            "description": "Exact status code to treat as operational (default: any 2xx)."
+                        },
+                        "degradedAbove": {
+                            "type": "number",
+                            "description": "Latency in ms above which the probe reads as degraded."
+                        },
+                        "method": {
+                            "type": "string"
+                        },
+                        "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "timeout": {
+                            "type": "number"
+                        },
+                        "static": {
+                            "type": "string",
+                            "description": "Literal state (operational | degraded | partial_outage | major_outage | maintenance)."
+                        },
+                        "feed": {
+                            "type": "string",
+                            "description": "URL returning JSON whose state field is read."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Dot-path into a feed response to the state value."
+                        },
+                        "mirror": {
+                            "type": "string",
+                            "description": "Named upstream whose own status feed is reflected (e.g. 'appwrite')."
+                        },
+                        "appwriteService": {
+                            "type": "string",
+                            "description": "Resolves against the global appwrite endpoint's /health."
+                        },
+                        "mcp": {
+                            "type": "string",
+                            "description": "Hosted (Manifest MCP) signal; a feed URL when self-resolving."
+                        },
+                        "heartbeat": {
+                            "type": "string",
+                            "description": "Dead-man's-switch key; call $status.beat(key) to pulse."
+                        },
+                        "expectEvery": {
+                            "type": "number",
+                            "description": "Heartbeat window in ms before it reads as down."
+                        }
                     }
                 }
             ]

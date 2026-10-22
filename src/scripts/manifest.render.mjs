@@ -10,6 +10,7 @@ import { cpus, hostname } from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import {
   NOT_FOUND_PATH,
   scriptSrcSet,
@@ -299,6 +300,10 @@ function parseArgs() {
     if (args[i] === '--wait-after-idle' && args[i + 1]) { out.waitAfterIdle = parseInt(args[++i], 10); continue; }
     if (args[i] === '--concurrency' && args[i + 1]) { out.concurrency = parseInt(args[++i], 10); continue; }
     if (args[i] === '--retries' && args[i + 1]) { out.retries = parseInt(args[++i], 10); continue; }
+    if (args[i] === '--incremental') { out.incremental = true; continue; }
+    if (args[i] === '--no-incremental') { out.noIncremental = true; continue; }
+    if (args[i] === '--run-cache') { out.runCache = true; continue; }
+    if (args[i] === '--no-run-cache') { out.runCache = false; continue; }
     if (args[i] === '--dry-run') { out.dryRun = true; continue; }
     if (args[i] === '--force-lock') { out.forceLock = true; continue; }
     if (args[i] === '--debug-prerender') { out.debugPrerender = true; continue; }
@@ -323,6 +328,25 @@ function loadConfig(rootDir) {
     return { prerender: {} };
   }
   return manifest;
+}
+
+/**
+ * Incremental participation policy.  Recording is on whenever the project
+ * PARTICIPATES: config `render.incremental: true`, the --incremental flag, or
+ * a valid ledger already on disk (so one opted-in render upgrades every later
+ * plain run).  --no-incremental disables skipping only — a participating run
+ * still records and refreshes the ledger.  Explicit config `incremental:
+ * false` is fully off, ledger or not.  Never-opted-in stays fully inert.
+ */
+function resolveIncrementalPolicy({ configValue, flagIncremental, flagNoIncremental, ledgerExists }) {
+  const participates = flagIncremental === true
+    ? true
+    : configValue === false ? false : (configValue === true || !!ledgerExists);
+  return {
+    record: participates,
+    skip: participates && flagNoIncremental !== true,
+    explicit: flagIncremental === true || configValue === true,
+  };
 }
 
 function resolveConfig() {
@@ -381,6 +405,23 @@ function resolveConfig() {
     paths: Array.isArray(pre.paths)
       ? pre.paths.map((p) => String(p).replace(/^\/+|\/+$/g, '')).filter(Boolean)
       : [],
+    // Incremental renders: see resolveIncrementalPolicy.  `incremental` gates
+    // skipping; `incrementalRecord` gates capture + ledger writes.
+    ...(() => {
+      const p = resolveIncrementalPolicy({
+        configValue: pre.incremental,
+        flagIncremental: cli.incremental,
+        flagNoIncremental: cli.noIncremental,
+        ledgerExists: loadRouteLedger(root) !== null,
+      });
+      return { incremental: p.skip, incrementalRecord: p.record, incrementalExplicit: p.explicit };
+    })(),
+    // Requests ABORTED during prerender (substring match, `*` glob within a
+    // pattern).  blockTelemetry (default on) adds TELEMETRY_BLOCK_PATTERNS.
+    blockRequests: Array.isArray(pre.blockRequests) ? pre.blockRequests.map((p) => String(p)).filter(Boolean) : [],
+    blockTelemetry: pre.blockTelemetry !== false,
+    // Run-scoped cross-origin response cache (render.runCache / --no-run-cache).
+    runCache: cli.runCache ?? pre.runCache !== false,
     dryRun: !!cli.dryRun,
     forceLock: !!cli.forceLock,
     debugPrerender: !!cli.debugPrerender,
@@ -983,10 +1024,17 @@ function generateLocaleVariantHtml({
 
 // --- Resolve $x bindings in <head> (data-head meta/link are injected with :attr="$x.path" but never evaluated) ---
 
+// js-yaml loads only when a YAML content source is read.
+let _jsYaml;
+function parseYamlContent(raw) {
+  if (_jsYaml === undefined) {
+    try { _jsYaml = require('js-yaml'); } catch { _jsYaml = null; }
+  }
+  return _jsYaml ? _jsYaml.load(raw) : {};
+}
+
 function loadContentForPrerender(manifest, rootDir, locale) {
-  let jsYaml = null;
-  try { jsYaml = require('js-yaml'); } catch { /* skip */ }
-  return loadContentFrom(manifest, fsReader(rootDir), locale, jsYaml ? (raw) => jsYaml.load(raw) : null);
+  return loadContentFrom(manifest, fsReader(rootDir), locale, parseYamlContent);
 }
 
 function parseCsvToKeyValue(filePath, valueLocale) {
@@ -1555,6 +1603,674 @@ function startStaticServer(rootDir) {
   });
 }
 
+// --- Incremental rendering (opt-in) -------------------------------------------
+// Ledger at <root>/.mnfst-cache/routes.json: per-route input fingerprints from
+// the last fully successful run.  Skipping is only ever an optimization — any
+// uncertainty (missing file, failed resolution, parse error) falls back to
+// rendering, never to skipping.
+
+const LEDGER_SCHEMA_VERSION = 2;
+
+const sha256Full = (data) => createHash('sha256').update(data).digest('hex');
+
+/** Deterministic JSON: object keys sorted recursively. */
+function stableStringify(value) {
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
+  }
+  return value === undefined ? 'null' : JSON.stringify(value);
+}
+
+/** Nearest package.json identity — part of every signature so a renderer
+ *  upgrade invalidates the whole ledger.  A run from the repo tree (not an
+ *  installed mnfst-render) also folds in the script's own content hash, since
+ *  the repo version doesn't bump per edit.  Unidentifiable → never skip. */
+function rendererPackageIdentity() {
+  let id = 'dev';
+  for (const rel of ['package.json', '../package.json', '../../package.json']) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(__dirname, rel), 'utf8'));
+      if (pkg && pkg.version) { id = `${pkg.name || 'mnfst-render'}@${pkg.version}`; break; }
+    } catch { /* keep looking */ }
+  }
+  if (!id.startsWith('mnfst-render@')) {
+    try {
+      const own = readFileSync(fileURLToPath(import.meta.url));
+      const page = readFileSync(fileURLToPath(new URL('./manifest.render.page.mjs', import.meta.url)));
+      id += '+' + sha256Full(Buffer.concat([own, page])).slice(0, 16);
+    } catch { id += '+' + Date.now(); }
+  }
+  return id;
+}
+
+/** Same pathname → disk-file resolution as startStaticServer (incl. the SPA
+ *  index.html fallback); null when nothing would serve the path. */
+function resolveStaticRequestFile(rootDir, pathname) {
+  const rootResolved = resolve(rootDir);
+  const segments = String(pathname || '/').split('/').filter((s) => s && s !== '..');
+  const rel = (p) => relative(rootResolved, p).split(sep).join('/');
+  let resolvedPath;
+  try { resolvedPath = resolve(join(rootResolved, ...segments)); } catch { resolvedPath = null; }
+  if (resolvedPath && resolvedPath.startsWith(rootResolved)) {
+    try {
+      if (existsSync(resolvedPath)) {
+        const st = statSync(resolvedPath);
+        if (!st.isDirectory()) return rel(resolvedPath);
+        const idx = join(resolvedPath, 'index.html');
+        if (existsSync(idx)) return rel(idx);
+      }
+    } catch { /* fall through to the SPA fallback */ }
+  }
+  return existsSync(join(rootResolved, 'index.html')) ? 'index.html' : null;
+}
+
+const PINNED_VERSION_RE = /@\d+\.\d+\.\d+/;
+
+// Bodies above this are never fingerprinted — the route renders instead.
+const EXTERNAL_BODY_HASH_LIMIT = 8 * 1024 * 1024;
+
+// A prerender is not a visitor (Playcom measured 465 fake GA page_views per
+// render), and error/RUM reporters phone home from headless too (a widget
+// crash in headless spams the site's production error tracker every render).
+// Analytics + error/RUM collection endpoints only — never script loads.
+const TELEMETRY_BLOCK_PATTERNS = [
+  'google-analytics.com/g/collect',
+  '*.google-analytics.com/mp/collect',
+  'stats.g.doubleclick.net',
+  '*.analytics.google.com/g/collect',
+  'plausible.io/api/event',
+  'api.segment.io/v1',
+  'api.mixpanel.com/track',
+  '.facebook.com/tr?',
+  '.facebook.com/tr/',
+  'ingest.sentry.io',
+  'notify.bugsnag.com',
+  'api.rollbar.com',
+  'cloudflareinsights.com/cdn-cgi/rum',
+  'bam.nr-data.net',
+  'browser-intake-datadoghq.com',
+];
+
+/** URL predicate from block patterns: substring match, `*` globs within a
+ *  pattern.  null when there is nothing to block. */
+function compileBlockMatcher(patterns) {
+  const regs = [];
+  for (const p of patterns || []) {
+    const src = String(p).split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    if (src) regs.push(new RegExp(src));
+  }
+  if (!regs.length) return null;
+  return (url) => regs.some((r) => r.test(String(url)));
+}
+
+// --- Run-scoped cross-origin response cache ------------------------------------
+// Within one run every cross-origin GET is fetched AT MOST ONCE: the first 2xx
+// body+headers are replayed to every later page.  A prerender is a point-in-
+// time snapshot, so run-level consistency is a feature — and N pages
+// re-fetching identical framework assets manufactures the burst that fails.
+const RUN_CACHE_MAX_ENTRY_BYTES = EXTERNAL_BODY_HASH_LIMIT;
+const RUN_CACHE_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+const RUN_CACHE_MAX_ENTRIES = 500;
+
+/** Interception verdict: blocked URLs abort FIRST (never cached/served); only
+ *  cross-origin http(s) GETs are cache-eligible; everything else passes. */
+function classifyRunCacheRequest({ url, method, localOrigin, isBlocked }) {
+  if (isBlocked && isBlocked(url)) return 'block';
+  let u;
+  try { u = new URL(url); } catch { return 'bypass'; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'bypass';
+  if (method !== 'GET' || u.origin === localOrigin) return 'bypass';
+  return 'cache';
+}
+
+/** Headers safe to replay via request.respond: the stored body is the decoded
+ *  bytes, so the original transfer's encoding/length no longer apply.  ETag,
+ *  Last-Modified and Content-Type pass through verbatim — capture must observe
+ *  identical metadata on served and fetched responses. */
+function runCacheReplayHeaders(headers) {
+  const out = {};
+  for (const [k, v] of Object.entries(headers || {})) {
+    const key = k.toLowerCase();
+    if (key === 'content-encoding' || key === 'content-length'
+      || key === 'transfer-encoding' || key === 'set-cookie') continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function createRunCache({
+  maxEntryBytes = RUN_CACHE_MAX_ENTRY_BYTES,
+  maxTotalBytes = RUN_CACHE_MAX_TOTAL_BYTES,
+  maxEntries = RUN_CACHE_MAX_ENTRIES,
+} = {}) {
+  const entries = new Map(); // url → { status, headers, body }; insertion = recency
+  const inflight = new Map(); // url → { promise, settle }
+  let totalBytes = 0;
+  const stats = { served: 0, servedUrls: new Set(), stored: 0 };
+  return {
+    stats,
+    get size() { return entries.size; },
+    get totalBytes() { return totalBytes; },
+    /** Hit refreshes LRU recency. */
+    get(url) {
+      const e = entries.get(url);
+      if (!e) return null;
+      entries.delete(url); entries.set(url, e);
+      return e;
+    },
+    peek: (url) => entries.get(url) || null,
+    /** First 2xx wins; failures and over-cap bodies are never cached. */
+    set(url, entry) {
+      const { status, body } = entry || {};
+      if (!(status >= 200 && status < 300)) return false;
+      if (!body || typeof body.length !== 'number' || body.length > maxEntryBytes) return false;
+      if (entries.has(url)) return true;
+      entries.set(url, entry);
+      totalBytes += body.length;
+      stats.stored++;
+      while (entries.size > maxEntries || totalBytes > maxTotalBytes) {
+        const oldest = entries.keys().next().value;
+        totalBytes -= entries.get(oldest).body.length;
+        entries.delete(oldest);
+      }
+      return true;
+    },
+    noteServed(url) { stats.served++; stats.servedUrls.add(url); },
+    flight: (url) => inflight.get(url) || null,
+    /** One network fetch per URL at a time: concurrent pages await the first.
+     *  The timer settles null if nothing ever answers (page died mid-flight). */
+    beginFlight(url, timeoutMs = 30000) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      const f = {
+        promise,
+        settle(entry) {
+          if (inflight.get(url) === f) inflight.delete(url);
+          clearTimeout(timer);
+          resolve(entry || null);
+        },
+      };
+      const timer = setTimeout(() => f.settle(null), timeoutMs);
+      timer.unref?.();
+      inflight.set(url, f);
+      return f;
+    },
+    settleFlight(url, entry) { inflight.get(url)?.settle(entry); },
+  };
+}
+
+/** Navigation budget: min(pageTimeout, 60s), keeping pageTimeout's 0=disabled. */
+const deriveNavTimeoutMs = (pageTimeoutMs) =>
+  (pageTimeoutMs > 0 ? Math.min(pageTimeoutMs, 60000) : 0);
+
+/** Cross-origin response → { validator } | { flag } | {} (2xx without
+ *  validator: content-address the body).  A 304 is the page's OWN conditional
+ *  revalidation answered "unchanged" — a hit, not a failure: the validator
+ *  comes from the 304's headers, else the request's conditional values.
+ *  A 304 has no body, so it never falls through to buffer(). */
+function classifyExternalResponse(status, responseHeaders = {}, requestHeaders = {}) {
+  if (status === 304) {
+    const etag = responseHeaders['etag'] || requestHeaders['if-none-match'];
+    if (etag) return { validator: { etag } };
+    const lastModified = responseHeaders['last-modified'] || requestHeaders['if-modified-since'];
+    if (lastModified) return { validator: { lastModified } };
+    return { flag: 'external 304 without validator' };
+  }
+  if (status < 200 || status >= 300) return { flag: `external ${status}` };
+  const etag = responseHeaders['etag'];
+  const lastModified = responseHeaders['last-modified'];
+  if (etag || lastModified) return { validator: etag ? { etag } : { lastModified } };
+  return {};
+}
+
+/**
+ * Incremental input-capture hooks over plain request/response shapes
+ * (Puppeteer-independent for unit tests).  Same-origin GETs map to disk files
+ * via the static server's own resolution; anything un-fingerprintable marks
+ * the route non-cacheable.  A blocked request never happened: not an input,
+ * not a failure, never awaited.
+ */
+function createCaptureHooks({ capture, localOrigin, resolveRequest, isBlocked }) {
+  const flag = (reason) => flagNonCacheable(capture, reason);
+  return {
+    request({ url, method }) {
+      try {
+        const u = new URL(url);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+        if (isBlocked && isBlocked(u.href)) return;
+        if (method !== 'GET') { flag(`non-GET ${method} ${u.href}`); return; }
+        if (u.origin !== localOrigin) {
+          // Pinned-version URL: the URL is its own identity.  Anything else
+          // must get a PROCESSED response (validator or content hash) by the
+          // end of the route or it stays in `awaiting` → route renders.
+          if (PINNED_VERSION_RE.test(u.pathname)) capture.externalPinned.add(u.href);
+          else capture.awaiting.add(u.href);
+          return;
+        }
+        const rel = resolveRequest(u.pathname);
+        if (rel) { capture.requested.set(u.pathname, rel); capture.files.add(rel); }
+        else flag(`unresolvable request ${u.pathname}`);
+      } catch { flag('unparseable request URL'); }
+    },
+    requestFailed({ url }) {
+      if (isBlocked && isBlocked(url)) return;
+      try { capture.awaiting.delete(new URL(url).href); } catch { /* flagged below */ }
+      flag(`request failed: ${url}`);
+    },
+    response({ url, status, headers, requestHeaders, buffer }) {
+      try {
+        const u = new URL(url);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+        if (isBlocked && isBlocked(u.href)) return;
+        if (u.origin === localOrigin || PINNED_VERSION_RE.test(u.pathname)) {
+          if (status >= 400) flag(`${status} ${u.href}`);
+          return;
+        }
+        const verdict = classifyExternalResponse(status, headers || {}, requestHeaders || {});
+        if (verdict.flag) { capture.awaiting.delete(u.href); flag(`${verdict.flag} ${u.href}`); return; }
+        if (verdict.validator) {
+          capture.externalValidated.set(u.href, verdict.validator);
+          capture.awaiting.delete(u.href);
+          return;
+        }
+        // No validator (e.g. cdn.manifestx.dev): content-address the bytes;
+        // revalidation re-downloads and compares.  Unreadable or oversized
+        // body → render.  `awaiting` clears only once the hash is recorded.
+        capture.pending.push(
+          Promise.resolve().then(buffer)
+            .then((body) => {
+              if (body.length > EXTERNAL_BODY_HASH_LIMIT) { flag(`external response too large to fingerprint: ${u.href}`); return; }
+              capture.externalValidated.set(u.href, { contentHash: sha256Full(body) });
+              capture.awaiting.delete(u.href);
+            })
+            .catch(() => flag(`external response unreadable: ${u.href}`))
+        );
+      } catch { flag('unparseable response URL'); }
+    },
+  };
+}
+
+// ALL distinct non-cacheable causes, not just the first: one render surfaces
+// every third party to block/fix instead of one per 65-minute run.
+const NONCACHEABLE_REASONS_CAP = 20;
+
+/** URLs in a cause reduced to host+path (no scheme/query) so per-page query
+ *  strings collapse into one actionable line. */
+function normalizeNonCacheableCause(reason) {
+  return String(reason).replace(/https?:\/\/[^\s]+/g, (m) => {
+    try { const u = new URL(m); return u.host + u.pathname; } catch { return m; }
+  });
+}
+
+/** `.reason` stays the first cause (ledger back-compat); `.reasons` collects
+ *  every distinct cause, ordered, deduped on the normalized form, capped. */
+function flagNonCacheable(capture, reason) {
+  if (!capture.nonCacheable) { capture.nonCacheable = true; capture.reason = reason; }
+  const list = capture.reasons || (capture.reasons = []);
+  if (list.length >= NONCACHEABLE_REASONS_CAP) return;
+  const key = normalizeNonCacheableCause(reason);
+  if (!list.some((r) => normalizeNonCacheableCause(r) === key)) list.push(reason);
+}
+
+const externalValidatorToken = (url, v) =>
+  `${url}#etag:${v?.etag || ''}|lm:${v?.lastModified || ''}|ch:${v?.contentHash || ''}`;
+
+/** Post-drain settlement: an unpinned cross-origin request that never got a
+ *  processed response (memory-cache hit, late/unreadable body) is an
+ *  UNVERIFIED external dependency — the route must render. */
+function settleCaptureAwaiting(capture) {
+  if (capture.awaiting && capture.awaiting.size > 0 && !capture.nonCacheable) {
+    flagNonCacheable(capture, `unverified external: ${[...capture.awaiting][0]}`);
+  }
+  return capture;
+}
+
+/** Re-check a recorded cross-origin validator.  ETag/Last-Modified go out as
+ *  a conditional request where only a 304 counts as unchanged; a validator-less
+ *  resource was content-addressed at capture, so it is re-downloaded and its
+ *  bytes re-hashed.  Any other status, a redirect, or a network failure means
+ *  render.  Memoized per run. */
+function createExternalRevalidator({ request, download } = {}) {
+  const requestFn = request || (async (url, headers) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    try {
+      const res = await fetch(url, { method: 'GET', headers, redirect: 'manual', signal: ctrl.signal });
+      try { await res.body?.cancel(); } catch { /* no body on 304 */ }
+      return res.status;
+    } finally { clearTimeout(t); }
+  });
+  const downloadFn = download || (async (url) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 20000);
+    try {
+      const res = await fetch(url, { method: 'GET', redirect: 'manual', signal: ctrl.signal });
+      if (res.status < 200 || res.status >= 300) return null;
+      if (Number(res.headers.get('content-length') || 0) > EXTERNAL_BODY_HASH_LIMIT) return null;
+      return Buffer.from(await res.arrayBuffer());
+    } finally { clearTimeout(t); }
+  });
+  const cache = new Map();
+  return (url, validator) => {
+    const key = externalValidatorToken(url, validator);
+    if (!cache.has(key)) {
+      let check;
+      if (validator?.etag || validator?.lastModified) {
+        const headers = validator.etag
+          ? { 'If-None-Match': validator.etag }
+          : { 'If-Modified-Since': validator.lastModified };
+        check = Promise.resolve().then(() => requestFn(url, headers)).then((status) => status === 304);
+      } else if (validator?.contentHash) {
+        check = Promise.resolve().then(() => downloadFn(url))
+          .then((body) => !!body && body.length <= EXTERNAL_BODY_HASH_LIMIT
+            && sha256Full(body) === validator.contentHash);
+      } else {
+        check = Promise.resolve(false);
+      }
+      cache.set(key, check.catch(() => false));
+    }
+    return cache.get(key);
+  };
+}
+
+/** relPath acceptable for joining under a base dir. */
+const isSafeRelPath = (rel) =>
+  typeof rel === 'string' && rel.length > 0 && !rel.includes('\\') && rel[0] !== '/'
+  && !/^[A-Za-z]:/.test(rel) && !rel.split('/').some((s) => s === '..' || s === '');
+
+function computeRouteSignature({ globalKey, inputPairs, requestedPairs = [], externalTokens }) {
+  return sha256Full([
+    globalKey,
+    [...inputPairs].sort().join('\n'),
+    [...requestedPairs].sort().join('\n'),
+    [...externalTokens].sort().join('\n'),
+  ].join('|'));
+}
+
+function routesLedgerPath(rootDir) { return join(rootDir, '.mnfst-cache', 'routes.json'); }
+
+/** null on absence, parse failure, or schema mismatch — full render. */
+function loadRouteLedger(rootDir) {
+  try {
+    const parsed = JSON.parse(readFileSync(routesLedgerPath(rootDir), 'utf8'));
+    if (!parsed || parsed.schemaVersion !== LEDGER_SCHEMA_VERSION) return null;
+    if (!parsed.routes || typeof parsed.routes !== 'object') return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function rawHtmlCachePath(rootDir, routeKey) {
+  return join(rootDir, '.mnfst-cache', 'render-html', `${sha256Full(String(routeKey)).slice(0, 24)}.html.gz`);
+}
+
+/** Disk files loadContentForPrerender reads for `locale` — Node-side inputs
+ *  (head meta / x-binding resolution) that the page itself never fetches. */
+function contentFilesForPrerender(manifest, locale) {
+  const data = manifest?.data?.content;
+  if (!data) return [];
+  const loc = locale || 'en';
+  const strip = (p) => String(p).replace(/^\/+/, '');
+  if (typeof data === 'string' && data.endsWith('.csv')) return [strip(data)];
+  if (data && typeof data === 'object' && typeof data.locales === 'string') return [strip(data.locales)];
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const filePath = data[loc] || data[Object.keys(data)[0]];
+    if (typeof filePath === 'string') return [strip(filePath)];
+  }
+  return [];
+}
+
+/**
+ * Per-route skip decision.  Skip requires: a well-formed entry, every recorded
+ * request pathname still resolving to the same file (a new physical file can
+ * shadow a prior SPA-fallback resolution), every recorded input re-hashing to
+ * its recorded value NOW, the recomputed signature matching (config/version/
+ * manifest/externals), every recorded output byte-identical in the previous
+ * final output (closes the edit→render-elsewhere→revert hole), and every
+ * cross-origin validator answering 304 to a conditional request NOW.
+ * Dependency-injected for unit tests.
+ */
+async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateExternal, globalKey, outputHash }) {
+  if (!entry || typeof entry !== 'object') return { skip: false, reason: 'no ledger entry' };
+  if (entry.nonCacheable) return { skip: false, reason: 'non-cacheable' };
+  if (typeof entry.sig !== 'string' || !entry.inputs || typeof entry.inputs !== 'object'
+    || !entry.requested || typeof entry.requested !== 'object'
+    || !Array.isArray(entry.external)
+    || !entry.externalValidated || typeof entry.externalValidated !== 'object'
+    || !entry.outputs || typeof entry.outputs !== 'object'
+    || Object.keys(entry.outputs).length === 0) {
+    return { skip: false, reason: 'malformed entry' };
+  }
+  const requestedPairs = [];
+  for (const [pathname, relPath] of Object.entries(entry.requested)) {
+    if (!isSafeRelPath(relPath)) return { skip: false, reason: `unsafe path in entry: ${relPath}` };
+    if (resolveRequest(pathname) !== relPath) return { skip: false, reason: `resolution changed: ${pathname}` };
+    requestedPairs.push(`${pathname}=>${relPath}`);
+  }
+  const inputPairs = [];
+  for (const [relPath, recorded] of Object.entries(entry.inputs)) {
+    if (!isSafeRelPath(relPath)) return { skip: false, reason: `unsafe path in entry: ${relPath}` };
+    const now = hashInput(relPath);
+    if (now !== recorded) return { skip: false, reason: `input changed: ${relPath}` };
+    inputPairs.push(`${relPath}:${now}`);
+  }
+  const externalTokens = [
+    ...entry.external,
+    ...Object.entries(entry.externalValidated).map(([u, v]) => externalValidatorToken(u, v)),
+  ];
+  if (computeRouteSignature({ globalKey, inputPairs, requestedPairs, externalTokens }) !== entry.sig) {
+    return { skip: false, reason: 'signature mismatch' };
+  }
+  for (const [relPath, recorded] of Object.entries(entry.outputs)) {
+    if (!isSafeRelPath(relPath)) return { skip: false, reason: `unsafe path in entry: ${relPath}` };
+    if (outputHash(relPath) !== recorded) return { skip: false, reason: `previous output missing or changed: ${relPath}` };
+  }
+  // Network last: everything local must already agree.
+  for (const [url, validator] of Object.entries(entry.externalValidated)) {
+    if (!(await revalidateExternal(url, validator))) return { skip: false, reason: `external changed: ${url}` };
+  }
+  return { skip: true };
+}
+
+/**
+ * Run-scoped incremental state: ledger, memoized hashing/resolution, the skip
+ * pass, per-route capture records, and the end-of-run ledger write.
+ */
+function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, globalKey, deps, skipEnabled = true }) {
+  const ledger = loadRouteLedger(rootResolved);
+  const revalidate = createExternalRevalidator();
+  const hashFileAt = (base, relPath) => {
+    try { return sha256Full(readFileSync(join(base, relPath))); } catch { return null; }
+  };
+  // 'absent' is a value, not a miss: a recorded-absent file that stays absent
+  // matches, one that appears mismatches.
+  const skipHashes = new Map();
+  const hashInput = (relPath) => {
+    if (!skipHashes.has(relPath)) skipHashes.set(relPath, hashFileAt(rootResolved, relPath) ?? 'absent');
+    return skipHashes.get(relPath);
+  };
+  const captures = new Map(); // routeKey → capture record of a route rendered this run
+  const carried = new Map();  // routeKey → previous entry revalidated and reused this run
+  const state = { disabled: false, skipped: 0, reasons: {}, skipEnabled };
+  const disable = (reason) => {
+    if (state.disabled) return;
+    state.disabled = true;
+    process.stdout.write(`prerender: incremental disabled for this run (${reason}) — rendering everything\n`);
+  };
+  // Why-rendered buckets for the run summary.
+  const noteRender = (reason, entry) => {
+    const r = String(reason || '');
+    let bucket;
+    if (r === 'non-cacheable') {
+      const detail = String(entry?.reason || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim().replace(/[:\s]+$/, '');
+      bucket = detail ? `non-cacheable: ${detail}` : 'non-cacheable';
+    } else if (r.startsWith('no ledger entry')) bucket = 'new';
+    else if (r.startsWith('input ')) bucket = 'changed inputs';
+    else if (r.startsWith('resolution changed')) bucket = 'changed resolution';
+    else if (r.startsWith('external changed')) bucket = 'changed externals';
+    else if (r.startsWith('signature mismatch')) bucket = 'changed signature';
+    else if (r.startsWith('previous output')) bucket = 'previous output missing/changed';
+    else bucket = r.slice(0, 48) || 'unknown';
+    state.reasons[bucket] = (state.reasons[bucket] || 0) + 1;
+  };
+
+  return {
+    state,
+    captures,
+    recordRoute(routeKey, record) { captures.set(routeKey, record); },
+
+    /** Skip pass: returns the subset of `paths` that must render; copies the
+     *  previous outputs of the rest into staging and carries their entries. */
+    async partition(paths) {
+      if (!skipEnabled) return paths; // recording-only run: render all, refresh the ledger
+      if (!ledger) {
+        for (let i = 0; i < paths.length; i++) noteRender('no ledger entry');
+        return paths;
+      }
+      const toRender = [];
+      for (const seg of paths) {
+        if (state.disabled) { noteRender('incremental disabled'); toRender.push(seg); continue; }
+        const entry = ledger.routes[seg];
+        let verdict;
+        try {
+          verdict = await evaluateRouteSkip({
+            entry, hashInput, globalKey,
+            resolveRequest: (pathname) => resolveStaticRequestFile(rootResolved, pathname),
+            revalidateExternal: revalidate,
+            outputHash: (rel) => hashFileAt(previousOutput, rel),
+          });
+        } catch (err) {
+          disable(`skip evaluation failed: ${err?.message || err}`);
+          noteRender('incremental disabled');
+          toRender.push(seg);
+          continue;
+        }
+        // A base whose locale variants substitute needs its cached raw DOM
+        // snapshot back; absent or unreadable → render the base.
+        let rawHtml = null;
+        if (verdict.skip && !entry.promoted && deps.hasPendingVariants(seg)) {
+          try { rawHtml = gunzipSync(readFileSync(rawHtmlCachePath(rootResolved, seg))).toString('utf8'); }
+          catch { rawHtml = null; }
+          if (!rawHtml) verdict = { skip: false, reason: 'raw snapshot missing' };
+        }
+        if (verdict.skip) {
+          try {
+            for (const rel of Object.keys(entry.outputs)) {
+              const dest = join(stagingOutput, rel);
+              mkdirSync(dirname(dest), { recursive: true });
+              cpSync(join(previousOutput, rel), dest);
+            }
+          } catch (err) {
+            verdict = { skip: false, reason: `copy failed: ${err?.message || err}` };
+          }
+        }
+        if (!verdict.skip) { noteRender(verdict.reason, entry); toRender.push(seg); continue; }
+        if (entry.promoted) deps.promoteVariants(seg);
+        else if (rawHtml) deps.cacheRawHtml(seg, rawHtml);
+        if (Array.isArray(entry.utility)) for (const b of entry.utility) deps.pushUtilityBlock(b);
+        carried.set(seg, entry);
+        state.skipped++;
+        process.stdout.write(`  [skip] ${seg === '' ? '/' : '/' + seg} (unchanged)\n`);
+      }
+      return toRender;
+    },
+
+    /** Written atomically, only after the staged output replaced the previous
+     *  one — covers exactly this run's skipped + successfully rendered routes.
+     *  Inputs are re-hashed HERE, not from the skip pass's memo, so a mid-run
+     *  edit is recorded as it is now and a later revert can't skip-match. */
+    async writeLedger(finalOutput) {
+      if (state.disabled) return false;
+      const writeHashes = new Map();
+      const hashNow = (rel) => {
+        if (!writeHashes.has(rel)) writeHashes.set(rel, hashFileAt(rootResolved, rel) ?? 'absent');
+        return writeHashes.get(rel);
+      };
+      const routes = {};
+      for (const [key, entry] of carried) routes[key] = entry;
+      for (const [key, cap] of captures) {
+        if (cap.nonCacheable) {
+          routes[key] = { nonCacheable: true, reason: cap.reason };
+          // Additive: tolerated by the malformed-entry check (non-cacheable
+          // entries short-circuit before the shape test), so no schema bump.
+          if (Array.isArray(cap.reasons) && cap.reasons.length) routes[key].reasons = cap.reasons;
+          continue;
+        }
+        const requested = {};
+        const requestedPairs = [];
+        for (const pathname of [...cap.requested.keys()].sort()) {
+          const rel = cap.requested.get(pathname);
+          requested[pathname] = rel;
+          requestedPairs.push(`${pathname}=>${rel}`);
+        }
+        const inputs = {};
+        const inputPairs = [];
+        for (const rel of [...cap.files].sort()) {
+          const h = hashNow(rel);
+          inputs[rel] = h;
+          inputPairs.push(`${rel}:${h}`);
+        }
+        const outputs = {};
+        let missingOut = null;
+        for (const rel of cap.outputs) {
+          const h = hashFileAt(finalOutput, rel);
+          if (!h) { missingOut = rel; break; }
+          outputs[rel] = h;
+        }
+        if (missingOut) { routes[key] = { nonCacheable: true, reason: `output unreadable: ${missingOut}` }; continue; }
+        const external = [...cap.externalPinned].sort();
+        const externalValidated = {};
+        const externalTokens = [...external];
+        for (const url of [...cap.externalValidated.keys()].sort()) {
+          const v = cap.externalValidated.get(url);
+          externalValidated[url] = v;
+          externalTokens.push(externalValidatorToken(url, v));
+        }
+        const entry = {
+          sig: computeRouteSignature({ globalKey, inputPairs, requestedPairs, externalTokens }),
+          inputs, requested, external, externalValidated, outputs,
+        };
+        if (Array.isArray(cap.utility) && cap.utility.length) entry.utility = cap.utility;
+        if (deps.isPromotedBase(key)) {
+          entry.promoted = true;
+        } else if (deps.hasPendingVariants(key)) {
+          const raw = deps.getRawHtml(key);
+          if (!raw) { routes[key] = { nonCacheable: true, reason: 'raw snapshot unavailable' }; continue; }
+          const p = rawHtmlCachePath(rootResolved, key);
+          mkdirSync(dirname(p), { recursive: true });
+          writeFileSync(p, gzipSync(Buffer.from(raw, 'utf8')));
+        }
+        routes[key] = entry;
+      }
+      const target = routesLedgerPath(rootResolved);
+      mkdirSync(dirname(target), { recursive: true });
+      const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+      writeFileSync(tmp, JSON.stringify({
+        schemaVersion: LEDGER_SCHEMA_VERSION,
+        createdAt: new Date().toISOString(),
+        routes,
+      }) + '\n', 'utf8');
+      renameSync(tmp, target);
+      // GC: snapshots no route references, and orphaned ledger tmp files.
+      try {
+        const keep = new Set(Object.keys(routes).map((k) => basename(rawHtmlCachePath(rootResolved, k))));
+        const snapDir = join(rootResolved, '.mnfst-cache', 'render-html');
+        if (existsSync(snapDir)) {
+          for (const f of readdirSync(snapDir)) {
+            if (!keep.has(f)) { try { unlinkSync(join(snapDir, f)); } catch { /* in use elsewhere */ } }
+          }
+        }
+        for (const f of readdirSync(join(rootResolved, '.mnfst-cache'))) {
+          if (f.startsWith('routes.json.') && f.endsWith('.tmp')) {
+            try { unlinkSync(join(rootResolved, '.mnfst-cache', f)); } catch { /* best-effort */ }
+          }
+        }
+      } catch { /* GC is best-effort */ }
+      return true;
+    },
+  };
+}
+
 // --- Output lock (one render per output dir) ---------------------------------
 
 const LOCK_SUFFIX = '.mnfst-lock';
@@ -1985,6 +2701,9 @@ async function runPrerender(config) {
   // a wedged page.evaluate() may have poisoned the shared browser process.
   // pageTimeout is configurable via manifest.prerender.pageTimeout; 0 disables.
   const pageTimeoutMs = Math.max(0, pre.pageTimeout ?? Math.max(120000, (config.wait ?? 30000) * 4));
+  // Navigation shares the page budget up to 60s (was a hard 30s cap that
+  // failed runs while a 120s page budget sat unused); 0 stays disabled.
+  const navTimeoutMs = deriveNavTimeoutMs(pageTimeoutMs);
   // The recycle gate must never swap the browser out from under a live page,
   // so its drain wait has to outlast the per-page timeout above (every page
   // is guaranteed to release its slot by then). Configurable via
@@ -2112,7 +2831,11 @@ async function runPrerender(config) {
    * segment). When it does, every locale variant of this base is moved from
    * substitution to a real per-locale Puppeteer render.
    */
+  // Bases whose locale variants were promoted this run — persisted in the
+  // route ledger so a future skipped run re-promotes instead of substituting.
+  const promotedBaseSegs = new Set();
   function promoteLocaleVariants(basePathSeg) {
+    promotedBaseSegs.add(basePathSeg);
     const variants = variantsByBase.get(basePathSeg);
     if (!variants || !variants.length) return;
     process.stdout.write(
@@ -2142,9 +2865,89 @@ async function runPrerender(config) {
 
   // baseHtmlCache: base path segment → raw DOM HTML captured before any Node.js transforms
   const baseHtmlCache = new Map();
-  const puppeteerTotal = puppeteerPaths.length;
 
-  process.stdout.write(`Prerendering ${pathTotal} path(s) (${puppeteerTotal} via Puppeteer, ${localeVariantPaths.length} via substitution)...\n`);
+  // --- Incremental skip pass (see the incremental-rendering section) ----------
+  // Skips reuse files from the PREVIOUS final output, which still exists while
+  // this run builds into staging.  Recording runs whenever the project
+  // participates (incrementalRecord); skipping only when `incremental` is on.
+  // Never-opted-in → no capture, no ledger, no new work.
+  let inc = null;
+  if (config.incrementalRecord && !config.serve) {
+    // Input capture maps request pathnames to disk via the built-in server's
+    // resolution; an external --local server voids that mapping.
+    if (config.incrementalExplicit) {
+      process.stdout.write('prerender: incremental needs the built-in static server — ignoring it for this run\n');
+    }
+  } else if (config.incrementalRecord) {
+    if (!config.incrementalExplicit) {
+      process.stdout.write('prerender: incremental active from existing ledger (.mnfst-cache/routes.json; --no-incremental to disable)\n');
+    }
+    let manifestContentHash = 'missing';
+    try { manifestContentHash = sha256Full(readFileSync(join(config.root, 'manifest.json'))); } catch { /* missing */ }
+    // Output-relevant resolved options (CLI included).  pathList is in here
+    // because per-page breadcrumb structured data depends on the full set.
+    const optionsSalt = sha256Full(stableStringify({
+      wait: config.wait,
+      waitAfterIdle: config.waitAfterIdle,
+      routerBase: config.routerBase,
+      localeRouteExclude: config.localeRouteExclude,
+      locales: config.locales ?? null,
+      redirects: config.redirects,
+      localeSubstitution: config.localeSubstitution,
+      localeSubstitutionExclude: config.localeSubstitutionExclude,
+      localeSubstitutionExcludePaths: config.localeSubstitutionExcludePaths,
+      paths: config.paths,
+      lazyIcons: config.lazyIcons,
+      seo: config.seo,
+      liveUrl: config.liveUrl,
+      utilitiesBundle: bundleUtilities,
+      tailwindBuilt,
+      // Blocking changes what a page loads; entries from another regime must not skip.
+      blockRequests: [...(config.blockRequests || [])].sort(),
+      blockTelemetry: config.blockTelemetry,
+      pathList: [...pathList].sort(),
+    }));
+    inc = createIncrementalRun({
+      rootResolved,
+      previousOutput: finalOutput,
+      stagingOutput: outputResolved,
+      globalKey: `${LEDGER_SCHEMA_VERSION}|${rendererPackageIdentity()}|${optionsSalt}|${manifestContentHash}`,
+      deps: {
+        hasPendingVariants: (seg) => variantsByBase.has(seg),
+        promoteVariants: promoteLocaleVariants,
+        isPromotedBase: (seg) => promotedBaseSegs.has(seg),
+        cacheRawHtml: (seg, html) => baseHtmlCache.set(seg, html),
+        getRawHtml: (seg) => baseHtmlCache.get(seg),
+        pushUtilityBlock: (b) => utilityBlocks.push(b),
+      },
+      skipEnabled: config.incremental,
+    });
+  }
+
+  // --- Request blocking during prerender ---------------------------------------
+  // Telemetry collection endpoints are blocked by default (blockTelemetry:
+  // false opts out); render.blockRequests adds user patterns.  Blocked
+  // requests are aborted via CDP and are invisible to incremental capture.
+  const blockPatterns = [
+    ...(config.blockTelemetry ? TELEMETRY_BLOCK_PATTERNS : []),
+    ...(config.blockRequests || []),
+  ];
+  const blockMatcher = compileBlockMatcher(blockPatterns);
+  const telemetryMatcher = config.blockTelemetry ? compileBlockMatcher(TELEMETRY_BLOCK_PATTERNS) : null;
+  const cdpBlockedUrls = blockPatterns.map((p) => `*${p}*`);
+  let telemetryBlockedCount = 0;
+
+  // Run cache (render.runCache, default on): one cross-origin fetch per URL per
+  // run, replayed to every later page.  With it active, blocking folds into the
+  // same interception path (Network.setBlockedURLs does not layer under
+  // request interception).
+  const runCache = config.runCache ? createRunCache() : null;
+
+  const puppeteerRenderPaths = inc ? await inc.partition(puppeteerPaths) : puppeteerPaths;
+  let incRendered = puppeteerRenderPaths.length;
+  const puppeteerTotal = puppeteerRenderPaths.length;
+
+  process.stdout.write(`Prerendering ${pathTotal} path(s) (${puppeteerTotal} via Puppeteer, ${localeVariantPaths.length} via substitution${inc ? `, ${inc.state.skipped} skipped unchanged` : ''})...\n`);
 
   // Asset-wide fingerprint used as a cache-invalidator for OG snapshots:
   // changes to theme CSS, manifest config, or the root index.html mean every
@@ -2184,9 +2987,94 @@ async function runPrerender(config) {
     // live for the whole call.
     const page = await browser.newPage();
     if (attempt) attempt.cancel = () => page.close();
+    // Incremental input capture: same-origin GETs map to disk files via the
+    // static server's own resolution; anything un-fingerprintable marks the
+    // route non-cacheable (it will always render).
+    let capture = null;
+    if (inc && !inc.state.disabled) {
+      capture = {
+        requested: new Map(), files: new Set(),
+        externalPinned: new Set(), externalValidated: new Map(),
+        awaiting: new Set(), pending: [], nonCacheable: false, reason: null, reasons: [],
+      };
+      const hooks = createCaptureHooks({
+        capture,
+        localOrigin: new URL(config.localUrl).origin,
+        resolveRequest: (pathname) => resolveStaticRequestFile(rootResolved, pathname),
+        isBlocked: blockMatcher,
+      });
+      page.on('request', (req) => hooks.request({ url: req.url(), method: req.method() }));
+      page.on('requestfailed', (req) => hooks.requestFailed({ url: req.url() }));
+      page.on('response', (res) => hooks.response({
+        url: res.url(), status: res.status(), headers: res.headers(),
+        requestHeaders: res.request().headers(),
+        buffer: () => res.buffer(),
+      }));
+    }
+    if (telemetryMatcher) {
+      page.on('requestfailed', (req) => { if (telemetryMatcher(req.url())) telemetryBlockedCount++; });
+    }
     try {
-      const { html: rawHtml } = await renderRouteDom(page, {
-        url, pathSeg, is404, currentLocale, locales, timeout, displayPath,
+      if (runCache) {
+        // Run cache via request interception.  Blocked URLs abort FIRST and are
+        // never cached or served; same-origin and non-GET traffic passes
+        // through untouched.  A served response is a real fulfilled response:
+        // the page.on capture listeners above observe it like a network one.
+        const pageLocalOrigin = new URL(config.localUrl).origin;
+        const done = (p) => p.catch(() => { /* page/request gone */ });
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+          try {
+            const verdict = classifyRunCacheRequest({
+              url: req.url(), method: req.method(),
+              localOrigin: pageLocalOrigin, isBlocked: blockMatcher,
+            });
+            if (verdict === 'block') return done(req.abort('blockedbyclient'));
+            if (verdict === 'bypass') return done(req.continue());
+            const href = new URL(req.url()).href;
+            const hit = runCache.get(href);
+            if (hit) { runCache.noteServed(href); return done(req.respond(hit)); }
+            const flight = runCache.flight(href);
+            if (flight) {
+              return flight.promise.then((entry) => {
+                if (entry) { runCache.noteServed(href); return done(req.respond(entry)); }
+                return done(req.continue()); // first fetch failed: retry the network
+              });
+            }
+            runCache.beginFlight(href);
+            return done(req.continue());
+          } catch { return done(req.continue()); }
+        });
+        page.on('response', (res) => {
+          try {
+            if (res.request().method() !== 'GET') return;
+            const u = new URL(res.url());
+            if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin === pageLocalOrigin) return;
+            const prior = runCache.peek(u.href);
+            if (prior) return runCache.settleFlight(u.href, prior);
+            const status = res.status();
+            if (status < 200 || status >= 300) return runCache.settleFlight(u.href, null);
+            const headers = runCacheReplayHeaders(res.headers());
+            res.buffer()
+              .then((body) => {
+                const entry = { status, headers, body };
+                runCache.settleFlight(u.href, runCache.set(u.href, entry) ? entry : null);
+              })
+              .catch(() => runCache.settleFlight(u.href, null));
+          } catch { /* not a cacheable response */ }
+        });
+        page.on('requestfailed', (req) => {
+          try { runCache.settleFlight(new URL(req.url()).href, null); } catch { /* unparseable */ }
+        });
+      } else if (cdpBlockedUrls.length > 0) {
+        // CDP URL blocking (telemetry + render.blockRequests): requests abort at
+        // the network layer; coexists with the page.on capture listeners above.
+        const cdp = await page.createCDPSession();
+        await cdp.send('Network.enable');
+        await cdp.send('Network.setBlockedURLs', { urls: cdpBlockedUrls });
+      }
+      const { html: rawHtml, earlySnapshotUrl } = await renderRouteDom(page, {
+        url, pathSeg, is404, currentLocale, locales, timeout, navTimeoutMs, displayPath,
         baseUrl: config.localUrl,
         liveUrl: config.liveUrl,
         pipelineTimeout: config.pipelineTimeout,
@@ -2200,7 +3088,7 @@ async function runPrerender(config) {
       });
       // Cache raw DOM snapshot for locale variant generation (before any Node.js transforms).
       if (typeof onRawHtml === 'function') onRawHtml(pathSeg, rawHtml);
-      const { html, utilityBlocks: pageBlocks } = finalizeRouteHtml(rawHtml, {
+      const { html, utilityBlocks: routeUtilityBlocks } = finalizeRouteHtml(rawHtml, {
         pathSeg, is404, currentLocale, locales, defaultLocale, routerBasePath, tailwindBuilt, bundleUtilities,
         originalScriptSrcs: buildOriginalScriptSrcSet(config.root),
         xData: { manifest, content: loadContentForPrerender(manifest, config.root, currentLocale) },
@@ -2208,10 +3096,29 @@ async function runPrerender(config) {
         localeRouteExclude: config.localeRouteExclude,
         liveUrl: config.liveUrl,
       });
-      for (const b of pageBlocks) utilityBlocks.push(b);
+      for (const b of routeUtilityBlocks) utilityBlocks.push(b);
       if (attempt?.abandoned) return; // a retry owns the output now
       mkdirSync(outDir, { recursive: true });
       writeFileSync(outFile, html, 'utf8');
+      if (capture) {
+        await Promise.allSettled(capture.pending); // drain in-flight body hashes
+        settleCaptureAwaiting(capture);            // anything still pending → render
+        const outputs = [relative(config.output, outFile).split(sep).join('/')];
+        if (earlySnapshotUrl) outputs.push(String(earlySnapshotUrl).replace(/^\//, ''));
+        // Node-side head/meta inputs the page never fetches.
+        for (const rel of contentFilesForPrerender(manifest, currentLocale)) capture.files.add(rel);
+        inc.recordRoute(pathSeg, {
+          requested: capture.requested,
+          files: capture.files,
+          externalPinned: capture.externalPinned,
+          externalValidated: capture.externalValidated,
+          nonCacheable: capture.nonCacheable,
+          reason: capture.reason,
+          reasons: capture.reasons,
+          outputs,
+          utility: routeUtilityBlocks,
+        });
+      }
       pushDebug({
         path: displayPath,
         stage: 'wrote',
@@ -2261,13 +3168,17 @@ async function runPrerender(config) {
   }
 
   try {
-    await renderPuppeteerPaths(puppeteerPaths);
+    await renderPuppeteerPaths(puppeteerRenderPaths);
     // Any base page found to have per-locale runtime content during the pass
     // above gets its locale variants rendered here — real Puppeteer render
     // per locale instead of the (incorrect) text substitution.
     if (promotedPaths.length > 0) {
-      process.stdout.write(`prerender: rendering ${promotedPaths.length} promoted locale variant(s) via Puppeteer...\n`);
-      await renderPuppeteerPaths(promotedPaths);
+      const promotedToRender = inc ? await inc.partition(promotedPaths) : promotedPaths;
+      incRendered += promotedToRender.length;
+      if (promotedToRender.length > 0) {
+        process.stdout.write(`prerender: rendering ${promotedToRender.length} promoted locale variant(s) via Puppeteer...\n`);
+        await renderPuppeteerPaths(promotedToRender);
+      }
     }
   } finally {
     await closeBrowser(browser);
@@ -2313,6 +3224,39 @@ async function runPrerender(config) {
   if (failedPaths.length > 0) {
     const sample = failedPaths.slice(0, 5).map((f) => `${f.path}: ${f.message}`).join(' | ');
     throw new Error(`prerender failed for ${failedPaths.length}/${pathTotal} paths. Sample: ${sample}`);
+  }
+
+  if (inc) {
+    if (!inc.state.skipEnabled) {
+      process.stdout.write(`prerender: rendered ${incRendered} (ledger refreshed, skipping off)\n`);
+    } else {
+      const why = Object.entries(inc.state.reasons).sort((a, b) => b[1] - a[1]).map(([r, c]) => `${c} ${r}`);
+      process.stdout.write(`prerender: skipped ${inc.state.skipped} unchanged, rendered ${incRendered}${why.length ? ` (${why.join(', ')})` : ''}\n`);
+    }
+    // Every distinct non-cacheable cause across the run, host+path visible:
+    // what to block or fix, found in ONE render instead of serially.
+    const causes = new Map();
+    for (const cap of inc.captures.values()) {
+      if (!cap.nonCacheable) continue;
+      const list = Array.isArray(cap.reasons) && cap.reasons.length ? cap.reasons : [cap.reason];
+      for (const r of list) {
+        if (!r) continue;
+        const key = normalizeNonCacheableCause(r);
+        causes.set(key, (causes.get(key) || 0) + 1);
+      }
+    }
+    if (causes.size > 0) {
+      const rows = [...causes.entries()].sort((a, b) => b[1] - a[1]);
+      process.stdout.write('prerender: non-cacheable causes —\n');
+      for (const [cause, n] of rows.slice(0, 10)) process.stdout.write(`  ${n}× ${cause}\n`);
+      if (rows.length > 10) process.stdout.write(`  … +${rows.length - 10} more cause(s)\n`);
+    }
+  }
+  if (runCache && runCache.stats.served > 0) {
+    process.stdout.write(`prerender: run cache served ${runCache.stats.served} cross-origin requests (${runCache.stats.servedUrls.size} unique)\n`);
+  }
+  if (telemetryBlockedCount > 0) {
+    process.stdout.write(`prerender: blocked ${telemetryBlockedCount} telemetry requests (render.blockTelemetry: false to allow)\n`);
   }
 
   if (config.debugPrerender) {
@@ -2380,6 +3324,16 @@ async function runPrerender(config) {
   if (existsSync(finalOutput)) rmSync(finalOutput, { recursive: true });
   renameSync(stagingOutput, finalOutput);
   config.output = finalOutput;
+
+  // Ledger only after the swap — a run that failed anywhere above never
+  // records anything, so the next run re-renders whatever is uncertain.
+  if (inc) {
+    try {
+      await inc.writeLedger(finalOutput);
+    } catch (err) {
+      process.stderr.write(`prerender: incremental ledger not written (${err?.message || err})\n`);
+    }
+  }
 }
 
 // Auto-run main() when this file is the direct entry point (node manifest.render.mjs)
@@ -2418,4 +3372,27 @@ export {
   isLocaleSubstitutionExcludedPath,
   loadAllLocaleContentData,
   buildSubstitutionPairs,
+  LEDGER_SCHEMA_VERSION,
+  stableStringify,
+  computeRouteSignature,
+  evaluateRouteSkip,
+  loadRouteLedger,
+  resolveStaticRequestFile,
+  createExternalRevalidator,
+  contentFilesForPrerender,
+  isSafeRelPath,
+  settleCaptureAwaiting,
+  EXTERNAL_BODY_HASH_LIMIT,
+  resolveIncrementalPolicy,
+  classifyExternalResponse,
+  createCaptureHooks,
+  compileBlockMatcher,
+  TELEMETRY_BLOCK_PATTERNS,
+  createRunCache,
+  classifyRunCacheRequest,
+  runCacheReplayHeaders,
+  deriveNavTimeoutMs,
+  flagNonCacheable,
+  normalizeNonCacheableCause,
+  NONCACHEABLE_REASONS_CAP,
 };

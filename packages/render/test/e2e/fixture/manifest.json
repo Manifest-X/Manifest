@@ -26,6 +26,7 @@
     "output": ".out",
     "routerBase": "",
     "browserRecycleEvery": 2,
-    "concurrency": 2
+    "concurrency": 2,
+    "blockRequests": ["127.0.0.1:5102/custom-tracker"]
   }
 }
