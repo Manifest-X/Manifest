@@ -88,5 +88,12 @@ describe('data path discovery: only routes some x-route shows', () => {
     });
     expect(routes).toContain('pricing');
   });
+
+  it('a bound x-route keeps the plain-route mount too', () => {
+    const routes = site('<x-docs x-route="docs"></x-docs><div :x-route="page.route"></div>', { docs: '/data/docs.yaml' }, {
+      'docs.yaml': yaml('Guides', 'intro'),
+    });
+    expect(routes).toContain('docs/guides/intro');
+  });
 });
 

@@ -3263,7 +3263,7 @@ function discoverRoutesFrom(manifest, read, warn = () => {}) {
 
   const wildcardBases = getWildcardBasesFromConditions(allConditions);
   // A bound x-route can show any path: keep every data path.
-  discoverDataPaths(manifest, read, wildcardBases, locales, warn, boundRoute ? ['*'] : [...allConditions]).forEach((p) => pathSet.add(p));
+  discoverDataPaths(manifest, read, wildcardBases, locales, warn, boundRoute ? [...allConditions, '*'] : [...allConditions]).forEach((p) => pathSet.add(p));
 
   const arr = [...pathSet].map((p) => (p === '/' ? '' : p.replace(/^\//, '').replace(/\/$/, '') || ''));
   return arr.includes('') ? arr : ['', ...arr.filter(Boolean)];
