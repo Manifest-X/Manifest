@@ -312,6 +312,25 @@ function normalizeRouteCondition(cond) {
   return { kind: 'path', path: trimmed };
 }
 
+/** ManifestRouting.matchesCondition for a locale-stripped path. */
+function routeConditionMatches(path, condition) {
+  const p = String(path).replace(/^\/+|\/+$/g, '') || '/';
+  if (condition.includes('*')) {
+    if (condition === '*') return true;
+    return p.startsWith(condition.replace('*', '').replace(/^\/+|\/+$/g, '') + '/');
+  }
+  if (condition.startsWith('=')) {
+    const exact = condition.slice(1);
+    return exact === '/' ? p === '/' : p === exact.replace(/^\/+|\/+$/g, '');
+  }
+  if (condition.startsWith('/')) {
+    if (condition === '/') return p === '/';
+    const route = condition.replace(/^\//, '');
+    return p === route || p.startsWith(route + '/');
+  }
+  return p.includes(condition);
+}
+
 function conditionsToPaths(conditions) {
   const paths = new Set();
   paths.add('/');
@@ -3095,8 +3114,15 @@ function parseCsvPaths(text) {
   return paths;
 }
 
-function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], warn = () => {}) {
+function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], warn = () => {}, conditions = []) {
   const paths = new Set();
+  // Plain routes that show their children too (`docs`, `/docs`; not `=docs`): a source named after one mounts there.
+  const plainBases = conditions
+    .filter((c) => !c.includes('*') && !c.startsWith('=') && !c.startsWith('!'))
+    .map((c) => c.replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
+  // With no wildcard base, a data path counts only if some x-route shows it; a site without any keeps them all.
+  const routed = conditions.filter((c) => !c.startsWith('!') && normalizeRouteCondition(c).kind !== 'root');
   const data = manifest.data;
   if (!data || typeof data !== 'object') return paths;
   const localeSet = new Set((locales || []).map((l) => String(l).toLowerCase()));
@@ -3104,9 +3130,9 @@ function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], war
   function shouldIncludeDataPath(rawPath) {
     const p = String(rawPath || '').replace(/^\/+|\/+$/g, '');
     if (!p || p.includes('#') || p.includes('?') || p.includes('*')) return false;
-    if (wildcardBases.length === 0) return true;
     const segs = p.split('/');
     const rest = segs.length > 1 && localeSet.has(segs[0].toLowerCase()) ? segs.slice(1).join('/') : p;
+    if (wildcardBases.length === 0) return routed.length === 0 || routed.some((c) => routeConditionMatches(rest, c));
     return wildcardBases.some((base) => rest.startsWith(base + '/'));
   }
 
@@ -3126,6 +3152,8 @@ function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], war
         warn(`prerender: data source "${sourceKey}" mounts under ${mount}/*\n`);
       } else if (nested.length > 1) {
         warn(`prerender: data source "${sourceKey}" matches ${nested.map((b) => b + '/*').join(', ')}; not mounted (ambiguous)\n`);
+      } else if (plainBases.includes(sourceKey)) {
+        mount = sourceKey;
       }
     }
     mounts.set(sourceKey, mount);
@@ -3136,7 +3164,7 @@ function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], war
     const p = String(rawPath || '').replace(/^\/+|\/+$/g, '');
     if (!p) return [];
     const candidates = [p];
-    if (wildcardBases.length === 0) return candidates;
+    if (wildcardBases.length === 0 && plainBases.length === 0) return candidates;
     const mount = mountFor(sourceKey);
     if (!mount) return candidates;
     const parts = p.split('/');
@@ -3217,7 +3245,7 @@ function discoverRoutesFrom(manifest, read, warn = () => {}) {
   }
 
   const wildcardBases = getWildcardBasesFromConditions(allConditions);
-  discoverDataPaths(manifest, read, wildcardBases, locales, warn).forEach((p) => pathSet.add(p));
+  discoverDataPaths(manifest, read, wildcardBases, locales, warn, [...allConditions]).forEach((p) => pathSet.add(p));
 
   const arr = [...pathSet].map((p) => (p === '/' ? '' : p.replace(/^\//, '').replace(/\/$/, '') || ''));
   return arr.includes('') ? arr : ['', ...arr.filter(Boolean)];
