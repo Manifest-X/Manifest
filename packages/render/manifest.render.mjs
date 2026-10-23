@@ -1872,6 +1872,24 @@ function createCaptureHooks({ capture, localOrigin, resolveRequest, isBlocked })
         if (verdict.validator) {
           capture.externalValidated.set(u.href, verdict.validator);
           capture.awaiting.delete(u.href);
+          // Bytes beside the validator: revalidation byte-compares when an
+          // origin stamps a fresh validator over identical content.  Over-cap
+          // or unreadable body → validator-only (today's entry), never a flag.
+          // A 304 has no body.
+          if (status !== 304) {
+            capture.pending.push(
+              Promise.resolve().then(buffer)
+                .then((body) => {
+                  if (body.length > EXTERNAL_BODY_HASH_LIMIT) return;
+                  const cur = capture.externalValidated.get(u.href);
+                  if (cur && cur.etag === verdict.validator.etag
+                    && cur.lastModified === verdict.validator.lastModified) {
+                    capture.externalValidated.set(u.href, { ...verdict.validator, contentHash: sha256Full(body) });
+                  }
+                })
+                .catch(() => { /* validator-only entry */ })
+            );
+          }
           return;
         }
         // No validator (e.g. cdn.manifestx.dev): content-address the bytes;
@@ -1927,18 +1945,32 @@ function settleCaptureAwaiting(capture) {
 }
 
 /** Re-check a recorded cross-origin validator.  ETag/Last-Modified go out as
- *  a conditional request where only a 304 counts as unchanged; a validator-less
- *  resource was content-addressed at capture, so it is re-downloaded and its
- *  bytes re-hashed.  Any other status, a redirect, or a network failure means
- *  render.  Memoized per run. */
+ *  a conditional request: a 304 is unchanged (fast path); a 2xx with a stored
+ *  content hash is byte-compared — a changing validator over identical bytes
+ *  is unchanged (origins that stamp Last-Modified per request), and the fresh
+ *  validator+hash is remembered (`.freshest`) so carried entries self-heal.
+ *  A validator-less resource was content-addressed at capture, so it is
+ *  re-downloaded and its bytes re-hashed.  Any other status, a redirect, or a
+ *  network failure means render.  Memoized per run. */
 function createExternalRevalidator({ request, download } = {}) {
-  const requestFn = request || (async (url, headers) => {
+  const requestFn = request || (async (url, headers, wantBody) => {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 10000);
+    const t = setTimeout(() => ctrl.abort(), wantBody ? 20000 : 10000);
     try {
       const res = await fetch(url, { method: 'GET', headers, redirect: 'manual', signal: ctrl.signal });
-      try { await res.body?.cancel(); } catch { /* no body on 304 */ }
-      return res.status;
+      const out = {
+        status: res.status,
+        etag: res.headers.get('etag') || undefined,
+        lastModified: res.headers.get('last-modified') || undefined,
+        body: null,
+      };
+      if (wantBody && res.status >= 200 && res.status < 300
+        && Number(res.headers.get('content-length') || 0) <= EXTERNAL_BODY_HASH_LIMIT) {
+        try { out.body = Buffer.from(await res.arrayBuffer()); } catch { out.body = null; }
+      } else {
+        try { await res.body?.cancel(); } catch { /* no body on 304 */ }
+      }
+      return out;
     } finally { clearTimeout(t); }
   });
   const downloadFn = download || (async (url) => {
@@ -1952,7 +1984,8 @@ function createExternalRevalidator({ request, download } = {}) {
     } finally { clearTimeout(t); }
   });
   const cache = new Map();
-  return (url, validator) => {
+  const observed = new Map(); // url → freshest validator+hash proven unchanged this run
+  const revalidate = (url, validator) => {
     const key = externalValidatorToken(url, validator);
     if (!cache.has(key)) {
       let check;
@@ -1960,7 +1993,21 @@ function createExternalRevalidator({ request, download } = {}) {
         const headers = validator.etag
           ? { 'If-None-Match': validator.etag }
           : { 'If-Modified-Since': validator.lastModified };
-        check = Promise.resolve().then(() => requestFn(url, headers)).then((status) => status === 304);
+        check = Promise.resolve().then(() => requestFn(url, headers, !!validator.contentHash)).then((res) => {
+          const r = (res && typeof res === 'object') ? res : { status: res };
+          if (r.status === 304) return true;
+          // A changing validator is a hint, not proof: with stored bytes in
+          // hand, equal content is unchanged.  No stored hash (old entries,
+          // 304-captured, oversized), oversized or unreadable body → changed.
+          if (r.status < 200 || r.status >= 300 || !validator.contentHash) return false;
+          if (!r.body || r.body.length > EXTERNAL_BODY_HASH_LIMIT) return false;
+          if (sha256Full(r.body) !== validator.contentHash) return false;
+          observed.set(url, {
+            ...(r.etag ? { etag: r.etag } : r.lastModified ? { lastModified: r.lastModified } : {}),
+            contentHash: validator.contentHash,
+          });
+          return true;
+        });
       } else if (validator?.contentHash) {
         check = Promise.resolve().then(() => downloadFn(url))
           .then((body) => !!body && body.length <= EXTERNAL_BODY_HASH_LIMIT
@@ -1971,6 +2018,40 @@ function createExternalRevalidator({ request, download } = {}) {
       cache.set(key, check.catch(() => false));
     }
     return cache.get(key);
+  };
+  revalidate.freshest = (url) => observed.get(url) || null;
+  return revalidate;
+}
+
+/** A carried (skipped) route self-heals: externalValidated values refreshed to
+ *  the freshest validator+hash revalidation proved unchanged, so a well-behaved
+ *  origin returns to the 304 fast path next run and a misbehaving one costs
+ *  exactly one GET+compare per unique URL per run.  Any refresh re-signs the
+ *  entry from its own recorded pairs. */
+function refreshCarriedEntry(entry, freshest, globalKey) {
+  if (!entry || entry.nonCacheable || !entry.externalValidated) return entry;
+  let changed = false;
+  const externalValidated = {};
+  for (const [url, v] of Object.entries(entry.externalValidated)) {
+    const f = freshest(url);
+    if (f && externalValidatorToken(url, f) !== externalValidatorToken(url, v)) {
+      externalValidated[url] = f;
+      changed = true;
+    } else externalValidated[url] = v;
+  }
+  if (!changed) return entry;
+  return {
+    ...entry,
+    externalValidated,
+    sig: computeRouteSignature({
+      globalKey,
+      inputPairs: Object.entries(entry.inputs).map(([rel, h]) => `${rel}:${h}`),
+      requestedPairs: Object.entries(entry.requested).map(([p, rel]) => `${p}=>${rel}`),
+      externalTokens: [
+        ...entry.external,
+        ...Object.entries(externalValidated).map(([u, v]) => externalValidatorToken(u, v)),
+      ],
+    }),
   };
 }
 
@@ -2027,7 +2108,8 @@ function contentFilesForPrerender(manifest, locale) {
  * its recorded value NOW, the recomputed signature matching (config/version/
  * manifest/externals), every recorded output byte-identical in the previous
  * final output (closes the edit→render-elsewhere→revert hole), and every
- * cross-origin validator answering 304 to a conditional request NOW.
+ * cross-origin validator answering 304 to a conditional request NOW (or, with
+ * stored bytes, a 2xx whose body hashes identically).
  * Dependency-injected for unit tests.
  */
 async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateExternal, globalKey, outputHash }) {
@@ -2187,7 +2269,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
         return writeHashes.get(rel);
       };
       const routes = {};
-      for (const [key, entry] of carried) routes[key] = entry;
+      for (const [key, entry] of carried) routes[key] = refreshCarriedEntry(entry, revalidate.freshest, globalKey);
       for (const [key, cap] of captures) {
         if (cap.nonCacheable) {
           routes[key] = { nonCacheable: true, reason: cap.reason };
@@ -3379,6 +3461,7 @@ export {
   loadRouteLedger,
   resolveStaticRequestFile,
   createExternalRevalidator,
+  refreshCarriedEntry,
   contentFilesForPrerender,
   isSafeRelPath,
   settleCaptureAwaiting,
