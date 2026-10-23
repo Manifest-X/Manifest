@@ -85,6 +85,20 @@ async function initializeAppwriteClient() {
     return appwriteClientPromise;
 }
 
+// Shared Realtime: ONE instance (one socket) per tab, keyed to the client it
+// wraps. Auth identity events drop it (below) so the next use rebuilds against
+// the current session; manifest.data.realtime.js re-binds live channels.
+let realtimeCache = null;
+let realtimeClient = null;
+function getSharedRealtime(client) {
+    if (!client || !window.Appwrite?.Realtime) return null;
+    if (!realtimeCache || realtimeClient !== client) {
+        realtimeCache = new window.Appwrite.Realtime(client);
+        realtimeClient = client;
+    }
+    return realtimeCache;
+}
+
 // Get Appwrite data services (TablesDB, Storage, Realtime)
 // Works with or without auth plugin
 async function getAppwriteDataServices() {
@@ -96,7 +110,7 @@ async function getAppwriteDataServices() {
     return {
         tablesDB: window.Appwrite.TablesDB ? new window.Appwrite.TablesDB(client) : null,
         storage: window.Appwrite.Storage ? new window.Appwrite.Storage(client) : null,
-        realtime: window.Appwrite.Realtime ? new window.Appwrite.Realtime(client) : null
+        realtime: getSharedRealtime(client)
     };
 }
 
@@ -104,7 +118,10 @@ async function getAppwriteDataServices() {
 let authCheck = null;
 let authVerified = false;
 ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized']
-    .forEach(type => window.addEventListener(type, () => { authCheck = null; authVerified = false; }));
+    .forEach(type => window.addEventListener(type, () => {
+        authCheck = null; authVerified = false;
+        realtimeCache = null; realtimeClient = null; // socket re-authenticates as the new identity
+    }));
 
 async function verifyAuthenticated() {
     if (!window.ManifestAppwriteAuthConfig || authVerified) return;

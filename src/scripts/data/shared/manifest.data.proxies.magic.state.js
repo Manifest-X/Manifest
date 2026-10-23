@@ -1,5 +1,5 @@
 /* Manifest Data Sources - Magic Method State Properties */
-// $loading, $error, $ready, $stale, $fresh state properties
+// $loading, $error, $ready, $stale, $fresh, $realtimeOverflow state properties
 //
 // $stale: true until the first network-fresh landing of this page-load is
 //   applied (rows from a fetch, `$query`, or the memory cache of a fetch made
@@ -7,12 +7,15 @@
 //   reports through $loading. Single-reveal UIs gate on `!$stale`.
 // $fresh: promise resolving at that same first fresh landing; never rejects
 //   (a failed reload keeps old rows and sets $error). Per page-load.
+// $realtimeOverflow: realtime events not applied since the last load (bounded
+//   growth caps); reset to 0 on each load.
 
-const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh'];
+const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow'];
 
 function defaultStateValue(prop) {
     if (prop === '$error') return null;
     if (prop === '$stale') return true;
+    if (prop === '$realtimeOverflow') return 0;
     return false;
 }
 
@@ -41,6 +44,8 @@ function getStateProperty(prop, dataSourceName) {
         return state.ready || false;
     } else if (prop === '$stale') {
         return state.stale !== false;
+    } else if (prop === '$realtimeOverflow') {
+        return state.realtimeOverflow || 0;
     }
 
     return undefined;

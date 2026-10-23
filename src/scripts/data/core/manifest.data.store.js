@@ -296,7 +296,8 @@ function writeSource(dataSourceName, data, options = {}) {
         error: options.error !== undefined ? options.error : currentState.error,
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null),
-        stale: fresh ? false : currentState.stale !== false
+        stale: fresh ? false : currentState.stale !== false,
+        realtimeOverflow: currentState.realtimeOverflow || 0 // set via setSourceState (realtime caps)
     };
     store[`_${dataSourceName}_state`] = newState;
     if (fresh) markFresh(dataSourceName);

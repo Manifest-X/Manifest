@@ -354,6 +354,59 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
     return [...scopeQueries, ...userQueries];
 }
 
+// Client-side row matcher for realtime events: evaluates a source's configured
+// filter queries against one row. Liveness over precision: anything
+// unevaluable — search, an unknown operator, or a $auth. arg that can't resolve
+// synchronously — counts as a MATCH so live events are never silently dropped.
+const NON_FILTER_METHODS = new Set(['limit', 'offset', 'orderAsc', 'orderDesc', 'select', 'cursorAfter', 'cursorBefore']);
+
+function rowMatchesQueries(row, queriesConfig) {
+    if (!row || !Array.isArray(queriesConfig) || queriesConfig.length === 0) return true;
+    return queriesConfig.every(query => matchQuery(row, query));
+}
+
+function matchQuery(row, query) {
+    if (!Array.isArray(query) || query.length === 0) return true;
+    let interpolated;
+    try {
+        interpolated = interpolateQuery(query);
+    } catch (e) {
+        if (e === NOT_READY) return true; // unresolved $auth. arg
+        throw e;
+    }
+    const [method, ...args] = interpolated;
+    if (NON_FILTER_METHODS.has(method)) return true;
+    if (method === 'and') return Array.isArray(args[0]) ? args[0].every(sub => matchQuery(row, sub)) : true;
+    if (method === 'or') return Array.isArray(args[0]) ? args[0].some(sub => matchQuery(row, sub)) : true;
+
+    const attr = args[0];
+    const val = row ? row[attr] : undefined;
+    const values = Array.isArray(args[1]) ? args[1] : [args[1]];
+    const anyEqual = () => Array.isArray(val)
+        ? values.some(v => val.some(el => el === v))
+        : values.some(v => val === v);
+    const cmp = (bound, op) => val !== null && val !== undefined && bound !== null && bound !== undefined && op(val, bound);
+
+    switch (method) {
+        case 'equal': return anyEqual();
+        case 'notEqual': return !anyEqual();
+        case 'lessThan': return cmp(args[1], (a, b) => a < b);
+        case 'lessThanEqual': return cmp(args[1], (a, b) => a <= b);
+        case 'greaterThan': return cmp(args[1], (a, b) => a > b);
+        case 'greaterThanEqual': return cmp(args[1], (a, b) => a >= b);
+        case 'between': return cmp(args[1], (a, b) => a >= b) && cmp(args[2], (a, b) => a <= b);
+        case 'isNull': return val === null || val === undefined;
+        case 'isNotNull': return val !== null && val !== undefined;
+        case 'startsWith': return typeof val === 'string' && values.some(v => val.startsWith(String(v)));
+        case 'endsWith': return typeof val === 'string' && values.some(v => val.endsWith(String(v)));
+        case 'contains':
+            if (Array.isArray(val)) return values.some(v => val.some(el => el === v));
+            if (typeof val === 'string') return values.some(v => val.includes(String(v)));
+            return false;
+        default: return true; // search / unknown operator: unevaluable
+    }
+}
+
 // Convert query array to Appwrite Query object
 function toAppwriteQuery(queryArray) {
     if (!Array.isArray(queryArray) || queryArray.length === 0) {
@@ -439,6 +492,7 @@ window.ManifestDataQueries = {
     getAuthValue,
     buildQueries,
     buildAppwriteQueries,
+    rowMatchesQueries,
     toAppwriteQuery,
     ALLOWED_VARIABLES,
     DEFAULT_SCOPE_COLUMNS
