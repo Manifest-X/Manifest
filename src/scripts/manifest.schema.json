@@ -245,6 +245,31 @@
                                     "type": "string"
                                 }
                             },
+                            "realtime": {
+                                "description": "Realtime subscription config. false disables the subscription. { mode, maxRows } bounds growth: 'append' (default) stops appending at maxRows and counts skipped events in $realtimeOverflow; 'window' keeps the initial window size by evicting the oldest realtime-appended rows. maxRows defaults to max(500, 2x the initially loaded rows); 0 opts into legacy unbounded growth.",
+                                "oneOf": [
+                                    {
+                                        "type": "boolean"
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "mode": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "append",
+                                                    "window"
+                                                ]
+                                            },
+                                            "maxRows": {
+                                                "type": "number",
+                                                "minimum": 0
+                                            }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                ]
+                            },
                             "storage": {
                                 "type": "object",
                                 "description": "Map of storage-bucket source names to the column on this row that holds their file IDs.",

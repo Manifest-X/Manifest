@@ -870,8 +870,8 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return undefined;
                 }
 
-                // Handle state properties ($loading, $error, $ready, $stale, $fresh)
-                if (key === '$stale' || key === '$fresh') {
+                // Handle state properties ($loading, $error, $ready, $stale, $fresh, $realtimeOverflow)
+                if (key === '$stale' || key === '$fresh' || key === '$realtimeOverflow') {
                     return window.ManifestDataProxiesMagic?.getStateProperty?.(key, dataSourceName);
                 }
                 if (key === '$loading' || key === '$error' || key === '$ready') {

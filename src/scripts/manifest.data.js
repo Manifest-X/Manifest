@@ -574,7 +574,8 @@ function writeSource(dataSourceName, data, options = {}) {
         error: options.error !== undefined ? options.error : currentState.error,
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null),
-        stale: fresh ? false : currentState.stale !== false
+        stale: fresh ? false : currentState.stale !== false,
+        realtimeOverflow: currentState.realtimeOverflow || 0 // set via setSourceState (realtime caps)
     };
     store[`_${dataSourceName}_state`] = newState;
     if (fresh) markFresh(dataSourceName);
@@ -4923,8 +4924,8 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     return undefined;
                 }
 
-                // Handle state properties ($loading, $error, $ready, $stale, $fresh)
-                if (key === '$stale' || key === '$fresh') {
+                // Handle state properties ($loading, $error, $ready, $stale, $fresh, $realtimeOverflow)
+                if (key === '$stale' || key === '$fresh' || key === '$realtimeOverflow') {
                     return window.ManifestDataProxiesMagic?.getStateProperty?.(key, dataSourceName);
                 }
                 if (key === '$loading' || key === '$error' || key === '$ready') {
@@ -8816,7 +8817,7 @@ window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler = createAppwrite
 
 
 /* Manifest Data Sources - Magic Method State Properties */
-// $loading, $error, $ready, $stale, $fresh state properties
+// $loading, $error, $ready, $stale, $fresh, $realtimeOverflow state properties
 //
 // $stale: true until the first network-fresh landing of this page-load is
 //   applied (rows from a fetch, `$query`, or the memory cache of a fetch made
@@ -8824,12 +8825,15 @@ window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler = createAppwrite
 //   reports through $loading. Single-reveal UIs gate on `!$stale`.
 // $fresh: promise resolving at that same first fresh landing; never rejects
 //   (a failed reload keeps old rows and sets $error). Per page-load.
+// $realtimeOverflow: realtime events not applied since the last load (bounded
+//   growth caps); reset to 0 on each load.
 
-const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh'];
+const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow'];
 
 function defaultStateValue(prop) {
     if (prop === '$error') return null;
     if (prop === '$stale') return true;
+    if (prop === '$realtimeOverflow') return 0;
     return false;
 }
 
@@ -8858,6 +8862,8 @@ function getStateProperty(prop, dataSourceName) {
         return state.ready || false;
     } else if (prop === '$stale') {
         return state.stale !== false;
+    } else if (prop === '$realtimeOverflow') {
+        return state.realtimeOverflow || 0;
     }
 
     return undefined;
@@ -11705,10 +11711,10 @@ async function filterFilesByScope(files, scope) {
 }
 
 // Handle real-time storage events
-async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation) {
+async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation, queriesConfig) {
 
-    // Deduplicate events
-    const eventKey = getEventKey(eventType, payload);
+    // Deduplicate events (per source: shared-channel peers each process once)
+    const eventKey = `${dataSourceName}|${getEventKey(eventType, payload)}`;
     if (isEventProcessed(eventKey)) {
         return;
     }
@@ -11731,8 +11737,12 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         const file = payload?.$id ? payload : (payload?.file || payload);
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
-            if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append', generation });
+            if (fileMatchesScope && eventMatchesQueries(file, queriesConfig)) {
+                if (currentFiles.find(f => f && f.$id === file.$id)) {
+                    landRows(dataSourceName, [file], { mode: 'append', generation });
+                } else {
+                    realtimeAppend(dataSourceName, file, currentFiles, generation);
+                }
 
                 // Emit custom event for new file creation so UI can refresh project files
                 window.dispatchEvent(new CustomEvent('manifest:file-created', {
@@ -11746,10 +11756,14 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         const file = payload?.$id ? payload : (payload?.file || payload);
         if (file && file.$id) {
             const fileMatchesScope = await checkFileMatchesScope(file, scope);
-            if (fileMatchesScope) {
-                landRows(dataSourceName, [file], { mode: 'append', generation });
+            if (fileMatchesScope && eventMatchesQueries(file, queriesConfig)) {
+                if (currentFiles.find(f => f && f.$id === file.$id)) {
+                    landRows(dataSourceName, [file], { mode: 'append', generation });
+                } else {
+                    realtimeAppend(dataSourceName, file, currentFiles, generation);
+                }
             } else {
-                // File no longer matches scope, remove it
+                // File no longer matches scope/queries, remove it
                 landRemove(dataSourceName, [file.$id], { generation });
             }
         }
@@ -11757,11 +11771,14 @@ async function handleStorageRealtimeEvent(dataSourceName, bucketId, scope, event
         const fileId = payload?.$id || payload?.file?.$id || payload?.fileId || payload;
         if (fileId) {
             landRemove(dataSourceName, [fileId.$id || fileId], { generation });
+            forgetRealtimeRow(dataSourceName, fileId.$id || fileId);
         }
     }
 }
 
-// Realtime event dedup: key by type+id+sequence(+timestamp)
+// Realtime event dedup: key by source+type+id+sequence(+timestamp).
+// Keyed PER SOURCE: on the shared realtime client two sources sharing a channel
+// each process an event once; the dedupe only absorbs replays within a source.
 const processedEvents = new Map(); // Map<eventKey, timestamp>
 const EVENT_DEDUP_WINDOW = 2000; // ms
 
@@ -11806,11 +11823,92 @@ function markEventProcessed(eventKey) {
     }
 }
 
-// Handle real-time events for database tables
-async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload, generation) {
+// Bounded realtime growth: per-source caps + overflow counter, reset each load
+const realtimeMeta = new Map(); // Map<name, { mode, maxRows, appended: [], pending: 0 }>
 
-    // Deduplicate events
-    const eventKey = getEventKey(eventType, payload);
+function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery) {
+    const cfg = (config && typeof config === 'object') ? config : {};
+    const mode = cfg.mode === 'window' ? 'window' : 'append';
+    const fallback = Math.max(500, 2 * initialCount);
+    let maxRows;
+    if (typeof cfg.maxRows === 'number' && cfg.maxRows >= 0) {
+        maxRows = cfg.maxRows; // explicit 0 = unbounded (legacy opt-in, append only)
+        if (maxRows === 0 && mode === 'window') {
+            console.warn(`[Manifest Data] realtime maxRows 0 contradicts window mode for "${dataSourceName}"; using the default cap`);
+            maxRows = fallback;
+        }
+    } else if (mode === 'window') {
+        // Window = the limit query, else the initial count; a computed 0 is no window, so default
+        const windowSize = (typeof limitQuery === 'number' && limitQuery > 0) ? limitQuery : initialCount;
+        maxRows = windowSize > 0 ? windowSize : fallback;
+    } else {
+        maxRows = fallback;
+    }
+    realtimeMeta.set(dataSourceName, { mode, maxRows, appended: [], pending: 0 });
+    window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: 0 });
+}
+
+// Events not applied since the last load — $x.<source>.$realtimeOverflow
+function bumpRealtimeOverflow(dataSourceName) {
+    const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
+    window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: (state?.realtimeOverflow || 0) + 1 });
+}
+
+// Append under the cap. 'window' evicts the oldest realtime-appended row first
+// (never an initially-loaded row); otherwise the event counts in $realtimeOverflow.
+function realtimeAppend(dataSourceName, row, currentRows, generation) {
+    const { landRows, landRemove } = window.ManifestDataStore;
+    const meta = realtimeMeta.get(dataSourceName);
+    if (!meta || meta.maxRows === 0) {
+        if (meta) meta.appended.push(row.$id);
+        landRows(dataSourceName, [row], { mode: 'append', generation });
+        return;
+    }
+    const len = currentRows.length + meta.pending;
+    if (len >= meta.maxRows) {
+        if (meta.mode !== 'window') {
+            bumpRealtimeOverflow(dataSourceName);
+            return;
+        }
+        let evicted = null;
+        for (let i = 0; i < meta.appended.length; i++) {
+            // Oldest appended row still landed; pending (unflushed) ids stay tracked
+            if (currentRows.some(r => r && r.$id === meta.appended[i])) {
+                evicted = meta.appended.splice(i, 1)[0];
+                break;
+            }
+        }
+        if (evicted === null) {
+            bumpRealtimeOverflow(dataSourceName);
+            return;
+        }
+        landRemove(dataSourceName, [evicted], { generation });
+    }
+    meta.pending++;
+    meta.appended.push(row.$id);
+    landRows(dataSourceName, [row], { mode: 'append', generation })
+        .then(() => { meta.pending = Math.max(0, meta.pending - 1); });
+}
+
+function forgetRealtimeRow(dataSourceName, id) {
+    const meta = realtimeMeta.get(dataSourceName);
+    if (!meta) return;
+    const i = meta.appended.indexOf(id);
+    if (i !== -1) meta.appended.splice(i, 1);
+}
+
+// Query-aware event filter: the source's own queries, evaluated client-side
+// (unevaluable → match; see rowMatchesQueries)
+function eventMatchesQueries(row, queriesConfig) {
+    const matcher = window.ManifestDataQueries?.rowMatchesQueries;
+    return matcher ? matcher(row, queriesConfig) : true;
+}
+
+// Handle real-time events for database tables
+async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, scope, scopeColumns, eventType, payload, generation, queriesConfig) {
+
+    // Deduplicate events (per source: shared-channel peers each process once)
+    const eventKey = `${dataSourceName}|${getEventKey(eventType, payload)}`;
     if (isEventProcessed(eventKey)) {
         return;
     }
@@ -11834,9 +11932,15 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
     if (eventType === 'create') {
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
+            // Scope AND queries must match before the row lands
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
-            if (rowMatchesScope) {
-                landRows(dataSourceName, [row], { mode: 'append', generation });
+            if (rowMatchesScope && eventMatchesQueries(row, queriesConfig)) {
+                if (currentRows.find(r => r.$id === row.$id)) {
+                    // Echo of a row already held (optimistic create): merge, never counts as growth
+                    landRows(dataSourceName, [row], { mode: 'append', generation });
+                } else {
+                    realtimeAppend(dataSourceName, row, currentRows, generation);
+                }
             }
         } else {
             console.warn('[Manifest Data] Invalid row payload in create event:', payload);
@@ -11846,14 +11950,17 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         if (row && row.$id) {
             const existingRow = currentRows.find(r => r.$id === row.$id);
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
-            if (!rowMatchesScope) {
-                // Row no longer matches scope, remove it
-                if (existingRow) landRemove(dataSourceName, [row.$id], { generation });
+            if (!rowMatchesScope || !eventMatchesQueries(row, queriesConfig)) {
+                // Row stopped matching scope or queries, remove it
+                if (existingRow) {
+                    landRemove(dataSourceName, [row.$id], { generation });
+                    forgetRealtimeRow(dataSourceName, row.$id);
+                }
                 return;
             }
             if (!existingRow) {
-                // Row not in list, but matches scope now - add it
-                landRows(dataSourceName, [row], { mode: 'append', generation });
+                // Row not in list, but matches now - add it (capped like a create)
+                realtimeAppend(dataSourceName, row, currentRows, generation);
                 return;
             }
 
@@ -11927,6 +12034,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         const rowId = payload?.$id || payload?.row?.$id || payload?.rowId || payload;
         if (rowId) {
             landRemove(dataSourceName, [rowId.$id || rowId], { generation });
+            forgetRealtimeRow(dataSourceName, rowId.$id || rowId);
         }
     }
 
@@ -12226,15 +12334,19 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     );
                     if (superseded()) { landed = true; return null; }
 
-                    // Subscribe to real-time updates for this table (events from a superseded identity drop)
-                    if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
+                    // Subscribe to real-time updates for this table (events from a
+                    // superseded identity drop); realtime: false opts the source out
+                    if (dataSource.realtime !== false && window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
+                        const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
+                        const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
+                        configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
                         const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation);
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, rtQueries);
                             },
                             () => !superseded()
                         );
@@ -12275,15 +12387,19 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     if (superseded()) { landed = true; return null; }
 
-                    // Subscribe to real-time updates for this bucket (events from a superseded identity drop)
-                    if (window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToStorageBucket) {
+                    // Subscribe to real-time updates for this bucket (events from a
+                    // superseded identity drop); realtime: false opts the source out
+                    if (dataSource.realtime !== false && window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToStorageBucket) {
+                        const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
+                        const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
+                        configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
                         const unsubscribe = await window.ManifestDataRealtime.subscribeToStorageBucket(
                             dataSourceName,
                             bucketId,
                             scope,
                             async (eventType, payload) => {
                                 if (superseded()) return;
-                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation);
+                                await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation, rtQueries);
                             },
                             () => !superseded()
                         );
