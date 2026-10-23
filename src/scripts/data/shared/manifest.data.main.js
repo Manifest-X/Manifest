@@ -381,13 +381,20 @@ const realtimeMeta = new Map(); // Map<name, { mode, maxRows, appended: [], pend
 function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery) {
     const cfg = (config && typeof config === 'object') ? config : {};
     const mode = cfg.mode === 'window' ? 'window' : 'append';
+    const fallback = Math.max(500, 2 * initialCount);
     let maxRows;
     if (typeof cfg.maxRows === 'number' && cfg.maxRows >= 0) {
-        maxRows = cfg.maxRows; // 0 = explicitly unbounded (legacy opt-in)
+        maxRows = cfg.maxRows; // explicit 0 = unbounded (legacy opt-in, append only)
+        if (maxRows === 0 && mode === 'window') {
+            console.warn(`[Manifest Data] realtime maxRows 0 contradicts window mode for "${dataSourceName}"; using the default cap`);
+            maxRows = fallback;
+        }
     } else if (mode === 'window') {
-        maxRows = (typeof limitQuery === 'number' && limitQuery > 0) ? limitQuery : initialCount;
+        // Window = the limit query, else the initial count; a computed 0 is no window, so default
+        const windowSize = (typeof limitQuery === 'number' && limitQuery > 0) ? limitQuery : initialCount;
+        maxRows = windowSize > 0 ? windowSize : fallback;
     } else {
-        maxRows = Math.max(500, 2 * initialCount);
+        maxRows = fallback;
     }
     realtimeMeta.set(dataSourceName, { mode, maxRows, appended: [], pending: 0 });
     window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: 0 });
@@ -416,9 +423,12 @@ function realtimeAppend(dataSourceName, row, currentRows, generation) {
             return;
         }
         let evicted = null;
-        while (meta.appended.length) {
-            const id = meta.appended.shift();
-            if (currentRows.some(r => r && r.$id === id)) { evicted = id; break; }
+        for (let i = 0; i < meta.appended.length; i++) {
+            // Oldest appended row still landed; pending (unflushed) ids stay tracked
+            if (currentRows.some(r => r && r.$id === meta.appended[i])) {
+                evicted = meta.appended.splice(i, 1)[0];
+                break;
+            }
         }
         if (evicted === null) {
             bumpRealtimeOverflow(dataSourceName);

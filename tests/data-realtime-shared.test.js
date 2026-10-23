@@ -184,6 +184,32 @@ describe('one shared realtime client per tab', () => {
         expect(rows('alpha')).toEqual(['a1', 'n1'])
     })
 
+    it('a multi-variant Appwrite message merges exactly once', async () => {
+        const { rt, rows, main } = await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] } })
+        await main.loadDataSource('alpha')
+        await settle()
+        const ds = window.ManifestDataStore
+        const orig = ds.landRows
+        let lands = 0
+        ds.landRows = (...a) => { lands++; return orig(...a) }
+        try {
+            // Appwrite sends several event-name variants for one change
+            rt().fire(CH('t1'), {
+                events: [
+                    'databases.db.tables.t1.rows.n1.create',
+                    'tables.rows.create',
+                    'rows.create',
+                ],
+                payload: { $id: 'n1', $sequence: ++seq },
+            })
+            await settle()
+        } finally {
+            ds.landRows = orig
+        }
+        expect(lands).toBe(1)
+        expect(rows('alpha')).toEqual(['a1', 'n1'])
+    })
+
     it('storage buckets share the same instance', async () => {
         const { stats, rt, rows, main } = await boot(
             { alpha: T('t1'), docs: { appwriteBucketId: 'bk' } },
@@ -203,7 +229,7 @@ describe('one shared realtime client per tab', () => {
 describe('query matcher', () => {
     const boot1 = (auth) => boot({ alpha: T('t1') }, { tables: { t1: [] }, auth })
 
-    it('evaluates filter operators against a row', async () => {
+    it('evaluates the operators the load serializes (queryMap set)', async () => {
         const { queries } = await boot1()
         const m = (row, q) => queries().rowMatchesQueries(row, q)
         expect(m({ a: 1 }, [['equal', 'a', 1]])).toBe(true)
@@ -217,16 +243,6 @@ describe('query matcher', () => {
         expect(m({ a: 2 }, [['lessThanEqual', 'a', 2]])).toBe(true)
         expect(m({ a: 3 }, [['greaterThan', 'a', 2]])).toBe(true)
         expect(m({ a: 2 }, [['greaterThanEqual', 'a', 2]])).toBe(true)
-        expect(m({ a: 2 }, [['between', 'a', 1, 3]])).toBe(true)
-        expect(m({ a: 4 }, [['between', 'a', 1, 3]])).toBe(false)
-        expect(m({ a: null }, [['isNull', 'a']])).toBe(true)
-        expect(m({}, [['isNull', 'a']])).toBe(true)
-        expect(m({ a: 1 }, [['isNull', 'a']])).toBe(false)
-        expect(m({ a: 1 }, [['isNotNull', 'a']])).toBe(true)
-        expect(m({}, [['isNotNull', 'a']])).toBe(false)
-        expect(m({ a: 'foobar' }, [['startsWith', 'a', 'foo']])).toBe(true)
-        expect(m({ a: 'foobar' }, [['startsWith', 'a', 'bar']])).toBe(false)
-        expect(m({ a: 'foobar' }, [['endsWith', 'a', 'bar']])).toBe(true)
         expect(m({ a: 'foobar' }, [['contains', 'a', 'oob']])).toBe(true)
         expect(m({ a: ['x', 'y'] }, [['contains', 'a', 'y']])).toBe(true)
         expect(m({ a: ['x'] }, [['contains', 'a', 'y']])).toBe(false)
@@ -235,22 +251,38 @@ describe('query matcher', () => {
         expect(m({ a: 1, b: 3 }, [['equal', 'a', 1], ['equal', 'b', 2]])).toBe(false)
     })
 
-    it('nested and/or', async () => {
+    it('strings compare case-insensitively (Appwrite ci collation); other types strictly', async () => {
+        const { queries } = await boot1()
+        const m = (row, q) => queries().rowMatchesQueries(row, q)
+        expect(m({ a: 'Chat' }, [['equal', 'a', 'chat']])).toBe(true)
+        expect(m({ a: 'Chat' }, [['notEqual', 'a', 'chat']])).toBe(false)
+        expect(m({ a: 'FooBar' }, [['contains', 'a', 'oob']])).toBe(true)
+        expect(m({ a: ['X', 'Y'] }, [['contains', 'a', 'y']])).toBe(true)
+        expect(m({ a: '1' }, [['equal', 'a', 1]])).toBe(false) // no cross-type coercion
+        expect(m({ a: 1 }, [['equal', 'a', 1]])).toBe(true)
+    })
+
+    it('nested or evaluates; and is not serialized by the load so it matches', async () => {
         const { queries } = await boot1()
         const m = (row, q) => queries().rowMatchesQueries(row, q)
         expect(m({ a: 1, b: 9 }, [['or', [['equal', 'a', 1], ['equal', 'b', 2]]]])).toBe(true)
         expect(m({ a: 0, b: 9 }, [['or', [['equal', 'a', 1], ['equal', 'b', 2]]]])).toBe(false)
-        expect(m({ a: 1, b: 2 }, [['and', [['equal', 'a', 1], ['equal', 'b', 2]]]])).toBe(true)
-        expect(m({ a: 1, b: 9 }, [['and', [['equal', 'a', 1], ['equal', 'b', 2]]]])).toBe(false)
-        expect(m({ a: 1, b: 2, c: 'x' }, [['or', [['and', [['equal', 'a', 1], ['equal', 'b', 2]]], ['equal', 'c', 'nope']]]])).toBe(true)
+        expect(m({ a: 0, b: 9 }, [['and', [['equal', 'a', 1], ['equal', 'b', 2]]]])).toBe(true)
+        // an unevaluable branch inside or counts as a match
+        expect(m({ a: 0 }, [['or', [['equal', 'a', 1], ['isNull', 'zzz']]]])).toBe(true)
     })
 
-    it('non-filter queries are ignored; unevaluable queries match', async () => {
+    it('non-filter queries are ignored; operators the load drops match regardless', async () => {
         const { queries } = await boot1()
         const m = (row, q) => queries().rowMatchesQueries(row, q)
         expect(m({ a: 1 }, [['limit', 5], ['offset', 2], ['orderDesc', 'a'], ['select', ['a']], ['cursorAfter', 'x']])).toBe(true)
         expect(m({ a: 1 }, [['search', 'a', 'zzz']])).toBe(true)          // search: unevaluable
         expect(m({ a: 1 }, [['someFutureOp', 'a', 'zzz']])).toBe(true)    // unknown: unevaluable
+        // Not in toAppwriteQuery's queryMap -> dropped at load -> never drop rows here
+        for (const q of [['between', 'a', 2, 3], ['isNull', 'a'], ['isNotNull', 'zzz'], ['startsWith', 'a', 'z'], ['endsWith', 'a', 'z']]) {
+            expect(queries().toAppwriteQuery(q)).toBe(null)
+            expect(m({ a: 1 }, [q])).toBe(true)
+        }
         // $auth. arg unresolved (signed out): unevaluable -> match
         expect(m({ owner: 'u9' }, [['equal', 'owner', '$auth.user.$id']])).toBe(true)
     })
@@ -299,6 +331,36 @@ describe('query-aware merge', () => {
         await settle()
         expect(rows('alpha')).toEqual(['a1', 'a2', 'n1'])
         expect(Alpine.store('data').alpha.find(r => r.$id === 'a2').title).toBe('x')
+    })
+
+    it('string equality in the merge is case-insensitive', async () => {
+        const { rt, rows, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'kind', 'chat']] }) },
+            { tables: { t1: [{ $id: 'a1', kind: 'chat' }] } }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        rt().fire(CH('t1'), evt('create', { $id: 'n1', kind: 'Chat' })) // server would include it (ci collation)
+        await settle()
+        expect(rows('alpha')).toEqual(['a1', 'n1'])
+    })
+
+    it('operators the load drops (startsWith/isNull) never drop events either', async () => {
+        const { rt, rows, main } = await boot(
+            { alpha: T('t1', { queries: [['startsWith', 'title', 'Z'], ['isNull', 'deletedAt']] }) },
+            { tables: { t1: [{ $id: 'a1', title: 'abc' }] } }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        // the load dropped both queries, so the server never filtered on them:
+        // events must match regardless of value, and updates must not evict held rows
+        rt().fire(CH('t1'), evt('create', { $id: 'n1', title: 'other', deletedAt: '2026-01-01' }))
+        await settle()
+        expect(rows('alpha')).toEqual(['a1', 'n1'])
+        rt().fire(CH('t1'), evt('update', { $id: 'a1', title: 'renamed', deletedAt: '2026-01-02' }))
+        await settle()
+        expect(rows('alpha')).toEqual(['a1', 'n1'])
+        expect(Alpine.store('data').alpha.find(r => r.$id === 'a1').title).toBe('renamed')
     })
 })
 
@@ -374,6 +436,40 @@ describe('bounded growth', () => {
         rt().fire(CH('t1'), evt('create', { $id: 'r4' }))
         await settle()
         expect(rows('alpha')).toEqual(['a1', 'a2', 'a3', 'r3', 'r4'])
+    })
+
+    it('window mode with 0 initial rows and no limit query stays bounded at the default cap', async () => {
+        const { rt, rows, state, main } = await boot(
+            { alpha: T('t1', { realtime: { mode: 'window' } }) },
+            { tables: { t1: [] } }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        for (let i = 0; i < 505; i++) rt().fire(CH('t1'), evt('create', { $id: `n${i}` }))
+        await settle(200)
+        // a computed window of 0 is no window: fall back to max(500, 2x initial)
+        expect(rows('alpha').length).toBe(500)
+        expect(state('alpha').realtimeOverflow).toBe(5)
+    })
+
+    it('explicit maxRows 0 in window mode is a contradiction: normalized to the default cap', async () => {
+        const warns = []
+        const orig = console.warn
+        console.warn = (...a) => { warns.push(a.join(' ')) }
+        try {
+            const { rt, rows, main } = await boot(
+                { alpha: T('t1', { realtime: { mode: 'window', maxRows: 0 } }) },
+                { tables: { t1: [] } }
+            )
+            await main.loadDataSource('alpha')
+            await settle()
+            rt().fire(CH('t1'), evt('create', { $id: 'n1' }))
+            await settle()
+            expect(rows('alpha')).toEqual(['n1']) // bounded window, not unbounded
+            expect(warns.some(w => w.includes('maxRows 0 contradicts window mode'))).toBe(true)
+        } finally {
+            console.warn = orig
+        }
     })
 
     it('window mode with no evictable rows overflows instead of dropping initial rows', async () => {

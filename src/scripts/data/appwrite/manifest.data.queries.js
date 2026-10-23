@@ -354,9 +354,30 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
     return [...scopeQueries, ...userQueries];
 }
 
+// Query methods buildAppwriteQueries serializes (anything else is dropped at
+// load and must therefore never drop rows in the realtime matcher below)
+const QUERY_MAP = {
+    'equal': 'equal',
+    'notEqual': 'notEqual',
+    'lessThan': 'lessThan',
+    'lessThanEqual': 'lessThanEqual',
+    'greaterThan': 'greaterThan',
+    'greaterThanEqual': 'greaterThanEqual',
+    'contains': 'contains',
+    'search': 'search',
+    'or': 'or', // Support for multi-team queries (Query.or([Query.equal(...), ...]))
+    'orderAsc': 'orderAsc',
+    'orderDesc': 'orderDesc',
+    'limit': 'limit',
+    'offset': 'offset',
+    'cursorAfter': 'cursorAfter',
+    'cursorBefore': 'cursorBefore'
+};
+
 // Client-side row matcher for realtime events: evaluates a source's configured
-// filter queries against one row. Liveness over precision: anything
-// unevaluable — search, an unknown operator, or a $auth. arg that can't resolve
+// filter queries against one row. Only operators the load actually serializes
+// (QUERY_MAP) are evaluable. Liveness over precision: anything unevaluable —
+// search, an operator the load drops, or a $auth. arg that can't resolve
 // synchronously — counts as a MATCH so live events are never silently dropped.
 const NON_FILTER_METHODS = new Set(['limit', 'offset', 'orderAsc', 'orderDesc', 'select', 'cursorAfter', 'cursorBefore']);
 
@@ -376,16 +397,22 @@ function matchQuery(row, query) {
     }
     const [method, ...args] = interpolated;
     if (NON_FILTER_METHODS.has(method)) return true;
+    if (!(method in QUERY_MAP)) return true; // load drops it: unevaluable
     if (method === 'and') return Array.isArray(args[0]) ? args[0].every(sub => matchQuery(row, sub)) : true;
     if (method === 'or') return Array.isArray(args[0]) ? args[0].some(sub => matchQuery(row, sub)) : true;
 
     const attr = args[0];
     const val = row ? row[attr] : undefined;
     const values = Array.isArray(args[1]) ? args[1] : [args[1]];
+    // Strings compare case-insensitively (Appwrite's ci collation); other types strictly
+    const eq = (a, b) => (typeof a === 'string' && typeof b === 'string')
+        ? a.toLowerCase() === b.toLowerCase()
+        : a === b;
     const anyEqual = () => Array.isArray(val)
-        ? values.some(v => val.some(el => el === v))
-        : values.some(v => val === v);
+        ? values.some(v => val.some(el => eq(el, v)))
+        : values.some(v => eq(val, v));
     const cmp = (bound, op) => val !== null && val !== undefined && bound !== null && bound !== undefined && op(val, bound);
+    const lower = s => String(s).toLowerCase();
 
     switch (method) {
         case 'equal': return anyEqual();
@@ -397,13 +424,13 @@ function matchQuery(row, query) {
         case 'between': return cmp(args[1], (a, b) => a >= b) && cmp(args[2], (a, b) => a <= b);
         case 'isNull': return val === null || val === undefined;
         case 'isNotNull': return val !== null && val !== undefined;
-        case 'startsWith': return typeof val === 'string' && values.some(v => val.startsWith(String(v)));
-        case 'endsWith': return typeof val === 'string' && values.some(v => val.endsWith(String(v)));
+        case 'startsWith': return typeof val === 'string' && values.some(v => lower(val).startsWith(lower(v)));
+        case 'endsWith': return typeof val === 'string' && values.some(v => lower(val).endsWith(lower(v)));
         case 'contains':
-            if (Array.isArray(val)) return values.some(v => val.some(el => el === v));
-            if (typeof val === 'string') return values.some(v => val.includes(String(v)));
+            if (Array.isArray(val)) return values.some(v => val.some(el => eq(el, v)));
+            if (typeof val === 'string') return values.some(v => lower(val).includes(lower(v)));
             return false;
-        default: return true; // search / unknown operator: unevaluable
+        default: return true; // search: unevaluable
     }
 }
 
@@ -415,24 +442,9 @@ function toAppwriteQuery(queryArray) {
 
     const [method, ...args] = queryArray;
 
-    // Map common query methods to Appwrite Query methods
-    const queryMap = {
-        'equal': 'equal',
-        'notEqual': 'notEqual',
-        'lessThan': 'lessThan',
-        'lessThanEqual': 'lessThanEqual',
-        'greaterThan': 'greaterThan',
-        'greaterThanEqual': 'greaterThanEqual',
-        'contains': 'contains',
-        'search': 'search',
-        'or': 'or', // Support for multi-team queries (Query.or([Query.equal(...), ...]))
-        'orderAsc': 'orderAsc',
-        'orderDesc': 'orderDesc',
-        'limit': 'limit',
-        'offset': 'offset',
-        'cursorAfter': 'cursorAfter',
-        'cursorBefore': 'cursorBefore'
-    };
+    // Map common query methods to Appwrite Query methods (QUERY_MAP above —
+    // also the realtime matcher's evaluable set)
+    const queryMap = QUERY_MAP;
 
     if (!window.Appwrite || !window.Appwrite.Query) {
         console.error('[Manifest Data] Appwrite Query not available');
