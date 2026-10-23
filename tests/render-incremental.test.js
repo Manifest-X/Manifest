@@ -10,6 +10,7 @@ import {
   loadRouteLedger,
   resolveStaticRequestFile,
   createExternalRevalidator,
+  refreshCarriedEntry,
   contentFilesForPrerender,
   isSafeRelPath,
   settleCaptureAwaiting,
@@ -267,6 +268,106 @@ describe('createExternalRevalidator', () => {
     const failing = createExternalRevalidator({ request: async () => { throw new Error('offline'); } });
     expect(await failing('https://a.test/x', { etag: 'e1' })).toBe(false);
   });
+  it('a validator mismatch over identical bytes is UNCHANGED (iconify pattern)', async () => {
+    const { createHash } = await import('node:crypto');
+    const body = Buffer.from('icon svg bytes');
+    const hash = createHash('sha256').update(body).digest('hex');
+    const revalidate = createExternalRevalidator({
+      request: async () => ({ status: 200, lastModified: 'Thu, 23 Oct 2026 10:00:01 GMT', body }),
+    });
+    expect(await revalidate('https://api.icons.test/x.svg',
+      { lastModified: 'Thu, 23 Oct 2026 10:00:00 GMT', contentHash: hash })).toBe(true);
+    expect(revalidate.freshest('https://api.icons.test/x.svg'))
+      .toEqual({ lastModified: 'Thu, 23 Oct 2026 10:00:01 GMT', contentHash: hash });
+  });
+  it('a validator mismatch over different bytes is changed', async () => {
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update('old bytes').digest('hex');
+    const revalidate = createExternalRevalidator({
+      request: async () => ({ status: 200, etag: 'W/"v2"', body: Buffer.from('new bytes') }),
+    });
+    expect(await revalidate('https://a.test/x', { etag: 'W/"v1"', contentHash: hash })).toBe(false);
+    expect(revalidate.freshest('https://a.test/x')).toBe(null);
+  });
+  it('the 304 fast path is untouched, with or without a stored hash', async () => {
+    const wantBodies = [];
+    const revalidate = createExternalRevalidator({
+      request: async (url, headers, wantBody) => { wantBodies.push(wantBody); return { status: 304, body: null }; },
+    });
+    expect(await revalidate('https://a.test/x', { etag: 'e1', contentHash: 'c'.repeat(64) })).toBe(true);
+    expect(await revalidate('https://a.test/y', { etag: 'e1' })).toBe(true);
+    expect(wantBodies).toEqual([true, false]);
+    expect(revalidate.freshest('https://a.test/x')).toBe(null); // nothing to heal on a 304
+  });
+  it('a 2xx with no stored hash is changed, as before', async () => {
+    const revalidate = createExternalRevalidator({
+      request: async () => ({ status: 200, etag: 'W/"v2"', body: Buffer.from('whatever') }),
+    });
+    expect(await revalidate('https://a.test/x', { etag: 'W/"v1"' })).toBe(false);
+  });
+  it('an oversized or unreadable revalidation body is changed', async () => {
+    const { createHash } = await import('node:crypto');
+    const big = Buffer.alloc(EXTERNAL_BODY_HASH_LIMIT + 1);
+    const hash = createHash('sha256').update(big).digest('hex');
+    const oversized = createExternalRevalidator({ request: async () => ({ status: 200, body: big }) });
+    expect(await oversized('https://a.test/x', { etag: 'e1', contentHash: hash })).toBe(false);
+    const unreadable = createExternalRevalidator({ request: async () => ({ status: 200, body: null }) });
+    expect(await unreadable('https://a.test/x', { etag: 'e1', contentHash: hash })).toBe(false);
+  });
+  it('a fresh 2xx without any validator header heals to a hash-only entry', async () => {
+    const { createHash } = await import('node:crypto');
+    const body = Buffer.from('stable');
+    const hash = createHash('sha256').update(body).digest('hex');
+    const revalidate = createExternalRevalidator({ request: async () => ({ status: 200, body }) });
+    expect(await revalidate('https://a.test/x', { lastModified: 'lm1', contentHash: hash })).toBe(true);
+    expect(revalidate.freshest('https://a.test/x')).toEqual({ contentHash: hash });
+  });
+});
+
+describe('refreshCarriedEntry', () => {
+  const globalKey = 'gk';
+  const entry = () => ({
+    sig: computeRouteSignature({
+      globalKey,
+      inputPairs: ['index.html:h1'],
+      requestedPairs: ['/=>index.html'],
+      externalTokens: [
+        'https://cdn.test/a@1.0.0/a.js',
+        'https://api.icons.test/x.svg#etag:|lm:lm1|ch:aaa',
+      ],
+    }),
+    inputs: { 'index.html': 'h1' },
+    requested: { '/': 'index.html' },
+    external: ['https://cdn.test/a@1.0.0/a.js'],
+    externalValidated: { 'https://api.icons.test/x.svg': { lastModified: 'lm1', contentHash: 'aaa' } },
+    outputs: { 'index.html': 'o1' },
+  });
+  it('replaces a refreshed validator and re-signs consistently', async () => {
+    const fresh = { lastModified: 'lm2', contentHash: 'aaa' };
+    const out = refreshCarriedEntry(entry(), () => fresh, globalKey);
+    expect(out.externalValidated['https://api.icons.test/x.svg']).toEqual(fresh);
+    expect(out.sig).not.toBe(entry().sig);
+    // The healed entry passes its own signature check next run.
+    const verdict = await evaluateRouteSkip({
+      entry: out,
+      hashInput: () => 'h1',
+      resolveRequest: () => 'index.html',
+      revalidateExternal: async () => true,
+      globalKey,
+      outputHash: () => 'o1',
+    });
+    expect(verdict.skip).toBe(true);
+  });
+  it('returns the entry untouched when nothing fresher was observed', () => {
+    const e = entry();
+    expect(refreshCarriedEntry(e, () => null, globalKey)).toBe(e);
+    expect(refreshCarriedEntry(e, () => ({ lastModified: 'lm1', contentHash: 'aaa' }), globalKey)).toBe(e);
+  });
+  it('leaves non-cacheable and shapeless entries alone', () => {
+    const nc = { nonCacheable: true, reason: 'x' };
+    expect(refreshCarriedEntry(nc, () => ({ etag: 'e' }), globalKey)).toBe(nc);
+    expect(refreshCarriedEntry(undefined, () => null, globalKey)).toBe(undefined);
+  });
 });
 
 describe('settleCaptureAwaiting', () => {
@@ -461,6 +562,39 @@ describe('createCaptureHooks', () => {
     expect(capture.nonCacheable).toBe(true);
     expect(capture.reason).toMatch(/external 304 without validator/);
     expect(capture.awaiting.size).toBe(0);
+  });
+  it('a validator 2xx records the validator and the body hash together', async () => {
+    const { capture, hooks } = make();
+    hooks.request({ url: 'https://api.icons.test/x.svg', method: 'GET' });
+    hooks.response({
+      url: 'https://api.icons.test/x.svg', status: 200,
+      headers: { 'last-modified': 'Thu, 23 Oct 2026 10:00:00 GMT' }, requestHeaders: {},
+      buffer: async () => Buffer.from('icon bytes'),
+    });
+    // Validator lands synchronously; the hash upgrade drains via pending.
+    expect(capture.externalValidated.get('https://api.icons.test/x.svg'))
+      .toEqual({ lastModified: 'Thu, 23 Oct 2026 10:00:00 GMT' });
+    expect(capture.awaiting.size).toBe(0);
+    await Promise.allSettled(capture.pending);
+    const v = capture.externalValidated.get('https://api.icons.test/x.svg');
+    expect(v.lastModified).toBe('Thu, 23 Oct 2026 10:00:00 GMT');
+    expect(v.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(capture.nonCacheable).toBe(false);
+  });
+  it('an oversized or unreadable validator body keeps a validator-only entry, unflagged', async () => {
+    const { capture, hooks } = make();
+    hooks.response({
+      url: 'https://big.test/blob', status: 200, headers: { etag: 'W/"b"' }, requestHeaders: {},
+      buffer: async () => Buffer.alloc(EXTERNAL_BODY_HASH_LIMIT + 1),
+    });
+    hooks.response({
+      url: 'https://flaky.test/x', status: 200, headers: { etag: 'W/"f"' }, requestHeaders: {},
+      buffer: async () => { throw new Error('body gone'); },
+    });
+    await Promise.allSettled(capture.pending);
+    expect(capture.externalValidated.get('https://big.test/blob')).toEqual({ etag: 'W/"b"' });
+    expect(capture.externalValidated.get('https://flaky.test/x')).toEqual({ etag: 'W/"f"' });
+    expect(capture.nonCacheable).toBe(false);
   });
   it('content-addresses a validator-less 2xx body via the pending queue', async () => {
     const { capture, hooks } = make();

@@ -729,7 +729,7 @@ const EXTERNAL_PORT = 5101; // fixture's #external-note fetches this origin
 // 'no-validator' serves plain 200s with no validator at all.  /conditional is
 // independent of the mode: a fixed validator with Cache-Control: no-cache, so
 // the page's own second fetch revalidates and gets a 304 at capture time.
-const externalState = { mode: 'etag', etag: 'W/"v1"', body: 'external note v1' };
+const externalState = { mode: 'etag', etag: 'W/"v1"', body: 'external note v1', lmTick: 0 };
 function startExternalServer(port, state) {
   const server = createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -744,6 +744,11 @@ function startExternalServer(port, state) {
     if (state.mode === 'etag') {
       res.setHeader('ETag', state.etag);
       if (req.headers['if-none-match'] === state.etag) { res.statusCode = 304; res.end(); return; }
+    }
+    if (state.mode === 'request-time-lm') {
+      // The iconify pattern: Last-Modified stamped per request over identical
+      // bytes, never a 304.  Monotonic stamps so back-to-back runs differ.
+      res.setHeader('Last-Modified', new Date(Date.UTC(2026, 9, 23, 0, 0, state.lmTick++)).toUTCString());
     }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.end(state.body);
@@ -922,6 +927,41 @@ async function runIncrementalTests() {
   assert(x5 && x5.rendered === 0 && x5.skipped === total,
     'unchanged validated cross-origin resource (304) lets the route skip again',
     `summary: ${JSON.stringify(x5)}`);
+
+  // The iconify pattern: Last-Modified stamped with the request time over
+  // byte-identical bodies.  The validator never matches again, the bytes
+  // never change — the stored content hash must keep the route skipping.
+  externalState.mode = 'request-time-lm';
+  externalState.body = 'external note lm-stamped';
+  const runL1 = await runPrerender(['--incremental'], true);
+  const l1 = summaryOf(runL1.stdout);
+  assert(l1 && l1.rendered === 1 && l1.skipped === total - 1,
+    'switching to a request-time Last-Modified origin renders once (bytes changed)',
+    `summary: ${JSON.stringify(l1)}`);
+  const lmNoteEntry = async () => JSON.parse(await readFile(LEDGER_PATH, 'utf8'))
+    .routes['external']?.externalValidated?.['http://127.0.0.1:5101/note.txt'];
+  const lmV1 = await lmNoteEntry();
+  assert(lmV1 && lmV1.lastModified && /^[0-9a-f]{64}$/.test(lmV1.contentHash || ''),
+    'capture records the request-time validator and the body hash together',
+    JSON.stringify(lmV1));
+  const runL2 = await runPrerender(['--incremental'], true);
+  const l2 = summaryOf(runL2.stdout);
+  assert(l2 && l2.rendered === 0 && l2.skipped === total,
+    'request-time Last-Modified over identical bytes still SKIPS (byte comparison beats the validator)',
+    `summary: ${JSON.stringify(l2)}`);
+  const lmV2 = await lmNoteEntry();
+  assert(lmV2 && lmV2.lastModified !== lmV1.lastModified && lmV2.contentHash === lmV1.contentHash,
+    'carried entry self-heals: validator refreshed to the one observed at revalidation',
+    `before ${JSON.stringify(lmV1)} after ${JSON.stringify(lmV2)}`);
+  externalState.body = 'external note lm-stamped EDITED';
+  const runL3 = await runPrerender(['--incremental'], true);
+  const l3 = summaryOf(runL3.stdout);
+  assert(l3 && l3.rendered === 1 && l3.skipped === total - 1,
+    'byte change behind a request-time validator re-renders the route',
+    `summary: ${JSON.stringify(l3)}`);
+  const externalHtmlLm = await readFile(join(FIXTURE_OUT_DIR, 'external', 'index.html'), 'utf8');
+  assert(externalHtmlLm.includes('external note lm-stamped EDITED'),
+    're-rendered /external carries the edited lm-stamped content');
 
   // Without the flag, with a ledger on disk: the project PARTICIPATES —
   // a plain run skips and refreshes the ledger (the one-render upgrade).
