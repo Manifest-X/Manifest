@@ -12340,6 +12340,9 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
                         configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        // Events server-filtered where the SDK supports realtime queries; the
+                        // client matcher below still runs (realtime: { serverFilter: false } opts out)
+                        const rtFilterSpec = dataSource.realtime?.serverFilter === false ? null : { queriesConfig: rtQueries, scope, scopeColumns };
                         const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
@@ -12348,7 +12351,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             async (eventType, payload) => {
                                 await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, rtQueries);
                             },
-                            () => !superseded()
+                            () => !superseded(),
+                            rtFilterSpec
                         );
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
@@ -12393,6 +12397,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
                         configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        // Server-filtered on the source's own queries (buckets have no scope columns)
+                        const rtFilterSpec = dataSource.realtime?.serverFilter === false ? null : { queriesConfig: rtQueries, scope: null };
                         const unsubscribe = await window.ManifestDataRealtime.subscribeToStorageBucket(
                             dataSourceName,
                             bucketId,
@@ -12401,7 +12407,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                                 if (superseded()) return;
                                 await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation, rtQueries);
                             },
-                            () => !superseded()
+                            () => !superseded(),
+                            rtFilterSpec
                         );
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }

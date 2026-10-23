@@ -38,27 +38,78 @@ const settle = (ms = 60) => new Promise(r => setTimeout(r, ms))
 let iso = null
 
 // Counting Appwrite mock: Realtime instances created, SDK subscribe calls,
-// per-channel callbacks firable from tests
-function mockAppwrite(tables = {}, files = {}) {
-    const stats = { instances: [], subscribes: [] }
+// per-channel callbacks firable from tests. realtimeQueries: true swaps in the
+// query-capable Realtime (SDK >=25 shape: pendingSubscribes marker, queries as
+// third subscribe arg, Promise<{unsubscribe, close}> return, server-side
+// payload filtering ANDed per subscription — mirrors RuntimeQuery::filter).
+function serverMatch(row, q) {
+    if (typeof q === 'string') q = JSON.parse(q)
+    const val = row?.[q.attribute]
+    const vals = q.values || []
+    const eq = v => Array.isArray(val) ? val.includes(v) : val === v
+    switch (q.method) {
+        case 'equal': return vals.some(eq)
+        case 'notEqual': return !vals.some(eq)
+        case 'lessThan': return val < vals[0]
+        case 'lessThanEqual': return val <= vals[0]
+        case 'greaterThan': return val > vals[0]
+        case 'greaterThanEqual': return val >= vals[0]
+        case 'isNull': return val === null || val === undefined
+        case 'isNotNull': return val !== null && val !== undefined
+        case 'and': return vals.every(sub => serverMatch(row, sub))
+        case 'or': return vals.some(sub => serverMatch(row, sub))
+        default: return true
+    }
+}
+
+function mockAppwrite(tables = {}, files = {}, { realtimeQueries = false } = {}) {
+    const stats = { instances: [], subscribes: [], subscribeArgs: [], timeline: [] }
+    let subSeq = 0
     class Realtime {
         constructor(client) { this.client = client; this.channels = new Map(); stats.instances.push(this) }
-        subscribe(channel, cb) {
+        subscribe(channel, cb, ...rest) {
             stats.subscribes.push(channel)
+            stats.subscribeArgs.push({ channel, argc: 2 + rest.length, queries: rest[0] ?? null })
+            stats.timeline.push({ op: 'sub', channel, queries: rest[0] ?? null })
             const set = this.channels.get(channel) || new Set()
             set.add(cb)
             this.channels.set(channel, set)
-            return () => set.delete(cb)
+            return () => { set.delete(cb); stats.timeline.push({ op: 'unsub', channel, queries: null }) }
         }
         fire(channel, response) { [...(this.channels.get(channel) || [])].forEach(cb => cb(response)) }
         liveCount(channel) { return (this.channels.get(channel) || new Set()).size }
     }
+    class RealtimeQ {
+        constructor(client) { this.client = client; this.pendingSubscribes = new Map(); this.subs = new Map(); stats.instances.push(this) }
+        subscribe(channel, cb, queries = []) {
+            stats.subscribes.push(channel)
+            stats.subscribeArgs.push({ channel, argc: arguments.length, queries })
+            stats.timeline.push({ op: 'sub', channel, queries })
+            const id = `s${++subSeq}`
+            this.subs.set(id, { channel, cb, queries })
+            const drop = async () => { if (this.subs.delete(id)) stats.timeline.push({ op: 'unsub', channel, queries }) }
+            return Promise.resolve({ unsubscribe: drop, close: drop })
+        }
+        fire(channel, response) {
+            for (const sub of [...this.subs.values()]) {
+                if (sub.channel !== channel) continue
+                if (sub.queries.length && !sub.queries.every(q => serverMatch(response.payload, q))) continue
+                sub.cb(response)
+            }
+        }
+        liveCount(channel) { return [...this.subs.values()].filter(s => s.channel === channel).length }
+        liveQueries(channel) { return [...this.subs.values()].filter(s => s.channel === channel).map(s => s.queries) }
+    }
+    // Query strings mirror the real SDK wire shape: JSON {method, attribute, values}
+    const Q = (m, a) => m === 'or' || m === 'and'
+        ? JSON.stringify({ method: m, values: (a[0] || []).map(s => typeof s === 'string' ? JSON.parse(s) : s) })
+        : JSON.stringify({ method: m, attribute: a[0], ...(a.length > 1 && { values: Array.isArray(a[1]) ? a[1] : [a[1]] }) })
     window.Appwrite = {
         Client: class { setEndpoint() { return this } setProject() { return this } },
         TablesDB: class { async listRows({ tableId }) { return { rows: (tables[tableId] || []).map(r => ({ ...r })) } } },
         Storage: class { async listFiles(bucketId) { return { files: (files[bucketId] || []).map(f => ({ ...f })) } } },
-        Realtime,
-        Query: new Proxy({}, { get: (_, m) => (...a) => ({ m, a }) }),
+        Realtime: realtimeQueries ? RealtimeQ : Realtime,
+        Query: new Proxy({}, { get: (_, m) => (...a) => Q(m, a) }),
         Permission: { read: r => `read("${r}")` },
         Role: { user: id => `user:${id}`, team: id => `team:${id}` },
     }
@@ -67,10 +118,10 @@ function mockAppwrite(tables = {}, files = {}) {
 
 const signedOut = () => ({ _initialized: true, isAuthenticated: false, isAnonymous: false, user: null, currentTeam: null, teams: [] })
 
-async function boot(dataSources, { tables = {}, files = {}, auth } = {}) {
+async function boot(dataSources, { tables = {}, files = {}, auth, realtimeQueries = false } = {}) {
     window.Alpine = Alpine
     Alpine.store('auth', auth || signedOut())
-    const stats = mockAppwrite(tables, files)
+    const stats = mockAppwrite(tables, files, { realtimeQueries })
     delete window.ManifestDataRealtime
     delete window.ManifestDataAppwrite
     delete window.ManifestAppwriteAuthConfig
@@ -499,6 +550,16 @@ describe('opt-out and pre-filter', () => {
         expect(realtime().subscriptions.has('alpha')).toBe(false)
     })
 
+    it('server filtering unavailable (legacy SDK): channel-only subscribe, zero queries sent', async () => {
+        const { stats, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active']], scope: null }) },
+            { tables: { t1: [{ $id: 'a1', status: 'active' }] } } // plain mock: no query markers
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(stats.subscribeArgs).toEqual([{ channel: CH('t1'), argc: 2, queries: null }])
+    })
+
     it('setFilter drops before merge/dedupe; null clears it', async () => {
         const { rt, rows, main, realtime } = await boot(
             { alpha: T('t1') },
@@ -518,5 +579,152 @@ describe('opt-out and pre-filter', () => {
         rt().fire(CH('t1'), e)
         await settle()
         expect(rows('alpha')).toEqual(['a1', 'n1'])
+    })
+})
+
+describe('server-side realtime queries (query-capable SDK)', () => {
+    const parse = q => typeof q === 'string' ? JSON.parse(q) : q
+    const authed = (id = 'u1') => ({ _initialized: true, isAuthenticated: true, isAnonymous: false, user: { $id: id }, currentTeam: null, teams: [] })
+
+    it('expressible filters ride the subscription; unexpressible ops are omitted', async () => {
+        const { stats, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active'], ['search', 'title', 'x'], ['limit', 5]] }) },
+            { tables: { t1: [] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(stats.subscribeArgs.length).toBe(1)
+        expect(stats.subscribeArgs[0].queries.map(parse)).toEqual([
+            { method: 'equal', attribute: 'status', values: ['active'] },
+        ])
+    })
+
+    it('scope queries are filtered server-side (the bulk-import billing case)', async () => {
+        const { stats, main } = await boot(
+            { alpha: T('t1', { scope: 'user' }) },
+            { tables: { t1: [] }, auth: authed('u1'), realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(stats.subscribeArgs.length).toBe(1)
+        expect(stats.subscribeArgs[0].queries.map(parse)).toEqual([
+            { method: 'equal', attribute: 'userId', values: ['u1'] },
+        ])
+    })
+
+    it('same channel, different filters: two subscriptions on ONE client; identical filters shared', async () => {
+        const { stats, rt, rows, main } = await boot(
+            {
+                active: T('t1', { queries: [['equal', 'status', 'active']] }),
+                archived: T('t1', { queries: [['equal', 'status', 'archived']] }),
+                active2: T('t1', { queries: [['equal', 'status', 'active']] }),
+            },
+            { tables: { t1: [{ $id: 'a1', status: 'active' }] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('active')
+        await main.loadDataSource('archived')
+        await main.loadDataSource('active2')
+        await settle()
+        expect(stats.instances.length).toBe(1)
+        expect(rt().liveCount(CH('t1'))).toBe(2)
+        // server routes per subscription: an archived create reaches only the archived source
+        rt().fire(CH('t1'), evt('create', { $id: 'n1', status: 'archived' }))
+        await settle()
+        expect(rows('active')).toEqual(['a1'])
+        expect(rows('active2')).toEqual(['a1'])
+        expect(rows('archived')).toContain('n1')
+    })
+
+    it('entirely unexpressible filters subscribe channel-only', async () => {
+        const { stats, main } = await boot(
+            { alpha: T('t1', { queries: [['search', 'title', 'x'], ['limit', 9]] }) },
+            { tables: { t1: [] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(stats.subscribeArgs).toEqual([{ channel: CH('t1'), argc: 2, queries: [] }])
+    })
+
+    it('realtime: { serverFilter: false } opts a source out of server filtering', async () => {
+        const { stats, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active']], realtime: { serverFilter: false } }) },
+            { tables: { t1: [] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(stats.subscribeArgs).toEqual([{ channel: CH('t1'), argc: 2, queries: [] }])
+    })
+
+    it('client matcher still filters what the server cannot express (defense in depth)', async () => {
+        const { rt, rows, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active'], ['contains', 'title', 'x']] }) },
+            { tables: { t1: [] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        rt().fire(CH('t1'), evt('create', { $id: 'n1', status: 'active', title: 'nope' })) // passes the server filter, fails contains
+        rt().fire(CH('t1'), evt('create', { $id: 'n2', status: 'active', title: 'xy' }))
+        await settle()
+        expect(rows('alpha')).toEqual(['n2'])
+    })
+
+    it('$auth. values resolve into the subscription and re-resolve on identity events', async () => {
+        const { stats, rt, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'owner', '$auth.user.$id']] }) },
+            { tables: { t1: [] }, auth: authed('u1'), realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(rt().liveQueries(CH('t1'))[0].map(parse)).toEqual([
+            { method: 'equal', attribute: 'owner', values: ['u1'] },
+        ])
+        Alpine.store('auth', authed('u2'))
+        window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+        await settle(200)
+        expect(stats.instances.length).toBe(2)
+        const inst = stats.instances[1]
+        const queries = inst.liveQueries(CH('t1')).map(qs => qs.map(parse))
+        expect(queries).toEqual([[{ method: 'equal', attribute: 'owner', values: ['u2'] }]])
+    })
+
+    it('filter change resubscribes new-first (no event gap); overlap double-delivery lands once', async () => {
+        const { stats, rt, main, realtime } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active']] }) },
+            { tables: { t1: [{ $id: 'a1', status: 'active' }] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        const inst = rt()
+        const ds = window.ManifestDataStore
+        const origLand = ds.landRows
+        let n1Lands = 0
+        ds.landRows = (name, rowsArr, opts) => { if (rowsArr.some(r => r?.$id === 'n1')) n1Lands++; return origLand(name, rowsArr, opts) }
+        let delivered = 0
+        realtime().setFilter('alpha', () => { delivered++; return true })
+        // The overlap event matches BOTH filter sets (different attributes)
+        const E = { events: ['tables.rows.create'], payload: { $id: 'n1', $sequence: ++seq, status: 'active', kind: 'x' } }
+        const origSub = inst.subscribe.bind(inst)
+        // Fires the instant the replacement subscription goes live, old one still attached
+        inst.subscribe = (ch, cb, queries) => { const r = origSub(ch, cb, queries); inst.fire(ch, E); return r }
+        try {
+            window.ManifestComponentsRegistry.manifest.data.alpha.queries = [['equal', 'kind', 'x']]
+            await main.loadDataSource('alpha', 'en', { reload: true })
+            await settle()
+        } finally {
+            inst.subscribe = origSub
+            ds.landRows = origLand
+        }
+        const subIdx = stats.timeline.findIndex(t => t.op === 'sub' && (t.queries || []).some(q => String(q).includes('kind')))
+        const unsubIdx = stats.timeline.findIndex(t => t.op === 'unsub' && (t.queries || []).some(q => String(q).includes('status')))
+        expect(subIdx).toBeGreaterThan(-1)
+        expect(unsubIdx).toBeGreaterThan(subIdx) // new live before old detached
+        expect(delivered).toBe(1) // delivered through the old subscription during the overlap
+        expect(n1Lands).toBe(1)
+        // replayed through the replacement subscription inside the dedupe window: absorbed
+        inst.fire(CH('t1'), E)
+        await settle()
+        expect(delivered).toBe(2)
+        expect(n1Lands).toBe(1)
+        realtime().setFilter('alpha', null)
     })
 })
