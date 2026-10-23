@@ -504,7 +504,10 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (!rowMatchesScope || !eventMatchesQueries(row, queriesConfig)) {
                 // Row stopped matching scope or queries, remove it
-                if (existingRow) landRemove(dataSourceName, [row.$id], { generation });
+                if (existingRow) {
+                    landRemove(dataSourceName, [row.$id], { generation });
+                    forgetRealtimeRow(dataSourceName, row.$id);
+                }
                 return;
             }
             if (!existingRow) {
