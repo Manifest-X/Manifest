@@ -498,14 +498,19 @@ function isRealtimeExpressible(query) {
     return REALTIME_FILTER_OPS.has(method);
 }
 
-// Server-side realtime filter set: the source's resolved (scope + user) queries
-// reduced to the expressible subset. Omitting a query only WIDENS delivery —
-// the client matcher still filters — so unexpressible queries are dropped
-// whole, never approximated. Returns { queries, key } (key = canonical sorted
-// serialization, for subscription sharing) or null (not ready / nothing
-// expressible → channel-only subscribe, the 0.5.248 path).
-async function buildRealtimeQueries(queriesConfig, scope, scopeColumns) {
-    const resolved = await buildQueries(Array.isArray(queriesConfig) ? queriesConfig : [], scope, scopeColumns);
+// Server-side realtime filter set, reduced to the expressible subset. Omitting
+// a query only WIDENS delivery — the client matcher still filters — so
+// unexpressible queries are dropped whole, never approximated.
+// mode 'scope' (default): only scope-column queries ride the subscription —
+// permission-mirrored, so a row leaving the filter still delivers its last
+// event and drops live. 'all': user queries too (a held row that stops
+// matching then corrects on the next load, not instantly).
+// Returns { queries, key } (key = canonical sorted serialization, for
+// subscription sharing) or null (not ready / nothing expressible → channel-only
+// subscribe, the 0.5.248 path).
+async function buildRealtimeQueries(queriesConfig, scope, scopeColumns, mode = 'scope') {
+    const userConfig = (mode === 'all' && Array.isArray(queriesConfig)) ? queriesConfig : [];
+    const resolved = await buildQueries(userConfig, scope, scopeColumns);
     if (resolved === null) return null;
     const queries = resolved
         .filter(isRealtimeExpressible)

@@ -699,9 +699,12 @@ window.ManifestDataAppwrite = {
      or slotToSubscriptionId (22.4-24). Without either marker: channel-only
      subscribe, exactly the 0.5.248 path.
    - The server evaluates queries against the event payload only, so an
-     update that makes a held row STOP matching is not delivered; the client
-     matcher stays on in both modes and the row corrects on the next load.
-     realtime: { serverFilter: false } restores full channel delivery. */
+     update that makes a held row STOP matching is not delivered. Therefore
+     serverFilter defaults to 'scope': only scope-column filters (permission-
+     mirrored, effectively immutable) ride the subscription; user queries stay
+     client-side so stop-matching rows still drop live. 'all' pushes every
+     expressible filter server-side (such rows then correct on the next load);
+     false sends none. The client matcher stays on in every mode. */
 
 // Map<subKey, { channel, queries, refs, unsubscribe, handlers: Map<sourceName, handler> }>
 const entries = new Map();
@@ -711,6 +714,8 @@ const sources = new Map();
 const filters = new Map();
 // Back-compat/debug surface: Map<sourceName, unsubscribeFunction>
 const subscriptions = new Map();
+// Map<sourceName, n> — explicit teardowns; aborts a subscribe in flight
+const tombstones = new Map();
 // Instance the current subscriptions live on
 let activeRealtime = null;
 
@@ -757,8 +762,8 @@ function dispatch(subKey, response) {
 // Promise<RealtimeSubscription> (Realtime service): normalize teardown
 function dropSub(sub) {
     if (typeof sub === 'function') sub();
-    else if (sub && typeof sub.close === 'function') sub.close(); // unsubscribe + drop the socket when last
-    else if (sub && typeof sub.unsubscribe === 'function') sub.unsubscribe();
+    else if (sub && typeof sub.unsubscribe === 'function') sub.unsubscribe(); // per-subscription; never risks the shared socket
+    else if (sub && typeof sub.close === 'function') sub.close();
 }
 
 function makeUnsubscriber(result) {
@@ -857,6 +862,7 @@ async function rebindAll(realtime) {
 // A replaced registration detaches only after the new subscription is live (no
 // event gap); overlap double-delivery is absorbed by the per-source event dedupe.
 async function subscribeChannel(dataSourceName, channel, onEvent, isCurrent, getFilters) {
+    const epoch = tombstones.get(dataSourceName) || 0;
     const services = await window.ManifestDataAppwrite.getAppwriteDataServices();
     if (isCurrent && !isCurrent()) return null;
     if (!services?.realtime) {
@@ -865,17 +871,22 @@ async function subscribeChannel(dataSourceName, channel, onEvent, isCurrent, get
         subscriptions.delete(dataSourceName);
         return null;
     }
-    await syncInstance(services.realtime);
+    const realtime = services.realtime;
+    await syncInstance(realtime);
     if (isCurrent && !isCurrent()) return null;
 
-    const resolved = (supportsQueries(services.realtime) && getFilters) ? await getFilters() : null;
+    const resolved = (supportsQueries(realtime) && getFilters) ? await getFilters() : null;
     if (isCurrent && !isCurrent()) return null;
+    // Torn down while resolving: land nothing
+    if ((tombstones.get(dataSourceName) || 0) !== epoch) return null;
+    // Instance replaced while resolving (identity rebuild): re-run against the live one
+    if (activeRealtime !== realtime) return subscribeChannel(dataSourceName, channel, onEvent, isCurrent, getFilters);
     const subKey = subKeyFor(channel, resolved);
 
     const prev = sources.get(dataSourceName);
     let entry;
     try {
-        entry = ensureEntry(services.realtime, subKey, channel, resolved?.queries);
+        entry = ensureEntry(realtime, subKey, channel, resolved?.queries);
     } catch (error) {
         console.error('[Manifest Data] Failed to subscribe:', channel, error);
         detach(dataSourceName);
@@ -898,7 +909,7 @@ function filterResolver(filterSpec) {
     if (!filterSpec) return null;
     const build = window.ManifestDataQueries?.buildRealtimeQueries;
     if (typeof build !== 'function') return null;
-    return () => build(filterSpec.queriesConfig, filterSpec.scope, filterSpec.scopeColumns);
+    return () => build(filterSpec.queriesConfig, filterSpec.scope, filterSpec.scopeColumns, filterSpec.mode);
 }
 
 // Subscribe to storage bucket file changes
@@ -913,13 +924,17 @@ function subscribeToTable(dataSourceName, databaseId, tableId, scope, onEvent, i
 
 // Unsubscribe from a data source
 function unsubscribeFromDataSource(dataSourceName) {
+    tombstones.set(dataSourceName, (tombstones.get(dataSourceName) || 0) + 1);
     detach(dataSourceName);
     subscriptions.delete(dataSourceName);
 }
 
 // Unsubscribe from all data sources
 function unsubscribeAll() {
-    for (const name of [...sources.keys()]) detach(name);
+    for (const name of [...sources.keys()]) {
+        tombstones.set(name, (tombstones.get(name) || 0) + 1);
+        detach(name);
+    }
     subscriptions.clear();
 }
 
@@ -1453,14 +1468,19 @@ function isRealtimeExpressible(query) {
     return REALTIME_FILTER_OPS.has(method);
 }
 
-// Server-side realtime filter set: the source's resolved (scope + user) queries
-// reduced to the expressible subset. Omitting a query only WIDENS delivery —
-// the client matcher still filters — so unexpressible queries are dropped
-// whole, never approximated. Returns { queries, key } (key = canonical sorted
-// serialization, for subscription sharing) or null (not ready / nothing
-// expressible → channel-only subscribe, the 0.5.248 path).
-async function buildRealtimeQueries(queriesConfig, scope, scopeColumns) {
-    const resolved = await buildQueries(Array.isArray(queriesConfig) ? queriesConfig : [], scope, scopeColumns);
+// Server-side realtime filter set, reduced to the expressible subset. Omitting
+// a query only WIDENS delivery — the client matcher still filters — so
+// unexpressible queries are dropped whole, never approximated.
+// mode 'scope' (default): only scope-column queries ride the subscription —
+// permission-mirrored, so a row leaving the filter still delivers its last
+// event and drops live. 'all': user queries too (a held row that stops
+// matching then corrects on the next load, not instantly).
+// Returns { queries, key } (key = canonical sorted serialization, for
+// subscription sharing) or null (not ready / nothing expressible → channel-only
+// subscribe, the 0.5.248 path).
+async function buildRealtimeQueries(queriesConfig, scope, scopeColumns, mode = 'scope') {
+    const userConfig = (mode === 'all' && Array.isArray(queriesConfig)) ? queriesConfig : [];
+    const resolved = await buildQueries(userConfig, scope, scopeColumns);
     if (resolved === null) return null;
     const queries = resolved
         .filter(isRealtimeExpressible)

@@ -586,9 +586,9 @@ describe('server-side realtime queries (query-capable SDK)', () => {
     const parse = q => typeof q === 'string' ? JSON.parse(q) : q
     const authed = (id = 'u1') => ({ _initialized: true, isAuthenticated: true, isAnonymous: false, user: { $id: id }, currentTeam: null, teams: [] })
 
-    it('expressible filters ride the subscription; unexpressible ops are omitted', async () => {
+    it("serverFilter 'all': expressible user filters ride the subscription; unexpressible ops are omitted", async () => {
         const { stats, main } = await boot(
-            { alpha: T('t1', { queries: [['equal', 'status', 'active'], ['search', 'title', 'x'], ['limit', 5]] }) },
+            { alpha: T('t1', { queries: [['equal', 'status', 'active'], ['search', 'title', 'x'], ['limit', 5]], realtime: { serverFilter: 'all' } }) },
             { tables: { t1: [] }, realtimeQueries: true }
         )
         await main.loadDataSource('alpha')
@@ -615,9 +615,9 @@ describe('server-side realtime queries (query-capable SDK)', () => {
     it('same channel, different filters: two subscriptions on ONE client; identical filters shared', async () => {
         const { stats, rt, rows, main } = await boot(
             {
-                active: T('t1', { queries: [['equal', 'status', 'active']] }),
-                archived: T('t1', { queries: [['equal', 'status', 'archived']] }),
-                active2: T('t1', { queries: [['equal', 'status', 'active']] }),
+                active: T('t1', { queries: [['equal', 'status', 'active']], realtime: { serverFilter: 'all' } }),
+                archived: T('t1', { queries: [['equal', 'status', 'archived']], realtime: { serverFilter: 'all' } }),
+                active2: T('t1', { queries: [['equal', 'status', 'active']], realtime: { serverFilter: 'all' } }),
             },
             { tables: { t1: [{ $id: 'a1', status: 'active' }] }, realtimeQueries: true }
         )
@@ -637,7 +637,7 @@ describe('server-side realtime queries (query-capable SDK)', () => {
 
     it('entirely unexpressible filters subscribe channel-only', async () => {
         const { stats, main } = await boot(
-            { alpha: T('t1', { queries: [['search', 'title', 'x'], ['limit', 9]] }) },
+            { alpha: T('t1', { queries: [['search', 'title', 'x'], ['limit', 9]], realtime: { serverFilter: 'all' } }) },
             { tables: { t1: [] }, realtimeQueries: true }
         )
         await main.loadDataSource('alpha')
@@ -657,7 +657,7 @@ describe('server-side realtime queries (query-capable SDK)', () => {
 
     it('client matcher still filters what the server cannot express (defense in depth)', async () => {
         const { rt, rows, main } = await boot(
-            { alpha: T('t1', { queries: [['equal', 'status', 'active'], ['contains', 'title', 'x']] }) },
+            { alpha: T('t1', { queries: [['equal', 'status', 'active'], ['contains', 'title', 'x']], realtime: { serverFilter: 'all' } }) },
             { tables: { t1: [] }, realtimeQueries: true }
         )
         await main.loadDataSource('alpha')
@@ -670,7 +670,7 @@ describe('server-side realtime queries (query-capable SDK)', () => {
 
     it('$auth. values resolve into the subscription and re-resolve on identity events', async () => {
         const { stats, rt, main } = await boot(
-            { alpha: T('t1', { queries: [['equal', 'owner', '$auth.user.$id']] }) },
+            { alpha: T('t1', { queries: [['equal', 'owner', '$auth.user.$id']], realtime: { serverFilter: 'all' } }) },
             { tables: { t1: [] }, auth: authed('u1'), realtimeQueries: true }
         )
         await main.loadDataSource('alpha')
@@ -689,7 +689,7 @@ describe('server-side realtime queries (query-capable SDK)', () => {
 
     it('filter change resubscribes new-first (no event gap); overlap double-delivery lands once', async () => {
         const { stats, rt, main, realtime } = await boot(
-            { alpha: T('t1', { queries: [['equal', 'status', 'active']] }) },
+            { alpha: T('t1', { queries: [['equal', 'status', 'active']], realtime: { serverFilter: 'all' } }) },
             { tables: { t1: [{ $id: 'a1', status: 'active' }] }, realtimeQueries: true }
         )
         await main.loadDataSource('alpha')
@@ -726,5 +726,121 @@ describe('server-side realtime queries (query-capable SDK)', () => {
         expect(delivered).toBe(2)
         expect(n1Lands).toBe(1)
         realtime().setFilter('alpha', null)
+    })
+
+    it("default 'scope': scope rides server-side, user queries stay client-side; stop-matching rows still drop live", async () => {
+        const { stats, rt, rows, main, realtime } = await boot(
+            { alpha: T('t1', { scope: 'user', queries: [['equal', 'status', 'active']] }) },
+            { tables: { t1: [{ $id: 'a1', userId: 'u1', status: 'active' }] }, auth: authed('u1'), realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        // only the scope filter is on the subscription — the user query stays client-side
+        expect(stats.subscribeArgs[0].queries.map(parse)).toEqual([
+            { method: 'equal', attribute: 'userId', values: ['u1'] },
+        ])
+        let delivered = 0
+        realtime().setFilter('alpha', () => { delivered++; return true })
+        // cross-scope flood: never delivered (the billing case)
+        rt().fire(CH('t1'), evt('create', { $id: 'x1', userId: 'u2', status: 'active' }))
+        // in-scope stop-matching update: delivered, and the client matcher removes the row live
+        rt().fire(CH('t1'), evt('update', { $id: 'a1', userId: 'u1', status: 'archived' }))
+        await settle()
+        expect(delivered).toBe(1)
+        expect(rows('alpha')).toEqual([])
+        realtime().setFilter('alpha', null)
+    })
+
+    it("serverFilter 'all': a stop-matching update is not delivered — the held row lingers until the next load", async () => {
+        const { rt, rows, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active']], realtime: { serverFilter: 'all' } }) },
+            { tables: { t1: [{ $id: 'a1', status: 'active' }] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        rt().fire(CH('t1'), evt('update', { $id: 'a1', status: 'archived' }))
+        await settle()
+        expect(rows('alpha')).toEqual(['a1']) // the documented 'all' trade: corrects on the next load
+    })
+
+    it("serverFilter true normalizes to 'all'", async () => {
+        const { stats, main } = await boot(
+            { alpha: T('t1', { queries: [['equal', 'status', 'active']], realtime: { serverFilter: true } }) },
+            { tables: { t1: [] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        expect(stats.subscribeArgs[0].queries.map(parse)).toEqual([
+            { method: 'equal', attribute: 'status', values: ['active'] },
+        ])
+    })
+
+    it('double teardown is idempotent and never drops a peer', async () => {
+        const { rt, rows, main, realtime } = await boot(
+            { beta: T('t2'), gamma: T('t2') },
+            { tables: { t2: [{ $id: 'b1' }] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('beta')
+        await main.loadDataSource('gamma')
+        await settle()
+        const stored = realtime().subscriptions.get('beta')
+        realtime().unsubscribeFromDataSource('beta')
+        realtime().unsubscribeFromDataSource('beta')
+        stored() // stale closure after teardown: token-guarded no-op
+        await settle()
+        expect(rt().liveCount(CH('t2'))).toBe(1)
+        rt().fire(CH('t2'), evt('create', { $id: 'n1' }))
+        await settle()
+        expect(rows('gamma')).toEqual(['b1', 'n1'])
+        expect(rows('beta')).toEqual(['b1'])
+    })
+
+    it('teardown during an in-flight subscribe lands nothing', async () => {
+        const { rt, main, realtime, queries } = await boot(
+            { alpha: T('t1') },
+            { tables: { t1: [] }, realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha')
+        await settle()
+        const q = queries()
+        const orig = q.buildRealtimeQueries
+        let release
+        q.buildRealtimeQueries = (...a) => new Promise(resolve => { release = () => resolve(orig(...a)) })
+        const p = realtime().subscribeToTable('late', 'db', 't9', null, () => {}, null, { queriesConfig: [['equal', 'a', 1]], mode: 'all' })
+        await settle(20)
+        realtime().unsubscribeFromDataSource('late') // torn down while filters resolve
+        release()
+        const unsub = await p
+        q.buildRealtimeQueries = orig
+        expect(unsub).toBe(null)
+        expect(rt().liveCount(CH('t9'))).toBe(0)
+        expect(realtime().subscriptions.has('late')).toBe(false)
+    })
+
+    it('an identity rebuild finishing during filter resolution lands the subscription on the active instance', async () => {
+        const { stats, main, realtime, queries } = await boot(
+            { alpha: T('t1') },
+            { tables: { t1: [] }, auth: authed('u1'), realtimeQueries: true }
+        )
+        await main.loadDataSource('alpha') // keeps sources non-empty so the identity listener rebinds
+        await settle()
+        const q = queries()
+        const orig = q.buildRealtimeQueries
+        let release = null
+        q.buildRealtimeQueries = (...a) => release
+            ? orig(...a) // later calls (rebind, retry) resolve immediately
+            : new Promise(resolve => { release = () => resolve(orig(...a)) })
+        const p = realtime().subscribeToTable('beta', 'db', 't2', null, () => {}, null, { queriesConfig: [['equal', 'a', 1]], mode: 'all' })
+        await settle(20) // beta is now awaiting its filter resolution
+        window.dispatchEvent(new CustomEvent('manifest:auth:login')) // client memo dropped; rebind on a new instance
+        await settle(100)
+        release()
+        const unsub = await p
+        q.buildRealtimeQueries = orig
+        expect(typeof unsub).toBe('function')
+        expect(stats.instances.length).toBe(2)
+        expect(stats.instances[0].liveCount(CH('t2'))).toBe(0) // not stranded on the dead instance
+        expect(stats.instances[1].liveCount(CH('t2'))).toBe(1)
+        realtime().unsubscribeFromDataSource('beta')
     })
 })
