@@ -246,7 +246,7 @@
                                 }
                             },
                             "realtime": {
-                                "description": "Realtime subscription config. false disables the subscription. { mode, maxRows } bounds growth: 'append' (default) stops appending at maxRows and counts skipped events in $realtimeOverflow; 'window' keeps the initial window size by evicting the oldest realtime-appended rows. maxRows defaults to max(500, 2x the initially loaded rows); 0 opts into legacy unbounded growth.",
+                                "description": "Realtime subscription config. false disables the subscription. { mode, maxRows } bounds growth: 'append' (default) stops appending at maxRows and counts skipped events in $realtimeOverflow; 'window' keeps the initial window size by evicting the oldest realtime-appended rows. maxRows defaults to max(500, 2x the initially loaded rows); 0 opts into legacy unbounded growth. serverFilter picks which filters ride the Appwrite realtime subscription server-side: 'scope' (default) sends only scope-column filters; 'all' (alias true) sends every expressible filter — rows that stop matching then drop on the next load instead of instantly; false sends none.",
                                 "oneOf": [
                                     {
                                         "type": "boolean"
@@ -264,6 +264,20 @@
                                             "maxRows": {
                                                 "type": "number",
                                                 "minimum": 0
+                                            },
+                                            "serverFilter": {
+                                                "oneOf": [
+                                                    {
+                                                        "type": "boolean"
+                                                    },
+                                                    {
+                                                        "type": "string",
+                                                        "enum": [
+                                                            "scope",
+                                                            "all"
+                                                        ]
+                                                    }
+                                                ]
                                             }
                                         },
                                         "additionalProperties": false

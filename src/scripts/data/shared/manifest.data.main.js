@@ -449,6 +449,13 @@ function forgetRealtimeRow(dataSourceName, id) {
     if (i !== -1) meta.appended.splice(i, 1);
 }
 
+// realtime.serverFilter → mode: 'scope' (default) | 'all' (alias true) | null (false: no server filtering)
+function serverFilterMode(realtimeConfig) {
+    const sf = (realtimeConfig && typeof realtimeConfig === 'object') ? realtimeConfig.serverFilter : undefined;
+    if (sf === false) return null;
+    return (sf === 'all' || sf === true) ? 'all' : 'scope';
+}
+
 // Query-aware event filter: the source's own queries, evaluated client-side
 // (unevaluable → match; see rowMatchesQueries)
 function eventMatchesQueries(row, queriesConfig) {
@@ -892,6 +899,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
                         configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        // Events server-filtered where the SDK supports realtime queries; the client
+                        // matcher below still runs. serverFilter: 'scope' (default) | 'all' (alias true) | false
+                        const rtMode = serverFilterMode(dataSource.realtime);
+                        const rtFilterSpec = rtMode ? { queriesConfig: rtQueries, scope, scopeColumns, mode: rtMode } : null;
                         const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
@@ -900,7 +911,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             async (eventType, payload) => {
                                 await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, rtQueries);
                             },
-                            () => !superseded()
+                            () => !superseded(),
+                            rtFilterSpec
                         );
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
@@ -945,6 +957,9 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
                         configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        // Buckets have no scope columns: server filtering only under serverFilter 'all'
+                        const rtMode = serverFilterMode(dataSource.realtime);
+                        const rtFilterSpec = rtMode ? { queriesConfig: rtQueries, scope: null, mode: rtMode } : null;
                         const unsubscribe = await window.ManifestDataRealtime.subscribeToStorageBucket(
                             dataSourceName,
                             bucketId,
@@ -953,7 +968,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                                 if (superseded()) return;
                                 await handleStorageRealtimeEvent(dataSourceName, bucketId, scope, eventType, payload, generation, rtQueries);
                             },
-                            () => !superseded()
+                            () => !superseded(),
+                            rtFilterSpec
                         );
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }

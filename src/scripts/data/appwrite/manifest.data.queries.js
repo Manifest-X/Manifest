@@ -485,6 +485,42 @@ function toAppwriteQuery(queryArray) {
     }
 }
 
+// Realtime-expressible operators: the intersection of what the load serializes
+// (QUERY_MAP), what the matcher evaluates, and what Appwrite realtime filters
+// server-side. isNull/isNotNull are realtime-supported but the load drops them,
+// so filtering on them server-side would drop events the matcher keeps — excluded.
+const REALTIME_FILTER_OPS = new Set(['equal', 'notEqual', 'lessThan', 'lessThanEqual', 'greaterThan', 'greaterThanEqual']);
+
+function isRealtimeExpressible(query) {
+    if (!Array.isArray(query) || query.length === 0) return false;
+    const [method, ...args] = query;
+    if (method === 'or') return Array.isArray(args[0]) && args[0].length > 0 && args[0].every(isRealtimeExpressible);
+    return REALTIME_FILTER_OPS.has(method);
+}
+
+// Server-side realtime filter set, reduced to the expressible subset. Omitting
+// a query only WIDENS delivery — the client matcher still filters — so
+// unexpressible queries are dropped whole, never approximated.
+// mode 'scope' (default): only scope-column queries ride the subscription —
+// permission-mirrored, so a row leaving the filter still delivers its last
+// event and drops live. 'all': user queries too (a held row that stops
+// matching then corrects on the next load, not instantly).
+// Returns { queries, key } (key = canonical sorted serialization, for
+// subscription sharing) or null (not ready / nothing expressible → channel-only
+// subscribe, the 0.5.248 path).
+async function buildRealtimeQueries(queriesConfig, scope, scopeColumns, mode = 'scope') {
+    const userConfig = (mode === 'all' && Array.isArray(queriesConfig)) ? queriesConfig : [];
+    const resolved = await buildQueries(userConfig, scope, scopeColumns);
+    if (resolved === null) return null;
+    const queries = resolved
+        .filter(isRealtimeExpressible)
+        .map(query => toAppwriteQuery(query))
+        .filter(query => query !== null);
+    if (queries.length === 0) return null;
+    const key = queries.map(q => typeof q === 'string' ? q : JSON.stringify(q)).sort().join('\u001e');
+    return { queries, key };
+}
+
 // Build Appwrite queries from configuration
 // scopeColumns: { team, user } column names (default teamId/userId) — see manifest.data.config.js getScopeColumns
 // Returns null ("not ready") straight through — see buildQueries.
@@ -504,6 +540,7 @@ window.ManifestDataQueries = {
     getAuthValue,
     buildQueries,
     buildAppwriteQueries,
+    buildRealtimeQueries,
     rowMatchesQueries,
     toAppwriteQuery,
     ALLOWED_VARIABLES,
