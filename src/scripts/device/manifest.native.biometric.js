@@ -4,7 +4,9 @@
 
 const MANIFEST_BIOMETRIC_PLUGINS = ['BiometricAuthNative', 'BiometricAuth', 'NativeBiometric'];
 
+// Native only: bundled web builds expose plugin web stubs that always "verify".
 function manifestBiometricPlugin() {
+    if (!manifestNativeIsNative()) return null;
     for (const name of MANIFEST_BIOMETRIC_PLUGINS) {
         const plugin = manifestNativePlugin(name);
         if (plugin) return { name, plugin };
@@ -42,7 +44,7 @@ async function manifestBiometricVerify(opts) {
             return { verified: true };
         }
         if (manifestNativeHas(name, B, 'verifyIdentity')) {
-            await B.verifyIdentity({ reason: o.reason, title: o.title, subtitle: o.subtitle, negativeButtonText: o.cancelTitle, useFallback: !!o.allowDeviceCredential, fallbackTitle: o.fallbackTitle });
+            await B.verifyIdentity({ reason: o.reason, description: o.reason, title: o.title, subtitle: o.subtitle, negativeButtonText: o.cancelTitle, useFallback: !!o.allowDeviceCredential, fallbackTitle: o.fallbackTitle });
             return { verified: true };
         }
     } catch (e) { return { verified: false, error: (e && (e.message || e.code)) || 'failed', code: (e && e.code) || undefined }; }

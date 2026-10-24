@@ -15,9 +15,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const CODE = readFileSync(path.join(__dirname, '../src/scripts/manifest.device.js'), 'utf8')
 
 let magics
-function boot(plugins, headers) {
+function boot(plugins, headers, native = true) {
     magics = {}
-    window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'ios', Plugins: plugins, PluginHeaders: headers }
+    window.Capacitor = { isNativePlatform: () => native, getPlatform: () => 'ios', Plugins: plugins, PluginHeaders: headers }
     window.Alpine = { magic: (n, fn) => { magics[n] = fn() }, store: () => {} }
     new Function(CODE)()
     window.ensureManifestNativeInitialized()
@@ -78,7 +78,16 @@ describe('$biometric', () => {
         boot({ NativeBiometric: B }, [header('NativeBiometric', ['isAvailable', 'verifyIdentity'])])
         expect(await magics.biometric.available()).toBe(true)
         expect(await magics.biometric.verify({ reason: 'r', title: 't' })).toEqual({ verified: true })
-        expect(B.verifyIdentity).toHaveBeenCalledWith(expect.objectContaining({ reason: 'r', title: 't' }))
+        expect(B.verifyIdentity).toHaveBeenCalledWith(expect.objectContaining({ reason: 'r', description: 'r', title: 't' }))
+    })
+
+    it('ignores plugin web stubs in a bundled web build (no native verify off-device)', async () => {
+        const B = { isAvailable: vi.fn(async () => ({ isAvailable: true })), verifyIdentity: vi.fn(async () => {}) }
+        boot({ NativeBiometric: B }, undefined, false)
+        expect(await magics.biometric.available()).toBe(false)
+        expect(await magics.biometric.verify({ reason: 'r' })).toEqual({ verified: false, error: 'unsupported' })
+        expect(B.isAvailable).not.toHaveBeenCalled()
+        expect(B.verifyIdentity).not.toHaveBeenCalled()
     })
 
     it('reports unsupported with no plugin', async () => {
@@ -125,6 +134,35 @@ describe('$secure', () => {
         boot({ SecureStorage: S }, [header('SecureStorage', SECURE_METHODS)])
         await expect(magics.secure.set('k', 'v')).rejects.toThrow('Keychain locked')
         expect(err).toHaveBeenCalled()
+    })
+
+    it('uses the localStorage fallback in a bundled web build, not the plugin', async () => {
+        const S = aparajitaSecure()
+        localStorage.clear()
+        boot({ SecureStorage: S }, [header('SecureStorage', SECURE_METHODS)], false)
+        await magics.secure.set('k', 'v')
+        expect(localStorage.getItem('mnfst:k')).toBe('v')
+        expect(S.internalSetItem).not.toHaveBeenCalled()
+    })
+
+    it('handles an empty key without calling native', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const S = aparajitaSecure()
+        boot({ SecureStorage: S }, [header('SecureStorage', SECURE_METHODS)])
+        expect(await magics.secure.get('')).toBe(null)
+        await magics.secure.remove('')
+        await expect(magics.secure.set('', 'v')).rejects.toThrow(/No key/)
+        expect(S.internalGetItem).not.toHaveBeenCalled()
+        expect(S.internalRemoveItem).not.toHaveBeenCalled()
+        expect(S.internalSetItem).not.toHaveBeenCalled()
+    })
+
+    it('rejects remove() on an item-shaped plugin without removeItem', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const remove = vi.fn()
+        boot({ SecureStorage: { getItem: async () => null, setItem: async () => {}, remove } })
+        await expect(magics.secure.remove('a')).rejects.toThrow(/removeItem/)
+        expect(remove).not.toHaveBeenCalled()
     })
 
     it('rejects on an unrecognised plugin shape', async () => {

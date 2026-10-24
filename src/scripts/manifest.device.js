@@ -186,18 +186,24 @@ function manifestSecureNativeBackend(plugin, name) {
     };
     return {
         get: (key) => call('get', async () => {
+            if (key == null || key === '') return null;
             if (shape === 'internal') { const r = await plugin.internalGetItem({ prefixedKey: P + key }); return r && r.data != null ? r.data : null; }
             if (shape === 'item') { const v = await plugin.getItem(key); return v == null ? null : v; }
             const r = await plugin.get({ key }); return r && typeof r.value !== 'undefined' ? r.value : (r == null ? null : r);
         }),
         set: (key, value) => call('set', async () => {
+            if (key == null || key === '') throw new Error('No key provided');
             if (shape === 'internal') await plugin.internalSetItem({ prefixedKey: P + key, data: String(value) });
             else if (shape === 'item') await plugin.setItem(key, String(value));
             else await plugin.set({ key, value: String(value) });
         }),
         remove: (key) => call('remove', async () => {
+            if (key == null || key === '') return;
             if (shape === 'internal') await plugin.internalRemoveItem({ prefixedKey: P + key });
-            else if (shape === 'item' && has('removeItem')) await plugin.removeItem(key);
+            else if (shape === 'item') {
+                if (!has('removeItem')) throw new Error(n + ' plugin has no removeItem(); use $secure.use(adapter)');
+                await plugin.removeItem(key);
+            }
             else await plugin.remove({ key });
         }),
         keys: () => call('keys', async () => {
@@ -214,7 +220,7 @@ function manifestSecureNativeBackend(plugin, name) {
 let _manifestSecureBackend = null;
 function manifestSecureBackend() {
     if (_manifestSecureBackend) return _manifestSecureBackend;
-    const plugin = manifestNativePlugin('SecureStorage');
+    const plugin = manifestNativeIsNative() ? manifestNativePlugin('SecureStorage') : null;
     _manifestSecureBackend = plugin ? manifestSecureNativeBackend(plugin, 'SecureStorage') : manifestSecureWebBackend();
     return _manifestSecureBackend;
 }
@@ -429,7 +435,9 @@ function initManifestHaptics() {
 
 const MANIFEST_BIOMETRIC_PLUGINS = ['BiometricAuthNative', 'BiometricAuth', 'NativeBiometric'];
 
+// Native only: bundled web builds expose plugin web stubs that always "verify".
 function manifestBiometricPlugin() {
+    if (!manifestNativeIsNative()) return null;
     for (const name of MANIFEST_BIOMETRIC_PLUGINS) {
         const plugin = manifestNativePlugin(name);
         if (plugin) return { name, plugin };
@@ -467,7 +475,7 @@ async function manifestBiometricVerify(opts) {
             return { verified: true };
         }
         if (manifestNativeHas(name, B, 'verifyIdentity')) {
-            await B.verifyIdentity({ reason: o.reason, title: o.title, subtitle: o.subtitle, negativeButtonText: o.cancelTitle, useFallback: !!o.allowDeviceCredential, fallbackTitle: o.fallbackTitle });
+            await B.verifyIdentity({ reason: o.reason, description: o.reason, title: o.title, subtitle: o.subtitle, negativeButtonText: o.cancelTitle, useFallback: !!o.allowDeviceCredential, fallbackTitle: o.fallbackTitle });
             return { verified: true };
         }
     } catch (e) { return { verified: false, error: (e && (e.message || e.code)) || 'failed', code: (e && e.code) || undefined }; }
