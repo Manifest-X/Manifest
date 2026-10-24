@@ -342,7 +342,14 @@ export interface ManifestHaptics {
 /** `$biometric` from the device plugin. */
 export interface ManifestBiometric {
     available(): Promise<boolean>;
-    verify(opts?: Record<string, unknown>): Promise<unknown>;
+    verify(opts?: {
+        reason?: string;
+        title?: string;
+        subtitle?: string;
+        cancelTitle?: string;
+        fallbackTitle?: string;
+        allowDeviceCredential?: boolean;
+    }): Promise<{ verified: boolean; error?: string; code?: string }>;
 }
 
 /** `$camera` from the device plugin. */

@@ -58,3 +58,27 @@ describe('copyProjectIntoDist with Capacitor', () => {
         expect(existsSync(join(output, 'website'))).toBe(false);
     });
 });
+
+describe('copyProjectIntoDist dot-folders', () => {
+    it('ships .well-known (AASA, assetlinks) but no other dot entries', () => {
+        scaffold([
+            'manifest.json',
+            '.well-known/apple-app-site-association',
+            '.well-known/assetlinks.json',
+            '.env',
+            '.git/HEAD',
+            '.claude/settings.json',
+            '.app-www/index.html',
+        ]);
+        copyProjectIntoDist(root, output);
+        expect(existsSync(join(output, '.well-known/apple-app-site-association'))).toBe(true);
+        expect(existsSync(join(output, '.well-known/assetlinks.json'))).toBe(true);
+        for (const d of ['.env', '.git', '.claude', '.app-www']) expect(existsSync(join(output, d))).toBe(false);
+    });
+
+    it('ships .well-known in a Capacitor-wrapped project too', () => {
+        scaffold(['capacitor.config.json', 'manifest.json', '.well-known/apple-app-site-association']);
+        copyProjectIntoDist(root, output);
+        expect(existsSync(join(output, '.well-known/apple-app-site-association'))).toBe(true);
+    });
+});

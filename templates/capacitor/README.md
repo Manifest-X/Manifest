@@ -10,8 +10,10 @@ This is a scaffold, not an automated tool — run the steps on a Mac with Xcode.
 
 ## Prerequisites
 
-- macOS with **Xcode** + Command Line Tools, and **CocoaPods** (`sudo gem install cocoapods`)
-- Node 18+
+- macOS with the latest **Xcode** + Command Line Tools (see Capacitor's [environment setup](https://capacitorjs.com/docs/getting-started/environment-setup))
+- **Node 22+** — the Capacitor 8 CLI requires it (`engines: >=22`)
+- No CocoaPods needed: `npx cap add ios` uses Swift Package Manager by default since Capacitor 8 (pass `--packagemanager CocoaPods` only for plugins that ship no `Package.swift`)
+- iOS 15+ deployment target (Capacitor 8's default)
 - An **Apple Developer** account ($99/yr) for signing, TestFlight, and the App Store
 
 ## 1. Opt the app into device capabilities
@@ -96,13 +98,13 @@ the magics no-op when their plugin is absent.
 | `$app`, `$links` | `@capacitor/app` | lifecycle + `appUrlOpen` deep links |
 | `$device.online` (network) | `@capacitor/network` | higher-fidelity connectivity |
 | `$camera` | `@capacitor/camera` | |
-| `$secure` | a secure-storage plugin registered as `SecureStorage` (e.g. `@aparajita/capacitor-secure-storage`) | Keychain-backed; use `$secure.use(adapter)` if your plugin's API differs |
-| `$biometric` | a biometric plugin (e.g. `capacitor-native-biometric` or `@aparajita/capacitor-biometric-auth`) | Face ID / Touch ID |
+| `$secure` | `@aparajita/capacitor-secure-storage` | Keychain/Keystore; values stored under its default `capacitor-storage_` prefix. Other plugins: `$secure.use(adapter)` |
+| `$biometric` | `@aparajita/capacitor-biometric-auth` or `@capgo/capacitor-native-biometric` | Face ID / Touch ID |
 
 ```bash
 npm install @capacitor/share @capacitor/haptics @capacitor/app @capacitor/network \
-  @capacitor/push-notifications @capacitor/camera
-# plus your chosen secure-storage and biometric plugins
+  @capacitor/push-notifications @capacitor/camera \
+  @aparajita/capacitor-secure-storage @aparajita/capacitor-biometric-auth
 ```
 
 ## 5. Add the platforms
@@ -124,7 +126,7 @@ In Xcode (`npx cap open ios`), under the app target:
   - `NSPhotoLibraryUsageDescription` / `NSPhotoLibraryAddUsageDescription`
   - `NSFaceIDUsageDescription` — for `$biometric`
 - **Push:** add the *Push Notifications* capability and *Background Modes → Remote notifications*.
-- **Deep links:** add *Associated Domains* (`applinks:yourdomain.com`) for universal links, or a custom URL scheme for `myapp://` links — both arrive via `$links`.
+- **Deep links:** add *Associated Domains* (`applinks:yourdomain.com`) for universal links, or a custom URL scheme for `myapp://` links — both arrive via `$links`. Put `apple-app-site-association` (and Android's `assetlinks.json`) in a `.well-known/` folder at the project root; it publishes in SPA and render mode (`mnfst-render` 0.5.56+ copies `.well-known`, and no other dot-folder).
 - **Privacy manifest:** add `PrivacyInfo.xcprivacy` declaring data collection + required-reason API codes (mandatory since 2024, and covered SDKs like Capacitor plugins ship their own). See [Passing review](https://manifestx.dev/docs/framework/publishing/native-apps#passing-review).
 
 ## 7. Native feel (already mostly handled by Manifest)

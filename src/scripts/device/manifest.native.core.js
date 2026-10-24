@@ -11,6 +11,14 @@ function manifestNativePlugin(name) {
     const cap = window.Capacitor;
     return (cap && cap.Plugins && cap.Plugins[name]) || null;
 }
+// Whether a plugin exposes a native method. Bundled apps get a registerPlugin
+// Proxy where every property is a function, so prefer the native header.
+function manifestNativeHas(name, plugin, method) {
+    const headers = window.Capacitor && window.Capacitor.PluginHeaders;
+    const h = Array.isArray(headers) && headers.find(x => x && x.name === name);
+    if (h && Array.isArray(h.methods)) return h.methods.some(m => m && m.name === method);
+    return !!plugin && typeof plugin[method] === 'function';
+}
 function manifestNativePlatform() {
     const cap = window.Capacitor;
     if (cap && typeof cap.getPlatform === 'function') { try { return cap.getPlatform(); } catch (e) {} }
