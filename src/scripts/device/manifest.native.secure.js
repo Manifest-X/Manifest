@@ -1,8 +1,7 @@
 // $secure — Keychain/Keystore-backed key/value storage (native) with a
 // namespaced localStorage fallback on the web. Intended for session tokens etc.
-// Native: install a Capacitor secure-storage plugin registered as
-// window.Capacitor.Plugins.SecureStorage; if its method shape differs from the
-// adapters below, override with $secure.use(adapter). Verify on device.
+// Native: a plugin registered as SecureStorage (@aparajita/capacitor-secure-storage,
+// or any getItem/setItem or get/set shape); $secure.use(adapter) overrides.
 // The web fallback is NOT encrypted — it degrades honestly, not securely.
 
 const MANIFEST_SECURE_NS = 'mnfst:';
@@ -21,33 +20,63 @@ function manifestSecureWebBackend() {
     };
 }
 
-// Adapts the two common Capacitor secure-storage plugin shapes: localStorage-like
-// (getItem/setItem/removeItem) or object-arg (get/set/remove with {key,value}).
-function manifestSecureNativeBackend(plugin) {
-    const itemApi = typeof plugin.getItem === 'function';
+// aparajita's default prefix, so keys interop with its own getItem/setItem
+const MANIFEST_SECURE_NATIVE_PREFIX = 'capacitor-storage_';
+
+function manifestSecureFail(op, e) {
+    try { console.error('[Manifest] $secure.' + op + ' failed', e); } catch (_) {}
+    throw e instanceof Error ? e : new Error('$secure.' + op + ' failed: ' + ((e && (e.message || e.code)) || e));
+}
+
+// Adapts three native shapes: aparajita (internalGetItem…), localStorage-like
+// (getItem/setItem/removeItem) and object-arg (get/set/remove with {key,value}).
+function manifestSecureNativeBackend(plugin, name) {
+    const n = name || 'SecureStorage';
+    const has = (m) => manifestNativeHas(n, plugin, m);
+    const P = MANIFEST_SECURE_NATIVE_PREFIX;
+    const shape = has('internalGetItem') ? 'internal' : has('getItem') ? 'item' : has('get') ? 'object' : null;
+    const call = async (op, fn) => {
+        if (!shape) manifestSecureFail(op, new Error(n + ' plugin has no supported API; use $secure.use(adapter)'));
+        try { return await fn(); } catch (e) { manifestSecureFail(op, e); }
+    };
     return {
-        async get(key) {
-            try {
-                if (itemApi) { const v = await plugin.getItem(key); return v == null ? null : v; }
-                const r = await plugin.get({ key }); return r && typeof r.value !== 'undefined' ? r.value : (r == null ? null : r);
-            } catch (e) { return null; }
-        },
-        async set(key, value) {
-            try { if (itemApi) await plugin.setItem(key, String(value)); else await plugin.set({ key, value: String(value) }); } catch (e) {}
-        },
-        async remove(key) {
-            try { if (typeof plugin.removeItem === 'function') await plugin.removeItem(key); else await plugin.remove({ key }); } catch (e) {}
-        },
-        async keys() { try { const r = await plugin.keys(); return Array.isArray(r) ? r : (r && (r.keys || r.value)) || []; } catch (e) { return []; } },
-        async clear() { try { await plugin.clear(); } catch (e) {} }
+        get: (key) => call('get', async () => {
+            if (key == null || key === '') return null;
+            if (shape === 'internal') { const r = await plugin.internalGetItem({ prefixedKey: P + key }); return r && r.data != null ? r.data : null; }
+            if (shape === 'item') { const v = await plugin.getItem(key); return v == null ? null : v; }
+            const r = await plugin.get({ key }); return r && typeof r.value !== 'undefined' ? r.value : (r == null ? null : r);
+        }),
+        set: (key, value) => call('set', async () => {
+            if (key == null || key === '') throw new Error('No key provided');
+            if (shape === 'internal') await plugin.internalSetItem({ prefixedKey: P + key, data: String(value) });
+            else if (shape === 'item') await plugin.setItem(key, String(value));
+            else await plugin.set({ key, value: String(value) });
+        }),
+        remove: (key) => call('remove', async () => {
+            if (key == null || key === '') return;
+            if (shape === 'internal') await plugin.internalRemoveItem({ prefixedKey: P + key });
+            else if (shape === 'item') {
+                if (!has('removeItem')) throw new Error(n + ' plugin has no removeItem(); use $secure.use(adapter)');
+                await plugin.removeItem(key);
+            }
+            else await plugin.remove({ key });
+        }),
+        keys: () => call('keys', async () => {
+            if (shape === 'internal') { const r = await plugin.internalGetPrefixedKeys({ prefix: P }); return ((r && r.keys) || []).map(k => k.slice(P.length)); }
+            const r = await plugin.keys(); return Array.isArray(r) ? r : (r && (r.keys || r.value)) || [];
+        }),
+        clear: () => call('clear', async () => {
+            if (shape === 'internal') await plugin.internalClearItemsWithPrefix({ prefix: P });
+            else await plugin.clear();
+        })
     };
 }
 
 let _manifestSecureBackend = null;
 function manifestSecureBackend() {
     if (_manifestSecureBackend) return _manifestSecureBackend;
-    const plugin = manifestNativePlugin('SecureStorage');
-    _manifestSecureBackend = plugin ? manifestSecureNativeBackend(plugin) : manifestSecureWebBackend();
+    const plugin = manifestNativeIsNative() ? manifestNativePlugin('SecureStorage') : null;
+    _manifestSecureBackend = plugin ? manifestSecureNativeBackend(plugin, 'SecureStorage') : manifestSecureWebBackend();
     return _manifestSecureBackend;
 }
 

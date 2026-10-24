@@ -2482,6 +2482,9 @@ const COPY_EXCLUDE = new Set([
 const CAPACITOR_CONFIGS = ['capacitor.config.json', 'capacitor.config.ts', 'capacitor.config.js'];
 const CAPACITOR_EXCLUDE = new Set(['ios', 'android', ...CAPACITOR_CONFIGS]);
 
+// The one dot-folder that ships: AASA / assetlinks for universal + app links.
+const COPY_DOT_ALLOW = new Set(['.well-known']);
+
 function copyProjectIntoDist(rootResolved, outputResolved) {
   const outputDirName = basename(outputResolved);
   COPY_EXCLUDE.add(outputDirName);
@@ -2489,7 +2492,7 @@ function copyProjectIntoDist(rootResolved, outputResolved) {
   const entries = readdirSync(rootResolved, { withFileTypes: true });
   for (const ent of entries) {
     const name = ent.name;
-    if (COPY_EXCLUDE.has(name) || name.startsWith('.')) continue;
+    if (COPY_EXCLUDE.has(name) || (name.startsWith('.') && !COPY_DOT_ALLOW.has(name))) continue;
     if (wrapped && CAPACITOR_EXCLUDE.has(name)) continue;
     const src = join(rootResolved, name);
     const dest = join(outputResolved, name);
