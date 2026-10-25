@@ -14,7 +14,7 @@ function initManifestApp() {
     const visible = (typeof document !== 'undefined') ? document.visibilityState !== 'hidden' : true;
     if (!window.Alpine.store('app')) window.Alpine.store('app', { active: visible });
 
-    const App = manifestNativePlugin('App');
+    const App = manifestNativeUse('App', 'getState');
     if (App) {
         try { App.addListener('appStateChange', s => manifestAppSetActive(s && s.isActive)); } catch (e) {}
     } else if (typeof document !== 'undefined') {

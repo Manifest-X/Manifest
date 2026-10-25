@@ -5,6 +5,8 @@
  * for @aparajita/capacitor-biometric-auth, @capgo/capacitor-native-biometric and
  * @aparajita/capacitor-secure-storage (plain objects of native methods + headers),
  * and against a bundled registerPlugin Proxy (every property is a function).
+ * The other adapters: native plugin only inside the container; bundled web
+ * builds use Manifest's web fallbacks, never the plugin's web stub.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -18,7 +20,8 @@ let magics
 function boot(plugins, headers, native = true) {
     magics = {}
     window.Capacitor = { isNativePlatform: () => native, getPlatform: () => 'ios', Plugins: plugins, PluginHeaders: headers }
-    window.Alpine = { magic: (n, fn) => { magics[n] = fn() }, store: () => {} }
+    const stores = {}
+    window.Alpine = { magic: (n, fn) => { magics[n] = fn() }, store: (n, v) => { if (v === undefined) return stores[n]; stores[n] = v } }
     new Function(CODE)()
     window.ensureManifestNativeInitialized()
 }
@@ -181,5 +184,146 @@ describe('$secure', () => {
         boot({ SecureStorage: { get: async ({ key }) => ({ value: o.get(key) }), set: async ({ key, value }) => { o.set(key, value) }, remove: async ({ key }) => { o.delete(key) } } })
         await magics.secure.set('c', 'd')
         expect(o.get('c')).toBe('d')
+    })
+})
+
+// Bundled web build: registerPlugin proxy whose calls are recorded.
+function webProxy() {
+    const calls = []
+    const proxy = new Proxy({}, { get: (_, p) => (...a) => { calls.push(String(p)); return Promise.reject(Object.assign(new Error('not implemented on web'), { code: 'UNIMPLEMENTED' })) } })
+    return { proxy, calls }
+}
+const flush = () => new Promise(r => setTimeout(r, 0))
+
+describe('$share', () => {
+    it('uses the native sheet in the container', async () => {
+        const S = { share: vi.fn(async () => ({})) }
+        boot({ Share: S }, [header('Share', ['canShare', 'share'])])
+        expect(await magics.share({ url: 'https://x.test' })).toEqual({ shared: true, method: 'native' })
+        expect(S.share).toHaveBeenCalled()
+    })
+
+    it('falls back to web share / clipboard in a bundled web build', async () => {
+        const { proxy, calls } = webProxy()
+        const writeText = vi.fn(async () => {})
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+        boot({ Share: proxy }, undefined, false)
+        expect(await magics.share({ url: 'https://x.test' })).toEqual({ shared: true, method: 'clipboard' })
+        expect(writeText).toHaveBeenCalledWith('https://x.test')
+        expect(calls).toEqual([])
+    })
+})
+
+describe('$haptics', () => {
+    it('calls native Haptics in the container', async () => {
+        const H = { impact: vi.fn(async () => {}), selectionChanged: vi.fn(async () => {}) }
+        boot({ Haptics: H }, [header('Haptics', ['impact', 'notification', 'vibrate', 'selectionStart', 'selectionChanged', 'selectionEnd'])])
+        await magics.haptics.impact('LIGHT')
+        await magics.haptics.selection()
+        expect(H.impact).toHaveBeenCalledWith({ style: 'LIGHT' })
+        expect(H.selectionChanged).toHaveBeenCalled()
+    })
+
+    it('vibrates (or no-ops) in a bundled web build without rejecting', async () => {
+        const { proxy, calls } = webProxy()
+        const vibrate = vi.fn(() => true)
+        Object.defineProperty(navigator, 'vibrate', { value: vibrate, configurable: true })
+        boot({ Haptics: proxy }, undefined, false)
+        await expect(magics.haptics.impact()).resolves.toBeUndefined()
+        expect(vibrate).toHaveBeenCalled()
+        Object.defineProperty(navigator, 'vibrate', { value: undefined, configurable: true })
+        await expect(magics.haptics.notification()).resolves.toBeUndefined()
+        expect(calls).toEqual([])
+    })
+
+    it('skips a JS-registered plugin with no native header', async () => {
+        const { proxy, calls } = webProxy()
+        boot({ Haptics: proxy }, [header('App', ['getState'])])
+        await expect(magics.haptics.vibrate(20)).resolves.toBeUndefined()
+        expect(calls).toEqual([])
+    })
+})
+
+describe('$camera', () => {
+    it('calls native getPhoto in the container', async () => {
+        const C = { getPhoto: vi.fn(async () => ({ dataUrl: 'data:image/jpeg;base64,x', format: 'jpeg' })) }
+        boot({ Camera: C }, [header('Camera', ['getPhoto', 'pickImages'])])
+        expect(await magics.camera.pick()).toEqual({ dataUrl: 'data:image/jpeg;base64,x', format: 'jpeg' })
+        expect(C.getPhoto).toHaveBeenCalledWith(expect.objectContaining({ source: 'PHOTOS', resultType: 'dataUrl' }))
+    })
+
+    it('uses the file-input fallback in a bundled web build', async () => {
+        const { proxy, calls } = webProxy()
+        boot({ Camera: proxy }, undefined, false)
+        magics.camera.photo()
+        const input = document.querySelector('input[type=file]')
+        expect(input).toBeTruthy()
+        expect(input.getAttribute('capture')).toBe('environment')
+        expect(calls).toEqual([])
+        input.remove()
+    })
+})
+
+describe('$push', () => {
+    it('requests permission and listens natively in the container', async () => {
+        const P = { addListener: vi.fn(), requestPermissions: vi.fn(async () => ({ receive: 'granted' })), register: vi.fn(async () => {}) }
+        boot({ PushNotifications: P }, [header('PushNotifications', ['register', 'requestPermissions', 'checkPermissions'])])
+        expect(await magics.push.request()).toBe('granted')
+        await magics.push.register()
+        expect(P.register).toHaveBeenCalled()
+        expect(P.addListener.mock.calls.map(c => c[0])).toEqual(['registration', 'pushNotificationReceived', 'pushNotificationActionPerformed'])
+    })
+
+    it('uses the Notification API in a bundled web build (plugin has no web impl)', async () => {
+        const { proxy, calls } = webProxy()
+        window.Notification = { permission: 'default', requestPermission: vi.fn(async () => 'granted') }
+        boot({ PushNotifications: proxy }, undefined, false)
+        expect(magics.push.permission).toBe('prompt')
+        expect(await magics.push.request()).toBe('granted')
+        await magics.push.register()
+        expect(calls).toEqual([])
+        delete window.Notification
+    })
+})
+
+describe('$app / $links', () => {
+    it('listens to native App events in the container', async () => {
+        let onState
+        const A = { addListener: vi.fn((e, fn) => { if (e === 'appStateChange') onState = fn }), getLaunchUrl: vi.fn(async () => ({ url: '' })) }
+        boot({ App: A }, [header('App', ['getState', 'getLaunchUrl', 'getInfo'])])
+        expect(A.addListener.mock.calls.map(c => c[0])).toEqual(['appUrlOpen', 'appStateChange'])
+        expect(A.getLaunchUrl).toHaveBeenCalled()
+        onState({ isActive: false })
+        expect(magics.app.active).toBe(false)
+    })
+
+    it('uses document visibility in a bundled web build', async () => {
+        const { proxy, calls } = webProxy()
+        boot({ App: proxy }, undefined, false)
+        const changes = []
+        magics.app.onChange(a => changes.push(a))
+        window.dispatchEvent(new Event('pagehide'))
+        expect(magics.app.active).toBe(false)
+        expect(changes).toEqual([false])
+        expect(calls).toEqual([])
+    })
+})
+
+describe('network', () => {
+    it('reads native Network status in the container', async () => {
+        const N = { getStatus: vi.fn(async () => ({ connected: false })), addListener: vi.fn() }
+        boot({ Network: N }, [header('Network', ['getStatus'])])
+        await flush()
+        expect(document.documentElement.getAttribute('data-online')).toBe('false')
+        expect(N.addListener).toHaveBeenCalledWith('networkStatusChange', expect.any(Function))
+    })
+
+    it('leaves the web build to the base $device signal', async () => {
+        const { proxy, calls } = webProxy()
+        document.documentElement.removeAttribute('data-online')
+        boot({ Network: proxy }, undefined, false)
+        await flush()
+        expect(calls).toEqual([])
+        expect(document.documentElement.getAttribute('data-online')).toBe(null)
     })
 })

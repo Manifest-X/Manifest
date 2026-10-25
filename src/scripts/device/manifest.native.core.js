@@ -12,12 +12,23 @@ function manifestNativePlugin(name) {
     return (cap && cap.Plugins && cap.Plugins[name]) || null;
 }
 // Whether a plugin exposes a native method. Bundled apps get a registerPlugin
-// Proxy where every property is a function, so prefer the native header.
+// Proxy where every property is a function, so prefer the native header; a
+// header list without this plugin means it isn't installed natively.
 function manifestNativeHas(name, plugin, method) {
     const headers = window.Capacitor && window.Capacitor.PluginHeaders;
-    const h = Array.isArray(headers) && headers.find(x => x && x.name === name);
-    if (h && Array.isArray(h.methods)) return h.methods.some(m => m && m.name === method);
+    if (Array.isArray(headers)) {
+        const h = headers.find(x => x && x.name === name);
+        if (!h) return false;
+        if (Array.isArray(h.methods)) return h.methods.some(m => m && m.name === method);
+    }
     return !!plugin && typeof plugin[method] === 'function';
+}
+// A plugin with a native method, or null. Web builds use Manifest's own fallbacks,
+// not plugin web stubs, so bundled and plain web builds behave the same.
+function manifestNativeUse(name, method) {
+    if (!manifestNativeIsNative()) return null;
+    const plugin = manifestNativePlugin(name);
+    return plugin && manifestNativeHas(name, plugin, method) ? plugin : null;
 }
 function manifestNativePlatform() {
     const cap = window.Capacitor;

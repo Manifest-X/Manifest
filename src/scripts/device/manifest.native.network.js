@@ -13,7 +13,7 @@ function manifestNativeApplyOnline(connected) {
     } catch (e) {}
 }
 function initManifestNativeNetwork() {
-    const Network = manifestNativePlugin('Network');
+    const Network = manifestNativeUse('Network', 'getStatus');
     if (!Network) return;
     try { Network.getStatus().then(s => manifestNativeApplyOnline(s && s.connected)).catch(() => {}); } catch (e) {}
     try { Network.addListener('networkStatusChange', s => manifestNativeApplyOnline(s && s.connected)); } catch (e) {}

@@ -49,7 +49,7 @@ function initManifestLinks() {
         get last() { const s = window.Alpine.store('links'); return s ? s.last : null; }
     }));
 
-    const App = manifestNativePlugin('App');
+    const App = manifestNativeUse('App', 'getLaunchUrl');
     if (App) {
         try { App.addListener('appUrlOpen', (data) => { if (data && data.url) manifestHandleUrl(data.url); }); } catch (e) {}
         try { App.getLaunchUrl().then(r => { if (r && r.url) manifestHandleUrl(r.url); }).catch(() => {}); } catch (e) {}
