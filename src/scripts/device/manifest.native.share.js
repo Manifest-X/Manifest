@@ -25,7 +25,7 @@ function manifestShareWeb(payload) {
 }
 function manifestShare(opts) {
     const payload = opts || {};
-    const Share = manifestNativePlugin('Share');
+    const Share = manifestNativeUse('Share', 'share');
     if (Share) {
         // When the native sheet is present, never fall through to the web sheet
         // (that would double-prompt); report the native outcome instead.

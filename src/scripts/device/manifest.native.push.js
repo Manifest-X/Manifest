@@ -37,7 +37,7 @@ function initManifestPush() {
         window.Alpine.store('push', store);
     }
 
-    const Push = manifestNativePlugin('PushNotifications');
+    const Push = manifestNativeUse('PushNotifications', 'register');
     if (Push) {
         try { Push.addListener('registration', t => { store.token = t && t.value; _manifestPushTokenHandlers.forEach(fn => { try { fn(store.token); } catch (e) {} }); }); } catch (e) {}
         try { Push.addListener('pushNotificationReceived', n => { _manifestPushReceiveHandlers.forEach(fn => { try { fn(n); } catch (e) {} }); }); } catch (e) {}
@@ -46,13 +46,13 @@ function initManifestPush() {
 
     window.Alpine.magic('push', () => ({
         async request() {
-            const P = manifestNativePlugin('PushNotifications');
+            const P = manifestNativeUse('PushNotifications', 'requestPermissions');
             if (P) { try { const r = await P.requestPermissions(); const p = manifestPushMapPermission(r && r.receive); window.Alpine.store('push').permission = p; return p; } catch (e) { return 'denied'; } }
             if (typeof Notification !== 'undefined' && Notification.requestPermission) { try { const p = manifestPushMapPermission(await Notification.requestPermission()); window.Alpine.store('push').permission = p; return p; } catch (e) { return 'denied'; } }
             return 'unsupported';
         },
         async register() {
-            const P = manifestNativePlugin('PushNotifications');
+            const P = manifestNativeUse('PushNotifications', 'register');
             if (P) { try { await P.register(); } catch (e) {} }
         },
         onToken(fn) { if (typeof fn === 'function') _manifestPushTokenHandlers.push(fn); },

@@ -39,7 +39,7 @@ function manifestCameraWeb(opts) {
 
 function manifestCameraPhoto(opts) {
     const o = opts || {};
-    const Cam = manifestNativePlugin('Camera');
+    const Cam = manifestNativeUse('Camera', 'getPhoto');
     if (Cam) {
         return Cam.getPhoto({ resultType: 'dataUrl', source: o.source === 'photos' ? 'PHOTOS' : 'CAMERA', quality: o.quality || 90 })
             .then(r => ({ dataUrl: r && (r.dataUrl || r.webPath), format: r && r.format }))

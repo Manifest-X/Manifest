@@ -10,22 +10,22 @@ function manifestVibrate(pattern) {
 function initManifestHaptics() {
     window.Alpine.magic('haptics', () => ({
         impact(style) {
-            const H = manifestNativePlugin('Haptics');
+            const H = manifestNativeUse('Haptics', 'impact');
             if (H) { try { return H.impact({ style: style || 'MEDIUM' }); } catch (e) {} }
             manifestVibrate(10); return Promise.resolve();
         },
         notification(type) {
-            const H = manifestNativePlugin('Haptics');
+            const H = manifestNativeUse('Haptics', 'notification');
             if (H) { try { return H.notification({ type: type || 'SUCCESS' }); } catch (e) {} }
             manifestVibrate([10, 40, 10]); return Promise.resolve();
         },
         selection() {
-            const H = manifestNativePlugin('Haptics');
+            const H = manifestNativeUse('Haptics', 'selectionChanged');
             if (H) { try { return H.selectionChanged(); } catch (e) {} }
             manifestVibrate(5); return Promise.resolve();
         },
         vibrate(ms) {
-            const H = manifestNativePlugin('Haptics');
+            const H = manifestNativeUse('Haptics', 'vibrate');
             if (H) { try { return H.vibrate({ duration: ms || 300 }); } catch (e) {} }
             manifestVibrate(ms || 300); return Promise.resolve();
         }
