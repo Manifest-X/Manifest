@@ -3017,12 +3017,20 @@ function parseYamlPaths(text) {
   if (text == null) return [];
   const paths = [];
   let currentGroup = '';
+  let groupKeyCol = -1;
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
     const groupMatch = line.match(/^\s*-?\s*group:\s*["']?([^"'\n]+)["']?/);
     if (groupMatch) {
       currentGroup = groupMatch[1].trim().toLowerCase().replace(/\s+/g, '-');
+      groupKeyCol = line.indexOf('group:');
       continue;
+    }
+    // The group's own slug (a sibling of `group:`) names its URL segment, as the docs template does.
+    const groupSlug = currentGroup && line.match(/^(\s*)slug:\s*["']?([^"'\n#]+)["']?/);
+    if (groupSlug && groupSlug[1].length === groupKeyCol) {
+      const slug = groupSlug[2].trim().replace(/^\/+|\/+$/g, '');
+      if (slug) currentGroup = slug;
     }
     const pathMatch = line.match(/path:\s*["']?([^"'\n]+)["']?/);
     if (pathMatch && currentGroup) {

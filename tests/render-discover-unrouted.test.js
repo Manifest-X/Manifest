@@ -97,3 +97,14 @@ describe('data path discovery: only routes some x-route shows', () => {
   });
 });
 
+
+describe('data path discovery: group slugs', () => {
+  it('prefixes grouped paths with the group slug when one is set', () => {
+    const routes = site('<x-docs x-route="docs"></x-docs>', { docs: '/data/docs.yaml' }, {
+      'docs.yaml': '- group: "Getting started"\n  slug: "start"\n  items:\n    - name: "Welcome"\n      path: "welcome"\n'
+        + '- group: "Billing"\n  items:\n    - name: "Invoices"\n      path: "invoices"\n',
+    });
+    expect(routes).toEqual(expect.arrayContaining(['docs/start', 'docs/start/welcome', 'docs/billing/invoices']));
+    expect(routes.filter((r) => r.includes('getting-started'))).toEqual([]);
+  });
+});
