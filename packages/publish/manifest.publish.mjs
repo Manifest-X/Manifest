@@ -431,6 +431,8 @@ export async function pollPublishStatus(statusUrl, opts = {}) {
 // inside the window, so a missed beat or two is harmless) and once more right
 // before uploading. The server caps how long a link can be kept alive.
 const RENEW_EVERY_MS = 5 * 60 * 1000;
+// A hung renewal must not stall the publish; a timeout counts as a blip.
+const RENEW_TIMEOUT_MS = 15_000;
 
 export function renewUrlFor(uploadUrl) {
   return uploadUrl.replace(/\/+$/, '') + '/renew';
@@ -448,7 +450,11 @@ export async function renewUploadLink(uploadUrl, opts = {}) {
   let status = 0;
   let json = null;
   try {
-    const res = await fetchImpl(renewUrlFor(uploadUrl), { method: 'POST', headers: { accept: 'application/json' } });
+    const res = await fetchImpl(renewUrlFor(uploadUrl), {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(RENEW_TIMEOUT_MS),
+    });
     status = res.status;
     const text = await res.text();
     try {

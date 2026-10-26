@@ -66,6 +66,22 @@ describe('renewUploadLink', () => {
         expect(server.calls[0].init.method).toBe('POST')
     })
 
+    it('gives each renewal a 15 second timeout', async () => {
+        const server = renewServer([pending()])
+        await renewUploadLink(UPLOAD, { fetchImpl: server.fetchImpl })
+        const signal = server.calls[0].init.signal
+        expect(signal).toBeInstanceOf(AbortSignal)
+        expect(signal.aborted).toBe(false)
+    })
+
+    it('treats a timed-out renewal as transient', async () => {
+        const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
+        expect((await one(timeout)).state).toBe('retry')
+        // A body read that times out after the headers is transient too.
+        const slowBody = { status: 200, ok: true, text: async () => { throw timeout } }
+        expect((await one(slowBody)).state).toBe('retry')
+    })
+
     it('reads each answer', async () => {
         expect((await one(pending())).state).toBe('renewed')
         expect((await one(res(410, { error: 'expired', message: 'Publish link expired or already used.' }))).state).toBe('expired')
@@ -101,6 +117,17 @@ describe('keepUploadLinkAlive', () => {
         await t.fire()
         expect(t.scheduled).not.toBeNull()
         expect(await keep.finish()).toBe('active')
+    })
+
+    it('a final renewal that times out still lets the upload go ahead', async () => {
+        const timeout = Object.assign(new Error('timeout'), { name: 'TimeoutError' })
+        const server = renewServer([timeout])
+        const t = timers()
+        const keep = keepUploadLinkAlive(UPLOAD, { fetchImpl: server.fetchImpl, setTimer: t.setTimer, clearTimer: t.clearTimer, log: () => {} })
+        await t.fire()
+        expect(t.scheduled).not.toBeNull()
+        expect(await keep.finish()).toBe('active')
+        expect(server.calls.length).toBe(2)
     })
 
     it('stops renewing against an older server and lets the upload go ahead as today', async () => {
