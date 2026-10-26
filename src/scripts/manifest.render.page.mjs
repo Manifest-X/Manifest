@@ -1778,12 +1778,15 @@ async function renderRouteDom(page, ctx) {
   mark('routingReady');
 
   // Boot: plugins loaded and Alpine initialized — the route/locale events
-  // below need their listeners. Capped for pages that never boot Alpine.
+  // below need their listeners. No wait when nothing on the page will boot
+  // Alpine (no Alpine or Manifest script); otherwise capped at 3s.
   await page.evaluate(() => {
     return new Promise((resolve) => {
-      const check = () => window.__manifestRenderAlpineReady;
+      const expected = () => typeof window.Alpine !== 'undefined'
+        || !!document.querySelector('script[src*="alpine" i], script[src*="manifest" i]');
+      const check = () => window.__manifestRenderAlpineReady || !expected();
       if (check()) return resolve();
-      const deadline = Date.now() + 10000;
+      const deadline = Date.now() + 3000;
       const t = setInterval(() => {
         if (check() || Date.now() >= deadline) {
           clearInterval(t);
@@ -1857,6 +1860,13 @@ async function renderRouteDom(page, ctx) {
   // Flush any remaining Alpine microtask effects after the render-ready signal.
   await flushAlpineEffects(page);
   mark('flush');
+
+  // render.waitAfterIdle: extra time for late, quiet content (widgets that
+  // settle seconds after load) — before the og image and the snapshot.
+  if (ctx.waitAfterIdle > 0) {
+    await new Promise((r) => setTimeout(r, ctx.waitAfterIdle));
+    await flushAlpineEffects(page);
+  }
 
   // OG image auto-snapshot — captured here, BEFORE the heavy DOM-transform
   // passes (template removal, hydration contract, route-hidden cleanup)
@@ -2003,10 +2013,6 @@ async function renderRouteDom(page, ctx) {
     pushDebug({ path: displayPath, stage: 'post-dom-settle', metrics: before });
   }
 
-  // Optional extra delay so in-page async (e.g. fetch() in x-init for client logos) can complete before snapshot.
-  if (ctx.waitAfterIdle > 0) {
-    await new Promise((r) => setTimeout(r, ctx.waitAfterIdle));
-  }
 
   // Wait for async content in static lists: elements with x-init (fetch) + x-html should have content (e.g. inline SVG) before snapshot.
   const asyncContentTimeout = 5000;

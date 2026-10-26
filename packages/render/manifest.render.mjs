@@ -345,6 +345,12 @@ function resolveIncrementalPolicy({ configValue, flagIncremental, flagNoIncremen
   };
 }
 
+/** Extra ms after the page settles, before snapshot: CLI, then config. */
+function resolveWaitAfterIdle(cliValue, configValue) {
+  const v = Number(cliValue ?? configValue ?? 0);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
 function resolveConfig() {
   const cli = parseArgs();
   const cwd = process.cwd();
@@ -378,7 +384,7 @@ function resolveConfig() {
     locales: pre.locales,
     redirects: Array.isArray(pre.redirects) ? pre.redirects : [],
     wait: cli.wait ?? pre.wait ?? null,
-    waitAfterIdle: 0,
+    waitAfterIdle: resolveWaitAfterIdle(cli.waitAfterIdle, pre.waitAfterIdle),
     // Default concurrency: 2.  Chromium per-page memory overhead is large and
     // our hydration source-attribute map adds more per page.  On big sites
     // (>100 routes) higher concurrency crashes the browser with OOM/target
@@ -1086,6 +1092,22 @@ function computeGlobalAssetSignature(rootDir) {
  *   - body outerHTML, normalised to strip non-visual volatile attributes
  *   - html.className (theme variant: light/dark/etc.)
  */
+/** True when the document is scrolled to the top; with `fix`, re-scrolls and
+ *  waits a frame first. Unanswerable pages count as at the top. */
+async function ensureScrolledTop(page, { fix = true } = {}) {
+  return page.evaluate(async (fix) => {
+    const atTop = () => window.scrollY === 0 && (document.scrollingElement?.scrollTop || 0) === 0;
+    if (atTop() || !fix) return atTop();
+    window.scrollTo(0, 0);
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+    await new Promise((r) => {
+      const t = setTimeout(r, 250);
+      requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(); }));
+    });
+    return atTop();
+  }, fix).catch(() => true);
+}
+
 function ogFileSeg(pathSeg) {
   return pathSeg === ''
     ? 'index'
@@ -1186,13 +1208,23 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
     // surface (headless pages can sit frames behind after heavy updates).
     await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 8, height: 8 }, captureBeyondViewport: false }).catch(() => { });
     await new Promise((r) => setTimeout(r, 120));
-    const shoot = () => page.screenshot({
+    const capture = () => page.screenshot({
       path: filePath,
       type: 'png',
       clip: { x: 0, y: 0, width: 1200, height: 630 },
       omitBackground: false,
       captureBeyondViewport: false,
     });
+    // The card is the top of the document: re-scroll if anything moved it,
+    // and reshoot once if it moved during the capture.
+    const shoot = async () => {
+      await ensureScrolledTop(page);
+      await capture();
+      if (!(await ensureScrolledTop(page, { fix: false }))) {
+        await ensureScrolledTop(page);
+        await capture();
+      }
+    };
     await shoot();
     // Residual-race retry: a text-heavy page yielding a shell-weight card
     // means the main content missed the frame — settle again and reshoot.
@@ -2979,9 +3011,9 @@ async function runPrerender(config) {
 
   // --- Incremental skip pass (see the incremental-rendering section) ----------
   // Skips reuse files from the PREVIOUS final output, which still exists while
-  // this run builds into staging.  Recording runs whenever the project
-  // participates (incrementalRecord); skipping only when `incremental` is on.
-  // Never-opted-in → no capture, no ledger, no new work.
+  // this run builds into staging.  Every run records (incrementalRecord) and
+  // skips unless --no-incremental; config incremental:false → no capture, no
+  // ledger, no new work.
   let inc = null;
   if (config.incrementalRecord && !config.serve) {
     // Input capture maps request pathnames to disk via the built-in server's
@@ -3493,6 +3525,8 @@ export {
   INCREMENTAL_MAX_AGE_MS,
   gcOgCache,
   ogFileSeg,
+  resolveWaitAfterIdle,
+  takeOgSnapshot,
   stableStringify,
   computeRouteSignature,
   evaluateRouteSkip,

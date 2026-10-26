@@ -1229,6 +1229,31 @@ const readyPages = {
     @layer utilities { @media (min-width: 1px) { .md\\:flex { display: flex } } }
   </style></head><body><div class="md:flex">a</div><div class="nope:thing">b</div></body></html>`,
 };
+const ROUTED = `<script>
+    window.ManifestRouting = {};
+    window.dispatchEvent(new CustomEvent('manifest:routing-ready'));
+    window.__manifestReadyCoordinator = true;
+  </script>`;
+const NOISE = (region, hue) => `(() => { const c = document.getElementById('${region}'); const x = c.getContext('2d');
+    const d = x.createImageData(c.width, c.height);
+    for (let i = 0; i < d.data.length; i += 4) { const v = 128 + Math.random() * 127;
+      d.data[i] = ${hue === 'red' ? 'v' : '0'}; d.data[i + 1] = 0; d.data[i + 2] = ${hue === 'red' ? '0' : 'v'}; d.data[i + 3] = 255; }
+    x.putImageData(d, 0, 0); })();`;
+Object.assign(readyPages, {
+  // Quiet widget: lands 4s after load with no network or DOM activity before it.
+  '/late-quiet': `<!DOCTYPE html><html><head>${ROUTED}</head><body><main><h1>Late</h1><p id="late"></p></main>
+    <script>setTimeout(() => { document.getElementById('late').textContent = 'late widget'; }, 4000);</script></body></html>`,
+  // No Alpine and no Manifest script: nothing will ever boot.
+  '/plain': `<!DOCTYPE html><html><head><title>Plain</title></head><body><main><h1>Plain</h1></main></body></html>`,
+  // Scrolls itself to the bottom, and back down once more after the renderer scrolls up.
+  '/scrolls-back': `<!DOCTYPE html><html><head><style>body{margin:0}canvas{display:block}</style></head><body>
+    <canvas id="top" width="1200" height="700"></canvas><canvas id="bottom" width="1200" height="3000"></canvas>
+    <script>${NOISE('top', 'red')}${NOISE('bottom', 'blue')}
+      scrollTo(0, 2000);
+      let again = true;
+      addEventListener('scroll', () => { if (again && scrollY === 0) { again = false; setTimeout(() => scrollTo(0, 2000), 0); } });
+    </script></body></html>`,
+});
 function startReadyServer(port) {
   const server = createServer((req, res) => {
     const body = readyPages[new URL(req.url, 'http://x').pathname];
@@ -1242,10 +1267,13 @@ function startReadyServer(port) {
 async function runReadinessTests() {
   log.head('Readiness: settled pages are reported ready without fallback timeouts');
   const pageMod = await import(join(REPO_SRC_DIR, 'scripts', 'manifest.render.page.mjs'));
-  const puppeteer = require('puppeteer-core');
-  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || require('puppeteer').executablePath();
   const server = await startReadyServer(READY_PORT);
-  const browser = await puppeteer.launch({ executablePath: chromePath, headless: 'shell', args: ['--no-sandbox'] });
+  // Launched like the renderer: full puppeteer resolves chrome-headless-shell
+  // (new headless can hang captureScreenshot on macOS).
+  const browser = await require('puppeteer').launch({
+    headless: 'shell',
+    args: ['--no-sandbox', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
+  });
   const base = `http://127.0.0.1:${READY_PORT}`;
   try {
     const page = await browser.newPage();
@@ -1273,6 +1301,55 @@ async function runReadinessTests() {
     // The cap is 8s: nested rules count as resolved, an unresolvable variant
     // stops holding after its grace window.
     assert(vms < 3000, `visual settle sees @layer/@media utilities and drops unresolvable variants (${vms}ms)`);
+
+    const renderAt = async (path, over = {}) => {
+      const p = await browser.newPage();
+      const stages = {};
+      try {
+        const out = await pageMod.renderRouteDom(p, {
+          url: `${base}${path}`, pathSeg: path.slice(1), is404: false, currentLocale: 'en', locales: [],
+          timeout: 30000, navTimeoutMs: 30000, displayPath: path, baseUrl: base, liveUrl: base,
+          pipelineTimeout: 10000, waitAfterIdle: 0,
+          seo: { ...pageMod.seoConfigFromManifest({}), imageSnapshots: false },
+          renderedPaths: [path.slice(1)], localeSubstitution: false, onLocaleDependentContent: () => {},
+          ogSnapshot: null, onDebug: null, onTiming: (row) => Object.assign(stages, row.stages),
+          ...over,
+        });
+        return { ...out, stages };
+      } finally { await p.close(); }
+    };
+
+    const late = await renderAt('/late-quiet', { waitAfterIdle: 4500 });
+    assert(late.html.includes('late widget'), 'render.waitAfterIdle holds the snapshot for late, quiet content');
+
+    const plain = await renderAt('/plain');
+    assert(plain.stages.boot < 500, `a page that never boots Alpine skips the boot wait (${plain.stages.boot}ms)`);
+
+    // og: the card is the top of the document even when the page scrolls itself.
+    const renderMod = await import(join(REPO_SRC_DIR, 'scripts', 'manifest.render.mjs'));
+    const ogOut = await mkdtemp(join(tmpdir(), 'mnfst-og-'));
+    const spage = await browser.newPage();
+    await spage.setViewport({ width: 1200, height: 800 });
+    await spage.goto(`${base}/scrolls-back`, { waitUntil: 'load' });
+    const url = await renderMod.takeOgSnapshot(spage, ogOut, 'scrolls-back', 'sig', null);
+    await spage.close();
+    let top = null;
+    if (url) {
+      const b64 = (await readFile(join(ogOut, url.replace(/^\//, '')))).toString('base64');
+      const probe = await browser.newPage();
+      top = await probe.evaluate(async (src) => {
+        const img = new Image(); img.src = src; await img.decode();
+        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+        const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+        const d = x.getImageData(0, 0, c.width, c.height).data;
+        let r = 0, b = 0;
+        for (let i = 0; i < d.length; i += 4 * 97) { r += d[i]; b += d[i + 2]; }
+        return r > b ? 'top' : 'bottom';
+      }, `data:image/png;base64,${b64}`);
+      await probe.close();
+    }
+    await rm(ogOut, { recursive: true, force: true });
+    assert(top === 'top', `og snapshot shows the top of a page that scrolls itself (${top || 'no image'})`);
   } finally {
     await browser.close();
     server.close();

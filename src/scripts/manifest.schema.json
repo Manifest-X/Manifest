@@ -687,6 +687,12 @@
                     "default": true,
                     "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). On by default; anything uncertain renders, and every route re-renders at least weekly. --no-incremental renders everything but still records; false turns capture and recording fully off."
                 },
+                "waitAfterIdle": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Extra milliseconds after a page settles, before its og image and snapshot — for widgets that fill in late without network or DOM activity. --wait-after-idle overrides."
+                },
                 "blockRequests": {
                     "type": "array",
                     "items": {

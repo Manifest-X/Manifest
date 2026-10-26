@@ -28,6 +28,7 @@ import {
   normalizeNonCacheableCause,
   NONCACHEABLE_REASONS_CAP,
   gcOgCache,
+  resolveWaitAfterIdle,
 } from '../src/scripts/manifest.render.mjs';
 
 let dir;
@@ -812,5 +813,18 @@ describe('gcOgCache', () => {
   });
   it('tolerates a missing dir', () => {
     expect(() => gcOgCache(join(dir, 'nope'), [''])).not.toThrow();
+  });
+});
+
+describe('resolveWaitAfterIdle', () => {
+  it('reads render.waitAfterIdle from config; the CLI flag wins', () => {
+    expect(resolveWaitAfterIdle(undefined, 2500)).toBe(2500);
+    expect(resolveWaitAfterIdle(800, 2500)).toBe(800);
+    expect(resolveWaitAfterIdle(undefined, undefined)).toBe(0);
+  });
+  it('ignores negative or non-numeric values', () => {
+    expect(resolveWaitAfterIdle(undefined, -5)).toBe(0);
+    expect(resolveWaitAfterIdle(undefined, 'soon')).toBe(0);
+    expect(resolveWaitAfterIdle(NaN, undefined)).toBe(0);
   });
 });
