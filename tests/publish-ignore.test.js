@@ -54,7 +54,8 @@ describe('makePublishIgnore', () => {
 describe('isExcludedPath (secret guard — regression)', () => {
     it('still drops secrets and build/system dirs at any depth', () => {
         for (const p of ['.env', '.env.local', 'api/.env.production', 'id_rsa', 'certs/server.pem',
-            'sub/.claude/x.json', '.git/config', 'node_modules/pkg/index.js', 'a/b/.DS_Store', 'x.key']) {
+            'sub/.claude/x.json', '.git/config', 'node_modules/pkg/index.js', 'a/b/.DS_Store', 'x.key',
+            '.mnfst-cache/routes.json', '.mnfst-cache/og/index.png']) {
             expect(isExcludedPath(p)).toBe(true)
         }
     })

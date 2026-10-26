@@ -184,6 +184,9 @@ dist/
 build/
 *.tgz
 
+# Manifest render cache
+.mnfst-cache/
+
 # Development files
 .vscode/
 .idea/

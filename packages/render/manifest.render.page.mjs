@@ -63,19 +63,26 @@ function logicalPathToVisibilityNormalizedPath(pathSeg, locales) {
 }
 
 /**
- * Set locale, dispatch route/locale events, call component swapping, then wait for
- * manifest:render-ready — the authoritative signal from the data plugin that all tracked
- * sources have settled for the active locale.
- *
- * Falls back to a timeout if the data plugin is absent or predates manifest:render-ready,
- * so this is backward-compatible with any Manifest project.
+ * Phase 1: align locale state, dispatch route/locale events, warm data sources
+ * and run component swapping.  With a localechange, arms the render-ready wait
+ * on window before dispatching; otherwise phase 2 asks for a fresh settle.
  */
-async function waitForManifestRenderReady(page, { allLocales, currentLocale, timeoutMs }) {
-  const result = await page
+async function startManifestRouteState(page, { allLocales, currentLocale, timeoutMs }) {
+  return page
     .evaluate(
       async ({ localeList, loc, ms }) => {
         try {
           const locales = Array.isArray(localeList) ? localeList : [];
+
+          // Locale already live (set before boot): a localechange would only
+          // reload localized sources to get the same data back. A direct
+          // settle check re-fires render-ready instead (older data plugins
+          // without it keep the event).
+          const localeStoreBefore = typeof Alpine !== 'undefined' && Alpine.store
+            ? Alpine.store('locale') : null;
+          const localeLive = typeof window.ManifestDataStore?.checkAndDispatchRenderReady === 'function'
+            && document.documentElement.lang === loc
+            && (!localeStoreBefore || localeStoreBefore.current === loc);
 
           // 1. Align locale state before dispatching any events.
           if (loc && typeof loc === 'string') {
@@ -105,9 +112,9 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
           const normalizedPath =
             typeof to === 'string' && to !== '/' ? to.replace(/^\/|\/$/g, '') : '/';
 
-          // 3. Register the manifest:render-ready listener BEFORE dispatching events so we
-          //    never miss a fast-settling response. Falls back to timeout for older data plugins.
-          const renderReadyPromise = new Promise((resolve) => {
+          // 3. With a localechange, the render-ready it produces is the signal:
+          //    listen BEFORE dispatching so a fast settle is never missed.
+          window.__manifestRenderReadyWait = localeLive ? null : new Promise((resolve) => {
             const onReady = (e) => resolve({ ok: true, locale: e.detail?.locale });
             window.addEventListener('manifest:render-ready', onReady, { once: true });
             setTimeout(() => {
@@ -117,8 +124,22 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
           });
 
           // 4. Dispatch locale change — triggers localized source reloads in the data plugin.
-          if (loc && typeof loc === 'string') {
+          if (loc && typeof loc === 'string' && !localeLive) {
             window.dispatchEvent(new CustomEvent('localechange', { detail: { locale: loc } }));
+          }
+
+          // Anchors reset on route-change and re-extract on a timer: mark
+          // each until its refresh runs, so the settle can wait for it.
+          for (const el of document.querySelectorAll('[x-anchors]')) {
+            const refresh = el._x_anchorRefresh;
+            if (typeof refresh !== 'function' || refresh.__manifestRenderWrapped) continue;
+            el.__manifestRenderAnchorPending = true;
+            const wrapped = function (...args) {
+              el.__manifestRenderAnchorPending = false;
+              return refresh.apply(this, args);
+            };
+            wrapped.__manifestRenderWrapped = true;
+            el._x_anchorRefresh = wrapped;
           }
 
           // 5. Dispatch route change — ensures router visibility and head content are current.
@@ -164,19 +185,19 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
           // 6. Run component swapping explicitly so components tied to this route render
           //    and trigger any $x accesses that start on-demand data loads.
           //    Bounded: a stranded component load must not hang the pipeline.
+          let paMs = null;
           if (window.ManifestComponentsSwapping?.processAll) {
             try {
+              const pa0 = performance.now();
               await Promise.race([
-                window.ManifestComponentsSwapping.processAll(normalizedPath),
+                window.ManifestComponentsSwapping.processAll(normalizedPath).then(() => { paMs = Math.round(performance.now() - pa0); }),
                 new Promise((resolve) => setTimeout(resolve, ms)),
               ]);
             } catch (e) {
               return { ok: false, reason: 'processAll-error', message: String(e?.message || e) };
             }
           }
-
-          // 7. Await the authoritative signal (or timeout fallback).
-          return await renderReadyPromise;
+          return { ok: true, processAllMs: paMs, localeLive };
         } catch (err) {
           return { ok: false, reason: 'error', message: String(err?.message || err) };
         }
@@ -184,12 +205,72 @@ async function waitForManifestRenderReady(page, { allLocales, currentLocale, tim
       { localeList: allLocales, loc: currentLocale, ms: timeoutMs }
     )
     .catch((e) => ({ ok: false, reason: 'evaluate', message: String(e) }));
+}
 
-  // Note: render-ready wait timeouts are silently tolerated.  Earlier versions
-  // logged a warning per path, but it fires on essentially every route in
-  // projects whose data plugins don't dispatch `manifest:render-ready` (i.e.
-  // most of them), drowning the terminal in noise.  The fallback timeout is
-  // intentional and benign — the DOM is still captured.
+/**
+ * Phase 2: wait for manifest:render-ready — the authoritative signal from the
+ * data plugin that all tracked sources have settled for the active locale.
+ * Without a pending localechange, a direct settle check evaluated now (after
+ * the route's components are in) re-fires it.  Falls back to a timeout for
+ * data plugins that predate the signal; a loader that booted without the data
+ * plugin never sends it, so there is nothing to wait for.
+ */
+async function awaitManifestRenderReady(page, { timeoutMs, probe = false }) {
+  const t0 = Date.now();
+  const result = await page
+    .evaluate(
+      async ({ ms, probeOn }) => {
+        try {
+          const noData = window.__manifestReadyCoordinator && !window.ManifestDataStore
+            && !(typeof Alpine !== 'undefined' && Alpine.store && Alpine.store('data'));
+          let wait = window.__manifestRenderReadyWait;
+          if (!noData && !wait) {
+            wait = new Promise((resolve) => {
+              const onReady = (e) => resolve({ ok: true, locale: e.detail?.locale });
+              window.addEventListener('manifest:render-ready', onReady, { once: true });
+              setTimeout(() => {
+                window.removeEventListener('manifest:render-ready', onReady);
+                resolve({ ok: false, reason: 'timeout' });
+              }, ms);
+            });
+            window.ManifestDataStore?.checkAndDispatchRenderReady?.();
+          }
+          const r = noData ? { ok: true, reason: 'no-data-plugin' } : { ...(await wait) };
+          if (probeOn && !r.ok) {
+            const p = {};
+            try {
+              p.renderReadyFlag = !!window.__manifestRenderReady;
+              p.manifestReady = !!window.__manifestReady;
+              p.alpine = typeof Alpine !== 'undefined';
+              p.dataPlugin = !!window.ManifestDataStore;
+              p.mdPending = window.__manifestMarkdownPending || 0;
+              p.utilPending = window.__manifestUtilitiesPending || 0;
+              const d = typeof Alpine !== 'undefined' && Alpine.store ? Alpine.store('data') : null;
+              if (d) {
+                p.localeChanging = !!d._localeChanging;
+                p.loading = Object.keys(d).filter((k) => k.startsWith('_') && k.endsWith('_state') && d[k]?.loading);
+              }
+            } catch (e) { p.err = String(e); }
+            r.probe = p;
+          }
+          return r;
+        } catch (err) {
+          return { ok: false, reason: 'error', message: String(err?.message || err) };
+        }
+      },
+      { ms: timeoutMs, probeOn: probe }
+    )
+    .catch((e) => ({ ok: false, reason: 'evaluate', message: String(e) }));
+  result.ms = Date.now() - t0;
+  // Timeouts are tolerated: the DOM is still captured.
+  return result;
+}
+
+/** Both phases back to back (no settle waits between). */
+async function waitForManifestRenderReady(page, opts) {
+  const started = await startManifestRouteState(page, opts);
+  if (!started.ok) return started;
+  return { ...(await awaitManifestRenderReady(page, opts)), processAllMs: started.processAllMs };
 }
 
 function normalizeLocaleRouteExclude(val) {
@@ -941,6 +1022,13 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
       // runtime and the compiler throttles recompiles — a late-discovered
       // variant class leaves the layout in its mobile/stacked state at capture.
       // Hold while any variant class used in the DOM has no matching CSS rule.
+      // Utilities sit inside @layer/@media blocks: walk nested rules.
+      const collect = (rules, out) => {
+        for (const r of rules) {
+          if (r.selectorText) out.push(r.selectorText);
+          if (r.cssRules && r.cssRules.length) collect(r.cssRules, out);
+        }
+      };
       const unresolvedVariants = () => {
         try {
           const used = new Set();
@@ -949,10 +1037,11 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
             if (used.size > 300) break;
           }
           if (!used.size) return 0;
-          let selectors = '';
+          const parts = [];
           for (const sheet of document.styleSheets) {
-            try { for (const r of sheet.cssRules) if (r.selectorText) selectors += r.selectorText + '\n'; } catch { /* cross-origin */ }
+            try { collect(sheet.cssRules, parts); } catch { /* cross-origin */ }
           }
+          const selectors = parts.join('\n');
           let missing = 0;
           for (const c of used) {
             if (!selectors.includes('.' + CSS.escape(c))) missing++;
@@ -960,6 +1049,11 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
           return missing;
         } catch { return 0; }
       };
+      // A variant no compile resolves (unknown or non-utility) stops holding
+      // once its count stays unchanged through a nudge + recompile window.
+      const UNRESOLVED_GRACE_MS = 1000;
+      let missPrev = -1;
+      let missSince = Date.now();
       const start = Date.now();
       let last = state();
       let stableSince = Date.now();
@@ -972,8 +1066,10 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
         const bootPending = !!window.__manifestReadyCoordinator && !window.__manifestReady;
         const inflight = (window.__manifestMarkdownPending || 0) > 0;
         const mdPending = cur.mdEmpty > 0 && Date.now() - start < mdWaitMs;
+        const miss = elapsed < mdWaitMs + 4000 ? unresolvedVariants() : 0;
+        if (miss !== missPrev) { missPrev = miss; missSince = Date.now(); }
         const utilPending = (window.__manifestUtilitiesPending || 0) > 0
-          || (elapsed < mdWaitMs + 4000 && unresolvedVariants() > 0);
+          || (miss > 0 && Date.now() - missSince < UNRESOLVED_GRACE_MS);
         // A throttled compiler can DROP the request that would resolve them —
         // a class mutation re-triggers its observer's schedule.
         if (utilPending && elapsed % 500 < 100) document.body.classList.toggle('mnfst-og-nudge');
@@ -984,6 +1080,8 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
           break;
         }
       }
+      // The nudge is a probe, never content.
+      document.body?.classList.remove('mnfst-og-nudge');
       if (document.fonts?.ready) { try { await document.fonts.ready; } catch { /* best-effort */ } }
       // Let the compositor paint the settled state — but raced against a
       // timeout: a frame-idle headless page may never fire rAF, and an
@@ -1446,6 +1544,11 @@ async function renderRouteDom(page, ctx) {
   const navTimeoutMs = ctx.navTimeoutMs ?? Math.min(timeout, 30000);
   const debugOn = typeof ctx.onDebug === 'function';
   const pushDebug = (row) => { if (debugOn) ctx.onDebug(row); };
+  const traceOn = typeof ctx.onTiming === 'function';
+  const traceT0 = Date.now();
+  let traceLast = traceT0;
+  const stages = {};
+  const mark = (stage) => { const n = Date.now(); stages[stage] = n - traceLast; traceLast = n; };
   // Render at a typical desktop viewport so layouts dependent on viewport
   // width (responsive flex/grid, container queries, media queries) settle
   // into their desktop variant.  Without this the headless default (often
@@ -1460,6 +1563,9 @@ async function renderRouteDom(page, ctx) {
     // Render pass: the defer plugin keeps closed containers eager so the
     // snapshot carries their markup (hydration stashes it again).
     window.__manifestRender = true;
+    // routing-ready can fire before goto() resolves: latch it for the wait below.
+    window.addEventListener('manifest:routing-ready', () => { window.__manifestRenderRoutingReady = true; }, { once: true });
+    document.addEventListener('alpine:initialized', () => { window.__manifestRenderAlpineReady = true; }, { once: true });
     const apply = () => {
       try {
         if (locale && typeof locale === 'string') document.documentElement.lang = locale;
@@ -1627,11 +1733,19 @@ async function renderRouteDom(page, ctx) {
     window.__manifestSourceInnerHTML = sourceInnerHTML;
   });
 
+  // Requests still open when render-ready times out (diagnostics only).
+  const inflight = new Map();
+  if (traceOn) {
+    page.on('request', (r) => inflight.set(r, Date.now() - traceT0));
+    page.on('requestfinished', (r) => inflight.delete(r));
+    page.on('requestfailed', (r) => inflight.delete(r));
+  }
   pushDebug({ path: displayPath, stage: 'start' });
   await page.goto(url, {
     waitUntil: 'domcontentloaded',
     timeout: navTimeoutMs,
   });
+  mark('goto');
 
   // Settle waits.  These give Manifest plugins (especially the components
   // plugin, which lazy-fetches each component HTML over the network) time
@@ -1647,42 +1761,44 @@ async function renderRouteDom(page, ctx) {
   await Promise.race([
     page.evaluate(() => {
       return new Promise((resolve) => {
-        const done = () => resolve();
-        const t = setTimeout(done, 3000);
-        window.addEventListener(
-          'manifest:routing-ready',
-          () => {
-            clearTimeout(t);
-            setTimeout(done, 1000);
-          },
-          { once: true }
-        );
+        // Routed: the latched event (or the router's own flag). Unrouted: the
+        // loader has loaded every plugin (coordinator up) and none is a router.
+        const settled = () => window.__manifestRenderRoutingReady
+          || window.__manifestRoutingInitialized
+          || (window.__manifestReadyCoordinator && !window.ManifestRouting);
+        if (settled()) return resolve();
+        const deadline = Date.now() + 3000;
+        const t = setInterval(() => {
+          if (settled() || Date.now() >= deadline) { clearInterval(t); resolve(); }
+        }, 25);
       });
     }),
     new Promise((_, rej) => setTimeout(() => rej(new Error('ready timeout')), timeout)),
   ]).catch(() => { });
+  mark('routingReady');
 
-  // Ensure the dynamic loader has injected at least one plugin script.
-  // In practice this happens within ~100ms but allow up to 3s for cold
-  // CDN cache or slow disk.
+  // Boot: plugins loaded and Alpine initialized — the route/locale events
+  // below need their listeners. Capped for pages that never boot Alpine.
   await page.evaluate(() => {
     return new Promise((resolve) => {
-      const check = () => document.querySelectorAll('script[src*="manifest"]').length >= 2;
+      const check = () => window.__manifestRenderAlpineReady;
       if (check()) return resolve();
-      const deadline = Date.now() + 3000;
+      const deadline = Date.now() + 10000;
       const t = setInterval(() => {
         if (check() || Date.now() >= deadline) {
           clearInterval(t);
           resolve();
         }
-      }, 50);
+      }, 25);
     });
   }).catch(() => { });
+  mark('boot');
 
   // Network idle: drain pending fetches (component templates, data sources,
   // markdown files, icon SVGs).  Larger projects need the full window;
   // small ones settle in well under 1 second.
   await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => { });
+  mark('netIdle');
 
   // DOM stability after network idle (hard-capped).
   await page.evaluate(() => {
@@ -1697,18 +1813,50 @@ async function renderRouteDom(page, ctx) {
       const cap = setTimeout(finish, 15000);
     });
   }).catch(() => { });
+  mark('domStable');
 
-  // Set locale, dispatch route/locale events, call component swapping, then wait for
-  // manifest:render-ready — the single authoritative signal that all data sources have
-  // settled for this locale/route. Falls back to timeout for older data plugins.
-  await waitForManifestRenderReady(page, {
+  // Set locale, dispatch route/locale events, warm data, run component
+  // swapping — after content has loaded, so route-change handlers that scan
+  // the DOM (data-head, anchors) see it, as on a settled SPA navigation.
+  const started = await startManifestRouteState(page, {
     allLocales: locales,
     currentLocale,
     timeoutMs: ctx.pipelineTimeout,
   });
+  mark('routeState');
+
+  // Reactions to those events: deferred anchor refreshes, then the network
+  // and DOM going quiet again (all capped).
+  await page.evaluate(() => new Promise((resolve) => {
+    const deadline = Date.now() + 2000;
+    const t = setInterval(() => {
+      const pending = Array.from(document.querySelectorAll('[x-anchors]'))
+        .some((el) => el.__manifestRenderAnchorPending);
+      if (!pending || Date.now() >= deadline) { clearInterval(t); resolve(); }
+    }, 25);
+  })).catch(() => { });
+  await page.waitForNetworkIdle({ idleTime: 300, timeout: 5000 }).catch(() => { });
+  await page.evaluate(() => new Promise((resolve) => {
+    let stable;
+    const observer = new MutationObserver(() => { clearTimeout(stable); stable = setTimeout(finish, 300); });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    const finish = () => { clearTimeout(cap); observer.disconnect(); resolve(); };
+    stable = setTimeout(finish, 300);
+    const cap = setTimeout(finish, 5000);
+  })).catch(() => { });
+  mark('routeSettle');
+
+  // manifest:render-ready — the single authoritative signal that all data
+  // sources have settled for this locale/route.
+  const readyResult = started.ok
+    ? { ...(await awaitManifestRenderReady(page, { timeoutMs: ctx.pipelineTimeout, probe: traceOn })), processAllMs: started.processAllMs }
+    : started;
+  mark('renderReady');
+  if (traceOn && !readyResult.ok) readyResult.inflight = [...inflight].map(([r, t]) => `${t} ${r.method()} ${r.url().slice(0, 140)}`);
 
   // Flush any remaining Alpine microtask effects after the render-ready signal.
   await flushAlpineEffects(page);
+  mark('flush');
 
   // OG image auto-snapshot — captured here, BEFORE the heavy DOM-transform
   // passes (template removal, hydration contract, route-hidden cleanup)
@@ -1734,6 +1882,7 @@ async function renderRouteDom(page, ctx) {
       clearTimeout(ogTimer);
     }
   }
+  mark('og');
 
   if (debugOn) {
     const before = await page.evaluate(() => {
@@ -1875,6 +2024,7 @@ async function renderRouteDom(page, ctx) {
     }
     await new Promise((r) => setTimeout(r, asyncContentInterval));
   }
+  mark('asyncContent');
 
   // Strip x-init, x-data, x-html from elements that already have content (e.g. inline SVG from fetch).
   // Keeps the baked-in content as static HTML; Alpine won't re-fetch or overwrite on load.
@@ -2713,6 +2863,8 @@ async function renderRouteDom(page, ctx) {
     }).catch(() => null);
     pushDebug({ path: displayPath, stage: 'pre-serialize', metrics: post });
   }
+  mark('transforms');
+  if (traceOn) ctx.onTiming({ path: displayPath, total: Date.now() - traceT0, stages, ready: readyResult });
   return { html, earlySnapshotUrl };
 }
 
@@ -3456,6 +3608,8 @@ export {
   flushAlpineEffects,
   logicalPathToVisibilityNormalizedPath,
   waitForManifestRenderReady,
+  startManifestRouteState,
+  awaitManifestRenderReady,
   normalizeLocaleRouteExclude,
   isLocaleRouteExcluded,
   routeMatchesGlob,

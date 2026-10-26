@@ -331,17 +331,13 @@ function loadConfig(rootDir) {
 }
 
 /**
- * Incremental participation policy.  Recording is on whenever the project
- * PARTICIPATES: config `render.incremental: true`, the --incremental flag, or
- * a valid ledger already on disk (so one opted-in render upgrades every later
- * plain run).  --no-incremental disables skipping only — a participating run
- * still records and refreshes the ledger.  Explicit config `incremental:
- * false` is fully off, ledger or not.  Never-opted-in stays fully inert.
+ * Incremental policy: on by default — every run records, and skips routes the
+ * ledger proves unchanged.  --no-incremental renders everything but still
+ * refreshes the ledger.  Config `incremental: false` is fully off (no capture,
+ * no ledger) unless --incremental overrides it.
  */
-function resolveIncrementalPolicy({ configValue, flagIncremental, flagNoIncremental, ledgerExists }) {
-  const participates = flagIncremental === true
-    ? true
-    : configValue === false ? false : (configValue === true || !!ledgerExists);
+function resolveIncrementalPolicy({ configValue, flagIncremental, flagNoIncremental }) {
+  const participates = flagIncremental === true || configValue !== false;
   return {
     record: participates,
     skip: participates && flagNoIncremental !== true,
@@ -412,7 +408,6 @@ function resolveConfig() {
         configValue: pre.incremental,
         flagIncremental: cli.incremental,
         flagNoIncremental: cli.noIncremental,
-        ledgerExists: loadRouteLedger(root) !== null,
       });
       return { incremental: p.skip, incrementalRecord: p.record, incrementalExplicit: p.explicit };
     })(),
@@ -1091,6 +1086,26 @@ function computeGlobalAssetSignature(rootDir) {
  *   - body outerHTML, normalised to strip non-visual volatile attributes
  *   - html.className (theme variant: light/dark/etc.)
  */
+function ogFileSeg(pathSeg) {
+  return pathSeg === ''
+    ? 'index'
+    : pathSeg === '__404__'
+      ? '404'
+      : pathSeg.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+/** Drop og cache files no current route maps to (removed/renamed routes). */
+function gcOgCache(cacheDir, pathSegs) {
+  if (!cacheDir || !existsSync(cacheDir)) return;
+  const keep = new Set(pathSegs.map((seg) => ogFileSeg(seg === NOT_FOUND_PATH ? '__404__' : seg)));
+  try {
+    for (const f of readdirSync(cacheDir)) {
+      const m = f.match(/^(.*)\.(png|hash)$/);
+      if (m && !keep.has(m[1])) { try { unlinkSync(join(cacheDir, f)); } catch { /* best-effort */ } }
+    }
+  } catch { /* best-effort */ }
+}
+
 async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, cacheDir) {
   // Settle BEFORE the cache fingerprint: the hash must describe the same
   // steady-state DOM the screenshot captures, or late-arriving content makes
@@ -1100,11 +1115,7 @@ async function takeOgSnapshot(page, outputDir, pathSeg, globalAssetSignature, ca
   // concurrently and would otherwise race on the same og/index.png + cache
   // files. The 404 (route hidden, near-empty body) screenshots blank, and that
   // blank would clobber — or get mis-read as — the homepage's real snapshot.
-  const fileSeg = pathSeg === ''
-    ? 'index'
-    : pathSeg === '__404__'
-      ? '404'
-      : pathSeg.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const fileSeg = ogFileSeg(pathSeg);
   const ogDir = join(outputDir, 'og');
   try { mkdirSync(ogDir, { recursive: true }); } catch { /* exists */ }
   const filePath = join(ogDir, `${fileSeg}.png`);
@@ -1610,6 +1621,8 @@ function startStaticServer(rootDir) {
 // rendering, never to skipping.
 
 const LEDGER_SCHEMA_VERSION = 2;
+// Skipped routes still re-render at least this often (entry.renderedAt).
+const INCREMENTAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const sha256Full = (data) => createHash('sha256').update(data).digest('hex');
 
@@ -1734,7 +1747,9 @@ function runCacheReplayHeaders(headers) {
     const key = k.toLowerCase();
     if (key === 'content-encoding' || key === 'content-length'
       || key === 'transfer-encoding' || key === 'set-cookie') continue;
-    out[k] = v;
+    // Puppeteer joins repeated headers with '\n'; Fetch.fulfillRequest rejects
+    // that as an invalid header, so replay each value as its own header.
+    out[k] = typeof v === 'string' && v.includes('\n') ? v.split('\n') : v;
   }
   return out;
 }
@@ -2109,12 +2124,18 @@ function contentFilesForPrerender(manifest, locale) {
  * manifest/externals), every recorded output byte-identical in the previous
  * final output (closes the edit→render-elsewhere→revert hole), and every
  * cross-origin validator answering 304 to a conditional request NOW (or, with
- * stored bytes, a 2xx whose body hashes identically).
+ * stored bytes, a 2xx whose body hashes identically), and — when maxAgeMs is
+ * set — a render younger than maxAgeMs.
  * Dependency-injected for unit tests.
  */
-async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateExternal, globalKey, outputHash }) {
+async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateExternal, globalKey, outputHash, now, maxAgeMs }) {
   if (!entry || typeof entry !== 'object') return { skip: false, reason: 'no ledger entry' };
   if (entry.nonCacheable) return { skip: false, reason: 'non-cacheable' };
+  // Bounds clock-derived output (dates, "x days ago") that no input captures.
+  if (maxAgeMs > 0) {
+    const at = Date.parse(entry.renderedAt);
+    if (!(at <= now && now - at < maxAgeMs)) return { skip: false, reason: 'expired' };
+  }
   if (typeof entry.sig !== 'string' || !entry.inputs || typeof entry.inputs !== 'object'
     || !entry.requested || typeof entry.requested !== 'object'
     || !Array.isArray(entry.external)
@@ -2158,8 +2179,9 @@ async function evaluateRouteSkip({ entry, hashInput, resolveRequest, revalidateE
  * Run-scoped incremental state: ledger, memoized hashing/resolution, the skip
  * pass, per-route capture records, and the end-of-run ledger write.
  */
-function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, globalKey, deps, skipEnabled = true }) {
+function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, globalKey, deps, skipEnabled = true, maxAgeMs = INCREMENTAL_MAX_AGE_MS }) {
   const ledger = loadRouteLedger(rootResolved);
+  const startedAt = Date.now();
   const revalidate = createExternalRevalidator();
   const hashFileAt = (base, relPath) => {
     try { return sha256Full(readFileSync(join(base, relPath))); } catch { return null; }
@@ -2192,6 +2214,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
     else if (r.startsWith('external changed')) bucket = 'changed externals';
     else if (r.startsWith('signature mismatch')) bucket = 'changed signature';
     else if (r.startsWith('previous output')) bucket = 'previous output missing/changed';
+    else if (r === 'expired') bucket = 'expired';
     else bucket = r.slice(0, 48) || 'unknown';
     state.reasons[bucket] = (state.reasons[bucket] || 0) + 1;
   };
@@ -2216,7 +2239,9 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
         let verdict;
         try {
           verdict = await evaluateRouteSkip({
-            entry, hashInput, globalKey,
+            entry, hashInput, globalKey, now: startedAt,
+            // Per-route spread over [maxAge/2, maxAge): expiries don't all land on one run.
+            maxAgeMs: maxAgeMs * (0.5 + parseInt(sha256Full(String(seg)).slice(0, 8), 16) / 2 ** 33),
             resolveRequest: (pathname) => resolveStaticRequestFile(rootResolved, pathname),
             revalidateExternal: revalidate,
             outputHash: (rel) => hashFileAt(previousOutput, rel),
@@ -2311,6 +2336,7 @@ function createIncrementalRun({ rootResolved, previousOutput, stagingOutput, glo
         const entry = {
           sig: computeRouteSignature({ globalKey, inputPairs, requestedPairs, externalTokens }),
           inputs, requested, external, externalValidated, outputs,
+          renderedAt: new Date(startedAt).toISOString(),
         };
         if (Array.isArray(cap.utility) && cap.utility.length) entry.utility = cap.utility;
         if (deps.isPromotedBase(key)) {
@@ -2964,9 +2990,6 @@ async function runPrerender(config) {
       process.stdout.write('prerender: incremental needs the built-in static server — ignoring it for this run\n');
     }
   } else if (config.incrementalRecord) {
-    if (!config.incrementalExplicit) {
-      process.stdout.write('prerender: incremental active from existing ledger (.mnfst-cache/routes.json; --no-incremental to disable)\n');
-    }
     let manifestContentHash = 'missing';
     try { manifestContentHash = sha256Full(readFileSync(join(config.root, 'manifest.json'))); } catch { /* missing */ }
     // Output-relevant resolved options (CLI included).  pathList is in here
@@ -2996,7 +3019,8 @@ async function runPrerender(config) {
       rootResolved,
       previousOutput: finalOutput,
       stagingOutput: outputResolved,
-      globalKey: `${LEDGER_SCHEMA_VERSION}|${rendererPackageIdentity()}|${optionsSalt}|${manifestContentHash}`,
+      // Browser build too: a Chrome upgrade can change layout-derived output.
+      globalKey: `${LEDGER_SCHEMA_VERSION}|${rendererPackageIdentity()}|${await browser.version().catch(() => Date.now())}|${optionsSalt}|${manifestContentHash}`,
       deps: {
         hasPendingVariants: (seg) => variantsByBase.has(seg),
         promoteVariants: promoteLocaleVariants,
@@ -3118,11 +3142,13 @@ async function runPrerender(config) {
             if (verdict === 'bypass') return done(req.continue());
             const href = new URL(req.url()).href;
             const hit = runCache.get(href);
-            if (hit) { runCache.noteServed(href); return done(req.respond(hit)); }
+            // A refused fulfill leaves the request paused: fall back to the network.
+            const serve = (entry) => { runCache.noteServed(href); return done(req.respond(entry).catch(() => req.continue())); };
+            if (hit) return serve(hit);
             const flight = runCache.flight(href);
             if (flight) {
               return flight.promise.then((entry) => {
-                if (entry) { runCache.noteServed(href); return done(req.respond(entry)); }
+                if (entry) return serve(entry);
                 return done(req.continue()); // first fetch failed: retry the network
               });
             }
@@ -3170,6 +3196,10 @@ async function runPrerender(config) {
         onLocaleDependentContent,
         ogSnapshot: (p, key) => takeOgSnapshot(p, config.output, key, globalAssetSig, ogCacheDir),
         onDebug: config.debugPrerender ? pushDebug : null,
+        // Diagnostics: per-page stage timings (JSON lines) to this file.
+        onTiming: process.env.MNFST_RENDER_TIMING
+          ? (row) => appendFileSync(process.env.MNFST_RENDER_TIMING, JSON.stringify(row) + '\n')
+          : null,
       });
       // Cache raw DOM snapshot for locale variant generation (before any Node.js transforms).
       if (typeof onRawHtml === 'function') onRawHtml(pathSeg, rawHtml);
@@ -3410,6 +3440,8 @@ async function runPrerender(config) {
   renameSync(stagingOutput, finalOutput);
   config.output = finalOutput;
 
+  gcOgCache(ogCacheDir, pathList);
+
   // Ledger only after the swap — a run that failed anywhere above never
   // records anything, so the next run re-renders whatever is uncertain.
   if (inc) {
@@ -3458,6 +3490,9 @@ export {
   loadAllLocaleContentData,
   buildSubstitutionPairs,
   LEDGER_SCHEMA_VERSION,
+  INCREMENTAL_MAX_AGE_MS,
+  gcOgCache,
+  ogFileSeg,
   stableStringify,
   computeRouteSignature,
   evaluateRouteSkip,

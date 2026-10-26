@@ -782,6 +782,8 @@ function startAssetServer(port, state) {
     state.hits.push(`${req.method} ${req.url}`);
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (req.url.startsWith('/shared.txt')) {
+      // A repeated header: the run cache must replay it as separate values.
+      res.setHeader('X-Repeated', ['one', 'two']);
       res.setHeader('ETag', 'W/"shared-v1"');
       res.setHeader('Cache-Control', 'no-cache');
       if (req.headers['if-none-match'] === 'W/"shared-v1"') { res.statusCode = 304; res.end(); return; }
@@ -822,14 +824,21 @@ const summaryOf = (out) => {
 };
 
 async function runIncrementalTests() {
-  log.head('Incremental rendering (--incremental)');
+  log.head('Incremental rendering (on by default)');
   const ledgerPath = LEDGER_PATH;
 
-  // The baseline render above ran never-opted-in — fully inert: no capture,
-  // no ledger, no raw-DOM snapshots.  (.mnfst-cache/og is the OG snapshot
-  // cache, written by every render regardless of incremental.)
-  assert(!existsSync(ledgerPath) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
-    'never-opted-in run writes no ledger and no snapshots');
+  // The baseline render above ran with no flag and no config: it recorded.
+  assert(existsSync(ledgerPath), 'default run (no flag, no config) writes the route ledger');
+  const tree0 = await hashTree(FIXTURE_OUT_DIR);
+  const run0 = await runPrerender([], true);
+  const r0 = summaryOf(run0.stdout);
+  assert(r0 && r0.rendered === 0 && r0.skipped > 0,
+    'next plain run skips every Puppeteer route',
+    `summary: ${JSON.stringify(r0)}`);
+  const diff0 = treeDiff(tree0, await hashTree(FIXTURE_OUT_DIR));
+  assert(diff0.length === 0, 'default skip output is byte-identical to the asserted baseline output',
+    diff0.slice(0, 5).join(' | '));
+  await rm(join(FIXTURE_DIR, '.mnfst-cache'), { recursive: true, force: true });
 
   const runA = await runPrerender(['--incremental'], true);
   const a = summaryOf(runA.stdout);
@@ -1047,29 +1056,31 @@ async function runPolicyAndBlockingTests(total) {
     'telemetry endpoint still at zero hits after a full re-render',
     telemetryState.hits.slice(0, 5).join(' | '));
 
-  // Change 1: one-render upgrade path.  Never-opted-in first (also the
-  // overhead baseline), then a participating --no-incremental run must WRITE
-  // the ledger, and the next --incremental run skips.
-  log.head('One-render upgrade path (--no-incremental still records)');
+  // Default policy: config false is fully off; with no config every run
+  // records, --no-incremental renders everything but still records, and the
+  // next plain run skips.
+  log.head('Default policy (--no-incremental still records; config false is off)');
   await rm(join(FIXTURE_DIR, '.mnfst-cache'), { recursive: true, force: true });
-  const runPlain = await runPrerender([], true);
-  assert(!existsSync(LEDGER_PATH) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
-    'never-opted-in run (ledger deleted) writes no ledger and no snapshots');
   const mf = JSON.parse(manifestRaw);
-  mf.render.incremental = true;
+  mf.render.incremental = false;
+  await writeFile(manifestPath, JSON.stringify(mf, null, 2));
+  const runOff = await runPrerender([], true);
+  assert(!existsSync(LEDGER_PATH) && !existsSync(join(FIXTURE_DIR, '.mnfst-cache', 'render-html')),
+    'config incremental:false writes no ledger and no snapshots');
+  delete mf.render.incremental;
   await writeFile(manifestPath, JSON.stringify(mf, null, 2));
   const runH = await runPrerender(['--no-incremental'], true);
   assert(!/\[skip\]/.test(runH.stdout) && !/skipped \d+ unchanged/.test(runH.stdout),
-    'participating --no-incremental run skips nothing');
+    '--no-incremental run skips nothing');
   assert(new RegExp(`prerender: rendered ${total} \\(ledger refreshed, skipping off\\)`).test(runH.stdout),
     'summary says the ledger was refreshed with skipping off',
     runH.stdout.match(/prerender: rendered[^\n]*/)?.[0]);
-  assert(existsSync(LEDGER_PATH), 'participating --no-incremental run writes the ledger');
-  log.note(`wall time: never-opted-in run ${runPlain.ms}ms, recording-only (--no-incremental) run ${runH.ms}ms`);
-  const runI = await runPrerender(['--incremental'], true);
+  assert(existsSync(LEDGER_PATH), '--no-incremental run writes the ledger');
+  log.note(`wall time: incremental-off run ${runOff.ms}ms, recording-only (--no-incremental) run ${runH.ms}ms`);
+  const runI = await runPrerender([], true);
   const i = summaryOf(runI.stdout);
   assert(i && i.skipped === total && i.rendered === 0,
-    'next --incremental run skips everything (one-render upgrade)',
+    'next plain run skips everything',
     `summary: ${JSON.stringify(i)}`);
 
   // Salt pin: the blocking regime is part of the signature — entries rendered
@@ -1113,6 +1124,14 @@ async function runRunCacheTests() {
   assert(pagesOn > 1 && hitsOn === 1,
     `shared cross-origin asset hit the server EXACTLY ONCE for ${pagesOn} pages (run cache on)`,
     `hits ${hitsOn}: ${assetState.hits.slice(0, 8).join(' | ')}`);
+  const routeFiles = [...(await hashTree(FIXTURE_OUT_DIR)).keys()].filter((k) => k.endsWith('index.html'));
+  const missingShared = [];
+  for (const f of routeFiles) {
+    if (!(await readFile(join(FIXTURE_OUT_DIR, f), 'utf8')).includes('shared framework asset')) missingShared.push(f);
+  }
+  assert(routeFiles.length > 1 && missingShared.length === 0,
+    `every page (${routeFiles.length}) bakes the shared asset, cache-served ones included (repeated response header)`,
+    `missing in: ${missingShared.slice(0, 6).join(', ')}`);
   const cacheLine = runOn.stdout.match(/prerender: run cache served (\d+) cross-origin requests \((\d+) unique\)/);
   assert(cacheLine && Number(cacheLine[1]) >= pagesOn - 1 && Number(cacheLine[2]) >= 1,
     'summary reports the run-cache served count',
@@ -1195,6 +1214,71 @@ async function runCausesTests() {
   }
 }
 
+// ---- readiness: report ready as soon as the page is settled -------------------
+const READY_PORT = 5104;
+const readyPages = {
+  // Router fires before goto() resolves; the loader booted without the data plugin.
+  '/routed-early': `<!DOCTYPE html><html lang="en"><head><title>Early</title><script>
+    window.ManifestRouting = {};
+    window.dispatchEvent(new CustomEvent('manifest:routing-ready'));
+    window.__manifestReadyCoordinator = true;
+    document.addEventListener('DOMContentLoaded', () => document.dispatchEvent(new CustomEvent('alpine:initialized')));
+  </script></head><body><main><h1>Early</h1><p>Routed before navigation resolved.</p></main></body></html>`,
+  // Variant utilities live inside @layer/@media; one variant no compile resolves.
+  '/variants': `<!DOCTYPE html><html><head><style>
+    @layer utilities { @media (min-width: 1px) { .md\\:flex { display: flex } } }
+  </style></head><body><div class="md:flex">a</div><div class="nope:thing">b</div></body></html>`,
+};
+function startReadyServer(port) {
+  const server = createServer((req, res) => {
+    const body = readyPages[new URL(req.url, 'http://x').pathname];
+    if (!body) { res.statusCode = 404; res.end(); return; }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(body);
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
+async function runReadinessTests() {
+  log.head('Readiness: settled pages are reported ready without fallback timeouts');
+  const pageMod = await import(join(REPO_SRC_DIR, 'scripts', 'manifest.render.page.mjs'));
+  const puppeteer = require('puppeteer-core');
+  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || require('puppeteer').executablePath();
+  const server = await startReadyServer(READY_PORT);
+  const browser = await puppeteer.launch({ executablePath: chromePath, headless: 'shell', args: ['--no-sandbox'] });
+  const base = `http://127.0.0.1:${READY_PORT}`;
+  try {
+    const page = await browser.newPage();
+    const t0 = Date.now();
+    const { html } = await pageMod.renderRouteDom(page, {
+      url: `${base}/routed-early`, pathSeg: 'routed-early', is404: false, currentLocale: 'en', locales: [],
+      timeout: 30000, navTimeoutMs: 30000, displayPath: '/routed-early', baseUrl: base, liveUrl: base,
+      pipelineTimeout: 10000, waitAfterIdle: 0,
+      seo: { ...pageMod.seoConfigFromManifest({}), imageSnapshots: false },
+      renderedPaths: ['routed-early'], localeSubstitution: false, onLocaleDependentContent: () => {},
+      ogSnapshot: null, onDebug: null,
+    });
+    const ms = Date.now() - t0;
+    await page.close();
+    // Fallbacks were 3s (routing) + 10s (render-ready); the real work is ~2s.
+    assert(html.includes('Routed before navigation resolved.') && ms < 5000,
+      `early routing-ready + no data plugin: page ready in ${ms}ms (no 3s/10s fallbacks)`);
+
+    const vpage = await browser.newPage();
+    await vpage.goto(`${base}/variants`, { waitUntil: 'load' });
+    const v0 = Date.now();
+    await pageMod.waitForVisualSettle(vpage);
+    const vms = Date.now() - v0;
+    await vpage.close();
+    // The cap is 8s: nested rules count as resolved, an unresolvable variant
+    // stops holding after its grace window.
+    assert(vms < 3000, `visual settle sees @layer/@media utilities and drops unresolvable variants (${vms}ms)`);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+}
+
 // ---- main -------------------------------------------------------------------
 async function main() {
   await prepFixture();
@@ -1229,6 +1313,8 @@ async function main() {
     staticServer.close();
     log.note('static server stopped');
   }
+
+  await runReadinessTests();
 
   try {
     const total = await runIncrementalTests();

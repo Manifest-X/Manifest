@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -27,6 +27,7 @@ import {
   flagNonCacheable,
   normalizeNonCacheableCause,
   NONCACHEABLE_REASONS_CAP,
+  gcOgCache,
 } from '../src/scripts/manifest.render.mjs';
 
 let dir;
@@ -156,6 +157,17 @@ describe('evaluateRouteSkip', () => {
     expect(missing.skip).toBe(false);
     const altered = await evaluateRouteSkip(deps({ outputHash: () => 'tampered' }));
     expect(altered.skip).toBe(false);
+  });
+  it('max age: a recent render skips, an old or undated one renders', async () => {
+    const now = Date.parse('2026-10-25T00:00:00Z');
+    const day = 24 * 60 * 60 * 1000;
+    const at = (ms) => ({ ...goodEntry(), renderedAt: new Date(ms).toISOString() });
+    const run = (entry) => evaluateRouteSkip(deps({ entry, now, maxAgeMs: 7 * day }));
+    expect((await run(at(now - day))).skip).toBe(true);
+    expect(await run(at(now - 8 * day))).toEqual({ skip: false, reason: 'expired' });
+    expect(await run(goodEntry())).toEqual({ skip: false, reason: 'expired' });
+    expect(await run(at(now + day))).toEqual({ skip: false, reason: 'expired' }); // clock went back
+    expect((await evaluateRouteSkip(deps({ entry: goodEntry(), now }))).skip).toBe(true); // no max age
   });
   it('renders when any entry path would escape its base dir', async () => {
     for (const bad of ['../secrets.txt', '/etc/passwd', 'a/../../b', 'a\\b']) {
@@ -389,26 +401,23 @@ describe('settleCaptureAwaiting', () => {
 
 describe('resolveIncrementalPolicy', () => {
   const p = (over) => resolveIncrementalPolicy({
-    configValue: undefined, flagIncremental: undefined, flagNoIncremental: undefined, ledgerExists: false, ...over,
+    configValue: undefined, flagIncremental: undefined, flagNoIncremental: undefined, ...over,
   });
-  it('never-opted-in stays fully inert', () => {
-    expect(p({})).toEqual({ record: false, skip: false, explicit: false });
-    expect(p({ flagNoIncremental: true })).toEqual({ record: false, skip: false, explicit: false });
+  it('is on by default: records and skips with no config, flag, or ledger', () => {
+    expect(p({})).toEqual({ record: true, skip: true, explicit: false });
   });
-  it('participates via config true, the flag, or an existing ledger', () => {
+  it('config true and --incremental stay on, marked explicit', () => {
     expect(p({ configValue: true })).toEqual({ record: true, skip: true, explicit: true });
     expect(p({ flagIncremental: true })).toEqual({ record: true, skip: true, explicit: true });
-    expect(p({ ledgerExists: true })).toEqual({ record: true, skip: true, explicit: false });
   });
-  it('--no-incremental disables skipping only, recording stays on', () => {
+  it('--no-incremental renders everything but still records', () => {
+    expect(p({ flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: false });
     expect(p({ configValue: true, flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: true });
-    expect(p({ ledgerExists: true, flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: false });
     expect(p({ flagIncremental: true, flagNoIncremental: true })).toEqual({ record: true, skip: false, explicit: true });
   });
-  it('explicit config false is fully off, even with a ledger present', () => {
-    expect(p({ configValue: false, ledgerExists: true })).toEqual({ record: false, skip: false, explicit: false });
-    expect(p({ configValue: false, ledgerExists: true, flagNoIncremental: true }))
-      .toEqual({ record: false, skip: false, explicit: false });
+  it('config false is fully off', () => {
+    expect(p({ configValue: false })).toEqual({ record: false, skip: false, explicit: false });
+    expect(p({ configValue: false, flagNoIncremental: true })).toEqual({ record: false, skip: false, explicit: false });
   });
   it('the CLI flag overrides config false', () => {
     expect(p({ configValue: false, flagIncremental: true }).record).toBe(true);
@@ -653,6 +662,12 @@ describe('runCacheReplayHeaders', () => {
       'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache',
     });
   });
+  it('splits repeated headers (joined with \\n) into one value each', () => {
+    // Fetch.fulfillRequest rejects a newline in a value, leaving the request
+    // paused forever — the page's fetch never settles.
+    expect(runCacheReplayHeaders({ 'x-debug-fallback': 'false\ntrue', vary: 'Origin' }))
+      .toEqual({ 'x-debug-fallback': ['false', 'true'], vary: 'Origin' });
+  });
 });
 
 describe('createRunCache', () => {
@@ -784,5 +799,18 @@ describe('contentFilesForPrerender', () => {
     expect(contentFilesForPrerender({ data: { content: '/data/content.csv' } }, 'en')).toEqual(['data/content.csv']);
     expect(contentFilesForPrerender({ data: { content: { locales: '/data/locales.csv' } } }, 'en')).toEqual(['data/locales.csv']);
     expect(contentFilesForPrerender({}, 'en')).toEqual([]);
+  });
+});
+
+describe('gcOgCache', () => {
+  it('keeps og files of current routes (incl. index and 404), drops the rest', () => {
+    for (const f of ['index.png', 'index.hash', '404.png', 'docs-intro.png', 'docs-intro.hash', 'gone.png', 'gone.hash', 'notes.txt']) {
+      writeFileSync(join(dir, f), 'x');
+    }
+    gcOgCache(dir, ['', 'docs/intro', '__prerender_404__']);
+    expect(readdirSync(dir).sort()).toEqual(['404.png', 'docs-intro.hash', 'docs-intro.png', 'index.hash', 'index.png', 'notes.txt']);
+  });
+  it('tolerates a missing dir', () => {
+    expect(() => gcOgCache(join(dir, 'nope'), [''])).not.toThrow();
   });
 });

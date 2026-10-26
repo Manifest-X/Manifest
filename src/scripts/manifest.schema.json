@@ -684,8 +684,8 @@
                 },
                 "incremental": {
                     "type": "boolean",
-                    "default": false,
-                    "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). Anything uncertain renders. Once a ledger exists, every full render refreshes it (participation); explicit false turns capture and recording fully off."
+                    "default": true,
+                    "description": "Skip re-rendering routes whose fingerprinted inputs are unchanged since the last successful run (ledger in .mnfst-cache/routes.json). On by default; anything uncertain renders, and every route re-renders at least weekly. --no-incremental renders everything but still records; false turns capture and recording fully off."
                 },
                 "blockRequests": {
                     "type": "array",

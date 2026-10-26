@@ -192,7 +192,7 @@ async function callTool(url, key, name, args) {
 // Never ship local config or secrets — matched at ANY depth (by path segment /
 // basename), not just the project root. A nested `api/.env` or `sub/.claude/…`
 // must be excluded too. Mirrors the server's ingest drop list.
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.claude']);
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.claude', '.mnfst-cache']);
 const SECRET_DIRS = new Set(['.ssh', '.aws', '.wrangler']);
 const SECRET_FILES = new Set([
   '.npmrc', '.yarnrc', '.yarnrc.yml', '.pypirc', '.netrc', '_netrc', '.git-credentials', '.htpasswd',
