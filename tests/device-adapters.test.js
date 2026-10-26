@@ -84,6 +84,31 @@ describe('$biometric', () => {
         expect(B.verifyIdentity).toHaveBeenCalledWith(expect.objectContaining({ reason: 'r', description: 'r', title: 't' }))
     })
 
+    it('picks the natively installed plugin when several are JS-registered', async () => {
+        const A = capProxy({})
+        const C = { isAvailable: vi.fn(async () => ({ isAvailable: true })), verifyIdentity: vi.fn(async () => {}) }
+        boot({ BiometricAuthNative: A, NativeBiometric: C }, [header('NativeBiometric', ['isAvailable', 'verifyIdentity'])])
+        expect(await magics.biometric.available()).toBe(true)
+        expect(await magics.biometric.verify({ reason: 'r' })).toEqual({ verified: true })
+        expect(C.verifyIdentity).toHaveBeenCalled()
+    })
+
+    it('reports unavailable when no registered plugin is native', async () => {
+        const A = capProxy({}), C = capProxy({})
+        boot({ BiometricAuthNative: A, NativeBiometric: C }, [header('App', ['getState'])])
+        expect(await magics.biometric.available()).toBe(false)
+        expect(await magics.biometric.verify({})).toEqual({ verified: false, error: 'unsupported' })
+    })
+
+    it('keeps the first registered plugin without a header list', async () => {
+        const A = { checkBiometry: vi.fn(async () => ({ isAvailable: true })), internalAuthenticate: vi.fn(async () => {}) }
+        const C = { isAvailable: vi.fn(async () => ({ isAvailable: true })), verifyIdentity: vi.fn(async () => {}) }
+        boot({ BiometricAuthNative: A, NativeBiometric: C })
+        expect(await magics.biometric.available()).toBe(true)
+        expect(A.checkBiometry).toHaveBeenCalled()
+        expect(C.isAvailable).not.toHaveBeenCalled()
+    })
+
     it('ignores plugin web stubs in a bundled web build (no native verify off-device)', async () => {
         const B = { isAvailable: vi.fn(async () => ({ isAvailable: true })), verifyIdentity: vi.fn(async () => {}) }
         boot({ NativeBiometric: B }, undefined, false)

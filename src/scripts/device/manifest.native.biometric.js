@@ -7,6 +7,15 @@ const MANIFEST_BIOMETRIC_PLUGINS = ['BiometricAuthNative', 'BiometricAuth', 'Nat
 // Native only: bundled web builds expose plugin web stubs that always "verify".
 function manifestBiometricPlugin() {
     if (!manifestNativeIsNative()) return null;
+    // Prefer one in the native header list; without a list, first registered
+    const headers = window.Capacitor && window.Capacitor.PluginHeaders;
+    if (Array.isArray(headers)) {
+        for (const name of MANIFEST_BIOMETRIC_PLUGINS) {
+            const plugin = manifestNativePlugin(name);
+            if (plugin && headers.some(h => h && h.name === name)) return { name, plugin };
+        }
+        return null;
+    }
     for (const name of MANIFEST_BIOMETRIC_PLUGINS) {
         const plugin = manifestNativePlugin(name);
         if (plugin) return { name, plugin };
