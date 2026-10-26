@@ -6,7 +6,7 @@
 // the MCP publish handshake, renders if needed, zips gitignore-aware, uploads,
 // and prints the live URL. Zero npm deps; cross-platform (pure-Node zip).
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
 import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
@@ -424,6 +424,112 @@ export async function pollPublishStatus(statusUrl, opts = {}) {
   }
 }
 
+// --- Upload link renewal ------------------------------------------------------
+
+// A connector link expires 15 minutes after mint unless renewed, and a website
+// render can take an hour. While rendering, renew it on this interval (well
+// inside the window, so a missed beat or two is harmless) and once more right
+// before uploading. The server caps how long a link can be kept alive.
+const RENEW_EVERY_MS = 5 * 60 * 1000;
+
+export function renewUrlFor(uploadUrl) {
+  return uploadUrl.replace(/\/+$/, '') + '/renew';
+}
+
+/**
+ * One renewal. Resolves `{state, body}`:
+ *   renewed      the link is good for another window
+ *   expired      the link is used, expired or unknown (410)
+ *   unsupported  the server has no renew route, or will not extend this link
+ *   retry        a blip, 429 or 5xx: try again next time
+ */
+export async function renewUploadLink(uploadUrl, opts = {}) {
+  const { fetchImpl = fetch } = opts;
+  let status = 0;
+  let json = null;
+  try {
+    const res = await fetchImpl(renewUrlFor(uploadUrl), { method: 'POST', headers: { accept: 'application/json' } });
+    status = res.status;
+    const text = await res.text();
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* not JSON */
+    }
+  } catch {
+    return { state: 'retry' };
+  }
+  if (status === 200 && json && json.status === 'pending') return { state: 'renewed', body: json };
+  if (status === 410) return { state: 'expired', body: json };
+  if (status === 429 || status >= 500 || status === 0) return { state: 'retry', body: json };
+  return { state: 'unsupported', body: json };
+}
+
+/**
+ * Renew `uploadUrl` every `intervalMs` until finish(). finish() stops the
+ * timer, waits for any renewal in flight (so none races the upload), renews
+ * once more and resolves the link's state: active | expired | unsupported.
+ */
+export function keepUploadLinkAlive(uploadUrl, opts = {}) {
+  const {
+    fetchImpl = fetch,
+    intervalMs = RENEW_EVERY_MS,
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+    log: logFn = log,
+  } = opts;
+  let state = 'active';
+  let timer = null;
+  let inFlight = null;
+  let stopped = false;
+
+  const renew = async () => {
+    const r = await renewUploadLink(uploadUrl, { fetchImpl });
+    if (r.state === 'expired' && state !== 'expired') {
+      state = 'expired';
+      logFn('  the publish link expired. The render carries on so its output is kept on disk.');
+    } else if (r.state === 'unsupported') {
+      state = 'unsupported';
+    }
+  };
+  const schedule = () => {
+    if (stopped || state !== 'active') return;
+    timer = setTimer(() => {
+      timer = null;
+      inFlight = renew().finally(() => {
+        inFlight = null;
+        schedule();
+      });
+    }, intervalMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  };
+  schedule();
+
+  return {
+    get state() {
+      return state;
+    },
+    async finish() {
+      stopped = true;
+      if (timer) clearTimer(timer);
+      timer = null;
+      if (inFlight) await inFlight;
+      if (state === 'active') await renew();
+      return state;
+    },
+  };
+}
+
+/** What to do when the link is gone: a new link, and no second render when the output is already on disk. */
+export function expiredLinkAdvice({ rendered = false, outputDir = 'website' } = {}) {
+  const base = 'this publish link expired before the upload. Run manifest_publish again for a new link and run the command it returns.';
+  return rendered ? `${base} ${noRenderHint(outputDir)}` : base;
+}
+
+function noRenderHint(outputDir) {
+  return `The site is already rendered in "${outputDir}", so add --no-render to the new command to upload it without rendering again.`;
+}
+
 /** Turn a settled poll result into the success payload, or throw a plain-language error. */
 function settledPayload(res) {
   if (res.state === 'done') return res.body;
@@ -504,6 +610,13 @@ export async function uploadBundle(uploadUrl, zip, opts = {}) {
     if (res.status === 409 && json && json.error === 'ingest_in_progress') {
       logFn('  an earlier attempt is still publishing — waiting for it to finish…');
       return settledPayload(await poll({}));
+    }
+
+    // The link is used, expired or unknown: nothing to retry with it.
+    if (res.status === 410) {
+      const err = new Error((json && json.message) || 'Publish link expired or already used.');
+      err.code = 'link_expired';
+      throw err;
     }
 
     if (res.status >= 500 && attempt < tries) {
@@ -636,6 +749,35 @@ function buildZip(root, rels, overrides = new Map()) {
 
 // --- Main ------------------------------------------------------------------
 
+function runCommand(cmd, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, options);
+    child.on('error', () => resolve(1));
+    child.on('exit', (code) => resolve(code ?? 1));
+  });
+}
+
+// The upload carries the whole project. Only POST it to an HTTPS endpoint on
+// the SAME host as the MCP server — never to an arbitrary URL a tampered
+// response or misconfigured .mcp.json could inject.
+function checkUploadUrl(uploadUrl, mcpUrl) {
+  let u;
+  let mcpHost;
+  try {
+    u = new URL(uploadUrl);
+    mcpHost = new URL(mcpUrl).host;
+  } catch {
+    fail('the upload URL returned by the server was malformed.');
+  }
+  // Same host as the configured MCP, or the canonical first-party host — a
+  // project whose .mcp.json still points at the legacy workers.dev URL gets
+  // upload links minted on mcp.manifestx.dev during the domain migration.
+  const canonical = new URL(DEFAULT_MCP).host;
+  if (u.protocol !== 'https:' || (u.host !== mcpHost && u.host !== canonical)) {
+    fail(`refusing to upload to an unexpected endpoint (${u.protocol}//${u.host}); expected https://${mcpHost} or https://${canonical}.`);
+  }
+}
+
 export async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
@@ -672,10 +814,16 @@ export async function main() {
     fail('no API key found. Publish from Claude with the Manifest connector (no key needed), or set MANIFEST_API_KEY in .env for headless/CI use.');
   }
 
-  if (source === 'render' && opts.render !== false) {
+  // Checked before rendering, since the link is renewed while the render runs.
+  if (injectedUpload) checkUploadUrl(injectedUpload, url);
+  const keepAlive = injectedUpload ? keepUploadLinkAlive(injectedUpload) : null;
+
+  const rendering = source === 'render' && opts.render !== false;
+  if (rendering) {
     log('Rendering the site…');
-    const r = spawnSync('npx', ['mnfst-render'], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
-    if (r.status !== 0) fail('render failed — fix the errors above and try again.');
+    // Async, so the renewal timer runs during the render.
+    const code = await runCommand('npx', ['mnfst-render'], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
+    if (code !== 0) fail('render failed — fix the errors above and try again.');
   }
 
   // For a render project, sanity-check there's actually a built site to ship —
@@ -706,22 +854,7 @@ export async function main() {
     const handshake = await callTool(url, key, 'manifest_publish', { env: opts.env, source, via_cli: true });
     uploadUrl = handshake.upload_url;
     if (!uploadUrl) fail(handshake._text || 'could not start the publish (no upload URL returned).');
-  }
-  // The upload carries the whole project. Only POST it to an HTTPS endpoint on
-  // the SAME host as the MCP server — never to an arbitrary URL a tampered
-  // response or misconfigured .mcp.json could inject.
-  try {
-    const u = new URL(uploadUrl);
-    const mcpHost = new URL(url).host;
-    // Same host as the configured MCP, or the canonical first-party host — a
-    // project whose .mcp.json still points at the legacy workers.dev URL gets
-    // upload links minted on mcp.manifestx.dev during the domain migration.
-    const canonical = new URL(DEFAULT_MCP).host;
-    if (u.protocol !== 'https:' || (u.host !== mcpHost && u.host !== canonical)) {
-      fail(`refusing to upload to an unexpected endpoint (${u.protocol}//${u.host}); expected https://${mcpHost} or https://${canonical}.`);
-    }
-  } catch {
-    fail('the upload URL returned by the server was malformed.');
+    checkUploadUrl(uploadUrl, url);
   }
 
   const rels = collectFiles(root, opts.outputDir);
@@ -730,12 +863,18 @@ export async function main() {
     fail(`the output folder "${opts.outputDir}" doesn't exist — run the project's build first, then publish again.`);
   }
   const zip = buildZip(root, rels, stampManifests(root, rels));
+  const recovery = { rendered: source === 'render', outputDir: prerenderOutputDir(root) };
+  // Last renewal before the upload; an older server without renewal just uploads as before.
+  if (keepAlive && (await keepAlive.finish()) === 'expired') fail(expiredLinkAdvice(recovery));
   log(`Uploading ${rels.length} files (${(zip.length / 1048576).toFixed(1)} MB)…`);
 
   let upJson;
   try {
     upJson = await uploadBundle(uploadUrl, zip);
   } catch (e) {
+    if (e.code === 'link_expired') {
+      fail(/--no-render/.test(e.message) || !recovery.rendered ? e.message : `${e.message} ${noRenderHint(recovery.outputDir)}`);
+    }
     fail(e.message);
   }
 
