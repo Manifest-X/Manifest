@@ -108,3 +108,51 @@ describe('data path discovery: group slugs', () => {
     expect(routes.filter((r) => r.includes('getting-started'))).toEqual([]);
   });
 });
+
+describe('data path discovery: group slugs, all sources', () => {
+  const docs = (data, files) => {
+    const warnings = [];
+    const err = process.stderr.write;
+    process.stderr.write = (m) => { warnings.push(String(m)); return true; };
+    try {
+      return { routes: site('<x-docs x-route="docs"></x-docs>', data, files), warnings };
+    } finally {
+      process.stderr.write = err;
+    }
+  };
+
+  it('JSON groups use their slug', () => {
+    const { routes } = docs({ docs: '/data/docs.json' }, {
+      'docs.json': JSON.stringify([{ group: 'Getting Started', slug: 'start', items: [{ path: 'welcome' }] }, { group: 'Two', slug: 2, items: [{ path: 'x' }] }]),
+    });
+    expect(routes).toEqual(expect.arrayContaining(['docs/start/welcome', 'docs/2/x']));
+    expect(routes.filter((r) => r.includes('getting-started') || r.includes('two'))).toEqual([]);
+  });
+
+  it('a YAML group slug written after its items still applies', () => {
+    const { routes } = docs({ docs: '/data/docs.yaml' }, {
+      'docs.yaml': '- group: "Getting started"\n  items:\n    - name: "Welcome"\n      path: "welcome"\n  slug: "start"\n- group: "Billing"\n  items:\n    - path: "invoices"\n',
+    });
+    expect(routes).toEqual(expect.arrayContaining(['docs/start/welcome', 'docs/billing/invoices']));
+    expect(routes.filter((r) => r.includes('getting-started'))).toEqual([]);
+  });
+
+  it('YAML slugs resolve as the runtime loads them', () => {
+    const group = (name, slug) => `- group: "${name}"\n  slug: ${slug}\n  items:\n    - path: "a"\n`;
+    const { routes, warnings } = docs({ docs: '/data/docs.yaml' }, {
+      'docs.yaml': group('One', '01') + group('Quoted', '"01"') + group('Exp', '1e3') + group('Gone', 'null') + group('Note', 'notes # a comment'),
+    });
+    expect(routes).toEqual(expect.arrayContaining(['docs/1/a', 'docs/01/a', 'docs/1000/a', 'docs/gone/a', 'docs/notes/a']));
+    expect(routes.filter((r) => /docs\/(one|quoted|exp|note)\b/.test(r))).toEqual([]);
+    expect(warnings.join('')).toContain('"Gone" has an empty slug');
+  });
+
+  it('plain scalars resolve like js-yaml', async () => {
+    const { yamlScalar } = await import('../src/scripts/manifest.render.page.mjs');
+    const yaml = (await import('js-yaml')).default;
+    for (const v of ['01', '1e3', 'null', '~', '', 'true', 'False', '0x1F', '0o17', '017', '1_000', '1.50', '.5', '-0', '+3', '0b101', 'start', '"01"', "'01'", 'start # c', 'a#b', '"a\\"b"', "'it''s'", '1:2', 'a b', '.inf', '0x_1', '1e400']) {
+      const want = yaml.load(`v: ${v}`).v;
+      expect(yamlScalar(v), v).toBe(want === null ? null : String(want));
+    }
+  });
+});

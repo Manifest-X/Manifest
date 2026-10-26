@@ -3013,45 +3013,120 @@ function discoverLocalesFrom(manifest, read) {
 
 // --- Discovery: data-driven paths (docs-style YAML group/items[].path) ------
 
-function parseYamlPaths(text) {
+// js-yaml (default schema) plain-scalar resolution, as the runtime data plugin loads YAML.
+const YAML_NULL = /^(?:~|null|Null|NULL)?$/;
+const YAML_BOOL = /^(?:true|True|TRUE|false|False|FALSE)$/;
+const YAML_INT = /^[-+]?(?:0b[01_]+|0o[0-7_]+|0x[0-9a-fA-F_]+|[0-9][0-9_]*)$/;
+const YAML_FLOAT = /^(?:[-+]?(?:[0-9][0-9_]*)(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?|\.[0-9_]+(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$/;
+
+/** A YAML value as text, from the raw text after `key:` (quotes, comments, numbers, null). Null for YAML null. Timestamps stay verbatim. */
+function yamlScalar(raw) {
+  const t = String(raw).trim();
+  if (t.startsWith('"')) {
+    const m = t.match(/^"((?:[^"\\]|\\.)*)"/);
+    if (m) return m[1].replace(/\\(.)/g, (_, c) => ({ n: '\n', t: '\t', '"': '"', '\\': '\\' }[c] ?? c));
+  }
+  if (t.startsWith("'")) {
+    const m = t.match(/^'((?:[^']|'')*)'/);
+    if (m) return m[1].replace(/''/g, "'");
+  }
+  const v = t.replace(/(^|\s)#.*$/, '').trim();
+  if (YAML_NULL.test(v)) return null;
+  if (YAML_BOOL.test(v)) return String(/^t/i.test(v));
+  if (YAML_INT.test(v) && !v.endsWith('_')) {
+    const sign = v.startsWith('-') ? -1 : 1;
+    const digits = v.replace(/^[-+]/, '').replace(/_/g, '');
+    const n = digits.startsWith('0b') ? parseInt(digits.slice(2), 2)
+      : digits.startsWith('0o') ? parseInt(digits.slice(2), 8)
+      : digits.startsWith('0x') ? parseInt(digits.slice(2), 16)
+      : parseInt(digits, 10);
+    return String(sign * n === 0 ? 0 : sign * n);
+  }
+  if (YAML_FLOAT.test(v) && !v.endsWith('_')) {
+    const lower = v.toLowerCase();
+    if (lower.endsWith('.inf')) return lower.startsWith('-') ? '-Infinity' : 'Infinity';
+    if (lower === '.nan') return 'NaN';
+    return String(parseFloat(v.replace(/_/g, '')));
+  }
+  return v;
+}
+
+const YAML_GROUP_LINE = /^\s*-?\s*group:\s*["']?([^"'\n]+)["']?/;
+
+/** Each `group:` line's sibling `slug:` in the same mapping, wherever it sits; undefined when there is none. */
+function yamlGroupSlugs(lines) {
+  const indentOf = (l) => l.match(/^\s*/)[0].length;
+  const blank = (l) => !l.trim() || /^\s*#/.test(l);
+  const slugs = new Map();
+  lines.forEach((line, i) => {
+    if (!YAML_GROUP_LINE.test(line)) return;
+    const col = line.indexOf('group:');
+    let start = i;
+    if (!/^\s*-\s/.test(line)) {
+      for (let j = i - 1; j >= 0; j--) {
+        const l = lines[j];
+        if (blank(l)) continue;
+        if (indentOf(l) < col) {
+          if (/^\s*-\s/.test(l) && l.indexOf('-') === col - 2) start = j;
+          break;
+        }
+      }
+    }
+    let end = lines.length;
+    for (let j = start + 1; j < lines.length; j++) {
+      if (!blank(lines[j]) && indentOf(lines[j]) < col) { end = j; break; }
+    }
+    for (let j = start; j < end; j++) {
+      const m = lines[j].match(/^\s*-?\s*slug:(.*)$/);
+      if (m && lines[j].indexOf('slug:') === col) { slugs.set(i, yamlScalar(m[1])); break; }
+    }
+  });
+  return slugs;
+}
+
+/** URL segment for a group: its slug (as the docs template builds URLs), else its lowercased, hyphenated name. */
+function groupSegment(name, slug, warn) {
+  const fallback = String(name).trim().toLowerCase().replace(/\s+/g, '-');
+  if (slug === undefined) return fallback;
+  const s = slug === null ? '' : String(slug).trim().replace(/^\/+|\/+$/g, '');
+  if (s) return s;
+  warn(`prerender: data group "${String(name).trim()}" has an empty slug; using "${fallback}"\n`);
+  return fallback;
+}
+
+function parseYamlPaths(text, warn = () => {}) {
   if (text == null) return [];
   const paths = [];
   let currentGroup = '';
-  let groupKeyCol = -1;
   const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    const groupMatch = line.match(/^\s*-?\s*group:\s*["']?([^"'\n]+)["']?/);
+  const groupSlugs = yamlGroupSlugs(lines);
+  lines.forEach((line, i) => {
+    // A nested group: line takes over until the next group: line.
+    const groupMatch = line.match(YAML_GROUP_LINE);
     if (groupMatch) {
-      currentGroup = groupMatch[1].trim().toLowerCase().replace(/\s+/g, '-');
-      groupKeyCol = line.indexOf('group:');
-      continue;
-    }
-    // The group's own slug (a sibling of `group:`) names its URL segment, as the docs template does.
-    const groupSlug = currentGroup && line.match(/^(\s*)slug:\s*["']?([^"'\n#]+)["']?/);
-    if (groupSlug && groupSlug[1].length === groupKeyCol) {
-      const slug = groupSlug[2].trim().replace(/^\/+|\/+$/g, '');
-      if (slug) currentGroup = slug;
+      currentGroup = groupSegment(groupMatch[1], groupSlugs.get(i), warn);
+      return;
     }
     const pathMatch = line.match(/path:\s*["']?([^"'\n]+)["']?/);
     if (pathMatch && currentGroup) {
-      const segment = pathMatch[1].trim();
-      paths.push(`${currentGroup}/${segment}`);
+      const segment = yamlScalar(line.slice(line.indexOf('path:') + 5));
+      if (segment !== null && segment !== '') paths.push(`${currentGroup}/${segment}`);
     } else {
       // No group context — fall back to a bare path/slug.  Used by data files
       // whose entries are flat (e.g. articles list with `path:` per item).
-      const genericPathMatch = line.match(/^\s*(?:-\s*)?(?:path|slug):\s*["']?([^"'\n#]+)["']?/);
+      const genericPathMatch = line.match(/^\s*(?:-\s*)?(?:path|slug):(.*)$/);
       if (genericPathMatch) {
-        const v = genericPathMatch[1].trim().replace(/^\/+|\/+$/g, '');
+        const v = (yamlScalar(genericPathMatch[1]) ?? '').replace(/^\/+|\/+$/g, '');
         if (v && !v.includes('*') && !/\.[a-z0-9]+$/i.test(v)) {
           paths.push(v);
         }
       }
     }
-  }
+  });
   return paths;
 }
 
-function parseJsonPaths(raw) {
+function parseJsonPaths(raw, warn = () => {}) {
   if (raw == null) return [];
   let data;
   try {
@@ -3066,9 +3141,10 @@ function parseJsonPaths(raw) {
       obj.forEach((item) => {
         if (item && typeof item === 'object') {
           if (typeof item.path === 'string') paths.push(item.path);
-          else if (typeof item.slug === 'string') paths.push(item.slug);
+          else if (typeof item.slug === 'string' || typeof item.slug === 'number') paths.push(String(item.slug));
           if (item.group && Array.isArray(item.items)) {
-            const group = String(item.group).toLowerCase().replace(/\s+/g, '-');
+            const slug = typeof item.slug === 'string' || typeof item.slug === 'number' ? item.slug : 'slug' in item ? null : undefined;
+            const group = groupSegment(item.group, slug, warn);
             item.items.forEach((i) => {
               if (i && typeof i.path === 'string') paths.push(`${group}/${i.path}`);
             });
@@ -3197,13 +3273,13 @@ function discoverDataPaths(manifest, read, wildcardBases = [], locales = [], war
     if (typeof value !== 'string' || !value.startsWith('/')) return;
     const filePath = value;
     if (filePath.endsWith('.yaml') || filePath.endsWith('.yml')) {
-      parseYamlPaths(read(filePath)).forEach((p) => {
+      parseYamlPaths(read(filePath), warn).forEach((p) => {
         for (const c of expandCandidates(p, sourceKey)) {
           if (shouldIncludeDataPath(c)) paths.add('/' + c);
         }
       });
     } else if (filePath.endsWith('.json')) {
-      parseJsonPaths(read(filePath)).forEach((p) => {
+      parseJsonPaths(read(filePath), warn).forEach((p) => {
         const normalized = p.startsWith('/') ? p.slice(1) : p;
         for (const c of expandCandidates(normalized, sourceKey)) {
           if (shouldIncludeDataPath(c)) paths.add('/' + c);
@@ -3437,4 +3513,5 @@ export {
   discoverRoutesFrom,
   loadContentFrom,
   seoConfigFromManifest,
+  yamlScalar,
 };
