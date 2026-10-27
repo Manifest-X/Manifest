@@ -100,6 +100,31 @@ describe('$biometric', () => {
         expect(await magics.biometric.verify({})).toEqual({ verified: false, error: 'unsupported' })
     })
 
+    it('warns once naming registered plugins missing from the native build', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        boot({ BiometricAuthNative: capProxy({}), NativeBiometric: capProxy({}) }, [header('App', ['getState'])])
+        expect(await magics.biometric.available()).toBe(false)
+        expect(await magics.biometric.verify({})).toEqual({ verified: false, error: 'unsupported' })
+        expect(await magics.biometric.available()).toBe(false)
+        const hits = warn.mock.calls.filter(c => /not installed natively/.test(c[0]))
+        expect(hits).toHaveLength(1)
+        expect(hits[0][0]).toMatch(/BiometricAuthNative, NativeBiometric/)
+        expect(hits[0][0]).toMatch(/npx cap sync/)
+    })
+
+    it('does not warn when a registered plugin is native, nothing is registered, or on the web', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        boot({ BiometricAuthNative: { checkBiometry: async () => ({ isAvailable: true }) } }, [header('BiometricAuthNative', ['checkBiometry'])])
+        expect(await magics.biometric.available()).toBe(true)
+        boot({}, [header('App', ['getState'])])
+        expect(await magics.biometric.available()).toBe(false)
+        boot({ NativeBiometric: capProxy({}) }, [header('App', ['getState'])], false)
+        expect(await magics.biometric.available()).toBe(false)
+        boot({ NativeBiometric: { isAvailable: async () => ({ isAvailable: true }) } })
+        expect(await magics.biometric.available()).toBe(true)
+        expect(warn).not.toHaveBeenCalled()
+    })
+
     it('keeps the first registered plugin without a header list', async () => {
         const A = { checkBiometry: vi.fn(async () => ({ isAvailable: true })), internalAuthenticate: vi.fn(async () => {}) }
         const C = { isAvailable: vi.fn(async () => ({ isAvailable: true })), verifyIdentity: vi.fn(async () => {}) }
@@ -197,6 +222,33 @@ describe('$secure', () => {
         vi.spyOn(console, 'error').mockImplementation(() => {})
         boot({ SecureStorage: { somethingElse() {} } }, [header('SecureStorage', ['somethingElse'])])
         await expect(magics.secure.get('k')).rejects.toThrow(/no supported API/)
+    })
+
+    it('rejects clearly when registered but not installed natively, without web fallback', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const S = aparajitaSecure()
+        localStorage.clear()
+        boot({ SecureStorage: capProxy(S) }, [header('App', ['getState'])])
+        for (const op of [() => magics.secure.set('k', 'v'), () => magics.secure.get('k'), () => magics.secure.remove('k'), () => magics.secure.keys(), () => magics.secure.clear()]) {
+            await expect(op()).rejects.toThrow('SecureStorage plugin is not installed natively; run npx cap sync')
+        }
+        expect(localStorage.length).toBe(0)
+        expect(S.internalSetItem).not.toHaveBeenCalled()
+    })
+
+    it('honours $secure.use(adapter) when the plugin is not installed natively', async () => {
+        const m = new Map()
+        boot({ SecureStorage: capProxy({}) }, [header('App', ['getState'])])
+        magics.secure.use({ get: async k => m.get(k) ?? null, set: async (k, v) => { m.set(k, v) } })
+        await magics.secure.set('a', 'b')
+        expect(await magics.secure.get('a')).toBe('b')
+    })
+
+    it('uses localStorage natively when no SecureStorage is registered (unchanged)', async () => {
+        localStorage.clear()
+        boot({}, [header('App', ['getState'])])
+        await magics.secure.set('k', 'v')
+        expect(localStorage.getItem('mnfst:k')).toBe('v')
     })
 
     it('still adapts getItem/setItem and get/set shapes', async () => {

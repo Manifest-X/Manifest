@@ -72,10 +72,23 @@ function manifestSecureNativeBackend(plugin, name) {
     };
 }
 
+// Registered in JS but absent from the native header list
+function manifestSecureInstalled(name) {
+    const headers = window.Capacitor && window.Capacitor.PluginHeaders;
+    return !Array.isArray(headers) || headers.some(h => h && h.name === name);
+}
+
+// Rejects every call; never falls back to unencrypted web storage
+function manifestSecureMissingBackend(name) {
+    const fail = (op) => async () => manifestSecureFail(op, new Error(name + ' plugin is not installed natively; run npx cap sync'));
+    return { get: fail('get'), set: fail('set'), remove: fail('remove'), keys: fail('keys'), clear: fail('clear') };
+}
+
 let _manifestSecureBackend = null;
 function manifestSecureBackend() {
     if (_manifestSecureBackend) return _manifestSecureBackend;
     const plugin = manifestNativeIsNative() ? manifestNativePlugin('SecureStorage') : null;
+    if (plugin && !manifestSecureInstalled('SecureStorage')) return manifestSecureMissingBackend('SecureStorage');
     _manifestSecureBackend = plugin ? manifestSecureNativeBackend(plugin, 'SecureStorage') : manifestSecureWebBackend();
     return _manifestSecureBackend;
 }

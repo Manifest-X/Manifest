@@ -14,6 +14,7 @@ function manifestBiometricPlugin() {
             const plugin = manifestNativePlugin(name);
             if (plugin && headers.some(h => h && h.name === name)) return { name, plugin };
         }
+        manifestBiometricWarnNotNative();
         return null;
     }
     for (const name of MANIFEST_BIOMETRIC_PLUGINS) {
@@ -25,6 +26,16 @@ function manifestBiometricPlugin() {
 
 function manifestBiometricWarn(msg, e) {
     try { console.warn('[Manifest] $biometric: ' + msg, e || ''); } catch (_) {}
+}
+
+// Registered in JS but missing from the native build: warn once
+let manifestBiometricNotNativeWarned = false;
+function manifestBiometricWarnNotNative() {
+    if (manifestBiometricNotNativeWarned) return;
+    const missing = MANIFEST_BIOMETRIC_PLUGINS.filter(n => manifestNativePlugin(n));
+    if (!missing.length) return;
+    manifestBiometricNotNativeWarned = true;
+    manifestBiometricWarn(missing.join(', ') + ' registered but not installed natively; run npx cap sync');
 }
 
 async function manifestBiometricAvailable() {
