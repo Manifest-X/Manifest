@@ -615,8 +615,9 @@ const SCOPE_FREE_IDENTIFIERS = new Set([
 function scopeIdentifiers(expr) {
   let src = String(expr || '')
     .replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  const quoted = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
   src = src.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, (lit) => (lit[0] === '`'
-    ? ' ' + [...lit.matchAll(/\$\{([^}]*)\}/g)].map((m) => '(' + m[1] + ')').join(' ') + ' '
+    ? ' ' + [...lit.matchAll(/\$\{([^}]*)\}/g)].map((m) => '(' + m[1].replace(quoted, '""') + ')').join(' ') + ' '
     : '""'));
   const params = new Set();
   for (const m of src.matchAll(/(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>/g)) {
@@ -2547,6 +2548,8 @@ async function renderRouteDom(page, ctx) {
     const hasVar = (expr, varName) => varName && new RegExp(`\\b${varName}\\b`).test(expr || '');
     const stripLoopBindings = (el, loopVars) => {
       const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
+      // A clone given its own loop scope (x-data injected for hydrate islands) keeps empty bindings live.
+      const scoped = loopVars.some((v) => hasVar(el.getAttribute('x-data'), v));
       for (const node of nodes) {
         // Skip elements inside data-hydrate islands — their bindings must remain live
         if (node.hasAttribute('data-hydrate') || node.closest('[data-hydrate]')) continue;
@@ -2557,7 +2560,9 @@ async function renderRouteDom(page, ctx) {
           if (loopVars.some((v) => hasVar(expr, v))) {
             const name = attr.name;
             if (name === 'x-text' || name === 'x-html') {
-              node.removeAttribute(name);
+              if (!scoped || (node.textContent || '').trim() || (node.innerHTML || '').trim()) {
+                node.removeAttribute(name);
+              }
               continue;
             }
             if (name === 'x-show' || name === 'x-if') {
