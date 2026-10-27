@@ -3167,7 +3167,9 @@ async function runPrerender(config) {
         const pageLocalOrigin = new URL(config.localUrl).origin;
         const done = (p) => p.catch(() => { /* page/request gone */ });
         await page.setRequestInterception(true);
-        page.on('request', (req) => {
+        // Returns nothing: Puppeteer runs request handlers one after another, so a returned promise (a request
+        // waiting on another page's in-flight fetch) would hold back every later listener for that request.
+        const handleRunCache = (req) => {
           try {
             const verdict = classifyRunCacheRequest({
               url: req.url(), method: req.method(),
@@ -3190,7 +3192,8 @@ async function runPrerender(config) {
             runCache.beginFlight(href);
             return done(req.continue());
           } catch { return done(req.continue()); }
-        });
+        };
+        page.on('request', (req) => { handleRunCache(req); });
         page.on('response', (res) => {
           try {
             if (res.request().method() !== 'GET') return;

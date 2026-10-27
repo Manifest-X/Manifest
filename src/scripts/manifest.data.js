@@ -1137,7 +1137,8 @@ function setupTeamChangeListener() {
                 teamCheckIntervalId = setInterval(checkTeamChange, 2000);
             }
         } else {
-            setTimeout(startPolling, 100);
+            // Waits for an auth plugin that may never load: housekeeping, not page work
+            setTimeout(window.ManifestPending?.background?.(startPolling) ?? startPolling, 100);
         }
     };
 

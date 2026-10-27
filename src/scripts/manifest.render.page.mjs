@@ -19,67 +19,27 @@ function stripInjectedScripts(html, originals) {
   );
 }
 
-// Settle tracking (page side). Installed before any page script: timers and frames still pending, window.ManifestPending
-// holds, plugin counters, loading data sources, pending anchor refreshes and the last DOM change. A callback that keeps
-// re-arming itself without changing the DOM or finishing a request is a poll and stops counting; stray timers yield
-// after a long quiet window.
+// Settle tracking (page side). Installed before any page script (and in each frame): timers under 3s and frames still
+// pending, window.ManifestPending holds, plugin counters, loading data sources, pending anchor refreshes and the last
+// DOM change. With nothing pending a page settles after a short quiet window; with anything pending it falls back to
+// the fixed engine's own quiet criteria, so auto never snapshots earlier than fixed and is never materially slower.
 function installSettleTracker() {
   if (window.__mnfstSettle) return;
-  // Under TRACK_MS a timer can be the next step of a render; 2s+ ones are fallbacks and cleanups
-  const TRACK_MS = 2000;
-  // Consecutive idle re-arms before a self-re-arming callback counts as a poll
-  const POLL_RUNS = 3;
+  // Under TRACK_MS a timer can be the next step of a render; 3s+ ones are fallbacks and cleanups
+  const TRACK_MS = 3000;
   const native = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout, clearInterval: window.clearInterval };
-  const fnSource = Function.prototype.toString;
-  const timers = new Map();
-  const frames = new Map();
-  const keys = new WeakMap();
-  const polls = new Map();
-  let running = null;
+  const timers = new Set();
+  const frames = new Set();
   let lastChange = Date.now();
-  let mo = null;
-  try { performance.setResourceTimingBufferSize?.(100000); } catch { /* no-op */ }
-  const resources = () => { try { return performance.getEntriesByType('resource').length; } catch { return 0; } };
-  // Ordinary callbacks key by source (a retry builds a new closure each time); bound and native ones by identity
-  const keyOf = (fn) => {
-    if (typeof fn !== 'function') return String(fn);
-    let k = keys.get(fn);
-    if (k === undefined) {
-      const src = fnSource.call(fn);
-      k = /\[native code\]\s*\}$/.test(src) ? fn : src.slice(0, 400);
-      keys.set(fn, k);
-    }
-    return k;
-  };
-  const changed = () => {
-    if (!mo || !mo.takeRecords().length) return false;
-    lastChange = Date.now();
-    return true;
-  };
-  // Re-armed from its own callback: counted while runs change the DOM or requests finish, and for POLL_RUNS idle runs
-  const counted = (key) => {
-    if (running === null || running !== key) return true;
-    const seen = resources();
-    const p = polls.get(key);
-    if (changed() || !p || seen > p.seen) { polls.set(key, { idle: 0, seen }); return true; }
-    p.idle++;
-    return p.idle < POLL_RUNS;
-  };
-  const wrapCallback = (fn, key, done) => function (...args) {
-    done();
-    changed();
-    const prev = running;
-    running = key;
-    try { return typeof fn === 'function' ? fn.apply(this, args) : (0, eval)(String(fn)); } finally { running = prev; }
-  };
+  let phaseStart = Date.now();
+  let openAt = null;
   const background = (fn) => typeof fn === 'function' && fn.__manifestBackground === true;
   window.setTimeout = function (fn, delay, ...args) {
     if ((Number(delay) || 0) >= TRACK_MS || background(fn)) return native.setTimeout.call(window, fn, delay, ...args);
-    const key = keyOf(fn);
-    const track = counted(key);
     let id;
-    id = native.setTimeout.call(window, wrapCallback(fn, key, () => timers.delete(id)), delay, ...args);
-    if (track) timers.set(id, key);
+    const run = typeof fn === 'function' ? function (...a) { timers.delete(id); return fn.apply(this, a); } : () => { timers.delete(id); (0, eval)(String(fn)); };
+    id = native.setTimeout.call(window, run, delay, ...args);
+    timers.add(id);
     return id;
   };
   // Timeout and interval ids share one pool: either clear call can cancel a timer
@@ -89,19 +49,17 @@ function installSettleTracker() {
     const raf = window.requestAnimationFrame;
     const caf = window.cancelAnimationFrame;
     window.requestAnimationFrame = function (fn) {
-      const key = keyOf(fn);
-      const track = counted(key);
       let id;
-      id = raf.call(window, wrapCallback(fn, key, () => frames.delete(id)));
-      if (track) frames.set(id, key);
+      id = raf.call(window, function (t) { frames.delete(id); return fn.call(this, t); });
+      frames.add(id);
       return id;
     };
     window.cancelAnimationFrame = function (id) { frames.delete(id); return caf.call(window, id); };
   }
   try {
-    mo = new MutationObserver(() => { lastChange = Date.now(); });
-    mo.observe(document, { childList: true, subtree: true, characterData: true });
-  } catch { mo = null; }
+    new MutationObserver(() => { lastChange = Date.now(); })
+      .observe(document, { childList: true, subtree: true, characterData: true });
+  } catch { /* no document */ }
   const dataLoading = () => {
     try {
       const d = window.Alpine?.store?.('data');
@@ -111,30 +69,42 @@ function installSettleTracker() {
       return n;
     } catch { return 0; }
   };
-  const label = (k) => (typeof k === 'string' ? k.slice(0, 80) : `[${k.name || 'native'}]`);
-  const snapshot = () => {
+  const own = () => {
     // ManifestPending (mnfst 0.5.253+) includes the plugin counters; older frameworks expose only the counters
     const holds = window.ManifestPending ? window.ManifestPending.count || 0 : 0;
     const counters = window.ManifestPending ? 0 : (window.__manifestMarkdownPending || 0) + (window.__manifestUtilitiesPending || 0);
-    const loading = dataLoading();
     let anchors = 0;
     try { for (const el of document.querySelectorAll('[x-anchors]')) if (el.__manifestRenderAnchorPending) anchors++; } catch { /* no-op */ }
-    return { holds, counters, loading, anchors, timers: timers.size, frames: frames.size, quietMs: Date.now() - lastChange };
+    return { holds, counters, loading: dataLoading(), anchors, timers: timers.size, frames: frames.size, quietMs: Date.now() - lastChange };
   };
-  const pendingKeys = () => [...new Set([...timers.values(), ...frames.values()])].slice(0, 3).map(label);
-  // Resolves when settled, or after sliceMs with idle:false (the caller loops).
-  const wait = (quietMs, longQuietMs, sliceMs, fresh) => new Promise((resolve) => {
-    if (fresh) lastChange = Date.now();
+  // Same-origin frames count toward the page
+  const snapshot = () => {
+    const s = own();
+    for (let i = 0; i < window.frames.length; i++) {
+      try {
+        const f = window.frames[i].__mnfstSettle?.snapshot();
+        if (!f) continue;
+        for (const k of ['holds', 'counters', 'loading', 'anchors', 'timers', 'frames']) s[k] += f[k];
+        s.quietMs = Math.min(s.quietMs, f.quietMs);
+      } catch { /* cross-origin */ }
+    }
+    return s;
+  };
+  // Resolves when the page side is settled ('fast': nothing pending; 'fixed': the fixed engine's DOM quiet window),
+  // or after sliceMs with path:null (the caller loops). Anchor refreshes hold like the fixed engine's 2s anchors wait.
+  // openMs: how long nothing hard has held the page (the fixed engine's waits only start once its anchor wait ends).
+  const wait = ({ quietMs, fixedQuietMs, anchorsMs, sliceMs, fresh }) => new Promise((resolve) => {
+    if (fresh) { lastChange = Date.now(); phaseStart = Date.now(); openAt = null; }
     const end = Date.now() + sliceMs;
     const tick = () => {
       const s = snapshot();
-      // A source still 'loading' with nothing in flight is blocked (auth, a failed fetch), not working: soft
-      const hard = s.holds + s.counters;
+      const now = Date.now();
+      const hard = s.holds + s.counters + (s.anchors && now - phaseStart < anchorsMs ? 1 : 0);
       const soft = s.timers + s.frames + s.loading + s.anchors;
-      if (!hard && ((!soft && s.quietMs >= quietMs) || s.quietMs >= longQuietMs)) {
-        return resolve(soft ? { idle: true, ...s, timerKeys: pendingKeys() } : { idle: true });
-      }
-      if (Date.now() >= end) return resolve({ idle: false, ...s, labels: window.ManifestPending?.labels?.() || [], timerKeys: pendingKeys() });
+      if (hard) openAt = null; else if (openAt === null) openAt = now;
+      const path = hard ? null : !soft && s.quietMs >= quietMs ? 'fast' : s.quietMs >= fixedQuietMs ? 'fixed' : null;
+      const openMs = openAt === null ? 0 : now - openAt;
+      if (path || now >= end) return resolve({ path, openMs, ...s, labels: path ? undefined : window.ManifestPending?.labels?.() || [] });
       native.setTimeout.call(window, tick, 15);
     };
     tick();
@@ -142,41 +112,58 @@ function installSettleTracker() {
   window.__mnfstSettle = { snapshot, wait };
 }
 
-// Requests in flight for one page (Node side), counted until they finish or fail. Streams and media never finish and
-// don't count; anything open past 10s (a long poll) stops counting.
-function trackNetwork(page) {
+// Requests in flight for one page (Node side), counted until they finish or fail. Uses its own CDP session so request
+// interception handlers (which Puppeteer runs one after another) can't delay what it sees; falls back to page events.
+// Streams and media never finish and don't count; anything open past 10s (a long poll) stops counting.
+async function trackNetwork(page) {
   const open = new Map();
   let last = Date.now();
-  const done = (r) => { if (open.delete(r)) last = Date.now(); };
-  const endless = (r, res) => {
-    const type = typeof r.resourceType === 'function' ? r.resourceType() : '';
-    if (type === 'eventsource' || type === 'websocket' || type === 'media') return true;
-    const ct = (res && typeof res.headers === 'function' && res.headers()['content-type']) || '';
-    return /text\/event-stream|^(audio|video)\//i.test(ct);
-  };
-  page.on('request', (r) => { if (!endless(r)) { open.set(r, Date.now()); last = Date.now(); } });
-  page.on('response', (res) => { const r = res.request(); if (open.has(r) && endless(r, res)) done(r); });
-  page.on('requestfinished', done);
-  page.on('requestfailed', done);
+  const add = (id) => { open.set(id, Date.now()); last = Date.now(); };
+  const done = (id) => { if (open.delete(id)) last = Date.now(); };
+  const endlessType = (t) => /^(eventsource|websocket|media)$/i.test(t || '');
+  const endlessMime = (m) => /text\/event-stream|^(audio|video)\//i.test(m || '');
+  let cdp = null;
+  try {
+    cdp = await page.createCDPSession();
+    await cdp.send('Network.enable');
+  } catch { cdp = null; }
+  if (cdp) {
+    cdp.on('Network.requestWillBeSent', (e) => { if (!endlessType(e.type)) add(e.requestId); });
+    cdp.on('Network.responseReceived', (e) => { if (endlessType(e.type) || endlessMime(e.response?.mimeType)) done(e.requestId); });
+    cdp.on('Network.loadingFinished', (e) => done(e.requestId));
+    cdp.on('Network.loadingFailed', (e) => done(e.requestId));
+  } else {
+    page.on('request', (r) => { if (!endlessType(r.resourceType?.())) add(r); });
+    page.on('response', (res) => { if (endlessMime(res.headers?.()['content-type'])) done(res.request()); });
+    page.on('requestfinished', done);
+    page.on('requestfailed', done);
+  }
   return {
     inflight() {
       const now = Date.now();
       let n = 0;
-      for (const [r, t] of open) {
-        if (now - t > 10000) { open.delete(r); continue; }
+      for (const [id, t] of open) {
+        if (now - t > 10000) { open.delete(id); continue; }
         n++;
       }
       return n;
     },
     quietMs() { return Date.now() - last; },
-    list() { return [...open.keys()].slice(0, 5).map((r) => `${r.method()} ${r.url().slice(0, 120)}`); },
+    list() { return [...open.keys()].slice(0, 5).map((id) => (typeof id === 'string' ? id : `${id.method()} ${id.url().slice(0, 120)}`)); },
   };
 }
 
-// Settled: no request in flight, nothing pending in the page and no DOM change for quietMs. Null when the page never
-// had a tracker; reason 'evaluate' when the page context stayed unreachable (navigation, crash). Callers fall back to
-// the fixed windows for both.
-async function waitForPageSettle(page, net, { quietMs = 80, longQuietMs = 1000, stuckMs = 3000, capMs = 15000 } = {}) {
+// The fixed engine's windows per phase, run in sequence: network idle, then DOM quiet (load 1000 then 500ms;
+// route 300 then 300ms).
+const SETTLE_FIXED = {
+  load: { fixedNetMs: 1000, fixedQuietMs: 500 },
+  route: { fixedNetMs: 300, fixedQuietMs: 300 },
+};
+
+// Settled: no request in flight, nothing pending in the page and no DOM change for quietMs (fast path); with work still
+// pending, the fixed engine's network + DOM quiet windows. Null when the page never had a tracker; reason 'evaluate'
+// when the page context stayed unreachable (navigation, crash). Callers fall back to the fixed windows for both.
+async function waitForPageSettle(page, net, { quietMs = 80, fixedNetMs = 1000, fixedQuietMs = 500, anchorsMs = 2000, stuckMs = 3000, capMs = 15000 } = {}) {
   const t0 = Date.now();
   let last = null;
   let first = true;
@@ -186,20 +173,23 @@ async function waitForPageSettle(page, net, { quietMs = 80, longQuietMs = 1000, 
   while (Date.now() - t0 < capMs) {
     const sliceMs = Math.min(1000, capMs - (Date.now() - t0));
     // The first slice restarts the quiet clock: work this phase triggered must not ride an earlier quiet stretch.
-    const r = await page.evaluate((q, lq, s, f) => (window.__mnfstSettle ? window.__mnfstSettle.wait(q, lq, s, f) : null), quietMs, longQuietMs, sliceMs, first).catch(() => undefined);
+    const r = await page.evaluate((o) => (window.__mnfstSettle ? window.__mnfstSettle.wait(o) : null), { quietMs, fixedQuietMs, anchorsMs, sliceMs, fresh: first }).catch(() => undefined);
     if (r === null && !reached) return null;
     // A navigation or reload in a page script destroys the context; the new document gets its own tracker
     if (r === null || r === undefined) { await sleep(100); continue; }
     reached = true;
     first = false;
     last = r;
-    const netIdle = net.inflight() === 0 && net.quietMs() >= quietMs;
-    if (last.idle && netIdle) return last.timerKeys ? { ok: true, ms: Date.now() - t0, yielded: last } : { ok: true, ms: Date.now() - t0 };
+    const idle = net.inflight() === 0;
+    if (r.path === 'fast' && idle && net.quietMs() >= quietMs) return { ok: true, ms: Date.now() - t0 };
+    // Fixed engine: network idle for fixedNetMs (from when it could start waiting), then fixedQuietMs of DOM quiet
+    const sinceOpen = Math.min(net.quietMs(), r.openMs);
+    if (r.path && idle && sinceOpen >= fixedNetMs + fixedQuietMs) return { ok: true, ms: Date.now() - t0, path: 'fixed', pending: r };
     // Holds or counters that never clear (a wedged source) yield once nothing has moved for stuckMs.
-    if (!last.idle && netIdle && net.quietMs() >= stuckMs && last.quietMs >= stuckMs) return { ok: true, ms: Date.now() - t0, stuck: last };
-    if (last.idle) {
-      await sleep(net.inflight() ? backoff : Math.max(15, quietMs - net.quietMs()));
-      backoff = Math.min(100, backoff * 2);
+    if (!r.path && idle && net.quietMs() >= stuckMs && r.quietMs >= stuckMs) return { ok: true, ms: Date.now() - t0, stuck: r };
+    if (r.path) {
+      await sleep(Math.min(backoff, 100));
+      backoff *= 2;
     } else backoff = 25;
   }
   if (!reached) return { ok: false, reason: 'evaluate', ms: Date.now() - t0 };
@@ -1946,12 +1936,12 @@ async function renderRouteDom(page, ctx) {
   // Deterministic settle (render.settle !== 'fixed'): the tracker reports pending work instead of fixed windows.
   const settleOn = ctx.settle !== 'fixed';
   if (settleOn) await page.evaluateOnNewDocument(installSettleTracker);
-  const net = trackNetwork(page);
+  const net = await trackNetwork(page);
   const settleLog = [];
   // False: no tracker or the context stayed unreachable, so the caller runs the fixed windows for this route.
   const settle = async (phase, capMs) => {
     if (!settleOn) return false;
-    const r = await waitForPageSettle(page, net, { capMs });
+    const r = await waitForPageSettle(page, net, { capMs, ...SETTLE_FIXED[phase] });
     if (!r) return false;
     settleLog.push({ phase, ...r });
     return r.ok || r.reason === 'cap';
@@ -2045,8 +2035,17 @@ async function renderRouteDom(page, ctx) {
   mark('routeState');
 
   // Reactions to those events: deferred anchor refreshes, then the network
-  // and DOM going quiet again (all capped).
-  if (!(await settle('route', 7000))) {
+  // and DOM going quiet again (all capped). Routers with ManifestPending skip
+  // anchor retries in prerender, so anchors re-extract once from settled content.
+  if (await settle('route', 7000)) {
+    const refreshed = await page.evaluate(() => {
+      if (!window.ManifestPending) return 0;
+      const els = document.querySelectorAll('[x-anchors]');
+      for (const el of els) { try { el._x_anchorRefresh?.(); } catch { /* no-op */ } }
+      return els.length;
+    }).catch(() => 0);
+    if (refreshed) await settle('route', 2000);
+  } else {
     await page.evaluate(() => new Promise((resolve) => {
       const deadline = Date.now() + 2000;
       const t = setInterval(() => {
@@ -3887,6 +3886,7 @@ export {
   installSettleTracker,
   trackNetwork,
   waitForPageSettle,
+  SETTLE_FIXED,
   logicalPathToVisibilityNormalizedPath,
   waitForManifestRenderReady,
   startManifestRouteState,

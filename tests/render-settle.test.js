@@ -1,11 +1,12 @@
 /**
  * @vitest-environment happy-dom
  *
- * Render settle: the page-side tracker (timers up to 2s, frames, holds, plugin
- * counters, loading data, DOM changes), the Node-side request counter and the
- * wait that replaces the fixed quiet windows. Polls drop out after three idle
- * runs; stray timers yield after the long quiet window; a lost page context
- * retries, then reports 'evaluate' so the caller uses the fixed windows.
+ * Render settle: the page-side tracker (timers under 3s, frames, holds, plugin
+ * counters, loading data, anchor refreshes, DOM changes), the Node-side request
+ * counter and the wait that replaces the fixed quiet windows. With nothing
+ * pending a page settles after a short quiet window; with anything pending it
+ * uses the fixed engine's own windows (network idle, then DOM quiet). A lost
+ * page context retries, then reports 'evaluate' for the fixed-window fallback.
  * Real-browser cases live in tests/e2e/render-settle.e2e.mjs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -34,74 +35,40 @@ afterEach(() => {
 
 const fakePage = { evaluate: (fn, ...args) => Promise.resolve(fn(...args)) }
 const idleNet = { inflight: () => 0, quietMs: () => 1e6, list: () => [] }
-const timers = () => window.__mnfstSettle.snapshot().timers
+const snap = () => window.__mnfstSettle.snapshot()
+const small = { quietMs: 20, fixedNetMs: 100, fixedQuietMs: 100 }
 
 describe('settle tracker', () => {
-  it('counts timers under 2s, not 2s+ fallbacks', () => {
+  it('counts timers under 3s, not 3s+ fallbacks or background callbacks', () => {
     setTimeout(() => {}, 30)
-    setTimeout(() => {}, 1999)
-    setTimeout(() => {}, 2000)
-    setTimeout(() => {}, 5000)
-    expect(timers()).toBe(2)
+    setTimeout(() => {}, 2999)
+    setTimeout(() => {}, 3000)
+    const bg = () => {}
+    bg.__manifestBackground = true
+    setTimeout(bg, 100)
+    expect(snap().timers).toBe(2)
   })
 
-  it('skips callbacks marked as background housekeeping', () => {
-    const fn = () => {}
-    fn.__manifestBackground = true
-    setTimeout(fn, 100)
-    expect(timers()).toBe(0)
-  })
-
-  it('forgets a timer cleared through either clear API', () => {
+  it('forgets a timer when it fires, or is cleared through either clear API', async () => {
+    setTimeout(() => {}, 10)
     clearTimeout(setTimeout(() => {}, 100))
     clearInterval(setTimeout(() => {}, 100))
-    expect(timers()).toBe(0)
-  })
-
-  it('keeps a poll counted for three idle runs, then drops it', async () => {
-    let runs = 0
-    const poll = () => { runs++; setTimeout(poll, 10) }
-    setTimeout(poll, 10)
-    await sleep(25)
-    expect(timers()).toBeGreaterThan(0)
-    await sleep(120)
-    expect(runs).toBeGreaterThan(4)
-    expect(timers()).toBe(0)
-  })
-
-  it('keeps counting a loop whose runs change the DOM', async () => {
-    let n = 0
-    const step = () => { document.getElementById('m').append(document.createElement('p')); if (++n < 6) setTimeout(step, 10) }
-    setTimeout(step, 10)
-    await sleep(55)
-    expect(timers()).toBeGreaterThan(0)
-    await sleep(80)
-    expect(n).toBe(6)
-    expect(timers()).toBe(0)
-  })
-
-  it('never treats distinct bound callbacks as one loop', async () => {
-    let n = 0
-    const step = function () { if (++n < 6) setTimeout(step.bind(null), 10) }
-    setTimeout(step.bind(null), 10)
-    await sleep(45)
-    expect(n).toBeGreaterThan(2)
-    expect(n).toBeLessThan(6)
-    expect(timers()).toBeGreaterThan(0)
+    await sleep(30)
+    expect(snap().timers).toBe(0)
   })
 
   it('counts framework holds and, without the registry, the plugin counters', () => {
     window.__manifestMarkdownPending = 1
-    expect(window.__mnfstSettle.snapshot().counters).toBe(1)
+    expect(snap().counters).toBe(1)
     window.ManifestPending = { count: 2, labels: () => ['a', 'b'] }
-    const s = window.__mnfstSettle.snapshot()
-    expect(s.holds).toBe(2)
-    expect(s.counters).toBe(0)
+    expect(snap()).toMatchObject({ holds: 2, counters: 0 })
   })
 
-  it('counts data sources still loading', () => {
+  it('counts data sources still loading and pending anchor refreshes', () => {
     window.Alpine = { store: () => ({ _posts_state: { loading: true }, _pages_state: { loading: false } }) }
-    expect(window.__mnfstSettle.snapshot().loading).toBe(1)
+    document.body.innerHTML = '<nav x-anchors="h2"></nav>'
+    document.querySelector('nav').__manifestRenderAnchorPending = true
+    expect(snap()).toMatchObject({ loading: 1, anchors: 1 })
     delete window.Alpine
   })
 })
@@ -110,27 +77,38 @@ describe('trackNetwork', () => {
   const req = (type = 'fetch') => ({ resourceType: () => type, method: () => 'GET', url: () => 'https://x.test/' + type })
   const res = (r, ct = 'text/plain') => ({ request: () => r, headers: () => ({ 'content-type': ct }) })
 
-  it('counts a request until it finishes or fails, not when headers arrive', () => {
+  it('counts from its own CDP session, independent of page request listeners', async () => {
+    const cdp = new EventEmitter()
+    cdp.send = async () => {}
     const page = new EventEmitter()
-    const net = trackNetwork(page)
-    const a = req(), b = req()
-    page.emit('request', a)
-    page.emit('request', b)
-    page.emit('response', res(a))
+    page.createCDPSession = async () => cdp
+    const net = await trackNetwork(page)
+    page.emit('request', req())
+    expect(net.inflight()).toBe(0)
+    cdp.emit('Network.requestWillBeSent', { requestId: '1', type: 'Fetch' })
+    cdp.emit('Network.requestWillBeSent', { requestId: '2', type: 'EventSource' })
+    cdp.emit('Network.requestWillBeSent', { requestId: '3', type: 'Fetch' })
+    cdp.emit('Network.responseReceived', { requestId: '1', type: 'Fetch', response: { mimeType: 'text/plain' } })
     expect(net.inflight()).toBe(2)
-    page.emit('requestfinished', a)
-    page.emit('requestfailed', b)
+    cdp.emit('Network.responseReceived', { requestId: '3', type: 'Fetch', response: { mimeType: 'text/event-stream' } })
+    cdp.emit('Network.loadingFinished', { requestId: '1' })
     expect(net.inflight()).toBe(0)
   })
 
-  it('ignores streams and media', () => {
+  it('falls back to page events: counted until finished or failed; streams and media ignored', async () => {
     const page = new EventEmitter()
-    const net = trackNetwork(page)
-    page.emit('request', req('eventsource'))
+    page.createCDPSession = async () => { throw new Error('unsupported') }
+    const net = await trackNetwork(page)
+    const a = req(), b = req(), sse = req()
+    page.emit('request', a)
+    page.emit('request', b)
     page.emit('request', req('media'))
-    const sse = req()
     page.emit('request', sse)
+    page.emit('response', res(a))
     page.emit('response', res(sse, 'text/event-stream'))
+    expect(net.inflight()).toBe(2)
+    page.emit('requestfinished', a)
+    page.emit('requestfailed', b)
     expect(net.inflight()).toBe(0)
   })
 })
@@ -141,19 +119,45 @@ describe('waitForPageSettle', () => {
     expect(await waitForPageSettle(fakePage, idleNet, { capMs: 200 })).toBeNull()
   })
 
-  it('settles once pending work drains and the DOM is quiet', async () => {
-    setTimeout(() => { document.getElementById('m').textContent = 'loaded' }, 700)
-    const r = await waitForPageSettle(fakePage, idleNet, { quietMs: 30, capMs: 3000 })
-    expect(r.ok).toBe(true)
+  it('takes the fast path once nothing is pending and the DOM is quiet', async () => {
+    setTimeout(() => { document.getElementById('m').textContent = 'loaded' }, 50)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, capMs: 2000 })
+    expect(r).toMatchObject({ ok: true })
+    expect(r.path).toBeUndefined()
     expect(document.getElementById('m').textContent).toBe('loaded')
-    expect(r.ms).toBeGreaterThanOrEqual(690)
+  })
+
+  it('with work still pending, waits out the fixed windows in sequence (network idle, then DOM quiet)', async () => {
+    setTimeout(() => {}, 2500)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, fixedNetMs: 200, fixedQuietMs: 150, capMs: 3000 })
+    expect(r).toMatchObject({ ok: true, path: 'fixed' })
+    expect(r.ms).toBeGreaterThanOrEqual(340)
+    expect(r.ms).toBeLessThan(1200)
+  })
+
+  it('a DOM change inside the fixed window restarts the quiet part', async () => {
+    setTimeout(() => {}, 2500)
+    setTimeout(() => { document.getElementById('m').textContent = 'late' }, 250)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, fixedNetMs: 100, fixedQuietMs: 200, capMs: 3000 })
+    expect(r.path).toBe('fixed')
+    expect(r.ms).toBeGreaterThanOrEqual(440)
+  })
+
+  it('holds for anchor refreshes, up to the anchors window', async () => {
+    document.body.innerHTML = '<nav x-anchors="h2"></nav>'
+    const nav = document.querySelector('nav')
+    nav.__manifestRenderAnchorPending = true
+    native.setTimeout.call(window, () => { nav.__manifestRenderAnchorPending = false }, 150)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, anchorsMs: 2000, capMs: 3000 })
+    expect(r.ok).toBe(true)
+    expect(r.ms).toBeGreaterThanOrEqual(140)
   })
 
   it('waits for a framework hold', async () => {
     let held = true
     window.ManifestPending = { get count() { return held ? 1 : 0 }, labels: () => ['ready'] }
     native.setTimeout.call(window, () => { held = false }, 120)
-    const r = await waitForPageSettle(fakePage, idleNet, { quietMs: 20, capMs: 2000 })
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, capMs: 2000 })
     expect(r.ok).toBe(true)
     expect(r.ms).toBeGreaterThanOrEqual(110)
   })
@@ -162,50 +166,36 @@ describe('waitForPageSettle', () => {
     let open = 1
     const net = { inflight: () => open, quietMs: () => (open ? 0 : 1e6), list: () => [] }
     native.setTimeout.call(window, () => { open = 0 }, 100)
-    const r = await waitForPageSettle(fakePage, net, { quietMs: 20, capMs: 2000 })
+    const r = await waitForPageSettle(fakePage, net, { ...small, capMs: 2000 })
     expect(r.ok).toBe(true)
     expect(r.ms).toBeGreaterThanOrEqual(90)
   })
 
   it('yields a wedged hold once nothing has moved for stuckMs', async () => {
     window.ManifestPending = { count: 1, labels: () => ['ready'] }
-    const r = await waitForPageSettle(fakePage, idleNet, { quietMs: 20, stuckMs: 300, capMs: 3000 })
-    expect(r.ok).toBe(true)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, stuckMs: 300, capMs: 3000 })
+    expect(r).toMatchObject({ ok: true })
     expect(r.stuck).toBeTruthy()
     expect(r.ms).toBeGreaterThanOrEqual(290)
-  })
-
-  it('yields to a stray timer after the long quiet window', async () => {
-    // Armed outside its own callback each time: not detectable as a poll
-    native.setTimeout.call(window, function tick() { setTimeout(() => {}, 300); native.setTimeout.call(window, tick, 100) }, 0)
-    const r = await waitForPageSettle(fakePage, idleNet, { quietMs: 20, longQuietMs: 250, capMs: 3000 })
-    expect(r.ok).toBe(true)
-    expect(r.yielded).toBeTruthy()
-    expect(r.ms).toBeGreaterThanOrEqual(240)
-    expect(r.ms).toBeLessThan(1500)
   })
 
   it('retries while the page context is gone (a reload), then settles on the new document', async () => {
     let calls = 0
     const page = { evaluate: (fn, ...args) => (++calls <= 3 ? Promise.reject(new Error('Execution context was destroyed')) : Promise.resolve(fn(...args))) }
-    const r = await waitForPageSettle(page, idleNet, { quietMs: 20, capMs: 3000 })
+    const r = await waitForPageSettle(page, idleNet, { ...small, capMs: 3000 })
     expect(r.ok).toBe(true)
     expect(calls).toBeGreaterThan(3)
   })
 
   it("reports 'evaluate' when the context never comes back", async () => {
     const page = { evaluate: () => Promise.reject(new Error('Target closed')) }
-    const r = await waitForPageSettle(page, idleNet, { quietMs: 20, capMs: 400 })
-    expect(r.ok).toBe(false)
-    expect(r.reason).toBe('evaluate')
+    expect(await waitForPageSettle(page, idleNet, { ...small, capMs: 400 })).toMatchObject({ ok: false, reason: 'evaluate' })
   })
 
   it('reports the cap with what was pending', async () => {
     window.ManifestPending = { count: 1, labels: () => ['stuck'] }
     const busyNet = { inflight: () => 1, quietMs: () => 0, list: () => ['GET /slow'] }
-    const r = await waitForPageSettle(fakePage, busyNet, { quietMs: 20, capMs: 300 })
-    expect(r.ok).toBe(false)
-    expect(r.reason).toBe('cap')
-    expect(r.requests).toEqual(['GET /slow'])
+    const r = await waitForPageSettle(fakePage, busyNet, { ...small, capMs: 300 })
+    expect(r).toMatchObject({ ok: false, reason: 'cap', requests: ['GET /slow'] })
   })
 })
