@@ -19,6 +19,142 @@ function stripInjectedScripts(html, originals) {
   );
 }
 
+// Settle tracking (page side). Installed before any page script: short timers and frames still pending,
+// window.ManifestPending holds, plugin counters, loading data sources, anchor refreshes and the last DOM change.
+// A callback that re-arms itself (a loop) stops counting; stray timers yield after a long quiet window.
+function installSettleTracker() {
+  if (window.__mnfstSettle) return;
+  // Longer timers are fallbacks and cleanups, not the next step of a render
+  const SHORT_MS = 500;
+  const native = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+  const timers = new Map();
+  const frames = new Map();
+  let running = null;
+  let lastChange = Date.now();
+  const keyOf = (fn) => (typeof fn === 'function' ? Function.prototype.toString.call(fn) : String(fn)).slice(0, 400);
+  let mo = null;
+  // A callback re-arming itself is a loop (a poll or retry): tracked only while its runs change the DOM.
+  const tracked = (key) => {
+    if (running !== key) return true;
+    if (mo && mo.takeRecords().length) { lastChange = Date.now(); return true; }
+    return false;
+  };
+  const wrapCallback = (fn, key, done) => function (...args) {
+    done();
+    if (mo && mo.takeRecords().length) lastChange = Date.now();
+    const prev = running;
+    running = key;
+    try { return typeof fn === 'function' ? fn.apply(this, args) : (0, eval)(String(fn)); } finally { running = prev; }
+  };
+  window.setTimeout = function (fn, delay, ...args) {
+    if ((Number(delay) || 0) > SHORT_MS) return native.setTimeout.call(window, fn, delay, ...args);
+    const key = keyOf(fn);
+    const counted = tracked(key);
+    let id;
+    id = native.setTimeout.call(window, wrapCallback(fn, key, () => timers.delete(id)), delay, ...args);
+    if (counted) timers.set(id, key);
+    return id;
+  };
+  window.clearTimeout = function (id) { timers.delete(id); return native.clearTimeout.call(window, id); };
+  if (typeof window.requestAnimationFrame === 'function') {
+    const raf = window.requestAnimationFrame;
+    const caf = window.cancelAnimationFrame;
+    window.requestAnimationFrame = function (fn) {
+      const key = keyOf(fn);
+      const counted = tracked(key);
+      let id;
+      id = raf.call(window, wrapCallback(fn, key, () => frames.delete(id)));
+      if (counted) frames.set(id, key);
+      return id;
+    };
+    window.cancelAnimationFrame = function (id) { frames.delete(id); return caf.call(window, id); };
+  }
+  try {
+    mo = new MutationObserver(() => { lastChange = Date.now(); });
+    mo.observe(document, { childList: true, subtree: true, characterData: true });
+  } catch { mo = null; }
+  const dataLoading = () => {
+    try {
+      const d = window.Alpine?.store?.('data');
+      if (!d) return 0;
+      let n = 0;
+      for (const k of Object.keys(d)) if (k.startsWith('_') && k.endsWith('_state') && d[k]?.loading) n++;
+      return n;
+    } catch { return 0; }
+  };
+  const snapshot = () => {
+    // ManifestPending (mnfst 0.5.253+) includes the plugin counters; older frameworks expose only the counters
+    const holds = window.ManifestPending ? window.ManifestPending.count || 0 : 0;
+    const counters = window.ManifestPending ? 0 : (window.__manifestMarkdownPending || 0) + (window.__manifestUtilitiesPending || 0);
+    const loading = dataLoading();
+    let anchors = 0;
+    try { for (const el of document.querySelectorAll('[x-anchors]')) if (el.__manifestRenderAnchorPending) anchors++; } catch { /* no-op */ }
+    return { holds, counters, loading, anchors, timers: timers.size, frames: frames.size, quietMs: Date.now() - lastChange };
+  };
+  // Resolves when settled, or after sliceMs with idle:false (the caller loops).
+  const wait = (quietMs, longQuietMs, sliceMs, fresh) => new Promise((resolve) => {
+    if (fresh) lastChange = Date.now();
+    const end = Date.now() + sliceMs;
+    const tick = () => {
+      const s = snapshot();
+      // A source still 'loading' with nothing in flight is blocked (auth, a failed fetch), not working: soft
+      const hard = s.holds + s.counters;
+      const soft = s.timers + s.frames + s.loading;
+      if (!hard && ((!soft && s.quietMs >= quietMs) || s.quietMs >= longQuietMs)) {
+        return resolve(soft ? { idle: true, ...s, timerKeys: [...new Set([...timers.values(), ...frames.values()])].slice(0, 3).map((k) => k.slice(0, 80)) } : { idle: true });
+      }
+      if (Date.now() >= end) return resolve({ idle: false, ...s, labels: window.ManifestPending?.labels?.() || [], timerKeys: [...new Set(timers.values())].slice(0, 3).map((k) => k.slice(0, 80)) });
+      native.setTimeout.call(window, tick, 15);
+    };
+    tick();
+  });
+  window.__mnfstSettle = { snapshot, wait, touch: () => { lastChange = Date.now(); } };
+}
+
+// Requests in flight for one page (Node side). Long-lived requests (streams, sockets, long polls) stop counting.
+function trackNetwork(page) {
+  const open = new Map();
+  let last = Date.now();
+  const done = (r) => { if (open.delete(r)) last = Date.now(); };
+  page.on('request', (r) => { open.set(r, Date.now()); last = Date.now(); });
+  page.on('requestfinished', done);
+  page.on('requestfailed', done);
+  return {
+    inflight() {
+      const now = Date.now();
+      let n = 0;
+      for (const [r, t] of open) {
+        const age = now - t;
+        if (age > 10000 || (age > 1000 && typeof r.response === 'function' && r.response())) { open.delete(r); continue; }
+        n++;
+      }
+      return n;
+    },
+    quietMs() { return Date.now() - last; },
+    list() { return [...open.keys()].slice(0, 5).map((r) => `${r.method()} ${r.url().slice(0, 120)}`); },
+  };
+}
+
+// Settled: no request in flight, nothing pending in the page and no DOM change for quietMs. Null when the page has
+// no tracker (the caller falls back to fixed windows).
+async function waitForPageSettle(page, net, { quietMs = 80, longQuietMs = 1000, stuckMs = 3000, capMs = 15000 } = {}) {
+  const t0 = Date.now();
+  let last = null;
+  while (Date.now() - t0 < capMs) {
+    const sliceMs = Math.min(1000, capMs - (Date.now() - t0));
+    // The first slice restarts the quiet clock: work this phase triggered must not ride an earlier quiet stretch.
+    last = await page.evaluate((q, lq, s, f) => (window.__mnfstSettle ? window.__mnfstSettle.wait(q, lq, s, f) : null), quietMs, longQuietMs, sliceMs, last === null).catch(() => undefined);
+    if (last === null) return null;
+    if (last === undefined) return { ok: false, reason: 'evaluate', ms: Date.now() - t0 };
+    const netIdle = net.inflight() === 0 && net.quietMs() >= quietMs;
+    if (last.idle && netIdle) return last.timerKeys ? { ok: true, ms: Date.now() - t0, yielded: last } : { ok: true, ms: Date.now() - t0 };
+    // Holds or counters that never clear (a wedged source) yield once nothing has moved for stuckMs.
+    if (!last.idle && netIdle && net.quietMs() >= stuckMs && last.quietMs >= stuckMs) return { ok: true, ms: Date.now() - t0, stuck: last };
+    if (last.idle) await new Promise((r) => setTimeout(r, Math.max(15, quietMs - net.quietMs())));
+  }
+  return { ok: false, reason: 'cap', ms: Date.now() - t0, pending: last, requests: net.list() };
+}
+
 async function flushAlpineEffects(page) {
   // Bounded: Alpine's scheduler can swallow a nextTick callback
   await page
@@ -1756,13 +1892,18 @@ async function renderRouteDom(page, ctx) {
     window.__manifestSourceInnerHTML = sourceInnerHTML;
   });
 
-  // Requests still open when render-ready times out (diagnostics only).
-  const inflight = new Map();
-  if (traceOn) {
-    page.on('request', (r) => inflight.set(r, Date.now() - traceT0));
-    page.on('requestfinished', (r) => inflight.delete(r));
-    page.on('requestfailed', (r) => inflight.delete(r));
-  }
+  // Deterministic settle (render.settle !== 'fixed'): the tracker reports pending work instead of fixed windows.
+  const settleOn = ctx.settle !== 'fixed';
+  if (settleOn) await page.evaluateOnNewDocument(installSettleTracker);
+  const net = trackNetwork(page);
+  const settleLog = [];
+  const settle = async (phase, capMs) => {
+    if (!settleOn) return false;
+    const r = await waitForPageSettle(page, net, { capMs });
+    if (!r) return false;
+    settleLog.push({ phase, ...r });
+    return true;
+  };
   pushDebug({ path: displayPath, stage: 'start' });
   await page.goto(url, {
     waitUntil: 'domcontentloaded',
@@ -1822,25 +1963,23 @@ async function renderRouteDom(page, ctx) {
   }).catch(() => { });
   mark('boot');
 
-  // Network idle: drain pending fetches (component templates, data sources,
-  // markdown files, icon SVGs).  Larger projects need the full window;
-  // small ones settle in well under 1 second.
-  await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => { });
-  mark('netIdle');
-
-  // DOM stability after network idle (hard-capped).
-  await page.evaluate(() => {
-    return new Promise((resolve) => {
-      const observer = new MutationObserver(() => {
-        clearTimeout(stable);
-        stable = setTimeout(finish, 500);
+  // Content load: component templates, data sources, markdown, icons. Fixed windows when the page has no tracker.
+  if (!(await settle('load', 15000))) {
+    await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => { });
+    mark('netIdle');
+    await page.evaluate(() => {
+      return new Promise((resolve) => {
+        const observer = new MutationObserver(() => {
+          clearTimeout(stable);
+          stable = setTimeout(finish, 500);
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        const finish = () => { clearTimeout(cap); observer.disconnect(); resolve(); };
+        let stable = setTimeout(finish, 500);
+        const cap = setTimeout(finish, 15000);
       });
-      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-      const finish = () => { clearTimeout(cap); observer.disconnect(); resolve(); };
-      let stable = setTimeout(finish, 500);
-      const cap = setTimeout(finish, 15000);
-    });
-  }).catch(() => { });
+    }).catch(() => { });
+  }
   mark('domStable');
 
   // Set locale, dispatch route/locale events, warm data, run component
@@ -1854,24 +1993,34 @@ async function renderRouteDom(page, ctx) {
   mark('routeState');
 
   // Reactions to those events: deferred anchor refreshes, then the network
-  // and DOM going quiet again (all capped).
-  await page.evaluate(() => new Promise((resolve) => {
-    const deadline = Date.now() + 2000;
-    const t = setInterval(() => {
-      const pending = Array.from(document.querySelectorAll('[x-anchors]'))
-        .some((el) => el.__manifestRenderAnchorPending);
-      if (!pending || Date.now() >= deadline) { clearInterval(t); resolve(); }
-    }, 25);
-  })).catch(() => { });
-  await page.waitForNetworkIdle({ idleTime: 300, timeout: 5000 }).catch(() => { });
-  await page.evaluate(() => new Promise((resolve) => {
-    let stable;
-    const observer = new MutationObserver(() => { clearTimeout(stable); stable = setTimeout(finish, 300); });
-    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-    const finish = () => { clearTimeout(cap); observer.disconnect(); resolve(); };
-    stable = setTimeout(finish, 300);
-    const cap = setTimeout(finish, 5000);
-  })).catch(() => { });
+  // and DOM going quiet again (all capped). With the tracker, anchors refresh
+  // from the settled content rather than on the router's 800ms fallback.
+  if (await settle('route', 7000)) {
+    const anchors = await page.evaluate(() => {
+      const els = document.querySelectorAll('[x-anchors]');
+      for (const el of els) { try { el._x_anchorRefresh?.(); } catch { /* no-op */ } }
+      return els.length;
+    }).catch(() => 0);
+    if (anchors) await settle('anchors', 2000);
+  } else {
+    await page.evaluate(() => new Promise((resolve) => {
+      const deadline = Date.now() + 2000;
+      const t = setInterval(() => {
+        const pending = Array.from(document.querySelectorAll('[x-anchors]'))
+          .some((el) => el.__manifestRenderAnchorPending);
+        if (!pending || Date.now() >= deadline) { clearInterval(t); resolve(); }
+      }, 25);
+    })).catch(() => { });
+    await page.waitForNetworkIdle({ idleTime: 300, timeout: 5000 }).catch(() => { });
+    await page.evaluate(() => new Promise((resolve) => {
+      let stable;
+      const observer = new MutationObserver(() => { clearTimeout(stable); stable = setTimeout(finish, 300); });
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+      const finish = () => { clearTimeout(cap); observer.disconnect(); resolve(); };
+      stable = setTimeout(finish, 300);
+      const cap = setTimeout(finish, 5000);
+    })).catch(() => { });
+  }
   mark('routeSettle');
 
   // manifest:render-ready — the single authoritative signal that all data
@@ -1880,7 +2029,7 @@ async function renderRouteDom(page, ctx) {
     ? { ...(await awaitManifestRenderReady(page, { timeoutMs: ctx.pipelineTimeout, probe: traceOn })), processAllMs: started.processAllMs }
     : started;
   mark('renderReady');
-  if (traceOn && !readyResult.ok) readyResult.inflight = [...inflight].map(([r, t]) => `${t} ${r.method()} ${r.url().slice(0, 140)}`);
+  if (traceOn && !readyResult.ok) readyResult.inflight = net.list();
 
   // Flush any remaining Alpine microtask effects after the render-ready signal.
   await flushAlpineEffects(page);
@@ -2949,7 +3098,7 @@ async function renderRouteDom(page, ctx) {
     pushDebug({ path: displayPath, stage: 'pre-serialize', metrics: post });
   }
   mark('transforms');
-  if (traceOn) ctx.onTiming({ path: displayPath, total: Date.now() - traceT0, stages, ready: readyResult });
+  if (traceOn) ctx.onTiming({ path: displayPath, total: Date.now() - traceT0, stages, ready: readyResult, settle: settleLog });
   return { html, earlySnapshotUrl };
 }
 
@@ -3691,6 +3840,9 @@ export {
   scriptSrcSet,
   stripInjectedScripts,
   flushAlpineEffects,
+  installSettleTracker,
+  trackNetwork,
+  waitForPageSettle,
   logicalPathToVisibilityNormalizedPath,
   waitForManifestRenderReady,
   startManifestRouteState,

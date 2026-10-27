@@ -657,6 +657,13 @@ declare global {
         };
         Alpine?: unknown;
         __manifestLoaded?: unknown;
+        /** Pending work that will still change the page; prerender waits until count is 0. */
+        ManifestPending?: {
+            /** Hold until the work's DOM update lands; call the returned function to release. */
+            hold(label?: string): () => void;
+            readonly count: number;
+            labels(): string[];
+        };
         /** Rich text engine (rich-text plugin). */
         ManifestRichText?: {
             attach(el: Element, options?: ManifestRichTextAttachOptions): ManifestRichTextHandle | null;

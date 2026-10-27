@@ -298,6 +298,7 @@ function parseArgs() {
     if (args[i] === '--serve') { out.serve = true; continue; }
     if (args[i] === '--wait' && args[i + 1]) { out.wait = parseInt(args[++i], 10); continue; }
     if (args[i] === '--wait-after-idle' && args[i + 1]) { out.waitAfterIdle = parseInt(args[++i], 10); continue; }
+    if (args[i] === '--settle' && args[i + 1]) { out.settle = args[++i]; continue; }
     if (args[i] === '--concurrency' && args[i + 1]) { out.concurrency = parseInt(args[++i], 10); continue; }
     if (args[i] === '--retries' && args[i + 1]) { out.retries = parseInt(args[++i], 10); continue; }
     if (args[i] === '--incremental') { out.incremental = true; continue; }
@@ -385,6 +386,8 @@ function resolveConfig() {
     redirects: Array.isArray(pre.redirects) ? pre.redirects : [],
     wait: cli.wait ?? pre.wait ?? null,
     waitAfterIdle: resolveWaitAfterIdle(cli.waitAfterIdle, pre.waitAfterIdle),
+    // 'fixed': the older fixed settle windows instead of the pending-work tracker
+    settle: (cli.settle ?? pre.settle) === 'fixed' ? 'fixed' : 'auto',
     // Default concurrency: 2.  Chromium per-page memory overhead is large and
     // our hydration source-attribute map adds more per page.  On big sites
     // (>100 routes) higher concurrency crashes the browser with OOM/target
@@ -3222,6 +3225,7 @@ async function runPrerender(config) {
         liveUrl: config.liveUrl,
         pipelineTimeout: config.pipelineTimeout,
         waitAfterIdle: config.waitAfterIdle,
+        settle: config.settle,
         seo: config.seo,
         renderedPaths: pathList.filter((p) => p !== NOT_FOUND_PATH),
         localeSubstitution: config.localeSubstitution,

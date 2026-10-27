@@ -693,6 +693,12 @@
                     "default": 0,
                     "description": "Extra milliseconds after a page settles, before its og image and snapshot — for widgets that fill in late without network or DOM activity. --wait-after-idle overrides."
                 },
+                "settle": {
+                    "type": "string",
+                    "enum": ["auto", "fixed"],
+                    "default": "auto",
+                    "description": "How a page counts as settled before its snapshot. auto: when no request is in flight, no short timer, frame, data load or framework hold is pending, and the DOM has been quiet briefly. fixed: the older fixed quiet windows (about 2 seconds per page). --settle overrides."
+                },
                 "blockRequests": {
                     "type": "array",
                     "items": {
