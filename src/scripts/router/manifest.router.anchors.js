@@ -220,8 +220,8 @@ function initializeAnchors() {
                 if (anchors.length > 0) {
                     updateAnchors(anchors);
                     return true;
-                } else if (attempt < maxAttempts && !window.__manifestRender) {
-                    // Prerender refreshes anchors once content settles; no need to poll for it
+                } else if (attempt < maxAttempts && window.__manifestRenderSettle !== 'auto') {
+                    // mnfst-render's auto settle re-extracts anchors once content settles; no need to poll for it
                     setTimeout(() => {
                         attemptExtraction(attempt + 1, maxAttempts);
                     }, attempt * 200); // Progressive delay: 200ms, 400ms, 600ms, etc.

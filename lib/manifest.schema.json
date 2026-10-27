@@ -697,7 +697,7 @@
                     "type": "string",
                     "enum": ["auto", "fixed"],
                     "default": "auto",
-                    "description": "How a page counts as settled before its snapshot. auto: as soon as no request is in flight, no timer under 3s, frame, data load or framework hold is pending, and the DOM has been quiet briefly; while anything is still pending, the fixed windows below, so auto is never earlier than fixed. fixed: the older fixed quiet windows (about 2 seconds per page). Content a custom script writes after a longer timer needs waitAfterIdle. --settle overrides."
+                    "description": "How a page counts as settled before its snapshot. auto: snapshots early only when no request is in flight and no timer due within 3s, interval, animation frame, idle callback, running CSS animation, open stream or socket, worker, cross-origin frame, data load or framework hold is pending; otherwise it uses the fixed waits. fixed: the fixed waits only (network idle, then DOM quiet; about 2 seconds per page). Use waitAfterIdle for content a script adds after a longer timer. --settle overrides."
                 },
                 "blockRequests": {
                     "type": "array",

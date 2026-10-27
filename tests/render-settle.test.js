@@ -1,19 +1,20 @@
 /**
  * @vitest-environment happy-dom
  *
- * Render settle: the page-side tracker (timers under 3s, frames, holds, plugin
- * counters, loading data, anchor refreshes, DOM changes), the Node-side request
- * counter and the wait that replaces the fixed quiet windows. With nothing
- * pending a page settles after a short quiet window; with anything pending it
- * uses the fixed engine's own windows (network idle, then DOM quiet). A lost
- * page context retries, then reports 'evaluate' for the fixed-window fallback.
+ * Render settle: the page-side tracker (timers, intervals, frames, idle
+ * callbacks, streams/sockets/workers, holds, plugin counters, loading data,
+ * anchor refreshes, DOM changes), the Node-side request counter and the wait.
+ * The fast path needs the page provably quiet; anything pending uses the fixed
+ * engine's windows (network idle or its timeout, then DOM quiet or its cap). A
+ * lost page context retries, then reports 'evaluate' for the fixed fallback.
  * Real-browser cases live in tests/e2e/render-settle.e2e.mjs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { installSettleTracker, trackNetwork, waitForPageSettle } from '../src/scripts/manifest.render.page.mjs'
 
-const native = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout, clearInterval: window.clearInterval, raf: window.requestAnimationFrame, caf: window.cancelAnimationFrame }
+const saved = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'EventSource', 'WebSocket', 'Worker', 'SharedWorker']
+const native = Object.fromEntries(saved.map((k) => [k, window[k]]))
 const sleep = (ms) => new Promise((r) => native.setTimeout.call(window, r, ms))
 
 beforeEach(() => {
@@ -22,31 +23,40 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  window.setTimeout = native.setTimeout
-  window.clearTimeout = native.clearTimeout
-  window.clearInterval = native.clearInterval
-  window.requestAnimationFrame = native.raf
-  window.cancelAnimationFrame = native.caf
-  delete window.__mnfstSettle
-  delete window.ManifestPending
-  delete window.__manifestMarkdownPending
-  delete window.__manifestUtilitiesPending
+  for (const k of saved) window[k] = native[k]
+  for (const k of ['__mnfstSettle', '__manifestRenderSettle', 'ManifestPending', '__manifestMarkdownPending', '__manifestUtilitiesPending']) delete window[k]
 })
 
 const fakePage = { evaluate: (fn, ...args) => Promise.resolve(fn(...args)) }
 const idleNet = { inflight: () => 0, quietMs: () => 1e6, list: () => [] }
 const snap = () => window.__mnfstSettle.snapshot()
-const small = { quietMs: 20, fixedNetMs: 100, fixedQuietMs: 100 }
+const small = { quietMs: 20, fixedNetMs: 100, fixedNetTimeoutMs: 1000, fixedQuietMs: 100, fixedDomCapMs: 1000 }
 
 describe('settle tracker', () => {
-  it('counts timers under 3s, not 3s+ fallbacks or background callbacks', () => {
+  it('marks the page as rendered by auto settle', () => {
+    expect(window.__manifestRenderSettle).toBe('auto')
+  })
+
+  it('counts timers due within 3s, and a later one once it gets that close', async () => {
     setTimeout(() => {}, 30)
-    setTimeout(() => {}, 2999)
-    setTimeout(() => {}, 3000)
+    setTimeout(() => {}, 2990)
+    setTimeout(() => {}, 3100)
     const bg = () => {}
     bg.__manifestBackground = true
     setTimeout(bg, 100)
     expect(snap().timers).toBe(2)
+    await sleep(150)
+    expect(snap().timers).toBe(2)
+  })
+
+  it('counts live intervals under 3s until cleared through either clear API', () => {
+    const a = setInterval(() => {}, 100)
+    const b = setInterval(() => {}, 200)
+    setInterval(() => {}, 5000)
+    expect(snap().intervals).toBe(2)
+    clearInterval(a)
+    clearTimeout(b)
+    expect(snap().intervals).toBe(0)
   })
 
   it('forgets a timer when it fires, or is cleared through either clear API', async () => {
@@ -55,6 +65,19 @@ describe('settle tracker', () => {
     clearInterval(setTimeout(() => {}, 100))
     await sleep(30)
     expect(snap().timers).toBe(0)
+  })
+
+  it('counts open streams and live workers until closed', () => {
+    window.EventSource = native.EventSource = class { close() {} addEventListener() {} }
+    window.Worker = native.Worker = class { terminate() {} addEventListener() {} }
+    delete window.__mnfstSettle
+    installSettleTracker()
+    const es = new window.EventSource('/s')
+    const w = new window.Worker('/w.js')
+    expect(snap().live).toBe(2)
+    es.close()
+    w.terminate()
+    expect(snap().live).toBe(0)
   })
 
   it('counts framework holds and, without the registry, the plugin counters', () => {
@@ -74,41 +97,59 @@ describe('settle tracker', () => {
 })
 
 describe('trackNetwork', () => {
-  const req = (type = 'fetch') => ({ resourceType: () => type, method: () => 'GET', url: () => 'https://x.test/' + type })
+  const req = (id, type = 'fetch', extra = {}) => ({ id, resourceType: () => type, method: () => 'GET', url: () => 'https://x.test/' + id, ...extra })
   const res = (r, ct = 'text/plain') => ({ request: () => r, headers: () => ({ 'content-type': ct }) })
+  const pageWith = (cdp) => {
+    const page = new EventEmitter()
+    page.createCDPSession = cdp ? async () => cdp : async () => { throw new Error('unsupported') }
+    return page
+  }
 
-  it('counts from its own CDP session, independent of page request listeners', async () => {
+  it('starts from CDP or page events and finishes from either, by request id', async () => {
     const cdp = new EventEmitter()
     cdp.send = async () => {}
-    const page = new EventEmitter()
-    page.createCDPSession = async () => cdp
+    const page = pageWith(cdp)
     const net = await trackNetwork(page)
-    page.emit('request', req())
-    expect(net.inflight()).toBe(0)
     cdp.emit('Network.requestWillBeSent', { requestId: '1', type: 'Fetch' })
-    cdp.emit('Network.requestWillBeSent', { requestId: '2', type: 'EventSource' })
-    cdp.emit('Network.requestWillBeSent', { requestId: '3', type: 'Fetch' })
-    cdp.emit('Network.responseReceived', { requestId: '1', type: 'Fetch', response: { mimeType: 'text/plain' } })
+    page.emit('request', req('1'))
+    page.emit('request', req('w'))
     expect(net.inflight()).toBe(2)
-    cdp.emit('Network.responseReceived', { requestId: '3', type: 'Fetch', response: { mimeType: 'text/event-stream' } })
-    cdp.emit('Network.loadingFinished', { requestId: '1' })
+    page.emit('requestfinished', req('1'))
+    cdp.emit('Network.loadingFinished', { requestId: 'w' })
     expect(net.inflight()).toBe(0)
   })
 
-  it('falls back to page events: counted until finished or failed; streams and media ignored', async () => {
-    const page = new EventEmitter()
-    page.createCDPSession = async () => { throw new Error('unsupported') }
+  it('drops the old document requests when the main frame navigates', async () => {
+    const cdp = new EventEmitter()
+    cdp.send = async () => {}
+    const net = await trackNetwork(pageWith(cdp))
+    cdp.emit('Network.requestWillBeSent', { requestId: 'D1', loaderId: 'D1', type: 'Document', frameId: 'main' })
+    cdp.emit('Network.requestWillBeSent', { requestId: 'f', type: 'Fetch' })
+    cdp.emit('Network.requestWillBeSent', { requestId: 'D2', loaderId: 'D2', type: 'Document', frameId: 'main' })
+    cdp.emit('Network.loadingFinished', { requestId: 'D2' })
+    expect(net.inflight()).toBe(0)
+  })
+
+  it('ignores streams and media', async () => {
+    const cdp = new EventEmitter()
+    cdp.send = async () => {}
+    const page = pageWith(cdp)
     const net = await trackNetwork(page)
-    const a = req(), b = req(), sse = req()
+    cdp.emit('Network.requestWillBeSent', { requestId: '2', type: 'EventSource' })
+    page.emit('request', req('m', 'media'))
+    cdp.emit('Network.requestWillBeSent', { requestId: '3', type: 'Fetch' })
+    cdp.emit('Network.responseReceived', { requestId: '3', type: 'Fetch', response: { mimeType: 'text/event-stream' } })
+    expect(net.inflight()).toBe(0)
+  })
+
+  it('works from page events alone when CDP sessions are unavailable', async () => {
+    const page = pageWith(null)
+    const net = await trackNetwork(page)
+    const a = req('a')
     page.emit('request', a)
-    page.emit('request', b)
-    page.emit('request', req('media'))
-    page.emit('request', sse)
     page.emit('response', res(a))
-    page.emit('response', res(sse, 'text/event-stream'))
-    expect(net.inflight()).toBe(2)
-    page.emit('requestfinished', a)
-    page.emit('requestfailed', b)
+    expect(net.inflight()).toBe(1)
+    page.emit('requestfailed', a)
     expect(net.inflight()).toBe(0)
   })
 })
@@ -127,8 +168,8 @@ describe('waitForPageSettle', () => {
     expect(document.getElementById('m').textContent).toBe('loaded')
   })
 
-  it('with work still pending, waits out the fixed windows in sequence (network idle, then DOM quiet)', async () => {
-    setTimeout(() => {}, 2500)
+  it('with work pending, waits out the fixed windows in sequence (network idle, then DOM quiet)', async () => {
+    setInterval(() => {}, 50)
     const r = await waitForPageSettle(fakePage, idleNet, { ...small, fixedNetMs: 200, fixedQuietMs: 150, capMs: 3000 })
     expect(r).toMatchObject({ ok: true, path: 'fixed' })
     expect(r.ms).toBeGreaterThanOrEqual(340)
@@ -136,11 +177,21 @@ describe('waitForPageSettle', () => {
   })
 
   it('a DOM change inside the fixed window restarts the quiet part', async () => {
-    setTimeout(() => {}, 2500)
+    setInterval(() => {}, 50)
     setTimeout(() => { document.getElementById('m').textContent = 'late' }, 250)
     const r = await waitForPageSettle(fakePage, idleNet, { ...small, fixedNetMs: 100, fixedQuietMs: 200, capMs: 3000 })
     expect(r.path).toBe('fixed')
     expect(r.ms).toBeGreaterThanOrEqual(440)
+  })
+
+  it('treats the network as idle after the fixed timeout, then caps DOM churn', async () => {
+    const busy = { inflight: () => 1, quietMs: () => 0, list: () => [] }
+    const churn = setInterval(() => { document.getElementById('m').textContent = String(Math.random()) }, 20)
+    const r = await waitForPageSettle(fakePage, busy, { ...small, fixedNetTimeoutMs: 300, fixedDomCapMs: 300, capMs: 5000 })
+    clearInterval(churn)
+    expect(r).toMatchObject({ ok: true, path: 'fixed' })
+    expect(r.ms).toBeGreaterThanOrEqual(580)
+    expect(r.ms).toBeLessThan(1500)
   })
 
   it('holds for anchor refreshes, up to the anchors window', async () => {
@@ -170,6 +221,7 @@ describe('waitForPageSettle', () => {
     expect(r.ok).toBe(true)
     expect(r.ms).toBeGreaterThanOrEqual(90)
   })
+
 
   it('yields a wedged hold once nothing has moved for stuckMs', async () => {
     window.ManifestPending = { count: 1, labels: () => ['ready'] }
