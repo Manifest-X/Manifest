@@ -612,6 +612,34 @@ async function runAssertions() {
       '$x-driven x-for renders exactly 2 plans (no duplicates)',
       `got ${xforDataState.spanCount}: ${JSON.stringify(xforDataState.spanTexts)}`);
 
+    // ------- Test: x-for clone walk stops at the list's real end ------------
+    // Regression: the loop-binding strip walked same-tag siblings past the clones and froze a
+    // following <button>'s x-text because it named the loop var (as an arrow param). The $x
+    // freeze pass likewise froze a $x expression that also reads scope state.
+    const overrunOut = await readFile(join(FIXTURE_OUT_DIR, 'index.html'), 'utf8');
+    const tagOf = (id) => (overrunOut.match(new RegExp(`<[a-z]+[^>]*id="${id}"[^>]*>`)) || [''])[0];
+    assert(/\sx-text=/.test(tagOf('overrun-label')),
+      'same-tag sibling after x-for clones keeps its x-text in output', tagOf('overrun-label'));
+    assert(/\sx-text=/.test(tagOf('xfree-label')),
+      '$x x-text that reads scope state keeps its x-text in output', tagOf('xfree-label'));
+    const overrunBefore = await page.evaluate(() => ({
+      items: document.querySelectorAll('#xfor-overrun-test .overrun-item').length,
+      label: document.getElementById('overrun-label')?.textContent.trim(),
+      xfree: document.getElementById('xfree-label')?.textContent.trim(),
+    }));
+    await click('#overrun-follow');
+    await new Promise((r) => setTimeout(r, 200));
+    const overrunAfter = await page.evaluate(() => ({
+      label: document.getElementById('overrun-label')?.textContent.trim(),
+      xfree: document.getElementById('xfree-label')?.textContent.trim(),
+    }));
+    assert(overrunBefore.items === 3 && overrunBefore.label === 'B' && overrunAfter.label === 'A',
+      'same-tag sibling after x-for clones stays reactive at runtime',
+      `before ${JSON.stringify(overrunBefore)}, after ${JSON.stringify(overrunAfter)}`);
+    assert(overrunBefore.xfree === 'Pro' && overrunAfter.xfree === 'Starter',
+      '$x x-text that reads scope state stays reactive at runtime',
+      `before ${JSON.stringify(overrunBefore)}, after ${JSON.stringify(overrunAfter)}`);
+
     // ------- Test: prerendered HTML has no duplicate SVGs inside icon elements --
     // Regression: when hydration removed display:none from x-show RTL icons,
     // both LTR and RTL icon variants became visible, appearing as duplicated

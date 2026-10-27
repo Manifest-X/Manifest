@@ -605,13 +605,33 @@ function isHydrateMarkedAttrs(attrsStr) {
   return /\sdata-hydrate(?:-id)?(?:\s*=|[\s>])/i.test(attrsStr);
 }
 
-//    Do NOT strip when expression is user-driven: $route(, $search, $query. Those stay so Alpine can update.
+const SCOPE_FREE_IDENTIFIERS = new Set([
+  '$x', 'true', 'false', 'null', 'undefined', 'typeof', 'instanceof', 'in', 'of', 'new', 'void',
+  'Math', 'JSON', 'Number', 'String', 'Boolean', 'Object', 'Array', 'Date', 'Intl',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURIComponent', 'decodeURIComponent', 'NaN', 'Infinity',
+]);
+
+// Identifiers a serialized attribute expression reads from Alpine scope (not $x, property names, strings or arrow params).
+function scopeIdentifiers(expr) {
+  let src = String(expr || '')
+    .replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  src = src.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\$]|\$(?!\{))*`/g, '""');
+  const params = new Set();
+  for (const m of src.matchAll(/(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>/g)) {
+    for (const p of (m[1] ?? m[2] ?? '').match(/[A-Za-z_$][\w$]*/g) || []) params.add(p);
+  }
+  return (src.match(/(?<![\w$.])[A-Za-z_$][\w$]*/g) || [])
+    .filter((id) => !params.has(id) && !SCOPE_FREE_IDENTIFIERS.has(id));
+}
+
+//    Do NOT strip when expression is user-driven: $route(, $search, $query, or reads any other scope
+//    state (e.g. $x.docs.find(d => d.key === family)). Those stay so Alpine can update.
 //    Same rule for :attr in stripPrerenderDynamicBindings: bindings with $x are kept (content stays for SEO).
 function stripPrerenderedXDataDirectives(html) {
   function isStatic(expr) {
     if (expr.includes('$route(')) return false;
     if (expr.includes('$search') || expr.includes('$query')) return false;
-    return true;
+    return scopeIdentifiers(expr).length === 0;
   }
   return html.replace(/<(\w+)([^>]*)>/g, (full, tag, attrs) => {
     if (isHydrateMarkedAttrs(attrs)) return full;
@@ -1902,13 +1922,19 @@ async function renderRouteDom(page, ctx) {
   if (debugOn) {
     const before = await page.evaluate(() => {
       const templates = Array.from(document.querySelectorAll('template[x-for]'));
+      const ownClones = (tpl) => {
+        const lookup = tpl._x_lookup;
+        if (!lookup || typeof lookup !== 'object') return null;
+        try { return new Set(lookup instanceof Map ? lookup.values() : Object.values(lookup)); } catch { return null; }
+      };
       const entries = templates.slice(0, 60).map((tpl) => {
         const first = tpl.content?.firstElementChild;
         const tag = first ? first.tagName : null;
         const cls = first ? (first.getAttribute('class') || '') : '';
+        const own = ownClones(tpl);
         let cloneCount = 0;
         let next = tpl.nextElementSibling;
-        while (next && (!tag || next.tagName === tag)) {
+        while (next && (!tag || next.tagName === tag) && (!own || own.has(next))) {
           if (tag && (next.getAttribute('class') || '') !== cls) break;
           cloneCount++;
           next = next.nextElementSibling;
@@ -1974,9 +2000,10 @@ async function renderRouteDom(page, ctx) {
         const first = tpl.content?.firstElementChild;
         const tag = first ? first.tagName : null;
         const cls = first ? (first.getAttribute('class') || '') : '';
+        const own = ownClones(tpl);
         let cloneCount = 0;
         let next = tpl.nextElementSibling;
-        while (next && (!tag || next.tagName === tag)) {
+        while (next && (!tag || next.tagName === tag) && (!own || own.has(next))) {
           if (tag && (next.getAttribute('class') || '') !== cls) break;
           cloneCount++;
           next = next.nextElementSibling;
@@ -2313,6 +2340,25 @@ async function renderRouteDom(page, ctx) {
     });
   }
 
+  // Stamp each x-for's clones from Alpine's own bookkeeping (_x_lookup) so the passes below stop at the
+  // list's real end, not at the next same-tag sibling. Stamps survive cloneNode; removed before serialization.
+  await page.evaluate(() => {
+    const A = window.Alpine;
+    const runBatch = typeof A?.mutateDom === 'function' ? (fn) => A.mutateDom(fn) : (fn) => fn();
+    runBatch(() => {
+      document.querySelectorAll('template[x-for]').forEach((tpl) => {
+        const lookup = tpl._x_lookup;
+        if (!lookup || typeof lookup !== 'object') return;
+        let els;
+        try { els = lookup instanceof Map ? [...lookup.values()] : Object.values(lookup); } catch { return; }
+        window.__mnfstXforSeq = (window.__mnfstXforSeq || 0) + 1;
+        const key = 'f' + window.__mnfstXforSeq;
+        tpl.setAttribute('data-mnfst-xfor', key);
+        els.forEach((el) => { if (el?.nodeType === 1) el.setAttribute('data-mnfst-xfor-of', key); });
+      });
+    });
+  });
+
   // x-for lists: keep static lists in the HTML for SEO; collapse only dynamic lists so Alpine re-renders.
   // Explicit: data-prerender="dynamic"|"skip". Inferred: x-for uses $search/$query,
   // $url, $auth, or iterates over getter names (filtered*, results, searchResults). See docs prerender + local.data.
@@ -2352,10 +2398,12 @@ async function renderRouteDom(page, ctx) {
         if (first) {
           const tag = first.tagName;
           const cls = first.getAttribute('class') || '';
+          const own = tpl.getAttribute('data-mnfst-xfor');
           let next = tpl.nextElementSibling;
           let generatedCount = 0;
           while (next) {
             if (next.tagName !== tag) break;
+            if (own && next.getAttribute('data-mnfst-xfor-of') !== own) break;
             if (!isStatic) {
               const sameClass = (next.getAttribute('class') || '') === cls;
               if (!sameClass) break;
@@ -2374,11 +2422,12 @@ async function renderRouteDom(page, ctx) {
       if (!first) return;
       const tag = first.tagName;
       const cls = first.getAttribute('class') || '';
+      const own = tpl.getAttribute('data-mnfst-xfor');
       let next = tpl.nextElementSibling;
       while (next) {
         const sameTag = next.tagName === tag;
         const sameClass = (next.getAttribute('class') || '') === cls;
-        const isLikelyClone = sameTag && sameClass;
+        const isLikelyClone = sameTag && sameClass && (!own || next.getAttribute('data-mnfst-xfor-of') === own);
         const toRemove = next;
         next = next.nextElementSibling;
         if (isLikelyClone) toRemove.remove();
@@ -2424,8 +2473,9 @@ async function renderRouteDom(page, ctx) {
       if (!first) return;
       const tag = first.tagName;
       const cls = first.getAttribute('class') || '';
+      const own = tpl.getAttribute('data-mnfst-xfor');
       let n = tpl.nextElementSibling;
-      while (n && n.tagName === tag && (n.getAttribute('class') || '') === cls) {
+      while (n && n.tagName === tag && (n.getAttribute('class') || '') === cls && (!own || n.getAttribute('data-mnfst-xfor-of') === own)) {
         // Only process clones that contain data-hydrate descendants
         if (
           !n.hasAttribute('x-data') &&
@@ -2545,10 +2595,12 @@ async function renderRouteDom(page, ctx) {
         const first = tpl.content?.firstElementChild;
         if (!first) return;
         const tag = first.tagName;
+        const own = tpl.getAttribute('data-mnfst-xfor');
 
         let next = tpl.nextElementSibling;
         while (next) {
           if (next.tagName !== tag) break;
+          if (own && next.getAttribute('data-mnfst-xfor-of') !== own) break;
           stripLoopBindings(next, loopVars);
           next = next.nextElementSibling;
         }
@@ -2600,8 +2652,9 @@ async function renderRouteDom(page, ctx) {
           if (first) {
             const tag = first.tagName;
             const cls = first.getAttribute('class') || '';
+            const own = tpl.getAttribute('data-mnfst-xfor');
             let n = tpl.nextElementSibling;
-            while (n && n.tagName === tag && (n.getAttribute('class') || '') === cls) {
+            while (n && n.tagName === tag && (n.getAttribute('class') || '') === cls && (!own || n.getAttribute('data-mnfst-xfor-of') === own)) {
               const next = n.nextElementSibling;
               n.remove();
               n = next;
@@ -2622,8 +2675,9 @@ async function renderRouteDom(page, ctx) {
         }
         const tag = first.tagName;
         const cls = first.getAttribute('class') || '';
+        const own = tpl.getAttribute('data-mnfst-xfor');
         let n = tpl.nextElementSibling;
-        while (n && n.tagName === tag) {
+        while (n && n.tagName === tag && (!own || n.getAttribute('data-mnfst-xfor-of') === own)) {
           // Same rationale as the marking pass: under data-static, relax
           // class match (Alpine's :class evaluation on clones often differs
           // from the template's static class).
@@ -2673,11 +2727,13 @@ async function renderRouteDom(page, ctx) {
       const first = tpl.content?.firstElementChild;
       if (!first) return;
       const tag = first.tagName;
+      const own = tpl.getAttribute('data-mnfst-xfor');
 
       let next = tpl.nextElementSibling;
       while (next) {
         const sameTag = next.tagName === tag;
         if (!sameTag) break;
+        if (own && next.getAttribute('data-mnfst-xfor-of') !== own) break;
 
         const referencesLoopScope = elementReferencesLoopScope(next, loopVars);
 
@@ -2758,8 +2814,9 @@ async function renderRouteDom(page, ctx) {
       const first = tpl.content && tpl.content.firstElementChild;
       if (!first) return;
       const cloneTag = first.tagName;
+      const own = tpl.getAttribute('data-mnfst-xfor');
       let n = tpl.nextElementSibling;
-      while (n && n.tagName === cloneTag) {
+      while (n && n.tagName === cloneTag && (!own || n.getAttribute('data-mnfst-xfor-of') === own)) {
         const next = n.nextElementSibling;
         tag(n);
         n = next;
@@ -2768,6 +2825,10 @@ async function renderRouteDom(page, ctx) {
     document.querySelectorAll('template[x-if]').forEach((tpl) => {
       if (tpl.hasAttribute('data-hydrate') || tpl.closest('[data-hydrate]')) return;
       tag(tpl._x_currentIfEl);
+    });
+    document.querySelectorAll('[data-mnfst-xfor], [data-mnfst-xfor-of]').forEach((el) => {
+      el.removeAttribute('data-mnfst-xfor');
+      el.removeAttribute('data-mnfst-xfor-of');
     });
 
     // Clones inside CLOSED popovers carry no crawler value and are wiped
