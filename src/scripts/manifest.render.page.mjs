@@ -240,45 +240,67 @@ function installSettleTracker() {
 // its own (request interception handlers, which Puppeteer runs one after another, can't delay them) and from page
 // events (which also cover workers); finishes from either. A new main-frame document drops the old one's requests.
 // Streams and media never finish and don't count (the page tracker counts open streams). A request that never
-// finishes keeps the fast path closed; the fixed windows' own timeouts bound the wait.
+// finishes keeps the fast path closed. The fixed windows count a request as idle once its headers arrive, as
+// Puppeteer's waitForNetworkIdle does, so a response that streams forever can't hold them.
 async function trackNetwork(page) {
   const open = new Map();
+  const t0 = Date.now();
   let last = Date.now();
+  let lastHeaders = Date.now();
   let mainFrame = null;
-  const add = (id) => { if (!open.has(id)) open.set(id, Date.now()); last = Date.now(); };
-  const done = (id) => { if (open.delete(id)) last = Date.now(); };
+  const add = (id, method, url) => {
+    if (!open.has(id)) open.set(id, { at: Date.now(), method, url, headers: false });
+    last = lastHeaders = Date.now();
+  };
+  const done = (id) => { if (open.delete(id)) last = lastHeaders = Date.now(); };
+  const responded = (id) => {
+    const o = open.get(id);
+    if (o && !o.headers) { o.headers = true; lastHeaders = Date.now(); }
+  };
   const endlessType = (t) => /^(eventsource|websocket|media)$/i.test(t || '');
   const endlessMime = (m) => /text\/event-stream|^(audio|video)\//i.test(m || '');
-  const navigated = (frameId, id) => {
+  const navigated = (frameId, id, method, url) => {
     if (mainFrame === null) mainFrame = frameId;
-    else if (frameId === mainFrame) { open.clear(); last = Date.now(); }
-    add(id);
+    else if (frameId === mainFrame) { open.clear(); last = lastHeaders = Date.now(); }
+    add(id, method, url);
   };
   try {
     const cdp = await page.createCDPSession();
     // Events only: no response bodies kept (the page's own session already buffers them)
     await cdp.send('Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
     cdp.on('Network.requestWillBeSent', (e) => {
-      if (e.type === 'Document' && e.requestId === e.loaderId && !e.redirectResponse) return navigated(e.frameId, e.requestId);
-      if (!endlessType(e.type)) add(e.requestId);
+      const method = e.request?.method, url = e.request?.url;
+      if (e.type === 'Document' && e.requestId === e.loaderId && !e.redirectResponse) return navigated(e.frameId, e.requestId, method, url);
+      if (!endlessType(e.type)) add(e.requestId, method, url);
     });
-    cdp.on('Network.responseReceived', (e) => { if (endlessType(e.type) || endlessMime(e.response?.mimeType)) done(e.requestId); });
+    cdp.on('Network.responseReceived', (e) => {
+      if (endlessType(e.type) || endlessMime(e.response?.mimeType)) done(e.requestId);
+      else responded(e.requestId);
+    });
     cdp.on('Network.loadingFinished', (e) => done(e.requestId));
     cdp.on('Network.loadingFailed', (e) => done(e.requestId));
   } catch { /* page events only */ }
   page.on('request', (r) => {
     try {
-      if (r.isNavigationRequest?.() && r.frame?.() === page.mainFrame?.() && !r.redirectChain?.().length) return void navigated('main', r.id);
-      if (!endlessType(r.resourceType?.())) add(r.id);
+      if (r.isNavigationRequest?.() && r.frame?.() === page.mainFrame?.() && !r.redirectChain?.().length) return void navigated('main', r.id, r.method?.(), r.url?.());
+      if (!endlessType(r.resourceType?.())) add(r.id, r.method?.(), r.url?.());
     } catch { /* no-op */ }
   });
-  page.on('response', (res) => { try { if (endlessMime(res.headers?.()['content-type'])) done(res.request().id); } catch { /* no-op */ } });
+  page.on('response', (res) => {
+    try {
+      const id = res.request().id;
+      if (endlessMime(res.headers?.()['content-type'])) done(id); else responded(id);
+    } catch { /* no-op */ }
+  });
   page.on('requestfinished', (r) => done(r.id));
   page.on('requestfailed', (r) => done(r.id));
   return {
     inflight() { return open.size; },
     quietMs() { return Date.now() - last; },
-    list() { return [...open.keys()].slice(0, 5); },
+    // For the fixed windows: requests still waiting for headers, and time since the last start or headers
+    awaitingHeaders() { let n = 0; for (const o of open.values()) if (!o.headers) n++; return n; },
+    headersQuietMs() { return Date.now() - lastHeaders; },
+    list() { return [...open.values()].slice(0, 5).map((o) => `${o.at - t0} ${o.method || '?'} ${String(o.url || '').slice(0, 140)}`); },
   };
 }
 
@@ -334,7 +356,7 @@ async function waitForPageSettle(page, net, {
     if (r.anchorsWait) continue;
     // Fixed engine: network idle for fixedNetMs from when it could start (or its timeout), then DOM quiet (or its cap)
     if (netIdleAt === null) {
-      const idleFor = inflight ? 0 : Math.min(net.quietMs(), r.openMs);
+      const idleFor = net.awaitingHeaders() ? 0 : Math.min(net.headersQuietMs(), r.openMs);
       if (idleFor >= fixedNetMs) netIdleAt = now - (idleFor - fixedNetMs);
       else if (r.openMs >= fixedNetTimeoutMs) netIdleAt = now - (r.openMs - fixedNetTimeoutMs);
     }

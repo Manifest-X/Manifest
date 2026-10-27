@@ -657,13 +657,13 @@ declare global {
         };
         Alpine?: unknown;
         __manifestLoaded?: unknown;
-        /** Pending work that will still change the page; prerender waits until count is 0. */
+        /** Pending work that will still change the page; mnfst-render's auto settle won't snapshot early while count > 0. */
         ManifestPending?: {
             /** Hold until the work's DOM update lands; call the returned function to release. */
             hold(label?: string): () => void;
             readonly count: number;
             labels(): string[];
-            /** Mark a timer callback as housekeeping that never changes the page (prerender won't wait for it). */
+            /** Mark a timer callback as housekeeping that never changes the page (auto settle ignores it). */
             background<T extends Function>(fn: T): T;
         };
         /** Rich text engine (rich-text plugin). */

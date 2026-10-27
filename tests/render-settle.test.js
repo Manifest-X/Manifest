@@ -33,7 +33,15 @@ afterEach(() => {
 })
 
 const fakePage = { evaluate: (fn, ...args) => Promise.resolve(fn(...args)) }
-const idleNet = { inflight: () => 0, quietMs: () => 1e6, list: () => [] }
+// Fake request counter: open requests (and how many still await headers) and quiet times
+const fakeNet = ({ open = 0, awaiting = open, quiet = 1e6, headersQuiet = quiet, list = [] } = {}) => ({
+  inflight: typeof open === 'function' ? open : () => open,
+  awaitingHeaders: typeof awaiting === 'function' ? awaiting : () => awaiting,
+  quietMs: typeof quiet === 'function' ? quiet : () => quiet,
+  headersQuietMs: typeof headersQuiet === 'function' ? headersQuiet : () => headersQuiet,
+  list: () => list,
+})
+const idleNet = fakeNet()
 const snap = () => window.__mnfstSettle.snapshot()
 const small = { quietMs: 20, fixedNetMs: 100, fixedNetTimeoutMs: 1000, fixedQuietMs: 100, fixedDomCapMs: 1000 }
 
@@ -61,6 +69,7 @@ describe('settle tracker', () => {
     expect(snap().nextDueMs).toBeGreaterThan(100)
     clearTimeout(b)
     expect(snap().nextDueMs).toBeGreaterThan(4000)
+    expect(snap().nextDueMs).toBeLessThanOrEqual(5000)
     clearInterval(c)
     expect(snap().nextDueMs).toBe(Infinity)
   })
@@ -165,6 +174,19 @@ describe('trackNetwork', () => {
     expect(net.inflight()).toBe(0)
   })
 
+  it('reports requests still awaiting headers, and the time since the last start or headers', async () => {
+    const cdp = new EventEmitter()
+    cdp.send = async () => {}
+    const net = await trackNetwork(pageWith(cdp))
+    cdp.emit('Network.requestWillBeSent', { requestId: 's', type: 'Fetch', request: { method: 'GET', url: 'https://x.test/stream' } })
+    expect(net.awaitingHeaders()).toBe(1)
+    cdp.emit('Network.responseReceived', { requestId: 's', type: 'Fetch', response: { mimeType: 'application/octet-stream' } })
+    expect(net.awaitingHeaders()).toBe(0)
+    expect(net.inflight()).toBe(1)
+    expect(net.headersQuietMs()).toBeLessThan(50)
+    expect(net.list()[0]).toMatch(/^\d+ GET https:\/\/x\.test\/stream$/)
+  })
+
   it('ignores streams and media', async () => {
     const cdp = new EventEmitter()
     cdp.send = async () => {}
@@ -220,7 +242,7 @@ describe('waitForPageSettle', () => {
   })
 
   it('treats the network as idle after the fixed timeout, then caps DOM churn', async () => {
-    const busy = { inflight: () => 1, quietMs: () => 0, list: () => [] }
+    const busy = fakeNet({ open: 1, quiet: 0 })
     const churn = setInterval(() => { document.getElementById('m').textContent = String(Math.random()) }, 20)
     const r = await waitForPageSettle(fakePage, busy, { ...small, fixedNetTimeoutMs: 300, fixedDomCapMs: 300, capMs: 5000 })
     clearInterval(churn)
@@ -259,14 +281,14 @@ describe('waitForPageSettle', () => {
 
   it('a timer due within reach of recent network activity holds the fast path', async () => {
     setTimeout(() => {}, 2000)
-    const recent = { inflight: () => 0, quietMs: () => 100, list: () => [] }
+    const recent = fakeNet({ quiet: 100 })
     const r = await waitForPageSettle(fakePage, recent, { ...small, extraMs: 0, capMs: 3000 })
     expect(r.path).toBe('fixed')
   })
 
   it('a slow snapshot (og capture) widens the reach', async () => {
     setTimeout(() => {}, 4000)
-    const recent = { inflight: () => 0, quietMs: () => 100, list: () => [] }
+    const recent = fakeNet({ quiet: 100 })
     const quick = await waitForPageSettle(fakePage, recent, { ...small, extraMs: 0, capMs: 3000 })
     expect(quick.path).toBeUndefined()
     const slow = await waitForPageSettle(fakePage, recent, { ...small, extraMs: 2000, capMs: 3000 })
@@ -279,9 +301,16 @@ describe('waitForPageSettle', () => {
     expect(r.path).toBe('fixed')
   })
 
+  it('a response that streams forever keeps the fast path closed but not the fixed windows', async () => {
+    const streaming = fakeNet({ open: 1, awaiting: 0, quiet: 0, headersQuiet: 1e6 })
+    const r = await waitForPageSettle(fakePage, streaming, { ...small, fixedNetMs: 100, fixedQuietMs: 100, capMs: 3000 })
+    expect(r).toMatchObject({ ok: true, path: 'fixed' })
+    expect(r.ms).toBeLessThan(600)
+  })
+
   it('waits for requests in flight', async () => {
     let open = 1
-    const net = { inflight: () => open, quietMs: () => (open ? 0 : 1e6), list: () => [] }
+    const net = fakeNet({ open: () => open, awaiting: () => open, quiet: () => (open ? 0 : 1e6) })
     native.setTimeout.call(window, () => { open = 0 }, 100)
     const r = await waitForPageSettle(fakePage, net, { ...small, capMs: 2000 })
     expect(r.ok).toBe(true)
@@ -312,7 +341,7 @@ describe('waitForPageSettle', () => {
 
   it('reports the cap with what was pending', async () => {
     window.ManifestPending = { count: 1, labels: () => ['stuck'] }
-    const busyNet = { inflight: () => 1, quietMs: () => 0, list: () => ['GET /slow'] }
+    const busyNet = fakeNet({ open: 1, quiet: 0, list: ['GET /slow'] })
     const r = await waitForPageSettle(fakePage, busyNet, { ...small, fixedNetTimeoutMs: 5000, capMs: 300 })
     expect(r).toMatchObject({ ok: false, reason: 'cap', requests: ['GET /slow'] })
   })

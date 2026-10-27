@@ -11,7 +11,7 @@
 
 	const loaderScript = document.currentScript;
 
-	// Pending work that will still change the page: plugins hold() until their DOM update lands; prerender waits for zero
+	// Pending work that will still change the page: plugins hold() until their DOM update lands; mnfst-render's auto settle won't snapshot early while count > 0
 	if (!window.ManifestPending) {
 		const holds = new Map();
 		let seq = 0;

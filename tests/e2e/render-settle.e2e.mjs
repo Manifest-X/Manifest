@@ -56,6 +56,9 @@ const pages = {
   'wedged-counter': [`window.__manifestMarkdownPending = 1; ${D}`, 3500],
   'wedged-counter-ticking': [`window.__manifestMarkdownPending = 1; ${D}; const c = document.createElement('p'); document.body.append(c); setInterval(() => { c.textContent = Date.now() }, 1000)`, 3500],
   'very-slow-fetch': [`fetch('/slow11000').then((r) => r.text()).then(() => { ${D} })`],
+  // Responses that stream forever (WebChannel, NDJSON/AI streams): fixed counts them idle once headers arrive (~2.1s)
+  'never-ending-fetch-stream': [`fetch('/forever').then((r) => { ${D}; const rd = r.body.getReader(); (async () => { for (;;) { const { done } = await rd.read(); if (done) break } })() })`, 4000],
+  'never-ending-xhr': [`const x = new XMLHttpRequest(); x.open('GET', '/forever'); x.onprogress = () => { ${D} }; x.send()`, 4000],
 };
 const delays = { data: 200, slow1000: 1000, slow1200: 1200, slow1500: 1500, slow2500: 2500, slow11000: 11000 };
 const srv = http.createServer((req, res) => {
@@ -64,6 +67,10 @@ const srv = http.createServer((req, res) => {
   if (k === 'lib.js') return void setTimeout(() => res.end('window.lib = 1'), 300);
   if (k === 'sw.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return void res.end("self.addEventListener('install', (e) => e.waitUntil(new Promise((r) => setTimeout(r, 800)).then(() => self.skipWaiting())))"); }
   if (k === 'slowbody') { res.writeHead(200, { 'content-type': 'text/plain' }); res.write('a'); return void setTimeout(() => res.end('b'), 1800); }
+  if (k === 'forever') {
+    res.writeHead(200, { 'content-type': 'application/octet-stream' }); res.write('a'.repeat(2048));
+    const t = setInterval(() => res.write('x'), 2000); req.on('close', () => clearInterval(t)); return;
+  }
   if (k === 'sse') { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(':\n\n'); return void setTimeout(() => res.write('data: x\n\n'), 300); }
   res.writeHead(200, { 'content-type': 'text/html' });
   res.end(`<!doctype html><html><body><main id="m">x</main><script>const XO = '${XO}'; ${pages[k]?.[0] || ''}</script></body></html>`);
