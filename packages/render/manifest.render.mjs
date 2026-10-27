@@ -63,6 +63,7 @@ import {
   htmlToText,
   groupLlmsSections,
   renderRouteDom,
+  createSettleState,
   finalizeRouteHtml,
   extractRouteContentFromHtml,
   buildRobotsTxt,
@@ -2688,6 +2689,8 @@ function stripUnresolvedEnvFromOutputManifest(outputDir) {
 
 async function runPrerender(config) {
   const manifest = loadConfig(config.root);
+  // render.settle 'auto': one reach history for the run (one site)
+  const settleState = createSettleState();
   const localesConfig = config.locales;
 
   let locales = [];
@@ -3229,6 +3232,7 @@ async function runPrerender(config) {
         pipelineTimeout: config.pipelineTimeout,
         waitAfterIdle: config.waitAfterIdle,
         settle: config.settle,
+        settleState,
         seo: config.seo,
         renderedPaths: pathList.filter((p) => p !== NOT_FOUND_PATH),
         localeSubstitution: config.localeSubstitution,

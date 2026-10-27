@@ -311,16 +311,29 @@ const SETTLE_FIXED = {
   route: { fixedNetMs: 300, fixedNetTimeoutMs: 5000, fixedQuietMs: 300, fixedDomCapMs: 5000 },
 };
 // How long after the last request / DOM change the fixed engine can still be waiting before it reads the page: its
-// load + route windows, plus route state, render-ready, flush and og capture (measured per page, see settleExtraMs).
-// A timer due within that reach could land before its snapshot.
+// load + route windows, plus route state, render-ready, flush, waitAfterIdle and og capture (measured per page, see
+// settleExtraMs). A timer due within that reach could land before its snapshot.
 const SETTLE_REACH = { netMs: 2100, domMs: 1100, marginMs: 400 };
-// Recent pages' time from route state to the snapshot (rolling max; slow og capture widens the reach)
-const settleExtra = [1000];
-function settleExtraMs() { return Math.max(...settleExtra); }
-function noteSettleExtra(ms) {
+const SETTLE_EXTRA_MS = 1000;
+// Per render run (one site): recent pages' time from route state to the snapshot (rolling max; slow og capture widens
+// the reach). Never shared across sites: one Worker isolate renders many.
+function createSettleState() { return { extra: [SETTLE_EXTRA_MS] }; }
+// Callers without a run state: one per site origin (bounded), else per page
+const siteSettleStates = new Map();
+function siteSettleState(site) {
+  if (!site) return createSettleState();
+  let state = siteSettleStates.get(site);
+  if (state) siteSettleStates.delete(site);
+  else state = createSettleState();
+  siteSettleStates.set(site, state);
+  if (siteSettleStates.size > 64) siteSettleStates.delete(siteSettleStates.keys().next().value);
+  return state;
+}
+function settleExtraMs(state) { return Math.max(...state.extra); }
+function noteSettleExtra(state, ms) {
   if (!(ms >= 0)) return;
-  settleExtra.push(ms);
-  if (settleExtra.length > 8) settleExtra.shift();
+  state.extra.push(ms);
+  if (state.extra.length > 8) state.extra.shift();
 }
 
 // Settled on the fast path (nothing pending, no request, DOM quiet briefly) or else on the fixed engine's windows.
@@ -328,7 +341,7 @@ function noteSettleExtra(ms) {
 // back to the fixed windows for both.
 async function waitForPageSettle(page, net, {
   quietMs = 80, fixedNetMs = 1000, fixedNetTimeoutMs = 8000, fixedQuietMs = 500, fixedDomCapMs = 15000,
-  anchorsMs = 2000, capMs = 30000, extraMs = settleExtraMs(),
+  anchorsMs = 2000, capMs = 30000, extraMs = SETTLE_EXTRA_MS,
 } = {}) {
   const reachNetMs = SETTLE_REACH.netMs + extraMs + SETTLE_REACH.marginMs;
   const reachDomMs = SETTLE_REACH.domMs + extraMs + SETTLE_REACH.marginMs;
@@ -2109,6 +2122,10 @@ async function renderRouteDom(page, ctx) {
 
   // render.settle 'auto' (opt-in): the tracker reports pending work and quiet pages skip the fixed windows.
   const settleOn = ctx.settle === 'auto';
+  // Callers rendering a whole site pass one state for the run; otherwise the state for this page's origin
+  const settleState = ctx.settleState || (settleOn ? siteSettleState(ctx.baseUrl) : null);
+  // Never below the default plus this page's waitAfterIdle, whatever earlier pages measured
+  const settleFloorMs = SETTLE_EXTRA_MS + (Number(ctx.waitAfterIdle) > 0 ? Number(ctx.waitAfterIdle) : 0);
   if (settleOn) await page.evaluateOnNewDocument(installSettleTracker);
   // Tracking in auto, or for tracing's in-flight report; the fixed windows don't need it (it costs a CDP session)
   const net = settleOn || traceOn ? await trackNetwork(page) : null;
@@ -2116,7 +2133,7 @@ async function renderRouteDom(page, ctx) {
   // False: no tracker or the context stayed unreachable, so the caller runs the fixed windows for this route.
   const settle = async (phase, capMs) => {
     if (!settleOn) return false;
-    const r = await waitForPageSettle(page, net, { capMs, ...SETTLE_FIXED[phase] });
+    const r = await waitForPageSettle(page, net, { capMs, extraMs: Math.max(settleExtraMs(settleState), settleFloorMs), ...SETTLE_FIXED[phase] });
     if (!r) return false;
     settleLog.push({ phase, ...r });
     return r.ok || r.reason === 'cap';
@@ -2288,7 +2305,8 @@ async function renderRouteDom(page, ctx) {
     }
   }
   mark('og');
-  if (settleOn) noteSettleExtra(stages.routeState + stages.renderReady + stages.flush + stages.og + (ctx.waitAfterIdle || 0));
+  // og spans the waitAfterIdle sleep as well as the capture
+  if (settleOn) noteSettleExtra(settleState, stages.routeState + stages.renderReady + stages.flush + stages.og);
 
   if (debugOn) {
     const before = await page.evaluate(() => {
@@ -4062,6 +4080,9 @@ export {
   installSettleTracker,
   trackNetwork,
   waitForPageSettle,
+  createSettleState,
+  settleExtraMs,
+  noteSettleExtra,
   SETTLE_FIXED,
   SETTLE_REACH,
   logicalPathToVisibilityNormalizedPath,

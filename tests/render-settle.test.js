@@ -8,11 +8,12 @@
  * the fixed engine's reach; anything pending uses the fixed engine's windows
  * (network idle or its timeout, then DOM quiet or its cap). A lost page
  * context retries, then reports 'evaluate' for the fixed fallback.
+ * The reach widens with recent pages' time from route state to the snapshot, per render run (one site).
  * Real-browser cases live in tests/e2e/render-settle.e2e.mjs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { installSettleTracker, trackNetwork, waitForPageSettle } from '../src/scripts/manifest.render.page.mjs'
+import { installSettleTracker, trackNetwork, waitForPageSettle, renderRouteDom, createSettleState, settleExtraMs, noteSettleExtra } from '../src/scripts/manifest.render.page.mjs'
 
 const saved = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'EventSource', 'WebSocket', 'Worker', 'SharedWorker', 'postMessage']
 const protoSaved = [[window.MessagePort?.prototype, 'postMessage'], [window.BroadcastChannel?.prototype, 'postMessage']].filter(([o]) => o).map(([o, k]) => [o, k, o[k]])
@@ -350,4 +351,88 @@ describe('waitForPageSettle', () => {
     const r = await waitForPageSettle(fakePage, busyNet, { ...small, fixedNetTimeoutMs: 5000, capMs: 300 })
     expect(r).toMatchObject({ ok: false, reason: 'cap', requests: ['GET /slow'] })
   })
+})
+
+// renderRouteDom against this document: page functions run here, no network
+const routePage = () => Object.assign(new EventEmitter(), {
+  evaluate: async (fn, ...args) => fn(...args),
+  evaluateOnNewDocument: async (fn) => { fn() },
+  createCDPSession: async () => Object.assign(new EventEmitter(), { send: async () => ({}) }),
+  setViewport: async () => {},
+  goto: async () => {},
+  waitForNetworkIdle: async () => {},
+  content: async () => document.documentElement.outerHTML,
+})
+// Each run on a fresh tracker, as on a new page; `script` runs once it is installed
+const renderAuto = async ({ script, ...opts }) => {
+  for (const k of saved) window[k] = native[k]
+  delete window.__mnfstSettle
+  installSettleTracker()
+  script?.()
+  window.__manifestRenderRoutingReady = true
+  let row
+  try {
+    await renderRouteDom(routePage(), {
+      url: 'http://127.0.0.1/', pathSeg: '', is404: false, currentLocale: null, locales: [], timeout: 5000, displayPath: '/',
+      baseUrl: 'http://127.0.0.1', pipelineTimeout: 500, settle: 'auto', seo: { imageSnapshots: false }, renderedPaths: [''],
+      onTiming: (r) => { row = r }, ...opts,
+    })
+  } finally {
+    delete window.__manifestRenderRoutingReady
+  }
+  return row
+}
+
+describe('settle reach per render run', () => {
+  // The state's own max; renderRouteDom floors the reach at the default plus waitAfterIdle
+  it('keeps a rolling max of the last 8 pages', () => {
+    const state = createSettleState()
+    expect(settleExtraMs(state)).toBe(1000)
+    noteSettleExtra(state, 3000)
+    noteSettleExtra(state, NaN)
+    expect(settleExtraMs(state)).toBe(3000)
+    for (let i = 0; i < 7; i++) noteSettleExtra(state, 200)
+    expect(settleExtraMs(state)).toBe(3000)
+    noteSettleExtra(state, 200)
+    expect(settleExtraMs(state)).toBe(200)
+  })
+
+  it('notes route state to snapshot once: waitAfterIdle is inside the og stage', async () => {
+    const state = createSettleState()
+    const row = await renderAuto({ waitAfterIdle: 600, settleState: state })
+    const { routeState, renderReady, flush, og } = row.stages
+    expect(og).toBeGreaterThanOrEqual(600)
+    expect(state.extra).toEqual([1000, routeState + renderReady + flush + og])
+  }, 15000)
+
+  it("one site's slow pages never widen another site's reach", async () => {
+    const slowSite = createSettleState()
+    await renderAuto({ waitAfterIdle: 2000, settleState: slowSite })
+    expect(settleExtraMs(slowSite)).toBeGreaterThanOrEqual(2000)
+    // A timer due beyond the default reach (~3.5s from a fresh network) but within the slow site's
+    const timers = []
+    const script = () => { timers.push(setTimeout(() => {}, 3800)) }
+    try {
+      const otherSite = createSettleState()
+      const own = await renderAuto({ script, settleState: otherSite })
+      expect(own.settle[0]).toMatchObject({ phase: 'load', ok: true })
+      expect(own.settle[0].path).toBeUndefined()
+      expect(otherSite.extra).toHaveLength(2)
+      expect(settleExtraMs(slowSite)).toBeGreaterThanOrEqual(2000)
+      // No state passed: one per origin
+      await renderAuto({ waitAfterIdle: 2000, baseUrl: 'http://slow.test' })
+      const fresh = await renderAuto({ script, baseUrl: 'http://other.test' })
+      expect(fresh.settle[0].path).toBeUndefined()
+      const sameSite = await renderAuto({ script, baseUrl: 'http://slow.test' })
+      expect(sameSite.settle[0].path).toBe('fixed')
+      // A raised waitAfterIdle counts from the first page, before any page measures it
+      const raised = await renderAuto({ script, waitAfterIdle: 600, baseUrl: 'http://other.test' })
+      expect(raised.settle[0].path).toBe('fixed')
+      // Sharing the slow site's state (the old module-level behaviour) holds the fast path
+      const shared = await renderAuto({ script, settleState: slowSite })
+      expect(shared.settle[0].path).toBe('fixed')
+    } finally {
+      timers.forEach((t) => native.clearTimeout.call(window, t))
+    }
+  }, 30000)
 })
