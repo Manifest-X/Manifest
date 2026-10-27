@@ -72,6 +72,13 @@ describe('loader: ManifestPending', () => {
         expect(window.ManifestPending.labels()).not.toContain('ready')
     })
 
+    it('marks background callbacks', () => {
+        boot()
+        const fn = () => {}
+        expect(window.ManifestPending.background(fn)).toBe(fn)
+        expect(fn.__manifestBackground).toBe(true)
+    })
+
     it('keeps a registry a page already defined', () => {
         const own = { hold: () => () => {}, count: 0, labels: () => [] }
         window.ManifestPending = own

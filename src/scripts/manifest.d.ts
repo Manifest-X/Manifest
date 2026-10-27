@@ -663,6 +663,8 @@ declare global {
             hold(label?: string): () => void;
             readonly count: number;
             labels(): string[];
+            /** Mark a timer callback as housekeeping that never changes the page (prerender won't wait for it). */
+            background<T extends Function>(fn: T): T;
         };
         /** Rich text engine (rich-text plugin). */
         ManifestRichText?: {

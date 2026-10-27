@@ -30,6 +30,11 @@
 				if (window.__manifestUtilitiesPending > 0) out.push('utilities');
 				return out;
 			},
+			// Marks a timer callback as housekeeping that never changes the page; prerender doesn't wait for it
+			background(fn) {
+				if (typeof fn === 'function') fn.__manifestBackground = true;
+				return fn;
+			},
 		};
 	}
 

@@ -285,7 +285,8 @@ function registerXMagicMethod(loadDataSource) {
                                 : (typeof Alpine !== 'undefined' && Alpine.store('locale')?.current) || 'en';
                             pendingLoads.set(prop, Promise.resolve(loadDataSource(prop, locale)));
                             pendingLoads.get(prop).finally(() => {
-                                setTimeout(() => pendingLoads.delete(prop), 1000);
+                                const clear = () => pendingLoads.delete(prop);
+                                setTimeout(window.ManifestPending?.background?.(clear) ?? clear, 1000);
                             });
                         }
                         track();
@@ -710,9 +711,8 @@ function registerXMagicMethod(loadDataSource) {
                                     }
                                 }
                                 // Only clear pendingLoads after a delay to prevent rapid retries
-                                setTimeout(() => {
-                                    pendingLoads.delete(prop);
-                                }, 1000);
+                                const clear = () => { pendingLoads.delete(prop); };
+                                setTimeout(window.ManifestPending?.background?.(clear) ?? clear, 1000);
                             });
 
                             activeProps.delete(propKey); // Remove from active set before returning

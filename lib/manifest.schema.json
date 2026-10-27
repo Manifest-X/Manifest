@@ -697,7 +697,7 @@
                     "type": "string",
                     "enum": ["auto", "fixed"],
                     "default": "auto",
-                    "description": "How a page counts as settled before its snapshot. auto: when no request is in flight, no short timer, frame, data load or framework hold is pending, and the DOM has been quiet briefly. fixed: the older fixed quiet windows (about 2 seconds per page). --settle overrides."
+                    "description": "How a page counts as settled before its snapshot. auto: when no request is in flight, no timer under 2s, frame, data load or framework hold is pending, and the DOM has been quiet briefly. fixed: the older fixed quiet windows (about 2 seconds per page). A custom script that fills content in after a 2s+ timer needs fixed or waitAfterIdle. --settle overrides."
                 },
                 "blockRequests": {
                     "type": "array",
