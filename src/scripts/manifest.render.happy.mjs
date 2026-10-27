@@ -13,12 +13,34 @@ function loadHappyDom() {
     const { default: NamedNodeMap } = await import(new URL('./nodes/element/NamedNodeMap.js', 'file://' + main).href);
     // happy-dom gives `:class` the local name `class`, colliding with the real class attribute; un-namespaced names are their own local name.
     const setNamedItem = NamedNodeMap.prototype[symbols.setNamedItem];
-    if (!setNamedItem.__mnfstPatched) {
+    if (!setNamedItem.__mnfstPatched && !process.env.HX_NOATTR) {
       NamedNodeMap.prototype[symbols.setNamedItem] = function (item, ...rest) {
         if (!item[symbols.namespaceURI] && item[symbols.name]) item[symbols.localName] = item[symbols.name];
         return setNamedItem.call(this, item, ...rest);
       };
       NamedNodeMap.prototype[symbols.setNamedItem].__mnfstPatched = true;
+    }
+    // happy-dom runs classic scripts inside a function, so top-level var/function never become globals
+    // (UMD libraries like highlight.js lose their global). Run the rewritten body at global scope instead.
+    const { default: JavaScriptCompiler } = await import(new URL('./javascript/JavaScriptCompiler.js', 'file://' + main).href);
+    const compile = JavaScriptCompiler.prototype.compile;
+    if (!compile.__mnfstPatched && !process.env.HX_NOCOMPILE) {
+      const HEAD = '(function anonymous($happy_dom) {';
+      JavaScriptCompiler.prototype.compile = function (sourceURL, code) {
+        const win = this.window;
+        const evaluateScript = win[symbols.evaluateScript];
+        win[symbols.evaluateScript] = (wrapped, opts) => {
+          let body = wrapped.slice(HEAD.length, -2);
+          const tryCatch = body.startsWith('try {');
+          if (tryCatch) body = body.slice(5).replace(/\} catch \(error\) \{ \$happy_dom\.dispatchError\(error\); \}$/, '');
+          return (ctx) => {
+            win.$happy_dom = ctx;
+            try { return evaluateScript.call(win, body + '\n', opts); } catch (error) { if (!tryCatch) throw error; ctx.dispatchError(error); }
+          };
+        };
+        try { return compile.call(this, sourceURL, code); } finally { win[symbols.evaluateScript] = evaluateScript; }
+      };
+      JavaScriptCompiler.prototype.compile.__mnfstPatched = true;
     }
     return { Browser: mod.Browser, PropertySymbol: symbols };
   });
@@ -30,7 +52,7 @@ function serialize(value) {
   try { return JSON.parse(JSON.stringify(value)); } catch { return undefined; }
 }
 
-// No layout engine: displayed elements measure 1×1, hidden ones 0×0, so visibility checks hold.
+// Render-environment shim. No layout engine: displayed elements measure 1×1, hidden ones 0×0, so visibility checks hold.
 const LAYOUT_SHIM = `(() => {
   const hidden = (el) => {
     if (!el.isConnected) return true;
@@ -44,7 +66,32 @@ const LAYOUT_SHIM = `(() => {
     const v = hidden(this) ? 0 : 1;
     return { x: 0, y: 0, top: 0, left: 0, right: v, bottom: v, width: v, height: v, toJSON() { return this; } };
   };
+  Element.prototype.checkVisibility = function () { return !hidden(this); };
+  // Everything displayed counts as on screen: observers report it once, asynchronously, like a first frame.
+  window.IntersectionObserver = class IntersectionObserver {
+    constructor(cb, opts) { this.cb = cb; this.root = opts?.root || null; this.rootMargin = opts?.rootMargin || '0px'; this.thresholds = [0]; this.targets = new Set(); }
+    observe(el) {
+      if (this.targets.has(el)) return;
+      this.targets.add(el);
+      setTimeout(() => {
+        if (!this.targets.has(el)) return;
+        const r = el.getBoundingClientRect();
+        const visible = r.width > 0;
+        this.cb([{ target: el, isIntersecting: visible, intersectionRatio: visible ? 1 : 0, boundingClientRect: r, intersectionRect: r, rootBounds: null, time: performance.now() }], this);
+      }, 0);
+    }
+    unobserve(el) { this.targets.delete(el); }
+    disconnect() { this.targets.clear(); }
+    takeRecords() { return []; }
+  };
   window.__manifestRenderNoLayout = true;
+  // happy-dom exposes Node's own PerformanceObserver: observe() registers in a process-wide set and pins the page forever.
+  window.PerformanceObserver = class PerformanceObserver {
+    static get supportedEntryTypes() { return []; }
+    observe() {}
+    disconnect() {}
+    takeRecords() { return []; }
+  };
 })()`;
 
 function toPattern(glob) {
@@ -83,7 +130,7 @@ class HappyPage {
     this.hd = hd;
     this.cache = browserOpts.cache;
     this.idleCap = browserOpts.idleCap;
-    this.inflight = 0;
+    this.pending = new Map();
     this.lastActivity = Date.now();
     this.blocked = [];
     this.preScripts = [];
@@ -102,13 +149,11 @@ class HappyPage {
               if (isBlocked(request.url)) return new window.Response('', { status: 499 });
               const hit = request.method === 'GET' && cache.get(request.url);
               if (hit) return new window.Response(hit.body, { status: hit.status, statusText: hit.statusText, headers: hit.headers });
-              self.inflight++;
-              self.lastActivity = Date.now();
+              self.track(request);
               return undefined;
             },
             async afterAsyncResponse({ request, response, window }) {
-              self.inflight = Math.max(0, self.inflight - 1);
-              self.lastActivity = Date.now();
+              self.settle(request);
               if (request.method !== 'GET') return undefined;
               const headers = Object.fromEntries(response.headers);
               const e = cache.store(request.url, response.status, response.statusText, headers, Buffer.from(await response.arrayBuffer()));
@@ -116,6 +161,7 @@ class HappyPage {
             },
             beforeSyncRequest({ request, window }) {
               const hit = request.method === 'GET' && cache.get(request.url);
+              if (!hit && process.env.HX_LOGSYNC) process.stderr.write(`SYNC MISS ${request.url}\n`);
               if (!hit) return undefined;
               return { status: hit.status, statusText: hit.statusText, ok: true, url: request.url, redirected: false, headers: new window.Headers(hit.headers), body: hit.body };
             },
@@ -134,6 +180,25 @@ class HappyPage {
     });
     this.page = this.browser.newPage();
     this.page.setViewport({ width: 1200, height: 800, devicePixelRatio: 1 });
+  }
+
+  // In-flight requests; failures and aborts never reach afterAsyncResponse, so aborts settle here and stragglers age out.
+  track(request) {
+    this.pending.set(request, Date.now());
+    this.lastActivity = Date.now();
+    request.signal?.addEventListener?.('abort', () => this.settle(request), { once: true });
+  }
+
+  settle(request) {
+    this.pending.delete(request);
+    this.lastActivity = Date.now();
+  }
+
+  get inflight() {
+    const now = Date.now();
+    let n = 0;
+    for (const [r, t] of this.pending) { if (now - t > 3000) this.pending.delete(r); else n++; }
+    return n;
   }
 
   collectingConsole() {
@@ -186,7 +251,7 @@ class HappyPage {
     doc[P.isFirstWrite] = true;
     doc[P.isFirstWriteAfterOpen] = false;
     doc.open();
-    frame.evaluate(LAYOUT_SHIM);
+    if (!process.env.HX_NOSHIM) frame.evaluate(LAYOUT_SHIM);
     for (const s of this.preScripts) frame.evaluate(s);
     doc.write(html);
     return { ok: () => res.ok, status: () => res.status };
@@ -216,8 +281,16 @@ class HappyPage {
   }
 }
 
+let pageFaults = 0;
+
 export async function launchHappyBrowser() {
   const hd = await loadHappyDom();
+  // Page code shares Node's event loop: an unhandled rejection in a page must not end the run.
+  if (!process.listenerCount('unhandledRejection')) {
+    process.on('unhandledRejection', (reason) => {
+      if (pageFaults++ < 5) process.stderr.write(`prerender: page error (ignored): ${String(reason?.message || reason).slice(0, 160)}\n`);
+    });
+  }
   const opts = {
     cache: createResponseCache(),
     // Experimental: compress wall-clock settle windows (all page timers are capped at this many ms).
