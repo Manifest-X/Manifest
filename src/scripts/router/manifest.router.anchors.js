@@ -290,7 +290,8 @@ window.addEventListener('manifest:route-change', () => {
             t = setTimeout(finish, 50);
         });
         observer.observe(container, { childList: true, subtree: true });
-        const fallback = setTimeout(finish, 800);
+        // Under mnfst-render's auto settle the engine re-extracts anchors from settled content: don't hold it
+        const fallback = setTimeout(window.__manifestRenderSettle === 'auto' ? (window.ManifestPending?.background?.(finish) ?? finish) : finish, 800);
     };
 
     requestAnimationFrame(() => {

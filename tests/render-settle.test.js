@@ -1,12 +1,13 @@
 /**
  * @vitest-environment happy-dom
  *
- * Render settle: the page-side tracker (timers, intervals, frames, idle
- * callbacks, streams/sockets/workers, holds, plugin counters, loading data,
- * anchor refreshes, DOM changes), the Node-side request counter and the wait.
- * The fast path needs the page provably quiet; anything pending uses the fixed
- * engine's windows (network idle or its timeout, then DOM quiet or its cap). A
- * lost page context retries, then reports 'evaluate' for the fixed fallback.
+ * Render settle: the page-side tracker (next due timer or interval, frames,
+ * idle callbacks, streams/sockets/workers, holds, plugin counters, loading
+ * data, anchor refreshes, DOM changes), the Node-side request counter and the
+ * wait. The fast path needs the page provably quiet, with no timer due within
+ * the fixed engine's reach; anything pending uses the fixed engine's windows
+ * (network idle or its timeout, then DOM quiet or its cap). A lost page
+ * context retries, then reports 'evaluate' for the fixed fallback.
  * Real-browser cases live in tests/e2e/render-settle.e2e.mjs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -37,26 +38,25 @@ describe('settle tracker', () => {
     expect(window.__manifestRenderSettle).toBe('auto')
   })
 
-  it('counts timers due within 3s, and a later one once it gets that close', async () => {
-    setTimeout(() => {}, 30)
-    setTimeout(() => {}, 2990)
-    setTimeout(() => {}, 3100)
+  it('reports when the next timer is due, skipping background callbacks', () => {
     const bg = () => {}
     bg.__manifestBackground = true
-    setTimeout(bg, 100)
-    expect(snap().timers).toBe(2)
-    await sleep(150)
-    expect(snap().timers).toBe(2)
+    setTimeout(bg, 10)
+    setTimeout(() => {}, 5000)
+    setTimeout(() => {}, 400)
+    expect(snap().nextDueMs).toBeGreaterThan(300)
+    expect(snap().nextDueMs).toBeLessThanOrEqual(400)
   })
 
-  it('counts live intervals under 3s until cleared through either clear API', () => {
+  it('reports intervals under 3s until cleared through either clear API', () => {
     const a = setInterval(() => {}, 100)
     const b = setInterval(() => {}, 200)
     setInterval(() => {}, 5000)
-    expect(snap().intervals).toBe(2)
+    expect(snap().nextDueMs).toBeLessThanOrEqual(100)
     clearInterval(a)
+    expect(snap().nextDueMs).toBeGreaterThan(100)
     clearTimeout(b)
-    expect(snap().intervals).toBe(0)
+    expect(snap().nextDueMs).toBe(Infinity)
   })
 
   it('forgets a timer when it fires, or is cleared through either clear API', async () => {
@@ -64,7 +64,7 @@ describe('settle tracker', () => {
     clearTimeout(setTimeout(() => {}, 100))
     clearInterval(setTimeout(() => {}, 100))
     await sleep(30)
-    expect(snap().timers).toBe(0)
+    expect(snap().nextDueMs).toBe(Infinity)
   })
 
   it('counts open streams and live workers until closed', () => {
@@ -211,6 +211,21 @@ describe('waitForPageSettle', () => {
     const r = await waitForPageSettle(fakePage, idleNet, { ...small, capMs: 2000 })
     expect(r.ok).toBe(true)
     expect(r.ms).toBeGreaterThanOrEqual(110)
+  })
+
+  it('a timer due beyond the fixed engine\'s reach does not hold the fast path', async () => {
+    setTimeout(() => {}, 2500)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, capMs: 2000 })
+    expect(r).toMatchObject({ ok: true })
+    expect(r.path).toBeUndefined()
+    expect(r.ms).toBeLessThan(500)
+  })
+
+  it('a timer due within reach of recent network activity holds the fast path', async () => {
+    setTimeout(() => {}, 2500)
+    const recent = { inflight: () => 0, quietMs: () => 100, list: () => [] }
+    const r = await waitForPageSettle(fakePage, recent, { ...small, capMs: 3000 })
+    expect(r.path).toBe('fixed')
   })
 
   it('waits for requests in flight', async () => {

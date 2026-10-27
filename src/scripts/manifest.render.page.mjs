@@ -20,18 +20,17 @@ function stripInjectedScripts(html, originals) {
 }
 
 // Settle tracking (page side). Installed before any page script, in every frame. 'Fast' only when the page is provably
-// quiet: no timer under 3s, interval, frame, idle callback, running CSS animation or transition, open stream or
-// socket, live worker, cross-origin frame, loading data source, pending anchor refresh or framework hold. Anything
-// else the page could still be doing keeps it on the fixed engine's windows (see waitForPageSettle).
+// quiet: no frame, idle callback, running CSS animation or transition, open stream or socket, live worker,
+// cross-origin frame, loading data source, pending anchor refresh or framework hold, and (checked by the caller) no
+// timer or interval due within the fixed engine's reach. Anything else keeps the page on the fixed engine's windows.
 function installSettleTracker() {
   if (window.__mnfstSettle) return;
   window.__manifestRenderSettle = 'auto';
-  // A timer due within SHORT_MS, or an interval under it, can be the next step of a render. That covers the fixed
-  // engine's reach: it snapshots at most ~2.7s after the last request, and the fast path needs quiet network.
+  // Intervals under SHORT_MS are tracked; the next due timer or interval is reported to the caller
   const SHORT_MS = 3000;
   const native = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout, setInterval: window.setInterval, clearInterval: window.clearInterval };
   const timers = new Map();
-  const intervals = new Set();
+  const intervals = new Map();
   const frames = new Set();
   const idles = new Set();
   const live = new Set();
@@ -48,8 +47,12 @@ function installSettleTracker() {
     return id;
   };
   window.setInterval = function (fn, delay, ...args) {
-    const id = native.setInterval.call(window, fn, delay, ...args);
-    if (!background(fn) && (Number(delay) || 0) < SHORT_MS) intervals.add(id);
+    const every = Number(delay) || 0;
+    if (background(fn) || every >= SHORT_MS) return native.setInterval.call(window, fn, delay, ...args);
+    let id;
+    const run = typeof fn === 'function' ? function (...a) { intervals.set(id, Date.now() + every); return fn.apply(this, a); } : () => { intervals.set(id, Date.now() + every); (0, eval)(String(fn)); };
+    id = native.setInterval.call(window, run, delay, ...args);
+    intervals.set(id, Date.now() + every);
     return id;
   };
   // Timeout and interval ids share one pool: either clear call can cancel either
@@ -125,19 +128,18 @@ function installSettleTracker() {
   };
   const own = () => {
     const now = Date.now();
-    let short = 0;
-    for (const at of timers.values()) {
-      const left = at - now;
-      if (left < SHORT_MS && left > -1000) short++;
-    }
+    let next = Infinity;
+    for (const at of timers.values()) if (at > now - 1000) next = Math.min(next, Math.max(0, at - now));
+    for (const at of intervals.values()) next = Math.min(next, Math.max(0, at - now));
     // ManifestPending (mnfst 0.5.253+) includes the plugin counters; older frameworks expose only the counters
     const holds = window.ManifestPending ? window.ManifestPending.count || 0 : 0;
     const counters = window.ManifestPending ? 0 : (window.__manifestMarkdownPending || 0) + (window.__manifestUtilitiesPending || 0);
+    // Routers with ManifestPending skip their own anchor retries and the engine re-extracts after settling
     let anchors = 0;
-    try { for (const el of document.querySelectorAll('[x-anchors]')) if (el.__manifestRenderAnchorPending) anchors++; } catch { /* no-op */ }
+    if (!window.ManifestPending) try { for (const el of document.querySelectorAll('[x-anchors]')) if (el.__manifestRenderAnchorPending) anchors++; } catch { /* no-op */ }
     return {
-      holds, counters, anchors, loading: dataLoading(), timers: short, intervals: intervals.size, frames: frames.size,
-      idles: idles.size, live: live.size, animations: animating(), xframes: 0, quietMs: now - lastChange,
+      holds, counters, anchors, loading: dataLoading(), frames: frames.size, idles: idles.size, live: live.size,
+      animations: animating(), xframes: 0, nextDueMs: next, quietMs: now - lastChange,
     };
   };
   // Same-origin frames count toward the page; a cross-origin frame can't be accounted for
@@ -147,7 +149,8 @@ function installSettleTracker() {
       let f = null;
       try { f = window.frames[i].__mnfstSettle?.snapshot() || null; void window.frames[i].document; } catch { s.xframes++; continue; }
       if (!f) continue;
-      for (const k of ['holds', 'counters', 'anchors', 'loading', 'timers', 'intervals', 'frames', 'idles', 'live', 'animations', 'xframes']) s[k] += f[k];
+      for (const k of ['holds', 'counters', 'anchors', 'loading', 'frames', 'idles', 'live', 'animations', 'xframes']) s[k] += f[k];
+      s.nextDueMs = Math.min(s.nextDueMs, f.nextDueMs);
       s.quietMs = Math.min(s.quietMs, f.quietMs);
     }
     return s;
@@ -161,12 +164,12 @@ function installSettleTracker() {
       const s = snapshot();
       const now = Date.now();
       const hard = s.holds + s.counters + (s.anchors && now - phaseStart < anchorsMs ? 1 : 0);
-      const soft = s.timers + s.intervals + s.frames + s.idles + s.live + s.animations + s.xframes + s.loading + s.anchors;
+      const soft = s.frames + s.idles + s.live + s.animations + s.xframes + s.loading + s.anchors;
       if (hard) openAt = null; else if (openAt === null) openAt = now;
       const fast = !hard && !soft && s.quietMs >= quietMs;
       const openMs = openAt === null ? 0 : now - openAt;
       if (fast || (!hard && s.quietMs >= fixedQuietMs) || now >= end) {
-        return resolve({ fast, hard: !!hard, openMs, ...s, labels: hard ? window.ManifestPending?.labels?.() || [] : undefined });
+        return resolve({ fast, hard: !!hard, openMs, ...s, nextDueMs: s.nextDueMs === Infinity ? null : s.nextDueMs, labels: hard ? window.ManifestPending?.labels?.() || [] : undefined });
       }
       native.setTimeout.call(window, tick, 15);
     };
@@ -235,6 +238,9 @@ const SETTLE_FIXED = {
   load: { fixedNetMs: 1000, fixedNetTimeoutMs: 8000, fixedQuietMs: 500, fixedDomCapMs: 15000 },
   route: { fixedNetMs: 300, fixedNetTimeoutMs: 5000, fixedQuietMs: 300, fixedDomCapMs: 5000 },
 };
+// How long after the last request / DOM change the fixed engine can still be waiting (load + route windows and the
+// stages between): a timer due within that reach could land before its snapshot
+const SETTLE_REACH = { netMs: 3000, domMs: 1500 };
 
 // Settled on the fast path (nothing pending, no request, DOM quiet briefly) or else on the fixed engine's windows.
 // Null when the page never had a tracker; reason 'evaluate' when the page context stayed unreachable. Callers fall
@@ -261,7 +267,9 @@ async function waitForPageSettle(page, net, {
     last = r;
     const now = Date.now();
     const inflight = net.inflight();
-    if (r.fast && !inflight && net.quietMs() >= quietMs) return { ok: true, ms: now - t0 };
+    const reach = Math.max(SETTLE_REACH.netMs - net.quietMs(), SETTLE_REACH.domMs - r.quietMs);
+    const timerDue = r.nextDueMs !== null && r.nextDueMs <= reach;
+    if (r.fast && !timerDue && !inflight && net.quietMs() >= quietMs) return { ok: true, ms: now - t0 };
     if (r.hard) {
       // Holds or counters that never clear (a wedged source) yield once nothing has moved for stuckMs.
       if (!inflight && net.quietMs() >= stuckMs && r.quietMs >= stuckMs) return { ok: true, ms: now - t0, stuck: r };
@@ -277,7 +285,7 @@ async function waitForPageSettle(page, net, {
       const since = now - netIdleAt;
       if (Math.min(r.quietMs, since) >= fixedQuietMs || since >= fixedDomCapMs) return { ok: true, ms: now - t0, path: 'fixed', pending: r };
       await sleep(Math.max(15, Math.min(100, fixedQuietMs - Math.min(r.quietMs, since))));
-    } else await sleep(r.fast ? 15 : 50);
+    } else await sleep(r.fast ? (timerDue ? Math.max(15, Math.min(100, r.nextDueMs)) : 15) : 50);
   }
   if (!reached) return { ok: false, reason: 'evaluate', ms: Date.now() - t0 };
   return { ok: false, reason: 'cap', ms: Date.now() - t0, pending: last, requests: net.list() };
@@ -3975,6 +3983,7 @@ export {
   trackNetwork,
   waitForPageSettle,
   SETTLE_FIXED,
+  SETTLE_REACH,
   logicalPathToVisibilityNormalizedPath,
   waitForManifestRenderReady,
   startManifestRouteState,
