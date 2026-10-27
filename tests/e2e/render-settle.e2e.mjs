@@ -1,8 +1,10 @@
-// End-to-end settle checks in real Chrome, auto against the fixed engine's behaviour. Auto must bake what fixed bakes
-// when a page script writes after a long timer, an interval, an idle callback, a stream message, a CSS animation, a
-// cross-origin frame message, a worker reply, a lazy script, a slow body, a reload or a navigation; and it must not be
-// materially slower on animations or busy polling. Then the real CLI: run cache on with two routes sharing a slow
-// cross-origin URL, and late anchors in fixed mode with the new router.
+// End-to-end settle checks in real Chrome, render.settle 'auto' against the fixed engine's behaviour. Auto must bake
+// what fixed bakes when a page script writes after a long timer, an interval (any period), an idle callback, a
+// postTask or AbortSignal.timeout, message-channel work slices, a stream message, a CSS animation, a cross-origin frame
+// message, a worker reply, a service worker becoming ready, a lazy script, a slow or very slow body, a reload or a
+// navigation; and it must not be materially slower on animations, busy polling or wedged counters. Then the real CLI:
+// --settle auto with run cache on and two routes sharing a slow cross-origin URL, and the default (fixed) mode keeping
+// late anchors with the new router.
 // E2E_REPO=<tree> runs the same checks against another checkout (to show they fail on older code).
 import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -42,12 +44,25 @@ const pages = {
   'typewriter': [`let i = 0; const w = 'hello'; const t = () => { i = (i + 1) % (w.length + 1); m.textContent = i === w.length ? 'DONE' : w.slice(0, i); setTimeout(t, i === w.length ? 700 : 60) }; t()`, 6000],
   // Fixed: network never idles (fetch every 400ms), so its 8s + 5s timeouts end the waits (~13.8s)
   'poll-with-pending': [`${D}; const loop = () => setTimeout(loop, 100); loop(); setInterval(() => fetch('/data'), 400)`, 16000],
+  'interval-3s': [`fetch('/slow1500').then((r) => r.text()); setInterval(() => { ${D} }, 3000)`],
+  'post-task': [`scheduler.postTask(() => { ${D} }, { delay: 1000 })`],
+  'abort-timeout': [`AbortSignal.timeout(1000).addEventListener('abort', () => { ${D} })`],
+  'message-slices': [`const ch = new MessageChannel(); const t0 = performance.now(); ch.port1.onmessage = () => { const s = performance.now(); while (performance.now() - s < 5) {}
+    if (performance.now() - t0 < 700) ch.port2.postMessage(0); else { ${D} } }; ch.port2.postMessage(0)`],
+  'post-message-chain': [`const t0 = performance.now(); addEventListener('message', (e) => { if (e.data !== 'tick') return; const s = performance.now(); while (performance.now() - s < 5) {}
+    if (performance.now() - t0 < 700) postMessage('tick', '*'); else { ${D} } }); postMessage('tick', '*')`],
+  'service-worker-ready': [`navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => { ${D} })`],
+  // A counter that never clears must not hold auto past the fixed windows (fixed: ~2.1-2.3s)
+  'wedged-counter': [`window.__manifestMarkdownPending = 1; ${D}`, 3500],
+  'wedged-counter-ticking': [`window.__manifestMarkdownPending = 1; ${D}; const c = document.createElement('p'); document.body.append(c); setInterval(() => { c.textContent = Date.now() }, 1000)`, 3500],
+  'very-slow-fetch': [`fetch('/slow11000').then((r) => r.text()).then(() => { ${D} })`],
 };
-const delays = { data: 200, slow1000: 1000, slow1200: 1200, slow2500: 2500 };
+const delays = { data: 200, slow1000: 1000, slow1200: 1200, slow1500: 1500, slow2500: 2500, slow11000: 11000 };
 const srv = http.createServer((req, res) => {
   const k = req.url.slice(1).split('?')[0];
   if (k in delays) return void setTimeout(() => res.end('ok'), delays[k]);
   if (k === 'lib.js') return void setTimeout(() => res.end('window.lib = 1'), 300);
+  if (k === 'sw.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return void res.end("self.addEventListener('install', (e) => e.waitUntil(new Promise((r) => setTimeout(r, 800)).then(() => self.skipWaiting())))"); }
   if (k === 'slowbody') { res.writeHead(200, { 'content-type': 'text/plain' }); res.write('a'); return void setTimeout(() => res.end('b'), 1800); }
   if (k === 'sse') { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(':\n\n'); return void setTimeout(() => res.write('data: x\n\n'), 300); }
   res.writeHead(200, { 'content-type': 'text/html' });
@@ -107,7 +122,7 @@ const api = http.createServer((req, res) => {
 const shared = site(`<body><main x-data><div x-route="a"><p>A</p></div><div x-route="b"><p>B</p></div><div x-route="c"><p>C</p></div><p id="late">pending</p></main><script>
 fetch('http://127.0.0.1:${api.address().port}/slow').then((r) => r.text()).then(() => { document.getElementById('late').textContent = 'Baked late' });
 </script></body>`, { prerender: { concurrency: 2 } });
-const run = await cli(shared);
+const run = await cli(shared, ['--settle', 'auto']);
 api.close();
 // Whichever route starts second waits on the first one's in-flight fetch (it can be the 404 page): check them all
 const outputs = ['index.html', 'a/index.html', 'b/index.html', 'c/index.html', '404.html'];
@@ -115,14 +130,14 @@ const missing = outputs.filter((f) => !existsSync(join(shared, 'website', f)) ||
 if (run.status !== 0 || missing.length) failures.push(`cli shared fetch: exit ${run.status}, late content missing from ${missing.join(', ') || 'none'}${/run cache served/.test(run.stdout) ? '' : ' (run cache unused)'}`);
 else console.log(`  cli shared fetch: ${outputs.length}/${outputs.length} pages baked content from a shared 2.5s cross-origin fetch (run cache on, concurrency 2)`);
 
-// Fixed mode, new router: a heading that lands after the route-change refresh still gets its anchor link
+// Default (fixed) mode, new router: a heading that lands after the route-change refresh still gets its anchor link
 const anchors = site(`<body x-data><nav><template x-anchors="h2"><div><a x-text="anchor.text"></a></div></template></nav><main id="m"></main><script>
 addEventListener('manifest:route-change', () => setTimeout(() => { const h = document.createElement('h2'); h.id = 'late'; h.textContent = 'Late heading'; document.getElementById('m').append(h) }, 500), { once: true });
 </script></body>`);
-const fixedRun = await cli(anchors, ['--settle', 'fixed']);
+const fixedRun = await cli(anchors);
 const anchorsHtml = existsSync(join(anchors, 'website', 'index.html')) ? readFileSync(join(anchors, 'website', 'index.html'), 'utf8') : '';
-if (fixedRun.status !== 0 || !/<a[^>]*href="#late"/.test(anchorsHtml)) failures.push(`cli fixed anchors: exit ${fixedRun.status}, ${anchorsHtml.includes('Late heading</h2>') ? 'heading baked without its anchor link' : 'heading missing'}`);
-else console.log('  cli fixed anchors: late heading baked with its anchor link');
+if (fixedRun.status !== 0 || !/<a[^>]*href="#late"/.test(anchorsHtml)) failures.push(`cli default anchors: exit ${fixedRun.status}, ${anchorsHtml.includes('Late heading</h2>') ? 'heading baked without its anchor link' : 'heading missing'}`);
+else console.log('  cli default (fixed) anchors: late heading baked with its anchor link');
 
 if (failures.length) {
   console.error('RENDER SETTLE E2E FAILED —\n  ' + failures.join('\n  '));

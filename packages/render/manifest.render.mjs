@@ -386,8 +386,8 @@ function resolveConfig() {
     redirects: Array.isArray(pre.redirects) ? pre.redirects : [],
     wait: cli.wait ?? pre.wait ?? null,
     waitAfterIdle: resolveWaitAfterIdle(cli.waitAfterIdle, pre.waitAfterIdle),
-    // 'fixed': the older fixed settle windows instead of the pending-work tracker
-    settle: (cli.settle ?? pre.settle) === 'fixed' ? 'fixed' : 'auto',
+    // 'auto' (opt-in): skip the fixed settle windows when the page is provably quiet
+    settle: (cli.settle ?? pre.settle) === 'auto' ? 'auto' : 'fixed',
     // Default concurrency: 2.  Chromium per-page memory overhead is large and
     // our hydration source-attribute map adds more per page.  On big sites
     // (>100 routes) higher concurrency crashes the browser with OOM/target

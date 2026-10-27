@@ -348,10 +348,10 @@ function initializeTabsPlugin() {
         }
     }
 
-    // Add a fallback timer to catch cases where events don't fire (prerender: soon, so the snapshot waits for it)
+    // Add a fallback timer to catch cases where events don't fire (mnfst-render auto settle: soon, so it waits for it)
     setTimeout(() => {
         processTabsWhenReady();
-    }, window.__manifestRender ? 200 : 2000);
+    }, window.__manifestRenderSettle === 'auto' ? 200 : 2000);
 }
 
 // Track initialization to prevent duplicates

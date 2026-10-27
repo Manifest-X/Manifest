@@ -14,7 +14,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { installSettleTracker, trackNetwork, waitForPageSettle } from '../src/scripts/manifest.render.page.mjs'
 
-const saved = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'EventSource', 'WebSocket', 'Worker', 'SharedWorker']
+const saved = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'EventSource', 'WebSocket', 'Worker', 'SharedWorker', 'postMessage']
+const protoSaved = [[window.MessagePort?.prototype, 'postMessage'], [window.BroadcastChannel?.prototype, 'postMessage']].filter(([o]) => o).map(([o, k]) => [o, k, o[k]])
+const abortTimeout = AbortSignal.timeout
 const native = Object.fromEntries(saved.map((k) => [k, window[k]]))
 const sleep = (ms) => new Promise((r) => native.setTimeout.call(window, r, ms))
 
@@ -25,6 +27,8 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const k of saved) window[k] = native[k]
+  for (const [o, k, v] of protoSaved) o[k] = v
+  AbortSignal.timeout = abortTimeout
   for (const k of ['__mnfstSettle', '__manifestRenderSettle', 'ManifestPending', '__manifestMarkdownPending', '__manifestUtilitiesPending']) delete window[k]
 })
 
@@ -48,15 +52,36 @@ describe('settle tracker', () => {
     expect(snap().nextDueMs).toBeLessThanOrEqual(400)
   })
 
-  it('reports intervals under 3s until cleared through either clear API', () => {
+  it('reports intervals of any period until cleared through either clear API', () => {
     const a = setInterval(() => {}, 100)
     const b = setInterval(() => {}, 200)
-    setInterval(() => {}, 5000)
+    const c = setInterval(() => {}, 5000)
     expect(snap().nextDueMs).toBeLessThanOrEqual(100)
     clearInterval(a)
     expect(snap().nextDueMs).toBeGreaterThan(100)
     clearTimeout(b)
+    expect(snap().nextDueMs).toBeGreaterThan(4000)
+    clearInterval(c)
     expect(snap().nextDueMs).toBe(Infinity)
+  })
+
+  it('reports AbortSignal.timeout and scheduler.postTask delays as due, until they fire', async () => {
+    const posted = []
+    window.scheduler = { postTask: (fn, opts) => { posted.push([fn, opts]); return Promise.resolve() } }
+    delete window.__mnfstSettle
+    installSettleTracker()
+    AbortSignal.timeout(400)
+    window.scheduler.postTask(() => {}, { delay: 250 })
+    expect(snap().nextDueMs).toBeLessThanOrEqual(250)
+    posted[0][0]()
+    expect(snap().nextDueMs).toBeGreaterThan(250)
+    delete window.scheduler
+  })
+
+  it('reports recent message-channel activity', () => {
+    expect(snap().messageMs).toBe(Infinity)
+    window.postMessage('tick', '*')
+    expect(snap().messageMs).toBeLessThan(50)
   })
 
   it('forgets a timer when it fires, or is cleared through either clear API', async () => {
@@ -104,6 +129,16 @@ describe('trackNetwork', () => {
     page.createCDPSession = cdp ? async () => cdp : async () => { throw new Error('unsupported') }
     return page
   }
+
+  it('never drops a request that is still open, however old', async () => {
+    const cdp = new EventEmitter()
+    cdp.send = async () => {}
+    const net = await trackNetwork(pageWith(cdp))
+    const realNow = Date.now
+    cdp.emit('Network.requestWillBeSent', { requestId: 'slow', type: 'Fetch' })
+    Date.now = () => realNow() + 60000
+    try { expect(net.inflight()).toBe(1) } finally { Date.now = realNow }
+  })
 
   it('starts from CDP or page events and finishes from either, by request id', async () => {
     const cdp = new EventEmitter()
@@ -204,27 +239,43 @@ describe('waitForPageSettle', () => {
     expect(r.ms).toBeGreaterThanOrEqual(140)
   })
 
-  it('waits for a framework hold', async () => {
+  it('a framework hold keeps the fast path closed', async () => {
     let held = true
     window.ManifestPending = { get count() { return held ? 1 : 0 }, labels: () => ['ready'] }
-    native.setTimeout.call(window, () => { held = false }, 120)
-    const r = await waitForPageSettle(fakePage, idleNet, { ...small, capMs: 2000 })
+    native.setTimeout.call(window, () => { held = false }, 60)
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, fixedNetMs: 1000, fixedQuietMs: 500, capMs: 3000 })
     expect(r.ok).toBe(true)
-    expect(r.ms).toBeGreaterThanOrEqual(110)
+    expect(r.path).toBeUndefined()
+    expect(r.ms).toBeGreaterThanOrEqual(55)
   })
 
   it('a timer due beyond the fixed engine\'s reach does not hold the fast path', async () => {
     setTimeout(() => {}, 2500)
-    const r = await waitForPageSettle(fakePage, idleNet, { ...small, capMs: 2000 })
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, extraMs: 0, capMs: 2000 })
     expect(r).toMatchObject({ ok: true })
     expect(r.path).toBeUndefined()
     expect(r.ms).toBeLessThan(500)
   })
 
   it('a timer due within reach of recent network activity holds the fast path', async () => {
-    setTimeout(() => {}, 2500)
+    setTimeout(() => {}, 2000)
     const recent = { inflight: () => 0, quietMs: () => 100, list: () => [] }
-    const r = await waitForPageSettle(fakePage, recent, { ...small, capMs: 3000 })
+    const r = await waitForPageSettle(fakePage, recent, { ...small, extraMs: 0, capMs: 3000 })
+    expect(r.path).toBe('fixed')
+  })
+
+  it('a slow snapshot (og capture) widens the reach', async () => {
+    setTimeout(() => {}, 4000)
+    const recent = { inflight: () => 0, quietMs: () => 100, list: () => [] }
+    const quick = await waitForPageSettle(fakePage, recent, { ...small, extraMs: 0, capMs: 3000 })
+    expect(quick.path).toBeUndefined()
+    const slow = await waitForPageSettle(fakePage, recent, { ...small, extraMs: 2000, capMs: 3000 })
+    expect(slow.path).toBe('fixed')
+  })
+
+  it('recent message-channel activity holds the fast path', async () => {
+    window.postMessage('tick', '*')
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, extraMs: 0, capMs: 3000 })
     expect(r.path).toBe('fixed')
   })
 
@@ -238,12 +289,12 @@ describe('waitForPageSettle', () => {
   })
 
 
-  it('yields a wedged hold once nothing has moved for stuckMs', async () => {
+  it('a hold never extends the fixed windows: a wedged one yields to them', async () => {
     window.ManifestPending = { count: 1, labels: () => ['ready'] }
-    const r = await waitForPageSettle(fakePage, idleNet, { ...small, stuckMs: 300, capMs: 3000 })
-    expect(r).toMatchObject({ ok: true })
-    expect(r.stuck).toBeTruthy()
-    expect(r.ms).toBeGreaterThanOrEqual(290)
+    window.__manifestMarkdownPending = 1
+    const r = await waitForPageSettle(fakePage, idleNet, { ...small, fixedNetMs: 100, fixedQuietMs: 100, capMs: 3000 })
+    expect(r).toMatchObject({ ok: true, path: 'fixed' })
+    expect(r.ms).toBeLessThan(600)
   })
 
   it('retries while the page context is gone (a reload), then settles on the new document', async () => {
@@ -262,7 +313,7 @@ describe('waitForPageSettle', () => {
   it('reports the cap with what was pending', async () => {
     window.ManifestPending = { count: 1, labels: () => ['stuck'] }
     const busyNet = { inflight: () => 1, quietMs: () => 0, list: () => ['GET /slow'] }
-    const r = await waitForPageSettle(fakePage, busyNet, { ...small, capMs: 300 })
+    const r = await waitForPageSettle(fakePage, busyNet, { ...small, fixedNetTimeoutMs: 5000, capMs: 300 })
     expect(r).toMatchObject({ ok: false, reason: 'cap', requests: ['GET /slow'] })
   })
 })

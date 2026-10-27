@@ -695,9 +695,9 @@
                 },
                 "settle": {
                     "type": "string",
-                    "enum": ["auto", "fixed"],
-                    "default": "auto",
-                    "description": "How a page counts as settled before its snapshot. auto: snapshots early only when no request is in flight and no timer due within 3s, interval, animation frame, idle callback, running CSS animation, open stream or socket, worker, cross-origin frame, data load or framework hold is pending; otherwise it uses the fixed waits. fixed: the fixed waits only (network idle, then DOM quiet; about 2 seconds per page). Use waitAfterIdle for content a script adds after a longer timer. --settle overrides."
+                    "enum": ["fixed", "auto"],
+                    "default": "fixed",
+                    "description": "How a page counts as settled before its snapshot. fixed (default): network idle, then DOM quiet (about 2 seconds per page). auto (opt-in, faster): snapshots early when no request, timer, interval, scheduled task, animation, idle callback, stream, socket, worker, service-worker install, cross-origin frame, recent message-channel activity, data load or framework hold is pending; otherwise it uses the fixed waits. Pages whose scripts use other schedulers should stay on fixed. Use waitAfterIdle for content a script adds after a longer timer. --settle overrides."
                 },
                 "blockRequests": {
                     "type": "array",
