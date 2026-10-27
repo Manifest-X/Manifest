@@ -2789,6 +2789,9 @@ async function runPrerender(config) {
   // the old browser and start a new one every `browserRecycleEvery` pages to
   // bound memory growth.
   async function launchBrowser() {
+    if (process.env.MNFST_RENDER_ENGINE === 'happy') {
+      return (await import('./manifest.render.happy.mjs')).launchHappyBrowser();
+    }
     try {
       const chromium = await importFromProject('@sparticuz/chromium');
       const pptr = await importFromProject('puppeteer-core');
@@ -3226,7 +3229,7 @@ async function runPrerender(config) {
         renderedPaths: pathList.filter((p) => p !== NOT_FOUND_PATH),
         localeSubstitution: config.localeSubstitution,
         onLocaleDependentContent,
-        ogSnapshot: (p, key) => takeOgSnapshot(p, config.output, key, globalAssetSig, ogCacheDir),
+        ogSnapshot: browser.noPixels ? null : (p, key) => takeOgSnapshot(p, config.output, key, globalAssetSig, ogCacheDir),
         onDebug: config.debugPrerender ? pushDebug : null,
         // Diagnostics: per-page stage timings (JSON lines) to this file.
         onTiming: process.env.MNFST_RENDER_TIMING
