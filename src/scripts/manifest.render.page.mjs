@@ -187,7 +187,9 @@ async function waitForPageSettle(page, net, { quietMs = 80, fixedNetMs = 1000, f
     if (r.path && idle && sinceOpen >= fixedNetMs + fixedQuietMs) return { ok: true, ms: Date.now() - t0, path: 'fixed', pending: r };
     // Holds or counters that never clear (a wedged source) yield once nothing has moved for stuckMs.
     if (!r.path && idle && net.quietMs() >= stuckMs && r.quietMs >= stuckMs) return { ok: true, ms: Date.now() - t0, stuck: r };
-    if (r.path) {
+    // Re-check at least every 100ms (pending work may finish and open the fast path); never sleep past the fixed window
+    if (r.path && idle) await sleep(Math.max(15, Math.min(100, r.path === 'fast' ? quietMs - net.quietMs() : Infinity, fixedNetMs + fixedQuietMs - sinceOpen)));
+    else if (r.path) {
       await sleep(Math.min(backoff, 100));
       backoff *= 2;
     } else backoff = 25;
