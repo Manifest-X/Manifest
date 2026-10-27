@@ -11,6 +11,7 @@ describe('stripPrerenderedXDataDirectives', () => {
     expect(frozen("$x.a.find(d =&gt; d.k === &#39;x&#39;)?.name")).toBe(true)
     expect(frozen('$x.a.map((a, i) =&gt; a.n).join(&quot;, &quot;)')).toBe(true)
     expect(frozen('Math.max(...$x.a.map(p =&gt; p.price))')).toBe(true)
+    expect(frozen('`Hello ${$x.name}`')).toBe(true)
   })
 
   it('keeps $x expressions that also read scope state live', () => {

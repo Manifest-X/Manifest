@@ -270,7 +270,7 @@
        the sibling's bindings stay live, as does a $x expression that reads scope state. -->
   <div id="xfor-overrun-test" x-data="{ pick: 'b', items: [{ k: 'a', n: 'A' }, { k: 'b', n: 'B' }] }">
     <template x-for="d in items" :key="d.k">
-      <button type="button" class="overrun-item" x-text="d.n"></button>
+      <button type="button" class="overrun-item"><span x-text="d.n"></span><span class="overrun-miss" x-text="$x.content.nope?.[d.k]"></span></button>
     </template>
     <button type="button" id="overrun-follow" class="overrun-item" @click="pick = 'a'"><span id="overrun-label" x-text="items.find(d => d.k === pick)?.n"></span></button>
     <span id="xfree-label" x-text="$x.content.pricing.plans.find(d => d.name === (pick === 'a' ? 'Starter' : 'Pro'))?.name"></span>

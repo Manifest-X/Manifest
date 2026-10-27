@@ -615,7 +615,9 @@ const SCOPE_FREE_IDENTIFIERS = new Set([
 function scopeIdentifiers(expr) {
   let src = String(expr || '')
     .replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
-  src = src.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\$]|\$(?!\{))*`/g, '""');
+  src = src.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, (lit) => (lit[0] === '`'
+    ? ' ' + [...lit.matchAll(/\$\{([^}]*)\}/g)].map((m) => '(' + m[1] + ')').join(' ') + ' '
+    : '""'));
   const params = new Set();
   for (const m of src.matchAll(/(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>/g)) {
     for (const p of (m[1] ?? m[2] ?? '').match(/[A-Za-z_$][\w$]*/g) || []) params.add(p);
@@ -2350,11 +2352,19 @@ async function renderRouteDom(page, ctx) {
         const lookup = tpl._x_lookup;
         if (!lookup || typeof lookup !== 'object') return;
         let els;
-        try { els = lookup instanceof Map ? [...lookup.values()] : Object.values(lookup); } catch { return; }
+        try { els = new Set(lookup instanceof Map ? lookup.values() : Object.values(lookup)); } catch { return; }
         window.__mnfstXforSeq = (window.__mnfstXforSeq || 0) + 1;
         const key = 'f' + window.__mnfstXforSeq;
         tpl.setAttribute('data-mnfst-xfor', key);
-        els.forEach((el) => { if (el?.nodeType === 1) el.setAttribute('data-mnfst-xfor-of', key); });
+        // Everything up to the last tracked clone (untracked orphans between still belong to the list).
+        const run = [];
+        let last = 0;
+        let found = 0;
+        for (let n = tpl.nextElementSibling; n && found < els.size; n = n.nextElementSibling) {
+          run.push(n);
+          if (els.has(n)) { last = run.length; found++; } else if (run.length - last > 50) break;
+        }
+        run.slice(0, last).forEach((el) => el.setAttribute('data-mnfst-xfor-of', key));
       });
     });
   });
@@ -2547,9 +2557,7 @@ async function renderRouteDom(page, ctx) {
           if (loopVars.some((v) => hasVar(expr, v))) {
             const name = attr.name;
             if (name === 'x-text' || name === 'x-html') {
-              if ((node.textContent || '').trim() || (node.innerHTML || '').trim()) {
-                node.removeAttribute(name);
-              }
+              node.removeAttribute(name);
               continue;
             }
             if (name === 'x-show' || name === 'x-if') {

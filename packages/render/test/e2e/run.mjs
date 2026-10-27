@@ -622,6 +622,11 @@ async function runAssertions() {
       'same-tag sibling after x-for clones keeps its x-text in output', tagOf('overrun-label'));
     assert(/\sx-text=/.test(tagOf('xfree-label')),
       '$x x-text that reads scope state keeps its x-text in output', tagOf('xfree-label'));
+    const missTags = overrunOut.match(/<span class="overrun-miss"[^>]*>/g) || [];
+    assert(missTags.length === 2 && missTags.every((t) => !t.includes('x-text')),
+      'empty loop-var binding on a baked clone is stripped', JSON.stringify(missTags));
+    assert(!consoleErrors.some((e) => /\bd is not defined/.test(e)),
+      'baked x-for clones raise no loop-var ReferenceError', consoleErrors.filter((e) => /\bd is not defined/.test(e)).join(' | '));
     const overrunBefore = await page.evaluate(() => ({
       items: document.querySelectorAll('#xfor-overrun-test .overrun-item').length,
       label: document.getElementById('overrun-label')?.textContent.trim(),
