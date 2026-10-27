@@ -153,9 +153,13 @@ async function runPrerender(extraArgs = [], quiet = false) {
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d; });
+    let doneAt = null;
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      if (doneAt === null && stdout.includes('prerender: total time')) doneAt = Date.now();
+    });
     child.stderr.on('data', (d) => { stderr += d; });
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       if (code !== 0) {
         process.stdout.write(stdout);
         process.stderr.write(stderr);
@@ -168,7 +172,8 @@ async function runPrerender(extraArgs = [], quiet = false) {
           );
           lines.forEach((l) => log.note(l.trim()));
         }
-        resolve({ stdout, stderr, ms: Date.now() - startedAt });
+        const exitedAt = Date.now();
+        resolve({ stdout, stderr, ms: exitedAt - startedAt, exitLagMs: doneAt === null ? null : exitedAt - doneAt });
       }
     });
   });
@@ -849,6 +854,9 @@ async function runIncrementalTests() {
     'summary explains first-run renders as new routes',
     runA.stdout.match(/prerender: skipped[^\n]*/)?.[0]);
   assert(existsSync(ledgerPath), 'route ledger written after a successful incremental run');
+  assert(runA.exitLagMs !== null && runA.exitLagMs < 5000,
+    'process exits promptly after the total-time line (no stranded timers)',
+    `exit lag ${runA.exitLagMs}ms`);
   const total = a ? a.rendered : 0;
   const treeA = await hashTree(FIXTURE_OUT_DIR);
 

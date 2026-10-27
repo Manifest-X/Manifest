@@ -1758,6 +1758,7 @@ async function renderRouteDom(page, ctx) {
   // (~10 preloaded components, dozens of lazy components) actually finish
   // expanding before snapshot.  Earlier reductions were too aggressive and
   // left unexpanded `<x-*>` placeholders in the output.
+  let readyTimer;
   await Promise.race([
     page.evaluate(() => {
       return new Promise((resolve) => {
@@ -1773,8 +1774,9 @@ async function renderRouteDom(page, ctx) {
         }, 25);
       });
     }),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('ready timeout')), timeout)),
+    new Promise((_, rej) => { readyTimer = setTimeout(() => rej(new Error('ready timeout')), timeout); }),
   ]).catch(() => { });
+  clearTimeout(readyTimer);
   mark('routingReady');
 
   // Boot: plugins loaded and Alpine initialized — the route/locale events
@@ -1885,11 +1887,14 @@ async function renderRouteDom(page, ctx) {
     if (!ogImageHandled) {
       // Bounded: a hung CDP call costs only this page's og image
       let ogTimer;
-      earlySnapshotUrl = await Promise.race([
-        ctx.ogSnapshot ? ctx.ogSnapshot(page, is404 ? '__404__' : pathSeg) : null,
-        new Promise((resolve) => { ogTimer = setTimeout(() => resolve(null), 30000); }),
-      ]);
-      clearTimeout(ogTimer);
+      try {
+        earlySnapshotUrl = await Promise.race([
+          ctx.ogSnapshot ? ctx.ogSnapshot(page, is404 ? '__404__' : pathSeg) : null,
+          new Promise((resolve) => { ogTimer = setTimeout(() => resolve(null), 30000); }),
+        ]);
+      } finally {
+        clearTimeout(ogTimer);
+      }
     }
   }
   mark('og');
