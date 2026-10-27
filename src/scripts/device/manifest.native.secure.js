@@ -2,6 +2,7 @@
 // namespaced localStorage fallback on the web. Intended for session tokens etc.
 // Native: a plugin registered as SecureStorage (@aparajita/capacitor-secure-storage,
 // or any getItem/setItem or get/set shape); $secure.use(adapter) overrides.
+// Native without a plugin rejects; never localStorage.
 // The web fallback is NOT encrypted — it degrades honestly, not securely.
 
 const MANIFEST_SECURE_NS = 'mnfst:';
@@ -72,25 +73,32 @@ function manifestSecureNativeBackend(plugin, name) {
     };
 }
 
-// Registered in JS but absent from the native header list
-function manifestSecureInstalled(name) {
-    const headers = window.Capacitor && window.Capacitor.PluginHeaders;
-    return !Array.isArray(headers) || headers.some(h => h && h.name === name);
-}
+const MANIFEST_SECURE_NONE = 'No secure-storage plugin is installed; install @aparajita/capacitor-secure-storage and run npx cap sync, or provide one with $secure.use(adapter)';
+const MANIFEST_SECURE_UNSYNCED = 'SecureStorage plugin is not installed natively; run npx cap sync';
 
-// Rejects every call; never falls back to unencrypted web storage
-function manifestSecureMissingBackend(name) {
-    const fail = (op) => async () => manifestSecureFail(op, new Error(name + ' plugin is not installed natively; run npx cap sync'));
+// Rejects every call, logs once; never falls back to unencrypted web storage
+let _manifestSecureMissingLogged = false;
+function manifestSecureMissingBackend(msg) {
+    const fail = (op) => async () => {
+        const e = new Error(msg);
+        if (!_manifestSecureMissingLogged) {
+            _manifestSecureMissingLogged = true;
+            try { console.error('[Manifest] $secure.' + op + ' failed', e); } catch (_) {}
+        }
+        throw e;
+    };
     return { get: fail('get'), set: fail('set'), remove: fail('remove'), keys: fail('keys'), clear: fail('clear') };
 }
 
+// Missing backends aren't cached, so a later-registered plugin is picked up
 let _manifestSecureBackend = null;
 function manifestSecureBackend() {
     if (_manifestSecureBackend) return _manifestSecureBackend;
-    const plugin = manifestNativeIsNative() ? manifestNativePlugin('SecureStorage') : null;
-    if (plugin && !manifestSecureInstalled('SecureStorage')) return manifestSecureMissingBackend('SecureStorage');
-    _manifestSecureBackend = plugin ? manifestSecureNativeBackend(plugin, 'SecureStorage') : manifestSecureWebBackend();
-    return _manifestSecureBackend;
+    if (!manifestNativeIsNative()) return (_manifestSecureBackend = manifestSecureWebBackend());
+    const plugin = manifestNativePlugin('SecureStorage');
+    if (!plugin) return manifestSecureMissingBackend(MANIFEST_SECURE_NONE);
+    if (!manifestNativeInstalled('SecureStorage')) return manifestSecureMissingBackend(MANIFEST_SECURE_UNSYNCED);
+    return (_manifestSecureBackend = manifestSecureNativeBackend(plugin, 'SecureStorage'));
 }
 
 function initManifestSecure() {

@@ -11,6 +11,11 @@ function manifestNativePlugin(name) {
     const cap = window.Capacitor;
     return (cap && cap.Plugins && cap.Plugins[name]) || null;
 }
+// Whether a plugin is in the native header list (no list: assume installed)
+function manifestNativeInstalled(name) {
+    const headers = window.Capacitor && window.Capacitor.PluginHeaders;
+    return !Array.isArray(headers) || headers.some(h => h && h.name === name);
+}
 // Whether a plugin exposes a native method. Bundled apps get a registerPlugin
 // Proxy where every property is a function, so prefer the native header; a
 // header list without this plugin means it isn't installed natively.

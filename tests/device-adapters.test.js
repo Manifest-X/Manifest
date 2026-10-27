@@ -244,11 +244,52 @@ describe('$secure', () => {
         expect(await magics.secure.get('a')).toBe('b')
     })
 
-    it('uses localStorage natively when no SecureStorage is registered (unchanged)', async () => {
+    it('rejects natively when no SecureStorage is registered, never touching localStorage', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
         localStorage.clear()
+        localStorage.setItem('mnfst:k', 'old')
+        const setSpy = vi.spyOn(Storage.prototype, 'setItem')
+        const getSpy = vi.spyOn(Storage.prototype, 'getItem')
+        for (const headers of [[header('App', ['getState'])], undefined]) {
+            boot({}, headers)
+            for (const op of [() => magics.secure.set('k', 'v'), () => magics.secure.get('k'), () => magics.secure.remove('k'), () => magics.secure.keys(), () => magics.secure.clear()]) {
+                await expect(op()).rejects.toThrow(/No secure-storage plugin is installed.*\$secure\.use\(adapter\)/)
+            }
+        }
+        expect(setSpy).not.toHaveBeenCalled()
+        expect(getSpy).not.toHaveBeenCalled()
+        expect(localStorage.getItem('mnfst:k')).toBe('old')
+    })
+
+    it('honours $secure.use(adapter) natively when no SecureStorage is registered', async () => {
+        localStorage.clear()
+        const m = new Map()
         boot({}, [header('App', ['getState'])])
+        magics.secure.use({ get: async k => m.get(k) ?? null, set: async (k, v) => { m.set(k, v) } })
+        await magics.secure.set('a', 'b')
+        expect(await magics.secure.get('a')).toBe('b')
+        expect(localStorage.length).toBe(0)
+    })
+
+    it('logs a missing or unsynced plugin once per page load, rejecting every call', async () => {
+        for (const plugins of [{}, { SecureStorage: capProxy(aparajitaSecure()) }]) {
+            const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+            boot(plugins, [header('App', ['getState'])])
+            await expect(magics.secure.get('k')).rejects.toThrow()
+            await expect(magics.secure.set('k', 'v')).rejects.toThrow()
+            expect(err).toHaveBeenCalledTimes(1)
+            err.mockRestore()
+        }
+    })
+
+    it('uses localStorage on the web when no SecureStorage is registered (unchanged)', async () => {
+        localStorage.clear()
+        boot({}, undefined, false)
         await magics.secure.set('k', 'v')
         expect(localStorage.getItem('mnfst:k')).toBe('v')
+        expect(await magics.secure.get('k')).toBe('v')
+        boot({}, undefined, false)
+        expect(await magics.secure.keys()).toEqual(['k'])
     })
 
     it('still adapts getItem/setItem and get/set shapes', async () => {
