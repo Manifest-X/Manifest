@@ -239,7 +239,7 @@ function installSettleTracker() {
 // Requests in flight for one page (Node side), counted until they finish or fail. Starts come from a CDP session of
 // its own (request interception handlers, which Puppeteer runs one after another, can't delay them) and from page
 // events (which also cover workers); finishes from either. A new main-frame document drops the old one's requests.
-// Streams and media never finish and don't count (the page tracker counts open streams). A request that never
+// Streams and media count until their headers arrive (they never finish). A request that never
 // finishes keeps the fast path closed. The fixed windows count a request as idle once its headers arrive, as
 // Puppeteer's waitForNetworkIdle does, so a response that streams forever can't hold them.
 async function trackNetwork(page) {
@@ -271,7 +271,7 @@ async function trackNetwork(page) {
     cdp.on('Network.requestWillBeSent', (e) => {
       const method = e.request?.method, url = e.request?.url;
       if (e.type === 'Document' && e.requestId === e.loaderId && !e.redirectResponse) return navigated(e.frameId, e.requestId, method, url);
-      if (!endlessType(e.type)) add(e.requestId, method, url);
+      add(e.requestId, method, url);
     });
     cdp.on('Network.responseReceived', (e) => {
       if (endlessType(e.type) || endlessMime(e.response?.mimeType)) done(e.requestId);
@@ -283,7 +283,7 @@ async function trackNetwork(page) {
   page.on('request', (r) => {
     try {
       if (r.isNavigationRequest?.() && r.frame?.() === page.mainFrame?.() && !r.redirectChain?.().length) return void navigated('main', r.id, r.method?.(), r.url?.());
-      if (!endlessType(r.resourceType?.())) add(r.id, r.method?.(), r.url?.());
+      add(r.id, r.method?.(), r.url?.());
     } catch { /* no-op */ }
   });
   page.on('response', (res) => {

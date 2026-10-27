@@ -187,14 +187,19 @@ describe('trackNetwork', () => {
     expect(net.list()[0]).toMatch(/^\d+ GET https:\/\/x\.test\/stream$/)
   })
 
-  it('ignores streams and media', async () => {
+  it('counts streams and media until their headers arrive', async () => {
     const cdp = new EventEmitter()
     cdp.send = async () => {}
     const page = pageWith(cdp)
     const net = await trackNetwork(page)
     cdp.emit('Network.requestWillBeSent', { requestId: '2', type: 'EventSource' })
-    page.emit('request', req('m', 'media'))
+    const m = req('m', 'media')
+    page.emit('request', m)
     cdp.emit('Network.requestWillBeSent', { requestId: '3', type: 'Fetch' })
+    expect(net.inflight()).toBe(3)
+    expect(net.awaitingHeaders()).toBe(3)
+    cdp.emit('Network.responseReceived', { requestId: '2', type: 'EventSource', response: { mimeType: 'text/event-stream' } })
+    page.emit('response', res(m, 'video/mp4'))
     cdp.emit('Network.responseReceived', { requestId: '3', type: 'Fetch', response: { mimeType: 'text/event-stream' } })
     expect(net.inflight()).toBe(0)
   })
