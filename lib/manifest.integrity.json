@@ -1,7 +1,7 @@
 {
-  "manifest.appwrite.auth.js": "sha384-dsIWnH0qCAGSzAXMGrd8fvOrVl4tOIE6j5tC35JPTrQXZ56qLD36ARyvhR7vi3Id",
-  "manifest.appwrite.data.js": "sha384-FD5tfFyloHQ+4MeFkUpQg54mvasX5nX6Qjw1W+dpqJT5POlzusZ84hiEbGJ6ilQx",
-  "manifest.appwrite.presences.js": "sha384-JyVDWFT69b7Svq8J8p9tNWe2v9PZNQBY5UyhtOl1vnuHFAX0CRQ3MA9SiKq5wzNh",
+  "manifest.appwrite.auth.js": "sha384-9WNhIeSEzxxJm+yP7cV41kV2xyzyXgFCNpThqiREcNbb6tnIW6O7VRZPL2jwy9Nk",
+  "manifest.appwrite.data.js": "sha384-Tp5v3LBRMfWgPgzPXR3BPbNmvMV+6FkNJJ/ZT4d7XsIAKmwieEmLiQzbFd58pP9b",
+  "manifest.appwrite.presences.js": "sha384-qsRtzFCtW7pS+I95EQuZQoPAeZvBsNDSMFwDFBJriyCWcNv2Jo2KFvOweClJhowJ",
   "manifest.bindings.js": "sha384-lPtMf8Ykaic9gNVZKq8Scia1881ZeMAyxer3WCIkUNwwrgzGBWto1OXADUwjvORF",
   "manifest.charts.js": "sha384-G+huD7UvjF9zDovdVVlh4I5X1Mq4oNnJfoFg4NnGdP3R/4Skq9hy5cGuHNYLxDYm",
   "manifest.chat.js": "sha384-88DfMfJLoi2oxclVD2iIMDkIGAExMXq5k47mekUredlicLaP3oZY5bwtwqs+TqDF",

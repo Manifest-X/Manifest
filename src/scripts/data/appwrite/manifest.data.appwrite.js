@@ -4,6 +4,22 @@
 let appwriteClientCache = null;
 let appwriteClientPromise = null;
 
+// Auth plugin's client, polled while configured (script order isn't guaranteed)
+async function resolveAuthPluginClient(authConfigured) {
+    const deadline = Date.now() + (authConfigured ? 5000 : 0);
+    while (true) {
+        if (window.ManifestAppwriteAuthConfig) {
+            try {
+                const services = await window.ManifestAppwriteAuthConfig.getAppwriteClient();
+                if (services?.client) return services.client;
+            } catch (e) {
+            }
+        }
+        if (Date.now() >= deadline) return null;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+}
+
 // Initialize Appwrite client (supports both auth plugin and standalone)
 async function initializeAppwriteClient() {
     // Return cached client if available
@@ -24,17 +40,21 @@ async function initializeAppwriteClient() {
 
     appwriteClientPromise = (async () => {
         try {
-            // Try to get client from auth plugin first (if available)
-            if (window.ManifestAppwriteAuthConfig) {
-                try {
-                    const { client } = await window.ManifestAppwriteAuthConfig.getAppwriteClient();
-                    if (client) {
-                        appwriteClientCache = client;
-                        return client;
-                    }
-                } catch (e) {
-                }
+            // When appwrite.auth is configured the auth plugin's client is
+            // canonical: wait (bounded) for its module instead of splitting onto
+            // a second Client — a split flips the hub's single Realtime memo
+            // back and forth (socket churn on every cross-plugin subscribe)
+            let manifest = null;
+            let manifestError = null;
+            if (window.ManifestDataConfig) {
+                try { manifest = await window.ManifestDataConfig.ensureManifest(); } catch (e) { manifestError = e; }
             }
+            const authClient = await resolveAuthPluginClient(!!manifest?.appwrite?.auth);
+            if (authClient) {
+                appwriteClientCache = authClient;
+                return authClient;
+            }
+            if (manifestError) throw manifestError; // outer catch logs + resets the promise
 
             // Fallback: Initialize client from manifest config
             if (!window.ManifestDataConfig) {
@@ -42,7 +62,6 @@ async function initializeAppwriteClient() {
                 return null;
             }
 
-            const manifest = await window.ManifestDataConfig.ensureManifest();
             if (!manifest?.appwrite) {
                 console.warn('[Manifest Data] Appwrite config not found in manifest');
                 return null;
@@ -85,18 +104,12 @@ async function initializeAppwriteClient() {
     return appwriteClientPromise;
 }
 
-// Shared Realtime: ONE instance (one socket) per tab, keyed to the client it
-// wraps. Auth identity events drop it (below) so the next use rebuilds against
-// the current session; manifest.data.realtime.js re-binds live channels.
-let realtimeCache = null;
-let realtimeClient = null;
+// Shared Realtime: ONE instance (one socket) per tab, via the cross-plugin
+// hub (defined in manifest.data.realtime.js and the auth/presences carriers).
+// Auth identity events drop the hub's memo so the next use rebuilds against
+// the current session; the hub re-binds live channels.
 function getSharedRealtime(client) {
-    if (!client || !window.Appwrite?.Realtime) return null;
-    if (!realtimeCache || realtimeClient !== client) {
-        realtimeCache = new window.Appwrite.Realtime(client);
-        realtimeClient = client;
-    }
-    return realtimeCache;
+    return window.ManifestRealtimeHub ? window.ManifestRealtimeHub.acquire(client) : null;
 }
 
 // Get Appwrite data services (TablesDB, Storage, Realtime)
@@ -119,8 +132,7 @@ let authCheck = null;
 let authVerified = false;
 ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized']
     .forEach(type => window.addEventListener(type, () => {
-        authCheck = null; authVerified = false;
-        realtimeCache = null; realtimeClient = null; // socket re-authenticates as the new identity
+        authCheck = null; authVerified = false; // the hub drops its own Realtime memo on these events
     }));
 
 async function verifyAuthenticated() {
