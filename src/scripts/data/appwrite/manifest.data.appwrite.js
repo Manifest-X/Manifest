@@ -85,18 +85,12 @@ async function initializeAppwriteClient() {
     return appwriteClientPromise;
 }
 
-// Shared Realtime: ONE instance (one socket) per tab, keyed to the client it
-// wraps. Auth identity events drop it (below) so the next use rebuilds against
-// the current session; manifest.data.realtime.js re-binds live channels.
-let realtimeCache = null;
-let realtimeClient = null;
+// Shared Realtime: ONE instance (one socket) per tab, via the cross-plugin
+// hub (defined in manifest.data.realtime.js and the auth/presences carriers).
+// Auth identity events drop the hub's memo so the next use rebuilds against
+// the current session; the hub re-binds live channels.
 function getSharedRealtime(client) {
-    if (!client || !window.Appwrite?.Realtime) return null;
-    if (!realtimeCache || realtimeClient !== client) {
-        realtimeCache = new window.Appwrite.Realtime(client);
-        realtimeClient = client;
-    }
-    return realtimeCache;
+    return window.ManifestRealtimeHub ? window.ManifestRealtimeHub.acquire(client) : null;
 }
 
 // Get Appwrite data services (TablesDB, Storage, Realtime)
@@ -119,8 +113,7 @@ let authCheck = null;
 let authVerified = false;
 ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized']
     .forEach(type => window.addEventListener(type, () => {
-        authCheck = null; authVerified = false;
-        realtimeCache = null; realtimeClient = null; // socket re-authenticates as the new identity
+        authCheck = null; authVerified = false; // the hub drops its own Realtime memo on these events
     }));
 
 async function verifyAuthenticated() {

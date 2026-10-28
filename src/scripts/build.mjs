@@ -196,9 +196,16 @@ const CONFIG = {
 
     // Shared JS snippets, synced into each carrying plugin between the
     // snippet's own marker lines so every plugin stays standalone.
-    // Source of truth: scripts/snippets/.
+    // Source of truth: scripts/snippets/. A carrier under a subscript dir
+    // (path with '/') is synced in place in src so the bundle build and the
+    // vm-loaded tests read the same bytes.
     scriptSnippets: {
-        'manifest.expressions.js': ['manifest.tooltips.js', 'manifest.toasts.js']
+        'manifest.expressions.js': ['manifest.tooltips.js', 'manifest.toasts.js'],
+        'manifest.realtime.hub.js': [
+            'data/appwrite/manifest.data.realtime.js',
+            'auth/manifest.appwrite.auth.config.js',
+            'manifest.appwrite.presences.js'
+        ]
     },
 
     // Core plugins that should load first
@@ -325,7 +332,8 @@ function syncScriptSnippets() {
             process.exit(1);
         }
         for (const plugin of plugins) {
-            const content = fs.readFileSync(path.join('scripts', plugin), 'utf8');
+            const sourcePath = path.join('scripts', plugin);
+            const content = fs.readFileSync(sourcePath, 'utf8');
             const start = content.indexOf(startMarker);
             const end = start === -1 ? -1 : content.indexOf(endMarker, start);
             if (end === -1) {
@@ -333,8 +341,11 @@ function syncScriptSnippets() {
                 process.exit(1);
             }
             const synced = content.slice(0, start) + body + content.slice(end + endMarker.length);
-            const outputPath = path.join(MONOLITH_DIR, plugin);
-            if (synced !== content || SCRIPTS_OUT) fs.writeFileSync(outputPath, synced);
+            // Subscript carriers sync in place (buildSubscripts then embeds the
+            // fresh body); root-level plugins write to the output dir as before
+            const isSubscript = plugin.includes('/');
+            const outputPath = isSubscript ? sourcePath : path.join(MONOLITH_DIR, plugin);
+            if (synced !== content || (SCRIPTS_OUT && !isSubscript)) fs.writeFileSync(outputPath, synced);
             console.log(`  \u2713 ${snippet} \u2192 ${plugin}`);
         }
     }
@@ -931,10 +942,10 @@ async function build() {
     console.log('🚀 Starting Manifest build process...\n');
 
     try {
-        // Step 1: Build subscripts
+        // Step 1: Sync shared snippets (subscript carriers in place), then build subscripts
         if (SCRIPTS_OUT) fs.mkdirSync(SCRIPTS_OUT, { recursive: true });
-        buildSubscripts();
         syncScriptSnippets();
+        buildSubscripts();
 
         // Step 2: Build stylesheets
         if (!SCRIPTS_OUT) await buildStylesheets();

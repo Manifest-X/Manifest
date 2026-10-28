@@ -122,6 +122,7 @@ async function boot(dataSources, { tables = {}, files = {}, auth, realtimeQuerie
     window.Alpine = Alpine
     Alpine.store('auth', auth || signedOut())
     const stats = mockAppwrite(tables, files, { realtimeQueries })
+    delete window.ManifestRealtimeHub
     delete window.ManifestDataRealtime
     delete window.ManifestDataAppwrite
     delete window.ManifestAppwriteAuthConfig
@@ -235,14 +236,23 @@ describe('one shared realtime client per tab', () => {
         expect(rows('alpha')).toEqual(['a1', 'n1'])
     })
 
-    it('a multi-variant Appwrite message merges exactly once', async () => {
-        const { rt, rows, main } = await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] } })
+    it('a multi-variant Appwrite message is classified once: one filter call, one handler call, one merge', async () => {
+        const { rt, rows, main, realtime } = await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] } })
         await main.loadDataSource('alpha')
         await settle()
         const ds = window.ManifestDataStore
         const orig = ds.landRows
         let lands = 0
         ds.landRows = (...a) => { lands++; return orig(...a) }
+        const filterCalls = []
+        realtime().setFilter('alpha', (type, row) => { filterCalls.push([type, row.$id]); return true })
+        let handlerCalls = 0
+        const hubSources = window.ManifestRealtimeHub._sources
+        const src = hubSources.get('alpha')
+        const origHandler = src.handler
+        src.handler = (...a) => { handlerCalls++; return origHandler(...a) }
+        const entry = window.ManifestRealtimeHub._entries.get(CH('t1'))
+        entry.handlers.set('alpha', src.handler)
         try {
             // Appwrite sends several event-name variants for one change
             rt().fire(CH('t1'), {
@@ -256,7 +266,10 @@ describe('one shared realtime client per tab', () => {
             await settle()
         } finally {
             ds.landRows = orig
+            realtime().setFilter('alpha', null)
         }
+        expect(filterCalls).toEqual([['create', 'n1']]) // classified once, not once per variant
+        expect(handlerCalls).toBe(1)
         expect(lands).toBe(1)
         expect(rows('alpha')).toEqual(['a1', 'n1'])
     })
