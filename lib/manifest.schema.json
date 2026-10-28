@@ -413,6 +413,23 @@
                         }
                     ]
                 },
+                "presence": {
+                    "description": "Alias of presences — enable the $presence plugin: true, or an options object.",
+                    "oneOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "scope": {
+                                    "type": "string",
+                                    "description": "Roster scope: 'auto'/'team' (current team when one is active, default), 'global', or an explicit team id. May reference an env var via ${VAR_NAME}."
+                                }
+                            }
+                        }
+                    ]
+                },
                 "auth": {
                     "type": "object",
                     "properties": {
