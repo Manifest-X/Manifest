@@ -298,7 +298,7 @@ if (!window.ManifestRealtimeHub) {
         status: 'online',
         metadata: null,
         scope: 'auto',          // 'auto'/'team' = current team, 'global', or an explicit team id
-        teamsEnabled: false,    // manifest.appwrite.auth.teams (read at start)
+        teamsEnabled: false,    // manifest.appwrite.auth.teams (read in ensureServices)
         auto: true,             // focus/blur auto-flip
         heartbeatMs: 25000,     // TTL refresh cadence
         onFocus: null,
@@ -362,6 +362,12 @@ if (!window.ManifestRealtimeHub) {
         if (!A || !A.Presences || !A.Realtime || !window.ManifestRealtimeHub) return false;
         const services = await window.ManifestAppwriteAuthConfig?.getAppwriteClient?.();
         if (!services?.client) return false;
+        // teamsEnabled gates the scoped (never-users()) grant: resolve it here
+        // so pre-start set() writes are covered, not only start()
+        try {
+            const authCfg = await window.ManifestAppwriteAuthConfig?.getAppwriteConfig?.();
+            ctx.teamsEnabled = !!authCfg?.teams;
+        } catch (e) { ctx.teamsEnabled = false; }
         ctx.client = services.client;
         ctx.presences = new A.Presences(services.client);
         return true;
@@ -547,11 +553,6 @@ if (!window.ManifestRealtimeHub) {
         if (!authUser()) { if (s) s.error = 'sign in required'; return false; }
         if (!(await ensureServices())) { if (s) s.error = 'Appwrite Presences unavailable'; return false; }
         if (ctx.started) return true;
-
-        try {
-            const authCfg = await window.ManifestAppwriteAuthConfig?.getAppwriteConfig?.();
-            ctx.teamsEnabled = !!authCfg?.teams;
-        } catch (e) { ctx.teamsEnabled = false; }
 
         ctx.started = true;
 

@@ -480,6 +480,17 @@ describe('scope lifecycle', () => {
         expect(last.permissions.join()).not.toContain('read("users")')
     })
 
+    it('pre-start set() on a scoped teams project is self-only, never users()', async () => {
+        const { stats, presence } = await boot({
+            appwriteAuth: { teams: true },
+            auth: { ...authed(), currentTeam: null, teams: [] },
+        })
+        await presence.set('online')
+        await settle()
+        expect(stats.upserts[0].permissions).toContain('read("user:me")')
+        expect(stats.upserts[0].permissions.join()).not.toContain('read("users")')
+    })
+
     it('teams disabled in config writes the global users() grant', async () => {
         const { stats, presence } = await boot({
             appwriteAuth: {},
