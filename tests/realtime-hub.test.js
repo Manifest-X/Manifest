@@ -447,7 +447,7 @@ describe('scope lifecycle', () => {
         expect(last.permissions).toContain('read("team:teamA")')
     })
 
-    it('teams settling to none rewrites the pending record to the global users() grant', async () => {
+    it('scoped with teams resolving to none stays self-only — never the users() grant', async () => {
         const { stats, presence } = await boot({
             appwriteAuth: { teams: true },
             auth: { ...authed(), currentTeam: null, teams: [] },
@@ -457,7 +457,36 @@ describe('scope lifecycle', () => {
         expect(stats.upserts[0].permissions).toContain('read("user:me")')
         window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'))
         await settle(150)
+        for (const u of stats.upserts) expect(u.permissions.join()).not.toContain('read("users")')
+        // A team arriving late (slow provisioning) still rescopes to the team grant
+        Alpine.store('auth').currentTeam = { $id: 'teamLate' }
+        await settle(150)
         const last = stats.upserts[stats.upserts.length - 1]
-        expect(last.permissions).toContain('read("users")')
+        expect(last.permissions).toContain('read("team:teamLate")')
+    })
+
+    it('scoped team becoming null rescopes to self-only, not users()', async () => {
+        const { stats, presence } = await boot({
+            appwriteAuth: { teams: true },
+            auth: { ...authed(), currentTeam: { $id: 'teamA' }, teams: [{ $id: 'teamA' }] },
+        })
+        await presence.start()
+        await settle()
+        expect(stats.upserts[0].permissions).toContain('read("team:teamA")')
+        Object.assign(Alpine.store('auth'), { currentTeam: null, teams: [] })
+        await settle(150)
+        const last = stats.upserts[stats.upserts.length - 1]
+        expect(last.permissions).toContain('read("user:me")')
+        expect(last.permissions.join()).not.toContain('read("users")')
+    })
+
+    it('teams disabled in config writes the global users() grant', async () => {
+        const { stats, presence } = await boot({
+            appwriteAuth: {},
+            auth: { ...authed(), currentTeam: null, teams: [] },
+        })
+        await presence.start()
+        await settle()
+        expect(stats.upserts[0].permissions).toContain('read("users")')
     })
 })
