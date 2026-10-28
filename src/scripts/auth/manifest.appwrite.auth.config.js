@@ -50,9 +50,12 @@ if (!window.ManifestRealtimeHub) {
             let action = null;
             for (const event of list) {
                 if (typeof event !== 'string') continue;
-                if (event.includes('delete')) return 'delete';
-                if (event.includes('update') || event.includes('upsert')) action = 'update';
-                else if (!action && event.includes('create')) action = 'create';
+                // Verbs match as path segments only — event names embed
+                // user-chosen ids (a table named deleted_posts is not a delete)
+                const parts = event.split('.');
+                if (parts.includes('delete')) return 'delete';
+                if (parts.includes('update') || parts.includes('upsert')) action = 'update';
+                else if (!action && parts.includes('create')) action = 'create';
             }
             return action;
         }
@@ -170,9 +173,12 @@ if (!window.ManifestRealtimeHub) {
             const canQuery = supportsQueries(realtime);
             for (const [name, src] of sources) {
                 if (activeRealtime !== realtime) return; // superseded by a newer instance
-                const resolved = (canQuery && src.getFilters) ? await src.getFilters() : null;
-                const subKey = subKeyFor(src.channel, resolved);
                 try {
+                    // Inside the try: one source's failing getFilters must not
+                    // strand the sources after it unsubscribed
+                    const resolved = (canQuery && src.getFilters) ? await src.getFilters() : null;
+                    if (activeRealtime !== realtime) return;
+                    const subKey = subKeyFor(src.channel, resolved);
                     const entry = ensureEntry(realtime, subKey, src.channel, resolved?.queries);
                     entry.handlers.set(name, src.handler);
                     entry.refs = entry.handlers.size;
@@ -227,9 +233,11 @@ if (!window.ManifestRealtimeHub) {
             return () => detach(name, token);
         }
 
-        // Explicit teardown by name; also aborts a subscribe in flight
+        // Explicit teardown by name; also aborts a subscribe in flight and
+        // drops the name's pre-filter (a replacement re-registers its own)
         function unsubscribe(name) {
             tombstones.set(name, (tombstones.get(name) || 0) + 1);
+            filters.delete(name);
             detach(name);
         }
 
@@ -247,9 +255,13 @@ if (!window.ManifestRealtimeHub) {
                 realtimeCache = null;
                 realtimeClient = null;
                 if (!sources.size) return;
-                const src = [...sources.values()].find(s => s.getRealtime);
-                const realtime = src ? await src.getRealtime() : null;
-                if (realtime) syncInstance(realtime);
+                try {
+                    const src = [...sources.values()].find(s => s.getRealtime);
+                    const realtime = src ? await src.getRealtime() : null;
+                    if (realtime) syncInstance(realtime);
+                } catch (error) {
+                    console.error('[Manifest Realtime] Identity rebuild failed:', error);
+                }
             }));
         }
 
@@ -426,6 +438,7 @@ let appwriteUsers = null;
 // subscriptions (teams/memberships/account) ride the same socket as data and
 // presence, ref-counted and re-bound across identity rebuilds.
 let authRealtimeAdapter = null;
+let authSubSeq = 0;
 function getAuthRealtimeAdapter() {
     if (!window.Appwrite?.Realtime || !window.ManifestRealtimeHub) return null;
     if (authRealtimeAdapter) return authRealtimeAdapter;
@@ -436,7 +449,9 @@ function getAuthRealtimeAdapter() {
     };
     authRealtimeAdapter = {
         subscribe(channel, callback) {
-            const name = `auth:${channel}`;
+            // Unique per call: two subscriptions to one channel keep separate
+            // handlers/teardowns (the subKey ref-count still shares the socket sub)
+            const name = `auth:${channel}:${++authSubSeq}`;
             hub.subscribe({
                 name,
                 channel,

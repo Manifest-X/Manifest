@@ -43,7 +43,7 @@ let iso = null
 
 // Counting Appwrite mock across all three plugins: Client constructions,
 // Realtime instances, SDK subscribes, presence upserts.
-function mockAppwrite(tables = {}, presenceRows = [], stats) {
+function mockAppwrite(tables = {}, presenceRows = [], stats, { promiseMode = false } = {}) {
     class Realtime {
         constructor(client) { this.client = client; this.channels = new Map(); stats.instances.push(this) }
         subscribe(channel, cb, ...rest) {
@@ -52,7 +52,9 @@ function mockAppwrite(tables = {}, presenceRows = [], stats) {
             const set = this.channels.get(channel) || new Set()
             set.add(cb)
             this.channels.set(channel, set)
-            return () => set.delete(cb)
+            const drop = () => set.delete(cb)
+            // Real Web SDK ≥22.4 returns Promise<RealtimeSubscription> (the 0.5.248 trap)
+            return promiseMode ? Promise.resolve({ unsubscribe: drop }) : drop
         }
         fire(channel, response) { [...(this.channels.get(channel) || [])].forEach(cb => cb(response)) }
         liveCount(channel) { return (this.channels.get(channel) || new Set()).size }
@@ -66,8 +68,8 @@ function mockAppwrite(tables = {}, presenceRows = [], stats) {
         Presences: class {
             constructor() { stats.presencesServices.push(this) }
             async list() { return { presences: presenceRows.map(r => ({ ...r })) } }
-            async upsert(args) { stats.upserts.push(args); return { ...args } }
-            async delete() { return true }
+            async upsert(args) { stats.calls.push('upsert'); stats.upserts.push(args); return { ...args } }
+            async delete(args) { stats.calls.push('delete'); stats.deletes.push(args); return true }
         },
         Realtime,
         Channel: { presences: () => 'presences', presence: id => `presences.${id}` },
@@ -84,11 +86,11 @@ const authed = (team = null) => ({
     currentTeam: team ? { $id: team } : null, teams: [],
 })
 
-async function boot({ dataSources = {}, tables = {}, presenceRows = [], presencesConfig = true, auth } = {}) {
+async function boot({ dataSources = {}, tables = {}, presenceRows = [], presencesConfig = true, auth, appwriteAuth = null, promiseMode = false, deferAuth = false } = {}) {
     window.Alpine = Alpine
     Alpine.store('auth', auth || authed())
-    const stats = { clients: [], instances: [], subscribes: [], subscribeArgs: [], presencesServices: [], upserts: [] }
-    mockAppwrite(tables, presenceRows, stats)
+    const stats = { clients: [], instances: [], subscribes: [], subscribeArgs: [], presencesServices: [], upserts: [], deletes: [], calls: [] }
+    mockAppwrite(tables, presenceRows, stats, { promiseMode })
     delete window.ManifestRealtimeHub
     delete window.ManifestDataRealtime
     delete window.ManifestDataAppwrite
@@ -96,7 +98,7 @@ async function boot({ dataSources = {}, tables = {}, presenceRows = [], presence
     delete window.ManifestDataPersist
     delete window.ManifestPresence
     window.ManifestComponentsRegistry = {
-        manifest: { appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db', presences: presencesConfig }, data: dataSources }
+        manifest: { appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db', presences: presencesConfig, ...(appwriteAuth ? { auth: appwriteAuth } : {}) }, data: dataSources }
     }
 
     iso = isolateVm()
@@ -108,15 +110,24 @@ async function boot({ dataSources = {}, tables = {}, presenceRows = [], presence
         File: window.File, Blob: window.Blob,
     }
     vm.createContext(ctx)
-    // Load order mirrors the loader: auth first, then presences, then data
-    vm.runInContext(read(AUTH_CONFIG), ctx, { filename: AUTH_CONFIG })
-    vm.runInContext(read(PRESENCES), ctx, { filename: PRESENCES })
-    document.dispatchEvent(new window.CustomEvent('alpine:init')) // presences store/effects only — data not loaded yet
-    for (const f of DATA_SUBSCRIPTS) vm.runInContext(read(f), ctx, { filename: f })
+    let loadAuth = null
+    if (deferAuth) {
+        // Inverted order: data first, auth injected later by the test
+        for (const f of DATA_SUBSCRIPTS) vm.runInContext(read(f), ctx, { filename: f })
+        document.dispatchEvent(new window.CustomEvent('alpine:init'))
+        loadAuth = () => vm.runInContext(read(AUTH_CONFIG), ctx, { filename: AUTH_CONFIG })
+    } else {
+        // Load order mirrors the loader: auth first, then presences, then data
+        vm.runInContext(read(AUTH_CONFIG), ctx, { filename: AUTH_CONFIG })
+        vm.runInContext(read(PRESENCES), ctx, { filename: PRESENCES })
+        document.dispatchEvent(new window.CustomEvent('alpine:init')) // presences store/effects only — data not loaded yet
+        for (const f of DATA_SUBSCRIPTS) vm.runInContext(read(f), ctx, { filename: f })
+    }
     for (let i = 0; i < 50 && !Alpine.store('data')?._ready; i++) await settle(5)
     await settle(50)
 
     return {
+        loadAuth,
         stats,
         rt: () => stats.instances[stats.instances.length - 1],
         hub: () => window.ManifestRealtimeHub,
@@ -299,5 +310,154 @@ describe('classify once per message', () => {
         expect(c(['presences.u1.delete', 'presences.u1.upsert'])).toBe('delete')
         expect(c(['rows.create', 'rows.update'])).toBe('update')
         expect(c(['presences'])).toBe(null)
+    })
+
+    it('verbs match as path segments, never inside user-chosen ids', async () => {
+        const { hub } = await boot({})
+        const c = hub().classify
+        // a table named deleted_posts: its creates/updates are NOT deletes
+        expect(c(['databases.db.tables.deleted_posts.rows.r1.create', 'databases.db.tables.deleted_posts.rows.r1'])).toBe('create')
+        expect(c(['databases.db.tables.deleted_posts.rows.r1.update'])).toBe('update')
+        // a table named create_log: its deletes are NOT creates
+        expect(c(['databases.db.tables.create_log.rows.r1.delete'])).toBe('delete')
+        // a user id containing "update"
+        expect(c(['presences.user_update_bot.delete'])).toBe('delete')
+        // non-final verb segments still classify
+        expect(c(['users.u1.update.email'])).toBe('update')
+        expect(c(['teams.t1.memberships.m1.update.status'])).toBe('update')
+    })
+})
+
+describe('canonical client (no split, no rebind churn)', () => {
+    it('data loading before auth still lands on the auth client: one Client, one Realtime, no re-subscribes', async () => {
+        const { stats, loadAuth, main } = await boot({
+            deferAuth: true,
+            appwriteAuth: { teams: true },
+            dataSources: { alpha: T('t1') },
+            tables: { t1: [{ $id: 'a1' }] },
+            auth: authed('teamA'),
+        })
+        // Data starts loading while the auth module is still absent: it must
+        // wait for the configured auth plugin, not split onto its own Client
+        const loading = main.loadDataSource('alpha')
+        await settle(120)
+        loadAuth()
+        await loading
+        const services = await window.ManifestAppwriteAuthConfig.getAppwriteClient()
+        services.realtime.subscribe('teams', () => { })
+        await settle()
+        expect(stats.clients.length).toBe(1)
+        expect(stats.instances.length).toBe(1)
+        // zero churn: each channel subscribed exactly once
+        const counts = stats.subscribes.reduce((m, ch) => (m[ch] = (m[ch] || 0) + 1, m), {})
+        expect(counts).toEqual({ [CH('t1')]: 1, teams: 1 })
+    })
+})
+
+describe('promise-returning SDK subscribe (Web SDK ≥22.4 shape)', () => {
+    it('auth adapter and presence teardowns actually unsubscribe', async () => {
+        const { stats, presence } = await boot({ promiseMode: true, auth: authed('teamA') })
+        const services = await window.ManifestAppwriteAuthConfig.getAppwriteClient()
+        const teardown = services.realtime.subscribe('teams', () => { })
+        await presence.start()
+        await settle()
+        const rt = stats.instances[0]
+        expect(rt.liveCount('teams')).toBe(1)
+        expect(rt.liveCount('presences')).toBe(1)
+        teardown()
+        presence.stop()
+        await settle()
+        expect(rt.liveCount('teams')).toBe(0)
+        expect(rt.liveCount('presences')).toBe(0)
+    })
+
+    it('two auth subscriptions to one channel keep separate handlers and teardowns', async () => {
+        const { stats } = await boot({ auth: authed('teamA') })
+        const services = await window.ManifestAppwriteAuthConfig.getAppwriteClient()
+        const seen1 = [], seen2 = []
+        const un1 = services.realtime.subscribe('teams', r => seen1.push(r))
+        const un2 = services.realtime.subscribe('teams', r => seen2.push(r))
+        await settle()
+        const rt = stats.instances[0]
+        rt.fire('teams', { events: ['teams.t1.update'], payload: { $id: 't1' } })
+        await settle()
+        expect(seen1.length).toBe(1)
+        expect(seen2.length).toBe(1)
+        un1()
+        await settle()
+        rt.fire('teams', { events: ['teams.t1.update'], payload: { $id: 't1' } })
+        await settle()
+        expect(seen1.length).toBe(1) // torn down
+        expect(seen2.length).toBe(2) // still live
+        un2()
+    })
+})
+
+describe('scope lifecycle', () => {
+    it('a known record that leaves scope is removed from the roster', async () => {
+        const { rt, presence, records } = await boot({
+            presenceRows: [P('u2', ['read("team:teamA")'])], auth: authed('teamA'),
+        })
+        await presence.start()
+        await settle()
+        expect(Object.keys(records())).toContain('u2')
+        // u2's record moves to another team: delivery of the rewrite carries teamB perms
+        rt().fire('presences', presenceEvt('upsert', P('u2', ['read("team:teamB")'])))
+        await settle()
+        expect(Object.keys(records())).not.toContain('u2')
+    })
+
+    it('read("any") records land in every scope', async () => {
+        const { presence, records } = await boot({
+            presenceRows: [P('u9', ['read("any")'])], auth: authed('teamA'),
+        })
+        await presence.start()
+        await settle()
+        expect(Object.keys(records())).toContain('u9')
+    })
+
+    it('team switch deletes the old-scope record before re-upserting', async () => {
+        const { stats, presence } = await boot({ auth: authed('teamA') })
+        await presence.start()
+        await settle()
+        const callsBefore = stats.calls.length
+        Alpine.store('auth').currentTeam = { $id: 'teamB' }
+        await settle(150)
+        const calls = stats.calls.slice(callsBefore)
+        expect(calls).toEqual(['delete', 'upsert']) // old teammates only ever see the delete
+        const last = stats.upserts[stats.upserts.length - 1]
+        expect(last.permissions).toContain('read("team:teamB")')
+    })
+
+    it('scoped write before teams settle is self-only, then rewrites when the team lands', async () => {
+        const { stats, presence } = await boot({
+            appwriteAuth: { teams: true },
+            auth: { ...authed(), currentTeam: null, teams: [] },
+        })
+        await presence.start()
+        await settle()
+        // The leak window: never a users() broadcast while teams are loading
+        expect(stats.upserts[0].permissions).toContain('read("user:me")')
+        expect(stats.upserts[0].permissions.join()).not.toContain('read("users")')
+        // Teams land with a current team: the effect rescopes to the team grant
+        Alpine.store('auth').currentTeam = { $id: 'teamA' }
+        window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'))
+        await settle(150)
+        const last = stats.upserts[stats.upserts.length - 1]
+        expect(last.permissions).toContain('read("team:teamA")')
+    })
+
+    it('teams settling to none rewrites the pending record to the global users() grant', async () => {
+        const { stats, presence } = await boot({
+            appwriteAuth: { teams: true },
+            auth: { ...authed(), currentTeam: null, teams: [] },
+        })
+        await presence.start()
+        await settle()
+        expect(stats.upserts[0].permissions).toContain('read("user:me")')
+        window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded'))
+        await settle(150)
+        const last = stats.upserts[stats.upserts.length - 1]
+        expect(last.permissions).toContain('read("users")')
     })
 })

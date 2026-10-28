@@ -54,9 +54,12 @@ if (!window.ManifestRealtimeHub) {
             let action = null;
             for (const event of list) {
                 if (typeof event !== 'string') continue;
-                if (event.includes('delete')) return 'delete';
-                if (event.includes('update') || event.includes('upsert')) action = 'update';
-                else if (!action && event.includes('create')) action = 'create';
+                // Verbs match as path segments only — event names embed
+                // user-chosen ids (a table named deleted_posts is not a delete)
+                const parts = event.split('.');
+                if (parts.includes('delete')) return 'delete';
+                if (parts.includes('update') || parts.includes('upsert')) action = 'update';
+                else if (!action && parts.includes('create')) action = 'create';
             }
             return action;
         }
@@ -174,9 +177,12 @@ if (!window.ManifestRealtimeHub) {
             const canQuery = supportsQueries(realtime);
             for (const [name, src] of sources) {
                 if (activeRealtime !== realtime) return; // superseded by a newer instance
-                const resolved = (canQuery && src.getFilters) ? await src.getFilters() : null;
-                const subKey = subKeyFor(src.channel, resolved);
                 try {
+                    // Inside the try: one source's failing getFilters must not
+                    // strand the sources after it unsubscribed
+                    const resolved = (canQuery && src.getFilters) ? await src.getFilters() : null;
+                    if (activeRealtime !== realtime) return;
+                    const subKey = subKeyFor(src.channel, resolved);
                     const entry = ensureEntry(realtime, subKey, src.channel, resolved?.queries);
                     entry.handlers.set(name, src.handler);
                     entry.refs = entry.handlers.size;
@@ -231,9 +237,11 @@ if (!window.ManifestRealtimeHub) {
             return () => detach(name, token);
         }
 
-        // Explicit teardown by name; also aborts a subscribe in flight
+        // Explicit teardown by name; also aborts a subscribe in flight and
+        // drops the name's pre-filter (a replacement re-registers its own)
         function unsubscribe(name) {
             tombstones.set(name, (tombstones.get(name) || 0) + 1);
+            filters.delete(name);
             detach(name);
         }
 
@@ -251,9 +259,13 @@ if (!window.ManifestRealtimeHub) {
                 realtimeCache = null;
                 realtimeClient = null;
                 if (!sources.size) return;
-                const src = [...sources.values()].find(s => s.getRealtime);
-                const realtime = src ? await src.getRealtime() : null;
-                if (realtime) syncInstance(realtime);
+                try {
+                    const src = [...sources.values()].find(s => s.getRealtime);
+                    const realtime = src ? await src.getRealtime() : null;
+                    if (realtime) syncInstance(realtime);
+                } catch (error) {
+                    console.error('[Manifest Realtime] Identity rebuild failed:', error);
+                }
             }));
         }
 
@@ -286,6 +298,8 @@ if (!window.ManifestRealtimeHub) {
         status: 'online',
         metadata: null,
         scope: 'auto',          // 'auto'/'team' = current team, 'global', or an explicit team id
+        teamsEnabled: false,    // manifest.appwrite.auth.teams (read at start)
+        settleTimer: null,      // bounded wait for teams to settle
         auto: true,             // focus/blur auto-flip
         heartbeatMs: 25000,     // TTL refresh cadence
         onFocus: null,
@@ -356,6 +370,23 @@ if (!window.ManifestRealtimeHub) {
 
     /* Scope */
 
+    // Teams load in the background after auth init; until they settle, a scoped
+    // write must not fall back to read(users()) — that is the cross-tenant
+    // broadcast window. Settles on the auth event, or after a bounded wait for
+    // sessions the background load never covers (e.g. guests without guestTeams).
+    let teamsSettled = false;
+    window.addEventListener('manifest:auth:teams-loaded', () => { settleTeams(); });
+    ['manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => { teamsSettled = false; }));
+    function settleTeams() {
+        if (teamsSettled) return;
+        teamsSettled = true;
+        if (ctx.settleTimer) { clearTimeout(ctx.settleTimer); ctx.settleTimer = null; }
+        // Settled with a team: the team-switch effect rescopes. Settled with
+        // none: rewrite here, from self-only to the global users() grant.
+        if (ctx.started && !scopeTeamId()) { hydrate(); rescope(); }
+    }
+
     // Roster scope as a team id: explicit id > current team ('auto'/'team') > none ('global')
     function scopeTeamId() {
         const s = ctx.scope;
@@ -375,7 +406,8 @@ if (!window.ManifestRealtimeHub) {
         const meId = authUser()?.$id;
         if (meId && userId === meId) return true;
         const perms = Array.isArray(raw?.$permissions) ? raw.$permissions : [];
-        return perms.some(p => p === `read("team:${team}")` || p.startsWith(`read("team:${team}/`));
+        // read("any") is explicitly world-readable: in every scope
+        return perms.some(p => p === 'read("any")' || p === `read("team:${team}")` || p.startsWith(`read("team:${team}/`));
     }
 
     /* Records */
@@ -436,7 +468,8 @@ if (!window.ManifestRealtimeHub) {
                 // Ignore echoes of our own presence (tracked locally; delayed echoes would clobber newer status)
                 const meId = authUser()?.$id;
                 if (meId && rec.userId === meId) return;
-                if (!inScope(payload, rec.userId)) return;
+                // A known record that LEAVES scope is removed, not just ignored
+                if (!inScope(payload, rec.userId)) { removeRecord(rec.userId); return; }
                 if (action === 'delete') removeRecord(rec.userId);
                 else putRecord(rec);
             }
@@ -458,10 +491,15 @@ if (!window.ManifestRealtimeHub) {
         ctx.metadata = metadata !== undefined ? metadata : ctx.metadata;
 
         // Read-scope + owner write (owner update/delete required, else updates 401).
-        // Reads follow the roster scope: team role when scoped, all users when global.
+        // Reads follow the roster scope: team role when scoped, all users when
+        // global. Scoped with teams NOT yet settled: self-only — never the
+        // users() broadcast (the leak window); settle/team-switch rewrites it.
         const teamId = scopeTeamId();
+        const pending = !teamId && ctx.teamsEnabled && !teamsSettled
+            && ctx.scope !== 'global' && ctx.scope !== false;
+        const readRole = teamId ? A.Role.team(teamId) : (pending ? A.Role.user(user.$id) : A.Role.users());
         const permissions = [
-            teamId ? A.Permission.read(A.Role.team(teamId)) : A.Permission.read(A.Role.users()),
+            A.Permission.read(readRole),
             A.Permission.update(A.Role.user(user.$id)),
             A.Permission.delete(A.Role.user(user.$id))
         ];
@@ -483,6 +521,15 @@ if (!window.ManifestRealtimeHub) {
             if (s) s.error = e?.message || String(e);
             return false;
         }
+    }
+
+    // Scope change: old-scope rosters never receive a perms rewrite (delivery
+    // follows the OLD read grant), so delete first — the delete event still
+    // carries it — then re-upsert under the new scope
+    async function rescope() {
+        const user = authUser();
+        if (user && ctx.presences) { try { await ctx.presences.delete({ presenceId: user.$id }); } catch (e) { } }
+        await set(ctx.status, ctx.metadata);
     }
 
     async function clear() {
@@ -518,6 +565,19 @@ if (!window.ManifestRealtimeHub) {
         if (!authUser()) { if (s) s.error = 'sign in required'; return false; }
         if (!(await ensureServices())) { if (s) s.error = 'Appwrite Presences unavailable'; return false; }
         if (ctx.started) return true;
+
+        // Teams settle via the auth plugin's background load; disabled teams or
+        // an already-active team settle now, and a bounded wait covers sessions
+        // the load never fires for (e.g. guests without guestTeams)
+        try {
+            const authCfg = await window.ManifestAppwriteAuthConfig?.getAppwriteConfig?.();
+            ctx.teamsEnabled = !!authCfg?.teams;
+        } catch (e) { ctx.teamsEnabled = false; }
+        if (!ctx.teamsEnabled || currentTeamId()) settleTeams();
+        else if (!teamsSettled && !ctx.settleTimer) {
+            ctx.settleTimer = setTimeout(() => { ctx.settleTimer = null; settleTeams(); }, 8000);
+        }
+
         ctx.started = true;
 
         await hydrate();
@@ -540,6 +600,7 @@ if (!window.ManifestRealtimeHub) {
     }
 
     function stop() {
+        if (ctx.settleTimer) { clearTimeout(ctx.settleTimer); ctx.settleTimer = null; }
         if (ctx.heartbeat) { clearInterval(ctx.heartbeat); ctx.heartbeat = null; }
         if (ctx.onBlur) { window.removeEventListener('blur', ctx.onBlur); ctx.onBlur = null; }
         if (ctx.onFocus) { window.removeEventListener('focus', ctx.onFocus); ctx.onFocus = null; }
@@ -561,7 +622,9 @@ if (!window.ManifestRealtimeHub) {
             });
         } catch (e) { }
 
-        // Re-scope on team switch: refilter the roster, rewrite own presence perms
+        // Re-scope on team switch: refilter the roster, delete + rewrite own
+        // presence (old teammates only see the delete; the rewrite isn't
+        // delivered to them once the read grant moves)
         let lastTeam;
         try {
             Alpine.effect(() => {
@@ -570,7 +633,7 @@ if (!window.ManifestRealtimeHub) {
                 lastTeam = team;
                 if (!ctx.started) return;
                 hydrate();
-                set(ctx.status, ctx.metadata);
+                rescope();
             });
         } catch (e) { }
 
