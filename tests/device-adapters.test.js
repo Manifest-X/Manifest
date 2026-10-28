@@ -292,6 +292,54 @@ describe('$secure', () => {
         expect(await magics.secure.keys()).toEqual(['k'])
     })
 
+    it('does not cache the web backend before Capacitor appears', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        localStorage.clear()
+        boot({}, undefined, false)
+        delete window.Capacitor
+        await magics.secure.set('early', 'v')
+        expect(localStorage.getItem('mnfst:early')).toBe('v')
+        window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'ios', Plugins: {}, PluginHeaders: [header('App', ['getState'])] }
+        const setSpy = vi.spyOn(Storage.prototype, 'setItem')
+        const getSpy = vi.spyOn(Storage.prototype, 'getItem')
+        await expect(magics.secure.set('k', 'v')).rejects.toThrow(/No secure-storage plugin is installed/)
+        await expect(magics.secure.get('early')).rejects.toThrow(/No secure-storage plugin is installed/)
+        expect(setSpy).not.toHaveBeenCalled()
+        expect(getSpy).not.toHaveBeenCalled()
+    })
+
+    it('picks up a plugin registered after an earlier rejection', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        localStorage.clear()
+        boot({}, [header('App', ['getState'])])
+        await expect(magics.secure.set('k', 'v')).rejects.toThrow(/No secure-storage plugin is installed/)
+        const S = aparajitaSecure()
+        window.Capacitor.Plugins.SecureStorage = S
+        window.Capacitor.PluginHeaders.push(header('SecureStorage', SECURE_METHODS))
+        await magics.secure.set('k', 'v')
+        expect(await magics.secure.get('k')).toBe('v')
+        expect(S.internalSetItem).toHaveBeenCalled()
+        expect(localStorage.length).toBe(0)
+    })
+
+    it('use(null) clears an adapter and returns to auto-detection', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        localStorage.clear()
+        const m = new Map()
+        boot({}, [header('App', ['getState'])])
+        magics.secure.use({ get: async k => m.get(k) ?? null, set: async (k, v) => { m.set(k, v) } })
+        await magics.secure.set('a', 'b')
+        magics.secure.use(null)
+        await expect(magics.secure.get('a')).rejects.toThrow(/No secure-storage plugin is installed/)
+
+        boot({}, undefined, false)
+        magics.secure.use({ get: async k => m.get(k) ?? null, set: async (k, v) => { m.set(k, v) } })
+        magics.secure.use(null)
+        await magics.secure.set('w', 'x')
+        expect(localStorage.getItem('mnfst:w')).toBe('x')
+        expect(m.has('w')).toBe(false)
+    })
+
     it('still adapts getItem/setItem and get/set shapes', async () => {
         const m = new Map()
         boot({ SecureStorage: { getItem: async k => m.get(k) ?? null, setItem: async (k, v) => { m.set(k, v) }, removeItem: async k => { m.delete(k) } } })

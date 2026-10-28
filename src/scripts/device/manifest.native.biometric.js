@@ -12,7 +12,7 @@ function manifestBiometricPlugin() {
     if (Array.isArray(headers)) {
         for (const name of MANIFEST_BIOMETRIC_PLUGINS) {
             const plugin = manifestNativePlugin(name);
-            if (plugin && headers.some(h => h && h.name === name)) return { name, plugin };
+            if (plugin && manifestNativeInstalled(name)) return { name, plugin };
         }
         manifestBiometricWarnNotNative();
         return null;

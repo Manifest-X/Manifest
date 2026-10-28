@@ -90,11 +90,12 @@ function manifestSecureMissingBackend(msg) {
     return { get: fail('get'), set: fail('set'), remove: fail('remove'), keys: fail('keys'), clear: fail('clear') };
 }
 
-// Missing backends aren't cached, so a later-registered plugin is picked up
+// Only native or use() backends are cached: a later plugin or a late Capacitor is picked up
 let _manifestSecureBackend = null;
+let _manifestSecureWeb = null;
 function manifestSecureBackend() {
     if (_manifestSecureBackend) return _manifestSecureBackend;
-    if (!manifestNativeIsNative()) return (_manifestSecureBackend = manifestSecureWebBackend());
+    if (!manifestNativeIsNative()) return _manifestSecureWeb || (_manifestSecureWeb = manifestSecureWebBackend());
     const plugin = manifestNativePlugin('SecureStorage');
     if (!plugin) return manifestSecureMissingBackend(MANIFEST_SECURE_NONE);
     if (!manifestNativeInstalled('SecureStorage')) return manifestSecureMissingBackend(MANIFEST_SECURE_UNSYNCED);
