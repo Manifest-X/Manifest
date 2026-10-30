@@ -11,10 +11,13 @@ const computedFilesArrays = new Map();
 
 // Create a computed files array for an entry that filters the bucket array by fileIds
 // This is the new single-source-of-truth approach
-function createComputedFilesArray(tableName, entryId, bucketName, columnName = 'fileIds') {
-    const memoKey = JSON.stringify([tableName, entryId, bucketName, columnName]);
-    const memoized = computedFilesArrays.get(memoKey);
-    if (memoized) return memoized;
+// replace: the array supersedes the previous one for this entry, whose effect is released
+function createComputedFilesArray(tableName, entryId, bucketName, columnName = 'fileIds', options = {}) {
+    const memoKey = options.replace ? JSON.stringify([tableName, entryId, bucketName, columnName]) : null;
+    if (memoKey && computedFilesArrays.has(memoKey)) {
+        if (typeof Alpine !== 'undefined' && Alpine.release) Alpine.release(computedFilesArrays.get(memoKey));
+        computedFilesArrays.delete(memoKey);
+    }
 
     if (typeof Alpine === 'undefined') {
         // Return empty array proxy if Alpine not available
@@ -121,8 +124,9 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
     };
 
     // Set up Alpine effect to watch both bucket array and entry's fileIds
+    let filesEffect = null;
     if (typeof Alpine !== 'undefined' && Alpine.effect) {
-        Alpine.effect(() => {
+        filesEffect = Alpine.effect(() => {
             // Access store to track changes
             const store = Alpine.store('data');
             if (!store) {
@@ -191,7 +195,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
             return key in target || key === '$loading' || key === '$error';
         }
     });
-    computedFilesArrays.set(memoKey, computedProxy);
+    if (memoKey && filesEffect) computedFilesArrays.set(memoKey, filesEffect);
     return computedProxy;
 }
 

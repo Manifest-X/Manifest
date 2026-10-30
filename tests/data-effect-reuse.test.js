@@ -68,12 +68,18 @@ describe('route proxy', () => {
 
 describe('computed $files', () => {
     const make = (...a) => window.ManifestDataProxiesFiles.createComputedFilesArray(...a)
-    it('creates one effect per key however often it is evaluated', () => {
+    it('a replacing array is fresh and releases the previous one, one live effect per key', () => {
+        const release = vi.spyOn(Alpine, 'release')
         effect.mockClear()
-        const first = make('a', 'e1', 'bucket', 'fileIds')
-        for (let i = 0; i < 20; i++) expect(make('a', 'e1', 'bucket', 'fileIds')).toBe(first)
-        expect(effect.mock.calls.length).toBe(1)
-        expect(make('a', 'e1', 'bucket', 'other')).not.toBe(first)
+        const first = make('a', 'e1', 'bucket', 'fileIds', { replace: true })
+        const second = make('a', 'e1', 'bucket', 'fileIds', { replace: true })
+        expect(second).not.toBe(first)
+        expect(second.map(f => f.$id)).toEqual(['f1'])
+        expect(release).toHaveBeenCalledTimes(1)
+        expect(release.mock.calls[0][0]).toBe(effect.mock.results[0].value)
+        make('a', 'e1', 'bucket', 'other', { replace: true })
+        expect(release).toHaveBeenCalledTimes(1)
+        release.mockRestore()
     })
 
     it('stays in sync with the bucket and the entry', async () => {
