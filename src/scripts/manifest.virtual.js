@@ -241,6 +241,7 @@ function initializeVirtualPlugin() {
 
             const visible = new Set();
             const keys = [];
+            const items = [];
             for (let i = startItem; i < endItem; i++) {
                 const item = data[i];
                 if (item == null) continue;
@@ -248,13 +249,20 @@ function initializeVirtualPlugin() {
                 if (key == null) continue;
                 visible.add(key);
                 keys.push(key);
-                let entry = rendered.get(key);
-                if (!entry) entry = mountRow(item, key);
-                else if (entry.scope[itemName] !== item) entry.scope[itemName] = item;  // rebind by key
-                host.insertBefore(entry.node, botSpacer);        // keep DOM order = data order
+                items.push(item);
             }
             for (const [key, entry] of rendered) {
                 if (!visible.has(key)) removeRow(key, entry);
+            }
+
+            // Keep DOM order = data order, moving only rows out of place
+            let cursor = topSpacer.nextSibling;
+            for (let i = 0; i < keys.length; i++) {
+                let entry = rendered.get(keys[i]);
+                if (!entry) entry = mountRow(items[i], keys[i], cursor);
+                else if (entry.scope[itemName] !== items[i]) entry.scope[itemName] = items[i];  // rebind by key
+                if (entry.node === cursor) cursor = cursor.nextSibling;
+                else if (entry.node.nextSibling !== cursor) host.insertBefore(entry.node, cursor);
             }
 
             // Measure anything not yet measured, then reconcile offsets once.
@@ -306,10 +314,10 @@ function initializeVirtualPlugin() {
             scheduleMeasure(keys);
         }
 
-        function mountRow(item, key) {
+        function mountRow(item, key, before = anchor) {
             const tpl = template.content.firstElementChild;
             const node = tpl.cloneNode(true);
-            host.insertBefore(node, anchor);                     // connect before init
+            host.insertBefore(node, before);                     // connect before init
             const scope = Alpine.reactive({ [itemName]: item });
             const removeScope = Alpine.addScopeToNode(node, scope);
             Alpine.initTree(node);
