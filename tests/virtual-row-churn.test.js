@@ -60,3 +60,10 @@ it('still reorders rows to match the data', async () => {
     const i = data.rows.findIndex(r => r.id === shown[0])
     expect(shown).toEqual(data.rows.slice(i, i + shown.length).map(r => r.id))
 })
+
+it('source guards the placement cursor against non-row nodes and detachment', () => {
+    const src = readFileSync(path.join(dir, '../src/scripts/manifest.virtual.js'), 'utf8')
+    expect(src).toMatch(/const nextRow = /)
+    expect(src).toMatch(/if \(cursor\.parentNode !== host\) cursor = botSpacer;/)
+    expect(src).toMatch(/if \(!destroyed\) render\(\)/)
+})

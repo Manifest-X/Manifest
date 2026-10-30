@@ -256,13 +256,25 @@ function initializeVirtualPlugin() {
             }
 
             // Keep DOM order = data order, moving only rows out of place
-            let cursor = topSpacer.nextSibling;
+            const rowNodes = new Set();
+            for (const entry of rendered.values()) rowNodes.add(entry.node);
+            // Next row in the host; skips what a row root rendered (x-if clones), survives a row's init detaching it
+            const nextRow = (n) => {
+                while (n && n !== botSpacer && n.parentNode === host && !rowNodes.has(n)) n = n.nextSibling;
+                return n && n.parentNode === host ? n : botSpacer;
+            };
+            let cursor = nextRow(topSpacer.nextSibling);
             for (let i = 0; i < keys.length; i++) {
+                if (cursor.parentNode !== host) cursor = botSpacer;
                 let entry = rendered.get(keys[i]);
-                if (!entry) entry = mountRow(items[i], keys[i], cursor);
-                else if (entry.scope[itemName] !== items[i]) entry.scope[itemName] = items[i];  // rebind by key
-                if (entry.node === cursor) cursor = cursor.nextSibling;
-                else if (entry.node.nextSibling !== cursor) host.insertBefore(entry.node, cursor);
+                if (!entry) {
+                    entry = mountRow(items[i], keys[i], cursor);
+                    rowNodes.add(entry.node);
+                    continue;
+                }
+                if (entry.scope[itemName] !== items[i]) entry.scope[itemName] = items[i];  // rebind by key
+                if (entry.node === cursor) cursor = nextRow(cursor.nextSibling);
+                else host.insertBefore(entry.node, cursor);
             }
 
             // Measure anything not yet measured, then reconcile offsets once.
@@ -430,11 +442,12 @@ function initializeVirtualPlugin() {
 
         // ---- Scroll / resize ----
 
+        let destroyed = false;
         let scrollScheduled = false;
         const onScroll = () => {
             if (scrollScheduled) return;
             scrollScheduled = true;
-            requestAnimationFrame(() => { scrollScheduled = false; render(); });
+            requestAnimationFrame(() => { scrollScheduled = false; if (!destroyed) render(); });
         };
         scrollEl.addEventListener('scroll', onScroll, { passive: true });
 
@@ -448,6 +461,7 @@ function initializeVirtualPlugin() {
         if (!kind && !isMasonry && host !== scrollEl) ro.observe(host);   // only until a hidden host is classified
 
         cleanup(() => {
+            destroyed = true;
             scrollEl.removeEventListener('scroll', onScroll);
             ro.disconnect();
             clearTimeout(resizeTimer);
