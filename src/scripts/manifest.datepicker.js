@@ -1000,7 +1000,7 @@
 			Alpine.effect(() => {
 				let locale = '', dir = '';
 				try { const ls = Alpine.store('locale'); locale = ls?.current || document.documentElement.lang || ''; dir = ls?.direction || ''; } catch (_) { }
-				try { void Alpine.store('data')?._dataVersion; } catch (_) { }
+				try { const ds = Alpine.store('data'); if (ds) void ds._dataVersion; } catch (_) { }
 				const ui = window.ManifestUI.resolve('date', UI_FALLBACK);
 				const key = locale + '|' + dir + '|' + JSON.stringify(ui);
 				if (state._uiKey === key) return;

@@ -233,7 +233,7 @@
     // Human label for a state, localized through `_ui`, else title-cased.
     function formatStateLabel(state) {
         // Dep on the data store version so labels re-resolve when a `_ui` source loads late.
-        try { void (window.Alpine && Alpine.store('data')?._dataVersion); } catch (_) { }
+        try { const ds = window.Alpine && Alpine.store('data'); if (ds) void ds._dataVersion; } catch (_) { }
         const ui = window.ManifestUI ? window.ManifestUI.resolve('status', UI_FALLBACK) : UI_FALLBACK;
         const labels = (ui && ui.label) || UI_FALLBACK.label;
         if (labels[state]) return _resolveRefString(labels[state]);
