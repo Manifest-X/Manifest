@@ -7,17 +7,12 @@
 // Legacy: Keep reactiveFileManagers Map for backward compatibility during transition
 // Will be removed once all code is migrated to computed approach
 const reactiveFileManagers = new Map();
-const computedFilesArrays = new Map();
 
 // Create a computed files array for an entry that filters the bucket array by fileIds
 // This is the new single-source-of-truth approach
-// replace: the array supersedes the previous one for this entry, whose effect is released
+// owner: the row object holding this array; the effect releases itself once the row leaves its table
 function createComputedFilesArray(tableName, entryId, bucketName, columnName = 'fileIds', options = {}) {
-    const memoKey = options.replace ? JSON.stringify([tableName, entryId, bucketName, columnName]) : null;
-    if (memoKey && computedFilesArrays.has(memoKey)) {
-        if (typeof Alpine !== 'undefined' && Alpine.release) Alpine.release(computedFilesArrays.get(memoKey));
-        computedFilesArrays.delete(memoKey);
-    }
+    const owner = options.owner || null;
 
     if (typeof Alpine === 'undefined') {
         // Return empty array proxy if Alpine not available
@@ -134,6 +129,14 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
                 return;
             }
 
+            if (owner) {
+                const rows = store[tableName];
+                if (Array.isArray(rows) && !rows.some(row => (Alpine.raw ? Alpine.raw(row) : row) === owner)) {
+                    queueMicrotask(() => { if (filesEffect) Alpine.release(filesEffect); });
+                    return;
+                }
+            }
+
             // Track bucket array changes - access the array itself and iterate to track all elements
             const bucketFiles = store[bucketName];
             if (bucketFiles && Array.isArray(bucketFiles)) {
@@ -195,7 +198,6 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
             return key in target || key === '$loading' || key === '$error';
         }
     });
-    if (memoKey && filesEffect) computedFilesArrays.set(memoKey, filesEffect);
     return computedProxy;
 }
 

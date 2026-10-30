@@ -119,7 +119,7 @@ function mergeRowFields(target, fields, dataSourceName) {
         if (key === '$files') continue;
         const value = fields[key];
         if (sameScalarOrList(raw[key], value)) continue;
-        target[key] = createReactiveReferences(value, dataSourceName, true);
+        target[key] = createReactiveReferences(value, dataSourceName);
     }
 }
 
@@ -451,14 +451,14 @@ function getRawData(dataSourceName) {
 }
 
 // New object/array references (incl. nested arrays like fileIds) so Alpine tracks changes
-function createReactiveReferences(data, dataSourceName = null, nested = false) {
+function createReactiveReferences(data, dataSourceName = null) {
     if (data === null || data === undefined) {
         return data;
     }
 
     if (Array.isArray(data)) {
         // Create new array with new references for each item
-        return data.map(item => createReactiveReferences(item, dataSourceName, nested));
+        return data.map(item => createReactiveReferences(item, dataSourceName));
     }
 
     if (typeof data === 'object') {
@@ -468,7 +468,7 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
         for (const key of Object.keys(data)) {
             const value = data[key];
             // Recursively create new references for nested objects/arrays
-            newObj[key] = createReactiveReferences(value, dataSourceName, true);
+            newObj[key] = createReactiveReferences(value, dataSourceName);
         }
 
         // Detect file objects (have mimeType or sizeOriginal)
@@ -507,7 +507,7 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
                             data.$id,
                             bucketName,
                             columnName,
-                            { replace: !nested }
+                            { owner: newObj }
                         );
 
                         // Assign computed array to entry

@@ -68,17 +68,28 @@ describe('route proxy', () => {
 
 describe('computed $files', () => {
     const make = (...a) => window.ManifestDataProxiesFiles.createComputedFilesArray(...a)
-    it('a replacing array is fresh and releases the previous one, one live effect per key', () => {
+    it('an owned array releases its effect once its row leaves the table', async () => {
         const release = vi.spyOn(Alpine, 'release')
-        effect.mockClear()
-        const first = make('a', 'e1', 'bucket', 'fileIds', { replace: true })
-        const second = make('a', 'e1', 'bucket', 'fileIds', { replace: true })
-        expect(second).not.toBe(first)
-        expect(second.map(f => f.$id)).toEqual(['f1'])
+        const store = Alpine.store('data')
+        store.a.push({ $id: 'e2', fileIds: ['f2'] })
+        const row = Alpine.raw(store.a[1])
+        const twin = { $id: 'e2', fileIds: ['f2'] }
+        store.a.push(twin)
+        const files = make('a', 'e2', 'bucket', 'fileIds', { owner: row })
+        const twinFiles = make('a', 'e2', 'bucket', 'fileIds', { owner: Alpine.raw(store.a[2]) })
+        await tick()
+        expect(files.map(f => f.$id)).toEqual(['f2'])
+        expect(release).not.toHaveBeenCalled()
+        store.a.splice(2, 1)
+        await tick()
         expect(release).toHaveBeenCalledTimes(1)
-        expect(release.mock.calls[0][0]).toBe(effect.mock.results[0].value)
-        make('a', 'e1', 'bucket', 'other', { replace: true })
-        expect(release).toHaveBeenCalledTimes(1)
+        store.a[1].fileIds.push('f1')
+        await tick()
+        expect(files.map(f => f.$id).sort()).toEqual(['f1', 'f2'])
+        expect(twinFiles.map(f => f.$id)).toEqual(['f2'])
+        store.a.splice(1, 1)
+        await tick()
+        expect(release).toHaveBeenCalledTimes(2)
         release.mockRestore()
     })
 
