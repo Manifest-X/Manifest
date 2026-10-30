@@ -165,6 +165,202 @@ describe('x-dropdown teardown', () => {
     })
 })
 
+describe('x-dropdown cloned menus', () => {
+    const bodyMenus = () => document.querySelectorAll('body > menu[popover]').length
+
+    it('a template menu leaves with its trigger, across re-renders', async () => {
+        const tpl = mount(`<template id="row-menu"><menu><li>Edit</li></menu></template>`)
+        const base = bodyMenus()
+        for (let i = 0; i < 10; i++) {
+            const h = mount(`<div x-data><button x-dropdown="row-menu">open</button></div>`)
+            await settle()
+            expect(bodyMenus()).toBe(base + 1)
+            await unmount(h)
+            expect(bodyMenus()).toBe(base)
+        }
+        await unmount(tpl)
+    })
+
+    it('a template menu stays in the DOM until the current task ends', async () => {
+        const tpl = mount(`<template id="row-menu-tick"><menu><li>Edit</li></menu></template>`)
+        const h = mount(`<div x-data><button id="tick-t" x-dropdown="row-menu-tick">open</button></div>`)
+        await settle()
+        const menu = document.getElementById(h.querySelector('#tick-t').getAttribute('popovertarget'))
+        menu.showPopover()
+        Alpine.destroyTree(h)
+        expect(menu.isConnected).toBe(true)
+        expect(menu.matches(':popover-open')).toBe(false)
+        h.remove()
+        await settle()
+        expect(menu.isConnected).toBe(false)
+        await unmount(tpl)
+    })
+
+    it('removing a template menu destroys the Alpine tree inside it', async () => {
+        const tpl = mount(`<template id="row-menu-nested"><menu><li><button x-dropdown="row-menu-inner">more</button></li></menu></template><template id="row-menu-inner"><menu><li>Deep</li></menu></template>`)
+        const base = bodyMenus()
+        const h = mount(`<div x-data><button x-dropdown="row-menu-nested">open</button></div>`)
+        await settle(10)
+        expect(bodyMenus()).toBe(base + 2)
+        await unmount(h)
+        expect(bodyMenus()).toBe(base)
+        await unmount(tpl)
+    })
+
+    describe('component menus', () => {
+        let resolvers = []
+        beforeAll(() => {
+            window.__manifestComponentsInitialized = true
+            window.ManifestComponentsRegistry = { registered: new Set(['comp-menu', 'comp-race', 'comp-late', 'comp-tick']) }
+            window.ManifestComponentsLoader = {
+                loadComponent: (name) => new Promise((resolve) => {
+                    resolvers.push(() => resolve(`<menu id="${name}"><li>Item</li></menu>`))
+                }),
+            }
+        })
+        const flush = async () => { await settle(); resolvers.splice(0).forEach((r) => r()); await settle() }
+        const copies = (id) => document.querySelectorAll(`[id="${id}"]`).length
+
+        it('triggers mounted together share one menu, and it stays until the last leaves', async () => {
+            const a = mount(`<div x-data><button x-dropdown="comp-menu">a</button></div>`)
+            const b = mount(`<div x-data><button x-dropdown="comp-menu">b</button></div>`)
+            await flush()
+            expect(copies('comp-menu')).toBe(1)
+            await unmount(a)
+            expect(copies('comp-menu')).toBe(1)
+            await unmount(b)
+            expect(copies('comp-menu')).toBe(0)
+        })
+
+        it('a trigger mounted after the clone exists also holds it', async () => {
+            const a = mount(`<div x-data><button x-dropdown="comp-late">a</button></div>`)
+            await flush()
+            const b = mount(`<div x-data><button x-dropdown="comp-late">b</button></div>`)
+            await settle()
+            await unmount(a)
+            expect(copies('comp-late')).toBe(1)
+            await unmount(b)
+            expect(copies('comp-late')).toBe(0)
+        })
+
+        it('a trigger mounted in the same tick as the last release keeps the menu', async () => {
+            const a = mount(`<div x-data><button x-dropdown="comp-tick">a</button></div>`)
+            await flush()
+            const menu = document.getElementById('comp-tick')
+            const b = mount(`<div x-data><button x-dropdown="comp-tick">b</button></div>`)
+            Alpine.destroyTree(a)
+            a.remove()
+            await settle()
+            expect(document.getElementById('comp-tick')).toBe(menu)
+            await unmount(b)
+            expect(copies('comp-tick')).toBe(0)
+        })
+
+        it('a trigger removed during the component load clones nothing', async () => {
+            const a = mount(`<div x-data><button x-dropdown="comp-race">a</button></div>`)
+            await settle()
+            await unmount(a)
+            await flush()
+            expect(copies('comp-race')).toBe(0)
+        })
+    })
+})
+
+describe('x-dropdown.context ownership', () => {
+    const openAt = async (t) => { t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 })); await settle() }
+
+    it('owner removed while another trigger has the menu open: dismiss still works', async () => {
+        const keep = mount(`<div x-data><menu popover id="handoff"><li>One</li></menu></div>`)
+        const menu = keep.querySelector('#handoff')
+        const a = mount(`<div x-data><div x-dropdown.context="handoff">a</div></div>`)
+        await settle()
+        const b = mount(`<div x-data><div id="handoff-b" x-dropdown.context="handoff">b</div></div>`)
+        await settle()
+        await openAt(b.querySelector('#handoff-b'))
+        expect(menu.matches(':popover-open')).toBe(true)
+        await unmount(a)
+        expect(menu.isConnected).toBe(true)
+        expect(menu.matches(':popover-open')).toBe(true)
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        expect(menu.matches(':popover-open')).toBe(false)
+        await unmount(b)
+        await unmount(keep)
+    })
+
+    it('the trigger that opened a surviving menu closes it when removed', async () => {
+        const base = count(document)
+        const keep = mount(`<div x-data><menu popover id="opener-gone"><li>One</li></menu></div>`)
+        const menu = keep.querySelector('#opener-gone')
+        const a = mount(`<div x-data><div id="opener-a" x-dropdown.context="opener-gone">a</div></div>`)
+        await settle()
+        await openAt(a.querySelector('#opener-a'))
+        expect(menu.matches(':popover-open')).toBe(true)
+        await unmount(a)
+        expect(menu.isConnected).toBe(true)
+        expect(menu.matches(':popover-open')).toBe(false)
+        expect(menu._triggerHost).toBeNull()
+        expect(count(document) - base).toBe(0)
+        await unmount(keep)
+    })
+
+    it('re-initializing a trigger rebinds it: one open, no stale closures', async () => {
+        const keep = mount(`<div x-data><menu popover id="reinit"><li>One</li></menu></div>`)
+        const menu = keep.querySelector('#reinit')
+        const host = mount(`<div x-data><div id="reinit-t" x-dropdown.context="reinit">a</div></div>`)
+        await settle()
+        const trigger = host.querySelector('#reinit-t')
+        const withOne = count(trigger)
+        Alpine.destroyTree(host)
+        Alpine.initTree(host)
+        await settle()
+        expect(count(trigger)).toBe(withOne)
+        await openAt(trigger)
+        expect(menu.matches(':popover-open')).toBe(true)
+        expect(menu._triggerHost).toBe(trigger)
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        expect(menu.matches(':popover-open')).toBe(false)
+        await unmount(host)
+        await unmount(keep)
+    })
+})
+
+describe('x-dropdown per-menu handlers', () => {
+    it('keyboard close focuses a live trigger after the first trigger is removed', async () => {
+        const keep = mount(`<div x-data><menu popover id="close-focus"><li id="close-focus-item">One</li></menu></div>`)
+        const menu = keep.querySelector('#close-focus')
+        const a = mount(`<div x-data><button x-dropdown.close="close-focus">a</button></div>`)
+        const b = mount(`<div x-data><button id="close-focus-b" x-dropdown.close="close-focus">b</button></div>`)
+        await settle()
+        await unmount(a)
+        const trigger = b.querySelector('#close-focus-b')
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+        expect(menu.__mnfstTrigger ?? null).toBeNull()
+        menu.showPopover()
+        keep.querySelector('#close-focus-item').click()
+        expect(menu.matches(':popover-open')).toBe(false)
+        expect(document.activeElement).toBe(trigger)
+        await unmount(b)
+        await unmount(keep)
+    })
+
+    it('per-menu handlers bind once however many triggers come and go', async () => {
+        const keep = mount(`<div x-data><menu popover id="once"><li>One</li></menu></div>`)
+        const menu = keep.querySelector('#once')
+        const first = mount(`<div x-data><button x-dropdown="once">a</button></div>`)
+        await settle()
+        const withOne = count(menu)
+        await unmount(first)
+        expect(menu.isConnected).toBe(true)
+        const perTrigger = withOne - count(menu)
+        expect(perTrigger).toBeGreaterThan(0)
+        const second = mount(`<div x-data><button x-dropdown="once">b</button></div>`)
+        await settle()
+        expect(count(menu)).toBe(withOne)
+        await unmount(second)
+        await unmount(keep)
+    })
+})
+
 describe('x-chart teardown', () => {
     it('removing an activated chart releases its reactive effect (no redraw after removal)', async () => {
         Alpine.store('data', { _dataVersion: 0 })
