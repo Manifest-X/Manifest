@@ -767,10 +767,36 @@
 		if (window.Alpine && window.Alpine.magic) install();
 	}
 	stubEditMagic();
+	// Open-dialog state for manifest.dialog.css, instead of a document-wide :has() restyle
+	function watchDialogs() {
+		if (typeof document === 'undefined' || !document.documentElement || window.__manifestDialogWatch) return;
+		window.__manifestDialogWatch = true;
+		const root = document.documentElement;
+		let poll = null;
+		const set = (name, on) => { if (root.hasAttribute(name) !== on) root.toggleAttribute(name, on); };
+		const sync = () => {
+			let open = [];
+			try { open = [...document.querySelectorAll('dialog:popover-open')]; } catch (_) { return; }
+			set('data-dialog-open', open.length > 0);
+			set('data-dialog-stacked', open.some(d => { for (let s = d.previousElementSibling; s; s = s.previousElementSibling) if (open.includes(s)) return true; return false; }));
+			// A removed open dialog fires no toggle event
+			if (open.length && !poll) poll = setInterval(sync, 250);
+			else if (!open.length && poll) { clearInterval(poll); poll = null; }
+		};
+		const onToggle = (e) => { if (e.target && e.target.tagName === 'DIALOG') queueMicrotask(sync); };
+		document.addEventListener('beforetoggle', onToggle, true);
+		document.addEventListener('toggle', onToggle, true);
+		root.setAttribute('data-dialog-watch', '');
+		sync();
+	}
+	watchDialogs();
 	// Plugins loaded after Alpine started adopt what its first walk already passed
 	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => { window.__manifestAlpineStarted = true; }, { once: true });
 	// Framework web components — <x-*> tags that are NOT project components.
 	const FRAMEWORK_TAG_RE = /^x-(code|code-group)$/;
+	// Attribute values seen to hold no usage magic at all; repeated rows hit this instead of the regexes
+	const USAGE_ANY_RE = new RegExp('\\$(' + USAGE_PLUGINS.map(u => u.magic.slice(1)).join('|') + ')\\b');
+	const usageClean = new Set();
 	function detectUsagePlugins(alreadyLoaded, root = typeof document === 'undefined' ? null : document) {
 		const wanted = USAGE_PLUGINS.filter(u => !alreadyLoaded.includes(u.plugin));
 		// <x-*> tags load the components plugin even with nothing registered in
@@ -778,7 +804,8 @@
 		const wantComponents = !alreadyLoaded.includes('components');
 		if ((wanted.length === 0 && !wantComponents) || !root) return [];
 		const found = new Set();
-		const done = () => found.size === new Set(wanted.map(u => u.plugin)).size + (wantComponents ? 1 : 0);
+		const target = new Set(wanted.map(u => u.plugin)).size + (wantComponents ? 1 : 0);
+		const done = () => found.size === target;
 
 		for (const s of root.querySelectorAll('script:not([src])')) {
 			const t = s.textContent || '';
@@ -794,7 +821,12 @@
 			for (const attr of el.attributes || []) {
 				for (const u of wanted) if (u.attr && !found.has(u.plugin) && attr.name.startsWith(u.attr)) found.add(u.plugin);
 				const v = attr.value;
-				if (!v || v.indexOf('$') === -1) continue;
+				if (!v || v.indexOf('$') === -1 || usageClean.has(v)) continue;
+				if (!USAGE_ANY_RE.test(v)) {
+					if (usageClean.size > 20000) usageClean.clear();
+					usageClean.add(v);
+					continue;
+				}
 				for (const u of wanted) if (!found.has(u.plugin) && u.re.test(v)) found.add(u.plugin);
 			}
 		};

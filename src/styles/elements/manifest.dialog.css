@@ -104,7 +104,7 @@
     }
 
     /* Hide dropdowns when dialogs are open */
-    html:has(dialog:popover-open) {
+    html:is([data-dialog-open], :not([data-dialog-watch]):has(dialog:popover-open)) {
 
         /* Hide dropdowns outside of any dialog. A generated popover (a datepicker
            calendar, a colorpicker panel) is appended to <body>, so DOM position alone
@@ -123,7 +123,7 @@
     }
 
     /* When multiple dialogs are open, hide dropdowns in all but closest dialog */
-    html:has(dialog:popover-open ~ dialog:popover-open) {
+    html:is([data-dialog-stacked], :not([data-dialog-watch]):has(dialog:popover-open ~ dialog:popover-open)) {
         & dialog:popover-open:not(:last-of-type) menu[popover] {
             opacity: 0;
             scale: .9;

@@ -10,6 +10,15 @@ function initializeColorpickerPlugin() {
     if (!window.ManifestUI) {
         window.ManifestUI = {
             // Names of loaded data sources (current locale); never force-loads others.
+            // One cached evaluator per expression: each Alpine.evaluate would register a cleanup on <body>, never run
+            _eval(expr) {
+                const cache = this._evals || (this._evals = new Map());
+                let fn = cache.get(expr);
+                if (!fn) cache.set(expr, fn = Alpine.evaluateLater(document.body, expr));
+                let out;
+                fn(v => { out = v; });
+                return out;
+            },
             _loadedSourceNames() {
                 try {
                     const store = window.ManifestDataStore && window.ManifestDataStore.rawDataStore;
@@ -22,11 +31,11 @@ function initializeColorpickerPlugin() {
             resolve(component, fallbacks) {
                 const merged = JSON.parse(JSON.stringify(fallbacks || {}));
                 try {
-                    if (!window.Alpine || typeof Alpine.evaluate !== 'function') return merged;
-                    try { Alpine.evaluate(document.body, 'typeof $locale !== "undefined" && $locale.current'); } catch (_) { } // dep → re-resolve on locale switch
+                    if (!window.Alpine || typeof Alpine.evaluateLater !== 'function') return merged;
+                    try { this._eval('typeof $locale !== "undefined" && $locale.current'); } catch (_) { } // dep → re-resolve on locale switch
                     for (const name of this._loadedSourceNames()) {
                         let ui;
-                        try { ui = Alpine.evaluate(document.body, `$x['${name}'] && $x['${name}']._ui && $x['${name}']._ui['${component}']`); } catch (_) { ui = null; }
+                        try { ui = this._eval(`$x['${name}'] && $x['${name}']._ui && $x['${name}']._ui['${component}']`); } catch (_) { ui = null; }
                         if (ui && typeof ui === 'object' && !Array.isArray(ui)) this._deepOverlay(merged, ui);
                     }
                 } catch (_) { }
@@ -563,7 +572,7 @@ function initializeColorpickerPlugin() {
         try {
             if (window.Alpine?.evaluate) {
                 const expr = isBareRef && !hasInterp ? trimmed : '`' + trimmed + '`';
-                const out = Alpine.evaluate(document.body, expr);
+                const out = window.ManifestUI?._eval ? window.ManifestUI._eval(expr) : Alpine.evaluate(document.body, expr);
                 if (out == null) return val;
                 return typeof out === 'string' ? out : String(out);
             }
@@ -1646,12 +1655,12 @@ function initializeColorpickerPlugin() {
                         // `colorpicker` key flagged on the data entry itself (back-compat).
                         const names = [];
                         try {
-                            const ptr = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.colorpicker');
+                            const ptr = (window.ManifestUI?._eval ? window.ManifestUI._eval : (x) => Alpine.evaluate(evalCtx, x))('$x && $x.manifest && $x.manifest.colorpicker');
                             if (typeof ptr === 'string' && ptr) names.push(ptr);
                             else if (Array.isArray(ptr)) ptr.forEach(n => { if (typeof n === 'string' && n) names.push(n); });
                         } catch {}
                         let dataMap = null;
-                        try { dataMap = Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest.data'); } catch {}
+                        try { dataMap = (window.ManifestUI?._eval ? window.ManifestUI._eval : (x) => Alpine.evaluate(evalCtx, x))('$x && $x.manifest && $x.manifest.data'); } catch {}
                         if (dataMap && typeof dataMap === 'object') {
                             for (const name of Object.keys(dataMap)) {
                                 if (name.startsWith('$') || name.startsWith('_')) continue;
@@ -1665,7 +1674,7 @@ function initializeColorpickerPlugin() {
                             }
                         }
                         const collected = names.map(name => {
-                            try { return Alpine.evaluate(evalCtx, '$x.' + name); } catch { return null; }
+                            try { return (window.ManifestUI?._eval ? window.ManifestUI._eval : (x) => Alpine.evaluate(evalCtx, x))('$x.' + name); } catch { return null; }
                         });
                         const ready = names.length === 0 || collected.every(src => {
                             if (!src || typeof src !== 'object') return false;
@@ -1691,8 +1700,8 @@ function initializeColorpickerPlugin() {
 
                     // Reactive deps trigger re-runs on locale switch / manifest load.
                     this._effects.push(Alpine.effect(() => {
-                        try { Alpine.evaluate(evalCtx, 'typeof $locale !== "undefined" && $locale.current'); } catch {}
-                        try { Alpine.evaluate(evalCtx, '$x && $x.manifest && $x.manifest._loadedFrom'); } catch {}
+                        try { (window.ManifestUI?._eval ? window.ManifestUI._eval : (x) => Alpine.evaluate(evalCtx, x))('typeof $locale !== "undefined" && $locale.current'); } catch {}
+                        try { (window.ManifestUI?._eval ? window.ManifestUI._eval : (x) => Alpine.evaluate(evalCtx, x))('$x && $x.manifest && $x.manifest._loadedFrom'); } catch {}
                         runDiscovery();
                         // Re-localize the whole picker on locale switch.
                         this._applyUi(this.rootEl);
