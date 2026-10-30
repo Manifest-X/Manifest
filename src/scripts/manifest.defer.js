@@ -134,18 +134,41 @@ function register(el, rule, opts) {
         cleanup: []
     };
     wire(rec);
+    Alpine.onElRemoved?.(el, () => forget(rec));
     if (rule === 'route') routes.add(rec);
-    else if (!rec.lazy) { addPending(rec); if (!el.closest('[x-route][hidden]')) track(rec); schedule(); }
+    else if (!rec.lazy) { addPending(rec); if (!el.closest('[x-route][hidden]')) track(rec); if (rec.urgent || warm.size < PREWARM_CAP) schedule(); }
     return rec;
 }
 
+// A copy that renders like the original: a baked x-if clone is adopted through expandos
+// cloneNode drops, so the copy leaves it out and its x-if renders fresh.
+function pristineCopy(fragment) {
+    const copy = fragment.cloneNode(true);
+    const copies = copy.querySelectorAll('template[x-if]');
+    fragment.querySelectorAll('template[x-if]').forEach((t, i) => {
+        if (t._x_currentIfEl && t._x_currentIfEl === t.nextElementSibling) copies[i].nextElementSibling?.remove();
+    });
+    return copy;
+}
+
 function render(rec, viaPrewarm) {
-    if (rec.rendered) { if (!viaPrewarm && warm.delete(rec)) schedule(); return; }
+    if (rec.rendered) {
+        if (!viaPrewarm && warm.delete(rec)) {
+            rec.pristine = null; // opened: never evicted
+            schedule();
+        }
+        return;
+    }
     rec.rendered = true;
     pending.delete(rec);
     if (viaPrewarm) warm.add(rec); else { warm.delete(rec); untrack(rec); }
     const { el, tpl } = rec;
-    const content = rec.discard ? tpl.content.cloneNode(true) : tpl.content;
+    // A prewarm can be evicted, and eviction must restore unused markup: re-initializing
+    // used nodes stacks listeners on any directive without cleanup and re-runs plugins that
+    // rewrite their markup. So it keeps a copy, and the originals (with whatever adoption
+    // set on them) still render.
+    if (viaPrewarm && !rec.discard) rec.pristine = pristineCopy(tpl.content);
+    const content = rec.discard ? pristineCopy(tpl.content) : tpl.content;
     Alpine.mutateDom(() => {
         tpl.remove();
         el.appendChild(content);
@@ -165,6 +188,30 @@ function teardown(rec) {
     });
 }
 
+// Records hold the element and its anchor: a removed one must not pin its page.
+function forget(rec) {
+    rec.forgotten = true;
+    rec.pristine = null;
+    pending.delete(rec);
+    routes.delete(rec);
+    pool = null;
+    untrack(rec);
+    rec.invoker = null;
+    if (warm.delete(rec)) schedule();
+}
+
+// A forgotten container initialized again (re-attached, or destroyed and re-walked).
+// destroyTree also dropped its attribute watchers.
+function revive(rec) {
+    if (!rec.forgotten) return;
+    rec.forgotten = false;
+    Alpine.onElRemoved?.(rec.el, () => forget(rec));
+    if (rec.rendered) return;
+    rec.rearm?.();
+    if (rec.rule === 'route') routes.add(rec);
+    else if (!rec.lazy) { addPending(rec); track(rec); schedule(); }
+}
+
 // Evict a warm, still-closed, never-opened container back to its stash (non-urgent, least reachable first)
 function restash(rec) {
     if (!rec.rendered) return;
@@ -174,7 +221,8 @@ function restash(rec) {
     const { el, tpl } = rec;
     Alpine.mutateDom(() => {
         Array.from(el.children).forEach((child) => Alpine.destroyTree(child));
-        while (el.firstChild) tpl.content.appendChild(el.firstChild);
+        while (el.firstChild) el.firstChild.remove();
+        if (rec.pristine) { tpl.content.appendChild(rec.pristine); rec.pristine = null; }
         el.appendChild(tpl);
     });
     warm.delete(rec);
@@ -226,6 +274,7 @@ function wire(rec) {
             render(rec);
             if (rec.discard) arm();
         });
+        rec.rearm = arm;
         arm();
         if (rec.discard) observe(['hidden'], () => { if (el.hasAttribute('hidden')) teardown(rec); });
     } else if (rule === 'route') {
@@ -235,6 +284,7 @@ function wire(rec) {
             if (!el.hasAttribute('hidden')) render(rec);
             if (!rec.rendered || rec.discard) arm();
         });
+        rec.rearm = arm;
         arm();
         if (rec.discard) observe(['hidden'], () => { if (el.hasAttribute('hidden')) teardown(rec); });
     } else if (rule === 'panel') {
@@ -300,6 +350,7 @@ function reachablePending() {
     if (pool && poolEpoch === reachEpoch && pool.length < pending.size * 2 + 64) return pool;
     poolEpoch = reachEpoch;
     pool = [];
+    for (const set of [warm, routes]) for (const rec of set) if (!rec.el.isConnected) { set.delete(rec); untrack(rec); }
     for (const rec of pending) {
         if (!rec.el.isConnected) { pending.delete(rec); untrack(rec); continue; }
         if (reachable(rec)) { track(rec); pool.push(rec); } else untrack(rec);
@@ -416,12 +467,14 @@ const inViewport = (r) => !!r && r.bottom > 0 && r.top < window.innerHeight && r
 // On-screen rect for ranking, or null when off-screen / boxless
 function nearRect(rec) {
     if (rec.box !== undefined) return rec.ioNear ? rec.box : null;
+    if (rec.anchor) return null; // IO reports within a frame; a read here forces layout per record
     const r = anchorRect(rec);
     rec.near = inViewport(r);
     return rec.near ? r : null;
 }
 function isNear(rec) {
     if (rec.box !== undefined) return !!rec.ioNear;
+    if (rec.anchor) return false;
     if (rec.near === undefined) rec.near = inViewport(anchorRect(rec));
     return rec.near;
 }
@@ -498,7 +551,7 @@ function defer(el) {
 }
 
 function intercept(el, skip) {
-    if (el.__mnfstDefer) return;
+    if (el.__mnfstDefer) { revive(el.__mnfstDefer); return; }
     if (defer(el)) skip();
 }
 

@@ -171,6 +171,7 @@ function initializeTooltipPlugin() {
         s.el.style.setProperty('position-anchor', anchorName);
 
         s.activeTrigger = trigger;
+        trigger._tooltipSingleton = s;
         s.currentAnchorName = anchorName;
 
         // A11y: aria-describedby links trigger → tooltip for screen readers.
@@ -212,7 +213,20 @@ function initializeTooltipPlugin() {
 
     // ---- Directive ----
 
-    Alpine.directive('tooltip', (el, { modifiers, expression }, { effect, evaluateLater }) => {
+    Alpine.directive('tooltip', (el, { modifiers, expression }, { effect, evaluateLater, cleanup }) => {
+        const listeners = new AbortController();
+        const { signal } = listeners;
+        cleanup(() => {
+            listeners.abort();
+            if (_pendingTrigger === el) cancelPendingShow();
+            // A removal root is already detached here, so its host can't be looked up
+            const s = el._tooltipSingleton;
+            el._tooltipSingleton = null;
+            if (s && s.activeTrigger === el) {
+                if (s.el.matches(':popover-open')) s.el.hidePopover();
+                s.activeTrigger = null;
+            }
+        });
 
         // --- Content ---
         // Escape by default; author literal HTML or .html/.safe opts in.
@@ -288,15 +302,15 @@ function initializeTooltipPlugin() {
         };
 
         // Mouse interactions
-        el.addEventListener('mouseenter', requestShow);
-        el.addEventListener('mouseleave', requestHide);
+        el.addEventListener('mouseenter', requestShow, { signal });
+        el.addEventListener('mouseleave', requestHide, { signal });
 
         // Keyboard focus (WCAG 2.1 SC 1.4.13). Gated on :focus-visible so mouse-click
         // focus doesn't flash the tooltip.
         el.addEventListener('focus', () => {
             if (el.matches(':focus-visible')) requestShow();
-        });
-        el.addEventListener('blur', requestHide);
+        }, { signal });
+        el.addEventListener('blur', requestHide, { signal });
 
         // Mousedown/click hides now and clears the chain window, so a synthetic
         // re-hover (content shifting under the cursor) waits the full delay.
@@ -305,8 +319,8 @@ function initializeTooltipPlugin() {
             hideAnySingleton();
             clearChainWindow();
         };
-        el.addEventListener('mousedown', hideOnInteraction);
-        el.addEventListener('click', hideOnInteraction);
+        el.addEventListener('mousedown', hideOnInteraction, { signal });
+        el.addEventListener('click', hideOnInteraction, { signal });
     });
 
     // Global: when ANY other popover opens, close the singleton(s). Dropdowns and

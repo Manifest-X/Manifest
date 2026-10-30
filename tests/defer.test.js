@@ -18,6 +18,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const idleQueue = []
 const idleOpts = []
 let idleId = 0
+const ioInstances = []
+window.IntersectionObserver = class {
+    constructor(cb) { this.cb = cb; ioInstances.push(this) }
+    observe() {} unobserve() {} disconnect() {}
+}
 window.requestIdleCallback = (fn, opts) => { const id = ++idleId; idleQueue.push({ id, fn }); idleOpts.push(opts); return id }
 window.cancelIdleCallback = (id) => { const i = idleQueue.findIndex((x) => x.id === id); if (i >= 0) idleQueue.splice(i, 1) }
 // Deadlines: one = a short idle slice (one container), batch = a long one, forced = a timed-out fire (renders nothing)
@@ -296,7 +301,8 @@ describe('prewarm', () => {
         expect(menu.__mnfstDefer.urgent).toBe(false)
         drain()
         expect(window.counts.revealed).toBeUndefined() // paused at the cap, not near anything: stays pending
-        host.querySelector('#pane').getBoundingClientRect = () => ({ top: 10, bottom: 200, left: 10, right: 300, width: 290, height: 190 })
+        const box = { top: 10, bottom: 200, left: 10, right: 300, width: 290, height: 190 }
+        ioInstances.forEach((io) => io.cb([{ target: host.querySelector('#pane'), boundingClientRect: box, isIntersecting: true }]))
         document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
         await new Promise((r) => setTimeout(r, 200))
         expect(menu.__mnfstDefer.urgent).toBe(true)
@@ -337,5 +343,93 @@ describe('cooperative API', () => {
         openPopover(menu)
         expect(window.counts.m).toBe(1)
         expect(menu.querySelector('li').textContent).toBe('A')
+    })
+})
+
+describe('removed and evicted containers', () => {
+    it('a re-stashed container re-renders from pristine markup, not used nodes', () => {
+        drain()
+        const cap = window.ManifestDefer.stats().cap
+        const host = mount(`<div x-data>` + Array.from({ length: cap + 3 }, (_, i) => `<menu popover id="p` + i + `"><li class="orig">x</li></menu>`).join('') + `</div>`)
+        drain('batch')
+        const stashedMenu = Array.from(host.querySelectorAll('menu')).find((m) => stash(m))
+        expect(stashedMenu).toBeTruthy()
+        expect(stash(stashedMenu).content.querySelector('li.orig')).toBeTruthy()
+        openPopover(stashedMenu)
+        expect(stashedMenu.querySelector('li.orig')).toBeTruthy()
+    })
+
+    it('a prewarm renders the originals, keeps a copy, and drops it on open', () => {
+        drain()
+        document.dispatchEvent(new Event('pointerdown', { bubbles: true })) // urgent: ahead of the cap
+        const host = mount(`<div x-data><menu popover id="copy"><li class="stashed">x</li></menu></div>`)
+        const menu = host.querySelector('#copy')
+        const rec = menu.__mnfstDefer
+        const original = rec.tpl.content.querySelector('li')
+        expect(rec.urgent).toBe(true)
+        drain('batch')
+        expect(rec.rendered).toBe(true)
+        expect(menu.querySelector('li')).toBe(original)
+        expect(rec.pristine.querySelector('li')).toBeTruthy()
+        openPopover(menu)
+        expect(rec.pristine).toBeNull()
+    })
+
+    it('an evicted container with an adopted x-if clone never renders it twice', async () => {
+        drain()
+        const cap = window.ManifestDefer.stats().cap
+        const host = document.createElement('div')
+        host.setAttribute('x-data', '')
+        host.innerHTML = Array.from({ length: cap + 3 }, (_, i) => `<menu popover id="ai` + i + `"><template x-if="true"><li class="baked">x</li></template><li class="baked">x</li></menu>`).join('')
+        host.querySelectorAll('template').forEach((t) => { t._x_currentIfEl = t.nextElementSibling; t.nextElementSibling._x_undoIf = () => {} })
+        document.body.appendChild(host)
+        Alpine.initTree(host)
+        drain('batch')
+        const menus = Array.from(host.querySelectorAll('menu'))
+        expect(menus.some((m) => stash(m))).toBe(true)
+        for (const m of menus) openPopover(m)
+        await settle()
+        for (const m of menus) expect(m.querySelectorAll('li.baked').length).toBe(1)
+    })
+
+    it('a hidden container destroyed and re-initialized still renders when revealed', async () => {
+        drain()
+        const host = mount(`<div x-data><section id="rv" hidden><p x-init="counts.rv = (counts.rv || 0) + 1">x</p></section></div>`)
+        const el = host.querySelector('#rv')
+        Alpine.destroyTree(host)
+        Alpine.initTree(host)
+        el.removeAttribute('hidden')
+        await settle()
+        expect(window.counts.rv).toBe(1)
+    })
+
+    it('a removed container leaves the queues and stops being tracked', () => {
+        drain()
+        const before = window.ManifestDefer.stats()
+        const host = mount(`<div x-data>` + Array.from({ length: 6 }, (_, i) => `<menu popover id="gone` + i + `"><li>x</li></menu>`).join('') + `</div>`)
+        const during = window.ManifestDefer.stats()
+        expect(during.pending).toBe(before.pending + 6)
+        expect(during.observed).toBeGreaterThan(before.observed - 1)
+        Alpine.destroyTree(host)
+        host.remove()
+        const after = window.ManifestDefer.stats()
+        expect(after.pending).toBe(before.pending)
+        expect(after.observed).toBe(before.observed)
+    })
+
+    it('ranking containers never forces layout while the observer tracks them', () => {
+        drain()
+        const orig = Element.prototype.getBoundingClientRect
+        let reads = 0
+        Element.prototype.getBoundingClientRect = function () { reads++; return orig.call(this) }
+        try {
+            const host = mount(`<div x-data>` + Array.from({ length: 40 }, (_, i) => `<div><menu popover id="nr` + i + `"><li>x</li></menu></div>`).join('') + `</div>`)
+            drain('batch')
+            expect(reads).toBe(0)
+            Alpine.destroyTree(host)
+            host.remove()
+        } finally {
+            Element.prototype.getBoundingClientRect = orig
+        }
     })
 })

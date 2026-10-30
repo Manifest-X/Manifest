@@ -87,8 +87,12 @@ const load = (file) => import(/* @vite-ignore */ 'data:text/javascript,' + encod
 ))
 await load('manifest.dropdowns.js')
 await load('manifest.charts.js')
+await load('manifest.tooltips.js')
+await load('manifest.datepicker.js')
 window.ensureDropdownPluginInitialized()
 window.ensureChartsPluginInitialized()
+window.ensureTooltipPluginInitialized()
+window.ensureDatepickerPluginInitialized()
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
 const settle = async (n = 6) => { for (let i = 0; i < n; i++) await tick() }
@@ -386,5 +390,52 @@ describe('x-chart teardown', () => {
         await settle()
         expect(evals.n).toBe(0)
         expect(st.every((s) => !s._effect)).toBe(true)
+    })
+})
+
+describe('x-tooltip teardown', () => {
+    it('destroying and re-initializing an element does not stack its listeners', async () => {
+        const host = mount(`<div x-data><button id="tip" x-tooltip="'Hi'">a</button></div>`)
+        await settle()
+        const btn = host.querySelector('#tip')
+        const once = count(btn)
+        expect(once).toBeGreaterThan(0)
+        for (let i = 0; i < 5; i++) { Alpine.destroyTree(host); Alpine.initTree(host); await settle() }
+        expect(count(btn)).toBe(once)
+        await unmount(host)
+        expect(count(btn)).toBe(0)
+    })
+})
+
+describe('x-date teardown', () => {
+    const renders = () => { const n = window.__dpUi.n; return n }
+    it('a removed calendar stops following the stores and leaves the registry', async () => {
+        window.__dpUi = { n: 0 }
+        const realResolve = window.ManifestUI?.resolve
+        window.ManifestUI = { ...(window.ManifestUI || {}), resolve: (k, f) => { window.__dpUi.n++; return realResolve ? realResolve(k, f) : f } }
+        Alpine.store('data', { _dataVersion: 0 })
+        const host = mount(`<div x-data="{ day: '' }"><div id="dp-inline" x-date x-model="day"></div><input id="dp-field" x-date></div>`)
+        await settle()
+        Alpine.$data(host.firstElementChild).day = '2026-01-15'
+        await settle()
+        const live = mount(`<div x-data><span id="dp-live" x-text="$date('dp-inline').value"></span></div>`)
+        await settle()
+        expect(live.querySelector('#dp-live').textContent).toContain('2026-01-15') // control
+        await unmount(live)
+        Alpine.store('data')._dataVersion++
+        await settle()
+        expect(renders()).toBeGreaterThan(0) // control: mounted calendars follow the heartbeat
+        const before = document.querySelectorAll('menu[id^="mnfst-dp-menu-"]').length
+        expect(before).toBeGreaterThan(0)
+        await unmount(host)
+        expect(document.querySelectorAll('menu[id^="mnfst-dp-menu-"]').length).toBe(before - 1)
+        window.__dpUi.n = 0
+        Alpine.store('data')._dataVersion++
+        await settle()
+        expect(renders()).toBe(0)
+        const probe = mount(`<div x-data><span id="dp-probe" x-text="$date('dp-inline').value"></span></div>`)
+        await settle()
+        expect(probe.querySelector('#dp-probe').textContent).toBe('')
+        await unmount(probe)
     })
 })
