@@ -7,10 +7,15 @@
 // Legacy: Keep reactiveFileManagers Map for backward compatibility during transition
 // Will be removed once all code is migrated to computed approach
 const reactiveFileManagers = new Map();
+const computedFilesArrays = new Map();
 
 // Create a computed files array for an entry that filters the bucket array by fileIds
 // This is the new single-source-of-truth approach
 function createComputedFilesArray(tableName, entryId, bucketName, columnName = 'fileIds') {
+    const memoKey = JSON.stringify([tableName, entryId, bucketName, columnName]);
+    const memoized = computedFilesArrays.get(memoKey);
+    if (memoized) return memoized;
+
     if (typeof Alpine === 'undefined') {
         // Return empty array proxy if Alpine not available
         return new Proxy([], {
@@ -171,7 +176,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
     recomputeFiles();
 
     // Create proxy that adds loading/error properties
-    return new Proxy(computedFiles, {
+    const computedProxy = new Proxy(computedFiles, {
         get(target, key) {
             if (key === '$loading') return loadingState.value;
             if (key === '$error') return errorState.value;
@@ -186,6 +191,8 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
             return key in target || key === '$loading' || key === '$error';
         }
     });
+    computedFilesArrays.set(memoKey, computedProxy);
+    return computedProxy;
 }
 
 // Create reactive file array that watches a function/expression for entryId changes
@@ -619,9 +626,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         });
 
         unsubscribeCallbacks.push(() => {
-            if (unwatch && typeof unwatch === 'function') {
-                unwatch();
-            }
+            if (unwatch) Alpine.release(unwatch);
         });
     };
 

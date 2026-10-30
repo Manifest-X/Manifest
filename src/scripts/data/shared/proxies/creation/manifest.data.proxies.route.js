@@ -69,13 +69,9 @@ const routeProxyCache = new Map();
 // Clear route proxy cache for a specific data source (called when store updates)
 function clearRouteProxyCacheForDataSource(dataSourceName) {
     if (!dataSourceName) return;
-    const keysToDelete = [];
-    for (const [key] of routeProxyCache.entries()) {
-        if (key.startsWith(`${dataSourceName}:`)) {
-            keysToDelete.push(key);
-        }
+    for (const [key, entry] of routeProxyCache.entries()) {
+        if (key.startsWith(`${dataSourceName}:`)) entry.stale = true;
     }
-    keysToDelete.forEach(key => routeProxyCache.delete(key));
 }
 
 // Create proxy for route-specific lookups
@@ -83,8 +79,13 @@ function createRouteProxy(dataSourceData, pathKey, dataSourceName) {
     // Use cache if dataSourceName is provided to avoid recreating proxies
     if (dataSourceName && pathKey) {
         const cacheKey = `${dataSourceName}:${pathKey}`;
-        if (routeProxyCache.has(cacheKey)) {
-            return routeProxyCache.get(cacheKey);
+        const cached = routeProxyCache.get(cacheKey);
+        if (cached) {
+            if (cached.stale) {
+                cached.stale = false;
+                cached.refresh(dataSourceData);
+            }
+            return cached.proxy;
         }
     }
 
@@ -329,7 +330,15 @@ function createRouteProxy(dataSourceData, pathKey, dataSourceName) {
     // Cache the proxy if dataSourceName and pathKey are provided
     if (dataSourceName && pathKey) {
         const cacheKey = `${dataSourceName}:${pathKey}`;
-        routeProxyCache.set(cacheKey, proxy);
+        routeProxyCache.set(cacheKey, {
+            proxy,
+            stale: false,
+            refresh(data) {
+                dataSourceData = data;
+                lastUpdateUrl = null;
+                updateReactiveTarget();
+            }
+        });
     }
 
     return proxy;
