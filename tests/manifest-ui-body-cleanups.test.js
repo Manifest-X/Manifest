@@ -45,4 +45,18 @@ describe.each(COPIES)('%s', (file) => {
         expect(out).toEqual({ title: 'Titre', close: 'Close' })
         expect((document.body._x_cleanups || []).length - before).toBeLessThanOrEqual(4)
     })
+
+    it('sees a magic registered after its evaluator was built', () => {
+        delete window.ManifestUI
+        new Function(extract(file))()
+        const expr = `typeof $late${COPIES.indexOf(file)} !== "undefined" && $late${COPIES.indexOf(file)}.v`
+        expect(window.ManifestUI._eval(expr)).toBe(false)
+        Alpine.magic(`late${COPIES.indexOf(file)}`, () => ({ v: 'here' }))
+        expect(window.ManifestUI._eval(expr)).toBe('here')
+    })
+})
+
+it('colorpicker calls the shared evaluator as a method (strict copies need this)', () => {
+    const src = readFileSync(path.join(dir, '../src/scripts/manifest.colorpicker.js'), 'utf8')
+    expect(src).not.toMatch(/\? window\.ManifestUI\._eval :/)
 })

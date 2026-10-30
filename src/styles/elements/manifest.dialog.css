@@ -105,18 +105,18 @@
 
     /* Hide dropdowns when dialogs are open: <html> sets flags, menus read them via style queries */
     html:has(dialog:popover-open) {
-        --mnfst-dialog-open: 1;
+        --dialog-open: 1;
     }
 
     html:has(dialog:popover-open ~ dialog:popover-open) {
-        --mnfst-dialog-stacked: 1;
+        --dialog-stacked: 1;
     }
 
     /* Hide dropdowns outside of any dialog. A generated popover (a datepicker
        calendar, a colorpicker panel) is appended to <body>, so DOM position alone
        can't tell page chrome from a menu the dialog itself opened —
        data-popover-nested marks the latter, which CSS has no way to work out. */
-    @container style(--mnfst-dialog-open: 1) {
+    @container style(--dialog-open: 1) {
         menu[popover]:not(dialog *):not([data-popover-nested]) {
             opacity: 0;
             scale: .9;
@@ -130,7 +130,7 @@
     }
 
     /* When multiple dialogs are open, hide dropdowns in all but closest dialog */
-    @container style(--mnfst-dialog-stacked: 1) {
+    @container style(--dialog-stacked: 1) {
         dialog:popover-open:not(:last-of-type) menu[popover] {
             opacity: 0;
             scale: .9;

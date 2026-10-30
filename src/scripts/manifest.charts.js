@@ -15,9 +15,17 @@
 			/* Loaded data sources (current locale); never force-loads others. */
 			// One cached evaluator per expression: each Alpine.evaluate would register a cleanup on <body>, never run
 			_eval(expr) {
-				const cache = this._evals || (this._evals = new Map());
-				let fn = cache.get(expr);
-				if (!fn) cache.set(expr, fn = Alpine.evaluateLater(document.body, expr));
+				const A = window.Alpine;
+				// Magics registered after an evaluator was built stay invisible to it, so a registration drops the cache
+				if (!A.magic.__manifestMagicCounted) {
+					const magic = A.magic;
+					A.magic = function () { window.__manifestMagicVersion = (window.__manifestMagicVersion || 0) + 1; return magic.apply(this, arguments); };
+					A.magic.__manifestMagicCounted = true;
+				}
+				const version = window.__manifestMagicVersion || 0;
+				if (!this._evals || this._evalsVersion !== version) { this._evals = new Map(); this._evalsVersion = version; }
+				let fn = this._evals.get(expr);
+				if (!fn) this._evals.set(expr, fn = A.evaluateLater(document.body, expr));
 				let out;
 				fn(v => { out = v; });
 				return out;
