@@ -767,29 +767,6 @@
 		if (window.Alpine && window.Alpine.magic) install();
 	}
 	stubEditMagic();
-	// Open-dialog state for manifest.dialog.css, instead of a document-wide :has() restyle
-	function watchDialogs() {
-		if (typeof document === 'undefined' || !document.documentElement || window.__manifestDialogWatch) return;
-		window.__manifestDialogWatch = true;
-		const root = document.documentElement;
-		let poll = null;
-		const set = (name, on) => { if (root.hasAttribute(name) !== on) root.toggleAttribute(name, on); };
-		const sync = () => {
-			let open = [];
-			try { open = [...document.querySelectorAll('dialog:popover-open')]; } catch (_) { return; }
-			set('data-dialog-open', open.length > 0);
-			set('data-dialog-stacked', open.some(d => { for (let s = d.previousElementSibling; s; s = s.previousElementSibling) if (open.includes(s)) return true; return false; }));
-			// A removed open dialog fires no toggle event
-			if (open.length && !poll) poll = setInterval(sync, 250);
-			else if (!open.length && poll) { clearInterval(poll); poll = null; }
-		};
-		const onToggle = (e) => { if (e.target && e.target.tagName === 'DIALOG') queueMicrotask(sync); };
-		document.addEventListener('beforetoggle', onToggle, true);
-		document.addEventListener('toggle', onToggle, true);
-		root.setAttribute('data-dialog-watch', '');
-		sync();
-	}
-	watchDialogs();
 	// Plugins loaded after Alpine started adopt what its first walk already passed
 	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => { window.__manifestAlpineStarted = true; }, { once: true });
 	// Framework web components — <x-*> tags that are NOT project components.

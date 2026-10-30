@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  *
  * Loader: the post-boot usage sniff skips attribute values it has already seen hold no usage
- * magic, and open dialogs are mirrored onto <html> for manifest.dialog.css.
+ * magic.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -17,15 +17,13 @@ const V = '0.5.217'
 const injected = () => [...document.querySelectorAll('script[src*="/lib/manifest."]')].map(s => s.getAttribute('src').replace(/.*\/lib\/manifest\.(.*)\.min\.js/, '$1'))
 
 beforeEach(() => {
-    for (const k of ['__manifestLoaded', '__manifestPromise', '__manifestLoaderStarted', '__manifestReady', '__manifestSwArmed', '__manifestDialogWatch', 'Manifest', 'Capacitor']) delete window[k]
+    for (const k of ['__manifestLoaded', '__manifestPromise', '__manifestLoaderStarted', '__manifestReady', '__manifestSwArmed', 'Manifest', 'Capacitor']) delete window[k]
     vi.stubGlobal('fetch', vi.fn(async (url) => String(url).includes('manifest.json')
         ? new Response(JSON.stringify({ name: 'x' }), { status: 200, headers: { 'content-type': 'application/json' } })
         : new Response('', { status: 404 })))
     if (typeof performance.getEntriesByName === 'function') vi.spyOn(performance, 'getEntriesByName').mockReturnValue([])
     else performance.getEntriesByName = () => []
     if (!window.requestIdleCallback) window.requestIdleCallback = (fn) => setTimeout(fn, 0)
-    document.documentElement.removeAttribute('data-dialog-open')
-    document.documentElement.removeAttribute('data-dialog-watch')
 })
 
 function boot(bodyHtml = '') {
@@ -57,24 +55,5 @@ describe('usage sniff', () => {
         list.insertAdjacentHTML('beforeend', '<div x-text="$chat.status"></div>')
         await settle()
         expect(injected()).toContain('chat')
-    })
-})
-
-describe('dialog watch', () => {
-    it('marks <html> while a dialog is open', async () => {
-        boot('<dialog popover id=d></dialog>'); await settle()
-        const html = document.documentElement
-        expect(html.hasAttribute('data-dialog-watch')).toBe(true)
-        const d = document.getElementById('d')
-        const qsa = document.querySelectorAll.bind(document)
-        let open = [d]
-        vi.spyOn(document, 'querySelectorAll').mockImplementation((sel) => sel === 'dialog:popover-open' ? open : qsa(sel))
-        d.dispatchEvent(new Event('toggle'))
-        await Promise.resolve()
-        expect(html.hasAttribute('data-dialog-open')).toBe(true)
-        open = []
-        d.dispatchEvent(new Event('toggle'))
-        await Promise.resolve()
-        expect(html.hasAttribute('data-dialog-open')).toBe(false)
     })
 })
