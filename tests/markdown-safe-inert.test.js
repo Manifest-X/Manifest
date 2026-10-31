@@ -2,7 +2,8 @@
  * @vitest-environment happy-dom
  *
  * x-markdown.safe: unsanitized HTML is only ever parsed inert (template), and
- * DOMPurify runs on its defaults, so x-* custom elements don't survive.
+ * DOMPurify runs without custom elements, page styling or forms, and only
+ * callout classes survive.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeAll } from 'vitest'
@@ -18,7 +19,7 @@ globalThis.marked = marked
 
 const configs = []
 window.DOMPurify = {
-  sanitize: (html, config) => { configs.push(config); return '<p>clean</p>' },
+  sanitize: (html, config) => { configs.push(config); return '<p class="fixed inset-0">clean</p><aside class="brand z-[9999]">n</aside>' },
 }
 
 const liveParses = []
@@ -51,9 +52,17 @@ describe('x-markdown.safe', () => {
     Alpine.initTree(host)
     await settle(); await settle()
 
-    expect(host.querySelector('article').innerHTML).toContain('clean')
+    const article = host.querySelector('article')
+    expect(article.innerHTML).toContain('clean')
+    expect(article.querySelector('p').hasAttribute('class')).toBe(false)
+    expect(article.querySelector('aside').getAttribute('class')).toBe('brand')
     expect(liveParses).toEqual([])
     expect(configs.length).toBeGreaterThan(0)
-    for (const c of configs) expect(c?.CUSTOM_ELEMENT_HANDLING).toBeUndefined()
+    for (const c of configs) {
+      expect(c?.CUSTOM_ELEMENT_HANDLING).toBeUndefined()
+      expect(c.FORBID_TAGS).toEqual(expect.arrayContaining(['style', 'form', 'template']))
+      expect(c.FORBID_ATTR).toEqual(expect.arrayContaining(['style', 'popover']))
+      expect(c.SANITIZE_NAMED_PROPS).toBe(true)
+    }
   })
 })
