@@ -31,8 +31,9 @@ const hostile = [
     `<div popover id="p">p</div><button id="cmd" popovertarget="p" commandfor="dlg" command="show-modal">open</button>`,
     `<video autoplay src="https://evil.test/v.mp4"></video><audio autoplay src="https://evil.test/a.mp3"></audio>`,
     `<a id="config" name="config" data-component="x" href="https://ok.test">link</a>`,
+    `<input type="image" src="https://evil.test/i.png"><table background="https://evil.test/t.png"><tr><td>t</td></tr></table>`,
 ].join('\n\n')
-const benign = '# Intro\n\n[jump](#intro) [site](https://ok.test)\n\n- [ ] task\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n![alt](/i.png)\n\n::: brand\nnote\n:::\n\n```js\nlet a = 1\n```'
+const benign = '# Intro\n\n[jump](#intro) [site](https://ok.test) <a href="#%E0%A4%A">odd</a>\n\n- [ ] task\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n![alt](/i.png)\n\n::: brand\nnote\n:::\n\n```js\nlet a = 1\n```'
 
 const page = `<!doctype html><html><head>
 <script>window.__hits=[];window.hit=(n)=>window.__hits.push(n);window.D=${JSON.stringify({ ready: false, hostile, benign })}</script>
@@ -96,6 +97,7 @@ try {
             img: b?.querySelector('img')?.getAttribute('src'),
             callout: b?.querySelector('aside')?.getAttribute('class'),
             code: b?.querySelector('pre code')?.textContent,
+            escaped: (b?.innerHTML || '').includes('&lt;h1'),
         }
     })
 
@@ -110,6 +112,7 @@ try {
     check('page styling untouched', r.bodyDisplay === 'block' && r.headStyles === 0, r)
     check('ids cannot claim window globals', r.configGlobal === 'undefined', r.configGlobal)
     check('no requests leave the page', external.length === 0, external)
+    check('a malformed anchor leaves the message rendered', r.escaped === false && !!r.h1)
     check('in-content heading link follows its heading', r.anchor === '#' + r.h1 && !!r.h1, [r.anchor, r.h1])
     check('links, task list, table, image, callout and code survive',
         r.site && r.checkbox === false && r.cell === '1' && r.img === '/i.png' && r.callout === 'brand' && /let a = 1/.test(r.code || ''), r)

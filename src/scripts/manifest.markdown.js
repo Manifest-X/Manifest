@@ -19,7 +19,7 @@ if (typeof window !== 'undefined') {
 const MARKDOWN_PURIFY_CONFIG = {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['style', 'form', 'template', 'dialog', 'video', 'audio'],
-    FORBID_ATTR: ['style', 'popover', 'popovertarget', 'popovertargetaction', 'formaction', 'command', 'commandfor', 'autoplay'],
+    FORBID_ATTR: ['style', 'popover', 'popovertarget', 'popovertargetaction', 'formaction', 'command', 'commandfor', 'autoplay', 'background'],
     ALLOW_DATA_ATTR: false,
     SANITIZE_NAMED_PROPS: true
 };
@@ -29,6 +29,7 @@ const MARKDOWN_SAFE_CLASSES = new Set(['brand', 'accent', 'positive', 'negative'
 function restrictSafeClasses(html) {
     const t = document.createElement('template');
     t.innerHTML = html;
+    t.content.querySelectorAll('input[type="image" i]').forEach(el => el.remove());
     t.content.querySelectorAll('[class]').forEach(el => {
         const keep = el.tagName === 'ASIDE' ? [...el.classList].filter(c => MARKDOWN_SAFE_CLASSES.has(c)) : [];
         if (keep.length) el.setAttribute('class', keep.join(' '));
@@ -36,7 +37,9 @@ function restrictSafeClasses(html) {
     });
     // Ids carry DOMPurify's user-content- prefix; follow it in in-content anchors
     t.content.querySelectorAll('a[href^="#"]').forEach(a => {
-        const id = decodeURIComponent(a.getAttribute('href').slice(1));
+        const raw = a.getAttribute('href').slice(1);
+        let id;
+        try { id = decodeURIComponent(raw); } catch { id = raw; }
         if (id && t.content.getElementById('user-content-' + id)) a.setAttribute('href', '#user-content-' + id);
     });
     return t.innerHTML;
