@@ -274,6 +274,20 @@ describe('one shared realtime client per tab', () => {
         expect(rows('alpha')).toEqual(['a1', 'n1'])
     })
 
+    it('rows land without waiting for the realtime socket to open', async () => {
+        const { main, rows, state, stats } = await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] }, realtimeQueries: true })
+        window.Appwrite.Realtime.prototype.subscribe = function (channel) {
+            stats.subscribes.push(channel)
+            return new Promise(() => {})
+        }
+        const load = main.loadDataSource('alpha')
+        const done = await Promise.race([load.then(() => true), settle(500).then(() => false)])
+        expect(done).toBe(true)
+        expect(rows('alpha')).toEqual(['a1'])
+        expect(state('alpha').loading).toBe(false)
+        expect(stats.subscribes).toContain(CH('t1'))
+    })
+
     it('storage buckets share the same instance', async () => {
         const { stats, rt, rows, main } = await boot(
             { alpha: T('t1'), docs: { appwriteBucketId: 'bk' } },
