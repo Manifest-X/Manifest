@@ -280,7 +280,9 @@ describe('one shared realtime client per tab', () => {
         const $x = Alpine.evaluate(document.body, '$x')
         expect($x.__v_isReadonly).toBeUndefined()
         expect($x.__v_isRef).toBeUndefined()
-        expect($x.__v_skip).toBeUndefined()
+        expect($x.__v_skip).toBe(true)
+        expect(Alpine.reactive($x)).toBe($x)
+        expect($x.$register('__v_isReadonly', [])).toBeUndefined()
         expect($x[Symbol.toStringTag]).toBeUndefined()
         Alpine.reactive($x)
         await settle()
@@ -291,6 +293,18 @@ describe('one shared realtime client per tab', () => {
         await settle()
         Alpine.release(e)
         expect(runs).toBe(2)
+    })
+
+    it('x-data holding $x boots, and its neighbours still render', async () => {
+        await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] } })
+        const box = document.createElement('div')
+        box.innerHTML = '<section x-data="{ d: $x, n: 1 }"><b x-text="n"></b></section><p x-data x-text="\'ok\'"></p>'
+        document.body.appendChild(box)
+        Alpine.initTree(box)
+        await settle()
+        expect(box.querySelector('b').textContent).toBe('1')
+        expect(box.querySelector('p').textContent).toBe('ok')
+        box.remove()
     })
 
     it('rows land without waiting for the realtime socket to open', async () => {

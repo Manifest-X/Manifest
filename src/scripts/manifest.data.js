@@ -9444,14 +9444,16 @@ function registerXMagicMethod(loadDataSource) {
                         return undefined;
                     }
 
-                    // Vue internals are never sources: tracking __v_isReadonly on _v freezes its reactivity
+                    // Vue internals are never sources: tracking __v_isReadonly on _v freezes its reactivity.
+                    // __v_skip keeps Vue and Alpine from wrapping $x; Alpine's x-data walk would otherwise call into it
+                    if (prop === '__v_skip') return true;
                     if (propStr.startsWith('__v_')) return undefined;
 
                     // $x.$register(name, data) — install/replace a client-side source at
                     // runtime (array or object). Reactive like any manifest.json source.
                     if (prop === '$register') {
                         return (name, data) => {
-                            if (!name || typeof name !== 'string') return undefined;
+                            if (!name || typeof name !== 'string' || name.startsWith('__v_')) return undefined;
                             const stamped = Array.isArray(data)
                                 ? data.map(d => (d && typeof d === 'object' && !('contentType' in d)) ? { contentType: name, ...d } : d)
                                 : data;
