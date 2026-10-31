@@ -156,8 +156,9 @@ describe('x-toast expressions evaluate', () => {
         expect((await click(host.querySelector('button'))).text).toBe('From a data source')
     })
 
-    it('$x. values keep rendering as markup', async () => {
-        expect((await toastFor('x-toast="$x.example.rich"')).html).toBe('Saved <b>draft</b>')
+    it('$x. values render as text; .html renders them as markup', async () => {
+        expect((await toastFor('x-toast="$x.example.rich"')).html).toBe('Saved &lt;b&gt;draft&lt;/b&gt;')
+        expect((await toastFor('x-toast.html="$x.example.rich"')).html).toBe('Saved <b>draft</b>')
     })
 
     it('x-for loop variable without a template literal', async () => {
@@ -219,5 +220,32 @@ describe('x-toast re-evaluates per click', () => {
         await settle()
         expect((await click(btn)).text).toBe('n is 1')
         expect((await click(btn)).text).toBe('n is 2')
+    })
+})
+
+describe('toast content is text unless authored or opted in', () => {
+    const evil = `<img src="x" onerror="window.__hit=1"><span x-init="window.__hit=2">n</span>`
+
+    it('expression results never become elements', async () => {
+        const t = await toastFor('x-toast="evil"', `{ evil: ${JSON.stringify(evil).replace(/"/g, '&quot;')} }`)
+        expect(t.text).toBe(evil)
+        expect(document.querySelector('.toast-content img, .toast-content span')).toBeNull()
+    })
+
+    it('$toast and its variants show text; { html: true } renders markup', async () => {
+        const host = mount(`<div x-data="{ evil: ${JSON.stringify(evil).replace(/"/g, '&quot;')} }">
+            <button id="a" @click="$toast(evil)">A</button>
+            <button id="b" @click="$toast.negative.dismiss(evil)">B</button>
+            <button id="c" @click="$toast.positive.fixed('<b>ok</b>', { html: true })">C</button>
+        </div>`)
+        await settle()
+        expect((await click(host.querySelector('#a'))).text).toBe(evil)
+        expect((await click(host.querySelector('#b'))).text).toBe(evil)
+        expect((await click(host.querySelector('#c'))).html).toBe('<b>ok</b>')
+        expect(document.querySelectorAll('.toast-content img, .toast-content span')).toHaveLength(0)
+    })
+
+    it('authored static markup still renders', async () => {
+        expect((await toastFor(`x-toast="Hello <b>bold</b>"`)).html).toBe('Hello <b>bold</b>')
     })
 })
