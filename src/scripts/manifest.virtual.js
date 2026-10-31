@@ -270,6 +270,7 @@ function initializeVirtualPlugin() {
                 if (!entry) {
                     entry = mountRow(items[i], keys[i], cursor);
                     rowNodes.add(entry.node);
+                    if (entry.node.parentNode !== host) host.insertBefore(entry.node, cursor);  // root replaced itself in init
                     continue;
                 }
                 if (entry.scope[itemName] !== items[i]) entry.scope[itemName] = items[i];  // rebind by key
