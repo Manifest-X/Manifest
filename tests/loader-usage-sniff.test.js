@@ -57,3 +57,15 @@ describe('usage sniff', () => {
         expect(injected()).toContain('chat')
     })
 })
+
+describe('alpine pin', () => {
+    const pkg = JSON.parse(readFileSync(path.join(__dirname, '../package.json'), 'utf8'))
+
+    it('loads the exact version the suite tests against, unless data-alpine overrides it', () => {
+        const pinned = /DEFAULT_ALPINE_VERSION = '([^']+)'/.exec(CODE)[1]
+        expect(pinned).toMatch(/^\d+\.\d+\.\d+$/)
+        expect(pkg.devDependencies.alpinejs).toBe(pinned)
+        expect(JSON.parse(readFileSync(path.join(__dirname, '../node_modules/alpinejs/package.json'), 'utf8')).version).toBe(pinned)
+        expect(CODE).toMatch(/const v = dataAlpine \|\| DEFAULT_ALPINE_VERSION/)
+    })
+})

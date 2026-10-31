@@ -48,7 +48,7 @@ async function loadAlpineSource() {
         alpineSource = readFileSync(alpinePath, 'utf8');
         return alpineSource;
     } catch { /* fall through to CDN */ }
-    const res = await fetch('https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js');
+    const res = await fetch('https://cdn.jsdelivr.net/npm/alpinejs@3.17.5/dist/cdn.min.js');
     if (!res.ok) {
         throw new Error([
             "Could not load Alpine.js. Either install it locally:",

@@ -36,6 +36,14 @@ stranded fixes, and messy reconciliations. Keep everyone converged:
   (`scripts/release-bump.mjs`), so a stale local checkout can't collide with an
   already-published version.
 
+## Alpine version
+
+The loader pins Alpine by default (`DEFAULT_ALPINE_VERSION` in
+`src/scripts/manifest.js`, kept equal to `alpinejs` in `package.json`), so sites
+only change Alpine with a framework release. On each major framework release,
+re-evaluate the pin: review Alpine's changes, move to the current version where
+it's sound, and take any expansions or optimizations worth using.
+
 ## Dev-server previews (one server, never stale)
 
 Andrew reviews work at **http://localhost:5055** — the app-managed server that

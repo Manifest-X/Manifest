@@ -27,7 +27,7 @@ to any Manifest app. No VDOM, no compiler.
 ## 1. Ground truth from the source (what the brief couldn't see)
 
 1. **Alpine ships unmodified from CDN at `latest`** (`manifest.js`
-   `DEFAULT_VERSION='latest'`, `data-alpine` default `'3'`). The scheduler is
+   `DEFAULT_VERSION='latest'`, `data-alpine` default pinned, see `DEFAULT_ALPINE_VERSION`). The scheduler is
    module-internal. There is no "patch the flush" — see §6 for the only
    viable route.
 2. **`$x` landing = whole-store replacement.** `updateStore()`

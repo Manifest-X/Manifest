@@ -484,9 +484,11 @@
 	}
 
 	// Alpine URL candidates from a data-alpine value (version tag, full URL, or same-origin path)
+	// Tested version, kept equal to package.json; re-evaluated on each major framework release
+	const DEFAULT_ALPINE_VERSION = '3.17.5';
 	function alpineUrlCandidates(dataAlpine) {
 		if (dataAlpine && (dataAlpine.startsWith('http') || dataAlpine.startsWith('/'))) return [dataAlpine];
-		const v = dataAlpine || '3';
+		const v = dataAlpine || DEFAULT_ALPINE_VERSION;
 		return CDN_HOSTS.map(h => `${h}/alpinejs@${v}/dist/cdn.min.js`);
 	}
 
