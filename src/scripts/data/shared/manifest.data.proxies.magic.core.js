@@ -183,9 +183,12 @@ function registerXMagicMethod(loadDataSource) {
                     return fallback !== undefined ? fallback : '';
                 }
                 try {
-                    if (prop === Symbol.iterator || prop === 'then' || prop === 'catch' || prop === 'finally') {
+                    if (typeof prop === 'symbol' || prop === 'then' || prop === 'catch' || prop === 'finally') {
                         return undefined;
                     }
+
+                    // Vue internals are never sources: tracking __v_isReadonly on _v freezes its reactivity
+                    if (propStr.startsWith('__v_')) return undefined;
 
                     // $x.$register(name, data) — install/replace a client-side source at
                     // runtime (array or object). Reactive like any manifest.json source.

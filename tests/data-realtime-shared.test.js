@@ -274,6 +274,25 @@ describe('one shared realtime client per tab', () => {
         expect(rows('alpha')).toEqual(['a1', 'n1'])
     })
 
+    it('Vue wrapping $x does not freeze _v: internal props and symbols are not sources', async () => {
+        await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] } })
+        const store = Alpine.store('data')
+        const $x = Alpine.evaluate(document.body, '$x')
+        expect($x.__v_isReadonly).toBeUndefined()
+        expect($x.__v_isRef).toBeUndefined()
+        expect($x.__v_skip).toBeUndefined()
+        expect($x[Symbol.toStringTag]).toBeUndefined()
+        Alpine.reactive($x)
+        await settle()
+        expect(Object.keys(Alpine.raw(store)._v).filter(k => k.startsWith('__v_'))).toEqual([])
+        let runs = 0
+        const e = Alpine.effect(() => { void store._v.other; runs++ })
+        store._v.other = 1
+        await settle()
+        Alpine.release(e)
+        expect(runs).toBe(2)
+    })
+
     it('rows land without waiting for the realtime socket to open', async () => {
         const { main, rows, state, stats } = await boot({ alpha: T('t1') }, { tables: { t1: [{ $id: 'a1' }] }, realtimeQueries: true })
         window.Appwrite.Realtime.prototype.subscribe = function (channel) {
