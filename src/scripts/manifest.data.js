@@ -7186,9 +7186,26 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
     return entryFiles;
 }
 
+// Link/unlink rewrite the whole fileIds value, so one entry's writes run one at a time
+const entryFileWrites = new Map();
+function queueEntryFileWrite(tableName, entryId, fileIdsColumn, write) {
+    const key = `${tableName}:${entryId}:${fileIdsColumn}`;
+    const result = (entryFileWrites.get(key) || Promise.resolve()).then(write);
+    const tail = result.catch(() => { });
+    entryFileWrites.set(key, tail);
+    tail.then(() => {
+        if (entryFileWrites.get(key) === tail) entryFileWrites.delete(key);
+    });
+    return result;
+}
+
 // Link a file to a table entry by adding the file ID to the entry's fileIds array
 // Generic function - works with any table and any scope
-async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileLink(tableName, entryId, fileId, fileIdsColumn));
+}
+
+async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -7203,36 +7220,23 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
         throw new Error(`[Manifest Data] Invalid Appwrite configuration for "${tableName}"`);
     }
 
-    // Read store first for latest optimistic updates (concurrent uploads race otherwise)
-    let fileIds = null;
-    const store = typeof Alpine !== 'undefined' && Alpine.store ? Alpine.store('data') : null;
-    if (store && store[tableName] && Array.isArray(store[tableName])) {
-        const storeEntry = store[tableName].find(e => e.$id === entryId);
-        if (storeEntry && storeEntry[fileIdsColumn] !== undefined) {
-            fileIds = storeEntry[fileIdsColumn];
-        }
+    // Server row, not the store: a late realtime echo or reload can move the store behind committed writes
+    const entry = await window.ManifestDataAppwrite.getTableRow(
+        appwriteConfig.databaseId,
+        tableId,
+        entryId
+    );
+
+    if (!entry) {
+        throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
     }
 
-    // If store doesn't have it, read from database
-    if (fileIds === null) {
-        const entry = await window.ManifestDataAppwrite.getTableRow(
-            appwriteConfig.databaseId,
-            tableId,
-            entryId
-        );
-
-        if (!entry) {
-            throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
-        }
-
-        // Get or initialize fileIds array (using configurable column name)
-        // Check if the column exists (if it's undefined, the column might not exist in the table schema)
-        fileIds = entry[fileIdsColumn];
-        if (fileIds === undefined) {
-            // Column doesn't exist - throw a helpful error
-            throw new Error(`[Manifest Data] The "${fileIdsColumn}" column does not exist in the "${tableName}" table. Please add a "${fileIdsColumn}" column (type: string array) to the table in Appwrite.`);
-        }
-
+    // Get or initialize fileIds array (using configurable column name)
+    // Check if the column exists (if it's undefined, the column might not exist in the table schema)
+    let fileIds = entry[fileIdsColumn];
+    if (fileIds === undefined) {
+        // Column doesn't exist - throw a helpful error
+        throw new Error(`[Manifest Data] The "${fileIdsColumn}" column does not exist in the "${tableName}" table. Please add a "${fileIdsColumn}" column (type: string array) to the table in Appwrite.`);
     }
 
     if (!Array.isArray(fileIds)) {
@@ -7398,7 +7402,11 @@ async function unlinkFileFromAllEntries(fileId) {
 
 // Unlink a file from a table entry by removing the file ID from the entry's fileIds array
 // Generic function - works with any table and any scope
-async function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileUnlink(tableName, entryId, fileId, fileIdsColumn));
+}
+
+async function writeFileUnlink(tableName, entryId, fileId, fileIdsColumn) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -7692,7 +7700,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
     // Core handler (named so $duplicate etc. can recurse)
     const handleMethod = async function (method, ...args) {
-        clearErrorState();
+        const sourceUnloaded = args[3]?.sourceUnloaded === true;
+        if (!sourceUnloaded) clearErrorState();
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -8241,8 +8250,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const validOnProgress = typeof onProgress === 'function' ? onProgress : undefined;
 
                     // Use optimistic update via mutation system
-                    const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
-                    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+                    const addEntryToStore = sourceUnloaded ? null : window.ManifestDataMutations?.addEntryToStore;
+                    const removeEntryFromStore = sourceUnloaded ? null : window.ManifestDataMutations?.removeEntryFromStore;
                     const writeOptions = { generation: window.ManifestDataStore?.sourceGeneration?.(dataSourceName) };
                     const manifest = await window.ManifestDataConfig.ensureManifest();
                     const dataSource = manifest?.data?.[dataSourceName];
@@ -8383,9 +8392,17 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                     }
 
+                    // The source may have landed during the upload, from a list without this file
+                    if (sourceUnloaded && window.ManifestDataStore?.getRawData?.(dataSourceName) != null) {
+                        const landed = window.ManifestDataStore.getRawData(dataSourceName);
+                        if (!Array.isArray(landed) || !landed.some(row => row.$id === result.$id)) {
+                            window.ManifestDataMutations?.addEntryToStore?.(dataSourceName, result, writeOptions);
+                        }
+                    }
+
                     // We already have the real file from the API response, so no
                     // background reload; scope filtering (if any) is handled by realtime.
-                    if (!addEntryToStore) {
+                    if (!addEntryToStore && !sourceUnloaded) {
                         // Fallback: reload lands through loadDataSource (coalesced landing)
                         if (window.ManifestDataStore?.dataSourceCache) {
                             const cacheKey = `${dataSourceName}:en`;
@@ -9104,13 +9121,9 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
             throw new Error(`[Manifest Data] Bucket "${resolvedBucketName}" is not available`);
         }
         const bucketMethods = createHandler(resolvedBucketName, reloadDataSource);
-        // First load before any write: a row pushed into an unread store would block it
-        if (window.ManifestDataStore?.getRawData?.(resolvedBucketName) == null) {
-            await reloadDataSource(resolvedBucketName);
-        }
 
         // Get helper functions for uploading state
-        const { setUploadingFile, clearUploadingFile } = window.ManifestDataStore || {};
+        const { setUploadingFile, clearUploadingFile, getRawData } = window.ManifestDataStore || {};
 
         // Generate temporary file IDs for tracking upload state
         const fileIds = files.map(file => {
@@ -9128,13 +9141,21 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
         }
 
         try {
+            // First load before any write: a row pushed into an unread store would block it
+            if (getRawData?.(resolvedBucketName) == null) {
+                await reloadDataSource(resolvedBucketName);
+            }
+            // Still unread (load failed or was denied): upload without a store row, keeping its error and a later load
+            const sourceUnloaded = getRawData?.(resolvedBucketName) == null;
+
             // Upload files (single or multiple)
             const uploadPromises = files.map((file, index) => {
                 const tempFileId = fileIds[index];
                 return bucketMethods('$create', file, tempFileId, null, {
                     entryId: entryId,
                     table: dataSourceName,
-                    fileIdsColumn: resolvedColumnName
+                    fileIdsColumn: resolvedColumnName,
+                    sourceUnloaded
                 }).then(result => {
                     // Clear uploading state for this file
                     if (clearUploadingFile) {

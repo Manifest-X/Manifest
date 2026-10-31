@@ -72,13 +72,9 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
             throw new Error(`[Manifest Data] Bucket "${resolvedBucketName}" is not available`);
         }
         const bucketMethods = createHandler(resolvedBucketName, reloadDataSource);
-        // First load before any write: a row pushed into an unread store would block it
-        if (window.ManifestDataStore?.getRawData?.(resolvedBucketName) == null) {
-            await reloadDataSource(resolvedBucketName);
-        }
 
         // Get helper functions for uploading state
-        const { setUploadingFile, clearUploadingFile } = window.ManifestDataStore || {};
+        const { setUploadingFile, clearUploadingFile, getRawData } = window.ManifestDataStore || {};
 
         // Generate temporary file IDs for tracking upload state
         const fileIds = files.map(file => {
@@ -96,13 +92,21 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
         }
 
         try {
+            // First load before any write: a row pushed into an unread store would block it
+            if (getRawData?.(resolvedBucketName) == null) {
+                await reloadDataSource(resolvedBucketName);
+            }
+            // Still unread (load failed or was denied): upload without a store row, keeping its error and a later load
+            const sourceUnloaded = getRawData?.(resolvedBucketName) == null;
+
             // Upload files (single or multiple)
             const uploadPromises = files.map((file, index) => {
                 const tempFileId = fileIds[index];
                 return bucketMethods('$create', file, tempFileId, null, {
                     entryId: entryId,
                     table: dataSourceName,
-                    fileIdsColumn: resolvedColumnName
+                    fileIdsColumn: resolvedColumnName,
+                    sourceUnloaded
                 }).then(result => {
                     // Clear uploading state for this file
                     if (clearUploadingFile) {

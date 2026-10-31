@@ -29,7 +29,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
     // Core handler (named so $duplicate etc. can recurse)
     const handleMethod = async function (method, ...args) {
-        clearErrorState();
+        const sourceUnloaded = args[3]?.sourceUnloaded === true;
+        if (!sourceUnloaded) clearErrorState();
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -578,8 +579,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const validOnProgress = typeof onProgress === 'function' ? onProgress : undefined;
 
                     // Use optimistic update via mutation system
-                    const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;
-                    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
+                    const addEntryToStore = sourceUnloaded ? null : window.ManifestDataMutations?.addEntryToStore;
+                    const removeEntryFromStore = sourceUnloaded ? null : window.ManifestDataMutations?.removeEntryFromStore;
                     const writeOptions = { generation: window.ManifestDataStore?.sourceGeneration?.(dataSourceName) };
                     const manifest = await window.ManifestDataConfig.ensureManifest();
                     const dataSource = manifest?.data?.[dataSourceName];
@@ -720,9 +721,17 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                     }
 
+                    // The source may have landed during the upload, from a list without this file
+                    if (sourceUnloaded && window.ManifestDataStore?.getRawData?.(dataSourceName) != null) {
+                        const landed = window.ManifestDataStore.getRawData(dataSourceName);
+                        if (!Array.isArray(landed) || !landed.some(row => row.$id === result.$id)) {
+                            window.ManifestDataMutations?.addEntryToStore?.(dataSourceName, result, writeOptions);
+                        }
+                    }
+
                     // We already have the real file from the API response, so no
                     // background reload; scope filtering (if any) is handled by realtime.
-                    if (!addEntryToStore) {
+                    if (!addEntryToStore && !sourceUnloaded) {
                         // Fallback: reload lands through loadDataSource (coalesced landing)
                         if (window.ManifestDataStore?.dataSourceCache) {
                             const cacheKey = `${dataSourceName}:en`;

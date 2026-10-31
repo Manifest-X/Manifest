@@ -887,9 +887,26 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
     return entryFiles;
 }
 
+// Link/unlink rewrite the whole fileIds value, so one entry's writes run one at a time
+const entryFileWrites = new Map();
+function queueEntryFileWrite(tableName, entryId, fileIdsColumn, write) {
+    const key = `${tableName}:${entryId}:${fileIdsColumn}`;
+    const result = (entryFileWrites.get(key) || Promise.resolve()).then(write);
+    const tail = result.catch(() => { });
+    entryFileWrites.set(key, tail);
+    tail.then(() => {
+        if (entryFileWrites.get(key) === tail) entryFileWrites.delete(key);
+    });
+    return result;
+}
+
 // Link a file to a table entry by adding the file ID to the entry's fileIds array
 // Generic function - works with any table and any scope
-async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileLink(tableName, entryId, fileId, fileIdsColumn));
+}
+
+async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -904,36 +921,23 @@ async function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'file
         throw new Error(`[Manifest Data] Invalid Appwrite configuration for "${tableName}"`);
     }
 
-    // Read store first for latest optimistic updates (concurrent uploads race otherwise)
-    let fileIds = null;
-    const store = typeof Alpine !== 'undefined' && Alpine.store ? Alpine.store('data') : null;
-    if (store && store[tableName] && Array.isArray(store[tableName])) {
-        const storeEntry = store[tableName].find(e => e.$id === entryId);
-        if (storeEntry && storeEntry[fileIdsColumn] !== undefined) {
-            fileIds = storeEntry[fileIdsColumn];
-        }
+    // Server row, not the store: a late realtime echo or reload can move the store behind committed writes
+    const entry = await window.ManifestDataAppwrite.getTableRow(
+        appwriteConfig.databaseId,
+        tableId,
+        entryId
+    );
+
+    if (!entry) {
+        throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
     }
 
-    // If store doesn't have it, read from database
-    if (fileIds === null) {
-        const entry = await window.ManifestDataAppwrite.getTableRow(
-            appwriteConfig.databaseId,
-            tableId,
-            entryId
-        );
-
-        if (!entry) {
-            throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
-        }
-
-        // Get or initialize fileIds array (using configurable column name)
-        // Check if the column exists (if it's undefined, the column might not exist in the table schema)
-        fileIds = entry[fileIdsColumn];
-        if (fileIds === undefined) {
-            // Column doesn't exist - throw a helpful error
-            throw new Error(`[Manifest Data] The "${fileIdsColumn}" column does not exist in the "${tableName}" table. Please add a "${fileIdsColumn}" column (type: string array) to the table in Appwrite.`);
-        }
-
+    // Get or initialize fileIds array (using configurable column name)
+    // Check if the column exists (if it's undefined, the column might not exist in the table schema)
+    let fileIds = entry[fileIdsColumn];
+    if (fileIds === undefined) {
+        // Column doesn't exist - throw a helpful error
+        throw new Error(`[Manifest Data] The "${fileIdsColumn}" column does not exist in the "${tableName}" table. Please add a "${fileIdsColumn}" column (type: string array) to the table in Appwrite.`);
     }
 
     if (!Array.isArray(fileIds)) {
@@ -1099,7 +1103,11 @@ async function unlinkFileFromAllEntries(fileId) {
 
 // Unlink a file from a table entry by removing the file ID from the entry's fileIds array
 // Generic function - works with any table and any scope
-async function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileUnlink(tableName, entryId, fileId, fileIdsColumn));
+}
+
+async function writeFileUnlink(tableName, entryId, fileId, fileIdsColumn) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 

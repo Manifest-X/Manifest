@@ -76,7 +76,7 @@ try {
                 window.ManifestDataProxiesFiles.parseStorageConfig = parse
             }
         })
-        check('$upload reaches the bucket', uploaded === 'f', uploaded)
+        check('$upload resolves (handler stubbed)', uploaded === 'f', uploaded)
         check('$upload leaves $x', await readX() === 'object', await readX())
 
         const exported = await page.evaluate(async () => {
