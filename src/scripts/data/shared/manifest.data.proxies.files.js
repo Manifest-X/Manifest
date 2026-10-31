@@ -436,12 +436,19 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         : [];
 
     let loading = false;
+    let reloadQueued = false;
     let error = null;
     let unsubscribeCallbacks = [];
 
+    const tableRows = () => window.Alpine?.store?.('data')?.[tableName];
+
     // Load files function
     const loadFiles = async () => {
-        if (loading) return;
+        // A request during a load may carry newer data than that load read
+        if (loading) {
+            reloadQueued = true;
+            return;
+        }
 
         loading = true;
         error = null;
@@ -503,9 +510,9 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             files.push(...loadedFiles);
 
             // Sync lastSeenFileIds so the watch effect doesn't false-positive
-            const $x = window.Alpine?.magic?.('x')?.();
-            if ($x && $x[tableName] && Array.isArray($x[tableName])) {
-                const entry = $x[tableName].find(item => item.$id === entryId);
+            const rows = tableRows();
+            if (Array.isArray(rows)) {
+                const entry = rows.find(item => item.$id === entryId);
                 if (entry) {
                     const currentFileIds = entry[columnName || 'fileIds'] || [];
                     lastSeenFileIds = JSON.stringify(currentFileIds);
@@ -516,6 +523,10 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             error = err.message || String(err);
         } finally {
             loading = false;
+            if (reloadQueued) {
+                reloadQueued = false;
+                loadFiles();
+            }
         }
     };
 
@@ -541,10 +552,10 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                 // Use requestAnimationFrame for immediate execution
                 requestAnimationFrame(() => {
                     // Check if file is linked to this entry
-                    const $x = window.Alpine?.magic?.('x')?.();
-                    if ($x && $x[tableName]) {
-                        const entry = Array.isArray($x[tableName])
-                            ? $x[tableName].find(item => item.$id === entryId)
+                    const rows = tableRows();
+                    if (rows) {
+                        const entry = Array.isArray(rows)
+                            ? rows.find(item => item.$id === entryId)
                             : null;
                         if (entry && entry[columnName || 'fileIds']?.includes(e.detail.fileId)) {
                             loadFiles();
@@ -582,14 +593,15 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
 
     // Watch table data for fileIds changes; tracked per entry to avoid false positives
     let lastSeenFileIds = null;
+    let lastReconciledFileIds = null;
 
     const watchTableData = () => {
         if (typeof Alpine === 'undefined') return;
 
         const unwatch = Alpine.effect(() => {
-            const $x = window.Alpine?.magic?.('x')?.();
-            if ($x && $x[tableName] && Array.isArray($x[tableName])) {
-                const entry = $x[tableName].find(item => item.$id === entryId);
+            const rows = tableRows();
+            if (Array.isArray(rows)) {
+                const entry = rows.find(item => item.$id === entryId);
                 if (entry) {
                     const currentFileIds = entry[columnName || 'fileIds'] || [];
                     const currentFileIdsStr = JSON.stringify(currentFileIds);
@@ -601,9 +613,9 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
 
                         loadFiles().then(() => {
                             // Re-verify fileIds in case they changed during load
-                            const $xAfter = window.Alpine?.magic?.('x')?.();
-                            if ($xAfter && $xAfter[tableName] && Array.isArray($xAfter[tableName])) {
-                                const entryAfter = $xAfter[tableName].find(item => item.$id === entryId);
+                            const rowsAfter = tableRows();
+                            if (Array.isArray(rowsAfter)) {
+                                const entryAfter = rowsAfter.find(item => item.$id === entryId);
                                 if (entryAfter) {
                                     const fileIdsAfter = entryAfter[columnName || 'fileIds'] || [];
                                     lastSeenFileIds = JSON.stringify(fileIdsAfter);
@@ -621,7 +633,9 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                     const fileIdsMatch = currentFileIds.length === filesFileIds.length &&
                         currentFileIds.every(id => filesFileIds.includes(id));
 
-                    if (!fileIdsMatch && !loading && lastSeenFileIds !== null) {
+                    // Once per fileIds value: an id the bucket no longer lists never matches
+                    if (!fileIdsMatch && !loading && lastSeenFileIds !== null && lastReconciledFileIds !== currentFileIdsStr) {
+                        lastReconciledFileIds = currentFileIdsStr;
                         lastSeenFileIds = JSON.stringify(currentFileIds);
                         loadFiles().catch(err => {
                             console.error('[Manifest Data] Failed to reload files after sync check:', err);
@@ -640,7 +654,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
     subscribeToEvents();
     watchTableData();
 
-    loadFiles();
+    if (!loading) loadFiles();
 
     const manager = {
         files,
@@ -648,6 +662,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         error: () => error,
         reload: loadFiles,
         destroy: () => {
+            reloadQueued = false;
             unsubscribeCallbacks.forEach(cb => cb());
             reactiveFileManagers.delete(key);
         }

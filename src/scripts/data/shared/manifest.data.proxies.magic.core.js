@@ -20,25 +20,14 @@ if (typeof window !== 'undefined') {
                     }
                 }
 
-                // 2. Alpine magic method
-                try {
-                    const magicFn = window.Alpine?.magic?.('x');
-                    if (magicFn && typeof magicFn === 'function') {
-                        const proxy = magicFn();
-                        if (proxy) return proxy;
-                    }
-                } catch (e) {
-                    // Not ready — continue to fallback
-                }
-
-                // 3. Loading proxy (lets code run while Alpine initializes)
+                // 2. Loading proxy (lets code run while Alpine initializes)
                 const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
                 if (createLoadingProxy) {
                     const loadingProxy = createLoadingProxy();
                     if (loadingProxy) return loadingProxy;
                 }
 
-                // 4. Cached self-chaining proxy (same instance keeps chaining safe)
+                // 3. Cached self-chaining proxy (same instance keeps chaining safe)
                 if (!cachedFallbackProxy) {
                     cachedFallbackProxy = new Proxy({}, {
                         get(target, prop) {

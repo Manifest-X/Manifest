@@ -869,8 +869,7 @@ async function initializeMarkdownPlugin() {
                             }
 
                             // Check if $x magic method is available
-                            const xMagic = window.Alpine?.magic?.('x');
-                            const hasXMagic = typeof xMagic === 'function';
+                            const hasXMagic = typeof window._$xProxyFactory === 'function';
 
                             // If magic method isn't ready, wait briefly but don't block forever
                             if (!hasXMagic && retryCount < 5) {

@@ -574,8 +574,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         finalPermissions = Array.isArray(permissions) ? permissions : [permissions];
                     }
 
-                    // Ensure onProgress is undefined (not null) if not provided, as it's a callback
-                    const validOnProgress = (onProgress === undefined || onProgress === null) ? undefined : onProgress;
+                    // The 4th arg may be $upload's options object, not a callback
+                    const validOnProgress = typeof onProgress === 'function' ? onProgress : undefined;
 
                     // Use optimistic update via mutation system
                     const addEntryToStore = window.ManifestDataMutations?.addEntryToStore;

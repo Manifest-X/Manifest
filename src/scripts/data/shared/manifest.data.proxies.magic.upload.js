@@ -66,10 +66,15 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
             throw new Error(`[Manifest Data] Storage bucket "${resolvedBucketName}" not found in manifest`);
         }
 
-        // Get $x to access bucket methods
-        const $x = window.Alpine?.magic?.('x')?.();
-        if (!$x || !$x[resolvedBucketName] || typeof $x[resolvedBucketName].$create !== 'function') {
+        // Direct handler: $x[bucket] has no $create until that source has been read
+        const createHandler = window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler;
+        if (!createHandler) {
             throw new Error(`[Manifest Data] Bucket "${resolvedBucketName}" is not available`);
+        }
+        const bucketMethods = createHandler(resolvedBucketName, reloadDataSource);
+        // First load before any write: a row pushed into an unread store would block it
+        if (window.ManifestDataStore?.getRawData?.(resolvedBucketName) == null) {
+            await reloadDataSource(resolvedBucketName);
         }
 
         // Get helper functions for uploading state
@@ -94,7 +99,7 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
             // Upload files (single or multiple)
             const uploadPromises = files.map((file, index) => {
                 const tempFileId = fileIds[index];
-                return $x[resolvedBucketName].$create(file, tempFileId, null, {
+                return bucketMethods('$create', file, tempFileId, null, {
                     entryId: entryId,
                     table: dataSourceName,
                     fileIdsColumn: resolvedColumnName

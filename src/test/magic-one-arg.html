@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<!-- Fixture for tests/e2e/magic-one-arg.e2e.mjs: x-markdown present at plugin init, $x in use -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>one-arg magic repro</title>
+  <link rel="manifest" href="/manifest.json">
+  <script src="/scripts/manifest.js" data-plugin-base="/scripts/" data-plugins="data,markdown,export"></script>
+</head>
+<body>
+  <div id="md" x-markdown="'# Hello'"></div>
+  <div x-data><span id="v" x-text="$x.products.length"></span></div>
+</body>
+</html>
