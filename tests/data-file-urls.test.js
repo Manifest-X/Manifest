@@ -48,7 +48,9 @@ describe('opened file URLs', () => {
     })
 
     it('$openDownload links the SDK URL unchanged', async () => {
+        const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
         const url = await handle('$openDownload', 'f1', 'a.txt')
+        click.mockRestore()
         expect(url).toBe('https://cloud.test/v1/storage/buckets/bid/files/f1/download?project=p')
     })
 
