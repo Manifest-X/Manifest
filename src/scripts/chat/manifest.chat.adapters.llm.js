@@ -36,7 +36,9 @@
             function loadStore(cid) { try { return JSON.parse(localStorage.getItem(lsKey(cid)) || '[]'); } catch { return []; } }
             function saveMsg(cid, m) {
                 const all = loadStore(cid);
-                all.push({ id: m.id, role: m.author.kind === 'agent' ? 'assistant' : 'user', text: m.body.text, ts: m.ts });
+                const r = { id: m.id, role: m.author.kind === 'agent' ? 'assistant' : 'user', text: m.body.text, ts: m.ts };
+                if (m.error) r.error = true;
+                all.push(r);
                 try { localStorage.setItem(lsKey(cid), JSON.stringify(all.slice(-200))); } catch { }
             }
             const toMsg = (r) => ({ id: r.id, conversationId: null, author: r.role === 'assistant' ? BOT : USER, body: { text: r.text }, ts: r.ts, status: 'delivered' });
@@ -50,14 +52,14 @@
                 const prev = stored[stored.length - 1];
                 if (prev && prev.role === 'user' && prev.text === text) stored.pop();   // send() already saved this turn
                 // relays accept up to 100 messages, starting on a user turn
-                const hist = stored.slice(-99).map(r => ({ role: r.role, content: r.text }));
+                const hist = stored.filter(r => !r.error && r.text && r.text.trim()).slice(-99).map(r => ({ role: r.role, content: r.text }));
                 while (hist.length && hist[0].role !== 'user') hist.shift();
                 const media = ((draft.body && draft.body.media) || []).filter(a =>
                     a.data && (a.kind === 'image' || a.mediaType === 'application/pdf'));
                 const blocks = media.map(a => a.kind === 'image'
                     ? { type: 'image', source: { type: 'base64', media_type: a.mediaType, data: a.data } }
                     : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
-                const last = blocks.length ? { role: 'user', content: [...blocks, { type: 'text', text }] } : { role: 'user', content: text };
+                const last = blocks.length ? { role: 'user', content: text.trim() ? [...blocks, { type: 'text', text }] : blocks } : { role: 'user', content: text };
                 return [...hist, last];
             }
 
@@ -66,7 +68,7 @@
                 const messages = streamReply._pending; streamReply._pending = null;
                 const mid = id('m');
                 h.onMessage && h.onMessage({ id: mid, conversationId: cid, author: BOT, body: { text: '' }, ts: Date.now(), status: 'streaming', meta: { model: opts.model } });
-                let full = '';
+                let full = '', reply = '';
                 try {
                     const resp = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ system, model: opts.model, messages }) });
                     if (!resp.ok) {
@@ -89,7 +91,7 @@
                             const line = frame.split('\n').find(l => l.startsWith('data:')); if (!line) continue;
                             let evt; try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
                             if (evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') {
-                                full += evt.delta.text; h.onMessagePart && h.onMessagePart(mid, { text: evt.delta.text });
+                                full += evt.delta.text; reply += evt.delta.text; h.onMessagePart && h.onMessagePart(mid, { text: evt.delta.text });
                             } else if (evt.type === 'error') { full += '\n\n_(error: ' + (evt.error && evt.error.message) + ')_'; h.onMessagePart && h.onMessagePart(mid, { text: '\n\n_(error)_' }); }
                         }
                     }
@@ -100,7 +102,9 @@
                     h.onMessagePart && h.onMessagePart(mid, { text: note }); full += note;
                 }
                 h.onMessagePart && h.onMessagePart(mid, { text: '', done: true });
-                saveMsg(cid, { id: mid, author: BOT, body: { text: full }, ts: Date.now() });
+                // error notes show in the UI but never reach the model: keep partial text, else flag the entry
+                if (reply.trim()) saveMsg(cid, { id: mid, author: BOT, body: { text: reply }, ts: Date.now() });
+                else saveMsg(cid, { id: mid, author: BOT, body: { text: full }, ts: Date.now(), error: true });
             }
 
             return {

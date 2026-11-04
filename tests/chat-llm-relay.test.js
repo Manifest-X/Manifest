@@ -16,14 +16,14 @@ beforeAll(() => {
     new Function(readFileSync(path.join(dir, '../src/scripts/chat/manifest.chat.adapters.llm.js'), 'utf8'))()
 })
 
-const reply = async (fetchImpl) => {
+const reply = async (fetchImpl, draft = { body: { text: 'hi' } }) => {
     window.fetch = vi.fn(fetchImpl)
     const adapter = factory({})
     const parts = []
     let done
     const finished = new Promise(r => { done = r })
     adapter.subscribe('c1', { onMessage: () => {}, onMessagePart: (id, p) => { parts.push(p.text); if (p.done) done() } })
-    await adapter.send('c1', { body: { text: 'hi' } })
+    await adapter.send('c1', draft)
     await finished
     return parts.join('')
 }
@@ -76,5 +76,48 @@ describe('claude adapter history', () => {
         expect(msgs[0].role).toBe('user')
         expect(msgs.at(-1)).toEqual({ role: 'user', content: 'hi' })
         expect(msgs.at(-2).content).toBe('m149')
+    })
+
+    it('an attachment with no text sends no empty text block, and blank stored turns are skipped', async () => {
+        localStorage.clear()
+        localStorage.setItem('mnfst.chat.c1', JSON.stringify([
+            { id: 'a', role: 'user', text: '', ts: 1 },
+            { id: 'b', role: 'user', text: 'q', ts: 2 },
+            { id: 'c', role: 'assistant', text: 'a', ts: 3 }
+        ]))
+        let body
+        await reply(async (_url, init) => { body = JSON.parse(init.body); return new Response('', { status: 200 }) },
+            { body: { text: '', media: [{ kind: 'image', mediaType: 'image/png', data: 'AAA' }] } })
+        expect(body.messages).toEqual([
+            { role: 'user', content: 'q' },
+            { role: 'assistant', content: 'a' },
+            { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } }] }
+        ])
+    })
+})
+
+describe('claude adapter error notes', () => {
+    const sse = (...evts) => evts.map(e => 'event: ' + e.type + '\ndata: ' + JSON.stringify(e) + '\n\n').join('')
+    const lastCall = () => JSON.parse(window.fetch.mock.calls.at(-1)[1].body).messages
+
+    it('a failed reply shows its note but is not sent back to the model', async () => {
+        localStorage.clear()
+        const text = await reply(async () => new Response(JSON.stringify({ error: 'rate_limited', message: 'The AI provider is busy right now.' }), { status: 429 }))
+        expect(text).toContain('busy')
+        const stored = JSON.parse(localStorage.getItem('mnfst.chat.c1'))
+        expect(stored.at(-1)).toMatchObject({ role: 'assistant', error: true })
+        await reply(async () => new Response('', { status: 200 }), { body: { text: 'again' } })
+        expect(lastCall()).toEqual([{ role: 'user', content: 'hi' }, { role: 'user', content: 'again' }])
+    })
+
+    it('partial text before an error is kept without the note', async () => {
+        localStorage.clear()
+        const body = sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'Partial' } }, { type: 'error', error: { message: 'overloaded' } })
+        const text = await reply(async () => new Response(body, { status: 200 }))
+        expect(text).toContain('Partial')
+        expect(text).toContain('error')
+        const stored = JSON.parse(localStorage.getItem('mnfst.chat.c1'))
+        expect(stored.at(-1)).toMatchObject({ role: 'assistant', text: 'Partial' })
+        expect(stored.at(-1).error).toBeUndefined()
     })
 })

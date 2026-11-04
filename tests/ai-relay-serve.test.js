@@ -103,7 +103,7 @@ describe('mnfst-run AI relay', () => {
             { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
             { type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'AAA' } },
             { type: 'document', source: { type: 'base64', media_type: 'text/plain', data: 'AAA' } },
-            { type: 'text', text: '' },
+            { type: 'text', text: 42 },
             { type: 'tool_result', content: 'x' }
         ]
         for (const block of bad) {
@@ -113,6 +113,21 @@ describe('mnfst-run AI relay', () => {
         }
         const empty = await post(port, { messages: [{ role: 'user', content: [] }] })
         expect((await empty.json()).error).toBe('invalid_messages')
+    })
+
+    it('drops blank text blocks and blank turns, then trims to a user turn', async () => {
+        const img = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } }
+        const { messages } = await sent(await post(port, { messages: [
+            { role: 'user', content: '' },
+            { role: 'assistant', content: 'earlier' },
+            { role: 'user', content: '   ' },
+            { role: 'user', content: [{ type: 'text', text: '' }] },
+            { role: 'user', content: [img, { type: 'text', text: '' }] }
+        ] }))
+        expect(messages).toEqual([{ role: 'user', content: [img] }])
+        const none = await post(port, { messages: [{ role: 'user', content: ' ' }, { role: 'user', content: [{ type: 'text', text: '' }] }] })
+        expect(none.status).toBe(400)
+        expect((await none.json()).error).toBe('invalid_messages')
     })
 
     it('answers JSON errors before streaming', async () => {

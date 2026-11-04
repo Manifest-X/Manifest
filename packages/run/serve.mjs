@@ -453,10 +453,11 @@ function aiJson(res, status, error, message) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error, message }));
 }
-// Same shape rules as hosting: allowlisted blocks (else refused), last 100 messages, user turn first.
+// Same shape rules as hosting: empty text dropped, other blocks allowlisted (else refused),
+// last 100 messages, user turn first.
 function aiBlock(b) {
   if (!b || typeof b !== 'object') return null;
-  if (b.type === 'text') return typeof b.text === 'string' && b.text ? { type: 'text', text: b.text } : null;
+  if (b.type === 'text') return typeof b.text !== 'string' ? null : b.text.trim() ? { type: 'text', text: b.text } : 'empty';
   const src = b.source;
   if (!src || src.type !== 'base64' || typeof src.data !== 'string' || typeof src.media_type !== 'string') return null;
   if (b.type === 'image' && AI_IMAGE_TYPES.has(src.media_type)) return { type: 'image', source: { type: 'base64', media_type: src.media_type, data: src.data } };
@@ -468,11 +469,12 @@ function aiMessages(raw) {
   const out = [];
   for (const m of raw) {
     if (!m || (m.role !== 'user' && m.role !== 'assistant')) return null;
-    if (typeof m.content === 'string') { out.push({ role: m.role, content: m.content }); continue; }
-    if (!Array.isArray(m.content) || !m.content.length) return null;
+    if (typeof m.content === 'string') { if (m.content.trim()) out.push({ role: m.role, content: m.content }); continue; }
+    if (!Array.isArray(m.content)) return null;
     const content = m.content.map(aiBlock);
     if (content.includes(null)) return null;
-    out.push({ role: m.role, content });
+    const kept = content.filter(b => b !== 'empty');
+    if (kept.length) out.push({ role: m.role, content: kept });
   }
   const tail = out.slice(-AI_MAX_MESSAGES);
   while (tail.length && tail[0].role !== 'user') tail.shift();
