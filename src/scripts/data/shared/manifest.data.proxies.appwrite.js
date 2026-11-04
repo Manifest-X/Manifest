@@ -389,7 +389,14 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Create the duplicate entry using existing $create logic
                     return await handleMethod('$create', duplicateData, newRowId);
                 } else if (method === '$query') {
-                    const [queries] = args;
+                    let [queries] = args;
+                    if (typeof queries === 'string') {
+                        const named = dataSource.queries && !Array.isArray(dataSource.queries) ? dataSource.queries[queries] : undefined;
+                        if (!Array.isArray(named)) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" has no query named "${queries}"`);
+                        }
+                        queries = named;
+                    }
                     const appwriteQueries = await window.ManifestDataQueries.buildAppwriteQueries(
                         queries || [],
                         scope,
