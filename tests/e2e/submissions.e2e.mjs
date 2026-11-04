@@ -105,10 +105,10 @@ try {
         const valid = await p.evaluate(() => document.querySelector('[name=name]').matches(':user-valid'))
         check(':user-valid applies once fixed', valid)
 
-        const sent = p.evaluate(() => new Promise(r => document.getElementById('f').addEventListener('submit-sent', e => r({ ok: e.detail.ok, data: e.detail.data }), { once: true })))
+        const sent = p.evaluate(() => new Promise(r => document.getElementById('f').addEventListener('submit:sent', e => r({ ok: e.detail.ok, data: e.detail.data }), { once: true })))
         await p.click('button')
         const detail = await sent
-        check('submit-sent carries the JSON response', detail.ok && detail.data.id === 'sub_1', detail)
+        check('submit:sent carries the JSON response', detail.ok && detail.data.id === 'sub_1', detail)
         const last = received.at(-1)
         check('sent with Accept: application/json', last.accept === 'application/json', last.accept)
         check('urlencoded like a native post', /x-www-form-urlencoded/.test(last.type), last.type)
@@ -119,10 +119,10 @@ try {
 
         await p.evaluate(() => { document.querySelector('[name=email]').value = '' })
         await p.type('[name=email]', 'taken@example.com')
-        const failed = p.evaluate(() => new Promise(r => document.getElementById('f').addEventListener('submit-error', e => r({ status: e.detail.status, error: e.detail.error }), { once: true })))
+        const failed = p.evaluate(() => new Promise(r => document.getElementById('f').addEventListener('submit:error', e => r({ status: e.detail.status, error: e.detail.error }), { once: true })))
         await p.click('button')
         const err = await failed
-        check('submit-error carries status and code', err.status === 422 && err.error === 'invalid', err)
+        check('submit:error carries status and code', err.status === 422 && err.error === 'invalid', err)
         const msg = await p.evaluate(() => document.querySelector('[name=email]').validationMessage)
         check('server field error lands on the control', msg === 'Already registered', msg)
         await p.type('[name=email]', 'x')
@@ -140,7 +140,7 @@ try {
         await p.goto(`${BASE}/extra`, { waitUntil: 'load' })
 
         const n = received.length
-        const failed = p.evaluate(() => new Promise(r => document.getElementById('order').addEventListener('submit-error', () => r(true), { once: true })))
+        const failed = p.evaluate(() => new Promise(r => document.getElementById('order').addEventListener('submit:error', () => r(true), { once: true })))
         await p.click('#order [name=pic]')
         await failed
         const got = received.at(-1)
@@ -148,7 +148,7 @@ try {
         check('fields keep native order', got.order.join(',').startsWith('first,pic.x,pic.y,last'), got.order)
         const stuck = await p.evaluate(() => document.getElementById('order').checkValidity())
         check('error on hidden fields leaves the form submittable', stuck === true, stuck)
-        const again = p.evaluate(() => new Promise(r => document.getElementById('order').addEventListener('submit-error', () => r(true), { once: true })))
+        const again = p.evaluate(() => new Promise(r => document.getElementById('order').addEventListener('submit:error', () => r(true), { once: true })))
         await p.click('#order [name=pic]')
         await again
         check('a second submit goes through', received.length === n + 2, received.length - n)

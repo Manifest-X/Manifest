@@ -4,7 +4,7 @@
 
 if (typeof window === 'undefined' || window.ManifestSubmissions) return;
 
-const EVENTS = { sent: 'submit-sent', error: 'submit-error' };
+const EVENTS = { sent: 'submit:sent', error: 'submit:error' };
 
 // Server field errors: { fields: { name: message } } or { errors: [{ field, message }] }
 function fieldErrors(data) {

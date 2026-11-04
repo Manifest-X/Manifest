@@ -573,7 +573,7 @@ export type ManifestDirective =
     | 'x-export' | 'x-import' | 'x-pay' | 'x-files' | 'x-data-files'
     | 'x-edit' | 'x-rich-text' | 'x-submit';
 
-/** Detail of the `submit-sent` / `submit-error` events an `x-submit` form dispatches. */
+/** Detail of the `submit:sent` / `submit:error` events an `x-submit` form dispatches. */
 export interface ManifestSubmitDetail {
     /** True for a 2xx response whose JSON body is not `{ ok: false }`. */
     ok: boolean;
@@ -696,8 +696,8 @@ declare global {
     }
 
     interface HTMLElementEventMap {
-        'submit-sent': CustomEvent<ManifestSubmitDetail>;
-        'submit-error': CustomEvent<ManifestSubmitDetail>;
+        'submit:sent': CustomEvent<ManifestSubmitDetail>;
+        'submit:error': CustomEvent<ManifestSubmitDetail>;
     }
 
     /**

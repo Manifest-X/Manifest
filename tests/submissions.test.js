@@ -101,7 +101,7 @@ describe('state and events', () => {
         reply = () => new Promise(r => { release = () => r(json({ ok: true, id: 'sub_9' })) })
         const form = mount('<form x-submit action="/a" method="post"></form>')
         const seen = []
-        form.addEventListener('submit-sent', e => seen.push(e.detail))
+        form.addEventListener('submit:sent', e => seen.push(e.detail))
         submit(form); await tick()
         expect(form.getAttribute('data-state')).toBe('sending')
         expect(form.getAttribute('aria-busy')).toBe('true')
@@ -119,7 +119,7 @@ describe('state and events', () => {
         reply = () => json({ ok: false, error: 'cap_reached', message: 'Monthly limit reached' }, 429)
         const form = mount('<form x-submit action="/a" method="post"></form>')
         const seen = []
-        form.addEventListener('submit-error', e => seen.push(e.detail))
+        form.addEventListener('submit:error', e => seen.push(e.detail))
         submit(form); await settle()
         expect(form.getAttribute('data-state')).toBe('error')
         expect(seen[0]).toMatchObject({ ok: false, status: 429, error: 'cap_reached', message: 'Monthly limit reached' })
@@ -129,7 +129,7 @@ describe('state and events', () => {
         reply = () => json({ ok: false, error: 'rejected' })
         const form = mount('<form x-submit action="/a" method="post"></form>')
         let got
-        form.addEventListener('submit-error', e => { got = e.detail })
+        form.addEventListener('submit:error', e => { got = e.detail })
         submit(form); await settle()
         expect(got.error).toBe('rejected')
     })
@@ -138,7 +138,7 @@ describe('state and events', () => {
         reply = () => new Response('<h1>Oops</h1>', { status: 500, statusText: 'Server Error' })
         const form = mount('<form x-submit action="/a" method="post"></form>')
         let got
-        form.addEventListener('submit-error', e => { got = e.detail })
+        form.addEventListener('submit:error', e => { got = e.detail })
         submit(form); await settle()
         expect(got).toMatchObject({ ok: false, status: 500, data: null, error: 'http_error' })
     })
@@ -147,7 +147,7 @@ describe('state and events', () => {
         reply = () => Promise.reject(new TypeError('Failed to fetch'))
         const form = mount('<form x-submit action="/a" method="post"></form>')
         let got
-        form.addEventListener('submit-error', e => { got = e.detail })
+        form.addEventListener('submit:error', e => { got = e.detail })
         submit(form); await settle()
         expect(form.getAttribute('data-state')).toBe('error')
         expect(got).toMatchObject({ ok: false, status: 0, response: null, error: 'network_error', message: 'Failed to fetch' })
@@ -156,7 +156,7 @@ describe('state and events', () => {
     it('bubbles, so a wrapper can listen', async () => {
         const form = mount('<div id="w"><form x-submit action="/a" method="post"></form></div>')
         let n = 0
-        document.getElementById('w').addEventListener('submit-sent', () => n++)
+        document.getElementById('w').addEventListener('submit:sent', () => n++)
         submit(form); await settle()
         expect(n).toBe(1)
     })
@@ -169,7 +169,7 @@ describe('state and events', () => {
     })
 
     it('keeps the event names in one constant', () => {
-        expect(window.ManifestSubmissions.events).toEqual({ sent: 'submit-sent', error: 'submit-error' })
+        expect(window.ManifestSubmissions.events).toEqual({ sent: 'submit:sent', error: 'submit:error' })
     })
 })
 
@@ -192,7 +192,7 @@ describe('server field errors', () => {
         reply = () => json({ errors: [{ code: 'TYPE_EMAIL', field: 'email', message: 'should be an email' }] }, 422)
         const form = mount('<form x-submit action="/a" method="post"><input name="email" value="nope"></form>')
         let got
-        form.addEventListener('submit-error', e => { got = e.detail })
+        form.addEventListener('submit:error', e => { got = e.detail })
         submit(form); await settle()
         expect(form.querySelector('[name=email]').validationMessage).toBe('should be an email')
         expect(got).toMatchObject({ error: 'TYPE_EMAIL', message: 'should be an email' })
@@ -318,7 +318,7 @@ describe('review fixes', () => {
         reply = () => json({ fields: { h: 'bad' } }, 422)
         const form = mount('<form x-submit action="/a" method="post"><input type="hidden" name="h" value="1"></form>')
         let got
-        form.addEventListener('submit-error', e => { got = e.detail })
+        form.addEventListener('submit:error', e => { got = e.detail })
         submit(form); await settle()
         expect(got.status).toBe(422)
         expect(form.checkValidity()).toBe(true)
