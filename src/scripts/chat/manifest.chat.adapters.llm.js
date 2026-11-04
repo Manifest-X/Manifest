@@ -45,13 +45,18 @@
             // Only what the API accepts is forwarded (images + PDFs with data);
             // audio/video/voice render locally but don't reach the model.
             function apiMessages(cid, draft) {
-                const hist = loadStore(cid).map(r => ({ role: r.role, content: r.text }));
+                const text = (draft.body && draft.body.text) || draft.text || '';
+                const stored = loadStore(cid);
+                const prev = stored[stored.length - 1];
+                if (prev && prev.role === 'user' && prev.text === text) stored.pop();   // send() already saved this turn
+                // relays accept up to 100 messages, starting on a user turn
+                const hist = stored.slice(-99).map(r => ({ role: r.role, content: r.text }));
+                while (hist.length && hist[0].role !== 'user') hist.shift();
                 const media = ((draft.body && draft.body.media) || []).filter(a =>
                     a.data && (a.kind === 'image' || a.mediaType === 'application/pdf'));
                 const blocks = media.map(a => a.kind === 'image'
                     ? { type: 'image', source: { type: 'base64', media_type: a.mediaType, data: a.data } }
                     : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
-                const text = (draft.body && draft.body.text) || draft.text || '';
                 const last = blocks.length ? { role: 'user', content: [...blocks, { type: 'text', text }] } : { role: 'user', content: text };
                 return [...hist, last];
             }
@@ -65,9 +70,14 @@
                 try {
                     const resp = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ system, model: opts.model, messages }) });
                     if (!resp.ok) {
-                        let msg = '';
-                        try { const j = await resp.json(); msg = (j && (j.message || j.error)) || ''; } catch { }
-                        const err = new Error('HTTP ' + resp.status); err.relayMessage = msg; throw err;
+                        let body = '', msg = '';
+                        try { body = await resp.text(); } catch { }
+                        try { const j = JSON.parse(body); msg = (j && (j.message || j.error)) || ''; } catch { }
+                        if (!msg) {
+                            const line = body.split('\n').find(l => l.startsWith('data:'));
+                            try { const evt = line && JSON.parse(line.slice(5).trim()); msg = (evt && evt.error && evt.error.message) || ''; } catch { }
+                        }
+                        const err = new Error('HTTP ' + resp.status); err.relayMessage = typeof msg === 'string' ? msg : ''; throw err;
                     }
                     const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
                     for (; ;) {

@@ -405,7 +405,7 @@ const aiConfig = (() => {
 })();
 
 // Doc-grounding: `ai.system` (persona/instructions) + optional `ai.grounding`
-// (URL or project-relative file whose text is appended to the system prompt).
+// (https URL or project-relative file whose text is appended to the system prompt).
 // Resolved ONCE at startup so the combined prompt is byte-identical across
 // requests — the precondition for the server-side prompt cache to hit.
 let aiSystemResolved = (aiConfig && aiConfig.system) || '';
@@ -414,7 +414,11 @@ async function resolveAiGrounding() {
   if (!src) return;
   try {
     let text;
-    if (/^https?:\/\//.test(src)) {
+    if (/^http:\/\//i.test(src)) {
+      console.warn(`[mnfst-run] AI grounding must be https or a project file; ignoring ${src}`);
+      return;
+    }
+    if (/^https:\/\//i.test(src)) {
       const r = await fetch(src);
       if (!r.ok) throw new Error(`http ${r.status}`);
       text = await r.text();
@@ -438,6 +442,42 @@ if (aiConfig) {
   console.log(`[mnfst-run] AI relay on /_ai/chat — provider=${aiConfig.provider || 'anthropic'} model=${aiConfig.model || 'claude-haiku-4-5'} mode=${aiKey ? 'REAL' : 'MOCK (no ANTHROPIC_API_KEY)'}`);
 }
 
+const AI_MAX_BODY = 5 * 1024 * 1024;
+const AI_MAX_MESSAGES = 100;
+const AI_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const aiMaxTokens = (() => {
+  const n = Number(aiConfig && aiConfig.maxTokens);
+  return Number.isInteger(n) && n > 0 ? Math.min(n, 4096) : 1024;
+})();
+function aiJson(res, status, error, message) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error, message }));
+}
+// Same shape rules as hosting: allowlisted blocks, last 100 messages, user turn first.
+function aiBlock(b) {
+  if (!b || typeof b !== 'object') return null;
+  if (b.type === 'text') return typeof b.text === 'string' ? { type: 'text', text: b.text } : null;
+  const src = b.source;
+  if (!src || src.type !== 'base64' || typeof src.data !== 'string') return null;
+  if (b.type === 'image' && AI_IMAGE_TYPES.has(src.media_type)) return { type: 'image', source: { type: 'base64', media_type: src.media_type, data: src.data } };
+  if (b.type === 'document' && src.media_type === 'application/pdf') return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: src.data } };
+  return null;
+}
+function aiMessages(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const m of raw) {
+    if (!m || (m.role !== 'user' && m.role !== 'assistant')) return null;
+    if (typeof m.content === 'string') { out.push({ role: m.role, content: m.content }); continue; }
+    if (!Array.isArray(m.content)) return null;
+    const content = m.content.map(aiBlock).filter(Boolean);
+    if (content.length) out.push({ role: m.role, content });
+  }
+  const tail = out.slice(-AI_MAX_MESSAGES);
+  while (tail.length && tail[0].role !== 'user') tail.shift();
+  return tail.length ? tail : null;
+}
+
 function aiSse(res, o) { res.write(`event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`); }
 function streamMockAi(res) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -458,16 +498,16 @@ async function streamRealAi(res, payload) {
   // cache (~0.1× input price) after the first request — long doc-grounded
   // prompts cost near-nothing per message.
   const systemText = aiSystemResolved;
-  const maxTokens = Math.min(Number(aiConfig.maxTokens) || 1024, 4096);
+  const asked = Number(payload.max_tokens);
   const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': aiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: aiConfig.model || 'claude-haiku-4-5',
-      max_tokens: Math.min(Number(payload.max_tokens) || maxTokens, maxTokens),
+      max_tokens: Number.isInteger(asked) && asked > 0 ? Math.min(asked, aiMaxTokens) : aiMaxTokens,
       stream: true,
       system: systemText ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }] : undefined,
-      messages: payload.messages || []
+      messages: payload.messages
     })
   });
   if (!upstream.ok) {
@@ -2024,15 +2064,24 @@ const server = createServer((req, res) => {
   // key held server-side. Inert (404) unless manifest.json has an `ai` block.
   // No key → mock stream; add ANTHROPIC_API_KEY to .env for real.
   if (urlPath === '/_ai/chat') {
-    if (!aiConfig) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'ai_not_enabled', message: 'AI chat is not enabled: add an `ai` block to manifest.json.' })); return; }
-    if (req.method !== 'POST') { res.writeHead(405, { 'Allow': 'POST' }); res.end(); return; }
-    if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
-    let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 25e6) req.destroy(); });   // 25MB cap (attachments)
+    if (!aiConfig) return aiJson(res, 404, 'ai_not_enabled', 'AI chat is not enabled: add an `ai` block to manifest.json.');
+    if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return aiJson(res, 405, 'method_not_allowed', 'Use POST.'); }
+    if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) return aiJson(res, 403, 'forbidden_origin', 'AI chat only answers requests from this site.');
+    const chunks = []; let size = 0; let over = false;
+    req.on('data', c => {
+      if (over) return;
+      size += c.length;
+      if (size > AI_MAX_BODY) { over = true; chunks.length = 0; aiJson(res, 413, 'body_too_large', 'The message and attachments are over 5 MB.'); return; }
+      chunks.push(c);
+    });
     req.on('end', async () => {
-      let payload = {}; try { payload = raw ? JSON.parse(raw) : {}; } catch { res.writeHead(400); res.end('bad json'); return; }
-      try { if (aiKey) await streamRealAi(res, payload); else streamMockAi(res); }
-      catch (e) { try { res.writeHead(500); res.end(String(e && e.message || e)); } catch (_) {} }
+      if (over) return;
+      let payload; try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return aiJson(res, 400, 'invalid_json', 'The request body is not valid JSON.'); }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return aiJson(res, 400, 'invalid_body', 'The request body must be a JSON object.');
+      const messages = aiMessages(payload.messages);
+      if (!messages) return aiJson(res, 400, 'invalid_messages', 'The request needs at least one user message.');
+      try { if (aiKey) await streamRealAi(res, { ...payload, messages }); else streamMockAi(res); }
+      catch (e) { if (!res.headersSent) aiJson(res, 502, 'upstream_error', String(e && e.message || e)); else try { res.end(); } catch (_) {} }
     });
     return;
   }
