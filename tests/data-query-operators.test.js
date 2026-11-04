@@ -57,6 +57,14 @@ describe('operators', () => {
         expect(JSON.parse(qs[0]).values).toEqual([10, 50])
     })
 
+    it('accepts the local-source spellings greaterThanOrEqual and lessThanOrEqual', async () => {
+        const qs = await window.ManifestDataQueries.buildAppwriteQueries([['greaterThanOrEqual', 'p', 1], ['lessThanOrEqual', 'p', 9]], null)
+        expect(methods(qs)).toEqual(['greaterThanEqual', 'lessThanEqual'])
+        const { rowMatchesQueries } = window.ManifestDataQueries
+        expect(rowMatchesQueries({ p: 10 }, [['lessThanOrEqual', 'p', 9]])).toBe(false)
+        expect(rowMatchesQueries({ p: 9 }, [['lessThanOrEqual', 'p', 9]])).toBe(true)
+    })
+
     it('the realtime matcher agrees with the load on serialized operators', () => {
         const { rowMatchesQueries } = window.ManifestDataQueries
         expect(rowMatchesQueries({ price: 70 }, [['between', 'price', 10, 50]])).toBe(false)
