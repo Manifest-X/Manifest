@@ -571,7 +571,21 @@ export type ManifestDirective =
     | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-computed' | 'x-defer'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
     | 'x-export' | 'x-import' | 'x-pay' | 'x-files' | 'x-data-files'
-    | 'x-edit' | 'x-rich-text';
+    | 'x-edit' | 'x-rich-text' | 'x-submit';
+
+/** Detail of the `submit-sent` / `submit-error` events an `x-submit` form dispatches. */
+export interface ManifestSubmitDetail {
+    /** True for a 2xx response whose JSON body is not `{ ok: false }`. */
+    ok: boolean;
+    /** HTTP status; 0 when the request never reached a server. */
+    status: number;
+    /** The parsed JSON body, or null. */
+    data: any;
+    response: Response | null;
+    /** Error code (the body's `error`, else 'http_error' or 'network_error'); null when sent. */
+    error: string | null;
+    message: string;
+}
 
 // ---------------------------------------------------------------------------
 // Global declarations (what Alpine exposes inside `x-data`, `x-show`, etc.)
@@ -674,6 +688,16 @@ declare global {
             sanitize(html: string, allowBlocks?: boolean, keepStyle?: boolean): string;
             commands(): string[];
         };
+        /** Form sending (submissions plugin; loaded on first x-submit). */
+        ManifestSubmissions?: {
+            readonly events: { sent: string; error: string };
+            send(form: HTMLFormElement, submitter?: HTMLElement | null): Promise<ManifestSubmitDetail>;
+        };
+    }
+
+    interface HTMLElementEventMap {
+        'submit-sent': CustomEvent<ManifestSubmitDetail>;
+        'submit-error': CustomEvent<ManifestSubmitDetail>;
     }
 
     /**
