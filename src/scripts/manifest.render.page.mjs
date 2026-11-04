@@ -2613,6 +2613,13 @@ async function renderRouteDom(page, ctx) {
         if (isDiffBindingAttr(name)) return 'diff-binding';
         if (isBindingAttr(name) && val && RUNTIME_MAGIC_RX.test(val)) return 'runtime-magic';
       }
+      // Directives a plugin consumed during the bake (x-tabpanel → x-show)
+      const source = sourceAttrs.get(el);
+      if (source) {
+        for (const name in source) {
+          if (source[name] !== null && INTERACTIVE_DIRECTIVES.has(name)) return 'interactive';
+        }
+      }
       return null;
     };
 
