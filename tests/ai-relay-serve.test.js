@@ -84,14 +84,11 @@ describe('mnfst-run AI relay', () => {
         expect(messages.at(-1).content).toBe('m150')
     })
 
-    it('keeps only text and base64 image/PDF blocks, without cache_control', async () => {
+    it('keeps text and base64 image/PDF blocks, without cache_control', async () => {
         const content = [
             { type: 'text', text: 'look', cache_control: { type: 'ephemeral' } },
-            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } },
-            { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
-            { type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'AAA' } },
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'BBB' } },
-            { type: 'tool_result', content: 'x' }
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' }, cache_control: { type: 'ephemeral' } },
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'BBB' }, title: 'x' }
         ]
         const { messages } = await sent(await post(port, { messages: [{ role: 'user', content }] }))
         expect(messages[0].content).toEqual([
@@ -99,6 +96,23 @@ describe('mnfst-run AI relay', () => {
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } },
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'BBB' } }
         ])
+    })
+
+    it('refuses disallowed blocks with 400 invalid_messages, like hosting', async () => {
+        const bad = [
+            { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+            { type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'AAA' } },
+            { type: 'document', source: { type: 'base64', media_type: 'text/plain', data: 'AAA' } },
+            { type: 'text', text: '' },
+            { type: 'tool_result', content: 'x' }
+        ]
+        for (const block of bad) {
+            const resp = await post(port, { messages: [{ role: 'user', content: [{ type: 'text', text: 'ok' }, block] }] })
+            expect(resp.status).toBe(400)
+            expect((await resp.json()).error).toBe('invalid_messages')
+        }
+        const empty = await post(port, { messages: [{ role: 'user', content: [] }] })
+        expect((await empty.json()).error).toBe('invalid_messages')
     })
 
     it('answers JSON errors before streaming', async () => {
