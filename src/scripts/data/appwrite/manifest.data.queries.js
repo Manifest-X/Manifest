@@ -382,7 +382,7 @@ const QUERY_MAP = {
 
 // Local-source spellings, shared syntax across local and cloud
 const QUERY_ALIASES = { greaterThanOrEqual: 'greaterThanEqual', lessThanOrEqual: 'lessThanEqual' };
-const canonicalMethod = (method) => QUERY_ALIASES[method] || method;
+const canonicalMethod = (method) => Object.hasOwn(QUERY_ALIASES, method) ? QUERY_ALIASES[method] : method;
 
 // Client-side row matcher for realtime events: evaluates a source's configured
 // filter queries against one row. Only operators the load actually serializes

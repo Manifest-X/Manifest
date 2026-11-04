@@ -63,6 +63,9 @@ describe('operators', () => {
         const { rowMatchesQueries } = window.ManifestDataQueries
         expect(rowMatchesQueries({ p: 10 }, [['lessThanOrEqual', 'p', 9]])).toBe(false)
         expect(rowMatchesQueries({ p: 9 }, [['lessThanOrEqual', 'p', 9]])).toBe(true)
+        const inOr = await window.ManifestDataQueries.buildAppwriteQueries([['or', [['greaterThanOrEqual', 'p', 1], ['lessThanOrEqual', 'p', 9]]]], null)
+        expect(JSON.parse(inOr[0]).values.map(q => q.method)).toEqual(['greaterThanEqual', 'lessThanEqual'])
+        expect(rowMatchesQueries({ p: 10 }, [['or', [['lessThanOrEqual', 'p', 9]]]])).toBe(false)
     })
 
     it('the realtime matcher agrees with the load on serialized operators', () => {
