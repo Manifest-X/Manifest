@@ -935,8 +935,7 @@ function createReactiveReferences(data, dataSourceName = null) {
                         if (bucketArray && typeof bucketArray.$url === 'function') {
                             bucketArray.$url(data.$id)
                                 .then(url => {
-                                    // Append mode=admin for testing (can be made configurable later)
-                                    thumbnailState.url = url + (url.includes('?') ? '&' : '?') + 'mode=admin';
+                                    thumbnailState.url = url;
                                     thumbnailState.loading = false;
                                     thumbnailState.error = null;
                                 })
@@ -8060,7 +8059,14 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // Create the duplicate entry using existing $create logic
                     return await handleMethod('$create', duplicateData, newRowId);
                 } else if (method === '$query') {
-                    const [queries] = args;
+                    let [queries] = args;
+                    if (typeof queries === 'string') {
+                        const named = dataSource.queries && !Array.isArray(dataSource.queries) ? dataSource.queries[queries] : undefined;
+                        if (!Array.isArray(named)) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" has no query named "${queries}"`);
+                        }
+                        queries = named;
+                    }
                     const appwriteQueries = await window.ManifestDataQueries.buildAppwriteQueries(
                         queries || [],
                         scope,
@@ -8650,12 +8656,10 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const [fileId, token] = args;
                     try {
                         // Get URL from SDK (same method that works for thumbnails)
-                        let url = await handleMethod('$url', fileId, token);
+                        const url = await handleMethod('$url', fileId, token);
                         if (!url) {
                             throw new Error('[Manifest Data] No URL returned from $url');
                         }
-                        // Append mode=admin for testing (bypasses permission checks)
-                        url = url + (url.includes('?') ? '&' : '?') + 'mode=admin';
                         // Open URL directly - browser sends cookies automatically (like <img> tags)
                         window.open(url, '_blank', 'noopener,noreferrer');
                         return url;
@@ -8676,12 +8680,10 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     try {
                         const options = typeof widthOrOptions === 'object' ? widthOrOptions : { width: widthOrOptions || 800, height: height || 800 };
                         // Get preview URL from SDK (same method that works for thumbnails)
-                        let url = await handleMethod('$preview', fileId, options);
+                        const url = await handleMethod('$preview', fileId, options);
                         if (!url) {
                             throw new Error('[Manifest Data] No URL returned from $preview');
                         }
-                        // Append mode=admin for testing (bypasses permission checks)
-                        url = url + (url.includes('?') ? '&' : '?') + 'mode=admin';
                         // Open URL directly - browser sends cookies automatically (like <img> tags)
                         window.open(url, '_blank', 'noopener,noreferrer');
                         return url;
@@ -8702,12 +8704,10 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const [fileId, fileName, token] = args;
                     try {
                         // Get download URL from SDK (same method that works for thumbnails)
-                        let url = await handleMethod('$download', fileId, token);
+                        const url = await handleMethod('$download', fileId, token);
                         if (!url) {
                             throw new Error('[Manifest Data] No URL returned from $download');
                         }
-                        // Append mode=admin for testing (bypasses permission checks)
-                        url = url + (url.includes('?') ? '&' : '?') + 'mode=admin';
                         // Create link element pointing to SDK URL - browser sends cookies automatically
                         const link = document.createElement('a');
                         link.href = url;

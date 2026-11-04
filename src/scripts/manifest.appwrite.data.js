@@ -1270,9 +1270,9 @@ function waitForAuthInit(authStore) {
 // scopeColumns: { team, user } column names to filter/write on (default teamId/userId)
 async function buildQueries(queriesConfig, scope, scopeColumns) {
     const cols = { ...DEFAULT_SCOPE_COLUMNS, ...(scopeColumns || {}) };
-    if (!queriesConfig || !Array.isArray(queriesConfig)) {
-        return [];
-    }
+    // Scope applies whatever shape the user queries take
+    if (!Array.isArray(queriesConfig)) queriesConfig = [];
+    if (queriesConfig.length === 0 && !scope) return [];
 
     // Wait for auth to settle before interpolating — a $auth. reference in a raw
     // user query (queries.default) needs this regardless of whether `scope` is set.
@@ -1445,10 +1445,16 @@ const QUERY_MAP = {
     'greaterThan': 'greaterThan',
     'greaterThanEqual': 'greaterThanEqual',
     'contains': 'contains',
+    'between': 'between',
+    'isNull': 'isNull',
+    'isNotNull': 'isNotNull',
+    'startsWith': 'startsWith',
+    'endsWith': 'endsWith',
     'search': 'search',
     'or': 'or', // Support for multi-team queries (Query.or([Query.equal(...), ...]))
     'orderAsc': 'orderAsc',
     'orderDesc': 'orderDesc',
+    'orderRandom': 'orderRandom',
     'limit': 'limit',
     'offset': 'offset',
     'cursorAfter': 'cursorAfter',
@@ -1460,7 +1466,7 @@ const QUERY_MAP = {
 // (QUERY_MAP) are evaluable. Liveness over precision: anything unevaluable —
 // search, an operator the load drops, or a $auth. arg that can't resolve
 // synchronously — counts as a MATCH so live events are never silently dropped.
-const NON_FILTER_METHODS = new Set(['limit', 'offset', 'orderAsc', 'orderDesc', 'select', 'cursorAfter', 'cursorBefore']);
+const NON_FILTER_METHODS = new Set(['limit', 'offset', 'orderAsc', 'orderDesc', 'orderRandom', 'select', 'cursorAfter', 'cursorBefore']);
 
 function rowMatchesQueries(row, queriesConfig) {
     if (!row || !Array.isArray(queriesConfig) || queriesConfig.length === 0) return true;
@@ -1568,8 +1574,7 @@ function toAppwriteQuery(queryArray) {
 
 // Realtime-expressible operators: the intersection of what the load serializes
 // (QUERY_MAP), what the matcher evaluates, and what Appwrite realtime filters
-// server-side. isNull/isNotNull are realtime-supported but the load drops them,
-// so filtering on them server-side would drop events the matcher keeps — excluded.
+// server-side. Leaving one out only widens delivery.
 const REALTIME_FILTER_OPS = new Set(['equal', 'notEqual', 'lessThan', 'lessThanEqual', 'greaterThan', 'greaterThanEqual']);
 
 function isRealtimeExpressible(query) {

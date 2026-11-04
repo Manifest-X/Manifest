@@ -240,10 +240,18 @@
                                 "type": "boolean"
                             },
                             "queries": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string"
-                                }
+                                "description": "Appwrite queries applied at load, each ['method', 'attribute', ...values]. An object holds named queries for $query('name'); its 'default' key applies at load.",
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/definitions/appwriteQueryList"
+                                    },
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": {
+                                            "$ref": "#/definitions/appwriteQueryList"
+                                        }
+                                    }
+                                ]
                             },
                             "realtime": {
                                 "description": "Realtime subscription config. false disables the subscription. { mode, maxRows } bounds growth: 'append' (default) stops appending at maxRows and counts skipped events in $realtimeOverflow; 'window' keeps the initial window size by evicting the oldest realtime-appended rows. maxRows defaults to max(500, 2x the initially loaded rows); 0 opts into legacy unbounded growth. serverFilter picks which filters ride the Appwrite realtime subscription server-side: 'scope' (default) sends only scope-column filters; 'all' (alias true) sends every expressible filter — rows that stop matching then drop on the next load instead of instantly; false sends none.",
@@ -792,6 +800,18 @@
         }
     },
     "definitions": {
+        "appwriteQueryList": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "minItems": 1,
+                "items": [
+                    {
+                        "type": "string"
+                    }
+                ]
+            }
+        },
         "statusSignal": {
             "description": "One health input. Provider is inferred by which field is present.",
             "oneOf": [

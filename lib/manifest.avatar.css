@@ -58,6 +58,11 @@
         }
     }
 
+    /* Colors */
+    :where(.avatar:is(.brand, .accent, .positive, .negative), .avatar figure:is(.brand, .accent, .positive, .negative)) {
+        background-color: var(--color-field-surface, oklch(87% 0 0))
+    }
+
     /* Button & label versions */
     :where(button.avatar, [role=button].avatar, label.avatar):not(.unstyle) {
         padding: 0;
@@ -72,6 +77,10 @@
             & img {
                 filter: brightness(0.9)
             }
+        }
+
+        &:is(.brand, .accent, .positive, .negative):hover {
+            background-color: var(--color-field-surface-hover, oklch(87% 0 0))
         }
 
         & span {

@@ -2613,6 +2613,13 @@ async function renderRouteDom(page, ctx) {
         if (isDiffBindingAttr(name)) return 'diff-binding';
         if (isBindingAttr(name) && val && RUNTIME_MAGIC_RX.test(val)) return 'runtime-magic';
       }
+      // Directives a plugin consumed during the bake (x-tabpanel → x-show)
+      const source = sourceAttrs.get(el);
+      if (source) {
+        for (const name in source) {
+          if (source[name] !== null && INTERACTIVE_DIRECTIVES.has(name)) return 'interactive';
+        }
+      }
       return null;
     };
 
@@ -3412,7 +3419,7 @@ function finalizeRouteHtml(rawHtml, ctx) {
 /** Title, description and article text of a rendered page (.prose, then <article>, then <main>/<body> minus chrome). */
 function extractRouteContentFromHtml(html) {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+  const descMatch = html.match(/<meta\s+name=["']description["']\s+content=(["'])([\s\S]*?)\1/i);
 
   // Find the article-content region using depth-tracked tag matching.  Naive
   // non-greedy regex breaks on nested same-tag elements (article markdown
@@ -3446,74 +3453,70 @@ function extractRouteContentFromHtml(html) {
     return null;
   };
 
-  // Selection order — first hit wins:
-  //   1. `.prose` — Manifest convention for rendered markdown article content.
-  //      This is the cleanest source: contains only article body, no chrome.
-  //   2. `<article>` — semantic HTML for article bodies.
-  //   3. `<main>` — last resort.  At this layer we additionally strip the
-  //      site-chrome wrappers (data-static nav/TOC, semantic nav/header/footer
-  //      tags).  We do NOT strip <aside> because article content commonly uses
-  //      <aside class="frame"> for example boxes.
-  const proseRegion = extractByOpener(
-    html,
-    /<([a-z][a-z0-9]*)\b[^>]*\bclass=["'][^"']*\bprose\b[^"']*["'][^>]*>/i
-  );
-  let region = '';
-  if (proseRegion) {
-    region = proseRegion;
-  } else {
-    const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
-    if (articleMatch) {
-      region = articleMatch[1];
-    } else {
-      const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
-      const bodyMatch = mainMatch ? null : html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
-      let candidate = mainMatch ? mainMatch[1] : (bodyMatch ? bodyMatch[1] : '');
-      // Strip site chrome: top-level wrappers, not nested article content.
-      // <aside> is intentionally NOT stripped here — articles use <aside
-      // class="frame"> for example boxes that should appear in llms-full.
-      candidate = candidate.replace(/<nav\b[\s\S]*?<\/nav>/gi, ' ');
-      candidate = candidate.replace(/<footer\b[\s\S]*?<\/footer>/gi, ' ');
-      // Strip data-static containers (depth-tracked because nav lists nest).
-      const stripContainer = (s, openerRx) => {
-        let out = s;
-        let m;
-        while ((m = openerRx.exec(out))) {
-          const tagName = m[1];
-          const innerStart = m.index + m[0].length;
-          const open = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
-          const close = new RegExp(`</${tagName}\\s*>`, 'gi');
-          let depth = 1;
-          let cursor = innerStart;
-          let endIdx = out.length;
-          while (depth > 0) {
-            open.lastIndex = cursor;
-            close.lastIndex = cursor;
-            const nextOpen = open.exec(out);
-            const nextClose = close.exec(out);
-            if (!nextClose) break;
-            if (nextOpen && nextOpen.index < nextClose.index) {
-              depth++;
-              cursor = nextOpen.index + nextOpen[0].length;
-            } else {
-              depth--;
-              cursor = nextClose.index + nextClose[0].length;
-              if (depth === 0) endIdx = cursor;
-            }
-          }
-          out = out.slice(0, m.index) + ' ' + out.slice(endIdx);
-          openerRx.lastIndex = 0;
-        }
-        return out;
-      };
-      candidate = stripContainer(candidate, /<([a-z][a-z0-9]*)\b[^>]*\bdata-static\b[^>]*>/gi);
-      region = candidate;
+  // First region with text wins:
+  //   1. Prerendered markdown (`data-mnfst-md-src`), then `.prose`: article body, no chrome.
+  //   2. `<article>`.
+  //   3. `<main>`/`<body>` minus site chrome. <aside class="frame"> example boxes are kept.
+  const firstWithText = (openerRx) => {
+    const rx = new RegExp(openerRx.source, 'gi');
+    let m;
+    while ((m = rx.exec(html))) {
+      const r = extractByOpener(html.slice(m.index), openerRx);
+      if (r && htmlToText(r)) return r;
     }
+    return '';
+  };
+  let region = firstWithText(/<([a-z][a-z0-9]*)\b[^>]*\bdata-mnfst-md-src\b[^>]*>/i)
+    || firstWithText(/<([a-z][a-z0-9]*)\b[^>]*\bclass=["'][^"']*\bprose\b[^"']*["'][^>]*>/i)
+    || firstWithText(/<(article)\b[^>]*>/i);
+  if (!region) {
+    const mainRegion = extractByOpener(html, /<(main)\b[^>]*>/i);
+    const bodyRegion = mainRegion ? null : extractByOpener(html, /<(body)\b[^>]*>/i);
+    let candidate = mainRegion || bodyRegion || '';
+    // Strip site chrome: top-level wrappers, not nested article content.
+    // <aside> is intentionally NOT stripped here — articles use <aside
+    // class="frame"> for example boxes that should appear in llms-full.
+    candidate = candidate.replace(/<nav\b[\s\S]*?<\/nav>/gi, ' ');
+    candidate = candidate.replace(/<footer\b[\s\S]*?<\/footer>/gi, ' ');
+    // Strip data-static containers (depth-tracked because nav lists nest).
+    const stripContainer = (s, openerRx) => {
+      let out = s;
+      let m;
+      while ((m = openerRx.exec(out))) {
+        const tagName = m[1];
+        const innerStart = m.index + m[0].length;
+        const open = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+        const close = new RegExp(`</${tagName}\\s*>`, 'gi');
+        let depth = 1;
+        let cursor = innerStart;
+        let endIdx = out.length;
+        while (depth > 0) {
+          open.lastIndex = cursor;
+          close.lastIndex = cursor;
+          const nextOpen = open.exec(out);
+          const nextClose = close.exec(out);
+          if (!nextClose) break;
+          if (nextOpen && nextOpen.index < nextClose.index) {
+            depth++;
+            cursor = nextOpen.index + nextOpen[0].length;
+          } else {
+            depth--;
+            cursor = nextClose.index + nextClose[0].length;
+            if (depth === 0) endIdx = cursor;
+          }
+        }
+        out = out.slice(0, m.index) + ' ' + out.slice(endIdx);
+        openerRx.lastIndex = 0;
+      }
+      return out;
+    };
+    candidate = stripContainer(candidate, /<([a-z][a-z0-9]*)\b[^>]*\bdata-static\b[^>]*>/gi);
+    region = candidate;
   }
 
   return {
     title: titleMatch ? htmlToText(titleMatch[1]) : '',
-    description: descMatch ? descMatch[1] : '',
+    description: descMatch ? descMatch[2] : '',
     bodyText: region ? htmlToText(region) : '',
   };
 }

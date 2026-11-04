@@ -424,3 +424,11 @@
         }
     }
 }
+
+@layer utilities {
+
+    /* Badge sizes: outrank the relative .sm/.lg font sizes */
+    :where(.badge).sm {
+        font-size: 0.625rem
+    }
+}
