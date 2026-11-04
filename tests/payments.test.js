@@ -83,6 +83,15 @@ describe('payments config', () => {
             expect((await win.ManifestPaymentsConfig.getPaymentsConfig()).environment).toBe('sandbox')
         }
     })
+    it('reads environment case-insensitively; unknown values stay sandbox', async () => {
+        const env = async (environment) => {
+            const { win } = makeEnv({ payments: { endpoint: 'https://x/pay', environment } })
+            return (await win.ManifestPaymentsConfig.getPaymentsConfig()).environment
+        }
+        expect(await env('Live')).toBe('live')
+        expect(await env('SANDBOX')).toBe('sandbox')
+        for (const v of ['test', 'staging', '${PAYMENTS_ENV}']) expect(await env(v)).toBe('sandbox')
+    })
     it('refuses an unresolved ${VAR} in endpoint', async () => {
         const { win } = makeEnv({ payments: { endpoint: '${PAY_FN}' } })
         expect(await win.ManifestPaymentsConfig.getPaymentsConfig()).toBe(null)

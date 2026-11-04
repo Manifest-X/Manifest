@@ -46,9 +46,9 @@ shape) — the contract and fulfillment logic are provider-agnostic.
    `POST /api/1.0/webhooks` with `{ url: "https://<fn-url>/webhook", events: ["ORDER_COMPLETED", "DISPUTE_LOST"] }`
    — use `createWebhook()` from `revolut.js`. The response's **`signing_secret`** is your
    `REVOLUT_WEBHOOK_SECRET`. (Verified live: orders are under `/api/orders`, webhooks under `/api/1.0/webhooks`.)
-5. Point your `manifest.json` at the function:
+5. Point your `manifest.json` at the function, with `environment` matching `PAYMENTS_ENV` (it defaults to `live`):
    ```json
-   "payments": { "provider": "revolut", "endpoint": "https://<fn-url>", "state": { "url": "https://<fn-url>/state" } }
+   "payments": { "provider": "revolut", "endpoint": "https://<fn-url>", "environment": "sandbox", "state": { "url": "https://<fn-url>/state" } }
    ```
 
 ## Test

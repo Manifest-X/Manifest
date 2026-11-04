@@ -40,13 +40,22 @@ async function getPaymentsConfig() {
     if (p.endpoint && endpoint === null) return null;
     if (p.publicKey && publicKey === null) return null;
 
+    // Unset means live; anything but live/sandbox (typo, unresolved ${VAR}) stays sandbox
+    function environmentOf(v) {
+        if (v === undefined || v === null || v === '') return 'live';
+        const e = String(v).toLowerCase();
+        if (e === 'live' || e === 'sandbox') return e;
+        console.warn(`[Manifest Payments] Unknown environment "${v}"; using sandbox. Use "live" or "sandbox".`);
+        return 'sandbox';
+    }
+
     _cache = {
         provider: p.provider || null,
         endpoint,
         mode: p.mode === 'overlay' ? 'overlay' : 'redirect',
         publicKey,
         managed: p.managed === true,
-        environment: p.environment === 'sandbox' ? 'sandbox' : 'live',
+        environment: environmentOf(p.environment),
         state: p.state && typeof p.state === 'object' ? p.state : null,
         // Pass-through bag for adapter-specific options (locale, theme, etc.)
         options: p.options && typeof p.options === 'object' ? p.options : {}
