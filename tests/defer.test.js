@@ -208,7 +208,7 @@ describe('modifiers', () => {
 })
 
 describe('prewarm', () => {
-    it('waits for manifest:ready, then drains by priority and document order, skipping .lazy', () => {
+    it('waits for manifest:ready, then drains authored priorities first (lower n first), then document order, skipping .lazy', () => {
         const host = mount(`<div x-data>
             <menu popover id="p0a"><li x-init="counts.order = (counts.order || []).concat('p0a')"></li></menu>
             <menu popover x-defer.priority="2" id="p2"><li x-init="counts.order = (counts.order || []).concat('p2')"></li></menu>
@@ -225,7 +225,7 @@ describe('prewarm', () => {
         // One container per slice; containers left closed by earlier tests drain too
         let slices = 0
         while (idleQueue.length && slices++ < 50) runIdle()
-        expect(window.counts.order).toEqual(['p0a', 'p0b', 'p1', 'p2', 'late'])
+        expect(window.counts.order).toEqual(['p1', 'p2', 'late', 'p0a', 'p0b'])
         expect(slices).toBeGreaterThan(4)
         expect(idleQueue.length).toBe(0)
         expect(window.ManifestDefer.isPending(host.querySelector('#lazy'))).toBe(true)
