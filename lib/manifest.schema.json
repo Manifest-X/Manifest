@@ -594,6 +594,12 @@
                 "endpoint": {
                     "type": "string",
                     "description": "Backend endpoint for checkout/portal/state calls. Supports env() references."
+                },
+                "environment": {
+                    "type": "string",
+                    "enum": ["live", "sandbox"],
+                    "default": "live",
+                    "description": "Provider SDK environment for overlay checkouts. Set sandbox to test with the provider's test keys."
                 }
             },
             "additionalProperties": true
