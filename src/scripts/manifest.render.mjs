@@ -563,6 +563,16 @@ function promptContinueWithRuntimeTailwind(rootDir) {
 }
 
 /**
+ * Drop preflight rules that override Manifest's zero-specificity base styles when linked after manifest.css:
+ * the universal box reset (Manifest's reset is identical) and `hr`. Runtime Tailwind ships no preflight.
+ */
+function stripTailwindPreflightConflicts(css) {
+  return css
+    .replace(/\*\s*,\s*::after\s*,\s*::before\s*,\s*::backdrop\s*,\s*::file-selector-button\s*\{[^}]*\}/g, '')
+    .replace(/(\s*)hr\s*\{\s*height:\s*0;\s*color:\s*inherit;\s*border-top-width:\s*1px;?\s*\}/g, '');
+}
+
+/**
  * Build a static Tailwind stylesheet via @tailwindcss/cli (v4+), scanning project sources.
  * Only runs when the project uses data-tailwind on the manifest script tag (auto-detected).
  * Set manifest.prerender.tailwindInput to a custom CSS entry file if needed.
@@ -636,26 +646,10 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
     console.error('prerender: Tailwind CLI did not produce prerender.tailwind.css');
     return false;
   }
-  // Strip Tailwind preflight rules that conflict with Manifest's element-level
-  // resets.  Tailwind's `hr { height: 0; border-top-width: 1px }` would win on
-  // specificity over Manifest's `:where(hr) {...}` reset (same `@layer base`,
-  // higher specificity), even when Manifest CSS loads after Tailwind.  Removing
-  // the specific conflicting rules here is surgical: Tailwind's other utility
-  // classes (mt-6, md:hidden, etc.) keep their normal `@layer utilities`
-  // behaviour and continue to override Manifest's `*` reset as expected.
   try {
     const compiled = readFileSync(outCss, 'utf8');
-    // Inside Tailwind's `@layer base { ... }` block, remove the bare `hr { ... }`
-    // declaration only.  Other element resets in the same layer don't conflict
-    // with Manifest's `:where()` resets (they target other elements or rely on
-    // Manifest's resets winning later in source order at equal specificity).
-    const stripped = compiled.replace(
-      /(\s*)hr\s*\{\s*height:\s*0;\s*color:\s*inherit;\s*border-top-width:\s*1px;?\s*\}/g,
-      ''
-    );
-    if (stripped !== compiled) {
-      writeFileSync(outCss, stripped, 'utf8');
-    }
+    const stripped = stripTailwindPreflightConflicts(compiled);
+    if (stripped !== compiled) writeFileSync(outCss, stripped, 'utf8');
   } catch (e) {
     console.warn('prerender: failed to strip conflicting Tailwind preflight rules:', e?.message || e);
   }
@@ -3517,6 +3511,7 @@ if (_isDirectEntry) {
 
 // Exports for the CLI bin script and for unit testing.
 export {
+  stripTailwindPreflightConflicts,
   main,
   discoverRoutes,
   groupLlmsSections,
