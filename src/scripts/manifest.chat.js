@@ -1088,7 +1088,7 @@
                         }
                     }
                 } catch (e) {
-                    const note = '\n\n_(no AI relay at ' + endpoint + (e && /^HTTP /.test(e.message) ? ': ' + e.message : '') + ')_';
+                    const note = '\n\n(no AI relay at `' + endpoint + '`' + (e && /^HTTP /.test(e.message) ? ': ' + e.message : '') + ')';
                     h.onMessagePart && h.onMessagePart(mid, { text: note }); full += note;
                 }
                 h.onMessagePart && h.onMessagePart(mid, { text: '', done: true });
