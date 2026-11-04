@@ -249,6 +249,15 @@ describe('scoped presence', () => {
         expect(stats.upserts[0].permissions).toContain('read("team:teamA")')
     })
 
+    it('a nameless user publishes a null name, never their email', async () => {
+        const auth = { ...authed(), user: { $id: 'me', name: '', email: 'me@example.com' } }
+        const { stats, presence } = await boot({ auth })
+        await presence.start({ scope: 'global' })
+        await settle()
+        expect(stats.upserts[0].metadata.name).toBe(null)
+        expect(JSON.stringify(stats.upserts)).not.toContain('me@example.com')
+    })
+
     it("scope 'global' keeps every readable record and writes a users() read grant", async () => {
         const { rt, stats, presence, records } = await boot({ presenceRows: ROWS, auth: authed('teamA') })
         await presence.start({ scope: 'global' })
