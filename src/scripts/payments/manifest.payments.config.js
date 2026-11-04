@@ -46,7 +46,7 @@ async function getPaymentsConfig() {
         mode: p.mode === 'overlay' ? 'overlay' : 'redirect',
         publicKey,
         managed: p.managed === true,
-        environment: p.environment || (p.managed ? 'live' : 'sandbox'),
+        environment: p.environment === 'sandbox' ? 'sandbox' : 'live',
         state: p.state && typeof p.state === 'object' ? p.state : null,
         // Pass-through bag for adapter-specific options (locale, theme, etc.)
         options: p.options && typeof p.options === 'object' ? p.options : {}

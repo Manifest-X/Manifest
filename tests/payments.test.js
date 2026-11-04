@@ -71,6 +71,18 @@ describe('payments config', () => {
         const { win } = makeEnv({ payments: { endpoint: 'https://x/pay', mode: 'weird' } })
         expect((await win.ManifestPaymentsConfig.getPaymentsConfig()).mode).toBe('redirect')
     })
+    it('defaults environment to live, managed or not', async () => {
+        for (const extra of [{}, { managed: true }]) {
+            const { win } = makeEnv({ payments: { provider: 'paddle', endpoint: 'https://x/pay', ...extra } })
+            expect((await win.ManifestPaymentsConfig.getPaymentsConfig()).environment).toBe('live')
+        }
+    })
+    it('honours environment: sandbox, including on managed blocks', async () => {
+        for (const extra of [{}, { managed: true }]) {
+            const { win } = makeEnv({ payments: { provider: 'paddle', endpoint: 'https://x/pay', environment: 'sandbox', ...extra } })
+            expect((await win.ManifestPaymentsConfig.getPaymentsConfig()).environment).toBe('sandbox')
+        }
+    })
     it('refuses an unresolved ${VAR} in endpoint', async () => {
         const { win } = makeEnv({ payments: { endpoint: '${PAY_FN}' } })
         expect(await win.ManifestPaymentsConfig.getPaymentsConfig()).toBe(null)
