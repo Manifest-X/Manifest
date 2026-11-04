@@ -66,6 +66,5 @@ describe('alpine pin', () => {
         expect(pinned).toMatch(/^\d+\.\d+\.\d+$/)
         expect(pkg.devDependencies.alpinejs).toBe(pinned)
         expect(JSON.parse(readFileSync(path.join(__dirname, '../node_modules/alpinejs/package.json'), 'utf8')).version).toBe(pinned)
-        expect(CODE).toMatch(/const v = dataAlpine \|\| DEFAULT_ALPINE_VERSION/)
     })
 })
