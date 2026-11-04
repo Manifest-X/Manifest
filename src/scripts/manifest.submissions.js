@@ -18,8 +18,20 @@ function fieldErrors(data) {
     return [];
 }
 
-function controlsNamed(form, name) {
-    return [...form.elements].filter(c => c.name === name && typeof c.setCustomValidity === 'function');
+// Form properties are shadowed by controls named like them (<input name="action">)
+const attr = (el, name) => el ? Element.prototype.getAttribute.call(el, name) : null;
+const controlsOf = (form) => [...Reflect.get(HTMLFormElement.prototype, 'elements', form)];
+
+// Only fields the visitor can see and edit; anything else would block every later submit
+function editable(c) {
+    if (typeof c.setCustomValidity !== 'function' || c.willValidate === false) return false;
+    if (c.type === 'hidden' || c.readOnly || c.matches(':disabled')) return false;
+    if (c.closest('[hidden], [inert]')) return false;
+    const fieldset = c.closest('fieldset[disabled]');
+    if (fieldset && !fieldset.querySelector(':scope > legend')?.contains(c)) return false;
+    const closed = c.closest('details:not([open])');
+    if (closed && !c.closest('summary')) return false;
+    return typeof c.checkVisibility === 'function' ? c.checkVisibility({ visibilityProperty: true }) : true;
 }
 
 function clearErrors(form, name) {
@@ -35,7 +47,8 @@ function clearErrors(form, name) {
 function showErrors(form, errors) {
     const marked = [];
     for (const { field, message } of errors) {
-        for (const c of controlsNamed(form, field)) {
+        for (const c of controlsOf(form)) {
+            if (c.name !== field || !editable(c)) continue;
             c.setCustomValidity(message || 'Invalid value');
             marked.push(c);
         }
@@ -44,21 +57,61 @@ function showErrors(form, errors) {
     if (marked[0]) marked[0].reportValidity();
 }
 
-function request(form, submitter) {
-    const has = (a) => submitter && submitter.hasAttribute(a);
-    const action = has('formaction') ? submitter.formAction : form.action;
-    const method = (has('formmethod') ? submitter.formMethod : form.method || 'get').toLowerCase();
-    const enctype = has('formenctype') ? submitter.formEnctype : form.enctype;
+const URLENCODED = 'application/x-www-form-urlencoded', MULTIPART = 'multipart/form-data', TEXT = 'text/plain';
+const pick = (value, allowed, fallback) => {
+    const v = (value || '').trim().toLowerCase();
+    return allowed.includes(v) ? v : fallback;
+};
+
+let submitterArg;
+function supportsSubmitterArg() {
+    if (submitterArg === undefined) {
+        try {
+            const f = document.createElement('form'), b = document.createElement('button');
+            b.name = 's'; b.value = '1'; f.appendChild(b);
+            submitterArg = new FormData(f, b).get('s') === '1';
+        } catch { submitterArg = false; }
+    }
+    return submitterArg;
+}
+
+// Fields in native order, the submitter included; null when only the browser can build them
+function collect(form, submitter) {
+    if (submitter && supportsSubmitterArg()) {
+        try { return new FormData(form, submitter); } catch { }
+    }
     const data = new FormData(form);
-    if (submitter && submitter.name) data.append(submitter.name, submitter.value);
+    if (!submitter) return data;
+    if (submitter.type === 'image') return null;
+    if (submitter.name) data.append(submitter.name, submitter.value);
+    return data;
+}
+
+// The request a native submit would make, or null to leave the submit to the browser
+function plan(form, submitter) {
+    const target = attr(submitter, 'formtarget') ?? attr(form, 'target') ?? attr(document.querySelector('base[target]'), 'target') ?? '';
+    if (!['', '_self'].includes(target.trim().toLowerCase())) return null;
+    const method = pick(attr(submitter, 'formmethod') ?? attr(form, 'method'), ['get', 'post', 'dialog'], 'get');
+    if (method === 'dialog') return null;
+    const enctype = method === 'get' ? URLENCODED : pick(attr(submitter, 'formenctype') ?? attr(form, 'enctype'), [URLENCODED, MULTIPART, TEXT], URLENCODED);
+    const raw = attr(submitter, 'formaction') ?? attr(form, 'action');
+    const action = raw ? new URL(raw, form.baseURI).href : document.URL;
+
+    const data = collect(form, submitter);
+    if (!data) return null;
+    const files = [...data.values()].some(v => typeof v !== 'string' && (v.name || v.size));
+    if (files && enctype !== MULTIPART) return null;
+    const pairs = () => [...data].map(([k, v]) => [k, typeof v === 'string' ? v : v.name]);
+
     const headers = { Accept: 'application/json' };
     if (method === 'get') {
-        const url = new URL(action, document.baseURI);
-        url.search = new URLSearchParams(data).toString();
+        const url = new URL(action);
+        url.search = new URLSearchParams(pairs()).toString();
         return { url: url.href, init: { method: 'GET', headers } };
     }
-    // Same body the browser would send without script
-    const body = enctype === 'multipart/form-data' ? data : new URLSearchParams(data);
+    const body = enctype === MULTIPART ? data
+        : enctype === TEXT ? pairs().map(([k, v]) => `${k}=${v}\r\n`).join('')
+        : new URLSearchParams(pairs());
     return { url: action, init: { method: method.toUpperCase(), headers, body } };
 }
 
@@ -86,7 +139,8 @@ function resetTurnstile(form) {
     try { window.turnstile.reset(widget); } catch { }
 }
 
-async function send(form, submitter) {
+async function send(form, submitter = null, request = plan(form, submitter)) {
+    if (!request) return { ok: false, status: 0, data: null, response: null, error: 'unsupported', message: '' };
     form.__mnfstSubmitting = true;
     form.setAttribute('data-state', 'sending');
     form.setAttribute('aria-busy', 'true');
@@ -94,8 +148,7 @@ async function send(form, submitter) {
 
     let response = null, data = null, failure = null;
     try {
-        const { url, init } = request(form, submitter);
-        response = await fetch(url, init);
+        response = await fetch(request.url, request.init);
         data = await parse(response);
     } catch (e) {
         failure = e;
@@ -121,13 +174,14 @@ async function send(form, submitter) {
 // Runs after native validation; an author handler that prevents default opts out.
 document.addEventListener('submit', (e) => {
     const form = e.target;
-    if (e.defaultPrevented || !(form instanceof HTMLFormElement) || !form.hasAttribute('x-submit')) return;
+    if (e.defaultPrevented || !(form instanceof HTMLFormElement) || attr(form, 'x-submit') === null) return;
+    if (form.__mnfstSubmitting) return e.preventDefault();
     const submitter = e.submitter || null;
-    const method = ((submitter && submitter.hasAttribute('formmethod')) ? submitter.formMethod : form.method || '').toLowerCase();
-    if (method === 'dialog') return;
+    let request = null;
+    try { request = plan(form, submitter); } catch { }
+    if (!request) return;
     e.preventDefault();
-    if (form.__mnfstSubmitting) return;
-    send(form, submitter);
+    send(form, submitter, request);
 });
 
 // A field's server error clears once it is edited

@@ -224,3 +224,110 @@ describe('turnstile', () => {
         expect(window.turnstile.reset).not.toHaveBeenCalled()
     })
 })
+
+describe('review fixes', () => {
+    it('reads action, method and enctype from attributes when controls shadow them', async () => {
+        const form = mount('<form x-submit action="/_forms/x" method="post" enctype="multipart/form-data"><input name="action" value="a"><input name="method" value="m"><input name="enctype" value="e"><input name="elements" value="el"><input name="target" value="t"></form>')
+        expect(submit(form).defaultPrevented).toBe(true)
+        await settle()
+        expect(calls[0].url).toBe('https://site.example/_forms/x')
+        expect(calls[0].init.method).toBe('POST')
+        expect(calls[0].init.body).toBeInstanceOf(FormData)
+        expect(calls[0].init.body.get('action')).toBe('a')
+    })
+
+    it('an empty or missing action posts to the document URL', async () => {
+        window.happyDOM.setURL('https://site.example/contact/?ref=1')
+        const form = mount('<form x-submit action="" method="post"><input name="a" value="1"></form>')
+        submit(form); await settle()
+        expect(calls[0].url).toBe('https://site.example/contact/?ref=1')
+        window.happyDOM.setURL('https://site.example/contact/')
+    })
+
+    it('honours the submitter formenctype and an invalid method falls back to GET', async () => {
+        const form = mount('<form x-submit action="/a" method="bogus"><input name="x" value="1"><button formmethod="post" formenctype="multipart/form-data">Go</button></form>')
+        submit(form, form.querySelector('button')); await settle()
+        expect(calls[0].init.method).toBe('POST')
+        expect(calls[0].init.body).toBeInstanceOf(FormData)
+        const get = mount('<form x-submit action="/a" method="bogus"><input name="x" value="1"></form>')
+        submit(get); await settle()
+        expect(calls[1].init.method).toBe('GET')
+    })
+
+    it('sends text/plain as text/plain lines', async () => {
+        const form = mount('<form x-submit action="/a" method="post" enctype="text/plain"><input name="a" value="1"><input name="b" value="two words"></form>')
+        submit(form); await settle()
+        expect(calls[0].init.body).toBe('a=1\r\nb=two words\r\n')
+    })
+
+    it('leaves forms that target another browsing context to the browser', async () => {
+        const blank = mount('<form x-submit action="/a" method="post" target="_blank"></form>')
+        expect(submit(blank).defaultPrevented).toBe(false)
+        const self = mount('<form x-submit action="/a" method="post" target="_self"></form>')
+        expect(submit(self).defaultPrevented).toBe(true)
+        const viaButton = mount('<form x-submit action="/a" method="post"><button formtarget="frame">Go</button></form>')
+        expect(submit(viaButton, viaButton.querySelector('button')).defaultPrevented).toBe(false)
+        document.head.innerHTML = '<base target="_blank">'
+        const viaBase = mount('<form x-submit action="/a" method="post"></form>')
+        expect(submit(viaBase).defaultPrevented).toBe(false)
+        document.head.innerHTML = ''
+        await settle()
+        expect(calls).toHaveLength(1)
+    })
+
+    it('never sends a chosen file as text: non-multipart forms with a file go native', async () => {
+        const form = mount('<form x-submit action="/a" method="post"><input type="file" name="f"></form>')
+        const file = new File(['x'], 'cv.pdf')
+        const RealFormData = globalThis.FormData
+        vi.stubGlobal('FormData', class extends RealFormData { constructor(f, s) { super(f, s); if (f) this.set('f', file) } })
+        try {
+            expect(submit(form).defaultPrevented).toBe(false)
+            const multi = mount('<form x-submit action="/a" method="post" enctype="multipart/form-data"><input type="file" name="f"></form>')
+            expect(submit(multi).defaultPrevented).toBe(true)
+        } finally { vi.stubGlobal('FormData', RealFormData) }
+        await settle()
+        expect(calls).toHaveLength(1)
+    })
+
+    it('an unchosen file input sends an empty value, not [object File]', async () => {
+        const form = mount('<form x-submit action="/a" method="post"><input name="a" value="1"><input type="file" name="f"></form>')
+        submit(form); await settle()
+        expect(String(calls[0].init.body)).not.toContain('object')
+    })
+
+    it('maps field errors only onto controls the visitor can see and edit', async () => {
+        reply = () => json({ fields: { v: 'bad', h: 'bad', d: 'bad', r: 'bad', n: 'bad', c: 'bad', a: 'bad', s: 'bad' } }, 422)
+        const form = mount(`<form x-submit action="/a" method="post">
+            <input name="v" value="1">
+            <input type="hidden" name="h" value="1">
+            <input name="d" value="1" disabled>
+            <input name="r" value="1" readonly>
+            <input name="n" value="1" style="display:none">
+            <details><summary>More</summary><input name="c" value="1"></details>
+            <div hidden><input name="a" value="1"></div>
+            <fieldset disabled><input name="s" value="1"></fieldset>
+        </form>`)
+        submit(form); await settle()
+        const msg = (n) => form.querySelector(`[name=${n}]`).validationMessage
+        expect(msg('v')).toBe('bad')
+        for (const n of ['h', 'd', 'r', 'n', 'c', 'a', 's']) expect([n, msg(n)]).toEqual([n, ''])
+        expect(form.__mnfstSubmitErrors.map(c => c.name)).toEqual(['v'])
+    })
+
+    it('an error naming only unreachable fields leaves the form submittable', async () => {
+        reply = () => json({ fields: { h: 'bad' } }, 422)
+        const form = mount('<form x-submit action="/a" method="post"><input type="hidden" name="h" value="1"></form>')
+        let got
+        form.addEventListener('submit-error', e => { got = e.detail })
+        submit(form); await settle()
+        expect(got.status).toBe(422)
+        expect(form.checkValidity()).toBe(true)
+    })
+
+    it('send() without a sendable request reports unsupported and sends nothing', async () => {
+        const form = mount('<form action="/a" method="post" target="_blank"></form>')
+        const d = await window.ManifestSubmissions.send(form)
+        expect(d.error).toBe('unsupported')
+        expect(calls).toHaveLength(0)
+    })
+})
