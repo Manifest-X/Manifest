@@ -801,6 +801,7 @@ function copyFilesToDist() {
         { source: 'scripts/manifest.router.js', dest: '../lib/manifest.router.js' },
         { source: 'scripts/manifest.slides.js', dest: '../lib/manifest.slides.js' },
         { source: 'scripts/manifest.status.js', dest: '../lib/manifest.status.js' },
+        { source: 'scripts/manifest.submissions.js', dest: '../lib/manifest.submissions.js' },
         { source: 'scripts/manifest.chat.js', dest: '../lib/manifest.chat.js' },
         { source: 'scripts/manifest.device.js', dest: '../lib/manifest.device.js' },
         { source: 'scripts/manifest.device.js', dest: '../lib/manifest.native.js' },   // alias kept for one release
