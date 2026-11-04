@@ -397,7 +397,8 @@ if (APPWRITE_PROXY_TARGET) {
 // (server-side only). When the `ai` block is present, the dev server hosts the
 // relay so a chat adapter can POST to `/_ai/chat` with no separate proxy, no
 // CORS, and no key in the browser. No key → MOCK replies (try keyless); add the
-// key for real. The same path is served by managed Manifest hosting in prod.
+// key for real. Local only: a published project points the adapter's
+// endpoint at its own relay.
 const aiConfig = (() => {
   try { return JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).ai || null; }
   catch { return null; }
