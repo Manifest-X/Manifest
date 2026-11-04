@@ -118,7 +118,7 @@ function classify(request) {
 
 	if (ICONIFY_HOST.test(url.host)) return /\.json$/.test(path) ? 'immutable' : null;
 	if (!CDN_HOST.test(url.host)) return null;
-	if (EXACT_PIN.test(path) || /\/alpinejs@/.test(path)) return 'immutable';
+	if (EXACT_PIN.test(path)) return 'immutable';
 	if (ANY_PIN.test(path)) return 'swr';
 	return null;
 }

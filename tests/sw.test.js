@@ -279,7 +279,6 @@ describe('content-addressed assets: cache first, immutable', () => {
     it.each([
         'https://cdn.manifestx.dev/npm/mnfst@0.5.198/lib/manifest.min.js',
         'https://cdn.jsdelivr.net/npm/mnfst@0.5.198-next.4/lib/manifest.data.min.js',
-        'https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js',
         'https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js',
         'https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js',
         'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js',
@@ -400,16 +399,16 @@ describe('other same-origin static assets: stale-while-revalidate', () => {
         expect((await s.fetchEvent('/font.woff2')).text).toBe('f1')
     })
 
-    it('tag-pinned CDN URLs (mnfst@latest, alpinejs excepted) are stale-while-revalidate', async () => {
+    it('tag-pinned CDN URLs (mnfst@latest, an alpinejs range) are stale-while-revalidate', async () => {
         const s = makeScope()
-        for (const url of ['https://cdn.manifestx.dev/npm/mnfst@latest/lib/manifest.min.js', 'https://esm.run/d3-array@3', 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json']) {
+        for (const url of ['https://cdn.manifestx.dev/npm/mnfst@latest/lib/manifest.min.js', 'https://esm.run/d3-array@3', 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json', 'https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js']) {
             await s.fetchEvent(url, { mode: 'cors' })
             const b = await s.fetchEvent(url, { mode: 'cors' })
             expect(b.waits.length).toBe(1)
             await b.settle()
         }
         const swr = await s.caches.open('mnfst-sw:1.2.3:dep1:swr')
-        expect(swr.urls().length).toBe(3)
+        expect(swr.urls().length).toBe(4)
     })
 
     it('caps the SWR cache at 500 entries, evicting the least recently refreshed', async () => {
@@ -494,8 +493,7 @@ describe('precache.json warm-up', () => {
         const c = (cls) => s.caches.store.get('mnfst-sw:1.2.3:dep1:' + cls)?.urls() || []
         expect(c('pages')).toContain(`${ORIGIN}/index.html`)
         expect(c('assets')).toContain(`${ORIGIN}/components/card.html?v=dep1`)
-        expect(c('assets')).toContain('https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js')
-        expect(c('swr')).toEqual([])
+        expect(c('swr')).toEqual(['https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js'])
         expect(fetchesTo(s, '/v1/ignored')).toBe(0)
     })
 

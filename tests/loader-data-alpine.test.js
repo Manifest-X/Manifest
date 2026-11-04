@@ -54,6 +54,10 @@ describe('data-alpine', () => {
         expect(await boot('3.14.1')).toEqual([cdn('3.14.1')])
     })
 
+    it('trims whitespace around a version', async () => {
+        expect(await boot(' 3.14.1 ')).toEqual([cdn('3.14.1')])
+    })
+
     it('takes a range as a CDN range, so a bare major floats', async () => {
         expect(await boot('3')).toEqual([cdn('3')])
     })
@@ -69,13 +73,30 @@ describe('data-alpine', () => {
         expect(await boot(value)).toEqual([value])
     })
 
-    it.each([['false'], ['none'], ['None']])('loads no Alpine for %s', async (value) => {
+    it.each([['false'], ['none'], ['None'], ['off']])('loads no Alpine for %s, without a load error', async (value) => {
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {})
         expect(await boot(value)).toEqual([])
+        expect(error.mock.calls.filter(c => String(c[0]).includes('Alpine'))).toEqual([])
+        error.mockRestore()
+    })
+
+    it.each([['/vendor/alpine.mjs'], ['https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/module.esm.js']])('warns and loads nothing for an ES module build: %s', async (value) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        expect(await boot(value)).toEqual([])
+        expect(warn.mock.calls.some(c => String(c[0]).includes('ES module'))).toBe(true)
+        warn.mockRestore()
     })
 
     it('leaves a page\'s own Alpine tag alone', async () => {
         expect(await boot(undefined, '<script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>'))
             .toEqual(['https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js'])
+    })
+
+    it.each([
+        ['https://cdn.jsdelivr.net/npm/@alpinejs/csp@3.14.1/dist/cdn.min.js'],
+        ['https://cdn.jsdelivr.net/npm/@alpinejs/csp/dist/cdn.min.js'],
+    ])('treats the CSP build as Alpine itself: %s', async (csp) => {
+        expect(await boot(undefined, `<script async src="${csp}"></script>`)).toEqual([csp])
     })
 
     it('still loads Alpine next to an Alpine plugin tag', async () => {
