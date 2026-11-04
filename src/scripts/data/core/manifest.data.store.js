@@ -657,8 +657,7 @@ function createReactiveReferences(data, dataSourceName = null) {
                         if (bucketArray && typeof bucketArray.$url === 'function') {
                             bucketArray.$url(data.$id)
                                 .then(url => {
-                                    // Append mode=admin for testing (can be made configurable later)
-                                    thumbnailState.url = url + (url.includes('?') ? '&' : '?') + 'mode=admin';
+                                    thumbnailState.url = url;
                                     thumbnailState.loading = false;
                                     thumbnailState.error = null;
                                 })
