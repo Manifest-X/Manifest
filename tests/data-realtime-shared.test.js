@@ -383,17 +383,17 @@ describe('query matcher', () => {
         expect(m({ a: 0 }, [['or', [['equal', 'a', 1], ['isNull', 'zzz']]]])).toBe(true)
     })
 
-    it('non-filter queries are ignored; operators the load drops match regardless', async () => {
+    it('non-filter queries are ignored; unknown operators match regardless', async () => {
         const { queries } = await boot1()
         const m = (row, q) => queries().rowMatchesQueries(row, q)
-        expect(m({ a: 1 }, [['limit', 5], ['offset', 2], ['orderDesc', 'a'], ['select', ['a']], ['cursorAfter', 'x']])).toBe(true)
+        expect(m({ a: 1 }, [['limit', 5], ['offset', 2], ['orderDesc', 'a'], ['orderRandom'], ['select', ['a']], ['cursorAfter', 'x']])).toBe(true)
         expect(m({ a: 1 }, [['search', 'a', 'zzz']])).toBe(true)          // search: unevaluable
         expect(m({ a: 1 }, [['someFutureOp', 'a', 'zzz']])).toBe(true)    // unknown: unevaluable
-        // Not in toAppwriteQuery's queryMap -> dropped at load -> never drop rows here
+        // Serialized at load, so evaluated here
         for (const q of [['between', 'a', 2, 3], ['isNull', 'a'], ['isNotNull', 'zzz'], ['startsWith', 'a', 'z'], ['endsWith', 'a', 'z']]) {
-            expect(queries().toAppwriteQuery(q)).toBe(null)
-            expect(m({ a: 1 }, [q])).toBe(true)
+            expect(m({ a: 1 }, [q])).toBe(false)
         }
+        expect(m({ a: 'zebra' }, [['startsWith', 'a', 'Z'], ['isNull', 'b']])).toBe(true)
         // $auth. arg unresolved (signed out): unevaluable -> match
         expect(m({ owner: 'u9' }, [['equal', 'owner', '$auth.user.$id']])).toBe(true)
     })
@@ -456,22 +456,20 @@ describe('query-aware merge', () => {
         expect(rows('alpha')).toEqual(['a1', 'n1'])
     })
 
-    it('operators the load drops (startsWith/isNull) never drop events either', async () => {
+    it('startsWith/isNull filter events like the load does', async () => {
         const { rt, rows, main } = await boot(
             { alpha: T('t1', { queries: [['startsWith', 'title', 'Z'], ['isNull', 'deletedAt']] }) },
-            { tables: { t1: [{ $id: 'a1', title: 'abc' }] } }
+            { tables: { t1: [{ $id: 'a1', title: 'Zeta' }] } }
         )
         await main.loadDataSource('alpha')
         await settle()
-        // the load dropped both queries, so the server never filtered on them:
-        // events must match regardless of value, and updates must not evict held rows
-        rt().fire(CH('t1'), evt('create', { $id: 'n1', title: 'other', deletedAt: '2026-01-01' }))
+        rt().fire(CH('t1'), evt('create', { $id: 'n1', title: 'other' }))
+        rt().fire(CH('t1'), evt('create', { $id: 'n2', title: 'zulu' }))
         await settle()
-        expect(rows('alpha')).toEqual(['a1', 'n1'])
-        rt().fire(CH('t1'), evt('update', { $id: 'a1', title: 'renamed', deletedAt: '2026-01-02' }))
+        expect(rows('alpha')).toEqual(['a1', 'n2'])
+        rt().fire(CH('t1'), evt('update', { $id: 'a1', title: 'Zeta', deletedAt: '2026-01-02' }))
         await settle()
-        expect(rows('alpha')).toEqual(['a1', 'n1'])
-        expect(Alpine.store('data').alpha.find(r => r.$id === 'a1').title).toBe('renamed')
+        expect(rows('alpha')).toEqual(['n2'])
     })
 })
 
