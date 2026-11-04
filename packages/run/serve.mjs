@@ -397,8 +397,8 @@ if (APPWRITE_PROXY_TARGET) {
 // (server-side only). When the `ai` block is present, the dev server hosts the
 // relay so a chat adapter can POST to `/_ai/chat` with no separate proxy, no
 // CORS, and no key in the browser. No key → MOCK replies (try keyless); add the
-// key for real. Local only: a published project points the adapter's
-// endpoint at its own relay.
+// key for real. Published sites get the same route from Manifest hosting, so
+// the relay mirrors it: the `ai` block sets model and system, not the client.
 const aiConfig = (() => {
   try { return JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).ai || null; }
   catch { return null; }
@@ -456,15 +456,15 @@ async function streamRealAi(res, payload) {
   // System prompt as a cache_control block: the (instructions + grounding) text
   // is byte-identical every request, so Anthropic serves it from the prompt
   // cache (~0.1× input price) after the first request — long doc-grounded
-  // prompts cost near-nothing per message. Per-request payload.system overrides
-  // (adapter opts) still work but won't share the project-level cache entry.
-  const systemText = payload.system || aiSystemResolved;
+  // prompts cost near-nothing per message.
+  const systemText = aiSystemResolved;
+  const maxTokens = Math.min(Number(aiConfig.maxTokens) || 1024, 4096);
   const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': aiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
-      model: payload.model || aiConfig.model || 'claude-haiku-4-5',
-      max_tokens: payload.max_tokens || aiConfig.maxTokens || 1024,
+      model: aiConfig.model || 'claude-haiku-4-5',
+      max_tokens: Math.min(Number(payload.max_tokens) || maxTokens, maxTokens),
       stream: true,
       system: systemText ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }] : undefined,
       messages: payload.messages || []
@@ -2020,11 +2020,11 @@ const server = createServer((req, res) => {
   // Edit-plugin B-side write-back (SPIKE, dev-only). POST + same-origin. Currently
   // handles the `data` regime: reorder the source CSV/JSON for a registered data
   // source. static/component regimes are reported unsupported (need an HTML parser).
-  // Turnkey AI relay — same-origin chat proxy; key held server-side, never in
-  // the browser. Inert (404) unless manifest.json has an `ai` block. No key →
-  // mock stream so keyless dev works; add ANTHROPIC_API_KEY to .env for real.
+  // Turnkey AI relay — same route Manifest hosting serves on published sites;
+  // key held server-side. Inert (404) unless manifest.json has an `ai` block.
+  // No key → mock stream; add ANTHROPIC_API_KEY to .env for real.
   if (urlPath === '/_ai/chat') {
-    if (!aiConfig) { res.writeHead(404); res.end(); return; }
+    if (!aiConfig) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'ai_not_enabled', message: 'AI chat is not enabled: add an `ai` block to manifest.json.' })); return; }
     if (req.method !== 'POST') { res.writeHead(405, { 'Allow': 'POST' }); res.end(); return; }
     if (listenPort && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
     let raw = '';

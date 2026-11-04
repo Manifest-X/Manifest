@@ -1,8 +1,8 @@
 /**
  * @vitest-environment happy-dom
  *
- * claude adapter: a relay that isn't there (published hosting answers 405) shows an error naming the endpoint,
- * never a silent empty reply or a file readers don't have.
+ * claude adapter: relay failures show the relay's JSON `message` when given, else a note
+ * naming the endpoint and status, never a silent empty reply.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeAll, vi } from 'vitest'
@@ -36,10 +36,17 @@ describe('claude adapter relay errors', () => {
         expect(text).toContain('405')
     })
 
-    it('an unreachable relay names the endpoint, not a repo file', async () => {
+    it('an unreachable relay names the endpoint', async () => {
         localStorage.clear()
         const text = await reply(async () => { throw new TypeError('Failed to fetch') })
         expect(text).toContain('/_ai/chat')
-        expect(text).not.toContain('chat-llm-proxy')
+    })
+
+    it('shows the message from a JSON error body', async () => {
+        localStorage.clear()
+        const message = 'AI chat needs an Anthropic API key: ask your agent to set it up with the Manifest connector.'
+        const text = await reply(async () => new Response(JSON.stringify({ error: 'ai_not_configured', message }), { status: 503, headers: { 'content-type': 'application/json' } }))
+        expect(text).toContain(message)
+        expect(text).not.toContain('/_ai/chat')
     })
 })

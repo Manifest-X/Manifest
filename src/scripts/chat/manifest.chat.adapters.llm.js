@@ -1,8 +1,8 @@
 /*  Manifest Chat — optional LLM (Claude) adapter
  *  By Andrew Matlock under MIT license · https://manifestx.dev
  *
- *  Reference `claude` adapter: replies stream from a relay holding the API key
- *  (mnfst-run's /_ai/chat locally; your own endpoint once published). $chat
+ *  Reference `claude` adapter: replies stream from the same-origin /_ai/chat relay,
+ *  served by mnfst-run locally and by Manifest hosting once published. $chat
  *  never calls the LLM — this adapter does, behind the same contract. Optional, loaded separately from the bundle.
  *  Attachments ride draft.body.media[] as base64 → image/document blocks.
  */
@@ -22,7 +22,7 @@
 
         function claudeAdapter(opts) {
             opts = opts || {};
-            // Same-origin relay mnfst-run serves for an `ai` block; override via
+            // Same-origin relay for an `ai` block; override via
             // opts.endpoint / window.CHAT_LLM_ENDPOINT.
             const endpoint = opts.endpoint || window.CHAT_LLM_ENDPOINT || '/_ai/chat';
             // only when set — the relay's ai block (system + grounding) is the default
@@ -64,7 +64,11 @@
                 let full = '';
                 try {
                     const resp = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ system, model: opts.model, messages }) });
-                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    if (!resp.ok) {
+                        let msg = '';
+                        try { const j = await resp.json(); msg = (j && (j.message || j.error)) || ''; } catch { }
+                        const err = new Error('HTTP ' + resp.status); err.relayMessage = msg; throw err;
+                    }
                     const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
                     for (; ;) {
                         const { done, value } = await reader.read(); if (done) break;
@@ -80,7 +84,9 @@
                         }
                     }
                 } catch (e) {
-                    const note = '\n\n(no AI relay at `' + endpoint + '`' + (e && /^HTTP /.test(e.message) ? ': ' + e.message : '') + ')';
+                    const note = e && e.relayMessage
+                        ? '\n\n(' + e.relayMessage + ')'
+                        : '\n\n(AI chat unavailable at `' + endpoint + '`' + (e && /^HTTP /.test(e.message) ? ': ' + e.message : '') + ')';
                     h.onMessagePart && h.onMessagePart(mid, { text: note }); full += note;
                 }
                 h.onMessagePart && h.onMessagePart(mid, { text: '', done: true });

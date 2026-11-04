@@ -208,7 +208,7 @@ Design your adapter knowing these stay on your side of the line:
 - **Persistence, retention, history storage** — yours.
 - **Transport** (WebSocket/SSE/polling/webhooks) and delivery guarantees — yours.
 - **Channel integrations** (WhatsApp, Telegram, email, Slack) — server-side, yours; the browser adapter talks to *your* bus, not to the channel.
-- **LLM execution and keys** — a server relay's job (see `tools/chat-llm-proxy.mjs` and the `ai` block in the docs); the browser never holds a model key.
+- **LLM execution and keys** — the `/_ai/chat` relay's job (mnfst-run locally, Manifest hosting when published; see the `ai` block in the docs); the browser never holds a model key.
 - **Auth and visibility policy** — client-side gating is cosmetic; enforce access on the backend the adapter calls.
 - **Transfer/routing semantics, moderation policy, blob storage** — the plugin emits intents and renders state; the rules are yours.
 
