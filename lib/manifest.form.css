@@ -325,4 +325,26 @@
             max-width: 100%
         }
     }
+
+    /* Validation, once the user has interacted with a field or tried to submit */
+    :where(input:not([type=range], [type=hidden], [type=file], [type=search]), textarea, select):not(.unstyle) {
+
+        &:user-invalid {
+            box-shadow: inset 0 0 0 1px var(--color-field-invalid, var(--color-negative-content, oklch(57.7% 0.245 27.325)))
+        }
+
+        &:user-invalid:focus-visible {
+            box-shadow: inset 0 0 0 1px var(--color-field-invalid, var(--color-negative-content, oklch(57.7% 0.245 27.325))), 0 0 0 2px color-mix(in oklch, var(--color-field-invalid, var(--color-negative-content, oklch(57.7% 0.245 27.325))) 35%, transparent)
+        }
+
+        /* Transparent unless a theme sets --color-field-valid */
+        &:user-valid:not(:focus-visible) {
+            box-shadow: inset 0 0 0 1px var(--color-field-valid, transparent)
+        }
+    }
+
+    /* Search fields show the state on their label wrapper */
+    :where(label, .label):has(> input[type=search]:user-invalid):not(:focus-within, .unstyle) {
+        box-shadow: inset 0 0 0 1px var(--color-field-invalid, var(--color-negative-content, oklch(57.7% 0.245 27.325)))
+    }
 }
