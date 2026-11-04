@@ -1009,8 +1009,8 @@
 /*  Manifest Chat — optional LLM (Claude) adapter
  *  By Andrew Matlock under MIT license · https://manifestx.dev
  *
- *  Reference `claude` adapter: replies stream from a relay holding the API key
- *  (mnfst-run's /_ai/chat locally; your own endpoint once published). $chat
+ *  Reference `claude` adapter: replies stream from the same-origin /_ai/chat relay,
+ *  served by mnfst-run locally and by Manifest hosting once published. $chat
  *  never calls the LLM — this adapter does, behind the same contract. Optional, loaded separately from the bundle.
  *  Attachments ride draft.body.media[] as base64 → image/document blocks.
  */
@@ -1030,7 +1030,7 @@
 
         function claudeAdapter(opts) {
             opts = opts || {};
-            // Same-origin relay mnfst-run serves for an `ai` block; override via
+            // Same-origin relay for an `ai` block; override via
             // opts.endpoint / window.CHAT_LLM_ENDPOINT.
             const endpoint = opts.endpoint || window.CHAT_LLM_ENDPOINT || '/_ai/chat';
             // only when set — the relay's ai block (system + grounding) is the default
@@ -1044,7 +1044,9 @@
             function loadStore(cid) { try { return JSON.parse(localStorage.getItem(lsKey(cid)) || '[]'); } catch { return []; } }
             function saveMsg(cid, m) {
                 const all = loadStore(cid);
-                all.push({ id: m.id, role: m.author.kind === 'agent' ? 'assistant' : 'user', text: m.body.text, ts: m.ts });
+                const r = { id: m.id, role: m.author.kind === 'agent' ? 'assistant' : 'user', text: m.body.text, ts: m.ts };
+                if (m.error) r.error = true;
+                all.push(r);
                 try { localStorage.setItem(lsKey(cid), JSON.stringify(all.slice(-200))); } catch { }
             }
             const toMsg = (r) => ({ id: r.id, conversationId: null, author: r.role === 'assistant' ? BOT : USER, body: { text: r.text }, ts: r.ts, status: 'delivered' });
@@ -1053,14 +1055,19 @@
             // Only what the API accepts is forwarded (images + PDFs with data);
             // audio/video/voice render locally but don't reach the model.
             function apiMessages(cid, draft) {
-                const hist = loadStore(cid).map(r => ({ role: r.role, content: r.text }));
+                const text = (draft.body && draft.body.text) || draft.text || '';
+                const stored = loadStore(cid);
+                const prev = stored[stored.length - 1];
+                if (prev && prev.role === 'user' && prev.text === text) stored.pop();   // send() already saved this turn
+                // relays accept up to 100 messages, starting on a user turn
+                const hist = stored.filter(r => !r.error && r.text && r.text.trim()).slice(-99).map(r => ({ role: r.role, content: r.text }));
+                while (hist.length && hist[0].role !== 'user') hist.shift();
                 const media = ((draft.body && draft.body.media) || []).filter(a =>
                     a.data && (a.kind === 'image' || a.mediaType === 'application/pdf'));
                 const blocks = media.map(a => a.kind === 'image'
                     ? { type: 'image', source: { type: 'base64', media_type: a.mediaType, data: a.data } }
                     : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
-                const text = (draft.body && draft.body.text) || draft.text || '';
-                const last = blocks.length ? { role: 'user', content: [...blocks, { type: 'text', text }] } : { role: 'user', content: text };
+                const last = blocks.length ? { role: 'user', content: text.trim() ? [...blocks, { type: 'text', text }] : blocks } : { role: 'user', content: text };
                 return [...hist, last];
             }
 
@@ -1069,10 +1076,19 @@
                 const messages = streamReply._pending; streamReply._pending = null;
                 const mid = id('m');
                 h.onMessage && h.onMessage({ id: mid, conversationId: cid, author: BOT, body: { text: '' }, ts: Date.now(), status: 'streaming', meta: { model: opts.model } });
-                let full = '';
+                let full = '', reply = '';
                 try {
                     const resp = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ system, model: opts.model, messages }) });
-                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    if (!resp.ok) {
+                        let body = '', msg = '';
+                        try { body = await resp.text(); } catch { }
+                        try { const j = JSON.parse(body); msg = (j && (j.message || j.error)) || ''; } catch { }
+                        if (!msg) {
+                            const line = body.split('\n').find(l => l.startsWith('data:'));
+                            try { const evt = line && JSON.parse(line.slice(5).trim()); msg = (evt && evt.error && evt.error.message) || ''; } catch { }
+                        }
+                        const err = new Error('HTTP ' + resp.status); err.relayMessage = typeof msg === 'string' ? msg : ''; throw err;
+                    }
                     const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
                     for (; ;) {
                         const { done, value } = await reader.read(); if (done) break;
@@ -1083,16 +1099,20 @@
                             const line = frame.split('\n').find(l => l.startsWith('data:')); if (!line) continue;
                             let evt; try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
                             if (evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') {
-                                full += evt.delta.text; h.onMessagePart && h.onMessagePart(mid, { text: evt.delta.text });
+                                full += evt.delta.text; reply += evt.delta.text; h.onMessagePart && h.onMessagePart(mid, { text: evt.delta.text });
                             } else if (evt.type === 'error') { full += '\n\n_(error: ' + (evt.error && evt.error.message) + ')_'; h.onMessagePart && h.onMessagePart(mid, { text: '\n\n_(error)_' }); }
                         }
                     }
                 } catch (e) {
-                    const note = '\n\n(no AI relay at `' + endpoint + '`' + (e && /^HTTP /.test(e.message) ? ': ' + e.message : '') + ')';
+                    const note = e && e.relayMessage
+                        ? '\n\n(' + e.relayMessage + ')'
+                        : '\n\n(AI chat unavailable at `' + endpoint + '`' + (e && /^HTTP /.test(e.message) ? ': ' + e.message : '') + ')';
                     h.onMessagePart && h.onMessagePart(mid, { text: note }); full += note;
                 }
                 h.onMessagePart && h.onMessagePart(mid, { text: '', done: true });
-                saveMsg(cid, { id: mid, author: BOT, body: { text: full }, ts: Date.now() });
+                // error notes show in the UI but never reach the model: keep partial text, else flag the entry
+                if (reply.trim()) saveMsg(cid, { id: mid, author: BOT, body: { text: reply }, ts: Date.now() });
+                else saveMsg(cid, { id: mid, author: BOT, body: { text: full }, ts: Date.now(), error: true });
             }
 
             return {
