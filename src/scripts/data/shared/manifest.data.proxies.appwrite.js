@@ -127,9 +127,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     if (Array.isArray(idOrArray)) {
                         // Batch: ids (or rows) sharing `data`, or [{ id, data }] entries
                         const updates = idOrArray.map(update => (update !== null && typeof update === 'object')
-                            ? { id: update.id || update.$id || update.rowId, data: update.data || data || update }
+                            ? { id: update.$id || update.id || update.rowId, data: update.data || data || update }
                             : { id: update, data });
-                        if (updates.some(u => u.id === undefined || u.id === null || u.data === undefined)) {
+                        if (updates.some(u => u.id === undefined || u.id === null || u.id === '' || u.data === undefined)) {
                             throw new Error(`[Manifest Data] "${dataSourceName}" $update: batch entries need an id and data`);
                         }
                         if (executeMutation) {
@@ -429,8 +429,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     // only the last-issued read of this source lands
                     const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
                     if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
-                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
                         window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
+                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
                     }
                     return result;
                 }

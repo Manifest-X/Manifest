@@ -419,7 +419,13 @@ function sortSpec(queries) {
     return order.length ? order : null;
 }
 
-// $query landed: realtime follows the new filter set (caps reset to its result)
+function rebindLive(dataSourceName) {
+    const bind = realtimeBinds.get(dataSourceName);
+    if (bind?.mode !== 'all') return;
+    Promise.resolve().then(bind.rebind).catch(error => console.error(`[Manifest Data] Realtime rebind failed for "${dataSourceName}":`, error));
+}
+
+// $query landing: realtime follows the new filter set (caps reset to its result)
 function setActiveQuery(dataSourceName, queries, rowCount) {
     const list = Array.isArray(queries) ? queries : [];
     activeQueries.set(dataSourceName, list);
@@ -427,7 +433,19 @@ function setActiveQuery(dataSourceName, queries, rowCount) {
     if (!bind) return;
     const limitQ = list.find(q => Array.isArray(q) && q[0] === 'limit');
     configureRealtimeMeta(dataSourceName, bind.config, rowCount || 0, limitQ ? limitQ[1] : null);
-    if (bind.mode === 'all') bind.rebind();
+    rebindLive(dataSourceName);
+}
+
+// Default rows landed: back to the manifest queries
+function clearActiveQuery(dataSourceName) {
+    if (!activeQueries.delete(dataSourceName)) return;
+    rebindLive(dataSourceName);
+}
+
+// Source reset (identity/scope) or torn down: nothing of the old binding carries over
+function forgetLiveSource(dataSourceName) {
+    activeQueries.delete(dataSourceName);
+    realtimeBinds.delete(dataSourceName);
 }
 
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
@@ -790,13 +808,16 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         return cachedData;
     }
 
-    // In flight for this source+locale: share it (every entry path lands here)
+    // In flight for this source+locale: share it (every entry path lands here);
+    // joining makes it the latest read again
     if (loadingPromises.has(cacheKey)) {
+        window.ManifestDataStore.adoptRead?.(dataSourceName, window.ManifestDataStore.loadReadTokens?.get(cacheKey));
         return loadingPromises.get(cacheKey);
     }
 
     // Reads are ordered by call: a $query issued after this load wins over it
     const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
     // Loading state: rows already landed stay live; first-ever load clears
     const keepRows = hasLiveRows(dataSourceName);
@@ -926,20 +947,15 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         { requireAuth: requiresIdentity(dataSource) }
                     );
                     if (superseded()) { landed = true; return null; }
-                    // A $query issued since: its rows stand, this default result never lands
-                    if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
-                        landed = true;
-                        if (!isInitializing) setSourceState(dataSourceName, { loading: false });
-                        return Array.isArray(data) ? data : null;
-                    }
-                    activeQueries.delete(dataSourceName);
 
                     // Subscribe to real-time updates for this table (events from a
                     // superseded identity drop); realtime: false opts the source out
                     if (dataSource.realtime !== false && window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
-                        configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        if (!activeQueries.has(dataSourceName)) {
+                            configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        }
                         // Events server-filtered where the SDK supports realtime queries; the client
                         // matcher below still runs. serverFilter: 'scope' (default) | 'all' (alias true) | false
                         const rtMode = serverFilterMode(dataSource.realtime);
@@ -1148,9 +1164,17 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 || document.documentElement.lang || locale;
             const staleLocale = localeSensitive && liveLocale !== locale;
 
+            // A $query issued since this load began: its rows stand, this result never lands
+            if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
+                landed = true;
+                if (!isInitializing) setSourceState(dataSourceName, { loading: false });
+                return enhancedData;
+            }
+
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
+                clearActiveQuery(dataSourceName);
                 await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
@@ -1324,7 +1348,7 @@ async function initializeDataSourcesPlugin() {
     // Catch-up: events missed while offline or asleep never arrive, so live sources
     // refetch (their active $query, else the default load) on reconnect or wake
     const CATCH_UP_HIDDEN_MS = 60000;
-    let hiddenSince = null;
+    let hiddenSince = document.hidden ? Date.now() : null;
     let catchUpTimer = null;
     const catchUpLiveSources = () => {
         clearTimeout(catchUpTimer);
@@ -1351,6 +1375,7 @@ async function initializeDataSourcesPlugin() {
         filterFilesByScope, // Export for use by getFilesForEntry
         requiresIdentity,
         setActiveQuery,
+        forgetLiveSource,
         getActiveQuery: (dataSourceName) => activeQueries.get(dataSourceName) || null
     };
 

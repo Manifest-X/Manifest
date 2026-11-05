@@ -90,7 +90,8 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
                 for (const q of qs) {
                     if (q.method !== 'orderAsc' && q.method !== 'orderDesc') continue
                     const d = q.method === 'orderAsc' ? 1 : -1
-                    rows = rows.slice().sort((a, b) => (a[q.attribute] > b[q.attribute] ? d : a[q.attribute] < b[q.attribute] ? -d : 0))
+                    const key = r => (typeof r[q.attribute] === 'string' ? r[q.attribute].toLowerCase() : r[q.attribute])
+                    rows = rows.slice().sort((a, b) => (key(a) > key(b) ? d : key(a) < key(b) ? -d : 0))
                 }
                 const total = rows.length
                 const arg = q => (q.values ? q.values[0] : q.attribute)
@@ -157,12 +158,22 @@ export async function boot(dataSources, table, opts) {
     delete window.ManifestDataPersist
     window.ManifestComponentsRegistry = { manifest: { appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db' }, data: dataSources } }
     iso = isolateVm()
+    // document listeners (visibilitychange) are released with the rest
+    const docListeners = []
+    const docAdd = document.addEventListener
+    document.addEventListener = function (type, fn, opts) { docListeners.push([type, fn, opts]); return docAdd.call(this, type, fn, opts) }
+    const winRelease = iso.release
+    iso.release = () => {
+        winRelease()
+        document.addEventListener = docAdd
+        docListeners.splice(0).forEach(([type, fn, opts]) => document.removeEventListener(type, fn, opts))
+    }
     const ctx = {
         window, document, Alpine, console, ...iso.timers, clearTimeout, clearInterval,
         requestAnimationFrame: cb => window.requestAnimationFrame(cb),
         cancelAnimationFrame: id => window.cancelAnimationFrame(id),
         CustomEvent: window.CustomEvent, Event: window.Event, location: window.location, history: window.history,
-        File: window.File, Blob: window.Blob, URL, fetch: (...a) => window.fetch(...a),
+        File: window.File, Blob: window.Blob, URL, Date, fetch: (...a) => window.fetch(...a),
     }
     vm.createContext(ctx)
     for (const [name, src] of SUBSCRIPTS) vm.runInContext(src, ctx, { filename: name })

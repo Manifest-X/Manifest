@@ -173,3 +173,27 @@ describe('B8: relative API urls', () => {
         }
     })
 })
+
+describe('B6: wake after a long absence', () => {
+    it('a tab back after a minute or more in the background refetches', async () => {
+        const { main, stats } = await boot(SRC, makeRows(10))
+        await main.loadDataSource('items')
+        await settle()
+        const before = stats.lists.length
+        const realNow = Date.now
+        let now = realNow()
+        Date.now = () => now
+        try {
+            Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+            document.dispatchEvent(new Event('visibilitychange'))
+            now += 61000
+            Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+            document.dispatchEvent(new Event('visibilitychange'))
+        } finally {
+            Date.now = realNow
+            delete document.hidden
+        }
+        await settle(400)
+        expect(stats.lists.length).toBe(before + 1)
+    })
+})

@@ -172,3 +172,62 @@ describe('B3: live rows keep the sort order', () => {
         expect(ms).toBeLessThan(3000)
     })
 })
+
+describe('review follow-ups', () => {
+    it('a first load overtaken by $query still subscribes to realtime (x-init $query pattern)', async () => {
+        const delay = qs => qs.some(q => q.method === 'equal') ? 5 : 100
+        const { ids, main, query, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['limit', 100]] } }, makeRows(10), { delay })
+        const load = main.loadDataSource('items')
+        await query('items', [['equal', 'status', 'active'], ['limit', 100]])
+        await load
+        await settle()
+        expect(ids('items').length).toBe(5)
+        expect(rt().subs.size).toBe(1)
+        rt().fire(CH, evt('create', { $id: 'live', n: 50, status: 'active' }))
+        rt().fire(CH, evt('create', { $id: 'nope', n: 51, status: 'archived' }))
+        await settle()
+        expect(ids('items')).toContain('live')
+        expect(ids('items')).not.toContain('nope')
+    })
+
+    it('string sort keys compare case-insensitively, like Appwrite', async () => {
+        const table = [{ $id: 'a', name: 'alpha' }, { $id: 'c', name: 'charlie' }]
+        const { ids, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'name'], ['limit', 100]] } }, table)
+        await main.loadDataSource('items')
+        await settle()
+        rt().fire(CH, evt('create', { $id: 'b', name: 'Bravo' }))
+        await settle()
+        expect(ids('items')).toEqual(['a', 'b', 'c'])
+    })
+
+    it('an update that leaves the sort value alone never moves the row', async () => {
+        const table = [{ $id: 'a', name: 'alpha', n: 1 }, { $id: 'b', name: 'Bravo', n: 2 }, { $id: 'c', name: 'charlie', n: 3 }]
+        const { ids, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'name'], ['limit', 100]] } }, table)
+        await main.loadDataSource('items')
+        await settle()
+        rt().fire(CH, evt('update', { $id: 'a', name: 'alpha', n: 9 }))
+        await settle()
+        expect(ids('items')).toEqual(['a', 'b', 'c'])
+    })
+
+    it('a reload that joins an in-flight load makes it the latest read again', async () => {
+        const delay = qs => qs.some(q => q.method === 'equal') ? 5 : 80
+        const { rows, main, query } = await boot({ items: { appwriteTableId: 'items', queries: [['limit', 100]] } }, makeRows(10), { delay })
+        await main.loadDataSource('items')
+        const first = main.reloadDataSource('items')
+        await query('items', [['equal', 'status', 'active'], ['limit', 100]])
+        const joined = main.reloadDataSource('items')
+        await Promise.all([first, joined])
+        await settle()
+        expect(rows('items').length).toBe(10)
+    })
+
+    it('a source reset forgets its active $query', async () => {
+        const { main, query } = await boot({ items: { appwriteTableId: 'items', queries: [['limit', 100]] } }, makeRows(10))
+        await main.loadDataSource('items')
+        await query('items', [['equal', 'status', 'active'], ['limit', 100]])
+        expect(main.getActiveQuery('items')).not.toBe(null)
+        window.ManifestDataStore.resetSource('items')
+        expect(main.getActiveQuery('items')).toBe(null)
+    })
+})

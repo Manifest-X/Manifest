@@ -72,6 +72,9 @@ async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
 
 // Specific page (1-based), offset-based. Returns { items, page, total, totalPages, hasMore }
 async function getPage(dataSourceName, pageNumber, limit, baseQueries = []) {
+    if (!pageNumber || pageNumber < 1) {
+        throw new Error('[Manifest Data] Page number must be >= 1');
+    }
     const offset = (pageNumber - 1) * limit;
     const { rows, total, extra } = await fetchPage(dataSourceName, baseQueries, [window.Appwrite.Query.offset(offset)], limit);
     const items = rows.slice(0, limit);
