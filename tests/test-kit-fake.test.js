@@ -47,6 +47,21 @@ describe('listRows', () => {
         expect(ids(await list(fake, [Query.or([Query.equal('priority', 1), Query.equal('priority', 5)])]))).toEqual(['b', 'c'])
     })
 
+    it('handles exists, date helpers, offset validation and random order paging', async () => {
+        const fake = tasks()
+        const { Query } = fake.sdk
+        expect(ids(await list(fake, [Query.exists(['due'])]))).toEqual(['a'])
+        expect(ids(await list(fake, [Query.notExists(['due'])]))).toEqual(['b', 'c', 'd'])
+        expect(ids(await list(fake, [Query.createdAfter('2025-12-31T23:00:00Z')]))).toHaveLength(4)
+        expect(ids(await list(fake, [Query.createdBefore('2025-12-31T23:00:00Z')]))).toEqual([])
+        await expect(list(fake, [Query.offset(-1)])).rejects.toMatchObject({ code: 400 })
+        const all = ids(await list(fake, [Query.orderRandom()]))
+        const head = await list(fake, [Query.orderRandom(), Query.limit(2)])
+        expect(head.rows).toHaveLength(2)
+        await expect(list(fake, [Query.orderRandom(), Query.cursorAfter(head.rows[1].$id)])).resolves.toHaveProperty('rows')
+        expect(all).toHaveLength(4)
+    })
+
     it('sorts, tie-breaks by insertion order, and selects', async () => {
         const fake = tasks()
         const { Query } = fake.sdk

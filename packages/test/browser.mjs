@@ -1,6 +1,6 @@
 // Golden journeys in a real browser (puppeteer): fake data, screenshots, diffs.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -22,19 +22,24 @@ const APPWRITE_SDK = /\/(appwrite)(@[^/]*)?(\/dist\/[^?]*)?(\?.*)?$/;
 export async function serve(root, { mounts = {}, spa = true } = {}) {
     const bases = [['/', resolve(root)], ...Object.entries(mounts).map(([p, d]) => [p.endsWith('/') ? p : p + '/', resolve(d)])]
         .sort((a, b) => b[0].length - a[0].length);
+    const isFile = (f) => { try { return statSync(f).isFile(); } catch { return false; } };
     const server = createServer((req, res) => {
-        let path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+        try { handle(req, res); } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
+    });
+    function handle(req, res) {
+        let path;
+        try { path = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { return res.writeHead(400).end(); }
         if (path.includes('\0')) return res.writeHead(400).end();
         const [prefix, dir] = bases.find(([p]) => path.startsWith(p));
         let file = resolve(dir, '.' + path.slice(prefix.length - 1));
         if (file !== dir && !file.startsWith(dir + sep)) return res.writeHead(403).end();
-        if (path.endsWith('/')) file = join(file, 'index.html');
-        if (!existsSync(file) && !extname(file) && existsSync(file + '.html')) file += '.html';
-        if (!existsSync(file) && spa && !extname(path)) file = join(bases.find(([p]) => p === '/')[1], 'index.html');
-        if (!existsSync(file)) return res.writeHead(path === '/favicon.ico' ? 204 : 404).end();
+        if (!isFile(file) && isFile(join(file, 'index.html'))) file = join(file, 'index.html');
+        else if (!isFile(file) && !extname(file) && isFile(file + '.html')) file += '.html';
+        if (!isFile(file) && spa && !extname(path)) file = join(bases.find(([p]) => p === '/')[1], 'index.html');
+        if (!isFile(file)) return res.writeHead(path === '/favicon.ico' ? 204 : 404).end();
         res.writeHead(200, { 'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-store' });
         res.end(readFileSync(file));
-    });
+    }
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(r => server.close(r)) };
 }
@@ -109,14 +114,20 @@ function remoteFake(page) {
 export async function launch(config = {}) {
     const {
         root, baseURL, mounts, routes = [], viewport = { width: 1280, height: 800 },
-        snapshots = 'tests/__screenshots__', update = false, ci = !!process.env.CI,
+        snapshots = 'tests/__screenshots__', update = false, ci = !!process.env.CI && process.env.CI !== 'false',
         threshold = 0.1, maxDiffPixels = 0, headless = true, launchOptions = {}
     } = config;
     const puppeteer = await loadPuppeteer(config.puppeteer);
     const server = root ? await serve(root, { mounts }) : null;
     const origin = (baseURL || server?.url || '').replace(/\/$/, '');
     if (!origin) throw new Error('launch: pass `root` (a project dir to serve) or `baseURL`');
-    const browser = await puppeteer.launch({ headless, args: ['--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb', '--hide-scrollbars'], ...launchOptions });
+    let browser;
+    try {
+        browser = await puppeteer.launch({ headless, args: ['--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb', '--hide-scrollbars'], ...launchOptions });
+    } catch (e) {
+        if (server) await server.close();
+        throw e;
+    }
     const snapDir = resolve(snapshots);
     let diffPage = null;
 
@@ -144,7 +155,12 @@ export async function launch(config = {}) {
                 req.continue();
             });
         }
-        await page.goto(origin + path, { waitUntil: 'load' });
+        try {
+            await page.goto(origin + path, { waitUntil: 'load' });
+        } catch (e) {
+            await page.close().catch(() => {});
+            throw new Error(`${e.message}${errors.length ? `\n    console: ${errors.join('\n    console: ')}` : ''}`);
+        }
 
         const journey = {
             page,
@@ -168,11 +184,12 @@ export async function launch(config = {}) {
             },
             async snap(name, { selector, fullPage = false, mask = [] } = {}) {
                 await journey.settle();
-                await page.addStyleTag({ content: STABILISE_CSS + mask.map(s => `${s}{visibility:hidden!important}`).join('') });
+                const style = await page.addStyleTag({ content: STABILISE_CSS + mask.map(s => `${s}{visibility:hidden!important}`).join('') });
                 await page.evaluate(() => { document.activeElement?.blur?.(); });
                 const target = selector ? await page.$(selector) : page;
                 if (!target) throw new Error(`snap(${name}): no element matches ${selector}`);
                 const actual = Buffer.from(await target.screenshot({ type: 'png', ...(selector ? {} : { fullPage }) }));
+                await style.evaluate(el => el.remove());
                 const file = join(snapDir, `${slug(journey.name)}--${slug(name)}-${process.platform}.png`);
                 const result = { name, file, status: 'pass' };
                 if (update || !existsSync(file)) {
@@ -214,7 +231,7 @@ export async function launch(config = {}) {
     };
 }
 
-const slug = (s) => String(s).replace(/^\/+/, '').replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'root';
+const slug = (s) => String(s).replace(/^\/+/, '').replace(/\//g, '~').replace(/[^a-z0-9._~-]+/gi, '-').replace(/^-+|-+$/g, '') || 'root';
 
 // Run a list of journeys; a journey fails on a thrown step, a screenshot
 // mismatch, a missing baseline under CI, or (by default) any console error

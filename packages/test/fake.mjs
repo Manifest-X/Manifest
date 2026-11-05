@@ -127,8 +127,6 @@ export function createFakeAppwrite(options = {}) {
         notBetween: (v, vals) => !isNil(v) && !FILTERS.between(v, vals),
         isNull: (v) => isNil(v),
         isNotNull: (v) => !isNil(v),
-        exists: (v) => v !== undefined,
-        notExists: (v) => v === undefined,
         startsWith: (v, vals) => typeof v === 'string' && vals.some(x => norm(v).startsWith(norm(String(x)))),
         endsWith: (v, vals) => typeof v === 'string' && vals.some(x => norm(v).endsWith(norm(String(x)))),
         notStartsWith: (v, vals) => !FILTERS.startsWith(v, vals),
@@ -163,9 +161,12 @@ export function createFakeAppwrite(options = {}) {
     function matches(row, q) {
         if (q.method === 'and') return q.values.every(sub => matches(row, sub));
         if (q.method === 'or') return q.values.some(sub => matches(row, sub));
+        if (q.method === 'exists') return q.values.every(a => row[a] !== undefined);
+        if (q.method === 'notExists') return q.values.every(a => row[a] === undefined);
         if (DATE_FILTERS[q.method]) {
             const [attr, op] = DATE_FILTERS[q.method];
-            return FILTERS[op](row[attr], q.values);
+            const t = Date.parse(row[attr]);
+            return !Number.isNaN(t) && FILTERS[op](t, q.values.map(v => Date.parse(v)));
         }
         const fn = FILTERS[q.method];
         if (!fn) fail(400, 'general_query_invalid', `Invalid query method: ${q.method}`);
@@ -209,7 +210,12 @@ export function createFakeAppwrite(options = {}) {
                     if (limit === null) limit = n;
                     break;
                 }
-                case 'offset': if (offset === null) offset = Number(q.values[0]); break;
+                case 'offset': {
+                    const n = Number(q.values[0]);
+                    if (!Number.isInteger(n) || n < 0) fail(400, 'general_query_invalid', 'Invalid query: Invalid offset: Value must be a valid range between 0 and infinity');
+                    if (offset === null) offset = n;
+                    break;
+                }
                 case 'cursorAfter': if (!cursor) cursor = { id: q.values[0], dir: 'after' }; break;
                 case 'cursorBefore': if (!cursor) cursor = { id: q.values[0], dir: 'before' }; break;
                 case 'orderAsc': orders.push({ attribute: q.attribute, dir: 'asc' }); break;
@@ -221,10 +227,12 @@ export function createFakeAppwrite(options = {}) {
         }
         if (limit === null) limit = opts.defaultLimit;
         if (offset === null) offset = 0;
-        const cmp = compareBy(orders);
+        const base = compareBy(orders);
+        const rank = new Map();
+        if (shuffle) for (const r of store.rows.values()) rank.set(r.$id, random());
+        const cmp = shuffle ? (a, b) => (rank.get(a.$id) - rank.get(b.$id)) || base(a, b) : base;
         let rows = [...store.rows.values()].filter(r => filters.every(q => matches(r, q))).sort(cmp);
         const count = rows.length;
-        if (shuffle) rows = rows.map(r => [random(), r]).sort((a, b) => a[0] - b[0]).map(p => p[1]);
         if (cursor) {
             const at = store.rows.get(cursor.id);
             if (!at) fail(400, 'general_cursor_not_found', `Row '${cursor.id}' for the 'cursor' value not found.`);
