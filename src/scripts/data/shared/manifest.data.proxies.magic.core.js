@@ -302,6 +302,8 @@ function registerXMagicMethod(loadDataSource) {
                                         if (stateProps.includes(key)) {
                                             return window.ManifestDataProxiesMagic.getStateProperty(key, prop);
                                         }
+                                        if (key === '$saving') return window.ManifestDataProxiesMagic.createSavingMethod(prop);
+                                        if (key === '$more') return () => window.ManifestDataMain.loadMore(prop);
                                         return target[key];
                                     }
                                 }));

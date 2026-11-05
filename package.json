@@ -52,6 +52,7 @@
         "test:e2e:upload": "node tests/e2e/upload-first-load.e2e.mjs",
         "test:e2e:test-kit": "node tests/e2e/test-kit-journeys.e2e.mjs",
         "test:e2e:submissions": "node tests/e2e/submissions.e2e.mjs",
+        "test:e2e:data-paging": "node tests/e2e/data-paging.e2e.mjs",
         "test:e2e:modules": "node tests/e2e/modules.e2e.mjs",
         "test:e2e:contract": "node tests/e2e/contract.e2e.mjs && node tests/e2e/contract-checks.e2e.mjs",
         "lint": "echo 'No linting configured'",
