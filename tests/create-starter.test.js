@@ -36,6 +36,17 @@ describe('mnfst-starter', () => {
         expect(exists('.claude/settings.json')).toBe(false)
     })
 
+    it('scaffolds app code as native modules behind an import map', () => {
+        expect(run(['--here', '--name', 'Site']).status).toBe(0)
+        for (const f of ['app/main.js', 'app/components/counter.js', 'app/lib/format.js']) expect(exists(f)).toBe(true)
+        const html = read('index.html')
+        const map = html.match(/<script type="importmap">([\s\S]*?)<\/script>/)
+        expect(JSON.parse(map[1]).imports['@app/']).toBe('/app/')
+        expect(html).toContain('<script type="module" src="/app/main.js"></script>')
+        expect(html.indexOf('type="importmap"')).toBeLessThan(html.indexOf('type="module"'))
+        expect(read('app/main.js')).toMatch(/^import .* from '@app\//m)
+    })
+
     it('fresh folder with project id + key wires production MCP, no hook, key not printed', () => {
         const r = run(['--here', '--name', 'Site', '--project-id=proj_1', `--key=${KEY}`])
         expect(r.status).toBe(0)

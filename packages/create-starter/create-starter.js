@@ -105,6 +105,7 @@ if (apiKey && !/^mfst_(free|live|test)_[A-Za-z0-9]{20,}$/.test(apiKey)) {
 const starterDir = path.join(__dirname, 'templates');
 // Must match templates/starter; .gitignore is merged separately.
 const filesToCopy = [
+  'app',
   'components',
   'assets',
   '_redirects',
