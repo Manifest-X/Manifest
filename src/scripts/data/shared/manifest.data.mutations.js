@@ -260,7 +260,15 @@ async function executeMutation(mutationConfig) {
             if (type === 'create') {
                 // Ack: swap the temp row for the server row in place (new $id → new $files binding)
                 const { store, arr, index } = findRawIndex(dataSourceName, optimisticData.$id);
-                if (store && arr) {
+                // Realtime echo of this create may have landed first under the real $id
+                const held = (arr && result.$id !== optimisticData.$id) ? arr.findIndex(r => r && r.$id === result.$id) : -1;
+                if (store && arr && held !== -1) {
+                    const ds = window.ManifestDataStore;
+                    ds.mergeRowFields(store[dataSourceName][held], result, dataSourceName);
+                    if (index !== -1) store[dataSourceName].splice(index, 1);
+                    ds.touchSource(dataSourceName);
+                    clearSourceCaches(dataSourceName);
+                } else if (store && arr) {
                     if (index !== -1) {
                         const ds = window.ManifestDataStore;
                         store[dataSourceName].splice(index, 1, ds.createReactiveReferences(result, dataSourceName));

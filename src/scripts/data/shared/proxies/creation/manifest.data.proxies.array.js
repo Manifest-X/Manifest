@@ -547,52 +547,9 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             });
         }
 
-        // Attach pagination methods
-        const createPaginationMethod = (methodName) => {
-            return async function (...args) {
-                const manifest = await window.ManifestDataConfig.ensureManifest();
-                if (!manifest?.data) {
-                    throw new Error('[Manifest Data] Manifest not available');
-                }
-                const dataSource = manifest.data[dataSourceName];
-                if (!dataSource || !window.ManifestDataConfig.isAppwriteCollection(dataSource)) {
-                    throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
-                }
-                const scope = window.ManifestDataConfig.getScope(dataSource);
-                const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
-                const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
-                const baseQueries = queriesConfig
-                    ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-                    : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
-
-                if (baseQueries === null) {
-                    throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
-                }
-
-                if (methodName === '$first') {
-                    const limit = args[0] || 10;
-                    return await window.ManifestDataPagination.getFirstPage(dataSourceName, limit, baseQueries);
-                } else if (methodName === '$next') {
-                    const [cursor, limit = 10] = args;
-                    if (!cursor) {
-                        throw new Error('[Manifest Data] Cursor is required for $next');
-                    }
-                    return await window.ManifestDataPagination.getNextPage(dataSourceName, cursor, limit, baseQueries);
-                } else if (methodName === '$prev') {
-                    const [cursor, limit = 10] = args;
-                    if (!cursor) {
-                        throw new Error('[Manifest Data] Cursor is required for $prev');
-                    }
-                    return await window.ManifestDataPagination.getPrevPage(dataSourceName, cursor, limit, baseQueries);
-                } else if (methodName === '$page') {
-                    const [pageNumber, limit = 10] = args;
-                    if (!pageNumber || pageNumber < 1) {
-                        throw new Error('[Manifest Data] Page number must be >= 1');
-                    }
-                    return await window.ManifestDataPagination.getPage(dataSourceName, pageNumber, limit, baseQueries);
-                }
-            };
-        };
+        // Attach pagination methods (one implementation: magic.pagination)
+        const createPaginationMethod = (methodName) => (...args) =>
+            window.ManifestDataProxiesMagic.createPaginationMethod(methodName, dataSourceName)(...args);
 
         ['$first', '$next', '$prev', '$page'].forEach(methodName => {
             Object.defineProperty(array, methodName, {
@@ -897,52 +854,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
 
                 // Handle pagination methods
                 if (key === '$first' || key === '$next' || key === '$prev' || key === '$page') {
-                    return async function (...args) {
-                        const manifest = await window.ManifestDataConfig.ensureManifest();
-                        if (!manifest?.data) {
-                            throw new Error('[Manifest Data] Manifest not available');
-                        }
-
-                        const dataSource = manifest.data[dataSourceName];
-                        if (!dataSource || !window.ManifestDataConfig.isAppwriteCollection(dataSource)) {
-                            throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
-                        }
-
-                        // Get base queries (from manifest or scope)
-                        const scope = window.ManifestDataConfig.getScope(dataSource);
-                        const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
-                        const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
-                        const baseQueries = queriesConfig
-                            ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-                            : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
-
-                        if (baseQueries === null) {
-                            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
-                        }
-
-                        if (key === '$first') {
-                            const limit = args[0] || 10;
-                            return await window.ManifestDataPagination.getFirstPage(dataSourceName, limit, baseQueries);
-                        } else if (key === '$next') {
-                            const [cursor, limit = 10] = args;
-                            if (!cursor) {
-                                throw new Error('[Manifest Data] Cursor is required for $next');
-                            }
-                            return await window.ManifestDataPagination.getNextPage(dataSourceName, cursor, limit, baseQueries);
-                        } else if (key === '$prev') {
-                            const [cursor, limit = 10] = args;
-                            if (!cursor) {
-                                throw new Error('[Manifest Data] Cursor is required for $prev');
-                            }
-                            return await window.ManifestDataPagination.getPrevPage(dataSourceName, cursor, limit, baseQueries);
-                        } else if (key === '$page') {
-                            const [pageNumber, limit = 10] = args;
-                            if (!pageNumber || pageNumber < 1) {
-                                throw new Error('[Manifest Data] Page number must be >= 1');
-                            }
-                            return await window.ManifestDataPagination.getPage(dataSourceName, pageNumber, limit, baseQueries);
-                        }
-                    };
+                    return (...args) => window.ManifestDataProxiesMagic.createPaginationMethod(key, dataSourceName)(...args);
                 }
 
                 // $files handler for tables

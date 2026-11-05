@@ -31,6 +31,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
     const handleMethod = async function (method, ...args) {
         const sourceUnloaded = args[3]?.sourceUnloaded === true;
         if (!sourceUnloaded) clearErrorState();
+        // Reads are ordered by call, not by network start: the last-issued one lands
+        const readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -123,13 +125,19 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                     // Support batch updates
                     if (Array.isArray(idOrArray)) {
-                        const updates = idOrArray;
+                        // Batch: ids (or rows) sharing `data`, or [{ id, data }] entries
+                        const updates = idOrArray.map(update => (update !== null && typeof update === 'object')
+                            ? { id: update.$id || update.id || update.rowId, data: update.data || data || update }
+                            : { id: update, data });
+                        if (updates.some(u => u.id === undefined || u.id === null || u.id === '' || u.data === undefined)) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" $update: batch entries need an id and data`);
+                        }
                         if (executeMutation) {
                             // Use optimistic updates for batch
                             const results = await Promise.all(
                                 updates.map(update => {
-                                    const entryId = update.id || update.$id || update.rowId;
-                                    const updateData = update.data || update;
+                                    const entryId = update.id;
+                                    const updateData = update.data;
                                     return executeMutation({
                                         type: 'update',
                                         dataSourceName,
@@ -159,8 +167,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                     window.ManifestDataAppwrite.updateRow(
                                         appwriteConfig.databaseId,
                                         tableId,
-                                        update.id || update.$id || update.rowId,
-                                        update.data || update
+                                        update.id,
+                                        update.data
                                     )
                                 )
                             );
@@ -407,23 +415,24 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
-                    const { runDeduped, landRows, sourceGeneration } = window.ManifestDataStore || {};
+                    const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
                     const generation = sourceGeneration?.(dataSourceName);
                     const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
-                    const run = async () => {
-                        const result = await window.ManifestDataAppwrite.loadTableRows(
-                            appwriteConfig.databaseId,
-                            tableId,
-                            appwriteQueries,
-                            { requireAuth }
-                        );
-                        // Network landing: query result replaces the source (coalesced, identity-preserving)
-                        if (result !== undefined && landRows) {
-                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
-                        }
-                        return result;
-                    };
-                    return runDeduped ? await runDeduped(key, run) : await run();
+                    const run = () => window.ManifestDataAppwrite.loadTableRows(
+                        appwriteConfig.databaseId,
+                        tableId,
+                        appwriteQueries,
+                        { requireAuth }
+                    );
+                    const result = runDeduped ? await runDeduped(key, run) : await run();
+                    // Network landing: query result replaces the source (coalesced, identity-preserving);
+                    // only the last-issued read of this source lands
+                    const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
+                    if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
+                        window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
+                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
+                    }
+                    return result;
                 }
             }
 

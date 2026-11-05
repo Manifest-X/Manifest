@@ -1,6 +1,8 @@
 /* Manifest Data Sources - Magic Method Pagination Handlers */
 // $first, $next, $prev, $page
 
+const PAGE_WINDOW_METHODS = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore']);
+
 function createPaginationMethod(methodName, dataSourceName) {
     return async function (...args) {
         const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -16,10 +18,13 @@ function createPaginationMethod(methodName, dataSourceName) {
         // Base queries from manifest or scope
         const scope = window.ManifestDataConfig.getScope(dataSource);
         const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
+        // Pages follow the active $query, else the default queries; paging supplies its own window
         const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
-        const baseQueries = queriesConfig
-            ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-            : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+        const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
+        const active = window.ManifestDataMain?.getActiveQuery?.(dataSourceName);
+        const filters = (Array.isArray(active) ? active : (Array.isArray(defaults) ? defaults : []))
+            .filter(q => !(Array.isArray(q) && PAGE_WINDOW_METHODS.has(q[0])));
+        const baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
 
         if (baseQueries === null) {
             throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);

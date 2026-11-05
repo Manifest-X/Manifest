@@ -400,6 +400,56 @@ function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery)
     window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: 0 });
 }
 
+// Active $query per source (manifest-format): realtime matches, orders and
+// server-filters by it until the next default load replaces the rows
+const activeQueries = new Map();
+const realtimeBinds = new Map(); // Map<name, { config, mode, rebind }>
+
+function realtimeQueriesFor(dataSourceName, defaults) {
+    return activeQueries.has(dataSourceName) ? activeQueries.get(dataSourceName) : defaults;
+}
+
+// [['orderDesc', 'n'], ...] → [['n', -1], ...]; orderRandom has no stable position
+function sortSpec(queries) {
+    if (!Array.isArray(queries)) return null;
+    if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) return null;
+    const order = queries
+        .filter(q => Array.isArray(q) && (q[0] === 'orderAsc' || q[0] === 'orderDesc') && typeof q[1] === 'string')
+        .map(q => [q[1], q[0] === 'orderAsc' ? 1 : -1]);
+    return order.length ? order : null;
+}
+
+function rebindLive(dataSourceName) {
+    const bind = realtimeBinds.get(dataSourceName);
+    if (bind?.mode !== 'all') return;
+    Promise.resolve().then(bind.rebind).catch(error => console.error(`[Manifest Data] Realtime rebind failed for "${dataSourceName}":`, error));
+}
+
+// $query landing: realtime follows the new filter set (caps reset to its result)
+function setActiveQuery(dataSourceName, queries, rowCount) {
+    const list = Array.isArray(queries) ? queries : [];
+    activeQueries.set(dataSourceName, list);
+    const bind = realtimeBinds.get(dataSourceName);
+    if (!bind) return;
+    const limitQ = list.find(q => Array.isArray(q) && q[0] === 'limit');
+    configureRealtimeMeta(dataSourceName, bind.config, rowCount || 0, limitQ ? limitQ[1] : null);
+    rebindLive(dataSourceName);
+}
+
+// Default rows landed: back to the manifest queries (caps sized to those rows)
+function clearActiveQuery(dataSourceName, rowCount) {
+    if (!activeQueries.delete(dataSourceName)) return;
+    const bind = realtimeBinds.get(dataSourceName);
+    if (bind) configureRealtimeMeta(dataSourceName, bind.config, rowCount || 0, bind.defaultLimit);
+    rebindLive(dataSourceName);
+}
+
+// Source reset (identity/scope) or torn down: nothing of the old binding carries over
+function forgetLiveSource(dataSourceName) {
+    activeQueries.delete(dataSourceName);
+    realtimeBinds.delete(dataSourceName);
+}
+
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
 function bumpRealtimeOverflow(dataSourceName) {
     const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
@@ -408,12 +458,12 @@ function bumpRealtimeOverflow(dataSourceName) {
 
 // Append under the cap. 'window' evicts the oldest realtime-appended row first
 // (never an initially-loaded row); otherwise the event counts in $realtimeOverflow.
-function realtimeAppend(dataSourceName, row, currentRows, generation) {
+function realtimeAppend(dataSourceName, row, currentRows, generation, order) {
     const { landRows, landRemove } = window.ManifestDataStore;
     const meta = realtimeMeta.get(dataSourceName);
     if (!meta || meta.maxRows === 0) {
         if (meta) meta.appended.push(row.$id);
-        landRows(dataSourceName, [row], { mode: 'append', generation });
+        landRows(dataSourceName, [row], { mode: 'append', generation, order });
         return;
     }
     const len = currentRows.length + meta.pending;
@@ -438,7 +488,7 @@ function realtimeAppend(dataSourceName, row, currentRows, generation) {
     }
     meta.pending++;
     meta.appended.push(row.$id);
-    landRows(dataSourceName, [row], { mode: 'append', generation })
+    landRows(dataSourceName, [row], { mode: 'append', generation, order })
         .then(() => { meta.pending = Math.max(0, meta.pending - 1); });
 }
 
@@ -487,6 +537,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
 
     // Network landings: coalesced per frame (landRows upserts by $id), never the sync mutation path
     const { landRows, landRemove } = window.ManifestDataStore;
+    const order = sortSpec(queriesConfig);
 
     if (eventType === 'create') {
         const row = payload?.$id ? payload : (payload?.row || payload);
@@ -496,9 +547,9 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             if (rowMatchesScope && eventMatchesQueries(row, queriesConfig)) {
                 if (currentRows.find(r => r.$id === row.$id)) {
                     // Echo of a row already held (optimistic create): merge, never counts as growth
-                    landRows(dataSourceName, [row], { mode: 'append', generation });
+                    landRows(dataSourceName, [row], { mode: 'append', generation, order });
                 } else {
-                    realtimeAppend(dataSourceName, row, currentRows, generation);
+                    realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 }
             }
         } else {
@@ -519,7 +570,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             }
             if (!existingRow) {
                 // Row not in list, but matches now - add it (capped like a create)
-                realtimeAppend(dataSourceName, row, currentRows, generation);
+                realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 return;
             }
 
@@ -579,7 +630,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 const fileIdsChanged = isProjectWithFiles &&
                     JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
 
-                landRows(dataSourceName, [row], { mode: 'append', generation });
+                landRows(dataSourceName, [row], { mode: 'append', generation, order });
 
                 // Emit custom event for project file updates so UI can refresh
                 if (fileIdsChanged && dataSourceName === 'projects') {
@@ -759,10 +810,16 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         return cachedData;
     }
 
-    // In flight for this source+locale: share it (every entry path lands here)
+    // In flight for this source+locale: share it (every entry path lands here);
+    // joining makes it the latest read again
     if (loadingPromises.has(cacheKey)) {
+        window.ManifestDataStore.adoptRead?.(dataSourceName, window.ManifestDataStore.loadReadTokens?.get(cacheKey));
         return loadingPromises.get(cacheKey);
     }
+
+    // Reads are ordered by call: a $query issued after this load wins over it
+    const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
     // Loading state: rows already landed stay live; first-ever load clears
     const keepRows = hasLiveRows(dataSourceName);
@@ -898,22 +955,29 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     if (dataSource.realtime !== false && window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
-                        configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        if (!activeQueries.has(dataSourceName) || !realtimeMeta.has(dataSourceName)) {
+                            configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        }
                         // Events server-filtered where the SDK supports realtime queries; the client
                         // matcher below still runs. serverFilter: 'scope' (default) | 'all' (alias true) | false
                         const rtMode = serverFilterMode(dataSource.realtime);
-                        const rtFilterSpec = rtMode ? { queriesConfig: rtQueries, scope, scopeColumns, mode: rtMode } : null;
-                        const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
+                        const rtFilterSpec = rtMode ? {
+                            get queriesConfig() { return realtimeQueriesFor(dataSourceName, rtQueries); },
+                            scope, scopeColumns, mode: rtMode
+                        } : null;
+                        const subscribe = () => window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, rtQueries);
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, realtimeQueriesFor(dataSourceName, rtQueries));
                             },
                             () => !superseded(),
                             rtFilterSpec
                         );
+                        realtimeBinds.set(dataSourceName, { config: dataSource.realtime, mode: rtMode, rebind: subscribe, defaultLimit: limitQ ? limitQ[1] : null });
+                        const unsubscribe = await subscribe();
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else if (bucketId) {
@@ -1089,6 +1153,13 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
             if (superseded()) { landed = true; return null; }
 
+            // A $query issued since this load began: its rows stand, this result never lands
+            if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
+                landed = true;
+                if (!isInitializing) setSourceState(dataSourceName, { loading: false });
+                return enhancedData;
+            }
+
             // Cache is always safe — the key carries this load's locale.
             dataSourceCache.set(cacheKey, enhancedData);
 
@@ -1105,6 +1176,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
+                clearActiveQuery(dataSourceName, Array.isArray(enhancedData) ? enhancedData.length : 0);
                 await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
@@ -1275,12 +1347,38 @@ async function initializeDataSourcesPlugin() {
     }
 
     // Export loadDataSource for use by team change listener
+    // Catch-up: events missed while offline or asleep never arrive, so live sources
+    // refetch (their active $query, else the default load) on reconnect or wake
+    const CATCH_UP_HIDDEN_MS = 60000;
+    let hiddenSince = document.hidden ? Date.now() : null;
+    let catchUpTimer = null;
+    const catchUpLiveSources = () => {
+        clearTimeout(catchUpTimer);
+        catchUpTimer = setTimeout(() => {
+            for (const name of realtimeBinds.keys()) {
+                const active = activeQueries.get(name);
+                const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
+                Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
+            }
+        }, 250);
+    };
+    window.addEventListener('online', catchUpLiveSources);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { hiddenSince = Date.now(); return; }
+        const away = hiddenSince !== null ? Date.now() - hiddenSince : 0;
+        hiddenSince = null;
+        if (away >= CATCH_UP_HIDDEN_MS) catchUpLiveSources();
+    });
+
     window.ManifestDataMain = {
         loadDataSource,
         reloadDataSource,
         _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
         filterFilesByScope, // Export for use by getFilesForEntry
-        requiresIdentity
+        requiresIdentity,
+        setActiveQuery,
+        forgetLiveSource,
+        getActiveQuery: (dataSourceName) => activeQueries.get(dataSourceName) || null
     };
 
     // Listen for manifest:dev-reload (fired by mnfst-run when a data file changes).

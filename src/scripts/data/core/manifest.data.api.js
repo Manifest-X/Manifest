@@ -4,7 +4,8 @@
 // Load from API endpoint (read-only)
 async function loadFromAPI(dataSource) {
     try {
-        const url = new URL(window.ManifestDataConfig.interpolateEnvVars(dataSource.url));
+        // Relative urls resolve against the page
+        const url = new URL(window.ManifestDataConfig.interpolateEnvVars(dataSource.url), window.location.href);
 
         // Add query parameters
         if (dataSource.params) {
