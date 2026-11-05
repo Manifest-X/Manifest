@@ -20,6 +20,12 @@ From the project root:
 
 ```
 Project Name/
+├── app/                      # App logic as native modules, imported via "@app/"
+│   ├── components            # Alpine components
+│   │   └── counter.js
+│   ├── lib                   # Shared helpers
+│   │   └── format.js
+│   └── main.js               # Registers components and stores with Alpine
 ├── assets/                   # Visual files
 │   ├── fonts                 # Web fonts
 │   │   └── Inter.woff2
