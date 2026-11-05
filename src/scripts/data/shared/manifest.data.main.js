@@ -1321,13 +1321,37 @@ async function initializeDataSourcesPlugin() {
     }
 
     // Export loadDataSource for use by team change listener
+    // Catch-up: events missed while offline or asleep never arrive, so live sources
+    // refetch (their active $query, else the default load) on reconnect or wake
+    const CATCH_UP_HIDDEN_MS = 60000;
+    let hiddenSince = null;
+    let catchUpTimer = null;
+    const catchUpLiveSources = () => {
+        clearTimeout(catchUpTimer);
+        catchUpTimer = setTimeout(() => {
+            for (const name of realtimeBinds.keys()) {
+                const active = activeQueries.get(name);
+                const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
+                Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
+            }
+        }, 250);
+    };
+    window.addEventListener('online', catchUpLiveSources);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { hiddenSince = Date.now(); return; }
+        const away = hiddenSince !== null ? Date.now() - hiddenSince : 0;
+        hiddenSince = null;
+        if (away >= CATCH_UP_HIDDEN_MS) catchUpLiveSources();
+    });
+
     window.ManifestDataMain = {
         loadDataSource,
         reloadDataSource,
         _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
         filterFilesByScope, // Export for use by getFilesForEntry
         requiresIdentity,
-        setActiveQuery
+        setActiveQuery,
+        getActiveQuery: (dataSourceName) => activeQueries.get(dataSourceName) || null
     };
 
     // Listen for manifest:dev-reload (fired by mnfst-run when a data file changes).

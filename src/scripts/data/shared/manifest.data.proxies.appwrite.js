@@ -125,13 +125,19 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                     // Support batch updates
                     if (Array.isArray(idOrArray)) {
-                        const updates = idOrArray;
+                        // Batch: ids (or rows) sharing `data`, or [{ id, data }] entries
+                        const updates = idOrArray.map(update => (update !== null && typeof update === 'object')
+                            ? { id: update.id || update.$id || update.rowId, data: update.data || data || update }
+                            : { id: update, data });
+                        if (updates.some(u => u.id === undefined || u.id === null || u.data === undefined)) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" $update: batch entries need an id and data`);
+                        }
                         if (executeMutation) {
                             // Use optimistic updates for batch
                             const results = await Promise.all(
                                 updates.map(update => {
-                                    const entryId = update.id || update.$id || update.rowId;
-                                    const updateData = update.data || update;
+                                    const entryId = update.id;
+                                    const updateData = update.data;
                                     return executeMutation({
                                         type: 'update',
                                         dataSourceName,
@@ -161,8 +167,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                     window.ManifestDataAppwrite.updateRow(
                                         appwriteConfig.databaseId,
                                         tableId,
-                                        update.id || update.$id || update.rowId,
-                                        update.data || update
+                                        update.id,
+                                        update.data
                                     )
                                 )
                             );
