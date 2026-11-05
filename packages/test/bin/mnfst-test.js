@@ -1,7 +1,11 @@
 #!/usr/bin/env node
-import { main } from '../manifest.test.mjs';
+const argv = process.argv.slice(2);
 
-main(process.argv.slice(2)).then((exitCode) => {
+const run = argv[0] === 'journeys'
+    ? import('../browser.mjs').then(m => m.cli(argv.slice(1)))
+    : import('../manifest.test.mjs').then(m => m.main(argv));
+
+run.then((exitCode) => {
     process.exit(exitCode || 0);
 }).catch((err) => {
     console.error('mnfst-test:', err.message || err);

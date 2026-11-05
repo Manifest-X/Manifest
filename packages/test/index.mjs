@@ -19,6 +19,10 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createFakeAppwrite } from './fake.mjs';
+
+export { createFakeAppwrite } from './fake.mjs';
+export { makeRows, heavyTenant, emptyTenant, seededRandom } from './fixtures.mjs';
 
 let happyDom = null;
 async function loadHappyDom() {
@@ -72,6 +76,7 @@ async function loadAlpineSource() {
  * @param {object} [opts.manifest]  In-memory manifest.json. Defaults to {}.
  * @param {object} [opts.data]      In-memory data sources. Each key becomes $x.<key>.
  * @param {string[]} [opts.plugins] Manifest plugin file paths to evaluate after Alpine loads.
+ * @param {object}  [opts.appwrite] A createFakeAppwrite() instance, or its options.
  * @param {number}  [opts.settle]   Milliseconds to wait after mount for Alpine to render. Default 50.
  *
  * @returns {Promise<MountedManifest>}
@@ -115,6 +120,16 @@ export async function mountManifest(opts = {}) {
         throw new Error('mountManifest: provide either `html` or `page`');
     }
 
+    // The loader shares the parsed manifest here; plugins read it synchronously
+    window.__manifestLoaded = manifest;
+
+    // Fake Appwrite backend (createFakeAppwrite) or its options, installed before plugins
+    if (opts.appwrite) {
+        const fake = typeof opts.appwrite.install === 'function' ? opts.appwrite : createFakeAppwrite(opts.appwrite);
+        fake.install(window);
+        window.__manifestFake = fake;
+    }
+
     // Load Alpine.
     const alpine = await loadAlpineSource();
     runScript(window, alpine);
@@ -134,7 +149,7 @@ export async function mountManifest(opts = {}) {
     window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
     await new Promise((r) => setTimeout(r, opts.settle != null ? opts.settle : 50));
 
-    return makeApi(window);
+    return { ...makeApi(window), fake: window.__manifestFake || null };
 }
 
 function mockResponse(value) {

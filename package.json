@@ -50,6 +50,7 @@
         "test:e2e:magic": "node tests/e2e/magic-one-arg.e2e.mjs",
         "test:e2e:markdown-safe": "node tests/e2e/markdown-safe.e2e.mjs",
         "test:e2e:upload": "node tests/e2e/upload-first-load.e2e.mjs",
+        "test:e2e:test-kit": "node tests/e2e/test-kit-journeys.e2e.mjs",
         "test:e2e:submissions": "node tests/e2e/submissions.e2e.mjs",
         "test:e2e:modules": "node tests/e2e/modules.e2e.mjs",
         "lint": "echo 'No linting configured'",
