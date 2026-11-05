@@ -1,0 +1,16 @@
+{
+    "name": "Tasks",
+    "appwrite": {
+        "projectId": "example",
+        "endpoint": "https://cloud.appwrite.io/v1"
+    },
+    "data": {
+        "tasks": {
+            "appwriteDatabaseId": "main",
+            "appwriteTableId": "tasks",
+            "queries": {
+                "default": [["orderDesc", "$createdAt"], ["limit", 100]]
+            }
+        }
+    }
+}

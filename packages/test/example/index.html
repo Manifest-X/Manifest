@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tasks</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/lib/manifest.css">
+    <script src="https://cdn.jsdelivr.net/npm/appwrite@latest"></script>
+    <script src="/lib/manifest.js" data-plugin-base="/lib/" data-plugins="data,appwrite-data"></script>
+    <style>
+        body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; }
+        .row { display: flex; gap: .5rem; align-items: center; }
+        li.done span { text-decoration: line-through; opacity: .6; }
+        ul { list-style: none; padding: 0; }
+        li { padding: .4rem 0; border-top: 1px solid #ddd; }
+    </style>
+</head>
+<body x-data="{ title: '', term: '', page: null }">
+    <h1>Tasks</h1>
+
+    <!-- Add -->
+    <form class="row" @submit.prevent="$x.tasks.$create({ title, done: false }).then(() => title = '')">
+        <input name="title" placeholder="New task" aria-label="New task" x-model="title">
+        <button type="submit" :disabled="!title">Add</button>
+    </form>
+
+    <!-- Search -->
+    <input type="search" name="term" placeholder="Search" aria-label="Search" x-model="term">
+
+    <p data-testid="count" x-show="$x.tasks.$ready" x-text="`${$x.tasks.length} loaded`"></p>
+    <p data-testid="empty" x-show="$x.tasks.$ready && $x.tasks.length === 0">No tasks yet</p>
+
+    <!-- List -->
+    <ul data-testid="list">
+        <template x-for="task in $x.tasks.$search(term, 'title').slice(0, 8)" :key="task.$id">
+            <li class="row" :class="task.done && 'done'">
+                <input type="checkbox" :checked="task.done" :aria-label="task.title" @change="$x.tasks.$update(task.$id, { done: $event.target.checked })">
+                <span x-text="task.title"></span>
+                <button @click="$x.tasks.$delete(task.$id)" aria-label="Delete">×</button>
+            </li>
+        </template>
+    </ul>
+
+    <!-- Pager (offset pages from the server) -->
+    <div class="row">
+        <button data-testid="page" @click="page = await $x.tasks.$page((page?.page || 0) + 1, 10)">Next page</button>
+        <span data-testid="pager" x-show="page" x-text="page && `Page ${page.page} of ${page.totalPages} (${page.total} total): ${page.items.map(t => t.title).slice(0, 3).join(', ')}`"></span>
+    </div>
+</body>
+</html>

@@ -1,11 +1,14 @@
 {
   "name": "mnfst-test",
   "version": "0.1.9",
-  "description": "Testing toolkit for Manifest projects — `mnfst-test` CLI for project linting (typo'd tags, dead sources, syntax errors, console errors, a11y, broken links) and `mountManifest()` library for component-level tests with Vitest + happy-dom",
+  "description": "Testing toolkit for Manifest projects \u2014 `mnfst-test` CLI for project linting, a fake Appwrite backend that Manifest's real data plugins run on, golden-journey screenshot tests in a real browser, and `mountManifest()` for component tests with Vitest + happy-dom",
   "type": "module",
   "main": "./index.mjs",
   "exports": {
-    ".": "./index.mjs"
+    ".": "./index.mjs",
+    "./fake": "./fake.mjs",
+    "./fixtures": "./fixtures.mjs",
+    "./browser": "./browser.mjs"
   },
   "bin": {
     "mnfst-test": "./bin/mnfst-test.js"
@@ -14,6 +17,9 @@
     "bin",
     "index.mjs",
     "manifest.test.mjs",
+    "fake.mjs",
+    "fixtures.mjs",
+    "browser.mjs",
     "README.md"
   ],
   "publishConfig": {
@@ -29,7 +35,12 @@
     "validation",
     "vitest",
     "happy-dom",
-    "ai"
+    "ai",
+    "appwrite",
+    "fake",
+    "screenshot",
+    "visual-regression",
+    "e2e"
   ],
   "dependencies": {
     "js-yaml": "^4.1.0"
