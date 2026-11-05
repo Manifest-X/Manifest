@@ -594,6 +594,7 @@ async function checkDataSources(project, reporter) {
 
 // 4b. Shared contract ---------------------------------------------------
 
+const DEFAULT_SCOPE_COLUMNS = { team: 'teamId', user: 'userId' };
 const QUERY_NO_ATTRIBUTE = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore', 'orderRandom']);
 
 // Column names a query list reads: [method, attribute, ...] with and/or nesting and select lists
@@ -661,7 +662,11 @@ async function checkContract(project, reporter) {
         if (!table.columns) continue;
         const known = (c) => typeof c !== 'string' || c.startsWith('$') || table.columns.has(c.split('.')[0]);
         const sc = src.scopeColumn;
-        for (const c of typeof sc === 'string' ? [sc] : sc && typeof sc === 'object' ? Object.values(sc) : []) {
+        const scopes = (Array.isArray(src.scope) ? src.scope : [src.scope]).filter((x) => x === 'user' || x === 'team');
+        const named = sc && typeof sc === 'object' ? sc : {};
+        const scopeCols = typeof sc === 'string' ? [sc]
+            : [...Object.values(named), ...scopes.filter((x) => !named[x]).map((x) => DEFAULT_SCOPE_COLUMNS[x])];
+        for (const c of scopeCols) {
             if (!known(c)) reporter.error(`Data source "${name}" scopes on "${c}", not a column of "${table.key}" in the contract`, { file: 'manifest.json' });
         }
         const q = src.queries;

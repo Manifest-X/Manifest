@@ -16,6 +16,12 @@
     </template>
   </ul>
   <button id="typo" @click="typo = true">Typo</button>
+  <p id="assets" x-text="($x.assets || []).length"></p>
+  <ul id="projects">
+    <template x-for="project in $x.projects" :key="project.$id">
+      <li><span x-text="project.name"></span> <span class="files" x-text="(project.$files || []).length"></span></li>
+    </template>
+  </ul>
 </body>
 
 </html>

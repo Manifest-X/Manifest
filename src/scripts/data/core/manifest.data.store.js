@@ -468,6 +468,7 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
         // Object.keys, not for…in + .hasOwnProperty (see deepSeal). Hot path for
         // every Appwrite mutation result and realtime event.
         const newObj = {};
+        let self = newObj;
         for (const key of Object.keys(data)) {
             const value = data[key];
             // Recursively create new references for nested objects/arrays
@@ -510,7 +511,7 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
                             data.$id,
                             bucketName,
                             columnName,
-                            { owner: newObj }
+                            { owner: self }
                         );
 
                         // Assign computed array to entry
@@ -698,9 +699,10 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
         }
 
         // Contract checks wrap top-level Appwrite rows (dev and opted-in hosts)
-        return !nested && isDatabaseEntry && dataSourceName && window.ManifestDataContract
-            ? window.ManifestDataContract.guard(dataSourceName, newObj)
-            : newObj;
+        if (!nested && isDatabaseEntry && dataSourceName && window.ManifestDataContract) {
+            self = window.ManifestDataContract.guard(dataSourceName, newObj);
+        }
+        return self;
     }
 
     // Primitives can be returned as-is

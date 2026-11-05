@@ -8,6 +8,7 @@ import { readFileSync } from 'fs'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import Alpine from 'alpinejs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SRC = readFileSync(path.join(__dirname, '../src/scripts/data/appwrite/manifest.data.contract.js'), 'utf8')
@@ -22,11 +23,13 @@ async function fresh(contract, url = 'http://localhost:5000/') {
     window.__manifestLoaded = {
         contract,
         appwrite: { databaseId: 'main' },
-        data: { tasks: { appwriteTableId: 'tasks' }, loose: { appwriteTableId: 'loose' }, other: { appwriteTableId: 'other' } }
+        data: { tasks: { appwriteTableId: 'tasks' }, loose: { appwriteTableId: 'loose' }, other: { appwriteTableId: 'other' }, local: '/data/local.json' }
     }
     delete window.ManifestDataContract
     await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(SRC + `\n// ${n++}`))
-    return window.ManifestDataContract.guard
+    const g = window.ManifestDataContract.guard
+    // App code reads rows through Alpine's reactive proxy
+    return (source, row) => { const r = g(source, row); return r === row ? row : Alpine.reactive(r) }
 }
 const settle = () => new Promise((r) => setTimeout(r, 20))
 
@@ -51,12 +54,41 @@ describe('contract guard', () => {
         expect({ ...row }.status).toBe('done')
     })
 
-    it('keeps one proxy per row', async () => {
+    it('lets the framework write and delete columns the row lacks', async () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {})
         const guard = await fresh(CONTRACT)
         const raw = { $id: 'a', title: 'T' }
         const row = guard('tasks', raw)
-        expect(guard('tasks', raw)).toBe(row)
-        expect(guard('tasks', row)).toBe(row)
+        await settle()
+        expect(() => { row.priority = 9 }).not.toThrow()
+        expect(raw.priority).toBe(9)
+        expect(() => { delete row.ghost }).not.toThrow()
+        expect(() => { delete row.priority }).not.toThrow()
+    })
+
+    it('never throws for a column seen on any row of the source', async () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const guard = await fresh(CONTRACT)
+        guard('tasks', { $id: 'a', title: 'T', priority: 1 })
+        const sparse = guard('tasks', { $id: 'b', title: 'U' })
+        await settle()
+        expect(sparse.priority).toBeUndefined()
+        expect(() => sparse.prority).toThrow()
+    })
+
+    it('leaves non-Appwrite sources unwrapped', async () => {
+        const guard = await fresh(CONTRACT)
+        const raw = { $id: 'a' }
+        expect(window.ManifestDataContract.guard('local', raw)).toBe(raw)
+    })
+
+    it('keeps one proxy per row', async () => {
+        const guard = await fresh(CONTRACT)
+        const g = window.ManifestDataContract.guard
+        const raw = { $id: 'a', title: 'T' }
+        const row = g('tasks', raw)
+        expect(g('tasks', raw)).toBe(row)
+        expect(g('tasks', row)).toBe(row)
         expect(window.ManifestDataContract.raw(row)).toBe(raw)
         expect(window.ManifestDataContract.raw(raw)).toBe(raw)
     })

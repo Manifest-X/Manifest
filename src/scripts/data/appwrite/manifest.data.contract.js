@@ -1,7 +1,7 @@
 /* Manifest Data Sources - Contract checks */
 
-// Rows of Appwrite sources whose table the contract declares throw on reads of
-// columns that are neither declared nor present. Dev hosts by default.
+// Rows of Appwrite sources whose table the contract declares throw when app code
+// reads a column that is undeclared and never seen on a row. Dev hosts by default.
 (function () {
     const proxies = new WeakMap();
     const targets = new WeakMap();
@@ -11,6 +11,8 @@
     let enabled;
     let tables = null;
     const tableBySource = new Map();
+    const seenBySource = new Map();
+    let appwriteSources = null;
 
     function devHost(h) {
         return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h === '0.0.0.0' ||
@@ -39,7 +41,7 @@
     }
 
     function load(manifest, cfg) {
-        import(new URL(cfg.module, location.href).href).then(mod => {
+        import(new URL(cfg.module, location.origin + '/').href).then(mod => {
             tables = mod && mod.tables && typeof mod.tables === 'object' ? mod.tables : {};
             const defaultDb = manifest.appwrite && (manifest.appwrite.databaseId || manifest.appwrite.database);
             for (const [source, src] of Object.entries(manifest.data || {})) {
@@ -63,7 +65,10 @@
         if (!manifest) return false;
         const cfg = decide(manifest);
         enabled = !!cfg;
-        if (cfg) load(manifest, cfg);
+        if (cfg) {
+            appwriteSources = new Set(Object.entries(manifest.data || {}).filter(([, s]) => s && typeof s.appwriteTableId === 'string').map(([k]) => k));
+            load(manifest, cfg);
+        }
         return enabled;
     }
 
@@ -78,17 +83,21 @@
     }
 
     function guard(source, row) {
-        if (!row || typeof row !== 'object' || Array.isArray(row) || !isEnabled()) return row;
+        if (!row || typeof row !== 'object' || Array.isArray(row) || !isEnabled() || !appwriteSources.has(source)) return row;
         const existing = proxies.get(row);
         if (existing) return existing;
+        let seen = seenBySource.get(source);
+        if (!seen) seenBySource.set(source, seen = new Set());
+        for (const key of Object.keys(row)) seen.add(key);
         let checked = false;
         const proxy = new Proxy(row, {
+            // App reads arrive through Alpine's reactive proxy; its own old-value reads use this one
             get(target, key, receiver) {
-                if (typeof key === 'string' && tables) {
+                if (typeof key === 'string' && tables && receiver !== proxy) {
                     const table = tableBySource.get(source);
                     if (table) {
                         if (!checked) { checked = true; drift(source, table, target); }
-                        if (!known(key, table) && !(key in target)) {
+                        if (!known(key, table) && !(key in target) && !seen.has(key)) {
                             throw new Error(`[Manifest] "${key}" is not a column of "${table.key}" in the contract (data source "${source}")`);
                         }
                     }

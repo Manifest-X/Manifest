@@ -18,7 +18,12 @@ import { heavyTenant } from '../../packages/test/fixtures.mjs'
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const APP = path.join(ROOT, 'tests', 'fixtures', 'contract-appwrite')
 const statuses = ['open', 'done']
-const fake = heavyTenant({ main: { tasks: (i) => ({ title: `Task ${String(i + 1).padStart(2, '0')}`, status: statuses[i % 2], priority: i }) } }, { rows: 5 })
+const fake = heavyTenant({
+    main: {
+        tasks: (i) => ({ title: `Task ${String(i + 1).padStart(2, '0')}`, status: statuses[i % 2], priority: i }),
+        projects: { count: 1, build: () => ({ name: 'Launch', fileIds: ['f1'] }) }
+    }
+}, { rows: 5, buckets: { assets: [{ $id: 'f1', name: 'a.png' }, { $id: 'f2', name: 'b.png' }] } })
 
 let failed = 0
 function check(name, ok, detail = '') {
@@ -69,6 +74,20 @@ async function main() {
         const after = await j.page.$$eval('#tasks li', (els) => els.map((e) => e.textContent.trim().replace(/\s+/g, ' ')))
         check('realtime row with undeclared columns lands quietly', after.some((r) => r.startsWith('Task 00 live')))
         check('$update and $create work under checks', after.includes('Task 99 made here open') && (await j.fake.table('main', 'tasks').get(id)).status === 'done')
+        await j.x(`$x.tasks.$update('${id}', { owner: 'z' })`)
+        const liveId = await j.x('$x.tasks[0].$id')
+        await j.fake.table('main', 'tasks').update(liveId, { reviewer: 'y' })
+        await wait(600)
+        check('$update and realtime updates that add undeclared columns land', (await j.fake.table('main', 'tasks').get(id)).owner === 'z' && await j.x(`$x.tasks.find(t => t.$id === '${liveId}').reviewer`) === 'y')
+
+        await j.waitForData('projects')
+        await j.page.waitForFunction(() => document.querySelector('#projects .files')?.textContent === '1', { timeout: 5000 }).catch(() => {})
+        const filesBefore = await j.page.$eval('#projects .files', (el) => el.textContent)
+        const projectId = await j.x('$x.projects[0].$id')
+        await j.fake.table('main', 'projects').update(projectId, { fileIds: ['f1', 'f2'] })
+        await j.page.waitForFunction(() => document.querySelector('#projects .files')?.textContent === '2', { timeout: 5000 }).catch(() => {})
+        const filesAfter = await j.page.$eval('#projects .files', (el) => el.textContent)
+        check('$files follows fileIds on a storage-backed source', filesBefore === '1' && filesAfter === '2', `${filesBefore} → ${filesAfter}`)
         check('no errors from framework reads', j.errors.length === 0, j.errors.slice(0, 2).join(' | '))
         await j.close()
 

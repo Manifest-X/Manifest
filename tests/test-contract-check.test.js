@@ -81,6 +81,11 @@ describe('contract check', () => {
         expect(errors(c)).toEqual(['Data source "tasks" reads "nope", not a column of "tasks" in the contract'])
     })
 
+    it('checks the default scope columns when none is named', () => {
+        const c = lint({ contract: '/shared/contract.js', data: { tasks: { appwriteDatabaseId: 'main', appwriteTableId: 'tasks', scope: ['user', 'team'], scopeColumn: { team: 'workspaceId' } } } })
+        expect(errors(c)).toEqual(['Data source "tasks" scopes on "userId", not a column of "tasks" in the contract'])
+    })
+
     it('uses the manifest-wide Appwrite database when a source names none', () => {
         const c = lint({ contract: '/shared/contract.js', appwrite: { databaseId: 'archive' }, data: { tasks: { appwriteTableId: 'tasks' } } })
         expect(errors(c)).toEqual(['Data source "tasks" reads table "tasks" in "archive", which the contract does not declare'])
