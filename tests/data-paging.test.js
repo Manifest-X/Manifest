@@ -27,12 +27,24 @@ describe('paging: "all"', () => {
         expect(state().total).toBe(2350)
     })
 
-    it('stops at max and says there is more', async () => {
+    it('stops at max: no more to load, $total still tells the whole count', async () => {
         const { rows, main } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'all', max: 1000, size: 250 } } }, makeRows(2350))
         await main.loadDataSource('items')
         await settle()
         expect(rows('items').length).toBe(1000)
-        expect(state().hasMore).toBe(true)
+        expect(state().hasMore).toBe(false)
+        expect(state().total).toBe(2350)
+        expect(await main.loadMore('items')).toBe(0)
+        expect(rows('items').length).toBe(1000)
+    })
+
+    it('window $more() never passes max', async () => {
+        const { rows, main } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 40, max: 100 } } }, makeRows(300))
+        await main.loadDataSource('items')
+        while (await main.loadMore('items')) { /* page until stopped */ }
+        await settle()
+        expect(rows('items').length).toBe(100)
+        expect(state().hasMore).toBe(false)
     })
 
     it('a limit in the queries never caps the walk', async () => {
@@ -162,5 +174,90 @@ describe('paging: "window" and $more()', () => {
         expect(ns(list)).toEqual(Array.from({ length: 4000 }, (_, i) => i + 1))
         expect(list.filter(r => r.status === 'touched').length).toBe(500)
         expect(performance.now() - t0).toBeLessThan(5000)
+    })
+})
+
+describe('review: the cursor stays on server rows', () => {
+    const UNSORTED = { items: { appwriteTableId: 'items', paging: { mode: 'window', size: 50 } } }
+    const SORTED = { items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 50 } } }
+    const walk = async (main) => { while (await main.loadMore('items')) { /* next page */ } }
+
+    it('a local $create on an unsorted paged source never cuts off the unloaded rows', async () => {
+        const table = makeRows(120)
+        const { rows, main, call } = await boot(UNSORTED, table)
+        await main.loadDataSource('items')
+        await call('items', '$create', { n: 1000, name: 'mine' })
+        await settle()
+        await walk(main)
+        await settle()
+        const ids = rows('items').map(r => r.$id)
+        expect(new Set(ids).size).toBe(ids.length)
+        for (let i = 1; i <= 120; i++) expect(ids).toContain(`r${String(i).padStart(6, '0')}`)
+    })
+
+    it('a local $create on a sorted paged source lands in order and $more() leaves no gap', async () => {
+        const { rows, main, call } = await boot(SORTED, makeRows(120))
+        await main.loadDataSource('items')
+        await call('items', '$create', { n: 10.5 })
+        await settle()
+        expect(rows('items').findIndex(r => r.n === 10.5)).toBe(10)
+        await walk(main)
+        await settle()
+        expect(ns(rows('items'))).toEqual([...Array.from({ length: 10 }, (_, i) => i + 1), 10.5, ...Array.from({ length: 110 }, (_, i) => i + 11)])
+    })
+
+    it('a $query issued before $more() lands first: $more() continues inside the new filter', async () => {
+        const delay = qs => qs.some(q => q.method === 'equal') ? 5 : 40
+        const { rows, main, query } = await boot(SORTED, makeRows(300), { delay })
+        await main.loadDataSource('items')
+        const q = query('items', [['equal', 'status', 'archived'], ['orderAsc', 'n']])
+        const more = main.loadMore('items')
+        await Promise.all([q, more])
+        await settle(150)
+        expect(rows('items').every(r => r.status === 'archived')).toBe(true)
+    })
+
+    it('$more() while a reload is in flight waits for it: no gap', async () => {
+        const delay = qs => qs.some(q => q.method === 'cursorAfter') ? 5 : 60
+        const { rows, main } = await boot(SORTED, makeRows(300), { delay })
+        await main.loadDataSource('items')
+        await main.loadMore('items')
+        await settle()
+        const reload = main.reloadDataSource('items')
+        await main.loadMore('items')
+        await reload
+        await settle(200)
+        const list = ns(rows('items'))
+        expect(list).toEqual(Array.from({ length: list.length }, (_, i) => i + 1))
+    })
+
+    it('a held row updated past the loaded end leaves, and every row stays reachable', async () => {
+        const table = makeRows(200)
+        const { rows, main, rt } = await boot(SORTED, table)
+        await main.loadDataSource('items')
+        await settle()
+        table[4].n = 1000
+        rt().fire(CH, evt('update', { ...table[4] }))
+        await settle()
+        expect(rows('items').some(r => r.$id === table[4].$id)).toBe(false)
+        await walk(main)
+        await settle()
+        expect(rows('items').length).toBe(200)
+        expect(rows('items').at(-1).$id).toBe(table[4].$id)
+    })
+
+    it('a live row that ties with the last loaded row waits for its page', async () => {
+        const table = Array.from({ length: 80 }, (_, i) => ({ $id: `t${String(i).padStart(3, '0')}`, n: i < 40 ? i : 40 }))
+        const { rows, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 45 } } }, table)
+        await main.loadDataSource('items')
+        await settle()
+        const live = { $id: 't999', n: 40 }
+        table.push(live)
+        rt().fire(CH, evt('create', live))
+        await settle()
+        expect(rows('items').some(r => r.$id === 't999')).toBe(false)
+        await walk(main)
+        await settle()
+        expect(new Set(rows('items').map(r => r.$id)).size).toBe(81)
     })
 })

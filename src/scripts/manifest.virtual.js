@@ -109,6 +109,7 @@ function initializeVirtualPlugin() {
         let data = [];
         let cumulative = new Float64Array(1);  // line-top offsets; last = total
         let endNotifiedAt = -1;                // data length `virtual-end` last fired for
+        let endHead;                           // first item's key then: a replaced list fires again
         let lines = [];                        // gallery: [{ start, end, height }]
         let pos = [];                          // masonry: per-index { x, y, w, h }
         let sortedTop = [];                    // masonry: indices sorted by y
@@ -221,6 +222,9 @@ function initializeVirtualPlugin() {
 
         // The last item is rendered: `virtual-end` fires once per data length (load the next page here)
         function notifyEnd(reached) {
+            const head = data.length ? keyFn(data[0]) : undefined;
+            if (data.length < endNotifiedAt || head !== endHead) endNotifiedAt = -1;
+            endHead = head;
             if (!reached || !data.length || endNotifiedAt === data.length) return;
             endNotifiedAt = data.length;
             el.dispatchEvent(new CustomEvent('virtual-end', { bubbles: true, detail: { length: data.length } }));

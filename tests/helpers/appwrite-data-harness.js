@@ -104,6 +104,9 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
                     const end = rows.findIndex(r => r.$id === arg(before))
                     rows = rows.slice(Math.max(0, end - n), end)
                 } else {
+                    // Appwrite refuses a cursor row that no longer matches / exists
+                    if (after && !rows.some(r => r.$id === arg(after))) throw Object.assign(new Error(`Document with the requested ID '${arg(after)}' could not be found.`), { code: 400 })
+                    if (n > 5000) throw Object.assign(new Error('Invalid limit'), { code: 400 })
                     const start = after ? rows.findIndex(r => r.$id === arg(after)) + 1 : (off ? arg(off) : 0)
                     rows = rows.slice(start, start + n)
                 }

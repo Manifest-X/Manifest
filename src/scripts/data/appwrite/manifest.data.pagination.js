@@ -1,5 +1,7 @@
 /* Manifest Data Sources - Pagination (Appwrite) */
 
+const PAGE_LIMIT = 4999;
+
 // Resolve the source's table or bucket
 async function resolvePagedSource(dataSourceName) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -44,6 +46,7 @@ async function fetchPage(dataSourceName, baseQueries, pageQueries, limit) {
 
 // First page, cursor-based. Returns { items, cursor, total, hasMore }
 async function getFirstPage(dataSourceName, limit, baseQueries = []) {
+    limit = Math.min(limit, PAGE_LIMIT); // the extra row must fit Appwrite's 5000
     const { rows, total, extra } = await fetchPage(dataSourceName, baseQueries, [], limit);
     const items = rows.slice(0, limit);
     return { items, cursor: items.length ? items[items.length - 1].$id : null, total, hasMore: extra };
@@ -51,6 +54,7 @@ async function getFirstPage(dataSourceName, limit, baseQueries = []) {
 
 // Next page after a cursor. Returns { items, cursor, total, hasMore }
 async function getNextPage(dataSourceName, cursor, limit, baseQueries = []) {
+    limit = Math.min(limit, PAGE_LIMIT); // the extra row must fit Appwrite's 5000
     if (!cursor) {
         throw new Error('[Manifest Data] Cursor is required for next page');
     }
@@ -61,6 +65,7 @@ async function getNextPage(dataSourceName, cursor, limit, baseQueries = []) {
 
 // Previous page before a cursor. hasMore: rows exist before this page. Returns { items, cursor, total, hasMore }
 async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
+    limit = Math.min(limit, PAGE_LIMIT); // the extra row must fit Appwrite's 5000
     if (!cursor) {
         throw new Error('[Manifest Data] Cursor is required for previous page');
     }
@@ -72,6 +77,7 @@ async function getPrevPage(dataSourceName, cursor, limit, baseQueries = []) {
 
 // Specific page (1-based), offset-based. Returns { items, page, total, totalPages, hasMore }
 async function getPage(dataSourceName, pageNumber, limit, baseQueries = []) {
+    limit = Math.min(limit, PAGE_LIMIT); // the extra row must fit Appwrite's 5000
     if (!pageNumber || pageNumber < 1) {
         throw new Error('[Manifest Data] Page number must be >= 1');
     }

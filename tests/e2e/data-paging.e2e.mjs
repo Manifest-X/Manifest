@@ -101,6 +101,24 @@ try {
     })
     check('an unsettled write holds through a reload', opt.during.name === 'Optimistic' && opt.during.saving === true && opt.during.pending === '1', opt.during)
     check('settled: server value stands, nothing pending', opt.after.name === 'Optimistic' && opt.after.saving === false && opt.after.pending === '0', opt.after)
+
+    // A $query replaces the list: scrolling to its end pages again (virtual-end fires anew)
+    await page.evaluate(async () => {
+        window.__delay = () => 20
+        await Alpine.evaluate(document.body.firstElementChild, '$x.paged').$query([['equal', 'status', 'archived'], ['orderAsc', 'n']])
+    })
+    await page.waitForFunction(() => document.getElementById('held')?.textContent === '50', { timeout: 5000 })
+    await page.evaluate(() => { document.getElementById('scroller').scrollTop = 0 })
+    await page.hover('#scroller')
+    for (let i = 0; i < 40 && Number(await text('held')) <= 50; i++) {
+        await page.mouse.wheel({ deltaY: 4000 })
+        await new Promise(r => setTimeout(r, 150))
+    }
+    const afterQuery = await page.evaluate(() => {
+        const rows = Alpine.evaluate(document.body.firstElementChild, '$x.paged')
+        return { held: rows.length, allArchived: rows.every(r => r.status === 'archived') }
+    })
+    check('after a $query, scrolling to the end pages within the new filter', afterQuery.held > 50 && afterQuery.allArchived, afterQuery)
 } finally {
     await browser.close()
     server.close()

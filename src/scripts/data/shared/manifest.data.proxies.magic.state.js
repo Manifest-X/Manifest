@@ -66,7 +66,7 @@ function getStateProperty(prop, dataSourceName) {
 function createSavingMethod(dataSourceName) {
     return (id) => {
         void getStateProperty('$pending', dataSourceName);
-        return (window.ManifestDataStore?.pendingWritesFor?.(dataSourceName, id) || []).length > 0;
+        return !!window.ManifestDataStore?.isSaving?.(dataSourceName, id);
     };
 }
 

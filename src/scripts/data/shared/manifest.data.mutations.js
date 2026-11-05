@@ -73,8 +73,8 @@ function addEntryToStore(dataSourceName, entry, options = {}) {
         return false;
     }
 
-    // Local write: push onto the tracked array, sync
-    target.push(ds.createReactiveReferences(entry, dataSourceName));
+    // Local write: into the tracked array (its sort position on a sorted source), sync
+    ds.insertRow(Alpine.store('data'), dataSourceName, ds.createReactiveReferences(entry, dataSourceName));
     ds.noteLocalWrite(dataSourceName, entry?.$id, { patch: entry });
     ds.touchSource(dataSourceName);
     clearSourceCaches(dataSourceName);
@@ -252,7 +252,7 @@ async function executeMutation(mutationConfig) {
             if (originalData) {
                 updateEntryInStore(dataSourceName, entryId, data, options);
             }
-            held = ds0?.holdWrite?.(dataSourceName, entryId, 'update', { ...data });
+            held = ds0?.holdWrite?.(dataSourceName, entryId, 'update', { ...data }, originalData ? { ...originalData } : null);
         } else if (type === 'delete') {
             // Snapshot for rollback
             const store = Alpine.store('data');
@@ -277,7 +277,13 @@ async function executeMutation(mutationConfig) {
 
         // Step 2: Perform API call
         const result = await apiCall();
-        if (held) ds0.releaseWrite(dataSourceName, resolvedEntryId, held);
+        if (held) {
+            // Confirmed: still held over reads issued before now, under the server's id and values
+            if (type === 'create' && result?.$id) ds0.settleWrite(dataSourceName, resolvedEntryId, held, { id: result.$id, fields: result });
+            else if (type === 'update') ds0.settleWrite(dataSourceName, resolvedEntryId, held, result?.$id ? { fields: Object.fromEntries(Object.keys(data || {}).map(k => [k, result[k]])) } : {});
+            else if (type === 'delete') ds0.settleWrite(dataSourceName, resolvedEntryId, held);
+            else ds0.releaseWrite(dataSourceName, resolvedEntryId, held);
+        }
         held = null;
 
         // Step 3: Clear loading states after successful API call (regardless of result format)
@@ -345,7 +351,8 @@ async function executeMutation(mutationConfig) {
             clearDeletingEntry(dataSourceName, entryId);
         }
 
-        if (held) ds0.releaseWrite(dataSourceName, resolvedEntryId, held);
+        const mine = held ? ds0.releaseWrite(dataSourceName, resolvedEntryId, held) : null;
+        const heldToken = held;
         held = null;
 
         // Rollback on error
@@ -355,16 +362,22 @@ async function executeMutation(mutationConfig) {
             if (type === 'create' && optimisticData) {
                 removeEntryFromStore(dataSourceName, optimisticData.$id, writeOptions);
             } else if (type === 'update' && originalData) {
-                // Field-level: a field restores only if it still shows this write's value
-                // and no other unsettled write covers it (a live change meanwhile wins)
+                // Field-level: a field restores only if it still shows this write's value (a live
+                // change meanwhile wins). A later unsettled write on the same field takes over
+                // this write's snapshot instead, so the chain unwinds to the value before all of them
+                const snapshot = mine?.snapshot || originalData;
                 const { arr, index } = findRawIndex(dataSourceName, entryId);
                 const row = index !== -1 ? arr[index] : null;
                 const others = ds0?.pendingWritesFor?.(dataSourceName, entryId) || [];
                 const restore = {};
-                for (const key of Object.keys(originalData)) {
+                for (const key of Object.keys(snapshot)) {
+                    const later = others.find(w => w.kind === 'update' && w.token > heldToken && w.fields && key in w.fields);
+                    if (later) {
+                        if (later.snapshot) later.snapshot[key] = snapshot[key];
+                        continue;
+                    }
                     if (!row || !sameValue(row[key], data[key])) continue;
-                    if (others.some(w => w.kind === 'update' && w.fields && key in w.fields)) continue;
-                    restore[key] = originalData[key];
+                    restore[key] = snapshot[key];
                 }
                 if (Object.keys(restore).length) updateEntryInStore(dataSourceName, entryId, restore, writeOptions);
             } else if (type === 'delete' && originalData) {

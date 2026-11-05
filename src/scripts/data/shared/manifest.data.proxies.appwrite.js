@@ -444,8 +444,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
                     if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
                         window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
-                        if (paged) main.setPagingState(dataSourceName, paged);
-                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
+                        if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
+                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
                     }
                     return result;
                 }
@@ -1209,6 +1209,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             setErrorState(error);
             // Re-throw so promise chain still works if caller wants to handle it
             throw error;
+        } finally {
+            if (readToken !== undefined) window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
         }
     };
 

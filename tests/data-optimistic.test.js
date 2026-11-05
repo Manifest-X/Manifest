@@ -147,3 +147,44 @@ describe('heavy', () => {
         expect(performance.now() - t0).toBeLessThan(5000)
     })
 })
+
+describe('review: overlapping writes and settle window', () => {
+    for (const order of ['AB', 'BA']) {
+        it(`two failed writes on one field unwind to the value before both (${order})`, async () => {
+            let n = 0
+            const delays = order === 'AB' ? [40, 120] : [120, 40]
+            const { rows, main, call, stats } = await boot(SRC, makeRows(5), { writeDelay: () => delays[n++] })
+            await main.loadDataSource('items')
+            stats.failWrites = true
+            const a = call('items', '$update', 'r00001', { status: 'done' })
+            await settle(5)
+            const b = call('items', '$update', 'r00001', { status: 'x' })
+            await Promise.allSettled([a, b])
+            await settle()
+            expect(row(rows, 'r00001').status).toBe('open')
+        })
+    }
+
+    it('a pending create never shows under a $query that excludes it', async () => {
+        const { rows, main, call, query } = await boot(SRC, makeRows(5), { writeDelay: 150, echoFirst: false })
+        await main.loadDataSource('items')
+        const made = call('items', '$create', { n: 6, name: 'New', status: 'open' })
+        await settle(10)
+        await query('items', [['equal', 'status', 'closed'], ['orderAsc', 'n']])
+        await settle(30)
+        expect(rows('items').some(r => r.name === 'New')).toBe(false)
+        await made
+    })
+
+    it('a reload issued before a delete settled never brings the row back', async () => {
+        const delay = () => 120
+        const { ids, main, call } = await boot(SRC, makeRows(5), { delay, writeDelay: 20 })
+        await main.loadDataSource('items')
+        const reload = main.reloadDataSource('items') // reads before the delete commits
+        await settle(10)
+        await call('items', '$delete', 'r00002')
+        await reload
+        await settle()
+        expect(ids('items')).not.toContain('r00002')
+    })
+})
