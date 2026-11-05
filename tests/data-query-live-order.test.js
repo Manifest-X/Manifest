@@ -231,3 +231,21 @@ describe('review follow-ups', () => {
         expect(main.getActiveQuery('items')).toBe(null)
     })
 })
+
+describe('realtime caps follow the rows a default reload lands', () => {
+    for (const mode of ['window', 'append']) {
+        it(`${mode} mode: $query, then a default reload, then live creates land`, async () => {
+            const realtime = mode === 'window' ? { mode: 'window' } : {}
+            const n = mode === 'window' ? 20 : 600
+            const { ids, main, query, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['limit', n]], realtime } }, makeRows(mode === 'window' ? 10 : 600))
+            await main.loadDataSource('items')
+            await query('items', [['equal', 'n', 1], ['limit', 2]])
+            await main.reloadDataSource('items')
+            await settle()
+            rt().fire(CH, evt('create', { $id: 'after', n: 9999, status: 'active' }))
+            await settle()
+            expect(ids('items')).toContain('after')
+            expect(window.Alpine.store('data')._items_state.realtimeOverflow || 0).toBe(0)
+        })
+    }
+})

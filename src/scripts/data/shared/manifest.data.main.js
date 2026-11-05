@@ -436,9 +436,11 @@ function setActiveQuery(dataSourceName, queries, rowCount) {
     rebindLive(dataSourceName);
 }
 
-// Default rows landed: back to the manifest queries
-function clearActiveQuery(dataSourceName) {
+// Default rows landed: back to the manifest queries (caps sized to those rows)
+function clearActiveQuery(dataSourceName, rowCount) {
     if (!activeQueries.delete(dataSourceName)) return;
+    const bind = realtimeBinds.get(dataSourceName);
+    if (bind) configureRealtimeMeta(dataSourceName, bind.config, rowCount || 0, bind.defaultLimit);
     rebindLive(dataSourceName);
 }
 
@@ -953,7 +955,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     if (dataSource.realtime !== false && window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
-                        if (!activeQueries.has(dataSourceName)) {
+                        if (!activeQueries.has(dataSourceName) || !realtimeMeta.has(dataSourceName)) {
                             configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
                         }
                         // Events server-filtered where the SDK supports realtime queries; the client
@@ -974,7 +976,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             () => !superseded(),
                             rtFilterSpec
                         );
-                        realtimeBinds.set(dataSourceName, { config: dataSource.realtime, mode: rtMode, rebind: subscribe });
+                        realtimeBinds.set(dataSourceName, { config: dataSource.realtime, mode: rtMode, rebind: subscribe, defaultLimit: limitQ ? limitQ[1] : null });
                         const unsubscribe = await subscribe();
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
@@ -1151,6 +1153,13 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
             if (superseded()) { landed = true; return null; }
 
+            // A $query issued since this load began: its rows stand, this result never lands
+            if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
+                landed = true;
+                if (!isInitializing) setSourceState(dataSourceName, { loading: false });
+                return enhancedData;
+            }
+
             // Cache is always safe — the key carries this load's locale.
             dataSourceCache.set(cacheKey, enhancedData);
 
@@ -1164,17 +1173,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 || document.documentElement.lang || locale;
             const staleLocale = localeSensitive && liveLocale !== locale;
 
-            // A $query issued since this load began: its rows stand, this result never lands
-            if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
-                landed = true;
-                if (!isInitializing) setSourceState(dataSourceName, { loading: false });
-                return enhancedData;
-            }
-
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
-                clearActiveQuery(dataSourceName);
+                clearActiveQuery(dataSourceName, Array.isArray(enhancedData) ? enhancedData.length : 0);
                 await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
