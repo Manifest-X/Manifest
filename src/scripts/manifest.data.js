@@ -432,9 +432,12 @@ function sourceGeneration(dataSourceName) {
 // next read hydrates/fetches for the new scope; older loads are discarded
 function resetSource(dataSourceName) {
     sourceGen.set(dataSourceName, sourceGeneration(dataSourceName) + 1);
+    latestRead.delete(dataSourceName);
+    window.ManifestDataMain?.forgetLiveSource?.(dataSourceName);
     const prefix = `${dataSourceName}:`;
     for (const key of [...dataSourceCache.keys()]) if (key.startsWith(prefix)) dataSourceCache.delete(key);
     for (const key of [...loadingPromises.keys()]) if (key.startsWith(prefix)) loadingPromises.delete(key);
+    for (const key of [...loadReadTokens.keys()]) if (key.startsWith(prefix)) loadReadTokens.delete(key);
     freshness.delete(dataSourceName);
     pendingLocal.delete(dataSourceName);
     for (let i = pendingLandings.length - 1; i >= 0; i--) {
@@ -468,6 +471,15 @@ function setSourceState(dataSourceName, patch) {
     return next;
 }
 
+// Last-issued read per source: a slower earlier read ($query or load) never lands over a later one
+const latestRead = new Map();
+let readSeq = 0;
+const loadReadTokens = new Map(); // source:locale → token of the load in flight under that key
+function beginRead(dataSourceName) { const token = ++readSeq; latestRead.set(dataSourceName, token); return token; }
+function adoptRead(dataSourceName, token) { if (token !== undefined) latestRead.set(dataSourceName, token); }
+// A reset clears the record: generation stamps already drop the older reads
+function isLatestRead(dataSourceName, token) { return token === undefined || !latestRead.has(dataSourceName) || latestRead.get(dataSourceName) === token; }
+
 // Authoritative in-flight map: one promise per key, cleared on settle
 function runDeduped(key, factory) {
     if (loadingPromises.has(key)) return loadingPromises.get(key);
@@ -492,14 +504,72 @@ function ensureSourceArray(dataSourceName) {
     return store[dataSourceName];
 }
 
+// Sort spec [[attr, 1|-1], ...] → comparator; nulls sort first ascending,
+// strings case-insensitively (Appwrite's collation)
+function compareBy(order) {
+    const norm = v => (typeof v === 'string' ? v.toLowerCase() : v);
+    return (a, b) => {
+        for (const [key, dir] of order) {
+            const x = norm(a?.[key]), y = norm(b?.[key]);
+            if (x === y) continue;
+            if (x === null || x === undefined) return -dir;
+            if (y === null || y === undefined) return dir;
+            return (x < y ? -1 : 1) * dir;
+        }
+        return 0;
+    };
+}
+
+function sortedIndex(arr, row, cmp) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cmp(arr[mid], row) <= 0) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+// Ordered append (realtime on a sorted source): new rows insert at their sort
+// position; merged rows whose sort key moved are re-positioned. Structure is
+// rebuilt on a raw copy and assigned once (one reactive write, not per splice)
+function upsertOrdered(store, dataSourceName, rows, order) {
+    const cmp = compareBy(order);
+    const cur = store[dataSourceName];
+    const curRaw = rawOf(store)[dataSourceName];
+    let next = null;
+    for (const row of rows) {
+        const list = next || curRaw;
+        const id = rowKey(row);
+        const i = id !== null ? list.findIndex(r => rowKey(r) === id) : -1;
+        if (i !== -1) {
+            // Only a changed sort value moves a held row; the server's placement otherwise stands
+            const keyChanged = order.some(([key]) => Object.prototype.hasOwnProperty.call(row, key) && !sameScalarOrList(list[i][key], row[key]));
+            mergeRowFields(next ? (Alpine.reactive ? Alpine.reactive(list[i]) : list[i]) : cur[i], row, dataSourceName);
+            const misplaced = keyChanged && ((i > 0 && cmp(list[i - 1], list[i]) > 0) || (i < list.length - 1 && cmp(list[i], list[i + 1]) > 0));
+            if (!misplaced) continue;
+            if (!next) next = curRaw.slice();
+            const [moved] = next.splice(i, 1);
+            next.splice(sortedIndex(next, moved, cmp), 0, moved);
+            continue;
+        }
+        if (!next) next = curRaw.slice();
+        next.splice(sortedIndex(next, row, cmp), 0, rawOf(createReactiveReferences(row, dataSourceName)));
+    }
+    if (next) store[dataSourceName] = next;
+}
+
 // Identity-preserving upsert by $id: existing rows are merged in place, new
 // rows created; append keeps the array, replace swaps it only when membership
 // or order changed
-function upsertRows(store, dataSourceName, rows, mode) {
+function upsertRows(store, dataSourceName, rows, mode, order) {
     const raw = rawOf(store);
     const curRaw = Array.isArray(raw[dataSourceName]) ? raw[dataSourceName] : null;
     if (!curRaw) {
         store[dataSourceName] = rows.map(row => createReactiveReferences(row, dataSourceName));
+        return;
+    }
+    if (mode === 'append' && Array.isArray(order) && order.length) {
+        upsertOrdered(store, dataSourceName, rows, order);
         return;
     }
     const cur = store[dataSourceName];
@@ -557,7 +627,7 @@ function writeSource(dataSourceName, data, options = {}) {
             rawDataStore.set(dataSourceName, data);
         }
     } else if (Array.isArray(data)) {
-        upsertRows(store, dataSourceName, data, mode);
+        upsertRows(store, dataSourceName, data, mode, options.order);
         const arr = rawOf(store)[dataSourceName];
         rawDataStore.set(dataSourceName, arr);
         attachMethods(arr, dataSourceName);
@@ -1523,6 +1593,10 @@ window.ManifestDataStore = {
     // Stale-first + dedupe (§11.1)
     setSourceState,
     runDeduped,
+    beginRead,
+    adoptRead,
+    loadReadTokens,
+    isLatestRead,
     sourceFreshness,
     // Persistence (§12.2)
     sourceGeneration,
@@ -2865,7 +2939,8 @@ window.ManifestDataLoaders = {
 // Load from API endpoint (read-only)
 async function loadFromAPI(dataSource) {
     try {
-        const url = new URL(window.ManifestDataConfig.interpolateEnvVars(dataSource.url));
+        // Relative urls resolve against the page
+        const url = new URL(window.ManifestDataConfig.interpolateEnvVars(dataSource.url), window.location.href);
 
         // Add query parameters
         if (dataSource.params) {
@@ -3176,7 +3251,15 @@ async function executeMutation(mutationConfig) {
             if (type === 'create') {
                 // Ack: swap the temp row for the server row in place (new $id → new $files binding)
                 const { store, arr, index } = findRawIndex(dataSourceName, optimisticData.$id);
-                if (store && arr) {
+                // Realtime echo of this create may have landed first under the real $id
+                const held = (arr && result.$id !== optimisticData.$id) ? arr.findIndex(r => r && r.$id === result.$id) : -1;
+                if (store && arr && held !== -1) {
+                    const ds = window.ManifestDataStore;
+                    ds.mergeRowFields(store[dataSourceName][held], result, dataSourceName);
+                    if (index !== -1) store[dataSourceName].splice(index, 1);
+                    ds.touchSource(dataSourceName);
+                    clearSourceCaches(dataSourceName);
+                } else if (store && arr) {
                     if (index !== -1) {
                         const ds = window.ManifestDataStore;
                         store[dataSourceName].splice(index, 1, ds.createReactiveReferences(result, dataSourceName));
@@ -4602,52 +4685,9 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             });
         }
 
-        // Attach pagination methods
-        const createPaginationMethod = (methodName) => {
-            return async function (...args) {
-                const manifest = await window.ManifestDataConfig.ensureManifest();
-                if (!manifest?.data) {
-                    throw new Error('[Manifest Data] Manifest not available');
-                }
-                const dataSource = manifest.data[dataSourceName];
-                if (!dataSource || !window.ManifestDataConfig.isAppwriteCollection(dataSource)) {
-                    throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
-                }
-                const scope = window.ManifestDataConfig.getScope(dataSource);
-                const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
-                const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
-                const baseQueries = queriesConfig
-                    ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-                    : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
-
-                if (baseQueries === null) {
-                    throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
-                }
-
-                if (methodName === '$first') {
-                    const limit = args[0] || 10;
-                    return await window.ManifestDataPagination.getFirstPage(dataSourceName, limit, baseQueries);
-                } else if (methodName === '$next') {
-                    const [cursor, limit = 10] = args;
-                    if (!cursor) {
-                        throw new Error('[Manifest Data] Cursor is required for $next');
-                    }
-                    return await window.ManifestDataPagination.getNextPage(dataSourceName, cursor, limit, baseQueries);
-                } else if (methodName === '$prev') {
-                    const [cursor, limit = 10] = args;
-                    if (!cursor) {
-                        throw new Error('[Manifest Data] Cursor is required for $prev');
-                    }
-                    return await window.ManifestDataPagination.getPrevPage(dataSourceName, cursor, limit, baseQueries);
-                } else if (methodName === '$page') {
-                    const [pageNumber, limit = 10] = args;
-                    if (!pageNumber || pageNumber < 1) {
-                        throw new Error('[Manifest Data] Page number must be >= 1');
-                    }
-                    return await window.ManifestDataPagination.getPage(dataSourceName, pageNumber, limit, baseQueries);
-                }
-            };
-        };
+        // Attach pagination methods (one implementation: magic.pagination)
+        const createPaginationMethod = (methodName) => (...args) =>
+            window.ManifestDataProxiesMagic.createPaginationMethod(methodName, dataSourceName)(...args);
 
         ['$first', '$next', '$prev', '$page'].forEach(methodName => {
             Object.defineProperty(array, methodName, {
@@ -4952,52 +4992,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
 
                 // Handle pagination methods
                 if (key === '$first' || key === '$next' || key === '$prev' || key === '$page') {
-                    return async function (...args) {
-                        const manifest = await window.ManifestDataConfig.ensureManifest();
-                        if (!manifest?.data) {
-                            throw new Error('[Manifest Data] Manifest not available');
-                        }
-
-                        const dataSource = manifest.data[dataSourceName];
-                        if (!dataSource || !window.ManifestDataConfig.isAppwriteCollection(dataSource)) {
-                            throw new Error(`[Manifest Data] Pagination is only supported for Appwrite data sources`);
-                        }
-
-                        // Get base queries (from manifest or scope)
-                        const scope = window.ManifestDataConfig.getScope(dataSource);
-                        const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
-                        const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
-                        const baseQueries = queriesConfig
-                            ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-                            : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
-
-                        if (baseQueries === null) {
-                            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
-                        }
-
-                        if (key === '$first') {
-                            const limit = args[0] || 10;
-                            return await window.ManifestDataPagination.getFirstPage(dataSourceName, limit, baseQueries);
-                        } else if (key === '$next') {
-                            const [cursor, limit = 10] = args;
-                            if (!cursor) {
-                                throw new Error('[Manifest Data] Cursor is required for $next');
-                            }
-                            return await window.ManifestDataPagination.getNextPage(dataSourceName, cursor, limit, baseQueries);
-                        } else if (key === '$prev') {
-                            const [cursor, limit = 10] = args;
-                            if (!cursor) {
-                                throw new Error('[Manifest Data] Cursor is required for $prev');
-                            }
-                            return await window.ManifestDataPagination.getPrevPage(dataSourceName, cursor, limit, baseQueries);
-                        } else if (key === '$page') {
-                            const [pageNumber, limit = 10] = args;
-                            if (!pageNumber || pageNumber < 1) {
-                                throw new Error('[Manifest Data] Page number must be >= 1');
-                            }
-                            return await window.ManifestDataPagination.getPage(dataSourceName, pageNumber, limit, baseQueries);
-                        }
-                    };
+                    return (...args) => window.ManifestDataProxiesMagic.createPaginationMethod(key, dataSourceName)(...args);
                 }
 
                 // $files handler for tables
@@ -7701,6 +7696,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
     const handleMethod = async function (method, ...args) {
         const sourceUnloaded = args[3]?.sourceUnloaded === true;
         if (!sourceUnloaded) clearErrorState();
+        // Reads are ordered by call, not by network start: the last-issued one lands
+        const readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -7793,13 +7790,19 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                     // Support batch updates
                     if (Array.isArray(idOrArray)) {
-                        const updates = idOrArray;
+                        // Batch: ids (or rows) sharing `data`, or [{ id, data }] entries
+                        const updates = idOrArray.map(update => (update !== null && typeof update === 'object')
+                            ? { id: update.$id || update.id || update.rowId, data: update.data || data || update }
+                            : { id: update, data });
+                        if (updates.some(u => u.id === undefined || u.id === null || u.id === '' || u.data === undefined)) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" $update: batch entries need an id and data`);
+                        }
                         if (executeMutation) {
                             // Use optimistic updates for batch
                             const results = await Promise.all(
                                 updates.map(update => {
-                                    const entryId = update.id || update.$id || update.rowId;
-                                    const updateData = update.data || update;
+                                    const entryId = update.id;
+                                    const updateData = update.data;
                                     return executeMutation({
                                         type: 'update',
                                         dataSourceName,
@@ -7829,8 +7832,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                     window.ManifestDataAppwrite.updateRow(
                                         appwriteConfig.databaseId,
                                         tableId,
-                                        update.id || update.$id || update.rowId,
-                                        update.data || update
+                                        update.id,
+                                        update.data
                                     )
                                 )
                             );
@@ -8077,23 +8080,24 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
-                    const { runDeduped, landRows, sourceGeneration } = window.ManifestDataStore || {};
+                    const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
                     const generation = sourceGeneration?.(dataSourceName);
                     const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
-                    const run = async () => {
-                        const result = await window.ManifestDataAppwrite.loadTableRows(
-                            appwriteConfig.databaseId,
-                            tableId,
-                            appwriteQueries,
-                            { requireAuth }
-                        );
-                        // Network landing: query result replaces the source (coalesced, identity-preserving)
-                        if (result !== undefined && landRows) {
-                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
-                        }
-                        return result;
-                    };
-                    return runDeduped ? await runDeduped(key, run) : await run();
+                    const run = () => window.ManifestDataAppwrite.loadTableRows(
+                        appwriteConfig.databaseId,
+                        tableId,
+                        appwriteQueries,
+                        { requireAuth }
+                    );
+                    const result = runDeduped ? await runDeduped(key, run) : await run();
+                    // Network landing: query result replaces the source (coalesced, identity-preserving);
+                    // only the last-issued read of this source lands
+                    const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
+                    if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
+                        window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
+                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
+                    }
+                    return result;
                 }
             }
 
@@ -9198,6 +9202,8 @@ window.ManifestDataProxiesMagic.createUploadMethod = createUploadMethod;
 /* Manifest Data Sources - Magic Method Pagination Handlers */
 // $first, $next, $prev, $page
 
+const PAGE_WINDOW_METHODS = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore']);
+
 function createPaginationMethod(methodName, dataSourceName) {
     return async function (...args) {
         const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -9213,10 +9219,13 @@ function createPaginationMethod(methodName, dataSourceName) {
         // Base queries from manifest or scope
         const scope = window.ManifestDataConfig.getScope(dataSource);
         const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
+        // Pages follow the active $query, else the default queries; paging supplies its own window
         const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
-        const baseQueries = queriesConfig
-            ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-            : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+        const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
+        const active = window.ManifestDataMain?.getActiveQuery?.(dataSourceName);
+        const filters = (Array.isArray(active) ? active : (Array.isArray(defaults) ? defaults : []))
+            .filter(q => !(Array.isArray(q) && PAGE_WINDOW_METHODS.has(q[0])));
+        const baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
 
         if (baseQueries === null) {
             throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
@@ -11905,6 +11914,56 @@ function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery)
     window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: 0 });
 }
 
+// Active $query per source (manifest-format): realtime matches, orders and
+// server-filters by it until the next default load replaces the rows
+const activeQueries = new Map();
+const realtimeBinds = new Map(); // Map<name, { config, mode, rebind }>
+
+function realtimeQueriesFor(dataSourceName, defaults) {
+    return activeQueries.has(dataSourceName) ? activeQueries.get(dataSourceName) : defaults;
+}
+
+// [['orderDesc', 'n'], ...] → [['n', -1], ...]; orderRandom has no stable position
+function sortSpec(queries) {
+    if (!Array.isArray(queries)) return null;
+    if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) return null;
+    const order = queries
+        .filter(q => Array.isArray(q) && (q[0] === 'orderAsc' || q[0] === 'orderDesc') && typeof q[1] === 'string')
+        .map(q => [q[1], q[0] === 'orderAsc' ? 1 : -1]);
+    return order.length ? order : null;
+}
+
+function rebindLive(dataSourceName) {
+    const bind = realtimeBinds.get(dataSourceName);
+    if (bind?.mode !== 'all') return;
+    Promise.resolve().then(bind.rebind).catch(error => console.error(`[Manifest Data] Realtime rebind failed for "${dataSourceName}":`, error));
+}
+
+// $query landing: realtime follows the new filter set (caps reset to its result)
+function setActiveQuery(dataSourceName, queries, rowCount) {
+    const list = Array.isArray(queries) ? queries : [];
+    activeQueries.set(dataSourceName, list);
+    const bind = realtimeBinds.get(dataSourceName);
+    if (!bind) return;
+    const limitQ = list.find(q => Array.isArray(q) && q[0] === 'limit');
+    configureRealtimeMeta(dataSourceName, bind.config, rowCount || 0, limitQ ? limitQ[1] : null);
+    rebindLive(dataSourceName);
+}
+
+// Default rows landed: back to the manifest queries (caps sized to those rows)
+function clearActiveQuery(dataSourceName, rowCount) {
+    if (!activeQueries.delete(dataSourceName)) return;
+    const bind = realtimeBinds.get(dataSourceName);
+    if (bind) configureRealtimeMeta(dataSourceName, bind.config, rowCount || 0, bind.defaultLimit);
+    rebindLive(dataSourceName);
+}
+
+// Source reset (identity/scope) or torn down: nothing of the old binding carries over
+function forgetLiveSource(dataSourceName) {
+    activeQueries.delete(dataSourceName);
+    realtimeBinds.delete(dataSourceName);
+}
+
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
 function bumpRealtimeOverflow(dataSourceName) {
     const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
@@ -11913,12 +11972,12 @@ function bumpRealtimeOverflow(dataSourceName) {
 
 // Append under the cap. 'window' evicts the oldest realtime-appended row first
 // (never an initially-loaded row); otherwise the event counts in $realtimeOverflow.
-function realtimeAppend(dataSourceName, row, currentRows, generation) {
+function realtimeAppend(dataSourceName, row, currentRows, generation, order) {
     const { landRows, landRemove } = window.ManifestDataStore;
     const meta = realtimeMeta.get(dataSourceName);
     if (!meta || meta.maxRows === 0) {
         if (meta) meta.appended.push(row.$id);
-        landRows(dataSourceName, [row], { mode: 'append', generation });
+        landRows(dataSourceName, [row], { mode: 'append', generation, order });
         return;
     }
     const len = currentRows.length + meta.pending;
@@ -11943,7 +12002,7 @@ function realtimeAppend(dataSourceName, row, currentRows, generation) {
     }
     meta.pending++;
     meta.appended.push(row.$id);
-    landRows(dataSourceName, [row], { mode: 'append', generation })
+    landRows(dataSourceName, [row], { mode: 'append', generation, order })
         .then(() => { meta.pending = Math.max(0, meta.pending - 1); });
 }
 
@@ -11992,6 +12051,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
 
     // Network landings: coalesced per frame (landRows upserts by $id), never the sync mutation path
     const { landRows, landRemove } = window.ManifestDataStore;
+    const order = sortSpec(queriesConfig);
 
     if (eventType === 'create') {
         const row = payload?.$id ? payload : (payload?.row || payload);
@@ -12001,9 +12061,9 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             if (rowMatchesScope && eventMatchesQueries(row, queriesConfig)) {
                 if (currentRows.find(r => r.$id === row.$id)) {
                     // Echo of a row already held (optimistic create): merge, never counts as growth
-                    landRows(dataSourceName, [row], { mode: 'append', generation });
+                    landRows(dataSourceName, [row], { mode: 'append', generation, order });
                 } else {
-                    realtimeAppend(dataSourceName, row, currentRows, generation);
+                    realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 }
             }
         } else {
@@ -12024,7 +12084,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             }
             if (!existingRow) {
                 // Row not in list, but matches now - add it (capped like a create)
-                realtimeAppend(dataSourceName, row, currentRows, generation);
+                realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 return;
             }
 
@@ -12084,7 +12144,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 const fileIdsChanged = isProjectWithFiles &&
                     JSON.stringify(existingFileIds) !== JSON.stringify(incomingFileIds);
 
-                landRows(dataSourceName, [row], { mode: 'append', generation });
+                landRows(dataSourceName, [row], { mode: 'append', generation, order });
 
                 // Emit custom event for project file updates so UI can refresh
                 if (fileIdsChanged && dataSourceName === 'projects') {
@@ -12264,10 +12324,16 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         return cachedData;
     }
 
-    // In flight for this source+locale: share it (every entry path lands here)
+    // In flight for this source+locale: share it (every entry path lands here);
+    // joining makes it the latest read again
     if (loadingPromises.has(cacheKey)) {
+        window.ManifestDataStore.adoptRead?.(dataSourceName, window.ManifestDataStore.loadReadTokens?.get(cacheKey));
         return loadingPromises.get(cacheKey);
     }
+
+    // Reads are ordered by call: a $query issued after this load wins over it
+    const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
     // Loading state: rows already landed stay live; first-ever load clears
     const keepRows = hasLiveRows(dataSourceName);
@@ -12403,22 +12469,29 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     if (dataSource.realtime !== false && window.ManifestDataRealtime && window.ManifestDataRealtime.subscribeToTable) {
                         const rtQueries = Array.isArray(queriesConfig?.default || queriesConfig) ? (queriesConfig.default || queriesConfig) : [];
                         const limitQ = rtQueries.find(q => Array.isArray(q) && q[0] === 'limit');
-                        configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        if (!activeQueries.has(dataSourceName) || !realtimeMeta.has(dataSourceName)) {
+                            configureRealtimeMeta(dataSourceName, dataSource.realtime, Array.isArray(data) ? data.length : 0, limitQ ? limitQ[1] : null);
+                        }
                         // Events server-filtered where the SDK supports realtime queries; the client
                         // matcher below still runs. serverFilter: 'scope' (default) | 'all' (alias true) | false
                         const rtMode = serverFilterMode(dataSource.realtime);
-                        const rtFilterSpec = rtMode ? { queriesConfig: rtQueries, scope, scopeColumns, mode: rtMode } : null;
-                        const unsubscribe = await window.ManifestDataRealtime.subscribeToTable(
+                        const rtFilterSpec = rtMode ? {
+                            get queriesConfig() { return realtimeQueriesFor(dataSourceName, rtQueries); },
+                            scope, scopeColumns, mode: rtMode
+                        } : null;
+                        const subscribe = () => window.ManifestDataRealtime.subscribeToTable(
                             dataSourceName,
                             appwriteConfig.databaseId,
                             tableId,
                             scope,
                             async (eventType, payload) => {
-                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, rtQueries);
+                                await handleTableRealtimeEvent(dataSourceName, appwriteConfig.databaseId, tableId, scope, scopeColumns, eventType, payload, generation, realtimeQueriesFor(dataSourceName, rtQueries));
                             },
                             () => !superseded(),
                             rtFilterSpec
                         );
+                        realtimeBinds.set(dataSourceName, { config: dataSource.realtime, mode: rtMode, rebind: subscribe, defaultLimit: limitQ ? limitQ[1] : null });
+                        const unsubscribe = await subscribe();
                         if (superseded()) { dropSubscription(dataSourceName, unsubscribe); landed = true; return null; }
                     }
                 } else if (bucketId) {
@@ -12594,6 +12667,13 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
             if (superseded()) { landed = true; return null; }
 
+            // A $query issued since this load began: its rows stand, this result never lands
+            if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
+                landed = true;
+                if (!isInitializing) setSourceState(dataSourceName, { loading: false });
+                return enhancedData;
+            }
+
             // Cache is always safe — the key carries this load's locale.
             dataSourceCache.set(cacheKey, enhancedData);
 
@@ -12610,6 +12690,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
                 landed = true;
+                clearActiveQuery(dataSourceName, Array.isArray(enhancedData) ? enhancedData.length : 0);
                 await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
@@ -12780,12 +12861,38 @@ async function initializeDataSourcesPlugin() {
     }
 
     // Export loadDataSource for use by team change listener
+    // Catch-up: events missed while offline or asleep never arrive, so live sources
+    // refetch (their active $query, else the default load) on reconnect or wake
+    const CATCH_UP_HIDDEN_MS = 60000;
+    let hiddenSince = document.hidden ? Date.now() : null;
+    let catchUpTimer = null;
+    const catchUpLiveSources = () => {
+        clearTimeout(catchUpTimer);
+        catchUpTimer = setTimeout(() => {
+            for (const name of realtimeBinds.keys()) {
+                const active = activeQueries.get(name);
+                const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
+                Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
+            }
+        }, 250);
+    };
+    window.addEventListener('online', catchUpLiveSources);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { hiddenSince = Date.now(); return; }
+        const away = hiddenSince !== null ? Date.now() - hiddenSince : 0;
+        hiddenSince = null;
+        if (away >= CATCH_UP_HIDDEN_MS) catchUpLiveSources();
+    });
+
     window.ManifestDataMain = {
         loadDataSource,
         reloadDataSource,
         _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
         filterFilesByScope, // Export for use by getFilesForEntry
-        requiresIdentity
+        requiresIdentity,
+        setActiveQuery,
+        forgetLiveSource,
+        getActiveQuery: (dataSourceName) => activeQueries.get(dataSourceName) || null
     };
 
     // Listen for manifest:dev-reload (fired by mnfst-run when a data file changes).
