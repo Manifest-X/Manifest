@@ -44,8 +44,8 @@ describe('mountManifest({ appwrite })', () => {
         const tasks = () => x('$x.tasks')
         await wait(() => m.$$('li').length === 50)
 
-        // The source's default ['limit', 50] reaches the server first, and Appwrite keeps the first limit
-        expect((await tasks().$first(10)).items).toHaveLength(50)
+        // Paging supplies its own limit in place of the source's ['limit', 50]
+        expect((await tasks().$first(10)).items).toHaveLength(10)
         const paged = () => x('$x.paged')
         await wait(() => paged()?.$ready && typeof paged().$first === 'function')
         const first = await paged().$first(10)

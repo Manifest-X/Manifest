@@ -51,7 +51,8 @@ export default {
                 await j.page.waitForFunction(() => window.Alpine.evaluate(document.body, '$x.tasks.some(t => t.title === "Arrived live")'));
                 await j.fake.table('tasks').update('tas003000', { title: 'Renamed live' });
                 await j.fake.table('tasks').remove('tas002999');
-                await j.page.waitForFunction(() => document.querySelector('[data-testid=list] li span')?.textContent === 'Renamed live');
+                // Newest first: the live row sorts above the renamed one
+                await j.page.waitForFunction(() => [...document.querySelectorAll('[data-testid=list] li span')].slice(0, 2).map(el => el.textContent).join('|') === 'Arrived live|Renamed live');
                 expect(await j.x('$x.tasks.length') === 100, 'create then delete should net 100 rows');
                 await j.page.type('input[name=term]', 'live');
                 await j.settle();
