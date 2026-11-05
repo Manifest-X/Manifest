@@ -1,0 +1,6 @@
+{
+  "name": "Contract app",
+  "short_name": "Contract",
+  "start_url": "/",
+  "contract": "/shared/contract.js"
+}

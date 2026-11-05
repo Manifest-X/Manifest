@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contract app</title>
+  <link rel="manifest" href="/manifest.json">
+
+  <!-- App modules -->
+  <script type="importmap">
+    { "imports": { "@app/": "/app/", "@shared/": "/shared/" } }
+  </script>
+
+  <!-- Manifest -->
+  <script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="router"></script>
+  <script type="module" src="/app/main.js"></script>
+</head>
+
+<body>
+
+  <main>
+    <form x-data="taskForm" @submit.prevent="submit()" novalidate>
+      <label>Title <input id="title" x-model="title" :maxlength="titleMax"></label>
+      <p id="title-error" x-text="errors.title || ''"></p>
+      <label>Status
+        <select id="status" x-model="status">
+          <template x-for="s in statuses" :key="s"><option :value="s" x-text="s"></option></template>
+        </select>
+      </label>
+      <p id="status-error" x-text="errors.status || ''"></p>
+      <button id="save" type="submit">Save</button>
+      <p id="result" x-text="result"></p>
+    </form>
+  </main>
+
+</body>
+
+</html>

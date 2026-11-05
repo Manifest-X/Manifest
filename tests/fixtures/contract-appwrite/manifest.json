@@ -1,0 +1,13 @@
+{
+  "name": "Contract checks",
+  "short_name": "Checks",
+  "contract": "/shared/contract.js",
+  "appwrite": { "projectId": "example", "endpoint": "https://cloud.appwrite.io/v1" },
+  "data": {
+    "tasks": {
+      "appwriteDatabaseId": "main",
+      "appwriteTableId": "tasks",
+      "queries": { "default": [["orderAsc", "title"], ["limit", 100]] }
+    }
+  }
+}

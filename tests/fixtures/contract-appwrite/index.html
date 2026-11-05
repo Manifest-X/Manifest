@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Contract checks</title>
+  <link rel="manifest" href="/manifest.json">
+  <script src="https://cdn.jsdelivr.net/npm/appwrite@latest"></script>
+  <script src="/lib/manifest.js" data-plugin-base="/lib/" data-plugins="data,appwrite-data"></script>
+</head>
+
+<body x-data="{ typo: false }">
+  <ul id="tasks">
+    <template x-for="task in $x.tasks" :key="task.$id">
+      <li><span class="title" x-text="task.title"></span> <span class="status" x-text="typo ? task.stauts : task.status"></span></li>
+    </template>
+  </ul>
+  <button id="typo" @click="typo = true">Typo</button>
+</body>
+
+</html>

@@ -61,7 +61,10 @@ function deepSeal(obj) {
     return obj;
 }
 
-const rawOf = (obj) => (typeof Alpine !== 'undefined' && Alpine.raw && obj ? Alpine.raw(obj) : obj);
+const rawOf = (obj) => {
+    const raw = typeof Alpine !== 'undefined' && Alpine.raw && obj ? Alpine.raw(obj) : obj;
+    return window.ManifestDataContract ? window.ManifestDataContract.raw(raw) : raw;
+};
 
 const rowKey = (row) => (row && typeof row === 'object' && (typeof row.$id === 'string' || typeof row.$id === 'number'))
     ? row.$id
@@ -119,7 +122,7 @@ function mergeRowFields(target, fields, dataSourceName) {
         if (key === '$files') continue;
         const value = fields[key];
         if (sameScalarOrList(raw[key], value)) continue;
-        target[key] = createReactiveReferences(value, dataSourceName);
+        target[key] = createReactiveReferences(value, dataSourceName, true);
     }
 }
 
@@ -451,14 +454,14 @@ function getRawData(dataSourceName) {
 }
 
 // New object/array references (incl. nested arrays like fileIds) so Alpine tracks changes
-function createReactiveReferences(data, dataSourceName = null) {
+function createReactiveReferences(data, dataSourceName = null, nested = false) {
     if (data === null || data === undefined) {
         return data;
     }
 
     if (Array.isArray(data)) {
         // Create new array with new references for each item
-        return data.map(item => createReactiveReferences(item, dataSourceName));
+        return data.map(item => createReactiveReferences(item, dataSourceName, nested));
     }
 
     if (typeof data === 'object') {
@@ -468,7 +471,7 @@ function createReactiveReferences(data, dataSourceName = null) {
         for (const key of Object.keys(data)) {
             const value = data[key];
             // Recursively create new references for nested objects/arrays
-            newObj[key] = createReactiveReferences(value, dataSourceName);
+            newObj[key] = createReactiveReferences(value, dataSourceName, true);
         }
 
         // Detect file objects (have mimeType or sizeOriginal)
@@ -694,7 +697,10 @@ function createReactiveReferences(data, dataSourceName = null) {
             });
         }
 
-        return newObj;
+        // Contract checks wrap top-level Appwrite rows (dev and opted-in hosts)
+        return !nested && isDatabaseEntry && dataSourceName && window.ManifestDataContract
+            ? window.ManifestDataContract.guard(dataSourceName, newObj)
+            : newObj;
     }
 
     // Primitives can be returned as-is

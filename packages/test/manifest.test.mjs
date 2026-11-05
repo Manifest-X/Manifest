@@ -11,6 +11,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve, relative, basename, extname, isAbsolute, sep } from 'node:path';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 
@@ -396,6 +397,7 @@ const STATIC_CHECKS = [
     { name: 'pwa', label: 'PWA completeness', run: checkPwa },
     { name: 'components', label: 'Component references', run: checkComponents },
     { name: 'dataSources', label: 'Data source references', run: checkDataSources },
+    { name: 'contract', label: 'Shared contract', run: checkContract },
     { name: 'expressions', label: 'Directive expression syntax', run: checkExpressions },
     { name: 'routes', label: 'Route consistency', run: checkRoutes },
     { name: 'locales', label: 'Locale parity', run: checkLocales }
@@ -587,6 +589,90 @@ async function checkDataSources(project, reporter) {
     }
 
     reporter.setDetails(`${registered.size} source(s), ${used.size} used`);
+    reporter.endCheck();
+}
+
+// 4b. Shared contract ---------------------------------------------------
+
+const QUERY_NO_ATTRIBUTE = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore', 'orderRandom']);
+
+// Column names a query list reads: [method, attribute, ...] with and/or nesting and select lists
+function queryAttributes(list, out = []) {
+    if (!Array.isArray(list)) return out;
+    for (const q of list) {
+        if (!Array.isArray(q) || typeof q[0] !== 'string') continue;
+        const [method, ...args] = q;
+        if (method === 'and' || method === 'or') queryAttributes(args[0], out);
+        else if (method === 'select') out.push(...(Array.isArray(args[0]) ? args[0] : args).filter((a) => typeof a === 'string'));
+        else if (!QUERY_NO_ATTRIBUTE.has(method) && typeof args[0] === 'string') out.push(args[0]);
+    }
+    return out;
+}
+
+async function checkContract(project, reporter) {
+    reporter.startCheck('contract', 'Shared contract');
+    const { manifest, dataSources, root } = project;
+    const c = manifest.contract;
+    const ref = c && typeof c === 'object' && !Array.isArray(c) ? c.module : c;
+    if (c === undefined) {
+        reporter.setDetails('no contract declared');
+        reporter.endCheck();
+        return;
+    }
+    if (typeof ref !== 'string' || !ref) {
+        reporter.error('"contract" must be a path to a JavaScript module', { file: 'manifest.json' });
+        reporter.endCheck();
+        return;
+    }
+    const file = resolve(root, ref.replace(/^\/+/, ''));
+    if (!existsSync(file)) {
+        reporter.error(`contract module not found: ${ref}`, { file: 'manifest.json' });
+        reporter.endCheck();
+        return;
+    }
+    let mod;
+    try {
+        mod = await import(`${pathToFileURL(file).href}?mtime=${statSync(file).mtimeMs}`);
+    } catch (e) {
+        reporter.error(`contract module failed to load: ${e.message}`, { file: relative(root, file) });
+        reporter.endCheck();
+        return;
+    }
+    const tables = mod.tables && typeof mod.tables === 'object' ? mod.tables : null;
+    if (!tables) {
+        reporter.info('contract exports no `tables`; Appwrite sources not checked', { file: relative(root, file) });
+        reporter.endCheck();
+        return;
+    }
+    const declared = Object.entries(tables).map(([key, t]) => ({
+        key, id: (t && t.id) || key, database: t && t.database, columns: t && Array.isArray(t.columns) ? new Set(t.columns) : null
+    }));
+    const defaultDb = manifest.appwrite && (manifest.appwrite.databaseId || manifest.appwrite.database);
+    let checked = 0;
+    for (const [name, src] of Object.entries(dataSources)) {
+        if (!src || typeof src !== 'object' || typeof src.appwriteTableId !== 'string') continue;
+        checked++;
+        const db = src.appwriteDatabaseId || defaultDb;
+        const table = declared.find((t) => t.id === src.appwriteTableId && (!t.database || !db || t.database === db));
+        if (!table) {
+            reporter.error(`Data source "${name}" reads table "${src.appwriteTableId}"${db ? ` in "${db}"` : ''}, which the contract does not declare`, { file: 'manifest.json' });
+            continue;
+        }
+        if (!table.columns) continue;
+        const known = (c) => typeof c !== 'string' || c.startsWith('$') || table.columns.has(c.split('.')[0]);
+        const sc = src.scopeColumn;
+        for (const c of typeof sc === 'string' ? [sc] : sc && typeof sc === 'object' ? Object.values(sc) : []) {
+            if (!known(c)) reporter.error(`Data source "${name}" scopes on "${c}", not a column of "${table.key}" in the contract`, { file: 'manifest.json' });
+        }
+        const q = src.queries;
+        const lists = Array.isArray(q) ? { '': q } : q && typeof q === 'object' ? q : {};
+        for (const [label, list] of Object.entries(lists)) {
+            for (const c of new Set(queryAttributes(list))) {
+                if (!known(c)) reporter.error(`Data source "${name}"${label ? ` query "${label}"` : ''} reads "${c}", not a column of "${table.key}" in the contract`, { file: 'manifest.json' });
+            }
+        }
+    }
+    reporter.setDetails(`${declared.length} table(s) declared, ${checked} Appwrite source(s) checked`);
     reporter.endCheck();
 }
 
