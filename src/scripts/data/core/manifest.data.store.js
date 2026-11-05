@@ -190,6 +190,12 @@ function setSourceState(dataSourceName, patch) {
     return next;
 }
 
+// Last-issued read per source: a slower earlier read ($query or load) never lands over a later one
+const latestRead = new Map();
+let readSeq = 0;
+function beginRead(dataSourceName) { const token = ++readSeq; latestRead.set(dataSourceName, token); return token; }
+function isLatestRead(dataSourceName, token) { return token === undefined || latestRead.get(dataSourceName) === token; }
+
 // Authoritative in-flight map: one promise per key, cleared on settle
 function runDeduped(key, factory) {
     if (loadingPromises.has(key)) return loadingPromises.get(key);
@@ -214,14 +220,68 @@ function ensureSourceArray(dataSourceName) {
     return store[dataSourceName];
 }
 
+// Sort spec [[attr, 1|-1], ...] → comparator; nulls sort first ascending
+function compareBy(order) {
+    return (a, b) => {
+        for (const [key, dir] of order) {
+            const x = a?.[key], y = b?.[key];
+            if (x === y) continue;
+            if (x === null || x === undefined) return -dir;
+            if (y === null || y === undefined) return dir;
+            return (x < y ? -1 : 1) * dir;
+        }
+        return 0;
+    };
+}
+
+function sortedIndex(arr, row, cmp) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cmp(arr[mid], row) <= 0) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+// Ordered append (realtime on a sorted source): new rows insert at their sort
+// position; merged rows whose sort key moved are re-positioned. Structure is
+// rebuilt on a raw copy and assigned once (one reactive write, not per splice)
+function upsertOrdered(store, dataSourceName, rows, order) {
+    const cmp = compareBy(order);
+    const cur = store[dataSourceName];
+    const curRaw = rawOf(store)[dataSourceName];
+    let next = null;
+    for (const row of rows) {
+        const list = next || curRaw;
+        const id = rowKey(row);
+        const i = id !== null ? list.findIndex(r => rowKey(r) === id) : -1;
+        if (i !== -1) {
+            mergeRowFields(next ? (Alpine.reactive ? Alpine.reactive(list[i]) : list[i]) : cur[i], row, dataSourceName);
+            const misplaced = (i > 0 && cmp(list[i - 1], list[i]) > 0) || (i < list.length - 1 && cmp(list[i], list[i + 1]) > 0);
+            if (!misplaced) continue;
+            if (!next) next = curRaw.slice();
+            const [moved] = next.splice(i, 1);
+            next.splice(sortedIndex(next, moved, cmp), 0, moved);
+            continue;
+        }
+        if (!next) next = curRaw.slice();
+        next.splice(sortedIndex(next, row, cmp), 0, rawOf(createReactiveReferences(row, dataSourceName)));
+    }
+    if (next) store[dataSourceName] = next;
+}
+
 // Identity-preserving upsert by $id: existing rows are merged in place, new
 // rows created; append keeps the array, replace swaps it only when membership
 // or order changed
-function upsertRows(store, dataSourceName, rows, mode) {
+function upsertRows(store, dataSourceName, rows, mode, order) {
     const raw = rawOf(store);
     const curRaw = Array.isArray(raw[dataSourceName]) ? raw[dataSourceName] : null;
     if (!curRaw) {
         store[dataSourceName] = rows.map(row => createReactiveReferences(row, dataSourceName));
+        return;
+    }
+    if (mode === 'append' && Array.isArray(order) && order.length) {
+        upsertOrdered(store, dataSourceName, rows, order);
         return;
     }
     const cur = store[dataSourceName];
@@ -279,7 +339,7 @@ function writeSource(dataSourceName, data, options = {}) {
             rawDataStore.set(dataSourceName, data);
         }
     } else if (Array.isArray(data)) {
-        upsertRows(store, dataSourceName, data, mode);
+        upsertRows(store, dataSourceName, data, mode, options.order);
         const arr = rawOf(store)[dataSourceName];
         rawDataStore.set(dataSourceName, arr);
         attachMethods(arr, dataSourceName);
@@ -1245,6 +1305,8 @@ window.ManifestDataStore = {
     // Stale-first + dedupe (§11.1)
     setSourceState,
     runDeduped,
+    beginRead,
+    isLatestRead,
     sourceFreshness,
     // Persistence (§12.2)
     sourceGeneration,
