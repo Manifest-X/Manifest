@@ -8,9 +8,9 @@
 // Re-running the CLI overwrites the augmentation block (between the
 // AUGMENTATION:start / AUGMENTATION:end markers in the template).
 
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
-import { dirname, join, resolve, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -45,18 +45,36 @@ export async function main(argv) {
     const output = applyAugmentation(template, augmentation);
 
     const outPath = resolve(cwd, opts.out);
+    if (opts.check) {
+        const current = existsSync(outPath) ? readFileSync(outPath, 'utf8') : '';
+        if (current !== output) {
+            console.error(`mnfst-types: ${opts.out} is out of date with manifest.json — run \`npx mnfst-types\` and commit it`);
+            process.exitCode = 1;
+            return;
+        }
+        console.log(`mnfst-types: ${opts.out} is up to date`);
+        return;
+    }
     writeFileSync(outPath, output);
     console.log(`mnfst-types: wrote ${outPath}`);
 
+    const typesPath = relative(projectRoot, outPath).split('\\').join('/');
     if (opts.init) {
-        const jsconfigPath = resolve(cwd, 'jsconfig.json');
-        if (existsSync(jsconfigPath)) {
-            console.log(`mnfst-types: jsconfig.json already exists, leaving it alone`);
-        } else {
-            writeFileSync(jsconfigPath, defaultJsconfig());
-            console.log(`mnfst-types: wrote ${jsconfigPath}`);
-        }
+        writeOnce(join(projectRoot, 'jsconfig.json'), defaultJsconfig(typesPath, importMapPaths(projectRoot)));
     }
+    if (opts.ci) {
+        writeOnce(join(projectRoot, '.github', 'workflows', 'types.yml'), defaultWorkflow(typesPath));
+    }
+}
+
+function writeOnce(path, content) {
+    if (existsSync(path)) {
+        console.log(`mnfst-types: ${path} already exists, leaving it alone`);
+        return;
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    console.log(`mnfst-types: wrote ${path}`);
 }
 
 function parseArgs(argv) {
@@ -64,12 +82,16 @@ function parseArgs(argv) {
         manifest: 'manifest.json',
         out: 'manifest.d.ts',
         init: false,
+        ci: false,
+        check: false,
         help: false
     };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--help' || a === '-h') opts.help = true;
         else if (a === '--init') opts.init = true;
+        else if (a === '--ci') opts.ci = true;
+        else if (a === '--check') opts.check = true;
         else if (a === '--manifest') opts.manifest = argv[++i];
         else if (a === '--out') opts.out = argv[++i];
         else if (a.startsWith('--manifest=')) opts.manifest = a.slice('--manifest='.length);
@@ -88,30 +110,68 @@ Options:
   --manifest <path>   Path to manifest.json (default: ./manifest.json)
   --out <path>        Output .d.ts path (default: ./manifest.d.ts)
   --init              Also write a baseline jsconfig.json (only if missing)
+  --ci                Also write .github/workflows/types.yml (only if missing)
+  --check             Exit 1 if the output file is out of date; write nothing
   -h, --help          Show this message
 `);
 }
 
-function defaultJsconfig() {
+// index.html's import map as jsconfig paths: "@app/": "/app/" → "@app/*": ["./app/*"]
+function importMapPaths(projectRoot) {
+    const paths = {};
+    let html = '';
+    try { html = readFileSync(join(projectRoot, 'index.html'), 'utf8'); } catch { return paths; }
+    const m = html.match(/<script[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (!m) return paths;
+    let map;
+    try { map = JSON.parse(m[1]); } catch { return paths; }
+    for (const [key, target] of Object.entries((map && map.imports) || {})) {
+        if (typeof target !== 'string' || /^[a-z]+:|^\/\//i.test(target)) continue;
+        const local = '.' + (target.startsWith('/') ? target : '/' + target);
+        if (key.endsWith('/') && local.endsWith('/')) paths[key + '*'] = [local + '*'];
+        else paths[key] = [local];
+    }
+    return paths;
+}
+
+function defaultJsconfig(types, aliases = {}) {
     return JSON.stringify({
         compilerOptions: {
             target: 'es2022',
-            module: 'es2022',
-            moduleResolution: 'node',
+            module: 'esnext',
+            moduleResolution: 'bundler',
             checkJs: true,
             allowJs: true,
             noEmit: true,
             strict: false,
-            lib: ['es2022', 'dom']
+            skipLibCheck: true,
+            lib: ['es2022', 'dom', 'dom.iterable'],
+            paths: { mnfst: [`./${types}`], ...aliases }
         },
-        include: ['**/*.js', 'manifest.d.ts'],
-        exclude: ['node_modules', 'dist']
-    }, null, 2) + '\n';
+        include: ['app/**/*', 'shared/**/*', types, '*.d.ts'],
+        exclude: ['node_modules', 'website']
+    }, null, 4) + '\n';
 }
 
-// ---------------------------------------------------------------------------
-// Template augmentation
-// ---------------------------------------------------------------------------
+function defaultWorkflow(out) {
+    return [
+        'name: Types',
+        '',
+        'on: [push, pull_request]',
+        '',
+        'jobs:',
+        '  check:',
+        '    runs-on: ubuntu-latest',
+        '    steps:',
+        '      - uses: actions/checkout@v4',
+        '      - uses: actions/setup-node@v4',
+        '        with:',
+        '          node-version: 22',
+        `      - run: npx -y mnfst-types@latest --check --out ${out}`,
+        '      - run: npx -y -p typescript@7 tsc -p jsconfig.json',
+        ''
+    ].join('\n');
+}
 
 const START_MARKER = '// AUGMENTATION:start';
 const END_MARKER = '// AUGMENTATION:end';
@@ -149,22 +209,18 @@ function applyAugmentation(template, body) {
 async function buildAugmentation(manifest, projectRoot) {
     const data = manifest && typeof manifest === 'object' ? manifest.data : null;
     if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
-        return [
-            'declare global {',
-            '    // No data sources declared in manifest.json.',
-            '}',
-            'export {};'
-        ].join('\n');
+        return '// No data sources declared in manifest.json.\nexport interface ManifestSources { }';
     }
 
+    const contract = await loadContract(manifest, projectRoot);
     const sourceTypes = [];
     const augmentations = [];
 
     for (const [name, config] of Object.entries(data)) {
-        const inferred = await inferSourceType(name, config, projectRoot);
+        const inferred = await inferSourceType(name, config, projectRoot, manifest, contract);
         if (!inferred) continue;
         sourceTypes.push(inferred.typeBlock);
-        augmentations.push(`        ${jsonKey(name)}: ${inferred.augmentationType};`);
+        augmentations.push(`    ${jsonKey(name)}: ${inferred.augmentationType};`);
     }
 
     const lines = [];
@@ -176,21 +232,44 @@ async function buildAugmentation(manifest, projectRoot) {
         lines.push(block);
         lines.push('');
     }
-    lines.push('declare global {');
-    lines.push('    interface ManifestSources {');
+    lines.push('export interface ManifestSources {');
     lines.push.apply(lines, augmentations);
-    lines.push('    }');
     lines.push('}');
-    lines.push('');
-    lines.push('export {};');
     return lines.join('\n');
+}
+
+// The project's shared contract (manifest.json `contract`), for Appwrite column names
+async function loadContract(manifest, projectRoot) {
+    const c = manifest.contract;
+    const ref = c && typeof c === 'object' ? c.module : c;
+    if (typeof ref !== 'string' || !ref) return null;
+    const file = resolve(projectRoot, ref.replace(/^\/+/, ''));
+    if (!existsSync(file)) {
+        console.warn(`mnfst-types: contract ${ref} not found; Appwrite rows stay loose`);
+        return null;
+    }
+    try {
+        const mod = await import(`${pathToFileURL(file).href}?mtime=${statSync(file).mtimeMs}`);
+        return mod && mod.tables && typeof mod.tables === 'object' ? mod.tables : null;
+    } catch (e) {
+        console.warn(`mnfst-types: contract ${ref} failed to load (${e.message}); Appwrite rows stay loose`);
+        return null;
+    }
+}
+
+function contractColumns(tables, manifest, config) {
+    if (!tables) return null;
+    const defaultDb = manifest.appwrite && (manifest.appwrite.databaseId || manifest.appwrite.database);
+    const db = config.appwriteDatabaseId || defaultDb;
+    const hit = Object.entries(tables).find(([key, t]) => t && (t.id || key) === config.appwriteTableId && (!t.database || !db || t.database === db));
+    return hit && Array.isArray(hit[1].columns) ? { key: hit[0], columns: hit[1].columns.filter((c) => typeof c === 'string') } : null;
 }
 
 // ---------------------------------------------------------------------------
 // Source-shape inference
 // ---------------------------------------------------------------------------
 
-async function inferSourceType(name, config, projectRoot) {
+async function inferSourceType(name, config, projectRoot, manifest = {}, contract = null) {
     const safeName = toTypeName(name);
 
     // Appwrite bucket (storage).
@@ -201,21 +280,24 @@ async function inferSourceType(name, config, projectRoot) {
         };
     }
 
-    // Appwrite table.
+    // Appwrite table: column names from the contract when it declares the table.
     if (config && typeof config === 'object' && config.appwriteTableId) {
         const rowType = `Row_${safeName}`;
-        const typeBlock = [
-            `/** Row shape for $x.${name} (Appwrite table — extend as needed). */`,
-            `export interface ${rowType} {`,
-            `    $id: string;`,
-            `    $createdAt?: string;`,
-            `    $updatedAt?: string;`,
-            `    [field: string]: unknown;`,
-            `}`
-        ].join('\n');
+        const declared = contractColumns(contract, manifest, config);
+        const typeBlock = declared
+            ? [
+                `/** Row shape for $x.${name}: columns of "${declared.key}" in the contract (declare ManifestRows.${name} for precise types). */`,
+                `export type ${rowType} = ManifestRowSystem & {`,
+                ...declared.columns.map((c) => `    ${jsonKey(c)}: any;`),
+                `};`
+            ].join('\n')
+            : [
+                `/** Row shape for $x.${name} (Appwrite table; add it to the contract, or declare ManifestRows.${name}, for checked columns). */`,
+                `export type ${rowType} = ManifestRowSystem & { [field: string]: any };`
+            ].join('\n');
         return {
             typeBlock,
-            augmentationType: `ManifestArraySource<${rowType}> & ManifestAppwriteTableOps<${rowType}>`
+            augmentationType: `ManifestTableSource<ManifestRowFor<${JSON.stringify(name)}, ${rowType}>>`
         };
     }
 
@@ -336,8 +418,9 @@ function sampleCsv(path) {
     const sampleRows = rows.slice(1, 51);
     const firstHeader = (header[0] || '').toLowerCase();
 
-    // Key-value mode: first column is `key`, second is `value`.
-    if (firstHeader === 'key' && (header[1] || '').toLowerCase() === 'value') {
+    // Key-value mode: `key` + `value`, or `key` + one column per locale (values resolve to the current locale)
+    const localeColumns = header.length > 1 && header.slice(1).every((h) => /^[a-z]{2,3}(-[a-z0-9]{2,8})?$/i.test(h || ''));
+    if (firstHeader === 'key' && ((header[1] || '').toLowerCase() === 'value' || localeColumns)) {
         const shape = {};
         for (const row of sampleRows) {
             if (!row[0]) continue;

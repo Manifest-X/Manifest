@@ -1,0 +1,38 @@
+{
+    "compilerOptions": {
+        "target": "es2022",
+        "module": "esnext",
+        "moduleResolution": "bundler",
+        "checkJs": true,
+        "allowJs": true,
+        "noEmit": true,
+        "strict": false,
+        "skipLibCheck": true,
+        "lib": [
+            "es2022",
+            "dom",
+            "dom.iterable"
+        ],
+        "paths": {
+            "mnfst": [
+                "./manifest.d.ts"
+            ],
+            "@app/*": [
+                "./app/*"
+            ],
+            "@shared/*": [
+                "./shared/*"
+            ]
+        }
+    },
+    "include": [
+        "app/**/*",
+        "shared/**/*",
+        "manifest.d.ts",
+        "*.d.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "website"
+    ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "Types app",
+  "short_name": "Types",
+  "contract": "/shared/contract.js",
+  "appwrite": { "projectId": "example", "endpoint": "https://cloud.appwrite.io/v1", "databaseId": "main" },
+  "data": {
+    "tasks": { "appwriteTableId": "tasks", "queries": { "default": [["orderDesc", "$createdAt"]], "open": [["equal", "status", "open"]] } },
+    "workspaces": { "appwriteTableId": "workspaces" },
+    "team": "/data/team.json"
+  }
+}

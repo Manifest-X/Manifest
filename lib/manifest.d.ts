@@ -17,7 +17,7 @@
 /** Appwrite-style query expression returned by helper builders. */
 export type ManifestQueryExpr = string;
 
-/** Appwrite-style query helpers used with `$query([...])`. */
+/** Appwrite-style query helpers. */
 export interface ManifestQuery {
     equal(field: string, value: unknown): ManifestQueryExpr;
     notEqual(field: string, value: unknown): ManifestQueryExpr;
@@ -41,81 +41,180 @@ export interface ManifestQuery {
     cursorBefore(id: string): ManifestQueryExpr;
 }
 
+/** A column of row type `T` (or a dot path into a relationship). Any string when `T` is loose. */
+export type ManifestColumn<T> = string extends keyof T ? string : (keyof T & string) | `${keyof T & string}.${string}`;
+
+type ManifestCompare = 'equal' | 'notEqual' | 'greaterThan' | 'greaterThanOrEqual' | 'greaterThanEqual'
+    | 'lessThan' | 'lessThanOrEqual' | 'lessThanEqual' | 'contains' | 'startsWith' | 'endsWith' | 'search';
+
+/** One `$query` expression: `[method, column, ...values]`. Column names are checked against the row type. */
+export type ManifestQueryTuple<T = any> =
+    | [ManifestCompare, ManifestColumn<T>, ...unknown[]]
+    | ['between', ManifestColumn<T>, unknown, unknown]
+    | ['isNull' | 'isNotNull' | 'orderAsc' | 'orderDesc', ManifestColumn<T>]
+    | ['orderRandom']
+    | ['limit' | 'offset', number]
+    | ['cursorAfter' | 'cursorBefore', string]
+    | ['select', ManifestColumn<T>[]]
+    | ['and' | 'or', ManifestQueryTuple<T>[]];
+
 /** State flags exposed on every data source (array or object). */
 export interface ManifestSourceState {
-    /** True while the source is fetching for the first time or after a mutation. */
+    /** True during a fetch or mutation. */
     readonly $loading: boolean;
     /** Last error from a load or mutation, or null. */
     readonly $error: Error | string | null;
-    /** True once initial load has completed (success or failure). */
+    /** True once the source has settled (loaded, or resolved empty because its scope can't apply). */
     readonly $ready: boolean;
+    /** True while cached rows show and fresh data is still loading. */
+    readonly $stale: boolean;
+    /** Resolves once fresh data has landed. */
+    readonly $fresh: Promise<void>;
 }
+
+/** Fields Appwrite adds to every row. */
+export interface ManifestRowSystem {
+    $id: string;
+    $createdAt: string;
+    $updatedAt: string;
+    $sequence?: number;
+    $permissions?: string[];
+    $tableId?: string;
+    $databaseId?: string;
+    /** Files linked to the row when the source configures `storage`. */
+    $files?: ManifestFile[];
+}
+
+/** A file row from an Appwrite bucket source. */
+export interface ManifestFile {
+    $id: string;
+    name: string;
+    mimeType: string;
+    sizeOriginal: number;
+    $createdAt: string;
+    $updatedAt: string;
+    readonly $url?: string;
+    readonly $isImage?: boolean;
+    readonly $isPdf?: boolean;
+    readonly $formattedSize?: string | null;
+    readonly $thumbnailUrl?: string | null;
+}
+
+/** Search weights: `{ title: 3, body: 1 }`. */
+export type ManifestSearchWeights<T> = Partial<Record<ManifestColumn<T>, number>>;
 
 /** Operators available on array-shaped sources (CSV tabular, JSON arrays, Appwrite tables). */
 export interface ManifestArrayOps<T> {
-    /** Substring match across the given fields. Returns matching items. */
-    $search(term: string, ...fields: (keyof T & string)[]): T[];
-    /**
-     * Local sources: filter by an array of `Manifest.query.*` expressions and array methods.
-     * Appwrite sources: server-side query, returns a Promise.
-     */
-    $query(expressions: ManifestQueryExpr[]): T[] | Promise<T[]>;
-    /** Look up a single row whose `id` matches the current route param, if any. */
-    $route(path?: string): T | undefined;
+    /** Substring match across the given fields, or a ranked search with field weights. */
+    $search(term: string, ...fields: ManifestColumn<T>[]): T[];
+    $search(term: string, weights: ManifestSearchWeights<T>): T[];
+    /** Local sources: filter synchronously. */
+    $query(queries: ManifestQueryTuple<T>[]): T[];
+    /** The row whose `field` matches a segment of the current URL. */
+    $route(field?: ManifestColumn<T>): T | undefined;
 }
 
-/** Mutations available on Appwrite-table sources. */
+/** A cursor page from `$first`, `$next` and `$prev`. */
+export interface ManifestCursorPage<T> {
+    items: T[];
+    cursor: string | null;
+    total: number;
+    hasMore: boolean;
+}
+
+/** An offset page from `$page`. */
+export interface ManifestOffsetPage<T> {
+    items: T[];
+    page: number;
+    total: number;
+    totalPages: number;
+    hasMore: boolean;
+}
+
+/** Options for `$duplicate` on table rows: field overrides plus copy controls. */
+export type ManifestDuplicateOptions<T> = Partial<T> & { newRowId?: string; files?: 'duplicate' | 'same' | 'none' };
+
+/** Reads, mutations and paging on Appwrite-table sources. */
 export interface ManifestAppwriteTableOps<T> {
-    $create(values: Partial<T>): Promise<T>;
+    /** Server-side query with expressions or a named query from manifest.json; replaces the source's rows. */
+    $query(queriesOrName: ManifestQueryTuple<T>[] | string): Promise<T[]>;
+    $create(values: Partial<T>, rowId?: string): Promise<T>;
     $update(id: string, values: Partial<T>): Promise<T>;
-    $delete(id: string): Promise<void>;
-    $duplicate(id: string, overrides?: Partial<T>): Promise<T>;
+    $update(ids: string[], values: Partial<T>): Promise<T[]>;
+    $delete(id: string): Promise<T>;
+    $delete(ids: string[]): Promise<T[]>;
+    $duplicate(id: string, options?: ManifestDuplicateOptions<T>): Promise<T>;
+    $first(limit?: number): Promise<ManifestCursorPage<T>>;
+    $next(cursor: string, limit?: number): Promise<ManifestCursorPage<T>>;
+    $prev(cursor: string, limit?: number): Promise<ManifestCursorPage<T>>;
+    $page(page: number, limit?: number): Promise<ManifestOffsetPage<T>>;
+    $reload(): Promise<void>;
+    /** Realtime events skipped by the growth cap since the last load. */
+    readonly $realtimeOverflow: number;
 }
 
 /** Operations available on Appwrite-bucket (storage) sources. */
 export interface ManifestAppwriteBucketOps {
-    $url(fileId: string): string;
-    $preview(fileId: string, opts?: Record<string, unknown>): string;
-    $download(fileId: string): string;
-    $openUrl(fileId: string): void;
-    $openPreview(fileId: string): void;
-    $openDownload(fileId: string): void;
-    $upload(file: File | Blob, opts?: Record<string, unknown>): Promise<{ $id: string }>;
+    $url(fileId: string, token?: string): string;
+    $preview(fileId: string, options?: Record<string, unknown>, token?: string): string;
+    $download(fileId: string, token?: string): string;
+    $openUrl(fileId: string, token?: string): void;
+    $openPreview(fileId: string, options?: Record<string, unknown>, token?: string): void;
+    $openDownload(fileId: string, filename?: string, token?: string): void;
+    $create(file: File | Blob, fileId?: string, permissions?: string[], onProgress?: (progress: unknown) => void): Promise<ManifestFile>;
+    $upload(file: File | Blob, opts?: Record<string, unknown>): Promise<ManifestFile>;
     $remove(fileId: string): Promise<void>;
-    $filesFor(parentId: string, fieldName?: string): unknown[];
+    $delete(fileId: string | string[]): Promise<unknown>;
+    $duplicate(fileId: string, options?: { newName?: string; newFileId?: string }): Promise<ManifestFile>;
+    $filesFor(parentId: string, fieldName?: string): ManifestFile[];
     $unlinkFrom(parentId: string, fileId: string): Promise<void>;
     $removeFrom(parentId: string, fileId: string): Promise<void>;
 }
 
 /**
- * The shape returned by `$x.<source>` for an array-of-rows source.
- * Behaves as a regular `T[]` (supports `map`, `filter`, `find`, etc.) plus
- * Manifest operators and state flags.
+ * `$x.<source>` for an array-of-rows source (CSV tabular, JSON arrays).
+ * Behaves as a regular `T[]` plus Manifest operators and state flags.
  */
 export type ManifestArraySource<T> =
     & ReadonlyArray<T>
     & ManifestSourceState
-    & ManifestArrayOps<T>
-    & Partial<ManifestAppwriteTableOps<T>>;
+    & ManifestArrayOps<T>;
 
-/** The shape returned by `$x.<source>` for an object-shaped source (CSV key-value, JSON object, YAML map). */
+/** `$x.<source>` for an Appwrite table: rows plus server-side queries, mutations and paging. */
+export type ManifestTableSource<T> =
+    & ReadonlyArray<T>
+    & ManifestSourceState
+    & Omit<ManifestArrayOps<T>, '$query'>
+    & ManifestAppwriteTableOps<T>;
+
+/** `$x.<source>` for an object-shaped source (CSV key-value, JSON object, YAML map). */
 export type ManifestObjectSource<T> = T & ManifestSourceState;
 
-/** The shape returned by `$x.<source>` for an Appwrite storage bucket. */
-export type ManifestBucketSource = ManifestSourceState & ManifestAppwriteBucketOps;
-
-// ---------------------------------------------------------------------------
-// Magic globals registered by Manifest plugins
-// ---------------------------------------------------------------------------
+/** `$x.<source>` for an Appwrite storage bucket. */
+export type ManifestBucketSource = ReadonlyArray<ManifestFile> & ManifestSourceState & ManifestAppwriteBucketOps;
 
 /**
- * Project-specific data sources, keyed by the names declared in `manifest.json`'s
- * `data` property. Augmented by `npx mnfst-types` from manifest.json + sample
- * data (declarations appended below the AUGMENTATION marker).
+ * Precise row types, keyed by data source name. Declare them to override the
+ * column names `npx mnfst-types` reads from the contract:
+ *
+ *     declare module 'mnfst' { interface ManifestRows { tasks: Task } }
  */
-export interface ManifestSources {
-    [sourceName: string]: ManifestArraySource<any> | ManifestObjectSource<any> | ManifestBucketSource;
-}
+export interface ManifestRows { }
+
+/** The row type for source `K`: a declared `ManifestRows` entry, else `Fallback`. */
+export type ManifestRowFor<K extends string, Fallback> = K extends keyof ManifestRows ? ManifestRows[K] & ManifestRowSystem : Fallback;
+
+/**
+ * Project data sources, keyed by the names in `manifest.json`'s `data`.
+ * `npx mnfst-types` fills this in below the AUGMENTATION marker.
+ */
+export interface ManifestSources { }
+
+/** `$x` itself: the sources plus runtime registration and persistence controls. */
+export type ManifestData = ManifestSources & {
+    $register(name: string, data: unknown[] | Record<string, unknown>): void;
+    $wipe(target?: string | { all: true }): Promise<void>;
+};
 
 /** `$auth` from the Appwrite auth plugin. Loose by design — auth API is broad. */
 export interface ManifestAuth {
@@ -194,7 +293,7 @@ export type ManifestRoute = string;
 export type ManifestModify = (attr: string) => string | undefined;
 
 /** `$try(fn)` — run a callback and swallow any thrown error, returning undefined on failure. */
-export type ManifestTry = <T>(fn: () => T) => T | undefined;
+export type ManifestTry = <T>(fn: () => T | Promise<T>, errorVar?: string) => Promise<T | undefined>;
 
 /** `$pay` from the payments plugin: callable to start checkout, plus portal/state helpers. */
 export interface ManifestPay {
@@ -588,12 +687,102 @@ export interface ManifestSubmitDetail {
 }
 
 // ---------------------------------------------------------------------------
+// App modules: components, stores and magics on `this`
+// ---------------------------------------------------------------------------
+
+/**
+ * Alpine stores, keyed by name. Declare them so `$store.<name>` is checked:
+ *
+ *     declare module 'mnfst' { interface ManifestStores { session: Session } }
+ */
+export interface ManifestStores { }
+
+/** Magics available on `this` inside an Alpine component (Alpine's own plus Manifest's). */
+export interface ManifestMagics {
+    $el: HTMLElement;
+    $root: HTMLElement;
+    $refs: Record<string, HTMLElement>;
+    $store: ManifestStores;
+    $data: Record<string, any>;
+    $watch(property: string, callback: (value: any, oldValue: any) => void): void;
+    $dispatch(event: string, detail?: unknown): void;
+    $nextTick(callback?: () => void): Promise<void>;
+    $id(name: string, key?: string | number): string;
+    $x: ManifestData;
+    $route: ManifestRoute;
+    $modify: ManifestModify;
+    $try: ManifestTry;
+    $computed<T>(fn: (scope: any) => T): T;
+    $auth: ManifestAuth;
+    $locale: ManifestLocale;
+    $toast: ManifestToast;
+    $color: ManifestColor;
+    $colorpicker: ManifestColorpicker;
+    $url: ManifestUrl;
+    $pay: ManifestPay;
+    $chat: ManifestChat;
+    $status: ManifestStatus;
+    $presence: ManifestPresence;
+    $date: ManifestDate;
+    $chart: ManifestChart;
+    $export: ManifestExport;
+    $import: ManifestImport;
+    $edit: ManifestEdit;
+    $rich: ManifestRichText;
+    $device: ManifestDevice;
+    $share: ManifestShare;
+    $push: ManifestPush;
+    $secure: ManifestSecure;
+    $links: ManifestLinks;
+    $app: ManifestApp;
+    $haptics: ManifestHaptics;
+    $biometric: ManifestBiometric;
+    $camera: ManifestCamera;
+}
+
+/** Lifecycle hooks Alpine calls on a component. */
+export interface ManifestComponentHooks {
+    init?(): void | Promise<void>;
+    destroy?(): void;
+}
+
+/**
+ * A component's state with `this` typed as that state plus every magic.
+ * Pair with an identity helper so `T` is inferred from the returned object:
+ *
+ *     /** @template T @param {() => import('mnfst').ManifestComponent<T>} fn *\/
+ *     export const component = (fn) => fn
+ */
+export type ManifestComponent<T> = T & ManifestComponentHooks & ThisType<T & ManifestMagics>;
+
+/** The `Alpine` global, as app modules use it. */
+export interface ManifestAlpine {
+    data<T>(name: string, factory: (...args: any[]) => T): void;
+    store<K extends keyof ManifestStores>(name: K, value: ManifestStores[K]): void;
+    store<K extends keyof ManifestStores>(name: K): ManifestStores[K];
+    store(name: string, value: unknown): void;
+    magic(name: string, callback: (el: HTMLElement, options: unknown) => unknown): void;
+    directive(name: string, callback: (...args: any[]) => unknown): unknown;
+    nextTick(callback?: () => void): Promise<void>;
+    effect(callback: () => void): unknown;
+    reactive<T extends object>(value: T): T;
+    raw<T>(value: T): T;
+    evaluate(el: Element, expression: string): unknown;
+    initTree(el: Element): void;
+    $data(el: Element): Record<string, any>;
+}
+
+// ---------------------------------------------------------------------------
 // Global declarations (what Alpine exposes inside `x-data`, `x-show`, etc.)
 // ---------------------------------------------------------------------------
 
 declare global {
     /** Project data sources registered in manifest.json. */
-    const $x: ManifestSources;
+    const $x: ManifestData;
+    /** Alpine stores. */
+    const $store: ManifestStores;
+    /** Alpine, loaded by Manifest; reach it inside `alpine:init`. */
+    const Alpine: ManifestAlpine;
     /** The current route path (compare or .startsWith against it). */
     const $route: ManifestRoute;
     /** Read a parent component attribute (Manifest's prop mechanism). */
@@ -669,7 +858,7 @@ declare global {
             /** The two-line same-origin /sw.js stub pinned to a framework version. */
             swStub?(version?: string): string;
         };
-        Alpine?: unknown;
+        Alpine?: ManifestAlpine;
         __manifestLoaded?: unknown;
         /** Pending work that will still change the page; mnfst-render's auto settle won't snapshot early while count > 0. */
         ManifestPending?: {
@@ -720,6 +909,7 @@ declare global {
 // ---------------------------------------------------------------------------
 
 // (No project augmentations yet — run `npx mnfst-types` to generate.)
+export interface ManifestSources { [sourceName: string]: any }
 
 // ---------------------------------------------------------------------------
 // AUGMENTATION:end

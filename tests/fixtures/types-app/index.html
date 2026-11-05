@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Types app</title>
+  <link rel="manifest" href="/manifest.json">
+  <script type="importmap">
+    { "imports": { "@app/": "/app/", "@shared/": "/shared/" } }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.js"></script>
+  <script type="module" src="/app/main.js"></script>
+</head>
+
+<body>
+  <section x-data="taskList">
+    <input type="search" x-model="query">
+    <template x-for="task in visible" :key="task.$id"><p x-text="task.title"></p></template>
+  </section>
+</body>
+
+</html>

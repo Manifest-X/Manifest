@@ -30,6 +30,10 @@
     "components/header.html",
     "components/logo.html"
   ],
+  "publishIgnore": [
+    "jsconfig.json",
+    "**/*.d.ts"
+  ],
   "data": {
     "manifest": "/manifest.json",
     "content": {
