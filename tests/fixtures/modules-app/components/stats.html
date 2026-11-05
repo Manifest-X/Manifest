@@ -1,0 +1,7 @@
+<div x-data="stats">
+  <p id="stats" x-text="text"></p>
+</div>
+<script type="module">
+  import { pluralize } from '@app/lib/format.js'
+  document.documentElement.dataset.statsModule = pluralize(2, 'module')
+</script>

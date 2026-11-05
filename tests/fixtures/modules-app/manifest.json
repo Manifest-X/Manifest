@@ -1,0 +1,19 @@
+{
+  "name": "Modules app",
+  "short_name": "Modules",
+  "start_url": "/",
+  "preloadedComponents": [
+    "components/nav.html",
+    "components/stats.html"
+  ],
+  "data": {
+    "tasks": "/data/tasks.json"
+  },
+  "render": {
+    "paths": [
+      "tasks/1",
+      "tasks/2",
+      "tasks/3"
+    ]
+  }
+}

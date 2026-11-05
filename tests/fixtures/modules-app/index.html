@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Modules app</title>
+  <link rel="manifest" href="/manifest.json">
+
+  <!-- App modules -->
+  <script type="importmap">
+    { "imports": { "@app/": "/app/" } }
+  </script>
+  <link rel="modulepreload" href="/app/main.js">
+
+  <!-- Manifest -->
+  <script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="components,router,data" data-sw="on"></script>
+  <script type="module" src="/app/main.js"></script>
+</head>
+
+<body>
+
+  <x-nav></x-nav>
+
+  <main>
+
+    <!-- Tasks -->
+    <section x-route="/" x-data="taskList">
+      <h1>Tasks</h1>
+      <input type="search" x-model="query" placeholder="Filter">
+      <ul id="tasks">
+        <template x-for="task in visible" :key="task.id">
+          <li><a :href="'/tasks/' + task.id" x-text="label(task)"></a></li>
+        </template>
+      </ul>
+      <p id="summary" x-text="summary"></p>
+    </section>
+
+    <!-- Task -->
+    <section x-route="tasks/*" x-data="taskDetail">
+      <h1 id="task-title" x-text="task ? task.title : ''"></h1>
+      <p id="task-due" x-text="due"></p>
+      <button id="star" @click="$store.session.toggle(task.id)" x-text="starred ? 'Unstar' : 'Star'"></button>
+    </section>
+
+    <!-- About -->
+    <section x-route="about" x-data>
+      <h1>About</h1>
+      <p id="starred" x-text="$store.session.summary"></p>
+      <x-stats></x-stats>
+    </section>
+
+  </main>
+
+</body>
+
+</html>

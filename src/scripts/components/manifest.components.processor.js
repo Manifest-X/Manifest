@@ -17,6 +17,12 @@ function escapeForSingleQuotedJsString(s) {
 // Framework web components (not project components) — never fetched.
 const FRAMEWORK_COMPONENT_TAGS = new Set(['code', 'code-group']);
 
+// Classic JS or module; anything else (JSON, templates) is a data block
+function isExecutableScript(el) {
+    const type = (el.getAttribute('type') || '').split(';')[0].trim().toLowerCase();
+    return type === '' || type === 'module' || /^(text|application)\/(x-)?(java|ecma)script$/.test(type);
+}
+
 // The <template x-if>/<template x-for> whose tracked clone is `el`, if any.
 function findOwningTemplate(el) {
     if (!el._x_dataStack) return null;
@@ -101,6 +107,8 @@ window.ManifestComponentsProcessor = {
         const scripts = [];
         const processScripts = (el) => {
             if (el.tagName.toLowerCase() === 'script') {
+                // Data blocks (JSON, templates) stay in place
+                if (!isExecutableScript(el)) return;
                 scripts.push({
                     content: el.textContent,
                     type: el.getAttribute('type') || 'text/javascript',
@@ -386,6 +394,11 @@ window.ManifestComponentsProcessor = {
                         scriptEl.type = script.type;
                         if (script.async) scriptEl.async = true;
                         if (script.defer) scriptEl.defer = true;
+                        document.head.appendChild(scriptEl);
+                    } else if (script.content && script.type.trim().toLowerCase() === 'module') {
+                        const scriptEl = document.createElement('script');
+                        scriptEl.type = 'module';
+                        scriptEl.textContent = script.content;
                         document.head.appendChild(scriptEl);
                     } else if (script.content) {
                         // Inline script → run in global scope
