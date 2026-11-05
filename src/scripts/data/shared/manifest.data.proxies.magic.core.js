@@ -93,6 +93,9 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
             if (key === '$more') {
                 return () => window.ManifestDataMain.loadMore(dataSourceName);
             }
+            if (key === '$saving') {
+                return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
+            }
 
             // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||

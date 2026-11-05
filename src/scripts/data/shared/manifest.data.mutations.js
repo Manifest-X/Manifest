@@ -127,6 +127,30 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
     return { originalEntry };
 }
 
+function cloneValue(value) {
+    if (value === null || typeof value !== 'object') return value;
+    try { return JSON.parse(JSON.stringify(value)); } catch { return value; }
+}
+
+function sameValue(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+
+// Re-insert a row at its old index (a failed delete); never duplicates one already back
+function insertEntryAt(dataSourceName, entry, index, options = {}) {
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
+    const { store, arr, index: existing } = findRawIndex(dataSourceName, entry?.$id);
+    if (!store || !arr || existing !== -1) return false;
+    const ds = window.ManifestDataStore;
+    const at = index >= 0 && index <= arr.length ? index : arr.length;
+    store[dataSourceName].splice(at, 0, ds.createReactiveReferences(entry, dataSourceName));
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
+    return true;
+}
+
 // Rollback a mutation
 function rollbackMutation(mutationId) {
     const mutation = pendingMutations.get(mutationId);
@@ -179,6 +203,9 @@ async function executeMutation(mutationConfig) {
     let originalData = null;
     let optimisticData = null;
     let resolvedEntryId = entryId;
+    let held = null;          // pending-write token: re-applied over landings until settled
+    let deletedAt = -1;       // a failed delete returns the row to its place
+    const ds0 = window.ManifestDataStore;
 
     // Get helper functions from store
     const {
@@ -204,13 +231,15 @@ async function executeMutation(mutationConfig) {
             }
 
             addEntryToStore(dataSourceName, optimisticData, options);
+            held = ds0?.holdWrite?.(dataSourceName, tempId, 'create', optimisticData);
             originalData = null; // Nothing to rollback for create
         } else if (type === 'update') {
             // Snapshot for rollback (the row itself is mutated in place)
             const store = Alpine.store('data');
+            // Snapshot only the patched fields: rollback restores those, nothing else
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
                 const found = store[dataSourceName].find(e => e.$id === entryId);
-                originalData = found ? { ...found } : null;
+                originalData = found && data ? Object.fromEntries(Object.keys(data).map(k => [k, cloneValue(found[k])])) : null;
             }
 
             // Set updating state
@@ -223,11 +252,13 @@ async function executeMutation(mutationConfig) {
             if (originalData) {
                 updateEntryInStore(dataSourceName, entryId, data, options);
             }
+            held = ds0?.holdWrite?.(dataSourceName, entryId, 'update', { ...data });
         } else if (type === 'delete') {
             // Snapshot for rollback
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                const found = store[dataSourceName].find(e => e.$id === entryId);
+                deletedAt = findRawIndex(dataSourceName, entryId).index;
+                const found = deletedAt !== -1 ? store[dataSourceName][deletedAt] : null;
                 originalData = found ? { ...found } : null;
             }
 
@@ -241,10 +272,13 @@ async function executeMutation(mutationConfig) {
             if (originalData) {
                 removeEntryFromStore(dataSourceName, entryId, options);
             }
+            held = ds0?.holdWrite?.(dataSourceName, entryId, 'delete', null);
         }
 
         // Step 2: Perform API call
         const result = await apiCall();
+        if (held) ds0.releaseWrite(dataSourceName, resolvedEntryId, held);
+        held = null;
 
         // Step 3: Clear loading states after successful API call (regardless of result format)
         if (type === 'create' && clearCreatingEntry && resolvedEntryId) {
@@ -311,6 +345,9 @@ async function executeMutation(mutationConfig) {
             clearDeletingEntry(dataSourceName, entryId);
         }
 
+        if (held) ds0.releaseWrite(dataSourceName, resolvedEntryId, held);
+        held = null;
+
         // Rollback on error
         console.error(`[Manifest Data] Mutation failed, rolling back:`, error);
 
@@ -318,9 +355,20 @@ async function executeMutation(mutationConfig) {
             if (type === 'create' && optimisticData) {
                 removeEntryFromStore(dataSourceName, optimisticData.$id, writeOptions);
             } else if (type === 'update' && originalData) {
-                updateEntryInStore(dataSourceName, entryId, originalData, writeOptions);
+                // Field-level: a field restores only if it still shows this write's value
+                // and no other unsettled write covers it (a live change meanwhile wins)
+                const { arr, index } = findRawIndex(dataSourceName, entryId);
+                const row = index !== -1 ? arr[index] : null;
+                const others = ds0?.pendingWritesFor?.(dataSourceName, entryId) || [];
+                const restore = {};
+                for (const key of Object.keys(originalData)) {
+                    if (!row || !sameValue(row[key], data[key])) continue;
+                    if (others.some(w => w.kind === 'update' && w.fields && key in w.fields)) continue;
+                    restore[key] = originalData[key];
+                }
+                if (Object.keys(restore).length) updateEntryInStore(dataSourceName, entryId, restore, writeOptions);
             } else if (type === 'delete' && originalData) {
-                addEntryToStore(dataSourceName, originalData, writeOptions);
+                insertEntryAt(dataSourceName, originalData, deletedAt, writeOptions);
             }
         };
 

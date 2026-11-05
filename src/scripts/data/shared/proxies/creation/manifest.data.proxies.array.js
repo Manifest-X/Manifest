@@ -182,7 +182,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     });
 
     // Paged sources: next page, and the paging state
-    for (const prop of ['$hasMore', '$total', '$totalCapped']) {
+    for (const prop of ['$hasMore', '$total', '$totalCapped', '$pending']) {
         Object.defineProperty(array, prop, {
             enumerable: false,
             configurable: true,
@@ -194,6 +194,12 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         configurable: true,
         writable: false,
         value: () => window.ManifestDataMain.loadMore(dataSourceName)
+    });
+    Object.defineProperty(array, '$saving', {
+        enumerable: false,
+        configurable: true,
+        writable: false,
+        value: (id) => window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName)(id)
     });
 
     // Attach $search method for client-side text filtering
@@ -843,7 +849,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                 }
 
                 // Handle state properties ($loading, $error, $ready, $stale, $fresh, $realtimeOverflow)
-                if (key === '$stale' || key === '$fresh' || key === '$realtimeOverflow' || key === '$hasMore' || key === '$total' || key === '$totalCapped') {
+                if (key === '$stale' || key === '$fresh' || key === '$realtimeOverflow' || key === '$hasMore' || key === '$total' || key === '$totalCapped' || key === '$pending') {
                     return window.ManifestDataProxiesMagic?.getStateProperty?.(key, dataSourceName);
                 }
                 if (key === '$loading' || key === '$error' || key === '$ready') {
@@ -869,6 +875,9 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
 
                 if (key === '$more') {
                     return () => window.ManifestDataMain.loadMore(dataSourceName);
+                }
+                if (key === '$saving') {
+                    return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
                 }
 
                 // Handle pagination methods

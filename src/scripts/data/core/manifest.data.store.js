@@ -156,6 +156,7 @@ function resetSource(dataSourceName) {
     sourceGen.set(dataSourceName, sourceGeneration(dataSourceName) + 1);
     latestRead.delete(dataSourceName);
     window.ManifestDataMain?.forgetLiveSource?.(dataSourceName);
+    pendingWrites.delete(dataSourceName); // a new identity never sees the old one's unsettled writes
     const prefix = `${dataSourceName}:`;
     for (const key of [...dataSourceCache.keys()]) if (key.startsWith(prefix)) dataSourceCache.delete(key);
     for (const key of [...loadingPromises.keys()]) if (key.startsWith(prefix)) loadingPromises.delete(key);
@@ -191,6 +192,76 @@ function setSourceState(dataSourceName, patch) {
     if (patch.error !== undefined) next.errorTime = patch.error ? (patch.errorTime || Date.now()) : null;
     store[key] = next;
     return next;
+}
+
+// Unacknowledged optimistic writes, re-applied over every network landing until
+// settled: a payload fetched before the write never shows the old values again
+const pendingWrites = new Map(); // source -> Map<$id, Array<{ token, kind, fields }>>
+let pendingSeq = 0;
+
+function holdWrite(dataSourceName, id, kind, fields) {
+    if (id === null || id === undefined) return null;
+    let byId = pendingWrites.get(dataSourceName);
+    if (!byId) pendingWrites.set(dataSourceName, byId = new Map());
+    const token = ++pendingSeq;
+    const list = byId.get(id) || [];
+    list.push({ token, kind, fields });
+    byId.set(id, list);
+    touchPending(dataSourceName);
+    return token;
+}
+
+function releaseWrite(dataSourceName, id, token) {
+    const byId = pendingWrites.get(dataSourceName);
+    const list = byId?.get(id);
+    if (!list) return;
+    const next = list.filter(w => w.token !== token);
+    if (next.length) byId.set(id, next); else byId.delete(id);
+    if (!byId.size) pendingWrites.delete(dataSourceName);
+    touchPending(dataSourceName);
+}
+
+function pendingWritesFor(dataSourceName, id) {
+    return pendingWrites.get(dataSourceName)?.get(id) || [];
+}
+
+function pendingCount(dataSourceName) {
+    return pendingWrites.get(dataSourceName)?.size || 0;
+}
+
+// $saving / $pending read this; bumps keep them reactive
+function touchPending(dataSourceName) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return;
+    const key = `_${dataSourceName}_state`;
+    const current = store[key] || { loading: false, error: null, ready: false, stale: true };
+    store[key] = { ...current, pending: pendingCount(dataSourceName) };
+}
+
+// After a landing: held writes win over the landed payload
+function reapplyPending(store, dataSourceName) {
+    const byId = pendingWrites.get(dataSourceName);
+    if (!byId) return false;
+    const curRaw = rawOf(store)[dataSourceName];
+    if (!Array.isArray(curRaw)) return false;
+    let changed = false;
+    for (const [id, list] of byId) {
+        let i = curRaw.findIndex(row => rowKey(row) === id);
+        for (const write of list) {
+            if (write.kind === 'delete') {
+                if (i !== -1) { store[dataSourceName].splice(i, 1); i = -1; changed = true; }
+            } else if (write.kind === 'create') {
+                if (i === -1) { store[dataSourceName].push(createReactiveReferences(write.fields, dataSourceName)); i = curRaw.length - 1; changed = true; }
+            } else if (i !== -1) {
+                const row = curRaw[i];
+                if (Object.keys(write.fields).some(k => !sameScalarOrList(row[k], write.fields[k]))) {
+                    mergeRowFields(store[dataSourceName][i], write.fields, dataSourceName);
+                    changed = true;
+                }
+            }
+        }
+    }
+    return changed;
 }
 
 // Last-issued read per source: a slower earlier read ($query or load) never lands over a later one
@@ -372,7 +443,8 @@ function writeSource(dataSourceName, data, options = {}) {
         // paged sources (set via setSourceState)
         hasMore: currentState.hasMore || false,
         total: currentState.total ?? null,
-        totalCapped: currentState.totalCapped || false
+        totalCapped: currentState.totalCapped || false,
+        pending: currentState.pending || 0
     };
     store[`_${dataSourceName}_state`] = newState;
     if (fresh) markFresh(dataSourceName);
@@ -474,6 +546,7 @@ function flushLandings() {
                 console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
             }
         }
+        for (const source of [...touched]) reapplyPending(store, source);
         for (const [source, byId] of local) {
             for (const [id, note] of byId) {
                 if (note.removed) {
@@ -1325,6 +1398,11 @@ window.ManifestDataStore = {
     // Stale-first + dedupe (§11.1)
     setSourceState,
     runDeduped,
+    holdWrite,
+    releaseWrite,
+    pendingWritesFor,
+    pendingCount,
+    sameScalarOrList,
     beginRead,
     adoptRead,
     currentRead,

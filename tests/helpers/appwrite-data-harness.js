@@ -115,15 +115,15 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
                 stats.writes.push(['create', rowId])
                 const row = { ...data, $id: rowId || `srv${stats.writes.length}` }
                 if (stats.failWrites) { await wait(); throw Object.assign(new Error('mock fail'), { code: 500 }) }
-                table.push(row)
-                if (echoFirst) echo('create', row)
+                // echoFirst: committed and announced before the reply; otherwise committed at the reply
+                if (echoFirst) { table.push(row); echo('create', row) }
                 await wait()
-                if (!echoFirst) setTimeout(() => echo('create', row), 0)
+                if (!echoFirst) { table.push(row); setTimeout(() => echo('create', row), 0) }
                 return { ...row }
             }
             async updateRow({ rowId, data }) {
                 stats.writes.push(['update', rowId, data])
-                await wait()
+                await (typeof writeDelay === 'function' ? new Promise(r => setTimeout(r, writeDelay(rowId, data))) : wait())
                 if (stats.failWrites) throw Object.assign(new Error('mock fail'), { code: 500 })
                 const row = table.find(r => r.$id === rowId)
                 if (!row) throw Object.assign(new Error('not found'), { code: 404 })
@@ -133,6 +133,7 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
             async deleteRow({ rowId }) {
                 stats.writes.push(['delete', rowId])
                 await wait()
+                if (stats.failWrites) throw Object.assign(new Error('mock fail'), { code: 500 })
                 const i = table.findIndex(r => r.$id === rowId)
                 if (i !== -1) table.splice(i, 1)
                 return {}
