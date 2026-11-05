@@ -246,7 +246,7 @@ describe('review: the cursor stays on server rows', () => {
         expect(rows('items').at(-1).$id).toBe(table[4].$id)
     })
 
-    it('a live row that ties with the last loaded row waits for its page', async () => {
+    it('a live row that ties with the last loaded row is never lost or repeated', async () => {
         const table = Array.from({ length: 80 }, (_, i) => ({ $id: `t${String(i).padStart(3, '0')}`, n: i < 40 ? i : 40 }))
         const { rows, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 45 } } }, table)
         await main.loadDataSource('items')
@@ -255,7 +255,6 @@ describe('review: the cursor stays on server rows', () => {
         table.push(live)
         rt().fire(CH, evt('create', live))
         await settle()
-        expect(rows('items').some(r => r.$id === 't999')).toBe(false)
         await walk(main)
         await settle()
         expect(new Set(rows('items').map(r => r.$id)).size).toBe(81)
@@ -276,7 +275,7 @@ describe('review 2: ties, local rows past the boundary, overtaken $more()', () =
         expect(new Set(rows('items').map(r => r.$id)).size).toBe(60)
     })
 
-    it('a tied live row the server places before the cursor lands now; one after it waits', async () => {
+    it('tied live rows land now, wherever the server places them, and paging never repeats them', async () => {
         const table = Array.from({ length: 60 }, (_, i) => ({ $id: `k${String(i).padStart(3, '0')}`, k: 1, $sequence: (i + 1) * 10 }))
         const { ids, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'k']], paging: { mode: 'window', size: 50 } } }, table)
         await main.loadDataSource('items')
@@ -288,7 +287,11 @@ describe('review 2: ties, local rows past the boundary, overtaken $more()', () =
         rt().fire(CH, evt('create', late))
         await settle()
         expect(ids('items')).toContain('early')
-        expect(ids('items')).not.toContain('late')
+        expect(ids('items')).toContain('late')
+        while (await main.loadMore('items')) { /* rest */ }
+        await settle()
+        expect(new Set(ids('items')).size).toBe(62)
+        expect(ids('items').length).toBe(62)
     })
 
     it('a local create past the boundary, then $more(): the list stays in order', async () => {

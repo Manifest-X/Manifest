@@ -558,7 +558,7 @@ function setPagingState(dataSourceName, page, { append = false, filters = null }
     const last = page.rows.length ? page.rows[page.rows.length - 1] : (append ? null : undefined);
     const cursor = last ? last.$id : (append ? prev.cursor : null);
     const boundary = last
-        ? Object.fromEntries([['$id', last.$id], ['$sequence', last.$sequence], ...(order || []).map(([key]) => [key, last[key]])])
+        ? Object.fromEntries([['$id', last.$id], ...(order || []).map(([key]) => [key, last[key]])])
         : (append ? prev.boundary : null);
     const max = spec ? spec.max : Infinity;
     const hasMore = !!page.hasMore && loaded < max;
@@ -634,17 +634,13 @@ async function loadMoreOnce(dataSourceName) {
 }
 
 // Is this row past the loaded boundary? While more pages exist, such rows arrive with
-// $more(), not by realtime or a local add. Ties fall back to Appwrite's own tie order
-// ($sequence); a row without one counts as past
+// $more(), not by realtime or a local add. A tie with the boundary counts as inside: if
+// the server puts it later, its page merges it by $id — never a row lost to the cursor
 function beyondLoaded(dataSourceName, row) {
     const state = pagingState.get(dataSourceName);
     if (!state?.hasMore || !state.boundary) return false;
     if (!state.order) return true; // unsorted: server order is creation order, new rows come last
-    const cmp = window.ManifestDataStore.compareBy(state.order)(row, state.boundary);
-    if (cmp !== 0) return cmp > 0;
-    const a = row?.$sequence, b = state.boundary.$sequence;
-    if (a === undefined || a === null || b === undefined || b === null) return true;
-    return Number(a) > Number(b);
+    return window.ManifestDataStore.compareBy(state.order)(row, state.boundary) > 0;
 }
 
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
