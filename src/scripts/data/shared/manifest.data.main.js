@@ -558,7 +558,7 @@ function setPagingState(dataSourceName, page, { append = false, filters = null }
     const last = page.rows.length ? page.rows[page.rows.length - 1] : (append ? null : undefined);
     const cursor = last ? last.$id : (append ? prev.cursor : null);
     const boundary = last
-        ? Object.fromEntries([['$id', last.$id], ...(order || []).map(([key]) => [key, last[key]])])
+        ? Object.fromEntries([['$id', last.$id], ['$sequence', last.$sequence], ...(order || []).map(([key]) => [key, last[key]])])
         : (append ? prev.boundary : null);
     const max = spec ? spec.max : Infinity;
     const hasMore = !!page.hasMore && loaded < max;
@@ -588,6 +588,12 @@ function loadMore(dataSourceName) {
     return run;
 }
 
+// Overtaken by a load or $query: run again once its window has landed (now, if it has)
+function requeueMore(dataSourceName) {
+    if (window.ManifestDataStore.readsInFlight(dataSourceName)) { moreQueued.add(dataSourceName); return; }
+    setTimeout(() => loadMore(dataSourceName).catch(() => {}), 0);
+}
+
 async function loadMoreOnce(dataSourceName) {
     const { currentRead, readsInFlight, sourceGeneration, landRows, setSourceState } = window.ManifestDataStore;
     const read = currentRead(dataSourceName);
@@ -609,14 +615,17 @@ async function loadMoreOnce(dataSourceName) {
         try {
             page = await fetchPagedRows(dataSourceName, filters, { want, after: state.cursor, isCurrent });
         } catch (error) {
+            const status = error?.code ?? error?.response?.code;
+            if (!isCurrent()) { requeueMore(dataSourceName); return 0; }
+            if (status !== 400 && status !== 404) throw error;
             // The cursor row is gone (deleted since): refetch everything held plus one page
-            if (!isCurrent()) return 0;
             catchUpTargets.set(dataSourceName, state.loaded + want);
             await reloadDataSource(dataSourceName);
             return 0;
         }
-        if (!page || !isCurrent()) return 0;
-        await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read });
+        // Overtaken by a load or $query: its window replaces the rows, then this runs again
+        if (!page || !isCurrent()) { if (page) requeueMore(dataSourceName); return 0; }
+        await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined });
         setPagingState(dataSourceName, { ...page, spec }, { append: true });
         return page.rows.length;
     } finally {
@@ -625,13 +634,17 @@ async function loadMoreOnce(dataSourceName) {
 }
 
 // Is this row past the loaded boundary? While more pages exist, such rows arrive with
-// $more(), not by realtime or a local add. Ties count as past: the server puts a newer
-// row after the rows it ties with, loaded or not
+// $more(), not by realtime or a local add. Ties fall back to Appwrite's own tie order
+// ($sequence); a row without one counts as past
 function beyondLoaded(dataSourceName, row) {
     const state = pagingState.get(dataSourceName);
     if (!state?.hasMore || !state.boundary) return false;
     if (!state.order) return true; // unsorted: server order is creation order, new rows come last
-    return window.ManifestDataStore.compareBy(state.order)(row, state.boundary) >= 0;
+    const cmp = window.ManifestDataStore.compareBy(state.order)(row, state.boundary);
+    if (cmp !== 0) return cmp > 0;
+    const a = row?.$sequence, b = state.boundary.$sequence;
+    if (a === undefined || a === null || b === undefined || b === null) return true;
+    return Number(a) > Number(b);
 }
 
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
@@ -759,7 +772,8 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             }
             // A held row whose sort value moved past the loaded boundary leaves; its page brings it back
             const paging = pagingState.get(dataSourceName);
-            if (paging?.order && row.$id !== paging.cursor && beyondLoaded(dataSourceName, row)) {
+            const sortMoved = paging?.order?.some(([key]) => key in row && !window.ManifestDataStore.sameScalarOrList(existingRow[key], row[key]));
+            if (sortMoved && row.$id !== paging.cursor && beyondLoaded(dataSourceName, row)) {
                 landRemove(dataSourceName, [row.$id], { generation });
                 return;
             }

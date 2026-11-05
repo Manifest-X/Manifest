@@ -85,13 +85,15 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
         TablesDB: class {
             async listRows({ queries = [] }) {
                 const qs = queries.map(q => JSON.parse(q))
+                // Appwrite keeps an internal sequence; ties in an order fall back to it
+                table.forEach((r, i) => { if (r.$sequence === undefined) Object.defineProperty(r, '$sequence', { value: i + 1, enumerable: true, writable: true, configurable: true }) })
                 stats.lists.push(qs)
                 let rows = table.filter(r => qs.every(q => PAGING.has(q.method) || match(r, q)))
                 for (const q of qs) {
                     if (q.method !== 'orderAsc' && q.method !== 'orderDesc') continue
                     const d = q.method === 'orderAsc' ? 1 : -1
                     const key = r => (typeof r[q.attribute] === 'string' ? r[q.attribute].toLowerCase() : r[q.attribute])
-                    rows = rows.slice().sort((a, b) => (key(a) > key(b) ? d : key(a) < key(b) ? -d : 0))
+                    rows = rows.slice().sort((a, b) => (key(a) > key(b) ? d : key(a) < key(b) ? -d : (a.$sequence - b.$sequence)))
                 }
                 const total = rows.length
                 const arg = q => (q.values ? q.values[0] : q.attribute)
@@ -116,7 +118,7 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
             }
             async createRow({ rowId, data }) {
                 stats.writes.push(['create', rowId])
-                const row = { ...data, $id: rowId || `srv${stats.writes.length}` }
+                const row = { ...data, $id: rowId || `srv${stats.writes.length}`, $sequence: table.length + 1 }
                 if (stats.failWrites) { await wait(); throw Object.assign(new Error('mock fail'), { code: 500 }) }
                 // echoFirst: committed and announced before the reply; otherwise committed at the reply
                 if (echoFirst) { table.push(row); echo('create', row) }

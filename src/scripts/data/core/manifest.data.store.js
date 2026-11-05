@@ -280,18 +280,19 @@ function insertRow(store, dataSourceName, row) {
     target.splice(sortedIndex(rawOf(store)[dataSourceName], rawOf(row), compareBy(order)), 0, row);
 }
 
-// After a landing: held writes win over the landed payload. readTokens: the read
-// tokens of this flush's landings for the source (undefined = realtime / local)
-function reapplyPending(store, dataSourceName, readTokens = []) {
+// After a landing: held writes win over the landed payload. reads: this flush's read
+// landings for the source, { token, ids } (ids null: a replace covering every row)
+function reapplyPending(store, dataSourceName, readLandings = []) {
     const byId = pendingWrites.get(dataSourceName);
     if (!byId) return false;
     const curRaw = rawOf(store)[dataSourceName];
     if (!Array.isArray(curRaw)) return false;
-    const reads = readTokens.filter(t => typeof t === 'number');
     const now = Date.now();
     let changed = false;
     for (const [id, list] of [...byId]) {
         let i = curRaw.findIndex(row => rowKey(row) === id);
+        // Only reads that carried this row (a replace carries every row) speak for it
+        const reads = readLandings.filter(r => r.ids === null || r.ids.has(id)).map(r => r.token);
         for (const write of [...list]) {
             if (write.settledAt !== null) {
                 // Settled: a read issued since reflects it (or time ran out) — let go
@@ -618,8 +619,10 @@ function flushLandings() {
             }
         }
         for (const source of [...touched]) {
-            const tokens = ops.filter(op => op.source === source).map(op => op.options?.readToken);
-            reapplyPending(store, source, tokens);
+            const reads = ops
+                .filter(op => op.source === source && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
+                .map(op => ({ token: op.options.readToken, ids: op.options.mode === 'append' ? new Set(op.rows.map(rowKey)) : null }));
+            reapplyPending(store, source, reads);
         }
         for (const [source, byId] of local) {
             for (const [id, note] of byId) {

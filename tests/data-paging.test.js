@@ -261,3 +261,57 @@ describe('review: the cursor stays on server rows', () => {
         expect(new Set(rows('items').map(r => r.$id)).size).toBe(81)
     })
 })
+
+describe('review 2: ties, local rows past the boundary, overtaken $more()', () => {
+    it('a live update to a held row that ties with the boundary keeps it (its sort value did not move)', async () => {
+        const table = Array.from({ length: 60 }, (_, i) => ({ $id: `k${String(i).padStart(3, '0')}`, k: 1, name: `n${i}` }))
+        const { rows, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'k']], paging: { mode: 'window', size: 50 } } }, table)
+        await main.loadDataSource('items')
+        await settle()
+        rt().fire(CH, evt('update', { ...table[10], name: 'renamed' }))
+        await settle()
+        expect(rows('items').find(r => r.$id === 'k010')?.name).toBe('renamed')
+        while (await main.loadMore('items')) { /* rest */ }
+        await settle()
+        expect(new Set(rows('items').map(r => r.$id)).size).toBe(60)
+    })
+
+    it('a tied live row the server places before the cursor lands now; one after it waits', async () => {
+        const table = Array.from({ length: 60 }, (_, i) => ({ $id: `k${String(i).padStart(3, '0')}`, k: 1, $sequence: (i + 1) * 10 }))
+        const { ids, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'k']], paging: { mode: 'window', size: 50 } } }, table)
+        await main.loadDataSource('items')
+        await settle()
+        const early = { $id: 'early', k: 1, $sequence: 15 }
+        const late = { $id: 'late', k: 1, $sequence: 9999 }
+        table.push(early, late)
+        rt().fire(CH, evt('update', early)) // matches now, not held
+        rt().fire(CH, evt('create', late))
+        await settle()
+        expect(ids('items')).toContain('early')
+        expect(ids('items')).not.toContain('late')
+    })
+
+    it('a local create past the boundary, then $more(): the list stays in order', async () => {
+        const { rows, main, call } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 50 } } }, makeRows(200))
+        await main.loadDataSource('items')
+        await call('items', '$create', { n: 150.5 })
+        await settle()
+        while (await main.loadMore('items')) { /* rest */ }
+        await settle()
+        const list = ns(rows('items'))
+        expect(list.length).toBe(201)
+        expect(list).toEqual([...list].sort((a, b) => a - b))
+    })
+
+    it('a $more() overtaken mid-fetch runs again after the newer window lands', async () => {
+        const delay = qs => qs.some(q => q.method === 'cursorAfter') ? 60 : 5
+        const { rows, main } = await boot({ items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 50 } } }, makeRows(300), { delay })
+        await main.loadDataSource('items')
+        const more = main.loadMore('items')
+        await settle(10)
+        await main.reloadDataSource('items')
+        await more
+        await settle(300)
+        expect(rows('items').length).toBe(100)
+    })
+})

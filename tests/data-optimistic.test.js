@@ -188,3 +188,20 @@ describe('review: overlapping writes and settle window', () => {
         expect(ids('items')).not.toContain('r00002')
     })
 })
+
+describe('review 2: a settled write never overrides a newer live value', () => {
+    it('a later $more() page does not re-apply it to rows outside that page', async () => {
+        const { rows, main, call, rt } = await boot(
+            { items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 50 } } },
+            makeRows(200), { writeDelay: 10 }
+        )
+        await main.loadDataSource('items')
+        await call('items', '$update', 'r00003', { status: 'done' })
+        await settle()
+        rt().fire(CH, evt('update', { $id: 'r00003', n: 3, name: 'Row 3', status: 'x' }))
+        await settle()
+        await main.loadMore('items')
+        await settle()
+        expect(row(rows, 'r00003').status).toBe('x')
+    })
+})
