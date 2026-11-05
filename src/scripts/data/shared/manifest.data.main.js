@@ -380,6 +380,12 @@ const realtimeMeta = new Map(); // Map<name, { mode, maxRows, appended: [], pend
 
 function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery) {
     const cfg = (config && typeof config === 'object') ? config : {};
+    // Paged sources hold what was paged in; growth is bounded by the paging rule, not a cap
+    if (pagingState.has(dataSourceName) && typeof cfg.maxRows !== 'number') {
+        realtimeMeta.set(dataSourceName, { mode: 'append', maxRows: 0, appended: [], pending: 0 });
+        window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: 0 });
+        return;
+    }
     const mode = cfg.mode === 'window' ? 'window' : 'append';
     const fallback = Math.max(500, 2 * initialCount);
     let maxRows;
@@ -447,7 +453,128 @@ function clearActiveQuery(dataSourceName, rowCount) {
 // Source reset (identity/scope) or torn down: nothing of the old binding carries over
 function forgetLiveSource(dataSourceName) {
     activeQueries.delete(dataSourceName);
+    pagingState.delete(dataSourceName);
+    catchUpTargets.delete(dataSourceName);
     realtimeBinds.delete(dataSourceName);
+}
+
+// Paged sources: `paging: "all" | "window" | { mode, size, max }`
+// all: every page up to `max` rows; window: `size` rows, `$more()` appends the next page
+const PAGED_WINDOW_QUERIES = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore']);
+const COUNT_CEILING = 5000; // Appwrite's default count cap
+const pagingState = new Map(); // Map<name, { hasMore, total }>
+const catchUpTargets = new Map(); // Map<name, rows to keep on a catch-up refetch>
+const pagingBusy = new Set(); // sources with a $more() in flight
+
+function pagingSpec(dataSource) {
+    const p = dataSource && typeof dataSource === 'object' ? dataSource.paging : null;
+    const cfg = typeof p === 'string' ? { mode: p } : (p && typeof p === 'object' ? p : null);
+    if (!cfg || (cfg.mode !== 'all' && cfg.mode !== 'window')) return null;
+    const size = Number(cfg.size) > 0 ? Math.floor(Number(cfg.size)) : 100;
+    const max = Number(cfg.max) > 0 ? Math.floor(Number(cfg.max)) : 5000;
+    return { mode: cfg.mode, size, max };
+}
+
+function stripPageWindow(queries) {
+    return (Array.isArray(queries) ? queries : []).filter(q => !(Array.isArray(q) && PAGED_WINDOW_QUERIES.has(q[0])));
+}
+
+// Fetch pages of a table: `want` rows from `after` (a row $id), `size` per request, each
+// asking for one extra row so "more" is exact. isCurrent() false stops the walk.
+// Returns { rows, total, hasMore } or null when queries can't resolve yet (auth)
+async function fetchPagedRows(dataSourceName, filters, { want, after = null, isCurrent = () => true } = {}) {
+    const manifest = await window.ManifestDataConfig.ensureManifest();
+    const dataSource = manifest?.data?.[dataSourceName];
+    const spec = pagingSpec(dataSource);
+    const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(dataSource);
+    const tableId = window.ManifestDataConfig.getAppwriteTableId(dataSource);
+    if (!spec || !appwriteConfig || !tableId) throw new Error(`[Manifest Data] "${dataSourceName}" is not a paged table source`);
+    const scope = window.ManifestDataConfig.getScope(dataSource);
+    const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
+    const base = await window.ManifestDataQueries.buildAppwriteQueries(stripPageWindow(filters), scope, scopeColumns);
+    if (base === null) return null;
+    const Query = window.Appwrite.Query;
+    const requireAuth = requiresIdentity(dataSource);
+    const limit = Math.max(1, want || spec.size);
+    const rows = [];
+    let total = null;
+    let hasMore = false;
+    let cursor = after;
+    while (rows.length < limit) {
+        const n = Math.min(spec.size, limit - rows.length);
+        const page = await window.ManifestDataAppwrite.loadTablePage(
+            appwriteConfig.databaseId, tableId,
+            [...base, ...(cursor ? [Query.cursorAfter(cursor)] : []), Query.limit(n + 1)],
+            { requireAuth }
+        );
+        if (total === null) total = page.total;
+        const got = page.rows.slice(0, n);
+        rows.push(...got);
+        hasMore = page.rows.length > n;
+        if (!hasMore || !got.length || !isCurrent()) break;
+        cursor = got[got.length - 1].$id;
+    }
+    return { rows, total, hasMore };
+}
+
+// Paging state for $hasMore / $total / $totalCapped
+function setPagingState(dataSourceName, { hasMore, total }) {
+    pagingState.set(dataSourceName, { ...(pagingState.get(dataSourceName) || {}), hasMore: !!hasMore, total });
+    window.ManifestDataStore.setSourceState(dataSourceName, {
+        hasMore: !!hasMore,
+        total: typeof total === 'number' ? total : null,
+        totalCapped: typeof total === 'number' && total >= COUNT_CEILING
+    });
+}
+
+// Rows a paged load should fetch: the window size, or (all) the cap; a catch-up keeps what is held
+function pagedWant(dataSourceName, spec) {
+    const keep = catchUpTargets.get(dataSourceName) || 0;
+    catchUpTargets.delete(dataSourceName);
+    return spec.mode === 'all' ? spec.max : Math.min(spec.max, Math.max(spec.size, keep));
+}
+
+// $more(): the next page lands after the held rows; the newest read wins (a $query or reload meanwhile drops it)
+async function loadMore(dataSourceName) {
+    // The read this page belongs to, taken at call time: any read issued after it wins
+    const { currentRead, sourceGeneration, landRows, setSourceState } = window.ManifestDataStore;
+    const read = currentRead(dataSourceName);
+    const generation = sourceGeneration(dataSourceName);
+    const manifest = await window.ManifestDataConfig.ensureManifest();
+    const dataSource = manifest?.data?.[dataSourceName];
+    const spec = pagingSpec(dataSource);
+    if (!spec) throw new Error(`[Manifest Data] "${dataSourceName}" $more: set "paging" on the source`);
+    const state = pagingState.get(dataSourceName);
+    if (!state?.hasMore || pagingBusy.has(dataSourceName)) return 0;
+    const store = Alpine.store('data');
+    const raw = window.ManifestDataStore.rawOf(store)[dataSourceName];
+    const held = Array.isArray(raw) ? raw : [];
+    const last = held.length ? held[held.length - 1] : null;
+    if (!last?.$id) return 0;
+    const isCurrent = () => currentRead(dataSourceName) === read && sourceGeneration(dataSourceName) === generation;
+    const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
+    const filters = activeQueries.get(dataSourceName) || (queriesConfig ? (queriesConfig.default || queriesConfig) : []);
+    pagingBusy.add(dataSourceName);
+    setSourceState(dataSourceName, { loading: true });
+    try {
+        const page = await fetchPagedRows(dataSourceName, filters, { want: spec.size, after: last.$id, isCurrent });
+        if (!page || !isCurrent()) return 0;
+        await landRows(dataSourceName, page.rows, { mode: 'append', generation });
+        setPagingState(dataSourceName, { hasMore: page.hasMore && held.length + page.rows.length < spec.max, total: state.total });
+        return page.rows.length;
+    } finally {
+        pagingBusy.delete(dataSourceName);
+        setSourceState(dataSourceName, { loading: false });
+    }
+}
+
+// Live rows past the end of a partly loaded source arrive with $more(), not by realtime
+function beyondLoaded(dataSourceName, row, order, currentRows) {
+    if (!pagingState.get(dataSourceName)?.hasMore) return false;
+    const last = currentRows.length ? currentRows[currentRows.length - 1] : null;
+    if (!last) return false;
+    if (!order) return true; // unsorted: server order is creation order, new rows come last
+    return window.ManifestDataStore.compareBy(order)(row, last) > 0;
 }
 
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
@@ -548,7 +675,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 if (currentRows.find(r => r.$id === row.$id)) {
                     // Echo of a row already held (optimistic create): merge, never counts as growth
                     landRows(dataSourceName, [row], { mode: 'append', generation, order });
-                } else {
+                } else if (!beyondLoaded(dataSourceName, row, order, currentRows)) {
                     realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 }
             }
@@ -570,7 +697,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             }
             if (!existingRow) {
                 // Row not in list, but matches now - add it (capped like a create)
-                realtimeAppend(dataSourceName, row, currentRows, generation, order);
+                if (!beyondLoaded(dataSourceName, row, order, currentRows)) realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 return;
             }
 
@@ -819,6 +946,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
     // Reads are ordered by call: a $query issued after this load wins over it
     const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
     // Loading state: rows already landed stay live; first-ever load clears
@@ -926,10 +1054,18 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
 
                 if (tableId) {
-                    // Load from Appwrite table (TablesDB)
-                    const queries = queriesConfig
-                        ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-                        : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+                    // Load from Appwrite table (TablesDB); paged sources fetch their window or walk every page
+                    const spec = pagingSpec(dataSource);
+                    if (spec && !pagingState.has(dataSourceName)) pagingState.set(dataSourceName, { hasMore: false, total: null });
+                    const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
+                    const paged = spec ? await fetchPagedRows(dataSourceName, defaults, {
+                        want: pagedWant(dataSourceName, spec),
+                        isCurrent: () => !superseded() && window.ManifestDataStore.isLatestRead(dataSourceName, readToken)
+                    }) : undefined;
+                    if (paged) pagedResult = paged;
+                    const queries = spec
+                        ? (paged ? [] : null)
+                        : await window.ManifestDataQueries.buildAppwriteQueries(defaults, scope, scopeColumns);
 
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
@@ -942,7 +1078,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
                     const teamIds = authStore?.teams?.map(t => t.$id || t.id) || [];
 
-                    data = await window.ManifestDataAppwrite.loadTableRows(
+                    data = paged ? paged.rows : await window.ManifestDataAppwrite.loadTableRows(
                         appwriteConfig.databaseId,
                         tableId,
                         queries,
@@ -1177,6 +1313,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!isInitializing && !staleLocale) {
                 landed = true;
                 clearActiveQuery(dataSourceName, Array.isArray(enhancedData) ? enhancedData.length : 0);
+                if (pagedResult) setPagingState(dataSourceName, pagedResult);
                 await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
             }
 
@@ -1357,6 +1494,10 @@ async function initializeDataSourcesPlugin() {
         catchUpTimer = setTimeout(() => {
             for (const name of realtimeBinds.keys()) {
                 const active = activeQueries.get(name);
+                if (pagingState.has(name)) {
+                    const held = window.ManifestDataStore.rawOf(Alpine.store('data'))?.[name];
+                    catchUpTargets.set(name, Array.isArray(held) ? held.length : 0);
+                }
                 const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
                 Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
             }
@@ -1378,6 +1519,11 @@ async function initializeDataSourcesPlugin() {
         requiresIdentity,
         setActiveQuery,
         forgetLiveSource,
+        pagingSpec,
+        fetchPagedRows,
+        pagedWant,
+        setPagingState,
+        loadMore,
         getActiveQuery: (dataSourceName) => activeQueries.get(dataSourceName) || null
     };
 

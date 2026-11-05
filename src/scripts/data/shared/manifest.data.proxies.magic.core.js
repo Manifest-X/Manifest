@@ -90,6 +90,9 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
             if ((key === '$first' || key === '$next' || key === '$prev' || key === '$page') && createPaginationMethod) {
                 return createPaginationMethod(key, dataSourceName);
             }
+            if (key === '$more') {
+                return () => window.ManifestDataMain.loadMore(dataSourceName);
+            }
 
             // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||

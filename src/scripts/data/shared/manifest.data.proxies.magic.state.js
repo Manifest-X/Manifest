@@ -10,12 +10,14 @@
 // $realtimeOverflow: realtime events not applied since the last load (bounded
 //   growth caps); reset to 0 on each load.
 
-const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow'];
+// $hasMore / $total / $totalCapped: paged sources (`paging` option)
+const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow', '$hasMore', '$total', '$totalCapped'];
 
 function defaultStateValue(prop) {
     if (prop === '$error') return null;
     if (prop === '$stale') return true;
     if (prop === '$realtimeOverflow') return 0;
+    if (prop === '$total') return null;
     return false;
 }
 
@@ -46,6 +48,12 @@ function getStateProperty(prop, dataSourceName) {
         return state.stale !== false;
     } else if (prop === '$realtimeOverflow') {
         return state.realtimeOverflow || 0;
+    } else if (prop === '$hasMore') {
+        return state.hasMore || false;
+    } else if (prop === '$total') {
+        return state.total ?? null;
+    } else if (prop === '$totalCapped') {
+        return state.totalCapped || false;
     }
 
     return undefined;

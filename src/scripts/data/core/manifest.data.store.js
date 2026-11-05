@@ -198,6 +198,7 @@ const latestRead = new Map();
 let readSeq = 0;
 const loadReadTokens = new Map(); // source:locale → token of the load in flight under that key
 function beginRead(dataSourceName) { const token = ++readSeq; latestRead.set(dataSourceName, token); return token; }
+function currentRead(dataSourceName) { return latestRead.get(dataSourceName); }
 function adoptRead(dataSourceName, token) { if (token !== undefined) latestRead.set(dataSourceName, token); }
 // A reset clears the record: generation stamps already drop the older reads
 function isLatestRead(dataSourceName, token) { return token === undefined || !latestRead.has(dataSourceName) || latestRead.get(dataSourceName) === token; }
@@ -367,7 +368,11 @@ function writeSource(dataSourceName, data, options = {}) {
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null),
         stale: fresh ? false : currentState.stale !== false,
-        realtimeOverflow: currentState.realtimeOverflow || 0 // set via setSourceState (realtime caps)
+        realtimeOverflow: currentState.realtimeOverflow || 0, // set via setSourceState (realtime caps)
+        // paged sources (set via setSourceState)
+        hasMore: currentState.hasMore || false,
+        total: currentState.total ?? null,
+        totalCapped: currentState.totalCapped || false
     };
     store[`_${dataSourceName}_state`] = newState;
     if (fresh) markFresh(dataSourceName);
@@ -1322,6 +1327,8 @@ window.ManifestDataStore = {
     runDeduped,
     beginRead,
     adoptRead,
+    currentRead,
+    compareBy,
     loadReadTokens,
     isLatestRead,
     sourceFreshness,

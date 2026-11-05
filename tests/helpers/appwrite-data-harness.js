@@ -109,7 +109,7 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
                 }
                 const ms = delay(qs)
                 if (ms) await new Promise(r => setTimeout(r, ms))
-                return { rows: rows.map(r => ({ ...r })), total }
+                return { rows: rows.map(r => ({ ...r })), total: Math.min(total, 5000) }
             }
             async createRow({ rowId, data }) {
                 stats.writes.push(['create', rowId])
