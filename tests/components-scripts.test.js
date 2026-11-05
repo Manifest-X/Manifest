@@ -3,7 +3,7 @@
  *
  * Scripts inside component files: classic inline scripts run in global scope,
  * inline modules become real module scripts (imports resolve through the
- * page's import map), and data blocks stay in the component untouched.
+ * page's import map, once per page), and data blocks are dropped unrun.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -18,7 +18,9 @@ const COMPONENTS = {
     typed: '<div class="typed">x</div><script type="text/javascript">window.__typedRuns = (window.__typedRuns || 0) + 1</script>',
     modular: '<div class="modular">x</div><script type="module">import { a } from "@app/a.js"; window.__mod = a</script>',
     external: '<div class="external">x</div><script type="module" src="/app/widget.js"></script>',
-    data: '<div class="data">x</div><script type="application/json" id="cfg">{"a":1}</script>'
+    data: '<div class="data">x</div><script type="application/json" id="cfg">{"a":1}</script>',
+    leading: '<script type="application/json">{"a":1}</script><div class="lead" x-text="label"></div>',
+    legacy: '<div class="legacy">x</div><script type="text/javascript1.5">window.__legacyRuns = (window.__legacyRuns || 0) + 1</script>'
 }
 window.Alpine = Alpine
 window.ManifestComponentsRegistry = { registered: new Set(Object.keys(COMPONENTS)) }
@@ -47,6 +49,7 @@ beforeEach(() => {
     document.head.querySelectorAll('script').forEach((s) => s.remove())
     delete window.__classicRuns
     delete window.__typedRuns
+    delete window.__legacyRuns
 })
 
 describe('component scripts', () => {
@@ -78,11 +81,38 @@ describe('component scripts', () => {
         expect(s.type).toBe('module')
     })
 
-    it('leaves data blocks in the component', async () => {
-        const host = await mount('data')
-        const cfg = host.querySelector('script#cfg')
-        expect(cfg).not.toBeNull()
-        expect(cfg.textContent).toBe('{"a":1}')
-        expect(document.head.querySelector('script')).toBeNull()
+    it('drops data blocks without running them', async () => {
+        const errors = []
+        const orig = console.error
+        console.error = (...a) => { errors.push(a.join(' ')) }
+        let host
+        try { host = await mount('data') } finally { console.error = orig }
+        expect(host.querySelector('script')).toBeNull()
+        expect(host.querySelector('.data')).not.toBeNull()
+        expect(errors).toHaveLength(0)
+    })
+
+    it('a leading data block never becomes the component root', async () => {
+        const host = document.createElement('div')
+        host.setAttribute('x-data', '')
+        host.innerHTML = '<x-leading x-data="{ label: \'hi\' }" class="p-4"></x-leading>'
+        document.body.appendChild(host)
+        Alpine.initTree(host)
+        await processor.processComponent(host.querySelector('x-leading'))
+        await settle()
+        const lead = host.querySelector('.lead')
+        expect(lead.classList.contains('p-4')).toBe(true)
+        expect(lead.textContent).toBe('hi')
+    })
+
+    it('runs legacy JavaScript MIME types as classic scripts', async () => {
+        await mount('legacy')
+        expect(window.__legacyRuns).toBe(1)
+    })
+
+    it('injects a given inline module once however many instances render', async () => {
+        await mount('modular')
+        await mount('modular')
+        expect(document.head.querySelectorAll('script[data-component-module]')).toHaveLength(1)
     })
 })
