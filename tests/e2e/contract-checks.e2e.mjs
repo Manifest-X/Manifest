@@ -73,6 +73,11 @@ async function main() {
         check('$search, $first, $page and $delete work under checks', found === 1 && first > 0 && /^Task/.test(page) && !(await j.fake.table('main', 'tasks').rows()).some((r) => r.$id === delId), `${found} ${first} ${page}`)
         const after = await j.page.$$eval('#tasks li', (els) => els.map((e) => e.textContent.trim().replace(/\s+/g, ' ')))
         check('realtime row with undeclared columns lands quietly', after.some((r) => r.startsWith('Task 00 live')))
+        const before = j.errors.length
+        await j.page.evaluate(() => { try { window.Alpine.evaluate(document.body, "$x.tasks.find(t => t.title === 'Task 00 live').nope") } catch (e) { console.error(e.message) } })
+        await wait(100)
+        check('a sorted realtime insert is checked like any row', j.errors.slice(before).some((e) => e.includes('"nope" is not a column')), j.errors.slice(before).join(' | '))
+        j.errors.length = before
         check('$update and $create work under checks', after.includes('Task 99 made here open') && (await j.fake.table('main', 'tasks').get(id)).status === 'done')
         await j.x(`$x.tasks.$update('${id}', { owner: 'z' })`)
         const liveId = await j.x('$x.tasks[0].$id')

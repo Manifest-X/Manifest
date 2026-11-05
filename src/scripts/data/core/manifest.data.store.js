@@ -61,10 +61,7 @@ function deepSeal(obj) {
     return obj;
 }
 
-const rawOf = (obj) => {
-    const raw = typeof Alpine !== 'undefined' && Alpine.raw && obj ? Alpine.raw(obj) : obj;
-    return window.ManifestDataContract ? window.ManifestDataContract.raw(raw) : raw;
-};
+const rawOf = (obj) => (typeof Alpine !== 'undefined' && Alpine.raw && obj ? Alpine.raw(obj) : obj);
 
 const rowKey = (row) => (row && typeof row === 'object' && (typeof row.$id === 'string' || typeof row.$id === 'number'))
     ? row.$id
