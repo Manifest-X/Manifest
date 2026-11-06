@@ -141,7 +141,7 @@ function setupAuthResetListener() {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
             if (!clear && keepQuery && awaitingQueries.has(name)) continue; // a $query waiting on this sign-in runs it
             if (!clear && readAtEvent !== undefined && (ds.currentRead?.(name) ?? 0) > readAtEvent) continue;
-            const active = keepQuery ? (queryIntents.get(name) || activeQueries.get(name)) : null;
+            const active = keepQuery ? (queryIntents.get(name)?.queries || activeQueries.get(name)) : null;
             if (clear) {
                 window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
                 ds.resetSource(name);
@@ -419,7 +419,7 @@ function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery)
 // server-filters by it until the next default load replaces the rows
 const activeQueries = new Map();
 const awaitingQueries = new Set(); // sources with a $query waiting for auth to settle
-const queryIntents = new Map(); // the latest $query asked of a source (cleared by a default load)
+const queryIntents = new Map(); // the latest $query asked of a source, { queries } (cleared by a reload)
 const realtimeBinds = new Map(); // Map<name, { config, mode, rebind }>
 
 function realtimeQueriesFor(dataSourceName, defaults) {
@@ -1070,8 +1070,11 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     }
 
     // Reads are ordered by call: a $query issued after this load wins over it
-    const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
-    queryIntents.delete(dataSourceName);
+    // A first (lazy) read while the source has a $query, asked or showing, only binds realtime:
+    // it neither outranks that $query nor lands its default rows. An explicit reload does both
+    const deferToQuery = () => !options.reload && (queryIntents.has(dataSourceName) || activeQueries.has(dataSourceName));
+    const readToken = deferToQuery() ? undefined : window.ManifestDataStore.beginRead?.(dataSourceName);
+    if (options.reload) queryIntents.delete(dataSourceName);
     let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
@@ -1416,8 +1419,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
             if (superseded()) { landed = true; return null; }
 
-            // A $query issued since this load began: its rows stand, this result never lands
-            if (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken)) {
+            // A $query issued since this load began (or one it deferred to): its rows stand, this result never lands
+            if (deferToQuery() || (window.ManifestDataStore.isLatestRead && !window.ManifestDataStore.isLatestRead(dataSourceName, readToken))) {
                 landed = true;
                 if (!isInitializing) setSourceState(dataSourceName, { loading: false });
                 return enhancedData;

@@ -33,7 +33,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         if (!sourceUnloaded) clearErrorState();
         // Reads are ordered by call, not by network start: the last-issued one lands
         let readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
-        let queryIntentRef = null;
+        // Recorded at call time: a lazy first load started after this defers to it
+        const queryIntentRef = method === '$query' ? { queries: args[0] ?? [] } : null;
+        if (queryIntentRef) window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queryIntentRef);
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -407,8 +409,6 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries = named;
                     }
                     window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                    queryIntentRef = [...(queries || [])]; // own copy: a named query's array is shared
-                    window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queryIntentRef);
                     // A $auth. value or scope not resolved yet: wait for auth once, then run
                     const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
                     let appwriteQueries = await build();
