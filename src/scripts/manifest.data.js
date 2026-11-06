@@ -620,6 +620,7 @@ function endRead(dataSourceName, token) {
 }
 function readsInFlight(dataSourceName) { return inflightReads.has(dataSourceName); }
 function currentRead(dataSourceName) { return latestRead.get(dataSourceName); }
+function readSeqNow() { return readSeq; }
 function adoptRead(dataSourceName, token) { if (token !== undefined) latestRead.set(dataSourceName, token); }
 // A reset clears the record: generation stamps already drop the older reads
 function isLatestRead(dataSourceName, token) { return token === undefined || !latestRead.has(dataSourceName) || latestRead.get(dataSourceName) === token; }
@@ -1766,6 +1767,7 @@ window.ManifestDataStore = {
     readsInFlight,
     adoptRead,
     currentRead,
+    readSeqNow,
     compareBy,
     loadReadTokens,
     isLatestRead,
@@ -3135,7 +3137,7 @@ async function loadFromAPI(dataSource) {
         });
 
         if (!response.ok) {
-            throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+            throw Object.assign(new Error(`API request failed: ${response.status} ${response.statusText}`), { status: response.status });
         }
 
         let data = await response.json();
@@ -4566,6 +4568,12 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         writable: false,
         value: () => window.ManifestDataMain.loadMore(dataSourceName)
     });
+    Object.defineProperty(array, '$reload', {
+        enumerable: false,
+        configurable: true,
+        writable: false,
+        value: () => window.ManifestDataMain.reloadSource(dataSourceName)
+    });
     Object.defineProperty(array, '$saving', {
         enumerable: false,
         configurable: true,
@@ -5249,6 +5257,9 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                 }
                 if (key === '$saving') {
                     return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
+                }
+                if (key === '$reload') {
+                    return () => window.ManifestDataMain.reloadSource(dataSourceName);
                 }
 
                 // Handle pagination methods
@@ -7958,7 +7969,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         const sourceUnloaded = args[3]?.sourceUnloaded === true;
         if (!sourceUnloaded) clearErrorState();
         // Reads are ordered by call, not by network start: the last-issued one lands
-        const readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
+        let readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
+        let queryIntentRef = null;
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -8331,13 +8343,29 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                         queries = named;
                     }
-                    const appwriteQueries = await window.ManifestDataQueries.buildAppwriteQueries(
-                        queries || [],
-                        scope,
-                        scopeColumns
-                    );
+                    window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
+                    queryIntentRef = [...(queries || [])]; // own copy: a named query's array is shared
+                    window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queryIntentRef);
+                    // A $auth. value or scope not resolved yet: wait for auth once, then run
+                    const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
+                    let appwriteQueries = await build();
                     if (appwriteQueries === null) {
-                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                        const waiting = window.ManifestDataMain?.awaitingQueries;
+                        waiting?.add(dataSourceName);
+                        try {
+                            await window.ManifestDataMain?.waitForAuthChange?.();
+                            // Let any reload of this source already running finish, then run as the newest read
+                            window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
+                            await window.ManifestDataMain?.settledReads?.(dataSourceName);
+                        } finally {
+                            waiting?.delete(dataSourceName);
+                        }
+                        readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
+                        window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
+                        appwriteQueries = await build();
+                    }
+                    if (appwriteQueries === null) {
+                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
                     }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
@@ -8351,19 +8379,21 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     let paged = null;
                     const run = spec
                         ? async () => {
-                            paged = await main.fetchPagedRows(dataSourceName, queries || [], {
+                            const fetchPaged = () => main.fetchPagedRows(dataSourceName, queries || [], {
                                 want,
                                 isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken)
                             });
+                            paged = await fetchPaged();
+                            if (paged === null) { await main.waitForAuthChange(); paged = await fetchPaged(); }
                             if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
                             return paged.rows;
                         }
-                        : () => window.ManifestDataAppwrite.loadTableRows(
+                        : () => (main?.withRetry || ((_, fn) => fn()))(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
                             appwriteConfig.databaseId,
                             tableId,
                             appwriteQueries,
                             { requireAuth }
-                        );
+                        ), () => sourceGeneration?.(dataSourceName) === generation); // shared by identical calls: stop only on a reset
                     const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
                     // Network landing: query result replaces the source (coalesced, identity-preserving);
                     // only the last-issued read of this source lands
@@ -9131,12 +9161,18 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
             throw new Error(`[Manifest Data] Method "${method}" not supported for this data source`);
         } catch (error) {
+            // A $query that failed is not what the source shows: a sign-in doesn't re-run it
+            if (method === '$query') window.ManifestDataMain?.dropQueryIntent?.(dataSourceName, queryIntentRef);
             // Automatically set error state - no need for inline .catch() in HTML
             setErrorState(error);
             // Re-throw so promise chain still works if caller wants to handle it
             throw error;
         } finally {
-            if (readToken !== undefined) window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
+            if (readToken !== undefined) {
+                const ds = window.ManifestDataStore;
+                ds?.endRead?.(dataSourceName, readToken);
+                if (!ds?.readsInFlight?.(dataSourceName)) ds?.setSourceState?.(dataSourceName, { loading: false });
+            }
         }
     };
 
@@ -9523,10 +9559,14 @@ function createPaginationMethod(methodName, dataSourceName) {
         const active = window.ManifestDataMain?.getActiveQuery?.(dataSourceName);
         const filters = (Array.isArray(active) ? active : (Array.isArray(defaults) ? defaults : []))
             .filter(q => !(Array.isArray(q) && PAGE_WINDOW_METHODS.has(q[0])));
-        const baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
-
+        let baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
         if (baseQueries === null) {
-            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
+            // A $auth. value or scope not resolved yet: wait for auth once
+            await window.ManifestDataMain?.waitForAuthChange?.();
+            baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
+        }
+        if (baseQueries === null) {
+            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready — sign in, or check the $auth. values in its queries`);
         }
 
         if (methodName === '$first') {
@@ -9613,6 +9653,20 @@ if (typeof window !== 'undefined') {
     }
 }
 
+// $x.<source> hands back the same array until the source's next landing, so
+// identity-keyed memos and Alpine comparisons hold between reads
+const sourceArrayViews = new WeakMap(); // array -> { version, view }
+function sourceArrayView(dataSourceName, array, build) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const raw = store ? (window.ManifestDataStore?.rawOf?.(store) || store) : null;
+    const version = raw?._v?.[dataSourceName];
+    const cached = sourceArrayViews.get(array);
+    if (cached && cached.version === version) return cached.view;
+    const view = build();
+    sourceArrayViews.set(array, { version, view });
+    return view;
+}
+
 // Loading proxy for Appwrite sources (CRUD + state/files/upload/pagination methods)
 function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
     const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
@@ -9660,6 +9714,9 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
             if (key === '$saving') {
                 return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
             }
+            if (key === '$reload') {
+                return () => window.ManifestDataMain.reloadSource(dataSourceName);
+            }
 
             // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||
@@ -9699,6 +9756,9 @@ function createBasicLoadingProxy(dataSourceName) {
 
             if (key === '$files' && filesMethod) {
                 return filesMethod;
+            }
+            if (key === '$reload') {
+                return () => window.ManifestDataMain.reloadSource(dataSourceName);
             }
 
             return target[key];
@@ -9868,6 +9928,7 @@ function registerXMagicMethod(loadDataSource) {
                                         }
                                         if (key === '$saving') return window.ManifestDataProxiesMagic.createSavingMethod(prop);
                                         if (key === '$more') return () => window.ManifestDataMain.loadMore(prop);
+                                        if (key === '$reload') return () => window.ManifestDataMain.reloadSource(prop);
                                         return target[key];
                                     }
                                 }));
@@ -9982,7 +10043,7 @@ function registerXMagicMethod(loadDataSource) {
                                         if (attachArrayMethods) {
                                             const arrayWithMethods = attachArrayMethods(arrayForMethods, prop, reloadDataSource);
                                             // has() trap so Alpine sees $search/$query/etc. before accessing
-                                            return new Proxy(arrayWithMethods, {
+                                            return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                                 get(target, key) {
                                                     if (key === '$search' || key === '$query' || key === '$route') {
                                                         if (key in target && typeof target[key] === 'function') {
@@ -10043,7 +10104,7 @@ function registerXMagicMethod(loadDataSource) {
                                                     }
                                                     return undefined;
                                                 }
-                                            });
+                                            }));
                                         } else {
                                             return arrayForMethods;
                                         }
@@ -10206,7 +10267,7 @@ function registerXMagicMethod(loadDataSource) {
                                 if (attachArrayMethods) {
                                     const arrayWithMethods = attachArrayMethods(emptyArray, prop, reloadDataSource);
                                     // has() trap so Alpine sees $search/$query/etc.
-                                    return new Proxy(arrayWithMethods, {
+                                    return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                         get(target, key) {
                                             if (key === '$search' || key === '$query' || key === '$route') {
                                                 if (key in target && typeof target[key] === 'function') {
@@ -10244,7 +10305,7 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                             return undefined;
                                         }
-                                    });
+                                    }));
                                 }
                                 return emptyArray;
                             }
@@ -10294,7 +10355,7 @@ function registerXMagicMethod(loadDataSource) {
                                 if (attachArrayMethods) {
                                     const arrayWithMethods = attachArrayMethods(value, prop, loadDataSource);
                                     // has() trap so Alpine sees $search/$query/etc.
-                                    return new Proxy(arrayWithMethods, {
+                                    return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                         get(target, key) {
                                             if (key === '$search' || key === '$query') {
                                                 if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
@@ -10370,7 +10431,7 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                             return undefined;
                                         }
-                                    });
+                                    }));
                                 }
                                 return value;
 
@@ -10525,7 +10586,7 @@ function registerXMagicMethod(loadDataSource) {
                                                 const appwriteMethodNames = ['$create', '$update', '$delete', '$query', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove'];
                                                 const baseMethodNames = ['$search', '$route', '$query']; // Base plugin methods available for all data sources
 
-                                                return new Proxy(arrayWithMethods, {
+                                                return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                                     get(target, prop) {
                                                         // Handle base plugin methods ($search, $route, $query)
                                                         if (prop === '$route' || prop === '$search' || prop === '$query') {
@@ -10658,7 +10719,7 @@ function registerXMagicMethod(loadDataSource) {
                                                         }
                                                         return Reflect.getOwnPropertyDescriptor(target, prop);
                                                     }
-                                                });
+                                                }));
                                             }
                                             // Only create proxy for objects, return primitives directly
                                             if (typeof nestedValue === 'object' && nestedValue !== null) {
@@ -11946,7 +12007,10 @@ function setupAuthResetListener() {
     let bound = (currentAuth() ? confirmedIdentity() : null) ?? lastKnownIdentity();
     // Reads under an unverified session failed or came from the snapshot: confirming the same identity still reloads
     let unverified = currentAuth()?._sessionUnverified === true;
-    const reset = async (clear) => {
+    // keepQuery: someone is signed in, so a source showing a $query shows it again under them
+    const reset = async (clear, keepQuery = false) => {
+        // Reads issued after this auth change already see the new identity: they stand
+        const readAtEvent = window.ManifestDataStore?.readSeqNow?.();
         const manifest = await window.ManifestDataConfig?.ensureManifest?.();
         const ds = window.ManifestDataStore;
         const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
@@ -11956,11 +12020,16 @@ function setupAuthResetListener() {
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
+            if (!clear && keepQuery && awaitingQueries.has(name)) continue; // a $query waiting on this sign-in runs it
+            if (!clear && readAtEvent !== undefined && (ds.currentRead?.(name) ?? 0) > readAtEvent) continue;
+            const active = keepQuery ? (queryIntents.get(name) || activeQueries.get(name)) : null;
             if (clear) {
                 window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
                 ds.resetSource(name);
             }
-            loadDataSource(name, locale, { reload: true });
+            const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
+            if (handler) Promise.resolve(handler('$query', active)).catch(() => { /* $error carries it */ });
+            else loadDataSource(name, locale, { reload: true });
         }
     };
     const onAuth = (type) => {
@@ -11974,10 +12043,11 @@ function setupAuthResetListener() {
         // Same identity, or unknown before (rows so far were read under this same session; a sign-out still drops them):
         // no reset, but an unverified boot's reads are redone with the rows kept live
         if (prev === next || (prev === null && !ended)) {
-            if (recovered) reset(false);
+            if (recovered) reset(false, next !== '');
             return;
         }
-        reset(prev !== '');
+        // An identity switch (A to B) starts clean with the defaults; a first sign-in keeps the $query
+        reset(prev !== '', prev === '' && next !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
         .forEach(type => window.addEventListener(type, () => onAuth(type)));
@@ -12229,6 +12299,8 @@ function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery)
 // Active $query per source (manifest-format): realtime matches, orders and
 // server-filters by it until the next default load replaces the rows
 const activeQueries = new Map();
+const awaitingQueries = new Set(); // sources with a $query waiting for auth to settle
+const queryIntents = new Map(); // the latest $query asked of a source (cleared by a default load)
 const realtimeBinds = new Map(); // Map<name, { config, mode, rebind }>
 
 function realtimeQueriesFor(dataSourceName, defaults) {
@@ -12294,9 +12366,51 @@ function rowFitsSource(dataSourceName, row) {
 // Source reset (identity/scope) or torn down: nothing of the old binding carries over
 function forgetLiveSource(dataSourceName) {
     activeQueries.delete(dataSourceName);
+    queryIntents.delete(dataSourceName);
     pagingState.delete(dataSourceName);
     catchUpTargets.delete(dataSourceName);
     realtimeBinds.delete(dataSourceName);
+}
+
+// Load retry: transient failures (network, 5xx, 408/429, an SDK call that dies mid-blip)
+// retry with backoff before $error shows. `retry: false` | `{ attempts, delay }` per source
+const RETRY_DEFAULT = { attempts: 3, delay: 500 };
+
+function retryPolicy(dataSource) {
+    const r = dataSource && typeof dataSource === 'object' ? dataSource.retry : undefined;
+    if (r === false || r === 0) return { attempts: 0, delay: 0 };
+    if (r && typeof r === 'object') {
+        return {
+            attempts: Number.isFinite(r.attempts) && r.attempts >= 0 ? Math.floor(r.attempts) : RETRY_DEFAULT.attempts,
+            delay: Number.isFinite(r.delay) && r.delay >= 0 ? r.delay : RETRY_DEFAULT.delay
+        };
+    }
+    return RETRY_DEFAULT;
+}
+
+function isTransient(error) {
+    // Offline: the `online` catch-up refetches, so retrying now only delays $error
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    const code = error?.code ?? error?.status ?? error?.response?.code;
+    if (typeof code === 'number' && code > 0) return code >= 500 || code === 408 || code === 429;
+    // fetch network failure, or the SDK reading a response that never came — not config mistakes
+    return error?.name === 'TypeError' && /fetch|network|load failed|headers/i.test(String(error.message || ''));
+}
+
+// Run a read, retrying transient failures with exponential backoff (delay, 2×, 4×…, jittered);
+// stops early once isCurrent() is false (a newer read or identity took over)
+async function withRetry(dataSource, fn, isCurrent = () => true) {
+    const { attempts, delay } = retryPolicy(dataSource);
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (error) {
+            if (attempt >= attempts || !isTransient(error) || !isCurrent()) throw error;
+            const wait = delay * 2 ** attempt * (0.75 + Math.random() * 0.5);
+            await new Promise(resolve => setTimeout(resolve, wait));
+            if (!isCurrent()) throw error;
+        }
+    }
 }
 
 // Paged sources: `paging: "all" | "window" | { mode, size, max }`
@@ -12353,11 +12467,10 @@ async function fetchPagedRows(dataSourceName, filters, { want, after = null, isC
     let cursor = after;
     while (rows.length < limit) {
         const n = Math.min(spec.size, limit - rows.length);
-        const page = await window.ManifestDataAppwrite.loadTablePage(
-            appwriteConfig.databaseId, tableId,
-            [...base, ...(cursor ? [Query.cursorAfter(cursor)] : []), Query.limit(n + 1)],
-            { requireAuth }
-        );
+        const pageQueries = [...base, ...(cursor ? [Query.cursorAfter(cursor)] : []), Query.limit(n + 1)];
+        const page = await withRetry(dataSource, () => window.ManifestDataAppwrite.loadTablePage(
+            appwriteConfig.databaseId, tableId, pageQueries, { requireAuth }
+        ), isCurrent);
         if (total === null) total = page.total;
         const got = page.rows.slice(0, n);
         rows.push(...got);
@@ -12839,6 +12952,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
     // Reads are ordered by call: a $query issued after this load wins over it
     const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    queryIntents.delete(dataSourceName);
     let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
@@ -12932,7 +13046,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 // Cloud API - load from HTTP endpoint (read-only)
                 // NOTE: Basic API support is in core for localization compatibility.
                 // Full CRUD operations will be available via manifest.api.data.js plugin (planned).
-                data = await window.ManifestDataAPI.loadFromAPI(dataSource);
+                data = await withRetry(dataSource, () => window.ManifestDataAPI.loadFromAPI(dataSource), () => !superseded());
             } else if (window.ManifestDataConfig.isAppwriteCollection(dataSource)) {
                 // Appwrite collection or bucket
                 const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(dataSource);
@@ -12972,12 +13086,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
                     const teamIds = authStore?.teams?.map(t => t.$id || t.id) || [];
 
-                    data = paged ? paged.rows : await window.ManifestDataAppwrite.loadTableRows(
+                    data = paged ? paged.rows : await withRetry(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
                         appwriteConfig.databaseId,
                         tableId,
                         queries,
                         { requireAuth: requiresIdentity(dataSource) }
-                    );
+                    ), () => !superseded());
                     if (superseded()) { landed = true; return null; }
 
                     // Subscribe to real-time updates for this table (events from a
@@ -13026,7 +13140,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         return null;
                     }
 
-                    let files = await window.ManifestDataAppwrite.listBucketFiles(bucketId, queries);
+                    let files = await withRetry(dataSource, () => window.ManifestDataAppwrite.listBucketFiles(bucketId, queries), () => !superseded());
 
                     // Ensure files is always an array
                     if (!Array.isArray(files)) {
@@ -13083,7 +13197,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         currentLocaleData = await window.ManifestDataLoaders.loadLocalFile(localizedDataSource);
                     } else if (localizedDataSource.url) {
                         // Localized cloud API
-                        currentLocaleData = await window.ManifestDataAPI.loadFromAPI(localizedDataSource);
+                        currentLocaleData = await withRetry(dataSource, () => window.ManifestDataAPI.loadFromAPI(localizedDataSource), () => !superseded());
                     } else {
                         console.warn(`[Manifest Data] No valid source found for dataSource "${dataSourceName}" in locale "${locale}"`);
                         return null;
@@ -13105,7 +13219,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             // For CSV in localized structure, don't pass locale - each file is already locale-specific
                             fallbackData = await window.ManifestDataLoaders.loadLocalFile(defaultLocaleDataSource);
                         } else if (defaultLocaleDataSource?.url) {
-                            fallbackData = await window.ManifestDataAPI.loadFromAPI(defaultLocaleDataSource);
+                            fallbackData = await withRetry(dataSource, () => window.ManifestDataAPI.loadFromAPI(defaultLocaleDataSource), () => !superseded());
                         }
 
                         // Merge fallback data with current locale data (current takes precedence if it exists)
@@ -13253,6 +13367,38 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     return run;
 }
 
+// $reload(): fetch again what the source shows — its active $query, else its default
+// load; a paged source keeps as many rows as it holds
+function reloadSource(dataSourceName) {
+    if (pagingState.has(dataSourceName)) {
+        const held = window.ManifestDataStore.rawOf(Alpine.store('data'))?.[dataSourceName];
+        catchUpTargets.set(dataSourceName, Array.isArray(held) ? held.length : 0);
+    }
+    const active = activeQueries.get(dataSourceName);
+    const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(dataSourceName, reloadDataSource);
+    return handler ? handler('$query', active) : reloadDataSource(dataSourceName);
+}
+
+// Resolves at the next auth change (sign-in settles, team switch) or after timeoutMs
+function waitForAuthChange(timeoutMs = 10000) {
+    const events = ['manifest:auth:login', 'manifest:auth:initialized', 'manifest:auth:anonymous', 'manifest:auth:teams-loaded', 'manifest:auth:logout', 'manifest:auth:session-cleared'];
+    return new Promise(resolve => {
+        const done = () => { clearTimeout(timer); events.forEach(type => window.removeEventListener(type, done)); resolve(); };
+        const timer = setTimeout(done, timeoutMs);
+        events.forEach(type => window.addEventListener(type, done));
+    });
+}
+
+// Resolves once no read of this source is in flight (bounded); starts after a tick so
+// reloads that an event just kicked off are counted
+async function settledReads(dataSourceName, timeoutMs = 5000) {
+    const until = Date.now() + timeoutMs;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    while (window.ManifestDataStore.readsInFlight(dataSourceName) && Date.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+}
+
 // Reload: refetch past the memory cache; rows stay live and merge by $id
 function reloadDataSource(dataSourceName, locale) {
     return loadDataSource(dataSourceName, locale || liveLocale(), { reload: true });
@@ -13389,13 +13535,7 @@ async function initializeDataSourcesPlugin() {
         clearTimeout(catchUpTimer);
         catchUpTimer = setTimeout(() => {
             for (const name of realtimeBinds.keys()) {
-                const active = activeQueries.get(name);
-                if (pagingState.has(name)) {
-                    const held = window.ManifestDataStore.rawOf(Alpine.store('data'))?.[name];
-                    catchUpTargets.set(name, Array.isArray(held) ? held.length : 0);
-                }
-                const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
-                Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
+                Promise.resolve(reloadSource(name)).catch(() => { /* $error carries it */ });
             }
         }, 250);
     };
@@ -13415,6 +13555,13 @@ async function initializeDataSourcesPlugin() {
         requiresIdentity,
         setActiveQuery,
         forgetLiveSource,
+        reloadSource,
+        waitForAuthChange,
+        settledReads,
+        awaitingQueries,
+        noteQueryIntent: (dataSourceName, queries) => queryIntents.set(dataSourceName, queries),
+        dropQueryIntent: (dataSourceName, queries) => { if (queryIntents.get(dataSourceName) === queries) queryIntents.delete(dataSourceName); },
+        withRetry,
         pagingSpec,
         fetchPagedRows,
         pagedWant,
