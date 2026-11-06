@@ -69,6 +69,8 @@ export interface ManifestSourceState {
     readonly $stale: boolean;
     /** Resolves once fresh data has landed. */
     readonly $fresh: Promise<void>;
+    /** Fetch again; Appwrite tables keep the active `$query` and paged rows. */
+    $reload(): Promise<unknown>;
 }
 
 /** Fields Appwrite adds to every row. */
@@ -153,7 +155,6 @@ export interface ManifestAppwriteTableOps<T> {
     $next(cursor: string, limit?: number): Promise<ManifestCursorPage<T>>;
     $prev(cursor: string, limit?: number): Promise<ManifestCursorPage<T>>;
     $page(page: number, limit?: number): Promise<ManifestOffsetPage<T>>;
-    $reload(): Promise<void>;
     /** Realtime events skipped by the growth cap since the last load. */
     readonly $realtimeOverflow: number;
     /** Loads the next page into the source (`paging` sources only); resolves with the rows added. */

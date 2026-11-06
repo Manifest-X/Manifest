@@ -275,6 +275,20 @@
                                     }
                                 ]
                             },
+                            "retry": {
+                                "description": "Retries for transient load failures (network, timeouts, 5xx, 429) before $error shows, on API, Appwrite table and bucket sources. false turns them off; default { attempts: 3, delay: 500 } (ms, backing off).",
+                                "oneOf": [
+                                    { "type": "boolean", "enum": [false] },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "attempts": { "type": "integer", "minimum": 0 },
+                                            "delay": { "type": "number", "minimum": 0 }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                ]
+                            },
                             "paging": {
                                 "description": "Load an Appwrite table in pages that stay live. 'all' walks every page (up to max, default 5000); 'window' loads the first page (size, default 100, at most 4999) and $more() appends the next.",
                                 "oneOf": [

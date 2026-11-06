@@ -18,5 +18,6 @@ export const validUsage = component(() => ({
     const rows = await this.$x.tasks.$update([{ id: 'a', data: { status: 'done' } }])
     return rows.length
   },
-  async pages() { const p = await this.$x.tasks.$page(2, 10); return p.totalPages }
+  async pages() { const p = await this.$x.tasks.$page(2, 10); return p.totalPages },
+  async refresh() { await this.$x.team.$reload(); await this.$x.tasks.$reload() }
 }))

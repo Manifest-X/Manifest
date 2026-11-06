@@ -61,6 +61,7 @@ describe('types-app', () => {
         ['a wrong store property', COMPONENT, 'this.$store.session.summary', 'this.$store.session.sumary', "Property 'sumary' does not exist"],
         ['a missing $saving argument', COMPONENT, '$saving(id)', '$saving()', 'Expected 1 arguments, but got 0'],
         ['$more treated as a flag', COMPONENT, 'await this.$x.tasks.$more()', 'this.$x.tasks.$more = true', "is not assignable to type '() => Promise<number>'"],
+        ['$reload with an argument', 'app/components/valid-usage.js', 'this.$x.team.$reload()', 'this.$x.team.$reload(true)', 'Expected 0 arguments, but got 1'],
         ['a wrong field read from the contract', COMPONENT, "validateTask({ title: this.title, status: 'open' })", "validateTask({ titel: this.title, status: 'open' })", 'titel']
     ]
     for (const [name, file, from, to, message] of cases) {
