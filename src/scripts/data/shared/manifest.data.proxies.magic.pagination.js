@@ -24,10 +24,14 @@ function createPaginationMethod(methodName, dataSourceName) {
         const active = window.ManifestDataMain?.getActiveQuery?.(dataSourceName);
         const filters = (Array.isArray(active) ? active : (Array.isArray(defaults) ? defaults : []))
             .filter(q => !(Array.isArray(q) && PAGE_WINDOW_METHODS.has(q[0])));
-        const baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
-
+        let baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
         if (baseQueries === null) {
-            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready yet — retry after auth settles`);
+            // A $auth. value or scope not resolved yet: wait for auth once
+            await window.ManifestDataMain?.waitForAuthChange?.();
+            baseQueries = await window.ManifestDataQueries.buildAppwriteQueries(filters, scope, scopeColumns);
+        }
+        if (baseQueries === null) {
+            throw new Error(`[Manifest Data] "${dataSourceName}" pagination: auth not ready — sign in, or check the $auth. values in its queries`);
         }
 
         if (methodName === '$first') {

@@ -126,7 +126,10 @@ function setupAuthResetListener() {
     let bound = (currentAuth() ? confirmedIdentity() : null) ?? lastKnownIdentity();
     // Reads under an unverified session failed or came from the snapshot: confirming the same identity still reloads
     let unverified = currentAuth()?._sessionUnverified === true;
-    const reset = async (clear) => {
+    // keepQuery: someone is signed in, so a source showing a $query shows it again under them
+    const reset = async (clear, keepQuery = false) => {
+        // Reads issued after this auth change already see the new identity: they stand
+        const readAtEvent = window.ManifestDataStore?.readSeqNow?.();
         const manifest = await window.ManifestDataConfig?.ensureManifest?.();
         const ds = window.ManifestDataStore;
         const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
@@ -136,11 +139,16 @@ function setupAuthResetListener() {
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
+            if (keepQuery && awaitingQueries.has(name)) continue; // a $query waiting on this sign-in runs it
+            if (!clear && readAtEvent !== undefined && (ds.currentRead?.(name) ?? 0) > readAtEvent) continue;
+            const active = keepQuery ? (queryIntents.get(name) || activeQueries.get(name)) : null;
             if (clear) {
                 window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
                 ds.resetSource(name);
             }
-            loadDataSource(name, locale, { reload: true });
+            const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
+            if (handler) Promise.resolve(handler('$query', active)).catch(() => { /* $error carries it */ });
+            else loadDataSource(name, locale, { reload: true });
         }
     };
     const onAuth = (type) => {
@@ -154,10 +162,10 @@ function setupAuthResetListener() {
         // Same identity, or unknown before (rows so far were read under this same session; a sign-out still drops them):
         // no reset, but an unverified boot's reads are redone with the rows kept live
         if (prev === next || (prev === null && !ended)) {
-            if (recovered) reset(false);
+            if (recovered) reset(false, next !== '');
             return;
         }
-        reset(prev !== '');
+        reset(prev !== '', next !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
         .forEach(type => window.addEventListener(type, () => onAuth(type)));
@@ -409,6 +417,8 @@ function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery)
 // Active $query per source (manifest-format): realtime matches, orders and
 // server-filters by it until the next default load replaces the rows
 const activeQueries = new Map();
+const awaitingQueries = new Set(); // sources with a $query waiting for auth to settle
+const queryIntents = new Map(); // the latest $query asked of a source (cleared by a default load)
 const realtimeBinds = new Map(); // Map<name, { config, mode, rebind }>
 
 function realtimeQueriesFor(dataSourceName, defaults) {
@@ -474,9 +484,50 @@ function rowFitsSource(dataSourceName, row) {
 // Source reset (identity/scope) or torn down: nothing of the old binding carries over
 function forgetLiveSource(dataSourceName) {
     activeQueries.delete(dataSourceName);
+    queryIntents.delete(dataSourceName);
     pagingState.delete(dataSourceName);
     catchUpTargets.delete(dataSourceName);
     realtimeBinds.delete(dataSourceName);
+}
+
+// Load retry: transient failures (network, 5xx, 408/429, an SDK call that dies mid-blip)
+// retry with backoff before $error shows. `retry: false` | `{ attempts, delay }` per source
+const RETRY_DEFAULT = { attempts: 3, delay: 500 };
+
+function retryPolicy(dataSource) {
+    const r = dataSource && typeof dataSource === 'object' ? dataSource.retry : undefined;
+    if (r === false || r === 0) return { attempts: 0, delay: 0 };
+    if (r && typeof r === 'object') {
+        return {
+            attempts: Number.isFinite(r.attempts) && r.attempts >= 0 ? Math.floor(r.attempts) : RETRY_DEFAULT.attempts,
+            delay: Number.isFinite(r.delay) && r.delay >= 0 ? r.delay : RETRY_DEFAULT.delay
+        };
+    }
+    return RETRY_DEFAULT;
+}
+
+function isTransient(error) {
+    // Offline: the `online` catch-up refetches, so retrying now only delays $error
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    const code = error?.code ?? error?.status ?? error?.response?.code;
+    if (typeof code === 'number' && code > 0) return code >= 500 || code === 408 || code === 429;
+    return error instanceof TypeError; // fetch network failure, or the SDK reading a missing response
+}
+
+// Run a read, retrying transient failures with exponential backoff (delay, 2×, 4×…, jittered);
+// stops early once isCurrent() is false (a newer read or identity took over)
+async function withRetry(dataSource, fn, isCurrent = () => true) {
+    const { attempts, delay } = retryPolicy(dataSource);
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (error) {
+            if (attempt >= attempts || !isTransient(error) || !isCurrent()) throw error;
+            const wait = delay * 2 ** attempt * (0.75 + Math.random() * 0.5);
+            await new Promise(resolve => setTimeout(resolve, wait));
+            if (!isCurrent()) throw error;
+        }
+    }
 }
 
 // Paged sources: `paging: "all" | "window" | { mode, size, max }`
@@ -533,11 +584,10 @@ async function fetchPagedRows(dataSourceName, filters, { want, after = null, isC
     let cursor = after;
     while (rows.length < limit) {
         const n = Math.min(spec.size, limit - rows.length);
-        const page = await window.ManifestDataAppwrite.loadTablePage(
-            appwriteConfig.databaseId, tableId,
-            [...base, ...(cursor ? [Query.cursorAfter(cursor)] : []), Query.limit(n + 1)],
-            { requireAuth }
-        );
+        const pageQueries = [...base, ...(cursor ? [Query.cursorAfter(cursor)] : []), Query.limit(n + 1)];
+        const page = await withRetry(dataSource, () => window.ManifestDataAppwrite.loadTablePage(
+            appwriteConfig.databaseId, tableId, pageQueries, { requireAuth }
+        ), isCurrent);
         if (total === null) total = page.total;
         const got = page.rows.slice(0, n);
         rows.push(...got);
@@ -1019,6 +1069,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
     // Reads are ordered by call: a $query issued after this load wins over it
     const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    queryIntents.delete(dataSourceName);
     let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
@@ -1112,7 +1163,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 // Cloud API - load from HTTP endpoint (read-only)
                 // NOTE: Basic API support is in core for localization compatibility.
                 // Full CRUD operations will be available via manifest.api.data.js plugin (planned).
-                data = await window.ManifestDataAPI.loadFromAPI(dataSource);
+                data = await withRetry(dataSource, () => window.ManifestDataAPI.loadFromAPI(dataSource), () => !superseded());
             } else if (window.ManifestDataConfig.isAppwriteCollection(dataSource)) {
                 // Appwrite collection or bucket
                 const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(dataSource);
@@ -1152,12 +1203,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
                     const teamIds = authStore?.teams?.map(t => t.$id || t.id) || [];
 
-                    data = paged ? paged.rows : await window.ManifestDataAppwrite.loadTableRows(
+                    data = paged ? paged.rows : await withRetry(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
                         appwriteConfig.databaseId,
                         tableId,
                         queries,
                         { requireAuth: requiresIdentity(dataSource) }
-                    );
+                    ), () => !superseded());
                     if (superseded()) { landed = true; return null; }
 
                     // Subscribe to real-time updates for this table (events from a
@@ -1206,7 +1257,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         return null;
                     }
 
-                    let files = await window.ManifestDataAppwrite.listBucketFiles(bucketId, queries);
+                    let files = await withRetry(dataSource, () => window.ManifestDataAppwrite.listBucketFiles(bucketId, queries), () => !superseded());
 
                     // Ensure files is always an array
                     if (!Array.isArray(files)) {
@@ -1433,6 +1484,38 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     return run;
 }
 
+// $reload(): fetch again what the source shows — its active $query, else its default
+// load; a paged source keeps as many rows as it holds
+function reloadSource(dataSourceName) {
+    if (pagingState.has(dataSourceName)) {
+        const held = window.ManifestDataStore.rawOf(Alpine.store('data'))?.[dataSourceName];
+        catchUpTargets.set(dataSourceName, Array.isArray(held) ? held.length : 0);
+    }
+    const active = activeQueries.get(dataSourceName);
+    const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(dataSourceName, reloadDataSource);
+    return handler ? handler('$query', active) : reloadDataSource(dataSourceName);
+}
+
+// Resolves at the next auth change (sign-in settles, team switch) or after timeoutMs
+function waitForAuthChange(timeoutMs = 10000) {
+    const events = ['manifest:auth:login', 'manifest:auth:initialized', 'manifest:auth:anonymous', 'manifest:auth:teams-loaded'];
+    return new Promise(resolve => {
+        const done = () => { clearTimeout(timer); events.forEach(type => window.removeEventListener(type, done)); resolve(); };
+        const timer = setTimeout(done, timeoutMs);
+        events.forEach(type => window.addEventListener(type, done));
+    });
+}
+
+// Resolves once no read of this source is in flight (bounded); starts after a tick so
+// reloads that an event just kicked off are counted
+async function settledReads(dataSourceName, timeoutMs = 5000) {
+    const until = Date.now() + timeoutMs;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    while (window.ManifestDataStore.readsInFlight(dataSourceName) && Date.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+}
+
 // Reload: refetch past the memory cache; rows stay live and merge by $id
 function reloadDataSource(dataSourceName, locale) {
     return loadDataSource(dataSourceName, locale || liveLocale(), { reload: true });
@@ -1569,13 +1652,7 @@ async function initializeDataSourcesPlugin() {
         clearTimeout(catchUpTimer);
         catchUpTimer = setTimeout(() => {
             for (const name of realtimeBinds.keys()) {
-                const active = activeQueries.get(name);
-                if (pagingState.has(name)) {
-                    const held = window.ManifestDataStore.rawOf(Alpine.store('data'))?.[name];
-                    catchUpTargets.set(name, Array.isArray(held) ? held.length : 0);
-                }
-                const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
-                Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
+                Promise.resolve(reloadSource(name)).catch(() => { /* $error carries it */ });
             }
         }, 250);
     };
@@ -1595,6 +1672,12 @@ async function initializeDataSourcesPlugin() {
         requiresIdentity,
         setActiveQuery,
         forgetLiveSource,
+        reloadSource,
+        waitForAuthChange,
+        settledReads,
+        awaitingQueries,
+        noteQueryIntent: (dataSourceName, queries) => queryIntents.set(dataSourceName, queries),
+        withRetry,
         pagingSpec,
         fetchPagedRows,
         pagedWant,

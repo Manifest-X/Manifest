@@ -195,6 +195,12 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         writable: false,
         value: () => window.ManifestDataMain.loadMore(dataSourceName)
     });
+    Object.defineProperty(array, '$reload', {
+        enumerable: false,
+        configurable: true,
+        writable: false,
+        value: () => window.ManifestDataMain.reloadSource(dataSourceName)
+    });
     Object.defineProperty(array, '$saving', {
         enumerable: false,
         configurable: true,
@@ -878,6 +884,9 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                 }
                 if (key === '$saving') {
                     return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
+                }
+                if (key === '$reload') {
+                    return () => window.ManifestDataMain.reloadSource(dataSourceName);
                 }
 
                 // Handle pagination methods

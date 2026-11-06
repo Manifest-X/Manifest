@@ -110,6 +110,9 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
             if (key === '$saving') {
                 return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
             }
+            if (key === '$reload') {
+                return () => window.ManifestDataMain.reloadSource(dataSourceName);
+            }
 
             // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||
@@ -149,6 +152,9 @@ function createBasicLoadingProxy(dataSourceName) {
 
             if (key === '$files' && filesMethod) {
                 return filesMethod;
+            }
+            if (key === '$reload') {
+                return () => window.ManifestDataMain.reloadSource(dataSourceName);
             }
 
             return target[key];
@@ -318,6 +324,7 @@ function registerXMagicMethod(loadDataSource) {
                                         }
                                         if (key === '$saving') return window.ManifestDataProxiesMagic.createSavingMethod(prop);
                                         if (key === '$more') return () => window.ManifestDataMain.loadMore(prop);
+                                        if (key === '$reload') return () => window.ManifestDataMain.reloadSource(prop);
                                         return target[key];
                                     }
                                 }));

@@ -53,7 +53,7 @@ const PAGING = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore', 'order
 // Options: delay(queries) per list call; writeDelay ms per write; echoFirst: the
 // realtime echo of a write fires before the HTTP reply (as Appwrite usually does)
 function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true } = {}) {
-    const stats = { lists: [], instances: [], writes: [], failWrites: false }
+    const stats = { lists: [], instances: [], writes: [], failWrites: false, failReads: 0, failError: null }
     const channel = 'databases.db.tables.items.rows'
     const echo = (type, row) => {
         const rt = stats.instances[stats.instances.length - 1]
@@ -84,6 +84,12 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
         Client: class { setEndpoint() { return this } setProject() { return this } },
         TablesDB: class {
             async listRows({ queries = [] }) {
+                // failReads: a number of upcoming reads to fail (transient by default)
+                if (stats.failReads > 0) {
+                    stats.failReads--
+                    stats.lists.push('failed')
+                    throw Object.assign(new Error(stats.failError?.message || 'Service unavailable'), { code: stats.failError?.code ?? 503 })
+                }
                 const qs = queries.map(q => JSON.parse(q))
                 // Appwrite keeps an internal sequence; ties in an order fall back to it
                 table.forEach((r, i) => { if (r.$sequence === undefined) Object.defineProperty(r, '$sequence', { value: i + 1, enumerable: true, writable: true, configurable: true }) })

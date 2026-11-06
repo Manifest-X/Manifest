@@ -342,6 +342,7 @@ function endRead(dataSourceName, token) {
 }
 function readsInFlight(dataSourceName) { return inflightReads.has(dataSourceName); }
 function currentRead(dataSourceName) { return latestRead.get(dataSourceName); }
+function readSeqNow() { return readSeq; }
 function adoptRead(dataSourceName, token) { if (token !== undefined) latestRead.set(dataSourceName, token); }
 // A reset clears the record: generation stamps already drop the older reads
 function isLatestRead(dataSourceName, token) { return token === undefined || !latestRead.has(dataSourceName) || latestRead.get(dataSourceName) === token; }
@@ -1488,6 +1489,7 @@ window.ManifestDataStore = {
     readsInFlight,
     adoptRead,
     currentRead,
+    readSeqNow,
     compareBy,
     loadReadTokens,
     isLatestRead,

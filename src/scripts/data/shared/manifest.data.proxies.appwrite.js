@@ -32,7 +32,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         const sourceUnloaded = args[3]?.sourceUnloaded === true;
         if (!sourceUnloaded) clearErrorState();
         // Reads are ordered by call, not by network start: the last-issued one lands
-        const readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
+        let readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -405,13 +405,27 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         }
                         queries = named;
                     }
-                    const appwriteQueries = await window.ManifestDataQueries.buildAppwriteQueries(
-                        queries || [],
-                        scope,
-                        scopeColumns
-                    );
+                    window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
+                    window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queries || []);
+                    // A $auth. value or scope not resolved yet: wait for auth once, then run
+                    const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
+                    let appwriteQueries = await build();
                     if (appwriteQueries === null) {
-                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                        const waiting = window.ManifestDataMain?.awaitingQueries;
+                        waiting?.add(dataSourceName);
+                        try {
+                            await window.ManifestDataMain?.waitForAuthChange?.();
+                            // Let any reload of this source already running finish, then run as the newest read
+                            window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
+                            await window.ManifestDataMain?.settledReads?.(dataSourceName);
+                        } finally {
+                            waiting?.delete(dataSourceName);
+                        }
+                        readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
+                        appwriteQueries = await build();
+                    }
+                    if (appwriteQueries === null) {
+                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
                     }
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
@@ -425,19 +439,21 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     let paged = null;
                     const run = spec
                         ? async () => {
-                            paged = await main.fetchPagedRows(dataSourceName, queries || [], {
+                            const fetchPaged = () => main.fetchPagedRows(dataSourceName, queries || [], {
                                 want,
                                 isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken)
                             });
+                            paged = await fetchPaged();
+                            if (paged === null) { await main.waitForAuthChange(); paged = await fetchPaged(); }
                             if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
                             return paged.rows;
                         }
-                        : () => window.ManifestDataAppwrite.loadTableRows(
+                        : () => (main?.withRetry || ((_, fn) => fn()))(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
                             appwriteConfig.databaseId,
                             tableId,
                             appwriteQueries,
                             { requireAuth }
-                        );
+                        ), () => !isLatestRead || isLatestRead(dataSourceName, readToken));
                     const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
                     // Network landing: query result replaces the source (coalesced, identity-preserving);
                     // only the last-issued read of this source lands
@@ -1210,7 +1226,11 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             // Re-throw so promise chain still works if caller wants to handle it
             throw error;
         } finally {
-            if (readToken !== undefined) window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
+            if (readToken !== undefined) {
+                const ds = window.ManifestDataStore;
+                ds?.endRead?.(dataSourceName, readToken);
+                if (!ds?.readsInFlight?.(dataSourceName)) ds?.setSourceState?.(dataSourceName, { loading: false });
+            }
         }
     };
 
