@@ -1338,7 +1338,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                             // For CSV in localized structure, don't pass locale - each file is already locale-specific
                             fallbackData = await window.ManifestDataLoaders.loadLocalFile(defaultLocaleDataSource);
                         } else if (defaultLocaleDataSource?.url) {
-                            fallbackData = await window.ManifestDataAPI.loadFromAPI(defaultLocaleDataSource);
+                            fallbackData = await withRetry(dataSource, () => window.ManifestDataAPI.loadFromAPI(defaultLocaleDataSource), () => !superseded());
                         }
 
                         // Merge fallback data with current locale data (current takes precedence if it exists)

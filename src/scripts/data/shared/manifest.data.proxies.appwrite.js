@@ -407,7 +407,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries = named;
                     }
                     window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                    queryIntentRef = queries || [];
+                    queryIntentRef = [...(queries || [])]; // own copy: a named query's array is shared
                     window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queryIntentRef);
                     // A $auth. value or scope not resolved yet: wait for auth once, then run
                     const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
