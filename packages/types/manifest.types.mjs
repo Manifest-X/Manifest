@@ -47,24 +47,20 @@ export async function main(argv) {
     const output = applyAugmentation(template, augmentation);
 
     const outPath = resolve(cwd, opts.out);
-    if (opts.tsc) {
-        process.exitCode = runTsc(projectRoot, relative(projectRoot, outPath).split('\\').join('/'));
-        return;
-    }
+    const typesPath = relative(projectRoot, outPath).split('\\').join('/');
     if (opts.check) {
         const current = existsSync(outPath) ? readFileSync(outPath, 'utf8') : '';
         if (current !== output) {
             console.error(`mnfst-types: ${opts.out} is out of date with manifest.json — run \`npx mnfst-types\` and commit it`);
             process.exitCode = 1;
-            return;
+        } else {
+            console.log(`mnfst-types: ${opts.out} is up to date`);
         }
-        console.log(`mnfst-types: ${opts.out} is up to date`);
-        return;
+    } else if (!opts.tsc) {
+        writeFileSync(outPath, output);
+        console.log(`mnfst-types: wrote ${outPath}`);
     }
-    writeFileSync(outPath, output);
-    console.log(`mnfst-types: wrote ${outPath}`);
 
-    const typesPath = relative(projectRoot, outPath).split('\\').join('/');
     if (opts.init) {
         const jsconfig = join(projectRoot, 'jsconfig.json');
         if (existsSync(jsconfig)) syncJsconfigPaths(jsconfig, typesPath, importMapPaths(projectRoot));
@@ -72,6 +68,10 @@ export async function main(argv) {
     }
     if (opts.ci) {
         writeOnce(join(projectRoot, '.github', 'workflows', 'types.yml'), defaultWorkflow(typesPath));
+    }
+    if (opts.tsc) {
+        const status = runTsc(projectRoot, typesPath);
+        if (status) process.exitCode = process.exitCode || status;
     }
 }
 
@@ -172,22 +172,59 @@ function readJsonc(path) {
     } catch { return null; }
 }
 
+// A config and its relative `extends` chain, nearest first: [{ file, config }]
+function configChain(file) {
+    const chain = [];
+    const seen = new Set();
+    let current = file;
+    while (current && !seen.has(current) && existsSync(current)) {
+        seen.add(current);
+        const config = readJsonc(current);
+        chain.push({ file: current, config });
+        const ext = config && config.extends;
+        const next = Array.isArray(ext) ? ext[ext.length - 1] : ext;
+        if (typeof next !== 'string' || !/^\.{1,2}[\\/]/.test(next)) break;
+        current = resolve(dirname(current), next.endsWith('.json') ? next : next + '.json');
+    }
+    return chain;
+}
+
+// Effective paths across the chain, as absolute targets (nearest config wins)
+function chainPaths(chain) {
+    const out = {};
+    for (const { file, config } of [...chain].reverse()) {
+        const opts = (config && config.compilerOptions) || {};
+        if (!opts.paths) continue;
+        const base = opts.baseUrl ? resolve(dirname(file), opts.baseUrl) : dirname(file);
+        for (const [k, v] of Object.entries(opts.paths)) out[k] = (Array.isArray(v) ? v : [v]).map((x) => resolve(base, x));
+    }
+    return out;
+}
+
 // --init on an existing jsconfig: add import-map paths it lacks (plain JSON only)
 function syncJsconfigPaths(path, types, aliases) {
+    const text = readFileSync(path, 'utf8');
     let config;
-    try { config = JSON.parse(readFileSync(path, 'utf8')); } catch {
-        console.log(`mnfst-types: ${path} has comments; add any import-map aliases to its paths by hand (npx mnfst-types --tsc merges them anyway)`);
+    try { config = JSON.parse(text); } catch {
+        console.log(`mnfst-types: ${path} isn't plain JSON (comments or trailing commas); add any new import-map aliases to its paths by hand (npx mnfst-types --tsc merges them anyway)`);
         return;
     }
-    const paths = (config.compilerOptions ||= {}).paths ||= {};
+    const dir = dirname(path);
+    const inherited = chainPaths(configChain(path).slice(1));
+    const own = (config.compilerOptions ||= {}).paths;
+    const known = new Set([...Object.keys(inherited), ...Object.keys(own || {})]);
     const wanted = { mnfst: [`./${types}`], ...aliases };
-    const added = Object.keys(wanted).filter((k) => !(k in paths));
+    const added = Object.keys(wanted).filter((k) => !known.has(k));
     if (!added.length) {
         console.log(`mnfst-types: ${path} already maps every import-map alias`);
         return;
     }
+    // A child `paths` replaces the base's, so carry inherited entries over
+    const paths = own || Object.fromEntries(Object.entries(inherited).map(([k, v]) => [k, v.map((t) => './' + relative(dir, t).split('\\').join('/'))]));
     for (const k of added) paths[k] = wanted[k];
-    writeFileSync(path, JSON.stringify(config, null, 4) + '\n');
+    config.compilerOptions.paths = paths;
+    const indent = (text.match(/\n([ \t]+)"/) || [, '    '])[1];
+    writeFileSync(path, JSON.stringify(config, null, indent) + '\n');
     console.log(`mnfst-types: added ${added.join(', ')} to ${path}`);
 }
 
@@ -202,7 +239,7 @@ function findTsc(projectRoot) {
             if (bin) return { cmd: process.execPath, args: [join(dirname(pkgPath), bin)] };
         } catch { /* next */ }
     }
-    return { cmd: process.platform === 'win32' ? 'npx.cmd' : 'npx', args: ['-y', '-p', 'typescript@7', 'tsc'] };
+    return { cmd: 'npx', args: ['-y', '-p', 'typescript@7', 'tsc'], shell: process.platform === 'win32' };
 }
 
 // Type-check with a config built now: import-map paths can't drift. A project
@@ -211,16 +248,14 @@ function runTsc(projectRoot, types) {
     const abs = (p) => resolve(projectRoot, p);
     const own = ['tsconfig.json', 'jsconfig.json'].map((f) => join(projectRoot, f)).find((f) => existsSync(f));
     const config = { compilerOptions: {} };
-    const paths = { mnfst: [abs(types)] };
+    let paths = { mnfst: [abs(types)] };
     for (const [k, v] of Object.entries(importMapPaths(projectRoot))) paths[k] = v.map(abs);
     if (own) {
         config.extends = own;
-        const parsed = readJsonc(own);
-        if (!parsed) console.warn(`mnfst-types: couldn't read ${own}; extending it with import-map paths only`);
-        const opts = (parsed && parsed.compilerOptions) || {};
-        const base = opts.baseUrl ? resolve(dirname(own), opts.baseUrl) : dirname(own);
-        for (const [k, v] of Object.entries(opts.paths || {})) paths[k] = (Array.isArray(v) ? v : [v]).map((x) => resolve(base, x));
-        if (parsed && !parsed.include && !parsed.files) config.include = DEFAULT_INCLUDE(types).map(abs);
+        const chain = configChain(own);
+        if (!chain[0].config) console.warn(`mnfst-types: couldn't read ${own}; extending it with import-map paths only`);
+        paths = { ...paths, ...chainPaths(chain) };
+        if (!chain.some(({ config: c }) => c && (c.include || c.files))) config.include = DEFAULT_INCLUDE(types).map(abs);
     } else {
         Object.assign(config.compilerOptions, COMPILER_DEFAULTS);
         config.include = DEFAULT_INCLUDE(types).map(abs);
@@ -232,11 +267,9 @@ function runTsc(projectRoot, types) {
     const file = join(dir, 'tsconfig.json');
     try {
         writeFileSync(file, JSON.stringify(config, null, 2));
-        const { cmd, args } = findTsc(projectRoot);
-        const r = spawnSync(cmd, [...args, '-p', file, '--pretty', 'false'], { cwd: realpathSync(projectRoot), encoding: 'utf8' });
+        const { cmd, args, shell } = findTsc(projectRoot);
+        const r = spawnSync(cmd, [...args, '-p', file, '--pretty', 'false'], { cwd: realpathSync(projectRoot), stdio: 'inherit', shell: !!shell });
         if (r.error) { console.error(`mnfst-types: couldn't run tsc (${r.error.message})`); return 2; }
-        process.stdout.write(r.stdout || '');
-        process.stderr.write(r.stderr || '');
         if (r.status === 0) console.log('mnfst-types: no type errors');
         return r.status ?? 1;
     } finally {

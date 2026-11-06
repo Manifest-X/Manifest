@@ -148,6 +148,44 @@ describe('hand-written config', () => {
     })
 })
 
+describe('extended configs', () => {
+    it("--tsc and --init keep a base config's paths and include", () => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-types-extends-'))
+        try {
+            fs.cpSync(FIXTURE, tmp, { recursive: true })
+            const own = JSON.parse(fs.readFileSync(path.join(tmp, 'jsconfig.json'), 'utf8'))
+            own.compilerOptions.paths['~lib/*'] = ['./app/lib/*']
+            fs.writeFileSync(path.join(tmp, 'base.json'), JSON.stringify(own, null, 2))
+            fs.writeFileSync(path.join(tmp, 'jsconfig.json'), JSON.stringify({ extends: './base.json' }, null, 2))
+            fs.writeFileSync(path.join(tmp, 'app', 'use.js'), "import { component } from '~lib/component.js'\nexport const c = component\n")
+            const run = (...args) => spawnSync(process.execPath, [TYPES, ...args], { cwd: tmp, encoding: 'utf8' })
+            const r = run('--tsc')
+            expect(r.stdout).toContain('no type errors')
+
+            const html = fs.readFileSync(path.join(tmp, 'index.html'), 'utf8')
+            fs.writeFileSync(path.join(tmp, 'index.html'), html.replace('"@shared/": "/shared/"', '"@shared/": "/shared/", "@lib/": "/app/lib/"'))
+            expect(run('--init').stdout).toContain('added @lib/*')
+            const child = JSON.parse(fs.readFileSync(path.join(tmp, 'jsconfig.json'), 'utf8'))
+            expect(child.compilerOptions.paths['~lib/*']).toEqual(['./app/lib/*'])
+            expect(child.compilerOptions.paths['@lib/*']).toEqual(['./app/lib/*'])
+            expect(spawnSync(TSC, ['-p', 'jsconfig.json'], { cwd: tmp, encoding: 'utf8' }).status).toBe(0)
+        } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+    })
+
+    it('--check --tsc runs both', () => {
+        const original = read('manifest.json')
+        const m = JSON.parse(original)
+        m.data.notes = { appwriteTableId: 'notes' }
+        write('manifest.json', JSON.stringify(m))
+        try {
+            const r = types('--check', '--tsc')
+            expect(r.status).toBe(1)
+            expect(r.stderr).toContain('out of date')
+            expect(r.stdout).toContain('no type errors')
+        } finally { write('manifest.json', original) }
+    })
+})
+
 describe('starter template', () => {
     const STARTER = path.join(ROOT, 'templates', 'starter')
     it('committed manifest.d.ts is current and the starter type-checks clean with no jsconfig', () => {
