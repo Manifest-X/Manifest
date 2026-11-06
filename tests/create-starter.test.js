@@ -53,7 +53,7 @@ describe('mnfst-starter', () => {
         const paths = json('jsconfig.json').compilerOptions.paths
         expect(paths.mnfst).toEqual(['./manifest.d.ts'])
         expect(paths['@app/*']).toEqual(['./app/*'])
-        expect(json('manifest.json').publishIgnore).toEqual(['jsconfig.json', '**/*.d.ts'])
+        expect(json('manifest.json').publishIgnore).toEqual(['jsconfig.json', '*.d.ts'])
     })
 
     it('fresh folder with project id + key wires production MCP, no hook, key not printed', () => {

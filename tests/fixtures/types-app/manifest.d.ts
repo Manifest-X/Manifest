@@ -55,8 +55,7 @@ export type ManifestQueryTuple<T = any> =
     | ['orderRandom']
     | ['limit' | 'offset', number]
     | ['cursorAfter' | 'cursorBefore', string]
-    | ['select', ManifestColumn<T>[]]
-    | ['and' | 'or', ManifestQueryTuple<T>[]];
+    | ['or', ManifestQueryTuple<T>[]];
 
 /** State flags exposed on every data source (array or object). */
 export interface ManifestSourceState {
@@ -106,10 +105,10 @@ export type ManifestSearchWeights<T> = Partial<Record<ManifestColumn<T>, number>
 /** Operators available on array-shaped sources (CSV tabular, JSON arrays, Appwrite tables). */
 export interface ManifestArrayOps<T> {
     /** Substring match across the given fields, or a ranked search with field weights. */
-    $search(term: string, ...fields: ManifestColumn<T>[]): T[];
-    $search(term: string, weights: ManifestSearchWeights<T>): T[];
-    /** Local sources: filter synchronously. */
-    $query(queries: ManifestQueryTuple<T>[]): T[];
+    $search(term: string, ...fields: ManifestColumn<T>[]): ManifestArraySource<T>;
+    $search(term: string, weights: ManifestSearchWeights<T>): ManifestArraySource<T>;
+    /** Local sources: filter synchronously (chainable with `$search`). */
+    $query(queries: ManifestQueryTuple<T>[]): ManifestArraySource<T>;
     /** The row whose `field` matches a segment of the current URL. */
     $route(field?: ManifestColumn<T>): T | undefined;
 }
@@ -131,6 +130,9 @@ export interface ManifestOffsetPage<T> {
     hasMore: boolean;
 }
 
+/** `$update` list form: one entry per row. */
+export type ManifestUpdateList<T> = Array<{ id?: string; $id?: string; data: Partial<T> }>;
+
 /** Options for `$duplicate` on table rows: field overrides plus copy controls. */
 export type ManifestDuplicateOptions<T> = Partial<T> & { newRowId?: string; files?: 'duplicate' | 'same' | 'none' };
 
@@ -139,9 +141,11 @@ export interface ManifestAppwriteTableOps<T> {
     /** Server-side query with expressions or a named query from manifest.json; replaces the source's rows. */
     $query(queriesOrName: ManifestQueryTuple<T>[] | string): Promise<T[]>;
     $create(values: Partial<T>, rowId?: string): Promise<T>;
-    $update(updates: Array<{ id?: string; $id?: string; data: Partial<T> }>): Promise<T[]>;
-    $update(ids: string[], values: Partial<T>): Promise<T[]>;
-    $update(id: string, values: Partial<T>): Promise<T>;
+    /** One row by id, several by ids, or a list of `{ id, data }` (no second argument). */
+    $update<I extends string | string[] | ManifestUpdateList<T>>(
+        target: I,
+        ...values: 0 extends (1 & I) ? [values?: Partial<T>] : I extends ManifestUpdateList<T> ? [] : [values: Partial<T>]
+    ): Promise<0 extends (1 & I) ? T : I extends string ? T : T[]>;
     $delete(id: string): Promise<T>;
     $delete(ids: string[]): Promise<T[]>;
     $duplicate(id: string, options?: ManifestDuplicateOptions<T>): Promise<T>;
@@ -171,7 +175,7 @@ export interface ManifestMutationDetail {
     mutationId: string;
     type: 'create' | 'update' | 'delete';
     dataSourceName: string;
-    entryId: string;
+    entryId?: string;
     result?: unknown;
     error?: unknown;
 }
@@ -722,14 +726,17 @@ export interface ManifestSubmitDetail {
  *
  *     declare module 'mnfst' { interface ManifestStores { session: Session } }
  */
-export interface ManifestStores { }
+export interface ManifestStores { [name: string]: any }
+
+/** Declared stores keep their types; any other name is `any` until it's declared. */
+export type ManifestStoreMap = ManifestStores;
 
 /** Magics available on `this` inside an Alpine component (Alpine's own plus Manifest's). */
 export interface ManifestMagics {
     $el: HTMLElement;
     $root: HTMLElement;
-    $refs: Record<string, HTMLElement>;
-    $store: ManifestStores;
+    $refs: Record<string, any>;
+    $store: ManifestStoreMap;
     $data: Record<string, any>;
     $watch(property: string, callback: (value: any, oldValue: any) => void): void;
     $dispatch(event: string, detail?: unknown): void;
@@ -785,9 +792,8 @@ export type ManifestComponent<T> = T & ManifestComponentHooks & ThisType<T & Man
 /** The `Alpine` global, as app modules use it. */
 export interface ManifestAlpine {
     data<T>(name: string, factory: (...args: any[]) => T): void;
-    store<K extends keyof ManifestStores>(name: K, value: ManifestStores[K]): void;
-    store<K extends keyof ManifestStores>(name: K): ManifestStores[K];
-    store(name: string, value: unknown): void;
+    store<T>(name: string, value: T & ThisType<T>): void;
+    store<K extends string>(name: K): ManifestStores[K];
     magic(name: string, callback: (el: HTMLElement, options: unknown) => unknown): void;
     directive(name: string, callback: (...args: any[]) => unknown): unknown;
     nextTick(callback?: () => void): Promise<void>;
@@ -807,7 +813,7 @@ declare global {
     /** Project data sources registered in manifest.json. */
     const $x: ManifestData;
     /** Alpine stores. */
-    const $store: ManifestStores;
+    const $store: ManifestStoreMap;
     /** Alpine, loaded by Manifest; reach it inside `alpine:init`. */
     const Alpine: ManifestAlpine;
     /** The current route path (compare or .startsWith against it). */
@@ -916,13 +922,6 @@ declare global {
         'submit:error': CustomEvent<ManifestSubmitDetail>;
     }
 
-    /**
-     * Fired when the utilities runtime sees a class the baked sheet (and
-     * `manifest.json`'s `utilities.safelist`/`patterns`) doesn't cover, after
-     * publish stamped that sheet as covering every class — see
-     * manifest.utilities.static.js. `engineLoaded` is true once the lazily
-     * loaded Tailwind engine has taken over, false if that load failed.
-     */
     interface WindowEventMap {
         'manifest:data-mutation-success': CustomEvent<ManifestMutationDetail>;
         'manifest:data-mutation-error': CustomEvent<ManifestMutationDetail>;
@@ -933,6 +932,13 @@ declare global {
         'virtual-end': CustomEvent<{ length: number }>;
     }
 
+    /**
+     * Fired when the utilities runtime sees a class the baked sheet (and
+     * `manifest.json`'s `utilities.safelist`/`patterns`) doesn't cover, after
+     * publish stamped that sheet as covering every class — see
+     * manifest.utilities.static.js. `engineLoaded` is true once the lazily
+     * loaded Tailwind engine has taken over, false if that load failed.
+     */
     interface WindowEventMap {
         'manifest:utilities-uncovered': CustomEvent<{ classes: string[]; engineLoaded: boolean }>;
     }
@@ -973,6 +979,8 @@ export interface ManifestSources {
     tasks: ManifestTableSource<ManifestRowFor<"tasks", Row_tasks>>;
     workspaces: ManifestTableSource<ManifestRowFor<"workspaces", Row_workspaces>>;
     team: ManifestArraySource<Row_team>;
+    /** Sources added at runtime ($x.$register) or since the last generation. */
+    [sourceName: string]: any;
 }
 // AUGMENTATION:end
 // ---------------------------------------------------------------------------

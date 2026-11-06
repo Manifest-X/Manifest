@@ -70,6 +70,9 @@ export async function main(argv) {
 function writeOnce(path, content) {
     if (existsSync(path)) {
         console.log(`mnfst-types: ${path} already exists, leaving it alone`);
+        if (/"moduleResolution"\s*:\s*"node(10)?"/i.test(readFileSync(path, 'utf8'))) {
+            console.warn('mnfst-types: its "moduleResolution": "node" is not supported by TypeScript 7; use "bundler" (delete the file and run --init again for the current defaults)');
+        }
         return;
     }
     mkdirSync(dirname(path), { recursive: true });
@@ -209,7 +212,7 @@ function applyAugmentation(template, body) {
 async function buildAugmentation(manifest, projectRoot) {
     const data = manifest && typeof manifest === 'object' ? manifest.data : null;
     if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
-        return '// No data sources declared in manifest.json.\nexport interface ManifestSources { }';
+        return '// No data sources declared in manifest.json.\nexport interface ManifestSources { [sourceName: string]: any }';
     }
 
     const contract = await loadContract(manifest, projectRoot);
@@ -234,6 +237,8 @@ async function buildAugmentation(manifest, projectRoot) {
     }
     lines.push('export interface ManifestSources {');
     lines.push.apply(lines, augmentations);
+    lines.push('    /** Sources added at runtime ($x.$register) or since the last generation. */');
+    lines.push('    [sourceName: string]: any;');
     lines.push('}');
     return lines.join('\n');
 }
@@ -418,9 +423,12 @@ function sampleCsv(path) {
     const sampleRows = rows.slice(1, 51);
     const firstHeader = (header[0] || '').toLowerCase();
 
-    // Key-value mode: `key` + `value`, or `key` + one column per locale (values resolve to the current locale)
-    const localeColumns = header.length > 1 && header.slice(1).every((h) => /^[a-z]{2,3}(-[a-z0-9]{2,8})?$/i.test(h || ''));
-    if (firstHeader === 'key' && ((header[1] || '').toLowerCase() === 'value' || localeColumns)) {
+    // Same rule as the runtime: a table only when the first header is `id`, there
+    // are 3+ columns and most of the first values look like ids; else key → value
+    const idLike = (v) => !!v && (/^\d+$/.test(v) || (v.length < 20 && !v.includes('.')));
+    const firstFive = sampleRows.slice(0, 5);
+    const tabular = header.length > 2 && firstHeader === 'id' && firstFive.filter((r) => idLike(r[0])).length >= firstFive.length * 0.6;
+    if (!tabular) {
         const shape = {};
         for (const row of sampleRows) {
             if (!row[0]) continue;

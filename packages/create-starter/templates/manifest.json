@@ -32,7 +32,7 @@
   ],
   "publishIgnore": [
     "jsconfig.json",
-    "**/*.d.ts"
+    "*.d.ts"
   ],
   "data": {
     "manifest": "/manifest.json",
