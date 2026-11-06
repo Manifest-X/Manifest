@@ -226,8 +226,8 @@ export type ManifestObjectSource<T> = T & ManifestSourceState;
 export type ManifestBucketSource = ReadonlyArray<ManifestFile> & ManifestSourceState & ManifestAppwriteBucketOps;
 
 /**
- * Precise row types, keyed by data source name. Declare them to override the
- * column names `npx mnfst-types` reads from the contract:
+ * Precise row types, keyed by data source name. Appwrite rows accept any
+ * field until declared here:
  *
  *     declare module 'mnfst' { interface ManifestRows { tasks: Task } }
  */

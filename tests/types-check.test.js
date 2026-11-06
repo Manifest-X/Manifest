@@ -1,6 +1,6 @@
 /**
  * Type checks without a build: tests/fixtures/types-app (JSDoc app modules,
- * shared contract, generated manifest.d.ts) passes `tsc --noEmit -p
+ * a typed shared module, generated manifest.d.ts) passes `tsc --noEmit -p
  * jsconfig.json`, and each planted mistake fails it.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -35,7 +35,7 @@ beforeAll(() => {
 afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
 describe('types-app', () => {
-    it('committed manifest.d.ts matches manifest.json, the contract and the template', () => {
+    it('committed manifest.d.ts matches manifest.json and the template', () => {
         const r = types('--check')
         expect(r.stdout + r.stderr).toContain('up to date')
         expect(r.status).toBe(0)
@@ -51,7 +51,6 @@ describe('types-app', () => {
     const COMPONENT = 'app/components/task-list.js'
     const cases = [
         ['a wrong field on a typed row', COMPONENT, "t.status === 'open'", "t.stauts === 'open'", "Property 'stauts' does not exist"],
-        ['a wrong field on a contract-columns row', COMPONENT, 'w => w.name', 'w => w.nmae', "Property 'nmae' does not exist"],
         ['a wrong field on a local JSON source', COMPONENT, "m.role === 'lead'", "m.rol === 'lead'", "Property 'rol' does not exist"],
         ['a wrong query column', COMPONENT, "['equal', 'status', 'open']", "['equal', 'stauts', 'open']", 'stauts'],
         ['a wrong $search field', COMPONENT, "$search(this.query, 'title')", "$search(this.query, 'titel')", 'task-list.js(9,'],
@@ -63,7 +62,7 @@ describe('types-app', () => {
         ['a missing $saving argument', COMPONENT, '$saving(id)', '$saving()', 'Expected 1 arguments, but got 0'],
         ['$more treated as a flag', COMPONENT, 'await this.$x.tasks.$more()', 'this.$x.tasks.$more = true', "is not assignable to type '() => Promise<number>'"],
         ['$reload with an argument', 'app/components/valid-usage.js', 'this.$x.team.$reload()', 'this.$x.team.$reload(true)', 'Expected 0 arguments, but got 1'],
-        ['a wrong field read from the contract', COMPONENT, "validateTask({ title: this.title, status: 'open' })", "validateTask({ titel: this.title, status: 'open' })", 'titel']
+        ['a wrong field passed to a typed helper', COMPONENT, "validateTask({ title: this.title, status: 'open' })", "validateTask({ titel: this.title, status: 'open' })", 'titel']
     ]
     for (const [name, file, from, to, message] of cases) {
         it(`fails on ${name}`, () => {
@@ -136,7 +135,7 @@ describe('hand-written config', () => {
         const config = JSON.parse(original.jsconfig)
         config.compilerOptions.noUnusedLocals = true
         write('jsconfig.json', '// project settings\n' + JSON.stringify(config, null, 2))
-        write('app/components/task-list.js', original.comp.replace("import { validateTask } from '@shared/contract.js'", "import { validateTask } from '@shared/contract.js'\nconst unused = 1"))
+        write('app/components/task-list.js', original.comp.replace("import { validateTask } from '@shared/model.js'", "import { validateTask } from '@shared/model.js'\nconst unused = 1"))
         try {
             const r = tsc()
             expect(r.status).not.toBe(0)
@@ -198,34 +197,41 @@ describe('extended configs', () => {
     })
 })
 
-describe('starter template', () => {
-    const STARTER = path.join(ROOT, 'templates', 'starter')
-    it('committed manifest.d.ts is current and the starter type-checks clean with no jsconfig', () => {
-        expect(fs.existsSync(path.join(STARTER, 'jsconfig.json'))).toBe(false)
-        const check = spawnSync(process.execPath, [TYPES, '--check'], { cwd: STARTER, encoding: 'utf8' })
-        expect(check.status, check.stderr).toBe(0)
-        const r = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: STARTER, encoding: 'utf8' })
-        expect(r.stdout).toContain('no type errors')
-        expect(r.status).toBe(0)
+describe('no assumed layout', () => {
+    it('checks the scripts the page loads, under any folder and alias names, and nothing else', () => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-types-layout-'))
+        const put = (f, c) => { fs.mkdirSync(path.dirname(path.join(tmp, f)), { recursive: true }); fs.writeFileSync(path.join(tmp, f), c) }
+        try {
+            put('manifest.json', JSON.stringify({ name: 'x', preloadedComponents: ['parts/panel.html'], data: { team: '/records/team.json' } }))
+            put('records/team.json', JSON.stringify([{ id: 'a', name: 'Ada' }]))
+            put('index.html', '<script type="importmap">{ "imports": { "#kit/": "/code/kit/" } }</script><script src="https://cdn.example.com/x.js"></script><script type="module" src="/code/boot.js"></script>')
+            put('parts/panel.html', '<div></div><script src="../code/panel.js"></script>')
+            put('code/boot.js', "import { label } from '#kit/label.js'\nexport const s = label('a')\n")
+            put('code/kit/label.js', '/** @param {string} s */\nexport const label = (s) => s.toUpperCase()\n')
+            put('code/panel.js', 'export const n = 1\n')
+            put('tools/build.mjs', "const fs = require('fs'); process.exit(undefinedThing)\n")
+            const run = (...args) => spawnSync(process.execPath, [TYPES, ...args], { cwd: tmp, encoding: 'utf8' })
+            expect(run().status).toBe(0)
+            const ok = run('--tsc')
+            expect(ok.stdout).toContain('no type errors')
+            put('code/boot.js', "import { label } from '#kit/label.js'\nexport const s = label(42)\n")
+            put('code/panel.js', 'export const n = missingName\n')
+            const bad = run('--tsc')
+            expect(bad.status).not.toBe(0)
+            expect(bad.stdout).toContain('code/boot.js')
+            expect(bad.stdout).toContain('code/panel.js')
+            expect(bad.stdout).not.toContain('tools/build.mjs')
+        } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
     })
 
-    it('adding @shared/ to the import map needs no config change', () => {
-        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-starter-shared-'))
+    it('a page that loads no local scripts has nothing to check', () => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-types-empty-'))
         try {
-            fs.cpSync(STARTER, tmp, { recursive: true })
-            const html = fs.readFileSync(path.join(tmp, 'index.html'), 'utf8')
-            fs.writeFileSync(path.join(tmp, 'index.html'), html.replace('"@app/": "/app/"', '"@app/": "/app/", "@shared/": "/shared/"'))
-            fs.mkdirSync(path.join(tmp, 'shared'))
-            fs.writeFileSync(path.join(tmp, 'shared', 'package.json'), '{ "type": "module" }\n')
-            fs.writeFileSync(path.join(tmp, 'shared', 'contract.js'), '/** @type {{ clicksMax: number }} */\nexport const limits = { clicksMax: 10 }\n')
-            const counter = path.join(tmp, 'app', 'components', 'counter.js')
-            fs.writeFileSync(counter, "import { limits } from '@shared/contract.js'\n" + fs.readFileSync(counter, 'utf8').replace("count: 0,", "count: 0,\n  max: limits.clicksMax,"))
-            const ok = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: tmp, encoding: 'utf8' })
-            expect(ok.stdout).toContain('no type errors')
-            fs.writeFileSync(counter, fs.readFileSync(counter, 'utf8').replace('limits.clicksMax', 'limits.clickMax'))
-            const bad = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: tmp, encoding: 'utf8' })
-            expect(bad.status).not.toBe(0)
-            expect(bad.stdout).toContain("Property 'clickMax' does not exist")
+            fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify({ name: 'x' }))
+            fs.writeFileSync(path.join(tmp, 'index.html'), '<script src="https://cdn.example.com/x.js"></script>')
+            const r = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: tmp, encoding: 'utf8' })
+            expect(r.status).toBe(0)
+            expect(r.stdout).toContain('no local scripts or .d.ts files to check')
         } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
     })
 })

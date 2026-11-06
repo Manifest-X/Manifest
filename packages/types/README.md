@@ -20,7 +20,7 @@ This writes `manifest.d.ts` in the current directory. Re-run it whenever you add
 --init              Also write a baseline jsconfig.json (only if missing)
 --ci                Also write .github/workflows/types.yml (only if missing)
 --check             Exit 1 if the output is out of date; write nothing
---tsc               Type-check app/ and shared/ (paths from the import map)
+--tsc               Type-check the scripts the page loads (paths from the import map)
 -h, --help          Show usage
 ```
 
@@ -30,9 +30,10 @@ This writes `manifest.d.ts` in the current directory. Re-run it whenever you add
 npx mnfst-types --tsc
 ```
 
-Type-checks `app/` and `shared/` with TypeScript. The config is built on every
-run: paths come from the page's import map, so adding an alias like `@shared/`
-never needs a config change. A project `jsconfig.json` or `tsconfig.json` is
+Type-checks the scripts `index.html` and the manifest's component files load
+(and everything they import), plus the project's `.d.ts` files. The config is
+built on every run: paths come from the page's import map, so adding an alias
+never needs a config change. No folder layout is assumed. A project `jsconfig.json` or `tsconfig.json` is
 extended — its own options and paths win.
 
 `--init` writes a `jsconfig.json` so editors show the same errors as you type;
@@ -44,7 +45,7 @@ https://manifestx.dev/docs/framework/getting-started/type-checks.
 
 1. Reads `manifest.json` and walks each entry under `data`.
 2. For local CSV / JSON / YAML sources, samples the first ~50 rows to infer field types.
-3. For Appwrite-table sources, types rows from the column names in the project's shared contract (manifest.json `contract`); `ManifestRows` overrides them with precise types.
+3. For Appwrite-table sources, rows accept any field until the project declares their type in `ManifestRows`.
 4. For Appwrite-bucket sources, types the source as `ManifestBucketSource`.
 5. Combines the inferred row types with the static ambient declarations and writes a single `manifest.d.ts`.
 

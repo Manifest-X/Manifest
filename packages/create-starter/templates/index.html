@@ -27,11 +27,7 @@
   <link rel="stylesheet" href="/manifest.theme.css">
 
   <!-- Scripts -->
-  <script type="importmap">
-    { "imports": { "@app/": "/app/" } }
-  </script>
   <script src="https://cdn.jsdelivr.net/npm/mnfst@latest/lib/manifest.min.js" data-tailwind data-version="latest"></script>
-  <script type="module" src="/app/main.js"></script>
 
 </head>
 
@@ -51,7 +47,6 @@
     <!-- Page 1 -->
     <section x-route="page-1">
       <h1 x-text="$x.content.page1">Page 1</h1>
-      <button x-data="counter" @click="count++" x-text="label"></button>
     </section>
 
     <!-- Page 2 -->

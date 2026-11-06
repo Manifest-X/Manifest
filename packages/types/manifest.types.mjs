@@ -8,11 +8,11 @@
 // Re-running the CLI overwrites the augmentation block (between the
 // AUGMENTATION:start / AUGMENTATION:end markers in the template).
 
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, mkdtempSync, rmSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, mkdtempSync, rmSync, realpathSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -70,7 +70,7 @@ export async function main(argv) {
         writeOnce(join(projectRoot, '.github', 'workflows', 'types.yml'), defaultWorkflow(typesPath));
     }
     if (opts.tsc) {
-        const status = runTsc(projectRoot, typesPath);
+        const status = runTsc(projectRoot, typesPath, manifest);
         if (status) process.exitCode = process.exitCode || status;
     }
 }
@@ -125,13 +125,14 @@ Options:
   --init              Also write a baseline jsconfig.json (only if missing)
   --ci                Also write .github/workflows/types.yml (only if missing)
   --check             Exit 1 if the output file is out of date; write nothing
-  --tsc               Type-check app/ and shared/ with tsc; paths come from the
-                      import map on every run (extends your jsconfig/tsconfig if any)
+  --tsc               Type-check the scripts the page loads (and what they import)
+                      plus the project's .d.ts files; import-map paths are read on
+                      every run; extends your jsconfig/tsconfig if any
   -h, --help          Show this message
 `);
 }
 
-// index.html's import map as jsconfig paths: "@app/": "/app/" → "@app/*": ["./app/*"]
+// index.html's import map as jsconfig paths: "@x/": "/x/" → "@x/*": ["./x/*"]
 function importMapPaths(projectRoot) {
     const paths = {};
     let html = '';
@@ -160,7 +161,48 @@ const COMPILER_DEFAULTS = {
     skipLibCheck: true,
     lib: ['es2022', 'dom', 'dom.iterable']
 };
-const DEFAULT_INCLUDE = (types) => ['app/**/*', 'shared/**/*', types, '*.d.ts'];
+const SCRIPT_SRC = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
+
+// Local scripts index.html and manifest.json's component files load (tsc follows their imports)
+function scriptEntries(projectRoot, manifest) {
+    const pages = ['index.html', ...stringList(manifest.preloadedComponents), ...stringList(manifest.components)];
+    const out = new Set();
+    for (const page of pages) {
+        const pagePath = resolve(projectRoot, page.replace(/^\/+/, ''));
+        let html;
+        try { html = readFileSync(pagePath, 'utf8'); } catch { continue; }
+        for (const m of html.matchAll(SCRIPT_SRC)) {
+            const src = m[1].split(/[?#]/)[0];
+            if (!src || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(src) || !/\.m?js$/i.test(src) || /\.min\.m?js$/i.test(src)) continue;
+            const file = src.startsWith('/') ? resolve(projectRoot, src.slice(1)) : resolve(dirname(pagePath), src);
+            if (file.startsWith(projectRoot) && existsSync(file)) out.add(file);
+        }
+    }
+    return [...out];
+}
+
+// Every .d.ts in the project except dependencies, dot-folders and render output
+function declarationFiles(projectRoot, manifest) {
+    const skip = new Set(['node_modules', (manifest.render && manifest.render.output) || 'website']);
+    const out = [];
+    const walk = (dir, depth) => {
+        if (depth > 8) return;
+        let entries;
+        try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+            if (e.name.startsWith('.')) continue;
+            const full = join(dir, e.name);
+            if (e.isDirectory()) { if (!(depth === 0 && skip.has(e.name)) && e.name !== 'node_modules') walk(full, depth + 1); }
+            else if (e.name.endsWith('.d.ts')) out.push(full);
+        }
+    };
+    walk(projectRoot, 0);
+    return out;
+}
+
+function stringList(v) {
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+}
 
 // JSON with comments and trailing commas, as tsconfig allows; null when unreadable
 function readJsonc(path) {
@@ -243,10 +285,11 @@ function findTsc(projectRoot) {
 
 // Type-check with a config built now: import-map paths can't drift. A project
 // jsconfig/tsconfig is extended, and its own paths win over the import map.
-function runTsc(projectRoot, types) {
+function runTsc(projectRoot, types, manifest = {}) {
     const abs = (p) => resolve(projectRoot, p);
     const own = ['tsconfig.json', 'jsconfig.json'].map((f) => join(projectRoot, f)).find((f) => existsSync(f));
     const config = { compilerOptions: {} };
+    const inputs = [...new Set([...scriptEntries(projectRoot, manifest), ...declarationFiles(projectRoot, manifest)])];
     let paths = { mnfst: [abs(types)] };
     for (const [k, v] of Object.entries(importMapPaths(projectRoot))) paths[k] = v.map(abs);
     if (own) {
@@ -254,11 +297,14 @@ function runTsc(projectRoot, types) {
         const chain = configChain(own);
         if (!chain[0].config) console.warn(`mnfst-types: couldn't read ${own}; extending it with import-map paths only`);
         paths = { ...paths, ...chainPaths(chain) };
-        if (!chain.some(({ config: c }) => c && (c.include || c.files))) config.include = DEFAULT_INCLUDE(types).map(abs);
+        if (!chain.some(({ config: c }) => c && (c.include || c.files))) config.files = inputs;
     } else {
         Object.assign(config.compilerOptions, COMPILER_DEFAULTS);
-        config.include = DEFAULT_INCLUDE(types).map(abs);
-        config.exclude = ['node_modules', 'website'].map(abs);
+        config.files = inputs;
+    }
+    if (config.files && !config.files.length) {
+        console.log('mnfst-types: no local scripts or .d.ts files to check');
+        return 0;
     }
     config.compilerOptions.paths = paths;
     config.compilerOptions.noEmit = true;
@@ -276,10 +322,10 @@ function runTsc(projectRoot, types) {
     }
 }
 
+// No include: editors check whatever is open; --tsc supplies its own inputs
 function defaultJsconfig(types, aliases = {}) {
     return JSON.stringify({
         compilerOptions: { ...COMPILER_DEFAULTS, paths: { mnfst: [`./${types}`], ...aliases } },
-        include: DEFAULT_INCLUDE(types),
         exclude: ['node_modules', 'website']
     }, null, 4) + '\n';
 }
@@ -343,12 +389,11 @@ async function buildAugmentation(manifest, projectRoot) {
         return '// No data sources declared in manifest.json.\nexport interface ManifestSources { [sourceName: string]: any }';
     }
 
-    const contract = await loadContract(manifest, projectRoot);
     const sourceTypes = [];
     const augmentations = [];
 
     for (const [name, config] of Object.entries(data)) {
-        const inferred = await inferSourceType(name, config, projectRoot, manifest, contract);
+        const inferred = await inferSourceType(name, config, projectRoot);
         if (!inferred) continue;
         sourceTypes.push(inferred.typeBlock);
         augmentations.push(`    ${jsonKey(name)}: ${inferred.augmentationType};`);
@@ -371,38 +416,7 @@ async function buildAugmentation(manifest, projectRoot) {
     return lines.join('\n');
 }
 
-// The project's shared contract (manifest.json `contract`), for Appwrite column names
-async function loadContract(manifest, projectRoot) {
-    const c = manifest.contract;
-    const ref = c && typeof c === 'object' ? c.module : c;
-    if (typeof ref !== 'string' || !ref) return null;
-    const file = resolve(projectRoot, ref.replace(/^\/+/, ''));
-    if (!existsSync(file)) {
-        console.warn(`mnfst-types: contract ${ref} not found; Appwrite rows stay loose`);
-        return null;
-    }
-    try {
-        const mod = await import(`${pathToFileURL(file).href}?mtime=${statSync(file).mtimeMs}`);
-        return mod && mod.tables && typeof mod.tables === 'object' ? mod.tables : null;
-    } catch (e) {
-        console.warn(`mnfst-types: contract ${ref} failed to load (${e.message}); Appwrite rows stay loose`);
-        return null;
-    }
-}
-
-function contractColumns(tables, manifest, config) {
-    if (!tables) return null;
-    const defaultDb = manifest.appwrite && (manifest.appwrite.databaseId || manifest.appwrite.database);
-    const db = config.appwriteDatabaseId || defaultDb;
-    const hit = Object.entries(tables).find(([key, t]) => t && (t.id || key) === config.appwriteTableId && (!t.database || !db || t.database === db));
-    return hit && Array.isArray(hit[1].columns) ? { key: hit[0], columns: hit[1].columns.filter((c) => typeof c === 'string') } : null;
-}
-
-// ---------------------------------------------------------------------------
-// Source-shape inference
-// ---------------------------------------------------------------------------
-
-async function inferSourceType(name, config, projectRoot, manifest = {}, contract = null) {
+async function inferSourceType(name, config, projectRoot) {
     const safeName = toTypeName(name);
 
     // Appwrite bucket (storage).
@@ -413,21 +427,13 @@ async function inferSourceType(name, config, projectRoot, manifest = {}, contrac
         };
     }
 
-    // Appwrite table: column names from the contract when it declares the table.
+    // Appwrite table: any field until the project declares ManifestRows.<name>
     if (config && typeof config === 'object' && config.appwriteTableId) {
         const rowType = `Row_${safeName}`;
-        const declared = contractColumns(contract, manifest, config);
-        const typeBlock = declared
-            ? [
-                `/** Row shape for $x.${name}: columns of "${declared.key}" in the contract (declare ManifestRows.${name} for precise types). */`,
-                `export type ${rowType} = ManifestRowSystem & {`,
-                ...declared.columns.map((c) => `    ${jsonKey(c)}: any;`),
-                `};`
-            ].join('\n')
-            : [
-                `/** Row shape for $x.${name} (Appwrite table; add it to the contract, or declare ManifestRows.${name}, for checked columns). */`,
-                `export type ${rowType} = ManifestRowSystem & { [field: string]: any };`
-            ].join('\n');
+        const typeBlock = [
+            `/** Row shape for $x.${name} (Appwrite table; declare ManifestRows.${name} for checked fields). */`,
+            `export type ${rowType} = ManifestRowSystem & { [field: string]: any };`
+        ].join('\n');
         return {
             typeBlock,
             augmentationType: `ManifestTableSource<ManifestRowFor<${JSON.stringify(name)}, ${rowType}>>`

@@ -1,5 +1,5 @@
 import { component } from '@app/lib/component.js'
-import { validateTask } from '@shared/contract.js'
+import { validateTask } from '@shared/model.js'
 
 export const taskList = component(() => ({
   query: '',

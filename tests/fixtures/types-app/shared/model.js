@@ -3,11 +3,6 @@
  * @typedef {{ title: string, status: Status, due: string | null, workspaceId: string }} Task
  */
 
-export const tables = {
-  tasks: { database: 'main', id: 'tasks', columns: ['title', 'status', 'due', 'workspaceId'] },
-  workspaces: { database: 'main', id: 'workspaces', columns: ['name', 'plan'] }
-}
-
 /** @type {Status[]} */
 export const statuses = ['open', 'blocked', 'done']
 

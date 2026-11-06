@@ -397,7 +397,7 @@ function mergeRowFields(target, fields, dataSourceName) {
         if (key === '$files') continue;
         const value = fields[key];
         if (sameScalarOrList(raw[key], value)) continue;
-        target[key] = createReactiveReferences(value, dataSourceName, true);
+        target[key] = createReactiveReferences(value, dataSourceName);
     }
 }
 
@@ -955,25 +955,24 @@ function getRawData(dataSourceName) {
 }
 
 // New object/array references (incl. nested arrays like fileIds) so Alpine tracks changes
-function createReactiveReferences(data, dataSourceName = null, nested = false) {
+function createReactiveReferences(data, dataSourceName = null) {
     if (data === null || data === undefined) {
         return data;
     }
 
     if (Array.isArray(data)) {
         // Create new array with new references for each item
-        return data.map(item => createReactiveReferences(item, dataSourceName, nested));
+        return data.map(item => createReactiveReferences(item, dataSourceName));
     }
 
     if (typeof data === 'object') {
         // Object.keys, not for…in + .hasOwnProperty (see deepSeal). Hot path for
         // every Appwrite mutation result and realtime event.
         const newObj = {};
-        let self = newObj;
         for (const key of Object.keys(data)) {
             const value = data[key];
             // Recursively create new references for nested objects/arrays
-            newObj[key] = createReactiveReferences(value, dataSourceName, true);
+            newObj[key] = createReactiveReferences(value, dataSourceName);
         }
 
         // Detect file objects (have mimeType or sizeOriginal)
@@ -1012,7 +1011,7 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
                             data.$id,
                             bucketName,
                             columnName,
-                            { owner: self }
+                            { owner: newObj }
                         );
 
                         // Assign computed array to entry
@@ -1199,11 +1198,7 @@ function createReactiveReferences(data, dataSourceName = null, nested = false) {
             });
         }
 
-        // Contract checks wrap top-level Appwrite rows (dev and opted-in hosts)
-        if (!nested && isDatabaseEntry && dataSourceName && window.ManifestDataContract) {
-            self = window.ManifestDataContract.guard(dataSourceName, newObj);
-        }
-        return self;
+        return newObj;
     }
 
     // Primitives can be returned as-is

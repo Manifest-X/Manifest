@@ -131,8 +131,7 @@ const CONFIG = {
         'appwrite/manifest.data.appwrite.js',
         'appwrite/manifest.data.realtime.js',  // Included in Appwrite plugin (not separate)
         'appwrite/manifest.data.queries.js',
-        'appwrite/manifest.data.pagination.js',
-        'appwrite/manifest.data.contract.js'     // Contract column checks (dev/opted-in hosts)
+        'appwrite/manifest.data.pagination.js'
     ],
 
     // Payments subscripts order (provider-agnostic x-pay / $pay)

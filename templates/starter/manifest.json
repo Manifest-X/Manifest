@@ -30,9 +30,6 @@
     "components/header.html",
     "components/logo.html"
   ],
-  "publishIgnore": [
-    "*.d.ts"
-  ],
   "data": {
     "manifest": "/manifest.json",
     "content": {

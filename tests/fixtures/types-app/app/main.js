@@ -1,3 +1,4 @@
+import '@app/components/valid-usage.js'
 import { session } from '@app/stores/session.js'
 import { taskList } from '@app/components/task-list.js'
 

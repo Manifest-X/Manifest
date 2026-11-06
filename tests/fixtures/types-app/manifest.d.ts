@@ -226,8 +226,8 @@ export type ManifestObjectSource<T> = T & ManifestSourceState;
 export type ManifestBucketSource = ReadonlyArray<ManifestFile> & ManifestSourceState & ManifestAppwriteBucketOps;
 
 /**
- * Precise row types, keyed by data source name. Declare them to override the
- * column names `npx mnfst-types` reads from the contract:
+ * Precise row types, keyed by data source name. Appwrite rows accept any
+ * field until declared here:
  *
  *     declare module 'mnfst' { interface ManifestRows { tasks: Task } }
  */
@@ -955,19 +955,11 @@ declare global {
 // Inferred row types for each data source.
 // ---------------------------------------------------------------------------
 
-/** Row shape for $x.tasks: columns of "tasks" in the contract (declare ManifestRows.tasks for precise types). */
-export type Row_tasks = ManifestRowSystem & {
-    title: any;
-    status: any;
-    due: any;
-    workspaceId: any;
-};
+/** Row shape for $x.tasks (Appwrite table; declare ManifestRows.tasks for checked fields). */
+export type Row_tasks = ManifestRowSystem & { [field: string]: any };
 
-/** Row shape for $x.workspaces: columns of "workspaces" in the contract (declare ManifestRows.workspaces for precise types). */
-export type Row_workspaces = ManifestRowSystem & {
-    name: any;
-    plan: any;
-};
+/** Row shape for $x.workspaces (Appwrite table; declare ManifestRows.workspaces for checked fields). */
+export type Row_workspaces = ManifestRowSystem & { [field: string]: any };
 
 /** Row shape for $x.team inferred from /data/team.json. */
 export interface Row_team {

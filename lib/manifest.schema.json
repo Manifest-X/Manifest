@@ -137,28 +137,6 @@
                 "type": "string"
             }
         },
-        "contract": {
-            "description": "Shared contract module, a path from the project root (e.g. /shared/contract.js), whose `tables` export declares Appwrite tables and columns. mnfst-test checks data sources against it; on dev hosts (or hosts listed in `checks`) app code reading a column of an Appwrite row that is undeclared and absent from every row of the source throws.",
-            "oneOf": [
-                { "type": "string" },
-                {
-                    "type": "object",
-                    "properties": {
-                        "module": { "type": "string" },
-                        "checks": {
-                            "description": "Where column checks run: 'dev' (default, local hosts), true (everywhere), false (nowhere), or host patterns such as '*-staging.example.com' (dev hosts included).",
-                            "oneOf": [
-                                { "type": "boolean" },
-                                { "type": "string", "enum": ["dev"] },
-                                { "type": "array", "items": { "type": "string" } }
-                            ]
-                        }
-                    },
-                    "required": ["module"],
-                    "additionalProperties": false
-                }
-            ]
-        },
         "data": {
             "type": "object",
             "description": "Named data sources made available via $x.<sourceName>. Each value is either a string path/URL or a config object.",

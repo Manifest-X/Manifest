@@ -1,7 +1,6 @@
 {
   "name": "Types app",
   "short_name": "Types",
-  "contract": "/shared/contract.js",
   "appwrite": {
     "projectId": "example",
     "endpoint": "https://cloud.appwrite.io/v1",

@@ -1,4 +1,4 @@
-import type { Task } from '../shared/contract.js'
+import type { Task } from '../shared/model.js'
 import type { Session } from './stores/session.js'
 
 declare module 'mnfst' {
