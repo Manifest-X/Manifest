@@ -33,6 +33,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
         if (!sourceUnloaded) clearErrorState();
         // Reads are ordered by call, not by network start: the last-issued one lands
         let readToken = method === '$query' ? window.ManifestDataStore?.beginRead?.(dataSourceName) : undefined;
+        let queryIntentRef = null;
 
         try {
             const manifest = await window.ManifestDataConfig?.ensureManifest?.();
@@ -406,7 +407,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries = named;
                     }
                     window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                    window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queries || []);
+                    queryIntentRef = queries || [];
+                    window.ManifestDataMain?.noteQueryIntent?.(dataSourceName, queryIntentRef);
                     // A $auth. value or scope not resolved yet: wait for auth once, then run
                     const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
                     let appwriteQueries = await build();
@@ -422,6 +424,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                             waiting?.delete(dataSourceName);
                         }
                         readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
+                        window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
                         appwriteQueries = await build();
                     }
                     if (appwriteQueries === null) {
@@ -453,7 +456,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                             tableId,
                             appwriteQueries,
                             { requireAuth }
-                        ), () => !isLatestRead || isLatestRead(dataSourceName, readToken));
+                        ), () => sourceGeneration?.(dataSourceName) === generation); // shared by identical calls: stop only on a reset
                     const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
                     // Network landing: query result replaces the source (coalesced, identity-preserving);
                     // only the last-issued read of this source lands
@@ -1221,6 +1224,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
             throw new Error(`[Manifest Data] Method "${method}" not supported for this data source`);
         } catch (error) {
+            // A $query that failed is not what the source shows: a sign-in doesn't re-run it
+            if (method === '$query') window.ManifestDataMain?.dropQueryIntent?.(dataSourceName, queryIntentRef);
             // Automatically set error state - no need for inline .catch() in HTML
             setErrorState(error);
             // Re-throw so promise chain still works if caller wants to handle it

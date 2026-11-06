@@ -139,7 +139,7 @@ function setupAuthResetListener() {
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
-            if (keepQuery && awaitingQueries.has(name)) continue; // a $query waiting on this sign-in runs it
+            if (!clear && keepQuery && awaitingQueries.has(name)) continue; // a $query waiting on this sign-in runs it
             if (!clear && readAtEvent !== undefined && (ds.currentRead?.(name) ?? 0) > readAtEvent) continue;
             const active = keepQuery ? (queryIntents.get(name) || activeQueries.get(name)) : null;
             if (clear) {
@@ -165,7 +165,8 @@ function setupAuthResetListener() {
             if (recovered) reset(false, next !== '');
             return;
         }
-        reset(prev !== '', next !== '');
+        // An identity switch (A to B) starts clean with the defaults; a first sign-in keeps the $query
+        reset(prev !== '', prev === '' && next !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
         .forEach(type => window.addEventListener(type, () => onAuth(type)));
@@ -511,7 +512,8 @@ function isTransient(error) {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
     const code = error?.code ?? error?.status ?? error?.response?.code;
     if (typeof code === 'number' && code > 0) return code >= 500 || code === 408 || code === 429;
-    return error instanceof TypeError; // fetch network failure, or the SDK reading a missing response
+    // fetch network failure, or the SDK reading a response that never came — not config mistakes
+    return error?.name === 'TypeError' && /fetch|network|load failed|headers/i.test(String(error.message || ''));
 }
 
 // Run a read, retrying transient failures with exponential backoff (delay, 2×, 4×…, jittered);
@@ -1314,7 +1316,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         currentLocaleData = await window.ManifestDataLoaders.loadLocalFile(localizedDataSource);
                     } else if (localizedDataSource.url) {
                         // Localized cloud API
-                        currentLocaleData = await window.ManifestDataAPI.loadFromAPI(localizedDataSource);
+                        currentLocaleData = await withRetry(dataSource, () => window.ManifestDataAPI.loadFromAPI(localizedDataSource), () => !superseded());
                     } else {
                         console.warn(`[Manifest Data] No valid source found for dataSource "${dataSourceName}" in locale "${locale}"`);
                         return null;
@@ -1498,7 +1500,7 @@ function reloadSource(dataSourceName) {
 
 // Resolves at the next auth change (sign-in settles, team switch) or after timeoutMs
 function waitForAuthChange(timeoutMs = 10000) {
-    const events = ['manifest:auth:login', 'manifest:auth:initialized', 'manifest:auth:anonymous', 'manifest:auth:teams-loaded'];
+    const events = ['manifest:auth:login', 'manifest:auth:initialized', 'manifest:auth:anonymous', 'manifest:auth:teams-loaded', 'manifest:auth:logout', 'manifest:auth:session-cleared'];
     return new Promise(resolve => {
         const done = () => { clearTimeout(timer); events.forEach(type => window.removeEventListener(type, done)); resolve(); };
         const timer = setTimeout(done, timeoutMs);
@@ -1677,6 +1679,7 @@ async function initializeDataSourcesPlugin() {
         settledReads,
         awaitingQueries,
         noteQueryIntent: (dataSourceName, queries) => queryIntents.set(dataSourceName, queries),
+        dropQueryIntent: (dataSourceName, queries) => { if (queryIntents.get(dataSourceName) === queries) queryIntents.delete(dataSourceName); },
         withRetry,
         pagingSpec,
         fetchPagedRows,

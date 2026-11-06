@@ -28,7 +28,7 @@ async function loadFromAPI(dataSource) {
         });
 
         if (!response.ok) {
-            throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+            throw Object.assign(new Error(`API request failed: ${response.status} ${response.statusText}`), { status: response.status });
         }
 
         let data = await response.json();

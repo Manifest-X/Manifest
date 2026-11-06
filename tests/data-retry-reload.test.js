@@ -135,3 +135,99 @@ describe('$query state', () => {
         expect(rows('items').every(r => r.status === 'active')).toBe(true)
     })
 })
+
+describe('review: identity switches and edge cases', () => {
+    const signIn = (id, extra = {}) => {
+        Object.assign(window.Alpine.store('auth'), { _initialized: true, isAuthenticated: true, user: { $id: id }, userId: id, teams: [], currentTeam: null, ...extra })
+        window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+    }
+
+    it('A to B while a $query waits for auth: the source resets and reads again for B', async () => {
+        const { main, query, stats } = await boot(fast(), makeRows(10))
+        signIn('A')
+        await settle(100)
+        await main.loadDataSource('items')
+        await settle()
+        const gen = window.ManifestDataStore.sourceGeneration('items')
+        const waiting = query('items', [['equal', 'status', '$auth.currentTeam.$id']]).catch(() => {})
+        await settle(20)
+        const before = stats.lists.length
+        signIn('B')
+        await settle(150)
+        expect(window.ManifestDataStore.sourceGeneration('items')).toBeGreaterThan(gen)
+        expect(stats.lists.slice(before).some(l => Array.isArray(l) && !l.some(q => q.method === 'equal'))).toBe(true)
+        await waiting
+    })
+
+    it('A to B with an active $query: B gets the default rows and stays live', async () => {
+        const { ids, main, query, rt } = await boot(fast(), makeRows(10))
+        signIn('A')
+        await settle(100)
+        await main.loadDataSource('items')
+        await query('items', [['equal', 'status', 'active'], ['orderAsc', 'n']])
+        await settle()
+        signIn('B')
+        await settle(200)
+        expect(ids('items').length).toBe(10)
+        expect(main.getActiveQuery('items')).toBe(null)
+        rt().fire('databases.db.tables.items.rows', { events: ['databases.db.tables.items.rows.live.create'], payload: { $id: 'live', n: 99, status: 'archived', $sequence: 999 } })
+        await settle()
+        expect(ids('items')).toContain('live')
+    })
+
+    it('two identical $query calls still retry a transient failure', async () => {
+        const { rows, main, query, stats } = await boot(fast(), makeRows(10))
+        await main.loadDataSource('items')
+        stats.failReads = 1
+        const q = [['equal', 'status', 'active'], ['orderAsc', 'n']]
+        const results = await Promise.allSettled([query('items', q), query('items', q)])
+        await settle()
+        expect(results.every(r => r.status === 'fulfilled')).toBe(true)
+        expect(rows('items').length).toBe(5)
+    })
+
+    it('a failed $query is not re-run by a later sign-in', async () => {
+        const { rows, main, query, stats } = await boot(fast(), makeRows(10))
+        await main.loadDataSource('items')
+        stats.failReads = 1
+        stats.failError = { code: 403, message: 'Forbidden' }
+        await query('items', [['equal', 'status', 'active']]).catch(() => {})
+        signIn('A')
+        await settle(200)
+        expect(rows('items').length).toBe(10)
+    })
+})
+
+describe('review: API sources', () => {
+    it('retry an HTTP 503 and land', async () => {
+        let n = 0
+        const realFetch = globalThis.fetch
+        globalThis.fetch = window.fetch = async () => (++n < 3
+            ? { ok: false, status: 503, statusText: 'Service Unavailable', json: async () => ({}) }
+            : { ok: true, status: 200, json: async () => [{ id: 1 }, { id: 2 }] })
+        try {
+            const { rows, main } = await boot({ api: { url: '/api/rows', retry: { attempts: 3, delay: 5 } } }, [])
+            await main.loadDataSource('api')
+            await settle()
+            expect(n).toBe(3)
+            expect(rows('api').length).toBe(2)
+            expect(window.Alpine.store('data')._api_state.error).toBe(null)
+        } finally {
+            globalThis.fetch = window.fetch = realFetch
+        }
+    })
+
+    it('a 404 fails at once', async () => {
+        let n = 0
+        const realFetch = globalThis.fetch
+        globalThis.fetch = window.fetch = async () => { n++; return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({}) } }
+        try {
+            const { main } = await boot({ api: { url: '/api/rows', retry: { attempts: 3, delay: 5 } } }, [])
+            await main.loadDataSource('api')
+            await settle()
+            expect(n).toBe(1)
+        } finally {
+            globalThis.fetch = window.fetch = realFetch
+        }
+    })
+})
