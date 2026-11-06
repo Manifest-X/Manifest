@@ -1070,8 +1070,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     // An explicit reload never joins a load that deferred to a $query: it runs after it
     // It counts as issued now: a $query called after it still wins
     if (options.reload && deferredLoads.has(cacheKey) && loadingPromises.has(cacheKey)) {
-        const issued = window.ManifestDataStore.beginRead?.(dataSourceName);
-        queryIntents.delete(dataSourceName);
+        const issued = options.issuedRead ?? window.ManifestDataStore.beginRead?.(dataSourceName);
+        if (options.issuedRead === undefined) queryIntents.delete(dataSourceName);
         return loadingPromises.get(cacheKey).catch(() => null)
             .then(() => loadDataSource(dataSourceName, locale, { ...options, issuedRead: issued }));
     }
@@ -1091,7 +1091,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const deferToQuery = () => deferred && queryHolds();
     const readToken = deferred ? undefined : (options.issuedRead ?? window.ManifestDataStore.beginRead?.(dataSourceName));
     if (deferred) deferredLoads.add(cacheKey);
-    if (options.reload) queryIntents.delete(dataSourceName);
+    if (options.reload && options.issuedRead === undefined) queryIntents.delete(dataSourceName);
     let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
