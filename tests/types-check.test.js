@@ -224,6 +224,41 @@ describe('no assumed layout', () => {
         } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
     })
 
+    it('covers inline modules, resolves component srcs from the page, skips data-src and comments, keeps the types file anywhere', () => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-types-inline-'))
+        const put = (f, c) => { fs.mkdirSync(path.dirname(path.join(tmp, f)), { recursive: true }); fs.writeFileSync(path.join(tmp, f), c) }
+        try {
+            put('manifest.json', JSON.stringify({ name: 'x', components: ['bits/card.html'] }))
+            put('index.html', [
+                '<script type="importmap">{ "imports": { "#js/": "/js/" } }</script>',
+                '<script type="module">import { twice } from "#js/math.js"; import { tag } from "./js/tag.js"; twice(tag)</script>',
+                '<div data-src="js/ignored.js"></div><img data-src="js/ignored.js">',
+                '<!-- <script src="js/commented.js"></script> -->'
+            ].join('\n'))
+            put('bits/card.html', '<p></p><script src="js/card.js"></script>')
+            put('js/math.js', '/** @param {number} n */\nexport const twice = (n) => n * 2\n')
+            put('js/tag.js', "export const tag = 'x'\n")
+            put('js/card.js', 'export const card = 1\n')
+            put('bits/js/card.js', 'export const wrong = missingName\n')
+            put('js/ignored.js', 'export const i = missingName\n')
+            put('js/commented.js', 'export const c = missingName\n')
+            put('main.js', 'Alpine.store("s", { n: 1 })\n')
+            put('index.html', fs.readFileSync(path.join(tmp, 'index.html'), 'utf8') + '\n<script src="/main.js"></script>')
+            const run = (...args) => spawnSync(process.execPath, [TYPES, '--out', '.types/manifest.d.ts', ...args], { cwd: tmp, encoding: 'utf8' })
+            expect(run().status).toBe(0)
+            const r = run('--tsc')
+            expect(r.status).not.toBe(0)
+            expect(r.stdout).toContain("Argument of type 'string' is not assignable to parameter of type 'number'")
+            expect(r.stdout).not.toContain('bits/js/card.js')
+            expect(r.stdout).not.toContain('ignored.js')
+            expect(r.stdout).not.toContain('commented.js')
+            expect(r.stdout).not.toContain("Cannot find name 'Alpine'")
+            put('js/tag.js', 'export const tag = 3\n')
+            const ok = run('--tsc')
+            expect(ok.stdout).toContain('no type errors')
+        } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+    })
+
     it('a page that loads no local scripts has nothing to check', () => {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-types-empty-'))
         try {

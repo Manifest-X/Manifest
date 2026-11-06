@@ -57,6 +57,7 @@ export async function main(argv) {
             console.log(`mnfst-types: ${opts.out} is up to date`);
         }
     } else if (!opts.tsc) {
+        mkdirSync(dirname(outPath), { recursive: true });
         writeFileSync(outPath, output);
         console.log(`mnfst-types: wrote ${outPath}`);
     }
@@ -161,38 +162,74 @@ const COMPILER_DEFAULTS = {
     skipLibCheck: true,
     lib: ['es2022', 'dom', 'dom.iterable']
 };
-const SCRIPT_SRC = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
+const SCRIPT_TAG = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+const SRC_ATTR = /(?:^|\s)src\s*=\s*["']([^"']+)["']/i;
+const MODULE_TYPE = /(?:^|\s)type\s*=\s*["']?module["']?/i;
 
-// Local scripts index.html and manifest.json's component files load (tsc follows their imports)
-function scriptEntries(projectRoot, manifest) {
+const inside = (root, file) => { const r = relative(root, file); return !!r && !r.startsWith('..') && !isAbsolute(r); };
+
+// The page and manifest.json's component files (their markup lands in the page)
+function pageSources(projectRoot, manifest) {
     const pages = ['index.html', ...stringList(manifest.preloadedComponents), ...stringList(manifest.components)];
-    const out = new Set();
+    const out = [];
     for (const page of pages) {
-        const pagePath = resolve(projectRoot, page.replace(/^\/+/, ''));
-        let html;
-        try { html = readFileSync(pagePath, 'utf8'); } catch { continue; }
-        for (const m of html.matchAll(SCRIPT_SRC)) {
-            const src = m[1].split(/[?#]/)[0];
-            if (!src || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(src) || !/\.m?js$/i.test(src) || /\.min\.m?js$/i.test(src)) continue;
-            const file = src.startsWith('/') ? resolve(projectRoot, src.slice(1)) : resolve(dirname(pagePath), src);
-            if (file.startsWith(projectRoot) && existsSync(file)) out.add(file);
+        try { out.push({ page, html: readFileSync(resolve(projectRoot, page.replace(/^\/+/, '')), 'utf8').replace(/<!--[\s\S]*?-->/g, '') }); } catch { /* missing */ }
+    }
+    return out;
+}
+
+// A src as the browser resolves it: against the page document at the project root
+function localScript(projectRoot, src) {
+    const clean = src.split(/[?#]/)[0];
+    if (!clean || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(clean) || !/\.m?js$/i.test(clean) || /\.min\.m?js$/i.test(clean)) return null;
+    let pathname;
+    try { pathname = decodeURIComponent(new URL(clean, 'http://page/').pathname); } catch { return null; }
+    const file = resolve(projectRoot, pathname.replace(/^\/+/, ''));
+    return inside(projectRoot, file) && existsSync(file) ? file : null;
+}
+
+// Local scripts the page loads (tsc follows their imports), and inline module bodies
+function scriptEntries(projectRoot, manifest) {
+    const files = new Set();
+    const inline = [];
+    for (const { page, html } of pageSources(projectRoot, manifest)) {
+        for (const [, attrs, body] of html.matchAll(SCRIPT_TAG)) {
+            const src = attrs.match(SRC_ATTR);
+            if (src) {
+                const file = localScript(projectRoot, src[1]);
+                if (file) files.add(file);
+            } else if (MODULE_TYPE.test(attrs) && body.trim()) {
+                inline.push({ page, body });
+            }
         }
     }
-    return [...out];
+    return { files: [...files], inline };
+}
+
+// Inline module copies for tsc: relative and root specifiers point at the files the page would load
+function writeInlineModules(dir, projectRoot, inline) {
+    return inline.map(({ page, body }, i) => {
+        const fixed = body.replace(/(\bfrom\s*|\bimport\s*\(?\s*)(["'])(\.{1,2}\/|\/)([^"']*)\2/g,
+            (m, lead, q, start, rest) => lead + q + resolve(projectRoot, (start === '/' ? '' : start) + rest).split('\\').join('/') + q);
+        const file = join(dir, `inline-${i + 1}-${page.replace(/[^a-z0-9]+/gi, '-')}.mjs`);
+        writeFileSync(file, fixed);
+        return file;
+    });
 }
 
 // Every .d.ts in the project except dependencies, dot-folders and render output
 function declarationFiles(projectRoot, manifest) {
-    const skip = new Set(['node_modules', (manifest.render && manifest.render.output) || 'website']);
+    const pre = manifest.render || manifest.prerender || {};
+    const output = resolve(projectRoot, typeof pre.output === 'string' ? pre.output : 'website');
     const out = [];
     const walk = (dir, depth) => {
         if (depth > 8) return;
         let entries;
         try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
         for (const e of entries) {
-            if (e.name.startsWith('.')) continue;
+            if (e.name.startsWith('.') || e.name === 'node_modules') continue;
             const full = join(dir, e.name);
-            if (e.isDirectory()) { if (!(depth === 0 && skip.has(e.name)) && e.name !== 'node_modules') walk(full, depth + 1); }
+            if (e.isDirectory()) { if (full !== output) walk(full, depth + 1); }
             else if (e.name.endsWith('.d.ts')) out.push(full);
         }
     };
@@ -289,7 +326,15 @@ function runTsc(projectRoot, types, manifest = {}) {
     const abs = (p) => resolve(projectRoot, p);
     const own = ['tsconfig.json', 'jsconfig.json'].map((f) => join(projectRoot, f)).find((f) => existsSync(f));
     const config = { compilerOptions: {} };
-    const inputs = [...new Set([...scriptEntries(projectRoot, manifest), ...declarationFiles(projectRoot, manifest)])];
+    const entries = scriptEntries(projectRoot, manifest);
+    const typesFile = abs(types);
+    const dir = mkdtempSync(join(tmpdir(), 'mnfst-tsc-'));
+    const inputs = [...new Set([
+        ...entries.files,
+        ...writeInlineModules(dir, projectRoot, entries.inline),
+        ...declarationFiles(projectRoot, manifest),
+        ...(existsSync(typesFile) ? [typesFile] : [])
+    ])];
     let paths = { mnfst: [abs(types)] };
     for (const [k, v] of Object.entries(importMapPaths(projectRoot))) paths[k] = v.map(abs);
     if (own) {
@@ -303,12 +348,12 @@ function runTsc(projectRoot, types, manifest = {}) {
         config.files = inputs;
     }
     if (config.files && !config.files.length) {
+        rmSync(dir, { recursive: true, force: true });
         console.log('mnfst-types: no local scripts or .d.ts files to check');
         return 0;
     }
     config.compilerOptions.paths = paths;
     config.compilerOptions.noEmit = true;
-    const dir = mkdtempSync(join(tmpdir(), 'mnfst-tsc-'));
     const file = join(dir, 'tsconfig.json');
     try {
         writeFileSync(file, JSON.stringify(config, null, 2));
