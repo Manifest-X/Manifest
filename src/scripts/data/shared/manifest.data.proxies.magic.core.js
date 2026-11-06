@@ -49,6 +49,20 @@ if (typeof window !== 'undefined') {
     }
 }
 
+// $x.<source> hands back the same array until the source's next landing, so
+// identity-keyed memos and Alpine comparisons hold between reads
+const sourceArrayViews = new WeakMap(); // array -> { version, view }
+function sourceArrayView(dataSourceName, array, build) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const raw = store ? (window.ManifestDataStore?.rawOf?.(store) || store) : null;
+    const version = raw?._v?.[dataSourceName];
+    const cached = sourceArrayViews.get(array);
+    if (cached && cached.version === version) return cached.view;
+    const view = build();
+    sourceArrayViews.set(array, { version, view });
+    return view;
+}
+
 // Loading proxy for Appwrite sources (CRUD + state/files/upload/pagination methods)
 function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
     const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
@@ -418,7 +432,7 @@ function registerXMagicMethod(loadDataSource) {
                                         if (attachArrayMethods) {
                                             const arrayWithMethods = attachArrayMethods(arrayForMethods, prop, reloadDataSource);
                                             // has() trap so Alpine sees $search/$query/etc. before accessing
-                                            return new Proxy(arrayWithMethods, {
+                                            return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                                 get(target, key) {
                                                     if (key === '$search' || key === '$query' || key === '$route') {
                                                         if (key in target && typeof target[key] === 'function') {
@@ -479,7 +493,7 @@ function registerXMagicMethod(loadDataSource) {
                                                     }
                                                     return undefined;
                                                 }
-                                            });
+                                            }));
                                         } else {
                                             return arrayForMethods;
                                         }
@@ -642,7 +656,7 @@ function registerXMagicMethod(loadDataSource) {
                                 if (attachArrayMethods) {
                                     const arrayWithMethods = attachArrayMethods(emptyArray, prop, reloadDataSource);
                                     // has() trap so Alpine sees $search/$query/etc.
-                                    return new Proxy(arrayWithMethods, {
+                                    return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                         get(target, key) {
                                             if (key === '$search' || key === '$query' || key === '$route') {
                                                 if (key in target && typeof target[key] === 'function') {
@@ -680,7 +694,7 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                             return undefined;
                                         }
-                                    });
+                                    }));
                                 }
                                 return emptyArray;
                             }
@@ -730,7 +744,7 @@ function registerXMagicMethod(loadDataSource) {
                                 if (attachArrayMethods) {
                                     const arrayWithMethods = attachArrayMethods(value, prop, loadDataSource);
                                     // has() trap so Alpine sees $search/$query/etc.
-                                    return new Proxy(arrayWithMethods, {
+                                    return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                         get(target, key) {
                                             if (key === '$search' || key === '$query') {
                                                 if (target && typeof target === 'object' && key in target && typeof target[key] === 'function') {
@@ -806,7 +820,7 @@ function registerXMagicMethod(loadDataSource) {
                                             }
                                             return undefined;
                                         }
-                                    });
+                                    }));
                                 }
                                 return value;
 
@@ -961,7 +975,7 @@ function registerXMagicMethod(loadDataSource) {
                                                 const appwriteMethodNames = ['$create', '$update', '$delete', '$query', '$url', '$download', '$preview', '$openUrl', '$openPreview', '$openDownload', '$filesFor', '$unlinkFrom', '$removeFrom', '$remove'];
                                                 const baseMethodNames = ['$search', '$route', '$query']; // Base plugin methods available for all data sources
 
-                                                return new Proxy(arrayWithMethods, {
+                                                return sourceArrayView(prop, arrayWithMethods, () => new Proxy(arrayWithMethods, {
                                                     get(target, prop) {
                                                         // Handle base plugin methods ($search, $route, $query)
                                                         if (prop === '$route' || prop === '$search' || prop === '$query') {
@@ -1094,7 +1108,7 @@ function registerXMagicMethod(loadDataSource) {
                                                         }
                                                         return Reflect.getOwnPropertyDescriptor(target, prop);
                                                     }
-                                                });
+                                                }));
                                             }
                                             // Only create proxy for objects, return primitives directly
                                             if (typeof nestedValue === 'object' && nestedValue !== null) {
