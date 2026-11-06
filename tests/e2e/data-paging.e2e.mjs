@@ -119,6 +119,19 @@ try {
         return { held: rows.length, allArchived: rows.every(r => r.status === 'archived') }
     })
     check('after a $query, scrolling to the end pages within the new filter', afterQuery.held > 50 && afterQuery.allArchived, afterQuery)
+
+    // F3: one array per landing; F5: $reload() retries a flaky read
+    const f35 = await page.evaluate(async () => {
+        const ev = (e) => Alpine.evaluate(document.body.firstElementChild, e)
+        const same = ev('$x.paged') === ev('$x.paged')
+        const before = ev('$x.paged')
+        window.__failReads = 2
+        await ev('$x.paged').$reload()
+        await new Promise(r => setTimeout(r, 100))
+        return { same, changed: ev('$x.paged') !== before, failed: __calls.filter(c => c.op === 'list:fail').length, error: ev('$x.paged.$error'), held: ev('$x.paged.length') }
+    })
+    check('$x.<source> keeps its identity between landings', f35.same, f35)
+    check('$reload() retries transient failures and lands without $error', f35.failed === 2 && f35.error === null && f35.held >= 50 && f35.changed, f35)
 } finally {
     await browser.close()
     server.close()
