@@ -419,7 +419,8 @@ function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery)
 // server-filters by it until the next default load replaces the rows
 const activeQueries = new Map();
 const awaitingQueries = new Set(); // sources with a $query waiting for auth to settle
-const queryIntents = new Map(); // the latest $query asked of a source, { queries } (cleared by a reload)
+const queryIntents = new Map(); // a $query in flight for a source, { queries }
+const deferredLoads = new Set(); // source:locale keys of in-flight loads that deferred to a $query
 const realtimeBinds = new Map(); // Map<name, { config, mode, rebind }>
 
 function realtimeQueriesFor(dataSourceName, defaults) {
@@ -1050,8 +1051,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     // Memory cache (this page-load's fetches). Serving cached data is fine, but
     // writing an old locale to the live store would clobber a concurrent locale
     // switch — so guard the store write via the `_locale` stamp.
+    // A $query in flight, or its rows showing: lazy reads defer to it (see below)
+    const queryHolds = () => queryIntents.has(dataSourceName) || (activeQueries.has(dataSourceName) && hasLiveRows(dataSourceName));
+
     if (!options.reload && dataSourceCache.has(cacheKey)) {
         const cachedData = dataSourceCache.get(cacheKey);
+        if (queryHolds()) return cachedData;
         const live = (window.Alpine && Alpine.store('locale')?.current)
             || document.documentElement.lang || locale;
         const staleLocaleHit = locale !== live && !!(cachedData && cachedData._locale);
@@ -1062,6 +1067,11 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         return cachedData;
     }
 
+    // An explicit reload never joins a load that deferred to a $query: it runs after it
+    if (options.reload && deferredLoads.has(cacheKey) && loadingPromises.has(cacheKey)) {
+        return loadingPromises.get(cacheKey).catch(() => null).then(() => loadDataSource(dataSourceName, locale, options));
+    }
+
     // In flight for this source+locale: share it (every entry path lands here);
     // joining makes it the latest read again
     if (loadingPromises.has(cacheKey)) {
@@ -1070,10 +1080,13 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     }
 
     // Reads are ordered by call: a $query issued after this load wins over it
-    // A first (lazy) read while the source has a $query, asked or showing, only binds realtime:
-    // it neither outranks that $query nor lands its default rows. An explicit reload does both
-    const deferToQuery = () => !options.reload && (queryIntents.has(dataSourceName) || activeQueries.has(dataSourceName));
-    const readToken = deferToQuery() ? undefined : window.ManifestDataStore.beginRead?.(dataSourceName);
+    // A lazy read while a $query is in flight, or while a $query's rows are showing, only binds
+    // realtime: it neither outranks that $query nor lands default rows. An explicit reload does both.
+    // (A listener that clears the rows first — locale, team — gets the defaults as before.)
+    const deferred = !options.reload && queryHolds();
+    const deferToQuery = () => deferred && queryHolds();
+    const readToken = deferred ? undefined : window.ManifestDataStore.beginRead?.(dataSourceName);
+    if (deferred) deferredLoads.add(cacheKey);
     if (options.reload) queryIntents.delete(dataSourceName);
     let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
@@ -1485,7 +1498,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!landed && keepRows && !isInitializing && !superseded()) setSourceState(dataSourceName, { loading: false });
         }
     });
-    run.then(settled, settled);
+    const done = () => { settled(); deferredLoads.delete(cacheKey); };
+    run.then(done, done);
     return run;
 }
 

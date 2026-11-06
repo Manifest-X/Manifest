@@ -1224,13 +1224,13 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
             throw new Error(`[Manifest Data] Method "${method}" not supported for this data source`);
         } catch (error) {
-            // A $query that failed is not what the source shows: a sign-in doesn't re-run it
-            if (method === '$query') window.ManifestDataMain?.dropQueryIntent?.(dataSourceName, queryIntentRef);
             // Automatically set error state - no need for inline .catch() in HTML
             setErrorState(error);
             // Re-throw so promise chain still works if caller wants to handle it
             throw error;
         } finally {
+            // In flight no longer: landed, it shows as the active query; failed, it never shows
+            if (queryIntentRef) window.ManifestDataMain?.dropQueryIntent?.(dataSourceName, queryIntentRef);
             if (readToken !== undefined) {
                 const ds = window.ManifestDataStore;
                 ds?.endRead?.(dataSourceName, readToken);

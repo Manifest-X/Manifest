@@ -56,3 +56,68 @@ for (const paging of [null, { mode: 'window', size: 100 }]) {
         })
     })
 }
+
+describe('review: paths that clear the rows and load without reload', () => {
+    const SRC = { items: { appwriteTableId: 'items', queries: [['orderAsc', 'n'], ['limit', 100]] } }
+    const state = () => window.Alpine.store('data')._items_state
+
+    it('a locale change after a $query lands the defaults (never an empty source)', async () => {
+        const { rows, main, query } = await boot(SRC, makeRows(20))
+        await main.loadDataSource('items')
+        await query('items', [['equal', 'projectId', 'p1']])
+        await settle()
+        window.dispatchEvent(new CustomEvent('localechange', { detail: { locale: 'fr' } }))
+        await settle(300)
+        expect(rows('items').length).toBe(20)
+        expect(state().ready).toBe(true)
+    })
+
+    it('a team-style clear-and-load after a $query lands the defaults', async () => {
+        const { rows, main, query } = await boot(SRC, makeRows(20))
+        await main.loadDataSource('items')
+        await query('items', [['equal', 'projectId', 'p1']])
+        await settle()
+        window.ManifestDataStore.dataSourceCache.clear()
+        delete window.Alpine.store('data').items
+        await main.loadDataSource('items')
+        await settle(200)
+        expect(rows('items').length).toBe(20)
+        expect(state().ready).toBe(true)
+    })
+
+    it('a failed $query while the lazy load deferred: the defaults land', async () => {
+        const { rows, main, query, stats } = await boot(SRC, makeRows(20), { delay: () => 40 })
+        stats.failReads = 1
+        stats.failError = { code: 400, message: 'bad' }
+        const q = query('items', [['equal', 'projectId', 'p1']]).catch(() => 'failed')
+        const lazy = main.loadDataSource('items')
+        expect(await q).toBe('failed')
+        await lazy
+        await settle(200)
+        expect(rows('items').length).toBe(20)
+        expect(state().ready).toBe(true)
+    })
+
+    it('the memory-cache path never lands cached defaults over a showing $query', async () => {
+        const { rows, main, query } = await boot(SRC, makeRows(20))
+        await main.loadDataSource('items')
+        await query('items', [['equal', 'projectId', 'p1']])
+        await settle()
+        await main.loadDataSource('items')
+        await settle()
+        expect(rows('items').length).toBe(10)
+    })
+
+    it('an explicit reload while a deferred lazy load is in flight still brings the defaults', async () => {
+        const { rows, main, query } = await boot(SRC, makeRows(20), { delay: qs => qs.some(q => q.method === 'equal') ? 5 : 80 })
+        await query('items', [['equal', 'projectId', 'p1']])
+        await settle()
+        window.ManifestDataStore.dataSourceCache.clear()
+        const lazy = main.loadDataSource('items')
+        await settle(10)
+        await main.reloadDataSource('items')
+        await lazy
+        await settle(200)
+        expect(rows('items').length).toBe(20)
+    })
+})
