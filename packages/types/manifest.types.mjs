@@ -8,7 +8,9 @@
 // Re-running the CLI overwrites the augmentation block (between the
 // AUGMENTATION:start / AUGMENTATION:end markers in the template).
 
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, mkdtempSync, rmSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -45,6 +47,10 @@ export async function main(argv) {
     const output = applyAugmentation(template, augmentation);
 
     const outPath = resolve(cwd, opts.out);
+    if (opts.tsc) {
+        process.exitCode = runTsc(projectRoot, relative(projectRoot, outPath).split('\\').join('/'));
+        return;
+    }
     if (opts.check) {
         const current = existsSync(outPath) ? readFileSync(outPath, 'utf8') : '';
         if (current !== output) {
@@ -60,7 +66,9 @@ export async function main(argv) {
 
     const typesPath = relative(projectRoot, outPath).split('\\').join('/');
     if (opts.init) {
-        writeOnce(join(projectRoot, 'jsconfig.json'), defaultJsconfig(typesPath, importMapPaths(projectRoot)));
+        const jsconfig = join(projectRoot, 'jsconfig.json');
+        if (existsSync(jsconfig)) syncJsconfigPaths(jsconfig, typesPath, importMapPaths(projectRoot));
+        else writeOnce(jsconfig, defaultJsconfig(typesPath, importMapPaths(projectRoot)));
     }
     if (opts.ci) {
         writeOnce(join(projectRoot, '.github', 'workflows', 'types.yml'), defaultWorkflow(typesPath));
@@ -87,6 +95,7 @@ function parseArgs(argv) {
         init: false,
         ci: false,
         check: false,
+        tsc: false,
         help: false
     };
     for (let i = 0; i < argv.length; i++) {
@@ -95,6 +104,7 @@ function parseArgs(argv) {
         else if (a === '--init') opts.init = true;
         else if (a === '--ci') opts.ci = true;
         else if (a === '--check') opts.check = true;
+        else if (a === '--tsc') opts.tsc = true;
         else if (a === '--manifest') opts.manifest = argv[++i];
         else if (a === '--out') opts.out = argv[++i];
         else if (a.startsWith('--manifest=')) opts.manifest = a.slice('--manifest='.length);
@@ -115,6 +125,8 @@ Options:
   --init              Also write a baseline jsconfig.json (only if missing)
   --ci                Also write .github/workflows/types.yml (only if missing)
   --check             Exit 1 if the output file is out of date; write nothing
+  --tsc               Type-check app/ and shared/ with tsc; paths come from the
+                      import map on every run (extends your jsconfig/tsconfig if any)
   -h, --help          Show this message
 `);
 }
@@ -137,21 +149,105 @@ function importMapPaths(projectRoot) {
     return paths;
 }
 
+const COMPILER_DEFAULTS = {
+    target: 'es2022',
+    module: 'esnext',
+    moduleResolution: 'bundler',
+    checkJs: true,
+    allowJs: true,
+    noEmit: true,
+    strict: false,
+    skipLibCheck: true,
+    lib: ['es2022', 'dom', 'dom.iterable']
+};
+const DEFAULT_INCLUDE = (types) => ['app/**/*', 'shared/**/*', types, '*.d.ts'];
+
+// JSON with comments and trailing commas, as tsconfig allows; null when unreadable
+function readJsonc(path) {
+    try {
+        const text = readFileSync(path, 'utf8')
+            .replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str || '')
+            .replace(/,(\s*[}\]])/g, '$1');
+        return JSON.parse(text);
+    } catch { return null; }
+}
+
+// --init on an existing jsconfig: add import-map paths it lacks (plain JSON only)
+function syncJsconfigPaths(path, types, aliases) {
+    let config;
+    try { config = JSON.parse(readFileSync(path, 'utf8')); } catch {
+        console.log(`mnfst-types: ${path} has comments; add any import-map aliases to its paths by hand (npx mnfst-types --tsc merges them anyway)`);
+        return;
+    }
+    const paths = (config.compilerOptions ||= {}).paths ||= {};
+    const wanted = { mnfst: [`./${types}`], ...aliases };
+    const added = Object.keys(wanted).filter((k) => !(k in paths));
+    if (!added.length) {
+        console.log(`mnfst-types: ${path} already maps every import-map alias`);
+        return;
+    }
+    for (const k of added) paths[k] = wanted[k];
+    writeFileSync(path, JSON.stringify(config, null, 4) + '\n');
+    console.log(`mnfst-types: added ${added.join(', ')} to ${path}`);
+}
+
+// tsc from the project, then next to mnfst-types, else npx
+function findTsc(projectRoot) {
+    for (const from of [join(projectRoot, 'package.json'), fileURLToPath(import.meta.url)]) {
+        try {
+            const req = createRequire(from);
+            const pkgPath = req.resolve('typescript/package.json');
+            const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+            const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin && pkg.bin.tsc;
+            if (bin) return { cmd: process.execPath, args: [join(dirname(pkgPath), bin)] };
+        } catch { /* next */ }
+    }
+    return { cmd: process.platform === 'win32' ? 'npx.cmd' : 'npx', args: ['-y', '-p', 'typescript@7', 'tsc'] };
+}
+
+// Type-check with a config built now: import-map paths can't drift. A project
+// jsconfig/tsconfig is extended, and its own paths win over the import map.
+function runTsc(projectRoot, types) {
+    const abs = (p) => resolve(projectRoot, p);
+    const own = ['tsconfig.json', 'jsconfig.json'].map((f) => join(projectRoot, f)).find((f) => existsSync(f));
+    const config = { compilerOptions: {} };
+    const paths = { mnfst: [abs(types)] };
+    for (const [k, v] of Object.entries(importMapPaths(projectRoot))) paths[k] = v.map(abs);
+    if (own) {
+        config.extends = own;
+        const parsed = readJsonc(own);
+        if (!parsed) console.warn(`mnfst-types: couldn't read ${own}; extending it with import-map paths only`);
+        const opts = (parsed && parsed.compilerOptions) || {};
+        const base = opts.baseUrl ? resolve(dirname(own), opts.baseUrl) : dirname(own);
+        for (const [k, v] of Object.entries(opts.paths || {})) paths[k] = (Array.isArray(v) ? v : [v]).map((x) => resolve(base, x));
+        if (parsed && !parsed.include && !parsed.files) config.include = DEFAULT_INCLUDE(types).map(abs);
+    } else {
+        Object.assign(config.compilerOptions, COMPILER_DEFAULTS);
+        config.include = DEFAULT_INCLUDE(types).map(abs);
+        config.exclude = ['node_modules', 'website'].map(abs);
+    }
+    config.compilerOptions.paths = paths;
+    config.compilerOptions.noEmit = true;
+    const dir = mkdtempSync(join(tmpdir(), 'mnfst-tsc-'));
+    const file = join(dir, 'tsconfig.json');
+    try {
+        writeFileSync(file, JSON.stringify(config, null, 2));
+        const { cmd, args } = findTsc(projectRoot);
+        const r = spawnSync(cmd, [...args, '-p', file, '--pretty', 'false'], { cwd: realpathSync(projectRoot), encoding: 'utf8' });
+        if (r.error) { console.error(`mnfst-types: couldn't run tsc (${r.error.message})`); return 2; }
+        process.stdout.write(r.stdout || '');
+        process.stderr.write(r.stderr || '');
+        if (r.status === 0) console.log('mnfst-types: no type errors');
+        return r.status ?? 1;
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+
 function defaultJsconfig(types, aliases = {}) {
     return JSON.stringify({
-        compilerOptions: {
-            target: 'es2022',
-            module: 'esnext',
-            moduleResolution: 'bundler',
-            checkJs: true,
-            allowJs: true,
-            noEmit: true,
-            strict: false,
-            skipLibCheck: true,
-            lib: ['es2022', 'dom', 'dom.iterable'],
-            paths: { mnfst: [`./${types}`], ...aliases }
-        },
-        include: ['app/**/*', 'shared/**/*', types, '*.d.ts'],
+        compilerOptions: { ...COMPILER_DEFAULTS, paths: { mnfst: [`./${types}`], ...aliases } },
+        include: DEFAULT_INCLUDE(types),
         exclude: ['node_modules', 'website']
     }, null, 4) + '\n';
 }
@@ -171,7 +267,7 @@ function defaultWorkflow(out) {
         '        with:',
         '          node-version: 22',
         `      - run: npx -y mnfst-types@latest --check --out ${out}`,
-        '      - run: npx -y -p typescript@7 tsc -p jsconfig.json',
+        `      - run: npx -y -p typescript@7 -p mnfst-types@latest mnfst-types --tsc --out ${out}`,
         ''
     ].join('\n');
 }

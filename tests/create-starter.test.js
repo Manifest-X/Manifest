@@ -47,13 +47,11 @@ describe('mnfst-starter', () => {
         expect(read('app/main.js')).toMatch(/^import .* from '@app\//m)
     })
 
-    it('scaffolds editor type checking: jsconfig paths mirror the import map', () => {
+    it('scaffolds types without a jsconfig (the check builds its own)', () => {
         expect(run(['--here', '--name', 'Site']).status).toBe(0)
         expect(exists('manifest.d.ts')).toBe(true)
-        const paths = json('jsconfig.json').compilerOptions.paths
-        expect(paths.mnfst).toEqual(['./manifest.d.ts'])
-        expect(paths['@app/*']).toEqual(['./app/*'])
-        expect(json('manifest.json').publishIgnore).toEqual(['jsconfig.json', '*.d.ts'])
+        expect(exists('jsconfig.json')).toBe(false)
+        expect(json('manifest.json').publishIgnore).toEqual(['*.d.ts'])
     })
 
     it('fresh folder with project id + key wires production MCP, no hook, key not printed', () => {

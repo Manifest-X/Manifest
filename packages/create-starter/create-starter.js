@@ -111,7 +111,6 @@ const filesToCopy = [
   '_redirects',
   'favicon.ico',
   'index.html',
-  'jsconfig.json',
   'LICENSE.md',
   'locales.csv',
   'manifest.d.ts',

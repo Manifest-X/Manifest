@@ -20,21 +20,25 @@ This writes `manifest.d.ts` in the current directory. Re-run it whenever you add
 --init              Also write a baseline jsconfig.json (only if missing)
 --ci                Also write .github/workflows/types.yml (only if missing)
 --check             Exit 1 if the output is out of date; write nothing
+--tsc               Type-check app/ and shared/ (paths from the import map)
 -h, --help          Show usage
 ```
 
 ## Type checks without a build
 
-`--init` writes a `jsconfig.json` whose `paths` mirror the page's import map,
-so JSDoc-annotated app modules type-check with no build step:
-
 ```bash
-npx mnfst-types --init
-npx -p typescript@7 tsc -p jsconfig.json
+npx mnfst-types --tsc
 ```
 
-`--ci` adds a GitHub Actions workflow running `mnfst-types --check` and `tsc`
-on every push. See https://manifestx.dev/docs/framework/getting-started/type-checks.
+Type-checks `app/` and `shared/` with TypeScript. The config is built on every
+run: paths come from the page's import map, so adding an alias like `@shared/`
+never needs a config change. A project `jsconfig.json` or `tsconfig.json` is
+extended — its own options and paths win.
+
+`--init` writes a `jsconfig.json` so editors show the same errors as you type;
+run it again after changing the import map to add new aliases to it. `--ci`
+adds a GitHub Actions workflow running `--check` and `--tsc` on every push. See
+https://manifestx.dev/docs/framework/getting-started/type-checks.
 
 ## How it works
 

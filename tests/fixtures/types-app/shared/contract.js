@@ -11,6 +11,7 @@ export const tables = {
 /** @type {Status[]} */
 export const statuses = ['open', 'blocked', 'done']
 
+/** @type {{ titleMax: number }} */
 export const limits = { titleMax: 80 }
 
 /**

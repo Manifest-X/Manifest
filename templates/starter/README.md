@@ -40,7 +40,6 @@ Project Name/
 ├── _redirects                # SPA routing support for modern static hosts
 ├── favicon.ico               # Browser tab icon
 ├── index.html                # Rendering entry point / main page
-├── jsconfig.json             # Editor and `tsc` type-check settings
 ├── LICENSE.md                # MIT License
 ├── locales.csv               # Translated content in English, Arabic, and Chinese
 ├── manifest.d.ts             # Types for Manifest and this project's data (`npx mnfst-types`)

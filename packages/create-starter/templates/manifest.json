@@ -31,7 +31,6 @@
     "components/logo.html"
   ],
   "publishIgnore": [
-    "jsconfig.json",
     "*.d.ts"
   ],
   "data": {

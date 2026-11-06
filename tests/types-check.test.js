@@ -18,8 +18,8 @@ const TYPES = path.join(ROOT, 'packages', 'types', 'bin', 'mnfst-types.js')
 let dir
 const read = (f) => fs.readFileSync(path.join(dir, f), 'utf8')
 const write = (f, c) => fs.writeFileSync(path.join(dir, f), c)
-const tsc = () => spawnSync(TSC, ['-p', 'jsconfig.json'], { cwd: dir, encoding: 'utf8' })
 const types = (...args) => spawnSync(process.execPath, [TYPES, ...args], { cwd: dir, encoding: 'utf8' })
+const tsc = () => types('--tsc')
 
 function planted(file, from, to) {
     const original = read(file)
@@ -43,7 +43,8 @@ describe('types-app', () => {
 
     it('type-checks clean', () => {
         const r = tsc()
-        expect(r.stdout + r.stderr).toBe('')
+        expect(r.stdout).toContain('no type errors')
+        expect(r.stdout.replace('mnfst-types: no type errors', '').trim() + r.stderr).toBe('')
         expect(r.status).toBe(0)
     })
 
@@ -85,13 +86,96 @@ describe('types-app', () => {
     })
 })
 
+describe('import map drift', () => {
+    const IMPORT = "import { component } from '@app/lib/component.js'"
+    const MAP = '"@shared/": "/shared/"'
+    let original
+    beforeAll(() => {
+        original = { index: read('index.html'), comp: read('app/components/task-list.js'), jsconfig: read('jsconfig.json') }
+        write('index.html', original.index.replace(MAP, MAP + ', "@lib/": "/app/lib/"'))
+        write('app/components/task-list.js', original.comp.replace(IMPORT, "import { component } from '@lib/component.js'"))
+    })
+    afterAll(() => {
+        write('index.html', original.index)
+        write('app/components/task-list.js', original.comp)
+        write('jsconfig.json', original.jsconfig)
+    })
+
+    it('a hand-written jsconfig without the new alias breaks plain tsc', () => {
+        const r = spawnSync(TSC, ['-p', 'jsconfig.json'], { cwd: dir, encoding: 'utf8' })
+        expect(r.status).not.toBe(0)
+        expect(r.stdout).toContain("'@lib/component.js'")
+    })
+
+    it('--tsc merges the new alias into the hand-written jsconfig', () => {
+        const r = tsc()
+        expect(r.stdout).toContain('no type errors')
+        expect(r.status).toBe(0)
+    })
+
+    it('--tsc works with no jsconfig at all', () => {
+        fs.rmSync(path.join(dir, 'jsconfig.json'))
+        try {
+            const r = tsc()
+            expect(r.stdout).toContain('no type errors')
+            expect(r.status).toBe(0)
+        } finally { write('jsconfig.json', original.jsconfig) }
+    })
+
+    it('--init adds the missing alias to an existing jsconfig', () => {
+        const r = types('--init')
+        expect(r.stdout).toContain('added @lib/*')
+        expect(JSON.parse(read('jsconfig.json')).compilerOptions.paths['@lib/*']).toEqual(['./app/lib/*'])
+        expect(spawnSync(TSC, ['-p', 'jsconfig.json'], { cwd: dir, encoding: 'utf8' }).status).toBe(0)
+    })
+})
+
+describe('hand-written config', () => {
+    it("--tsc keeps the project's own compiler options", () => {
+        const original = { jsconfig: read('jsconfig.json'), comp: read('app/components/task-list.js') }
+        const config = JSON.parse(original.jsconfig)
+        config.compilerOptions.noUnusedLocals = true
+        write('jsconfig.json', '// project settings\n' + JSON.stringify(config, null, 2))
+        write('app/components/task-list.js', original.comp.replace("import { validateTask } from '@shared/contract.js'", "import { validateTask } from '@shared/contract.js'\nconst unused = 1"))
+        try {
+            const r = tsc()
+            expect(r.status).not.toBe(0)
+            expect(r.stdout).toContain("'unused' is declared but its value is never read")
+        } finally {
+            write('jsconfig.json', original.jsconfig)
+            write('app/components/task-list.js', original.comp)
+        }
+    })
+})
+
 describe('starter template', () => {
     const STARTER = path.join(ROOT, 'templates', 'starter')
-    it('committed manifest.d.ts is current and the starter type-checks clean', () => {
+    it('committed manifest.d.ts is current and the starter type-checks clean with no jsconfig', () => {
+        expect(fs.existsSync(path.join(STARTER, 'jsconfig.json'))).toBe(false)
         const check = spawnSync(process.execPath, [TYPES, '--check'], { cwd: STARTER, encoding: 'utf8' })
         expect(check.status, check.stderr).toBe(0)
-        const r = spawnSync(TSC, ['-p', 'jsconfig.json'], { cwd: STARTER, encoding: 'utf8' })
-        expect(r.stdout + r.stderr).toBe('')
+        const r = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: STARTER, encoding: 'utf8' })
+        expect(r.stdout).toContain('no type errors')
         expect(r.status).toBe(0)
+    })
+
+    it('adding @shared/ to the import map needs no config change', () => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-starter-shared-'))
+        try {
+            fs.cpSync(STARTER, tmp, { recursive: true })
+            const html = fs.readFileSync(path.join(tmp, 'index.html'), 'utf8')
+            fs.writeFileSync(path.join(tmp, 'index.html'), html.replace('"@app/": "/app/"', '"@app/": "/app/", "@shared/": "/shared/"'))
+            fs.mkdirSync(path.join(tmp, 'shared'))
+            fs.writeFileSync(path.join(tmp, 'shared', 'package.json'), '{ "type": "module" }\n')
+            fs.writeFileSync(path.join(tmp, 'shared', 'contract.js'), '/** @type {{ clicksMax: number }} */\nexport const limits = { clicksMax: 10 }\n')
+            const counter = path.join(tmp, 'app', 'components', 'counter.js')
+            fs.writeFileSync(counter, "import { limits } from '@shared/contract.js'\n" + fs.readFileSync(counter, 'utf8').replace("count: 0,", "count: 0,\n  max: limits.clicksMax,"))
+            const ok = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: tmp, encoding: 'utf8' })
+            expect(ok.stdout).toContain('no type errors')
+            fs.writeFileSync(counter, fs.readFileSync(counter, 'utf8').replace('limits.clicksMax', 'limits.clickMax'))
+            const bad = spawnSync(process.execPath, [TYPES, '--tsc'], { cwd: tmp, encoding: 'utf8' })
+            expect(bad.status).not.toBe(0)
+            expect(bad.stdout).toContain("Property 'clickMax' does not exist")
+        } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
     })
 })
