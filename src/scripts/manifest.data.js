@@ -433,7 +433,9 @@ function sourceGeneration(dataSourceName) {
 function resetSource(dataSourceName) {
     sourceGen.set(dataSourceName, sourceGeneration(dataSourceName) + 1);
     latestRead.delete(dataSourceName);
+    inflightReads.delete(dataSourceName);
     window.ManifestDataMain?.forgetLiveSource?.(dataSourceName);
+    pendingWrites.delete(dataSourceName); // a new identity never sees the old one's unsettled writes
     const prefix = `${dataSourceName}:`;
     for (const key of [...dataSourceCache.keys()]) if (key.startsWith(prefix)) dataSourceCache.delete(key);
     for (const key of [...loadingPromises.keys()]) if (key.startsWith(prefix)) loadingPromises.delete(key);
@@ -471,11 +473,153 @@ function setSourceState(dataSourceName, patch) {
     return next;
 }
 
+// Optimistic writes, re-applied over network landings: unsettled ones over every
+// landing; settled ones only over reads issued before they settled (so data fetched
+// before the write never shows the old values), until a newer read lands
+const pendingWrites = new Map(); // source -> Map<$id, Array<{ token, kind, fields, snapshot, settledAt, settledTime }>>
+let pendingSeq = 0;
+const SETTLED_HOLD_MS = 30000;
+
+function holdWrite(dataSourceName, id, kind, fields, snapshot = null) {
+    if (id === null || id === undefined) return null;
+    let byId = pendingWrites.get(dataSourceName);
+    if (!byId) pendingWrites.set(dataSourceName, byId = new Map());
+    const token = ++pendingSeq;
+    const list = byId.get(id) || [];
+    list.push({ token, kind, fields, snapshot, settledAt: null, settledTime: 0 });
+    byId.set(id, list);
+    touchPending(dataSourceName);
+    return token;
+}
+
+function dropWrite(dataSourceName, id, token) {
+    const byId = pendingWrites.get(dataSourceName);
+    const list = byId?.get(id);
+    if (!list) return null;
+    const entry = list.find(w => w.token === token) || null;
+    const next = list.filter(w => w.token !== token);
+    if (next.length) byId.set(id, next); else byId.delete(id);
+    if (!byId.size) pendingWrites.delete(dataSourceName);
+    return entry;
+}
+
+// Failed: forget it (the caller rolls back). Returns the entry
+function releaseWrite(dataSourceName, id, token) {
+    const entry = dropWrite(dataSourceName, id, token);
+    touchPending(dataSourceName);
+    return entry;
+}
+
+// Confirmed: keep it over reads issued before now, under the server's id and values
+function settleWrite(dataSourceName, id, token, { id: newId = id, fields } = {}) {
+    const entry = dropWrite(dataSourceName, id, token);
+    if (entry) {
+        entry.settledAt = readSeq;
+        entry.settledTime = Date.now();
+        if (fields) entry.fields = fields;
+        let byId = pendingWrites.get(dataSourceName);
+        if (!byId) pendingWrites.set(dataSourceName, byId = new Map());
+        byId.set(newId, [...(byId.get(newId) || []), entry]);
+    }
+    touchPending(dataSourceName);
+}
+
+function pendingWritesFor(dataSourceName, id) {
+    return (pendingWrites.get(dataSourceName)?.get(id) || []).filter(w => w.settledAt === null);
+}
+
+function isSaving(dataSourceName, id) {
+    return pendingWritesFor(dataSourceName, id).length > 0;
+}
+
+function pendingCount(dataSourceName) {
+    const byId = pendingWrites.get(dataSourceName);
+    if (!byId) return 0;
+    let n = 0;
+    for (const list of byId.values()) if (list.some(w => w.settledAt === null)) n++;
+    return n;
+}
+
+// $saving / $pending read this; bumps keep them reactive
+function touchPending(dataSourceName) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return;
+    const key = `_${dataSourceName}_state`;
+    const current = store[key] || { loading: false, error: null, ready: false, stale: true };
+    const pending = pendingCount(dataSourceName);
+    if (current.pending !== pending) store[key] = { ...current, pending };
+}
+
+// Local row insert: at its sort position on a sorted source, else at the end
+function insertRow(store, dataSourceName, row) {
+    const target = store[dataSourceName];
+    const order = window.ManifestDataMain?.orderFor?.(dataSourceName);
+    if (!order) { target.push(row); return; }
+    target.splice(sortedIndex(rawOf(store)[dataSourceName], rawOf(row), compareBy(order)), 0, row);
+}
+
+// After a landing: held writes win over the landed payload. reads: this flush's read
+// landings for the source, { token, ids } (ids null: a replace covering every row)
+function reapplyPending(store, dataSourceName, readLandings = []) {
+    const byId = pendingWrites.get(dataSourceName);
+    if (!byId) return false;
+    const curRaw = rawOf(store)[dataSourceName];
+    if (!Array.isArray(curRaw)) return false;
+    const now = Date.now();
+    let changed = false;
+    for (const [id, list] of [...byId]) {
+        let i = curRaw.findIndex(row => rowKey(row) === id);
+        // Only reads that carried this row (a replace carries every row) speak for it
+        const reads = readLandings.filter(r => r.ids === null || r.ids.has(id)).map(r => r.token);
+        for (const write of [...list]) {
+            if (write.settledAt !== null) {
+                // Settled: a read issued since reflects it (or time ran out) — let go
+                if (reads.some(t => t > write.settledAt) || now - write.settledTime > SETTLED_HOLD_MS) {
+                    dropWrite(dataSourceName, id, write.token);
+                    continue;
+                }
+                if (!reads.some(t => t <= write.settledAt)) continue; // realtime is newer than the write
+            }
+            if (write.kind === 'delete') {
+                if (i !== -1) { store[dataSourceName].splice(i, 1); i = -1; changed = true; }
+            } else if (write.kind === 'create') {
+                // A placeholder stays only where it belongs (a $query that excludes it drops it)
+                if (i === -1 && (window.ManifestDataMain?.rowFitsSource?.(dataSourceName, write.fields) ?? true)) {
+                    insertRow(store, dataSourceName, createReactiveReferences(write.fields, dataSourceName));
+                    i = curRaw.findIndex(row => rowKey(row) === id);
+                    changed = true;
+                }
+            } else if (i !== -1) {
+                const row = curRaw[i];
+                if (Object.keys(write.fields).some(k => !sameScalarOrList(row[k], write.fields[k]))) {
+                    mergeRowFields(store[dataSourceName][i], write.fields, dataSourceName);
+                    changed = true;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
 // Last-issued read per source: a slower earlier read ($query or load) never lands over a later one
 const latestRead = new Map();
 let readSeq = 0;
 const loadReadTokens = new Map(); // source:locale → token of the load in flight under that key
-function beginRead(dataSourceName) { const token = ++readSeq; latestRead.set(dataSourceName, token); return token; }
+const inflightReads = new Map(); // source → Set of read tokens not yet settled
+function beginRead(dataSourceName) {
+    const token = ++readSeq;
+    latestRead.set(dataSourceName, token);
+    let set = inflightReads.get(dataSourceName);
+    if (!set) inflightReads.set(dataSourceName, set = new Set());
+    set.add(token);
+    return token;
+}
+function endRead(dataSourceName, token) {
+    const set = inflightReads.get(dataSourceName);
+    if (set) { set.delete(token); if (!set.size) inflightReads.delete(dataSourceName); }
+}
+function readsInFlight(dataSourceName) { return inflightReads.has(dataSourceName); }
+function currentRead(dataSourceName) { return latestRead.get(dataSourceName); }
 function adoptRead(dataSourceName, token) { if (token !== undefined) latestRead.set(dataSourceName, token); }
 // A reset clears the record: generation stamps already drop the older reads
 function isLatestRead(dataSourceName, token) { return token === undefined || !latestRead.has(dataSourceName) || latestRead.get(dataSourceName) === token; }
@@ -645,7 +789,12 @@ function writeSource(dataSourceName, data, options = {}) {
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null),
         stale: fresh ? false : currentState.stale !== false,
-        realtimeOverflow: currentState.realtimeOverflow || 0 // set via setSourceState (realtime caps)
+        realtimeOverflow: currentState.realtimeOverflow || 0, // set via setSourceState (realtime caps)
+        // paged sources (set via setSourceState)
+        hasMore: currentState.hasMore || false,
+        total: currentState.total ?? null,
+        totalCapped: currentState.totalCapped || false,
+        pending: currentState.pending || 0
     };
     store[`_${dataSourceName}_state`] = newState;
     if (fresh) markFresh(dataSourceName);
@@ -746,6 +895,12 @@ function flushLandings() {
             } catch (error) {
                 console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
             }
+        }
+        for (const source of [...touched]) {
+            const reads = ops
+                .filter(op => op.source === source && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
+                .map(op => ({ token: op.options.readToken, ids: op.options.mode === 'append' ? new Set(op.rows.map(rowKey)) : null }));
+            reapplyPending(store, source, reads);
         }
         for (const [source, byId] of local) {
             for (const [id, note] of byId) {
@@ -1598,8 +1753,20 @@ window.ManifestDataStore = {
     // Stale-first + dedupe (§11.1)
     setSourceState,
     runDeduped,
+    insertRow,
+    holdWrite,
+    releaseWrite,
+    settleWrite,
+    isSaving,
+    pendingWritesFor,
+    pendingCount,
+    sameScalarOrList,
     beginRead,
+    endRead,
+    readsInFlight,
     adoptRead,
+    currentRead,
+    compareBy,
     loadReadTokens,
     isLatestRead,
     sourceFreshness,
@@ -3069,8 +3236,8 @@ function addEntryToStore(dataSourceName, entry, options = {}) {
         return false;
     }
 
-    // Local write: push onto the tracked array, sync
-    target.push(ds.createReactiveReferences(entry, dataSourceName));
+    // Local write: into the tracked array (its sort position on a sorted source), sync
+    ds.insertRow(Alpine.store('data'), dataSourceName, ds.createReactiveReferences(entry, dataSourceName));
     ds.noteLocalWrite(dataSourceName, entry?.$id, { patch: entry });
     ds.touchSource(dataSourceName);
     clearSourceCaches(dataSourceName);
@@ -3121,6 +3288,30 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
     }));
 
     return { originalEntry };
+}
+
+function cloneValue(value) {
+    if (value === null || typeof value !== 'object') return value;
+    try { return JSON.parse(JSON.stringify(value)); } catch { return value; }
+}
+
+function sameValue(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+
+// Re-insert a row at its old index (a failed delete); never duplicates one already back
+function insertEntryAt(dataSourceName, entry, index, options = {}) {
+    if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
+    const { store, arr, index: existing } = findRawIndex(dataSourceName, entry?.$id);
+    if (!store || !arr || existing !== -1) return false;
+    const ds = window.ManifestDataStore;
+    const at = index >= 0 && index <= arr.length ? index : arr.length;
+    store[dataSourceName].splice(at, 0, ds.createReactiveReferences(entry, dataSourceName));
+    ds.touchSource(dataSourceName);
+    clearSourceCaches(dataSourceName);
+    return true;
 }
 
 // Rollback a mutation
@@ -3175,6 +3366,9 @@ async function executeMutation(mutationConfig) {
     let originalData = null;
     let optimisticData = null;
     let resolvedEntryId = entryId;
+    let held = null;          // pending-write token: re-applied over landings until settled
+    let deletedAt = -1;       // a failed delete returns the row to its place
+    const ds0 = window.ManifestDataStore;
 
     // Get helper functions from store
     const {
@@ -3200,13 +3394,15 @@ async function executeMutation(mutationConfig) {
             }
 
             addEntryToStore(dataSourceName, optimisticData, options);
+            held = ds0?.holdWrite?.(dataSourceName, tempId, 'create', optimisticData);
             originalData = null; // Nothing to rollback for create
         } else if (type === 'update') {
             // Snapshot for rollback (the row itself is mutated in place)
             const store = Alpine.store('data');
+            // Snapshot only the patched fields: rollback restores those, nothing else
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
                 const found = store[dataSourceName].find(e => e.$id === entryId);
-                originalData = found ? { ...found } : null;
+                originalData = found && data ? Object.fromEntries(Object.keys(data).map(k => [k, cloneValue(found[k])])) : null;
             }
 
             // Set updating state
@@ -3219,11 +3415,13 @@ async function executeMutation(mutationConfig) {
             if (originalData) {
                 updateEntryInStore(dataSourceName, entryId, data, options);
             }
+            held = ds0?.holdWrite?.(dataSourceName, entryId, 'update', { ...data }, originalData ? { ...originalData } : null);
         } else if (type === 'delete') {
             // Snapshot for rollback
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                const found = store[dataSourceName].find(e => e.$id === entryId);
+                deletedAt = findRawIndex(dataSourceName, entryId).index;
+                const found = deletedAt !== -1 ? store[dataSourceName][deletedAt] : null;
                 originalData = found ? { ...found } : null;
             }
 
@@ -3237,10 +3435,19 @@ async function executeMutation(mutationConfig) {
             if (originalData) {
                 removeEntryFromStore(dataSourceName, entryId, options);
             }
+            held = ds0?.holdWrite?.(dataSourceName, entryId, 'delete', null);
         }
 
         // Step 2: Perform API call
         const result = await apiCall();
+        if (held) {
+            // Confirmed: still held over reads issued before now, under the server's id and values
+            if (type === 'create' && result?.$id) ds0.settleWrite(dataSourceName, resolvedEntryId, held, { id: result.$id, fields: result });
+            else if (type === 'update') ds0.settleWrite(dataSourceName, resolvedEntryId, held, result?.$id ? { fields: Object.fromEntries(Object.keys(data || {}).map(k => [k, result[k]])) } : {});
+            else if (type === 'delete') ds0.settleWrite(dataSourceName, resolvedEntryId, held);
+            else ds0.releaseWrite(dataSourceName, resolvedEntryId, held);
+        }
+        held = null;
 
         // Step 3: Clear loading states after successful API call (regardless of result format)
         if (type === 'create' && clearCreatingEntry && resolvedEntryId) {
@@ -3307,6 +3514,10 @@ async function executeMutation(mutationConfig) {
             clearDeletingEntry(dataSourceName, entryId);
         }
 
+        const mine = held ? ds0.releaseWrite(dataSourceName, resolvedEntryId, held) : null;
+        const heldToken = held;
+        held = null;
+
         // Rollback on error
         console.error(`[Manifest Data] Mutation failed, rolling back:`, error);
 
@@ -3314,9 +3525,26 @@ async function executeMutation(mutationConfig) {
             if (type === 'create' && optimisticData) {
                 removeEntryFromStore(dataSourceName, optimisticData.$id, writeOptions);
             } else if (type === 'update' && originalData) {
-                updateEntryInStore(dataSourceName, entryId, originalData, writeOptions);
+                // Field-level: a field restores only if it still shows this write's value (a live
+                // change meanwhile wins). A later unsettled write on the same field takes over
+                // this write's snapshot instead, so the chain unwinds to the value before all of them
+                const snapshot = mine?.snapshot || originalData;
+                const { arr, index } = findRawIndex(dataSourceName, entryId);
+                const row = index !== -1 ? arr[index] : null;
+                const others = ds0?.pendingWritesFor?.(dataSourceName, entryId) || [];
+                const restore = {};
+                for (const key of Object.keys(snapshot)) {
+                    const later = others.find(w => w.kind === 'update' && w.token > heldToken && w.fields && key in w.fields);
+                    if (later) {
+                        if (later.snapshot) later.snapshot[key] = snapshot[key];
+                        continue;
+                    }
+                    if (!row || !sameValue(row[key], data[key])) continue;
+                    restore[key] = snapshot[key];
+                }
+                if (Object.keys(restore).length) updateEntryInStore(dataSourceName, entryId, restore, writeOptions);
             } else if (type === 'delete' && originalData) {
-                addEntryToStore(dataSourceName, originalData, writeOptions);
+                insertEntryAt(dataSourceName, originalData, deletedAt, writeOptions);
             }
         };
 
@@ -4324,6 +4552,27 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         }
     });
 
+    // Paged sources: next page, and the paging state
+    for (const prop of ['$hasMore', '$total', '$totalCapped', '$pending']) {
+        Object.defineProperty(array, prop, {
+            enumerable: false,
+            configurable: true,
+            get: () => window.ManifestDataProxiesMagic?.getStateProperty?.(prop, dataSourceName)
+        });
+    }
+    Object.defineProperty(array, '$more', {
+        enumerable: false,
+        configurable: true,
+        writable: false,
+        value: () => window.ManifestDataMain.loadMore(dataSourceName)
+    });
+    Object.defineProperty(array, '$saving', {
+        enumerable: false,
+        configurable: true,
+        writable: false,
+        value: (id) => window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName)(id)
+    });
+
     // Attach $search method for client-side text filtering
     Object.defineProperty(array, '$search', {
         enumerable: false,
@@ -4971,7 +5220,7 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                 }
 
                 // Handle state properties ($loading, $error, $ready, $stale, $fresh, $realtimeOverflow)
-                if (key === '$stale' || key === '$fresh' || key === '$realtimeOverflow') {
+                if (key === '$stale' || key === '$fresh' || key === '$realtimeOverflow' || key === '$hasMore' || key === '$total' || key === '$totalCapped' || key === '$pending') {
                     return window.ManifestDataProxiesMagic?.getStateProperty?.(key, dataSourceName);
                 }
                 if (key === '$loading' || key === '$error' || key === '$ready') {
@@ -4993,6 +5242,13 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
                     } else if (key === '$ready') {
                         return state.ready || false;
                     }
+                }
+
+                if (key === '$more') {
+                    return () => window.ManifestDataMain.loadMore(dataSourceName);
+                }
+                if (key === '$saving') {
+                    return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
                 }
 
                 // Handle pagination methods
@@ -8088,19 +8344,34 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
                     const generation = sourceGeneration?.(dataSourceName);
                     const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
-                    const run = () => window.ManifestDataAppwrite.loadTableRows(
-                        appwriteConfig.databaseId,
-                        tableId,
-                        appwriteQueries,
-                        { requireAuth }
-                    );
-                    const result = runDeduped ? await runDeduped(key, run) : await run();
+                    // Paged sources: the new filter set starts again at its first window (or walks all)
+                    const main = window.ManifestDataMain;
+                    const spec = main?.pagingSpec?.(dataSource);
+                    const want = spec ? main.pagedWant(dataSourceName, spec) : 0;
+                    let paged = null;
+                    const run = spec
+                        ? async () => {
+                            paged = await main.fetchPagedRows(dataSourceName, queries || [], {
+                                want,
+                                isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken)
+                            });
+                            if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                            return paged.rows;
+                        }
+                        : () => window.ManifestDataAppwrite.loadTableRows(
+                            appwriteConfig.databaseId,
+                            tableId,
+                            appwriteQueries,
+                            { requireAuth }
+                        );
+                    const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
                     // Network landing: query result replaces the source (coalesced, identity-preserving);
                     // only the last-issued read of this source lands
                     const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
                     if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
                         window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
-                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
+                        if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
+                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
                     }
                     return result;
                 }
@@ -8864,6 +9135,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             setErrorState(error);
             // Re-throw so promise chain still works if caller wants to handle it
             throw error;
+        } finally {
+            if (readToken !== undefined) window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
         }
     };
 
@@ -8891,12 +9164,15 @@ window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler = createAppwrite
 // $realtimeOverflow: realtime events not applied since the last load (bounded
 //   growth caps); reset to 0 on each load.
 
-const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow'];
+// $hasMore / $total / $totalCapped: paged sources (`paging` option)
+// $pending: rows with an unsettled write; $saving(id): that row has one
+const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow', '$hasMore', '$total', '$totalCapped', '$pending'];
 
 function defaultStateValue(prop) {
     if (prop === '$error') return null;
     if (prop === '$stale') return true;
-    if (prop === '$realtimeOverflow') return 0;
+    if (prop === '$realtimeOverflow' || prop === '$pending') return 0;
+    if (prop === '$total') return null;
     return false;
 }
 
@@ -8927,9 +9203,25 @@ function getStateProperty(prop, dataSourceName) {
         return state.stale !== false;
     } else if (prop === '$realtimeOverflow') {
         return state.realtimeOverflow || 0;
+    } else if (prop === '$hasMore') {
+        return state.hasMore || false;
+    } else if (prop === '$total') {
+        return state.total ?? null;
+    } else if (prop === '$totalCapped') {
+        return state.totalCapped || false;
+    } else if (prop === '$pending') {
+        return state.pending || 0;
     }
 
     return undefined;
+}
+
+// $saving(id): reactive on the source's pending count
+function createSavingMethod(dataSourceName) {
+    return (id) => {
+        void getStateProperty('$pending', dataSourceName);
+        return !!window.ManifestDataStore?.isSaving?.(dataSourceName, id);
+    };
 }
 
 // State property handler for use in proxy get() traps
@@ -8949,6 +9241,7 @@ if (!window.ManifestDataProxiesMagic) {
 window.ManifestDataProxiesMagic.STATE_PROPS = STATE_PROPS;
 window.ManifestDataProxiesMagic.getStateProperty = getStateProperty;
 window.ManifestDataProxiesMagic.createStatePropertyHandler = createStatePropertyHandler;
+window.ManifestDataProxiesMagic.createSavingMethod = createSavingMethod;
 
 
 /* Manifest Data Sources - Magic Method $files Handler */
@@ -9361,6 +9654,12 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
             if ((key === '$first' || key === '$next' || key === '$prev' || key === '$page') && createPaginationMethod) {
                 return createPaginationMethod(key, dataSourceName);
             }
+            if (key === '$more') {
+                return () => window.ManifestDataMain.loadMore(dataSourceName);
+            }
+            if (key === '$saving') {
+                return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
+            }
 
             // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||
@@ -9567,6 +9866,8 @@ function registerXMagicMethod(loadDataSource) {
                                         if (stateProps.includes(key)) {
                                             return window.ManifestDataProxiesMagic.getStateProperty(key, prop);
                                         }
+                                        if (key === '$saving') return window.ManifestDataProxiesMagic.createSavingMethod(prop);
+                                        if (key === '$more') return () => window.ManifestDataMain.loadMore(prop);
                                         return target[key];
                                     }
                                 }));
@@ -11899,6 +12200,12 @@ const realtimeMeta = new Map(); // Map<name, { mode, maxRows, appended: [], pend
 
 function configureRealtimeMeta(dataSourceName, config, initialCount, limitQuery) {
     const cfg = (config && typeof config === 'object') ? config : {};
+    // Paged sources hold what was paged in; growth is bounded by the paging rule, not a cap
+    if (pagingState.has(dataSourceName) && typeof cfg.maxRows !== 'number') {
+        realtimeMeta.set(dataSourceName, { mode: 'append', maxRows: 0, appended: [], pending: 0 });
+        window.ManifestDataStore.setSourceState(dataSourceName, { realtimeOverflow: 0 });
+        return;
+    }
     const mode = cfg.mode === 'window' ? 'window' : 'append';
     const fallback = Math.max(500, 2 * initialCount);
     let maxRows;
@@ -11963,10 +12270,197 @@ function clearActiveQuery(dataSourceName, rowCount) {
     rebindLive(dataSourceName);
 }
 
+// The manifest entry for a source, synchronously (the loader has it by the time rows exist)
+function sourceConfig(dataSourceName) {
+    return (window.ManifestComponentsRegistry?.manifest || window.__manifestLoaded)?.data?.[dataSourceName] || null;
+}
+
+// The sort a local row should follow: the active $query's order, else the defaults'
+function orderFor(dataSourceName) {
+    const dataSource = sourceConfig(dataSourceName);
+    return dataSource ? sortSpec(pagedFilters(dataSourceName, dataSource)) : null;
+}
+
+// Would this row belong in the source's current read (active $query, else defaults)?
+// Used for local placeholders; unevaluable filters count as a match
+function rowFitsSource(dataSourceName, row) {
+    const dataSource = sourceConfig(dataSourceName);
+    if (!dataSource || typeof dataSource !== 'object') return true;
+    const queriesConfig = window.ManifestDataConfig?.getQueries?.(dataSource);
+    const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
+    return eventMatchesQueries(row, realtimeQueriesFor(dataSourceName, Array.isArray(defaults) ? defaults : []));
+}
+
 // Source reset (identity/scope) or torn down: nothing of the old binding carries over
 function forgetLiveSource(dataSourceName) {
     activeQueries.delete(dataSourceName);
+    pagingState.delete(dataSourceName);
+    catchUpTargets.delete(dataSourceName);
     realtimeBinds.delete(dataSourceName);
+}
+
+// Paged sources: `paging: "all" | "window" | { mode, size, max }`
+// all: every page up to `max` rows; window: `size` rows, `$more()` appends the next page.
+// The cursor is the last row the server sent (never a local or moved row), with its
+// sort values as of that page: the boundary between loaded and not-yet-loaded rows.
+const PAGED_WINDOW_QUERIES = new Set(['limit', 'offset', 'cursorAfter', 'cursorBefore']);
+const COUNT_CEILING = 5000;  // Appwrite's default count cap
+const PAGE_SIZE_CAP = 4999;  // a page asks for one extra row; Appwrite's limit is 5000
+const pagingState = new Map(); // Map<name, { hasMore, total, loaded, cursor, boundary, order }>
+const catchUpTargets = new Map(); // Map<name, rows to keep on a catch-up refetch>
+const moreInFlight = new Map(); // Map<name, Promise> — one $more() per source at a time
+const moreQueued = new Set(); // $more() asked while a read was in flight: runs when it lands
+
+function pagingSpec(dataSource) {
+    const p = dataSource && typeof dataSource === 'object' ? dataSource.paging : null;
+    const cfg = typeof p === 'string' ? { mode: p } : (p && typeof p === 'object' ? p : null);
+    if (!cfg || (cfg.mode !== 'all' && cfg.mode !== 'window')) return null;
+    const size = Number(cfg.size) > 0 ? Math.min(PAGE_SIZE_CAP, Math.floor(Number(cfg.size))) : 100;
+    const max = Number(cfg.max) > 0 ? Math.floor(Number(cfg.max)) : 5000;
+    return { mode: cfg.mode, size, max };
+}
+
+function stripPageWindow(queries) {
+    return (Array.isArray(queries) ? queries : []).filter(q => !(Array.isArray(q) && PAGED_WINDOW_QUERIES.has(q[0])));
+}
+
+// The filters a paged source currently reads: the active $query, else its defaults
+function pagedFilters(dataSourceName, dataSource) {
+    const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
+    return activeQueries.get(dataSourceName) || (queriesConfig ? (queriesConfig.default || queriesConfig) : []);
+}
+
+// Fetch pages of a table: `want` rows from `after` (a row $id), `size` per request, each
+// asking for one extra row so "more" is exact. isCurrent() false stops the walk.
+// Returns { rows, total, hasMore } or null when queries can't resolve yet (auth)
+async function fetchPagedRows(dataSourceName, filters, { want, after = null, isCurrent = () => true } = {}) {
+    const manifest = await window.ManifestDataConfig.ensureManifest();
+    const dataSource = manifest?.data?.[dataSourceName];
+    const spec = pagingSpec(dataSource);
+    const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(dataSource);
+    const tableId = window.ManifestDataConfig.getAppwriteTableId(dataSource);
+    if (!spec || !appwriteConfig || !tableId) throw new Error(`[Manifest Data] "${dataSourceName}" is not a paged table source`);
+    const scope = window.ManifestDataConfig.getScope(dataSource);
+    const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
+    const base = await window.ManifestDataQueries.buildAppwriteQueries(stripPageWindow(filters), scope, scopeColumns);
+    if (base === null) return null;
+    const Query = window.Appwrite.Query;
+    const requireAuth = requiresIdentity(dataSource);
+    const limit = Math.max(1, want || spec.size);
+    const rows = [];
+    let total = null;
+    let hasMore = false;
+    let cursor = after;
+    while (rows.length < limit) {
+        const n = Math.min(spec.size, limit - rows.length);
+        const page = await window.ManifestDataAppwrite.loadTablePage(
+            appwriteConfig.databaseId, tableId,
+            [...base, ...(cursor ? [Query.cursorAfter(cursor)] : []), Query.limit(n + 1)],
+            { requireAuth }
+        );
+        if (total === null) total = page.total;
+        const got = page.rows.slice(0, n);
+        rows.push(...got);
+        hasMore = page.rows.length > n;
+        if (!hasMore || !got.length || !isCurrent()) break;
+        cursor = got[got.length - 1].$id;
+    }
+    return { rows, total, hasMore };
+}
+
+// A page landed: move the cursor to its last server row and publish $hasMore / $total.
+// append: a $more() page; otherwise the window restarted (load, $query, catch-up)
+function setPagingState(dataSourceName, page, { append = false, filters = null } = {}) {
+    const prev = pagingState.get(dataSourceName) || {};
+    const spec = page.spec || prev.spec;
+    const order = filters ? sortSpec(filters) : (prev.order || null);
+    const loaded = (append ? (prev.loaded || 0) : 0) + page.rows.length;
+    const last = page.rows.length ? page.rows[page.rows.length - 1] : (append ? null : undefined);
+    const cursor = last ? last.$id : (append ? prev.cursor : null);
+    const boundary = last
+        ? Object.fromEntries([['$id', last.$id], ...(order || []).map(([key]) => [key, last[key]])])
+        : (append ? prev.boundary : null);
+    const max = spec ? spec.max : Infinity;
+    const hasMore = !!page.hasMore && loaded < max;
+    const total = page.total !== undefined ? page.total : prev.total;
+    pagingState.set(dataSourceName, { spec, hasMore, total, loaded, cursor, boundary, order });
+    window.ManifestDataStore.setSourceState(dataSourceName, {
+        hasMore,
+        total: typeof total === 'number' ? total : null,
+        totalCapped: typeof total === 'number' && total >= COUNT_CEILING
+    });
+    if (!append && moreQueued.delete(dataSourceName) && hasMore) setTimeout(() => loadMore(dataSourceName).catch(() => {}), 0);
+}
+
+// Rows a paged load should fetch: the window size, or (all) the cap; a catch-up keeps what is held
+function pagedWant(dataSourceName, spec) {
+    const keep = catchUpTargets.get(dataSourceName) || 0;
+    catchUpTargets.delete(dataSourceName);
+    return spec.mode === 'all' ? spec.max : Math.min(spec.max, Math.max(spec.size, keep));
+}
+
+// $more(): the next page after the cursor. One at a time; while a load or $query is in
+// flight it waits for that to land (its window replaces the rows), then continues
+function loadMore(dataSourceName) {
+    if (moreInFlight.has(dataSourceName)) return moreInFlight.get(dataSourceName);
+    const run = loadMoreOnce(dataSourceName).finally(() => moreInFlight.delete(dataSourceName));
+    moreInFlight.set(dataSourceName, run);
+    return run;
+}
+
+// Overtaken by a load or $query: run again once its window has landed (now, if it has)
+function requeueMore(dataSourceName) {
+    if (window.ManifestDataStore.readsInFlight(dataSourceName)) { moreQueued.add(dataSourceName); return; }
+    setTimeout(() => loadMore(dataSourceName).catch(() => {}), 0);
+}
+
+async function loadMoreOnce(dataSourceName) {
+    const { currentRead, readsInFlight, sourceGeneration, landRows, setSourceState } = window.ManifestDataStore;
+    const read = currentRead(dataSourceName);
+    const generation = sourceGeneration(dataSourceName);
+    const manifest = await window.ManifestDataConfig.ensureManifest();
+    const dataSource = manifest?.data?.[dataSourceName];
+    const spec = pagingSpec(dataSource);
+    if (!spec) throw new Error(`[Manifest Data] "${dataSourceName}" $more: set "paging" on the source`);
+    if (readsInFlight(dataSourceName)) { moreQueued.add(dataSourceName); return 0; }
+    const state = pagingState.get(dataSourceName);
+    if (!state?.hasMore || !state.cursor) return 0;
+    const isCurrent = () => currentRead(dataSourceName) === read && sourceGeneration(dataSourceName) === generation && !readsInFlight(dataSourceName);
+    const want = Math.min(spec.size, spec.max - state.loaded);
+    if (want <= 0) return 0;
+    const filters = pagedFilters(dataSourceName, dataSource);
+    setSourceState(dataSourceName, { loading: true });
+    try {
+        let page;
+        try {
+            page = await fetchPagedRows(dataSourceName, filters, { want, after: state.cursor, isCurrent });
+        } catch (error) {
+            const status = error?.code ?? error?.response?.code;
+            if (!isCurrent()) { requeueMore(dataSourceName); return 0; }
+            if (status !== 400 && status !== 404) throw error;
+            // The cursor row is gone (deleted since): refetch everything held plus one page
+            catchUpTargets.set(dataSourceName, state.loaded + want);
+            await reloadDataSource(dataSourceName);
+            return 0;
+        }
+        // Overtaken by a load or $query: its window replaces the rows, then this runs again
+        if (!page || !isCurrent()) { if (page) requeueMore(dataSourceName); return 0; }
+        await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined });
+        setPagingState(dataSourceName, { ...page, spec }, { append: true });
+        return page.rows.length;
+    } finally {
+        if (!readsInFlight(dataSourceName)) setSourceState(dataSourceName, { loading: false });
+    }
+}
+
+// Is this row past the loaded boundary? While more pages exist, such rows arrive with
+// $more(), not by realtime or a local add. A tie with the boundary counts as inside: if
+// the server puts it later, its page merges it by $id — never a row lost to the cursor
+function beyondLoaded(dataSourceName, row) {
+    const state = pagingState.get(dataSourceName);
+    if (!state?.hasMore || !state.boundary) return false;
+    if (!state.order) return true; // unsorted: server order is creation order, new rows come last
+    return window.ManifestDataStore.compareBy(state.order)(row, state.boundary) > 0;
 }
 
 // Events not applied since the last load — $x.<source>.$realtimeOverflow
@@ -12067,7 +12561,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
                 if (currentRows.find(r => r.$id === row.$id)) {
                     // Echo of a row already held (optimistic create): merge, never counts as growth
                     landRows(dataSourceName, [row], { mode: 'append', generation, order });
-                } else {
+                } else if (!beyondLoaded(dataSourceName, row)) {
                     realtimeAppend(dataSourceName, row, currentRows, generation, order);
                 }
             }
@@ -12089,7 +12583,14 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             }
             if (!existingRow) {
                 // Row not in list, but matches now - add it (capped like a create)
-                realtimeAppend(dataSourceName, row, currentRows, generation, order);
+                if (!beyondLoaded(dataSourceName, row)) realtimeAppend(dataSourceName, row, currentRows, generation, order);
+                return;
+            }
+            // A held row whose sort value moved past the loaded boundary leaves; its page brings it back
+            const paging = pagingState.get(dataSourceName);
+            const sortMoved = paging?.order?.some(([key]) => key in row && !window.ManifestDataStore.sameScalarOrList(existingRow[key], row[key]));
+            if (sortMoved && row.$id !== paging.cursor && beyondLoaded(dataSourceName, row)) {
+                landRemove(dataSourceName, [row.$id], { generation });
                 return;
             }
 
@@ -12338,6 +12839,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
     // Reads are ordered by call: a $query issued after this load wins over it
     const readToken = window.ManifestDataStore.beginRead?.(dataSourceName);
+    let pagedResult = null;
     window.ManifestDataStore.loadReadTokens?.set(cacheKey, readToken);
 
     // Loading state: rows already landed stay live; first-ever load clears
@@ -12374,7 +12876,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         return true;
     };
 
-    return runDeduped(cacheKey, async () => {
+    const settled = () => window.ManifestDataStore.endRead?.(dataSourceName, readToken);
+    const run = runDeduped(cacheKey, async () => {
         let landed = false;
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
@@ -12445,10 +12948,18 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 const queriesConfig = window.ManifestDataConfig.getQueries(dataSource);
 
                 if (tableId) {
-                    // Load from Appwrite table (TablesDB)
-                    const queries = queriesConfig
-                        ? await window.ManifestDataQueries.buildAppwriteQueries(queriesConfig.default || queriesConfig, scope, scopeColumns)
-                        : await window.ManifestDataQueries.buildAppwriteQueries([], scope, scopeColumns);
+                    // Load from Appwrite table (TablesDB); paged sources fetch their window or walk every page
+                    const spec = pagingSpec(dataSource);
+                    if (spec && !pagingState.has(dataSourceName)) pagingState.set(dataSourceName, { hasMore: false, total: null });
+                    const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
+                    const paged = spec ? await fetchPagedRows(dataSourceName, defaults, {
+                        want: pagedWant(dataSourceName, spec),
+                        isCurrent: () => !superseded() && window.ManifestDataStore.isLatestRead(dataSourceName, readToken)
+                    }) : undefined;
+                    if (paged) pagedResult = { ...paged, spec, filters: defaults };
+                    const queries = spec
+                        ? (paged ? [] : null)
+                        : await window.ManifestDataQueries.buildAppwriteQueries(defaults, scope, scopeColumns);
 
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
@@ -12461,7 +12972,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
                     const teamIds = authStore?.teams?.map(t => t.$id || t.id) || [];
 
-                    data = await window.ManifestDataAppwrite.loadTableRows(
+                    data = paged ? paged.rows : await window.ManifestDataAppwrite.loadTableRows(
                         appwriteConfig.databaseId,
                         tableId,
                         queries,
@@ -12696,7 +13207,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!isInitializing && !staleLocale) {
                 landed = true;
                 clearActiveQuery(dataSourceName, Array.isArray(enhancedData) ? enhancedData.length : 0);
-                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation });
+                if (pagedResult) setPagingState(dataSourceName, pagedResult, { filters: pagedResult.filters });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation, readToken });
             }
 
             // Return unsealed version for our proxy system
@@ -12737,6 +13249,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!landed && keepRows && !isInitializing && !superseded()) setSourceState(dataSourceName, { loading: false });
         }
     });
+    run.then(settled, settled);
+    return run;
 }
 
 // Reload: refetch past the memory cache; rows stay live and merge by $id
@@ -12876,6 +13390,10 @@ async function initializeDataSourcesPlugin() {
         catchUpTimer = setTimeout(() => {
             for (const name of realtimeBinds.keys()) {
                 const active = activeQueries.get(name);
+                if (pagingState.has(name)) {
+                    const held = window.ManifestDataStore.rawOf(Alpine.store('data'))?.[name];
+                    catchUpTargets.set(name, Array.isArray(held) ? held.length : 0);
+                }
                 const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
                 Promise.resolve(handler ? handler('$query', active) : reloadDataSource(name)).catch(() => { /* $error carries it */ });
             }
@@ -12897,6 +13415,14 @@ async function initializeDataSourcesPlugin() {
         requiresIdentity,
         setActiveQuery,
         forgetLiveSource,
+        pagingSpec,
+        fetchPagedRows,
+        pagedWant,
+        setPagingState,
+        loadMore,
+        beyondLoaded,
+        orderFor,
+        rowFitsSource,
         getActiveQuery: (dataSourceName) => activeQueries.get(dataSourceName) || null
     };
 

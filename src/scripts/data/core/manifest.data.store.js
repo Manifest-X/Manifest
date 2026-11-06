@@ -155,7 +155,9 @@ function sourceGeneration(dataSourceName) {
 function resetSource(dataSourceName) {
     sourceGen.set(dataSourceName, sourceGeneration(dataSourceName) + 1);
     latestRead.delete(dataSourceName);
+    inflightReads.delete(dataSourceName);
     window.ManifestDataMain?.forgetLiveSource?.(dataSourceName);
+    pendingWrites.delete(dataSourceName); // a new identity never sees the old one's unsettled writes
     const prefix = `${dataSourceName}:`;
     for (const key of [...dataSourceCache.keys()]) if (key.startsWith(prefix)) dataSourceCache.delete(key);
     for (const key of [...loadingPromises.keys()]) if (key.startsWith(prefix)) loadingPromises.delete(key);
@@ -193,11 +195,153 @@ function setSourceState(dataSourceName, patch) {
     return next;
 }
 
+// Optimistic writes, re-applied over network landings: unsettled ones over every
+// landing; settled ones only over reads issued before they settled (so data fetched
+// before the write never shows the old values), until a newer read lands
+const pendingWrites = new Map(); // source -> Map<$id, Array<{ token, kind, fields, snapshot, settledAt, settledTime }>>
+let pendingSeq = 0;
+const SETTLED_HOLD_MS = 30000;
+
+function holdWrite(dataSourceName, id, kind, fields, snapshot = null) {
+    if (id === null || id === undefined) return null;
+    let byId = pendingWrites.get(dataSourceName);
+    if (!byId) pendingWrites.set(dataSourceName, byId = new Map());
+    const token = ++pendingSeq;
+    const list = byId.get(id) || [];
+    list.push({ token, kind, fields, snapshot, settledAt: null, settledTime: 0 });
+    byId.set(id, list);
+    touchPending(dataSourceName);
+    return token;
+}
+
+function dropWrite(dataSourceName, id, token) {
+    const byId = pendingWrites.get(dataSourceName);
+    const list = byId?.get(id);
+    if (!list) return null;
+    const entry = list.find(w => w.token === token) || null;
+    const next = list.filter(w => w.token !== token);
+    if (next.length) byId.set(id, next); else byId.delete(id);
+    if (!byId.size) pendingWrites.delete(dataSourceName);
+    return entry;
+}
+
+// Failed: forget it (the caller rolls back). Returns the entry
+function releaseWrite(dataSourceName, id, token) {
+    const entry = dropWrite(dataSourceName, id, token);
+    touchPending(dataSourceName);
+    return entry;
+}
+
+// Confirmed: keep it over reads issued before now, under the server's id and values
+function settleWrite(dataSourceName, id, token, { id: newId = id, fields } = {}) {
+    const entry = dropWrite(dataSourceName, id, token);
+    if (entry) {
+        entry.settledAt = readSeq;
+        entry.settledTime = Date.now();
+        if (fields) entry.fields = fields;
+        let byId = pendingWrites.get(dataSourceName);
+        if (!byId) pendingWrites.set(dataSourceName, byId = new Map());
+        byId.set(newId, [...(byId.get(newId) || []), entry]);
+    }
+    touchPending(dataSourceName);
+}
+
+function pendingWritesFor(dataSourceName, id) {
+    return (pendingWrites.get(dataSourceName)?.get(id) || []).filter(w => w.settledAt === null);
+}
+
+function isSaving(dataSourceName, id) {
+    return pendingWritesFor(dataSourceName, id).length > 0;
+}
+
+function pendingCount(dataSourceName) {
+    const byId = pendingWrites.get(dataSourceName);
+    if (!byId) return 0;
+    let n = 0;
+    for (const list of byId.values()) if (list.some(w => w.settledAt === null)) n++;
+    return n;
+}
+
+// $saving / $pending read this; bumps keep them reactive
+function touchPending(dataSourceName) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    if (!store) return;
+    const key = `_${dataSourceName}_state`;
+    const current = store[key] || { loading: false, error: null, ready: false, stale: true };
+    const pending = pendingCount(dataSourceName);
+    if (current.pending !== pending) store[key] = { ...current, pending };
+}
+
+// Local row insert: at its sort position on a sorted source, else at the end
+function insertRow(store, dataSourceName, row) {
+    const target = store[dataSourceName];
+    const order = window.ManifestDataMain?.orderFor?.(dataSourceName);
+    if (!order) { target.push(row); return; }
+    target.splice(sortedIndex(rawOf(store)[dataSourceName], rawOf(row), compareBy(order)), 0, row);
+}
+
+// After a landing: held writes win over the landed payload. reads: this flush's read
+// landings for the source, { token, ids } (ids null: a replace covering every row)
+function reapplyPending(store, dataSourceName, readLandings = []) {
+    const byId = pendingWrites.get(dataSourceName);
+    if (!byId) return false;
+    const curRaw = rawOf(store)[dataSourceName];
+    if (!Array.isArray(curRaw)) return false;
+    const now = Date.now();
+    let changed = false;
+    for (const [id, list] of [...byId]) {
+        let i = curRaw.findIndex(row => rowKey(row) === id);
+        // Only reads that carried this row (a replace carries every row) speak for it
+        const reads = readLandings.filter(r => r.ids === null || r.ids.has(id)).map(r => r.token);
+        for (const write of [...list]) {
+            if (write.settledAt !== null) {
+                // Settled: a read issued since reflects it (or time ran out) — let go
+                if (reads.some(t => t > write.settledAt) || now - write.settledTime > SETTLED_HOLD_MS) {
+                    dropWrite(dataSourceName, id, write.token);
+                    continue;
+                }
+                if (!reads.some(t => t <= write.settledAt)) continue; // realtime is newer than the write
+            }
+            if (write.kind === 'delete') {
+                if (i !== -1) { store[dataSourceName].splice(i, 1); i = -1; changed = true; }
+            } else if (write.kind === 'create') {
+                // A placeholder stays only where it belongs (a $query that excludes it drops it)
+                if (i === -1 && (window.ManifestDataMain?.rowFitsSource?.(dataSourceName, write.fields) ?? true)) {
+                    insertRow(store, dataSourceName, createReactiveReferences(write.fields, dataSourceName));
+                    i = curRaw.findIndex(row => rowKey(row) === id);
+                    changed = true;
+                }
+            } else if (i !== -1) {
+                const row = curRaw[i];
+                if (Object.keys(write.fields).some(k => !sameScalarOrList(row[k], write.fields[k]))) {
+                    mergeRowFields(store[dataSourceName][i], write.fields, dataSourceName);
+                    changed = true;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
 // Last-issued read per source: a slower earlier read ($query or load) never lands over a later one
 const latestRead = new Map();
 let readSeq = 0;
 const loadReadTokens = new Map(); // source:locale → token of the load in flight under that key
-function beginRead(dataSourceName) { const token = ++readSeq; latestRead.set(dataSourceName, token); return token; }
+const inflightReads = new Map(); // source → Set of read tokens not yet settled
+function beginRead(dataSourceName) {
+    const token = ++readSeq;
+    latestRead.set(dataSourceName, token);
+    let set = inflightReads.get(dataSourceName);
+    if (!set) inflightReads.set(dataSourceName, set = new Set());
+    set.add(token);
+    return token;
+}
+function endRead(dataSourceName, token) {
+    const set = inflightReads.get(dataSourceName);
+    if (set) { set.delete(token); if (!set.size) inflightReads.delete(dataSourceName); }
+}
+function readsInFlight(dataSourceName) { return inflightReads.has(dataSourceName); }
+function currentRead(dataSourceName) { return latestRead.get(dataSourceName); }
 function adoptRead(dataSourceName, token) { if (token !== undefined) latestRead.set(dataSourceName, token); }
 // A reset clears the record: generation stamps already drop the older reads
 function isLatestRead(dataSourceName, token) { return token === undefined || !latestRead.has(dataSourceName) || latestRead.get(dataSourceName) === token; }
@@ -367,7 +511,12 @@ function writeSource(dataSourceName, data, options = {}) {
         ready: options.ready !== undefined ? options.ready : (data !== null && data !== undefined),
         errorTime: options.error !== undefined && options.error !== null ? Date.now() : (currentState.errorTime || null),
         stale: fresh ? false : currentState.stale !== false,
-        realtimeOverflow: currentState.realtimeOverflow || 0 // set via setSourceState (realtime caps)
+        realtimeOverflow: currentState.realtimeOverflow || 0, // set via setSourceState (realtime caps)
+        // paged sources (set via setSourceState)
+        hasMore: currentState.hasMore || false,
+        total: currentState.total ?? null,
+        totalCapped: currentState.totalCapped || false,
+        pending: currentState.pending || 0
     };
     store[`_${dataSourceName}_state`] = newState;
     if (fresh) markFresh(dataSourceName);
@@ -468,6 +617,12 @@ function flushLandings() {
             } catch (error) {
                 console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
             }
+        }
+        for (const source of [...touched]) {
+            const reads = ops
+                .filter(op => op.source === source && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
+                .map(op => ({ token: op.options.readToken, ids: op.options.mode === 'append' ? new Set(op.rows.map(rowKey)) : null }));
+            reapplyPending(store, source, reads);
         }
         for (const [source, byId] of local) {
             for (const [id, note] of byId) {
@@ -1320,8 +1475,20 @@ window.ManifestDataStore = {
     // Stale-first + dedupe (§11.1)
     setSourceState,
     runDeduped,
+    insertRow,
+    holdWrite,
+    releaseWrite,
+    settleWrite,
+    isSaving,
+    pendingWritesFor,
+    pendingCount,
+    sameScalarOrList,
     beginRead,
+    endRead,
+    readsInFlight,
     adoptRead,
+    currentRead,
+    compareBy,
     loadReadTokens,
     isLatestRead,
     sourceFreshness,

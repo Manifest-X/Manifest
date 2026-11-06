@@ -85,13 +85,15 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
         TablesDB: class {
             async listRows({ queries = [] }) {
                 const qs = queries.map(q => JSON.parse(q))
+                // Appwrite keeps an internal sequence; ties in an order fall back to it
+                table.forEach((r, i) => { if (r.$sequence === undefined) Object.defineProperty(r, '$sequence', { value: i + 1, enumerable: true, writable: true, configurable: true }) })
                 stats.lists.push(qs)
                 let rows = table.filter(r => qs.every(q => PAGING.has(q.method) || match(r, q)))
                 for (const q of qs) {
                     if (q.method !== 'orderAsc' && q.method !== 'orderDesc') continue
                     const d = q.method === 'orderAsc' ? 1 : -1
                     const key = r => (typeof r[q.attribute] === 'string' ? r[q.attribute].toLowerCase() : r[q.attribute])
-                    rows = rows.slice().sort((a, b) => (key(a) > key(b) ? d : key(a) < key(b) ? -d : 0))
+                    rows = rows.slice().sort((a, b) => (key(a) > key(b) ? d : key(a) < key(b) ? -d : (a.$sequence - b.$sequence)))
                 }
                 const total = rows.length
                 const arg = q => (q.values ? q.values[0] : q.attribute)
@@ -104,26 +106,29 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
                     const end = rows.findIndex(r => r.$id === arg(before))
                     rows = rows.slice(Math.max(0, end - n), end)
                 } else {
+                    // Appwrite refuses a cursor row that no longer matches / exists
+                    if (after && !rows.some(r => r.$id === arg(after))) throw Object.assign(new Error(`Document with the requested ID '${arg(after)}' could not be found.`), { code: 400 })
+                    if (n > 5000) throw Object.assign(new Error('Invalid limit'), { code: 400 })
                     const start = after ? rows.findIndex(r => r.$id === arg(after)) + 1 : (off ? arg(off) : 0)
                     rows = rows.slice(start, start + n)
                 }
                 const ms = delay(qs)
                 if (ms) await new Promise(r => setTimeout(r, ms))
-                return { rows: rows.map(r => ({ ...r })), total }
+                return { rows: rows.map(r => ({ ...r })), total: Math.min(total, 5000) }
             }
             async createRow({ rowId, data }) {
                 stats.writes.push(['create', rowId])
-                const row = { ...data, $id: rowId || `srv${stats.writes.length}` }
+                const row = { ...data, $id: rowId || `srv${stats.writes.length}`, $sequence: table.length + 1 }
                 if (stats.failWrites) { await wait(); throw Object.assign(new Error('mock fail'), { code: 500 }) }
-                table.push(row)
-                if (echoFirst) echo('create', row)
+                // echoFirst: committed and announced before the reply; otherwise committed at the reply
+                if (echoFirst) { table.push(row); echo('create', row) }
                 await wait()
-                if (!echoFirst) setTimeout(() => echo('create', row), 0)
+                if (!echoFirst) { table.push(row); setTimeout(() => echo('create', row), 0) }
                 return { ...row }
             }
             async updateRow({ rowId, data }) {
                 stats.writes.push(['update', rowId, data])
-                await wait()
+                await (typeof writeDelay === 'function' ? new Promise(r => setTimeout(r, writeDelay(rowId, data))) : wait())
                 if (stats.failWrites) throw Object.assign(new Error('mock fail'), { code: 500 })
                 const row = table.find(r => r.$id === rowId)
                 if (!row) throw Object.assign(new Error('not found'), { code: 404 })
@@ -133,6 +138,7 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
             async deleteRow({ rowId }) {
                 stats.writes.push(['delete', rowId])
                 await wait()
+                if (stats.failWrites) throw Object.assign(new Error('mock fail'), { code: 500 })
                 const i = table.findIndex(r => r.$id === rowId)
                 if (i !== -1) table.splice(i, 1)
                 return {}

@@ -189,6 +189,17 @@ async function loadTableRows(databaseId, tableId, queries = [], { requireAuth = 
     }
 }
 
+// One page of a table with Appwrite's count: { rows, total }
+async function loadTablePage(databaseId, tableId, queries = [], { requireAuth = true } = {}) {
+    const services = await getAppwriteDataServices();
+    if (!services?.tablesDB) {
+        throw new Error('[Manifest Data] Appwrite TablesDB service not available');
+    }
+    if (requireAuth) await verifyAuthenticated();
+    const response = await services.tablesDB.listRows({ databaseId, tableId, queries });
+    return { rows: response.rows || [], total: typeof response.total === 'number' ? response.total : null };
+}
+
 // Get a single row from Appwrite table
 async function getTableRow(databaseId, tableId, rowId) {
     const services = await getAppwriteDataServices();
@@ -673,6 +684,7 @@ async function getFilePreview(bucketId, fileId, widthOrOptions = null, height = 
 window.ManifestDataAppwrite = {
     getAppwriteDataServices,
     loadTableRows,
+    loadTablePage,
     getTableRow,
     createRow,
     updateRow,

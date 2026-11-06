@@ -90,6 +90,12 @@ function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
             if ((key === '$first' || key === '$next' || key === '$prev' || key === '$page') && createPaginationMethod) {
                 return createPaginationMethod(key, dataSourceName);
             }
+            if (key === '$more') {
+                return () => window.ManifestDataMain.loadMore(dataSourceName);
+            }
+            if (key === '$saving') {
+                return window.ManifestDataProxiesMagic.createSavingMethod(dataSourceName);
+            }
 
             // Appwrite CRUD
             if (key === '$create' || key === '$update' || key === '$delete' || key === '$query' ||
@@ -296,6 +302,8 @@ function registerXMagicMethod(loadDataSource) {
                                         if (stateProps.includes(key)) {
                                             return window.ManifestDataProxiesMagic.getStateProperty(key, prop);
                                         }
+                                        if (key === '$saving') return window.ManifestDataProxiesMagic.createSavingMethod(prop);
+                                        if (key === '$more') return () => window.ManifestDataMain.loadMore(prop);
                                         return target[key];
                                     }
                                 }));

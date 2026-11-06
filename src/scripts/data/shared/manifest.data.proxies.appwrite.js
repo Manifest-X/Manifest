@@ -418,19 +418,34 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
                     const generation = sourceGeneration?.(dataSourceName);
                     const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
-                    const run = () => window.ManifestDataAppwrite.loadTableRows(
-                        appwriteConfig.databaseId,
-                        tableId,
-                        appwriteQueries,
-                        { requireAuth }
-                    );
-                    const result = runDeduped ? await runDeduped(key, run) : await run();
+                    // Paged sources: the new filter set starts again at its first window (or walks all)
+                    const main = window.ManifestDataMain;
+                    const spec = main?.pagingSpec?.(dataSource);
+                    const want = spec ? main.pagedWant(dataSourceName, spec) : 0;
+                    let paged = null;
+                    const run = spec
+                        ? async () => {
+                            paged = await main.fetchPagedRows(dataSourceName, queries || [], {
+                                want,
+                                isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken)
+                            });
+                            if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                            return paged.rows;
+                        }
+                        : () => window.ManifestDataAppwrite.loadTableRows(
+                            appwriteConfig.databaseId,
+                            tableId,
+                            appwriteQueries,
+                            { requireAuth }
+                        );
+                    const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
                     // Network landing: query result replaces the source (coalesced, identity-preserving);
                     // only the last-issued read of this source lands
                     const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
                     if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
                         window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
-                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation });
+                        if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
+                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
                     }
                     return result;
                 }
@@ -1194,6 +1209,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             setErrorState(error);
             // Re-throw so promise chain still works if caller wants to handle it
             throw error;
+        } finally {
+            if (readToken !== undefined) window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
         }
     };
 

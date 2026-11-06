@@ -10,12 +10,15 @@
 // $realtimeOverflow: realtime events not applied since the last load (bounded
 //   growth caps); reset to 0 on each load.
 
-const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow'];
+// $hasMore / $total / $totalCapped: paged sources (`paging` option)
+// $pending: rows with an unsettled write; $saving(id): that row has one
+const STATE_PROPS = ['$loading', '$error', '$ready', '$stale', '$fresh', '$realtimeOverflow', '$hasMore', '$total', '$totalCapped', '$pending'];
 
 function defaultStateValue(prop) {
     if (prop === '$error') return null;
     if (prop === '$stale') return true;
-    if (prop === '$realtimeOverflow') return 0;
+    if (prop === '$realtimeOverflow' || prop === '$pending') return 0;
+    if (prop === '$total') return null;
     return false;
 }
 
@@ -46,9 +49,25 @@ function getStateProperty(prop, dataSourceName) {
         return state.stale !== false;
     } else if (prop === '$realtimeOverflow') {
         return state.realtimeOverflow || 0;
+    } else if (prop === '$hasMore') {
+        return state.hasMore || false;
+    } else if (prop === '$total') {
+        return state.total ?? null;
+    } else if (prop === '$totalCapped') {
+        return state.totalCapped || false;
+    } else if (prop === '$pending') {
+        return state.pending || 0;
     }
 
     return undefined;
+}
+
+// $saving(id): reactive on the source's pending count
+function createSavingMethod(dataSourceName) {
+    return (id) => {
+        void getStateProperty('$pending', dataSourceName);
+        return !!window.ManifestDataStore?.isSaving?.(dataSourceName, id);
+    };
 }
 
 // State property handler for use in proxy get() traps
@@ -68,3 +87,4 @@ if (!window.ManifestDataProxiesMagic) {
 window.ManifestDataProxiesMagic.STATE_PROPS = STATE_PROPS;
 window.ManifestDataProxiesMagic.getStateProperty = getStateProperty;
 window.ManifestDataProxiesMagic.createStatePropertyHandler = createStatePropertyHandler;
+window.ManifestDataProxiesMagic.createSavingMethod = createSavingMethod;

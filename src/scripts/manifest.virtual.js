@@ -108,6 +108,8 @@ function initializeVirtualPlugin() {
         const rendered = new Map();  // key -> { node, scope, removeScope }
         let data = [];
         let cumulative = new Float64Array(1);  // line-top offsets; last = total
+        let endNotifiedAt = -1;                // data length `virtual-end` last fired for
+        let endHead;                           // first item's key then: a replaced list fires again
         let lines = [];                        // gallery: [{ start, end, height }]
         let pos = [];                          // masonry: per-index { x, y, w, h }
         let sortedTop = [];                    // masonry: indices sorted by y
@@ -218,6 +220,16 @@ function initializeVirtualPlugin() {
 
         // ---- Render ----
 
+        // The last item is rendered: `virtual-end` fires once per data length (load the next page here)
+        function notifyEnd(reached) {
+            const head = data.length ? keyFn(data[0]) : undefined;
+            if (data.length < endNotifiedAt || head !== endHead) endNotifiedAt = -1;
+            endHead = head;
+            if (!reached || !data.length || endNotifiedAt === data.length) return;
+            endNotifiedAt = data.length;
+            el.dispatchEvent(new CustomEvent('virtual-end', { bubbles: true, detail: { length: data.length } }));
+        }
+
         function render() {
             if (isMasonry) return renderMasonry();
             if (!data.length) { clearRows(); setHeight(topSpacer, 0); setHeight(botSpacer, 0); return; }
@@ -238,6 +250,7 @@ function initializeVirtualPlugin() {
             // Resolve the item range for these units.
             const startItem = isGallery ? lines[startUnit].start : startUnit;
             const endItem = isGallery ? lines[endUnit - 1].end : endUnit;
+            notifyEnd(endItem >= data.length);
 
             const visible = new Set();
             const keys = [];
@@ -324,6 +337,7 @@ function initializeVirtualPlugin() {
             for (const [key, entry] of rendered) {
                 if (!visible.has(key)) removeRow(key, entry);
             }
+            notifyEnd(visible.has(keyFn(data[data.length - 1])));
             scheduleMeasure(keys);
         }
 
