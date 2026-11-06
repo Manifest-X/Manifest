@@ -172,6 +172,18 @@ describe('extended configs', () => {
         } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
     })
 
+    it("--init adds aliases when the child's own paths hide the base's", () => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mnfst-types-hide-'))
+        try {
+            fs.cpSync(FIXTURE, tmp, { recursive: true })
+            fs.renameSync(path.join(tmp, 'jsconfig.json'), path.join(tmp, 'base.json'))
+            fs.writeFileSync(path.join(tmp, 'jsconfig.json'), JSON.stringify({ extends: './base.json', compilerOptions: { paths: { 'x/*': ['./app/*'] } } }, null, 2))
+            const r = spawnSync(process.execPath, [TYPES, '--init'], { cwd: tmp, encoding: 'utf8' })
+            expect(r.stdout).toContain('added mnfst, @app/*, @shared/*')
+            expect(spawnSync(TSC, ['-p', 'jsconfig.json'], { cwd: tmp, encoding: 'utf8' }).status).toBe(0)
+        } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+    })
+
     it('--check --tsc runs both', () => {
         const original = read('manifest.json')
         const m = JSON.parse(original)

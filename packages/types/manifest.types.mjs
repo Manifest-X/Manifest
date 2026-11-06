@@ -189,15 +189,14 @@ function configChain(file) {
     return chain;
 }
 
-// Effective paths across the chain, as absolute targets (nearest config wins)
+// Effective paths: a config's `paths` replaces any inherited one, so the nearest wins outright
 function chainPaths(chain) {
+    const hit = chain.find(({ config }) => config && config.compilerOptions && config.compilerOptions.paths);
+    if (!hit) return {};
+    const opts = hit.config.compilerOptions;
+    const base = opts.baseUrl ? resolve(dirname(hit.file), opts.baseUrl) : dirname(hit.file);
     const out = {};
-    for (const { file, config } of [...chain].reverse()) {
-        const opts = (config && config.compilerOptions) || {};
-        if (!opts.paths) continue;
-        const base = opts.baseUrl ? resolve(dirname(file), opts.baseUrl) : dirname(file);
-        for (const [k, v] of Object.entries(opts.paths)) out[k] = (Array.isArray(v) ? v : [v]).map((x) => resolve(base, x));
-    }
+    for (const [k, v] of Object.entries(opts.paths)) out[k] = (Array.isArray(v) ? v : [v]).map((x) => resolve(base, x));
     return out;
 }
 
@@ -212,7 +211,7 @@ function syncJsconfigPaths(path, types, aliases) {
     const dir = dirname(path);
     const inherited = chainPaths(configChain(path).slice(1));
     const own = (config.compilerOptions ||= {}).paths;
-    const known = new Set([...Object.keys(inherited), ...Object.keys(own || {})]);
+    const known = new Set(Object.keys(own || inherited));
     const wanted = { mnfst: [`./${types}`], ...aliases };
     const added = Object.keys(wanted).filter((k) => !known.has(k));
     if (!added.length) {
@@ -268,7 +267,7 @@ function runTsc(projectRoot, types) {
     try {
         writeFileSync(file, JSON.stringify(config, null, 2));
         const { cmd, args, shell } = findTsc(projectRoot);
-        const r = spawnSync(cmd, [...args, '-p', file, '--pretty', 'false'], { cwd: realpathSync(projectRoot), stdio: 'inherit', shell: !!shell });
+        const r = spawnSync(cmd, [...args, '-p', shell ? `"${file}"` : file, '--pretty', 'false'], { cwd: realpathSync(projectRoot), stdio: 'inherit', shell: !!shell });
         if (r.error) { console.error(`mnfst-types: couldn't run tsc (${r.error.message})`); return 2; }
         if (r.status === 0) console.log('mnfst-types: no type errors');
         return r.status ?? 1;
