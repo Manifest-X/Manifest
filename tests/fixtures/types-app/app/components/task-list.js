@@ -19,5 +19,8 @@ export const taskList = component(() => ({
     const task = await this.$x.tasks.$create({ title: this.title, status: 'open' })
     this.$toast.positive(`Added ${task.title}`)
   },
-  async finish(id) { await this.$x.tasks.$update(id, { status: 'done' }) }
+  /** @param {string} id */
+  async finish(id) { await this.$x.tasks.$update(id, { status: 'done' }) },
+  async loadMore() { if (this.$x.tasks.$hasMore) await this.$x.tasks.$more() },
+  isSaving(id) { return this.$x.tasks.$saving(id) || this.$x.tasks.$pending > 0 }
 }))

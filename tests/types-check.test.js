@@ -56,10 +56,12 @@ describe('types-app', () => {
         ['a wrong $search field', COMPONENT, "$search(this.query, 'title')", "$search(this.query, 'titel')", 'task-list.js(9,'],
         ['a wrong source name', COMPONENT, 'this.$x.workspaces', 'this.$x.workspace', "Property 'workspace' does not exist"],
         ['a wrong $first argument', COMPONENT, '$first(20)', "$first('20')", "Argument of type 'string' is not assignable to parameter of type 'number'"],
-        ['a missing $update argument', COMPONENT, "$update(id, { status: 'done' })", '$update(id)', 'Expected 2 arguments, but got 1'],
+        ['a missing $update argument', COMPONENT, "$update(id, { status: 'done' })", '$update(id)', "Argument of type 'string' is not assignable to parameter of type '{ id?: string"],
         ['a value outside the column type', COMPONENT, "$update(id, { status: 'done' })", "$update(id, { status: 'finished' })", `Type '"finished"' is not assignable to type 'Status'`],
         ['a wrong $toast argument', COMPONENT, '$toast.positive(`Added ${task.title}`)', '$toast.positive(42)', "Argument of type 'number' is not assignable to parameter of type 'string'"],
         ['a wrong store property', COMPONENT, 'this.$store.session.summary', 'this.$store.session.sumary', "Property 'sumary' does not exist"],
+        ['a missing $saving argument', COMPONENT, '$saving(id)', '$saving()', 'Expected 1 arguments, but got 0'],
+        ['$more treated as a flag', COMPONENT, 'await this.$x.tasks.$more()', 'this.$x.tasks.$more = true', "is not assignable to type '() => Promise<number>'"],
         ['a wrong field read from the contract', COMPONENT, "validateTask({ title: this.title, status: 'open' })", "validateTask({ titel: this.title, status: 'open' })", 'titel']
     ]
     for (const [name, file, from, to, message] of cases) {

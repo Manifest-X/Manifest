@@ -63,7 +63,7 @@ export interface ManifestSourceState {
     /** True during a fetch or mutation. */
     readonly $loading: boolean;
     /** Last error from a load or mutation, or null. */
-    readonly $error: Error | string | null;
+    readonly $error: string | null;
     /** True once the source has settled (loaded, or resolved empty because its scope can't apply). */
     readonly $ready: boolean;
     /** True while cached rows show and fresh data is still loading. */
@@ -139,8 +139,9 @@ export interface ManifestAppwriteTableOps<T> {
     /** Server-side query with expressions or a named query from manifest.json; replaces the source's rows. */
     $query(queriesOrName: ManifestQueryTuple<T>[] | string): Promise<T[]>;
     $create(values: Partial<T>, rowId?: string): Promise<T>;
-    $update(id: string, values: Partial<T>): Promise<T>;
+    $update(updates: Array<{ id?: string; $id?: string; data: Partial<T> }>): Promise<T[]>;
     $update(ids: string[], values: Partial<T>): Promise<T[]>;
+    $update(id: string, values: Partial<T>): Promise<T>;
     $delete(id: string): Promise<T>;
     $delete(ids: string[]): Promise<T[]>;
     $duplicate(id: string, options?: ManifestDuplicateOptions<T>): Promise<T>;
@@ -151,6 +152,28 @@ export interface ManifestAppwriteTableOps<T> {
     $reload(): Promise<void>;
     /** Realtime events skipped by the growth cap since the last load. */
     readonly $realtimeOverflow: number;
+    /** Loads the next page into the source (`paging` sources only); resolves with the rows added. */
+    $more(): Promise<number>;
+    /** Whether `$more()` can load another page; false at the end or at `max`. */
+    readonly $hasMore: boolean;
+    /** Appwrite's count for the current filters, or null when not requested. */
+    readonly $total: number | null;
+    /** True when `$total` hit Appwrite's counting ceiling. */
+    readonly $totalCapped: boolean;
+    /** Whether a write to row `id` is still unconfirmed. */
+    $saving(id: string): boolean;
+    /** Rows with an unconfirmed write. */
+    readonly $pending: number;
+}
+
+/** Detail of `manifest:data-mutation-success` / `manifest:data-mutation-error` on window. */
+export interface ManifestMutationDetail {
+    mutationId: string;
+    type: 'create' | 'update' | 'delete';
+    dataSourceName: string;
+    entryId: string;
+    result?: unknown;
+    error?: unknown;
 }
 
 /** Operations available on Appwrite-bucket (storage) sources. */
@@ -167,6 +190,10 @@ export interface ManifestAppwriteBucketOps {
     $delete(fileId: string | string[]): Promise<unknown>;
     $duplicate(fileId: string, options?: { newName?: string; newFileId?: string }): Promise<ManifestFile>;
     $filesFor(parentId: string, fieldName?: string): ManifestFile[];
+    $first(limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
+    $next(cursor: string, limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
+    $prev(cursor: string, limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
+    $page(page: number, limit?: number): Promise<ManifestOffsetPage<ManifestFile>>;
     $unlinkFrom(parentId: string, fileId: string): Promise<void>;
     $removeFrom(parentId: string, fileId: string): Promise<void>;
 }
@@ -896,6 +923,16 @@ declare global {
      * manifest.utilities.static.js. `engineLoaded` is true once the lazily
      * loaded Tailwind engine has taken over, false if that load failed.
      */
+    interface WindowEventMap {
+        'manifest:data-mutation-success': CustomEvent<ManifestMutationDetail>;
+        'manifest:data-mutation-error': CustomEvent<ManifestMutationDetail>;
+    }
+
+    /** x-virtual: the last rendered row neared the end of the list (bubbles). */
+    interface HTMLElementEventMap {
+        'virtual-end': CustomEvent<{ length: number }>;
+    }
+
     interface WindowEventMap {
         'manifest:utilities-uncovered': CustomEvent<{ classes: string[]; engineLoaded: boolean }>;
     }
