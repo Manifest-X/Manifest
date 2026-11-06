@@ -121,3 +121,21 @@ describe('review: paths that clear the rows and load without reload', () => {
         expect(rows('items').length).toBe(20)
     })
 })
+
+describe('review 2: a reload waiting on a deferred load keeps its place in line', () => {
+    it('$query after that reload wins', async () => {
+        const SRC = { items: { appwriteTableId: 'items', queries: [['orderAsc', 'n'], ['limit', 100]] } }
+        const { rows, main, query } = await boot(SRC, makeRows(20), { delay: qs => qs.some(q => q.method === 'equal') ? 5 : 80 })
+        await query('items', [['equal', 'projectId', 'p1']])
+        await settle()
+        window.ManifestDataStore.dataSourceCache.clear()
+        const lazy = main.loadDataSource('items')
+        await settle(10)
+        const reload = main.reloadDataSource('items')
+        const q2 = query('items', [['equal', 'projectId', 'p2']])
+        await Promise.all([lazy, reload, q2])
+        await settle(200)
+        expect(rows('items').length).toBe(10)
+        expect(rows('items').every(r => r.projectId === 'p2')).toBe(true)
+    })
+})
