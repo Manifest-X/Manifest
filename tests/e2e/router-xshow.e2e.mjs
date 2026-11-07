@@ -28,9 +28,13 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const PAGES = {
     '/with-css': `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <link rel="stylesheet" href="/fw/manifest.css">
-<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="router"></script></head>
+<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="router,tabs"></script></head>
 <body x-data="{ open: false }">
   <a id="to-a" href="/with-css/a">A</a> <a id="to-b" href="/with-css/b">B</a>
+  <div x-data><button x-tab="tab1">1</button><button x-tab="tab2">2</button>
+    <div id="tab1" x-tabpanel="g" x-route="with-css/a">one</div>
+    <div id="tab2" x-tabpanel="g" x-route="with-css/a">two</div>
+  </div>
   <button id="toggle" @click="open = !open">toggle</button>
   <section id="plain" x-route="with-css/a" x-show="open">plain</section>
   <section id="flex" class="row" x-route="with-css/a" x-show="open">flex</section>
@@ -95,6 +99,13 @@ async function run(b, label, base) {
         await page.click('#to-a'); await wait(400)
         const back = await is({ plain: false, flex: false, grid: true, b: false }, 'route re-activated with x-show false: hidden')
         check(`${label}: author inline display survives hide/show`, back.grid === 'grid', back.grid)
+
+        await page.goto(base + '/with-css/b', { waitUntil: 'load' })
+        await wait(800)
+        await page.click('#to-a'); await wait(400)
+        const tabs = await shown(page, ['tab1', 'tab2'])
+        const visibleTabs = Object.values(tabs).filter((d) => d !== 'none').length
+        check(`${label}: tab panels that are also routes show only the selected tab on first activation`, visibleTabs === 1, JSON.stringify(tabs))
 
         await page.goto(base + '/no-css/b', { waitUntil: 'load' })
         await wait(800)

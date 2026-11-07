@@ -797,7 +797,8 @@ function showRoute(element) {
     const prior = element.__manifestRouteDisplay;
     if (prior) {
         element.__manifestRouteDisplay = null;
-        if (element.style.display === 'none') element.style.setProperty('display', prior.value, prior.priority);
+        // x-show added since (tabs panels, components) now owns the inline display
+        if (!hasXShow(element) && element.style.display === 'none') element.style.setProperty('display', prior.value, prior.priority);
     }
 }
 
