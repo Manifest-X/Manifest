@@ -3177,15 +3177,21 @@ async function renderRouteDom(page, ctx) {
     }
   }, visibilityNormalizedPath);
 
-  // Remove route-hidden content ([x-route] with inline style display:none) so each prerendered page contains only that route's HTML.
-  await page.evaluate(() => {
+  // Remove route-hidden content so each prerendered page contains only that route's HTML. The router decides
+  // (x-show also writes display:none, and a route with x-show is hidden by [hidden] alone); inline
+  // display:none is the fallback for a page without the router's visibility API.
+  await page.evaluate((np) => {
+    const vis = window.ManifestRoutingVisibility;
     const reDisplayNone = /\bdisplay\s*:\s*none\b/i;
-    const candidates = document.querySelectorAll('[x-route][style*="display"]');
-    const toRemove = Array.from(candidates).filter((el) => reDisplayNone.test(el.getAttribute('style') || ''));
+    const live = !document.querySelector('meta[name="manifest:prerendered"][content="1"]');
+    const routeHidden = live && vis && typeof vis.isRouteActive === 'function'
+      ? (el) => !vis.isRouteActive(el, np)
+      : (el) => reDisplayNone.test(el.getAttribute('style') || '');
+    const toRemove = Array.from(document.querySelectorAll('[x-route]')).filter(routeHidden);
     const depth = (el) => { let d = 0; let n = el; while (n && n !== document.body) { d++; n = n.parentElement; } return d; };
     toRemove.sort((a, b) => depth(a) - depth(b)); // remove outer first so subtrees go in one go
     toRemove.forEach((el) => { if (document.contains(el)) el.remove(); });
-  });
+  }, visibilityNormalizedPath);
 
   // Tag baked x-for/x-if clones that Alpine produced during prerender but
   // whose <template> is still in the output (so Alpine WILL re-render the

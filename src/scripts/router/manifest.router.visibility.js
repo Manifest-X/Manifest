@@ -108,17 +108,30 @@ function isRouteActive(element, normalizedPath) {
     return routeMatches(element, normalizedPath === undefined ? currentNormalizedPath() : normalizedPath) !== false;
 }
 
+// x-show owns inline display on its element; the route then hides with [hidden] alone
+function hasXShow(element) {
+    for (const attr of element.attributes) if (attr.name === 'x-show' || attr.name.startsWith('x-show.')) return true;
+    return false;
+}
+
 // Activation hook fires before the route becomes visible so deferred content renders first
 function showRoute(element) {
     element.dispatchEvent(new CustomEvent('manifest:route-activate'));
     if (element.hasAttribute('hidden')) element.removeAttribute('hidden');
-    if (element.style.display) element.style.display = '';
+    const prior = element.__manifestRouteDisplay;
+    if (prior) {
+        element.__manifestRouteDisplay = null;
+        if (element.style.display === 'none') element.style.setProperty('display', prior.value, prior.priority);
+    }
 }
 
 // Skip no-op writes: each one is a mutation record for every observer
 function hideRoute(element) {
     if (!element.hasAttribute('hidden')) element.setAttribute('hidden', '');
-    if (element.style.display !== 'none') element.style.display = 'none';
+    if (hasXShow(element) || element.style.display === 'none') return;
+    // Restored on show, so an author's own inline display survives
+    element.__manifestRouteDisplay = { value: element.style.display, priority: element.style.getPropertyPriority('display') };
+    element.style.display = 'none';
 }
 
 // Process visibility for all elements with x-route

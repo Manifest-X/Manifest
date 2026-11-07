@@ -317,6 +317,10 @@
         display: none
     }
 
+    [x-route][hidden] {
+        display: none !important
+    }
+
     /* @ rule - font smoothing for iOS and Mac */
     @media (-webkit-min-device-pixel-ratio: 2) {
         :where(html) {
