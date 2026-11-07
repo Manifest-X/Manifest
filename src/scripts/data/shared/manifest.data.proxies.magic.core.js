@@ -334,7 +334,8 @@ function registerXMagicMethod(loadDataSource) {
                                         if (APPWRITE_EARLY_METHODS.has(key)) {
                                             const manifest = window.ManifestComponentsRegistry?.manifest || window.__manifestLoaded;
                                             const config = manifest?.data?.[prop];
-                                            const handler = config && window.ManifestDataConfig?.isAppwriteCollection?.(config)
+                                            // Manifest not loaded yet: route anyway (the handler awaits it and refuses non-Appwrite sources)
+                                            const handler = (!manifest || (config && window.ManifestDataConfig?.isAppwriteCollection?.(config)))
                                                 && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(prop, window.ManifestDataMain?.reloadDataSource);
                                             if (handler) return handler.bind(null, key);
                                         }

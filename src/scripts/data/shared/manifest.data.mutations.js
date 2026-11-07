@@ -314,8 +314,13 @@ async function executeMutation(mutationConfig) {
                     if (index !== -1) {
                         // The server row takes its own sort position (its values may differ from the placeholder's)
                         const ds = window.ManifestDataStore;
-                        store[dataSourceName].splice(index, 1);
-                        ds.insertRow(store, dataSourceName, ds.createReactiveReferences(result, dataSourceName));
+                        const created = ds.createReactiveReferences(result, dataSourceName);
+                        if (window.ManifestDataMain?.orderFor?.(dataSourceName)) {
+                            store[dataSourceName].splice(index, 1);
+                            ds.insertRow(store, dataSourceName, created);
+                        } else {
+                            store[dataSourceName].splice(index, 1, created); // unsorted: keeps its place
+                        }
                         ds.touchSource(dataSourceName);
                         clearSourceCaches(dataSourceName);
                     } else {

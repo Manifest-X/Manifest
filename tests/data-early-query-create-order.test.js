@@ -50,3 +50,16 @@ describe('$create on a source sorted by $createdAt', () => {
         })
     }
 })
+
+describe('review: unsorted sources', () => {
+    it('two quick creates keep their creation order after Appwrite answers', async () => {
+        const SRC = { tasks: { appwriteTableId: 'items', queries: [['limit', 100]] } }
+        let n = 0
+        const { rows, main, call } = await boot(SRC, makeRows(5), { writeDelay: () => (++n === 1 ? 80 : 20), echoFirst: false })
+        await main.loadDataSource('tasks')
+        await settle()
+        await Promise.all([call('tasks', '$create', { title: 'A' }), call('tasks', '$create', { title: 'B' })])
+        await settle(100)
+        expect(rows('tasks').slice(-2).map(r => r.title)).toEqual(['A', 'B'])
+    })
+})
