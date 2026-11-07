@@ -63,6 +63,8 @@ function sourceArrayView(dataSourceName, array, build) {
     return view;
 }
 
+const APPWRITE_EARLY_METHODS = new Set(['$query', '$create', '$update', '$delete', '$duplicate']);
+
 // Loading proxy for Appwrite sources (CRUD + state/files/upload/pagination methods)
 function createAppwriteLoadingProxy(dataSourceName, reloadDataSource) {
     const createLoadingProxy = window.ManifestDataProxiesCore?.createLoadingProxy;
@@ -325,6 +327,18 @@ function registerXMagicMethod(loadDataSource) {
                                         if (key === '$saving') return window.ManifestDataProxiesMagic.createSavingMethod(prop);
                                         if (key === '$more') return () => window.ManifestDataMain.loadMore(prop);
                                         if (key === '$reload') return () => window.ManifestDataMain.reloadSource(prop);
+                                        if (key === '$first' || key === '$next' || key === '$prev' || key === '$page') {
+                                            return window.ManifestDataProxiesMagic.createPaginationMethod(key, prop);
+                                        }
+                                        // Appwrite methods work before the first load ($query on open)
+                                        if (APPWRITE_EARLY_METHODS.has(key)) {
+                                            const manifest = window.ManifestComponentsRegistry?.manifest || window.__manifestLoaded;
+                                            const config = manifest?.data?.[prop];
+                                            // Manifest not loaded yet: route anyway (the handler awaits it and refuses non-Appwrite sources)
+                                            const handler = (!manifest || (config && window.ManifestDataConfig?.isAppwriteCollection?.(config)))
+                                                && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(prop, window.ManifestDataMain?.reloadDataSource);
+                                            if (handler) return handler.bind(null, key);
+                                        }
                                         return target[key];
                                     }
                                 }));

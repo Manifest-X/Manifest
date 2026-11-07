@@ -222,7 +222,9 @@ async function executeMutation(mutationConfig) {
         if (type === 'create') {
             // Generate temporary ID if not provided
             const tempId = data.$id || `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            optimisticData = { ...data, $id: tempId };
+            // Provisional timestamps so the placeholder sorts as the newest row; the server's replace them
+            const now = new Date().toISOString();
+            optimisticData = { $createdAt: now, $updatedAt: now, ...data, $id: tempId };
             resolvedEntryId = tempId;
 
             // Set creating state
@@ -310,8 +312,15 @@ async function executeMutation(mutationConfig) {
                     clearSourceCaches(dataSourceName);
                 } else if (store && arr) {
                     if (index !== -1) {
+                        // The server row takes its own sort position (its values may differ from the placeholder's)
                         const ds = window.ManifestDataStore;
-                        store[dataSourceName].splice(index, 1, ds.createReactiveReferences(result, dataSourceName));
+                        const created = ds.createReactiveReferences(result, dataSourceName);
+                        if (window.ManifestDataMain?.orderFor?.(dataSourceName)) {
+                            store[dataSourceName].splice(index, 1);
+                            ds.insertRow(store, dataSourceName, created);
+                        } else {
+                            store[dataSourceName].splice(index, 1, created); // unsorted: keeps its place
+                        }
                         ds.touchSource(dataSourceName);
                         clearSourceCaches(dataSourceName);
                     } else {

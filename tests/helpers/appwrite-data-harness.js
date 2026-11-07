@@ -124,7 +124,8 @@ function mockAppwrite(table, { delay = () => 0, writeDelay = 0, echoFirst = true
             }
             async createRow({ rowId, data }) {
                 stats.writes.push(['create', rowId])
-                const row = { ...data, $id: rowId || `srv${stats.writes.length}`, $sequence: table.length + 1 }
+                const now = new Date().toISOString()
+                const row = { ...data, $id: rowId || `srv${stats.writes.length}`, $sequence: table.length + 1, $createdAt: now, $updatedAt: now }
                 if (stats.failWrites) { await wait(); throw Object.assign(new Error('mock fail'), { code: 500 }) }
                 // echoFirst: committed and announced before the reply; otherwise committed at the reply
                 if (echoFirst) { table.push(row); echo('create', row) }
