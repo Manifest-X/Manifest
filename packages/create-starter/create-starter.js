@@ -13,7 +13,7 @@ function parseArgs(argv) {
   let mcpUrl = DEFAULT_MCP_URL;
   let projectId = null;    // --project-id: non-secret id for the committed .mcp.json
   let here = false;        // --here: install into the current directory, no subfolder
-  let displayName = null;  // --name: project display name when using --here
+  let displayName = null;  // --name: project display name (defaults to the folder name)
   let force = false;       // --force: overwrite same-named files in --here mode
   const remaining = [];
 
@@ -69,8 +69,10 @@ function printUsage() {
   console.log('  npx mnfst-starter "Playcom Platform"');
   console.log('  npx mnfst-starter --here                    # scaffold into the current folder');
   console.log('  npx mnfst-starter --here --name "My Site"   # current folder, explicit name');
+  console.log('  npx mnfst-starter my-site --name "My Site"  # ./my-site, named "My Site"');
   console.log('');
-  console.log('--here never overwrites existing files unless --force is given.');
+  console.log('--here never overwrites existing files unless --force is given; --force');
+  console.log('lists what it overwrote and keeps an existing manifest.json name unless --name is given.');
   console.log('');
   console.log('--project-id and/or --key (normally passed by Manifest\'s manifest_init)');
   console.log('wire the project to the Manifest MCP server: .mcp.json and');
@@ -80,19 +82,25 @@ function printUsage() {
 
 const { apiKey, mcpUrl, projectId, here, force, displayName, projectName } = parseArgs(process.argv.slice(2));
 
-// In --here mode the project name comes from --name or the current folder's name;
-// otherwise it's the positional argument (which also becomes the subfolder name).
-const name = here ? (displayName || path.basename(process.cwd())) : projectName;
+if (here && projectName) console.error(`Warning: "${projectName}" ignored with --here; use --name to set the project name.`);
+if (!here && force) console.error('Warning: --force only applies with --here; ignored.');
 
-if (!name) {
+// --here: --name, else an existing manifest.json name (kept on --force), else the folder name.
+// New folder: the positional is the folder; --name, if given, is the project name.
+const existingManifestName = here && !displayName ? readManifestName(path.join(process.cwd(), 'manifest.json')) : null;
+const folder = here ? null : projectName;
+const name = here ? (displayName || path.basename(process.cwd())) : (displayName || projectName);
+
+if (!name || (!here && !folder)) {
   printUsage();
   process.exit(1);
 }
 
-// Validate project name - allow letters, numbers, spaces, dots, underscores, hyphens; prevent path tricks
-if (!/^[a-zA-Z0-9._ -]+$/.test(name) || name.includes('..') || name.startsWith('.') || name.endsWith('.') || /^\s|\s$/.test(name)) {
-  console.error('Error: Project name must contain only letters, numbers, spaces, dots, underscores, and hyphens. Cannot start/end with dots or spaces, or contain consecutive dots.');
-  process.exit(1);
+for (const n of new Set([existingManifestName ? null : name, folder].filter(Boolean))) {
+  if (!validName(n)) {
+    console.error('Error: Project name must contain only letters, numbers, spaces, dots, underscores, and hyphens. Cannot start/end with dots or spaces, or contain consecutive dots.');
+    process.exit(1);
+  }
 }
 
 // Validate API key shape if provided (defence-in-depth — wrong key still works at runtime as anonymous,
@@ -119,18 +127,19 @@ const filesToCopy = [
 ];
 const mcpWiring = Boolean(projectId || apiKey);
 
-const projectPath = here ? process.cwd() : path.resolve(process.cwd(), name);
+const projectPath = here ? process.cwd() : path.resolve(process.cwd(), folder);
 
+let overwritten = [];
 if (here) {
-  const conflicts = filesToCopy.flatMap((f) => collisions(path.join(starterDir, f), path.join(projectPath, f), f));
-  if (conflicts.length && !force) {
+  overwritten = filesToCopy.flatMap((f) => collisions(path.join(starterDir, f), path.join(projectPath, f), f));
+  if (overwritten.length && !force) {
     console.error('Error: these files already exist in this folder and would be overwritten:');
-    conflicts.forEach((f) => console.error('  ' + f));
+    overwritten.forEach((f) => console.error('  ' + f));
     console.error('Move them aside, or re-run with --force to overwrite them.');
     process.exit(1);
   }
 } else if (fs.existsSync(projectPath)) {
-  console.error(`Error: Directory "${name}" already exists`);
+  console.error(`Error: Directory "${folder}" already exists`);
   process.exit(1);
 }
 
@@ -140,7 +149,13 @@ const settingsPath = path.join(projectPath, '.claude', 'settings.json');
 const existingMcp = mcpWiring ? readJson(mcpJsonPath) : null;
 const existingSettings = mcpWiring ? readJson(settingsPath) : null;
 
-console.log(here ? `Creating Manifest project "${name}" in the current folder` : `Creating Manifest project: ${name}`);
+const finalName = existingManifestName ? existingManifestName.name : name;
+console.log(here ? `Creating Manifest project "${finalName}" in the current folder` : `Creating Manifest project: ${finalName}` + (folder !== finalName ? ` in ./${folder}` : ''));
+if (overwritten.length) {
+  console.error(`Overwriting ${overwritten.length} existing file${overwritten.length === 1 ? '' : 's'}:`);
+  overwritten.forEach((f) => console.error('  ' + f));
+}
+if (existingManifestName) console.error(`Keeping the existing manifest.json name "${existingManifestName.name}"; pass --name to change it.`);
 
 try {
   // Create project directory
@@ -164,8 +179,14 @@ try {
   if (fs.existsSync(manifestPath)) {
     try {
       const mf = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      mf.name = name;
-      mf.short_name = name.length > 12 ? name.slice(0, 12) : name;
+      if (existingManifestName) {
+        mf.name = existingManifestName.name;
+        if (existingManifestName.short_name) mf.short_name = existingManifestName.short_name;
+        else delete mf.short_name;
+      } else {
+        mf.name = name;
+        mf.short_name = name.length > 12 ? name.slice(0, 12) : name;
+      }
       fs.writeFileSync(manifestPath, JSON.stringify(mf, null, 2) + '\n');
     } catch {
       // Non-fatal: ship the template manifest.json as-is rather than break setup.
@@ -332,6 +353,21 @@ jspm_packages/
 } catch (error) {
   console.error('Error creating project:', error.message);
   process.exit(1);
+}
+
+function validName(n) {
+  return /^[a-zA-Z0-9._ -]+$/.test(n) && !n.includes('..') && !n.startsWith('.') && !n.endsWith('.') && !/^\s|\s$/.test(n);
+}
+
+// { name, short_name } from an existing manifest.json, or null
+function readManifestName(file) {
+  try {
+    const mf = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (mf && typeof mf.name === 'string' && mf.name.trim()) {
+      return { name: mf.name, short_name: typeof mf.short_name === 'string' ? mf.short_name : null };
+    }
+  } catch {}
+  return null;
 }
 
 // Template files (relative paths) that already exist at dest

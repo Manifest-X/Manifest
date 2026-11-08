@@ -125,4 +125,55 @@ describe('mnfst-starter', () => {
         fs.mkdirSync(path.join(dir, 'Site'))
         expect(run(['Site']).status).toBe(1)
     })
+
+    it('subfolder mode honours --name and warns that --force is ignored', () => {
+        const r = run(['Foo', '--name', 'Bar Site', '--force'])
+        expect(r.status).toBe(0)
+        expect(fs.existsSync(path.join(dir, 'Foo', 'index.html'))).toBe(true)
+        const m = JSON.parse(fs.readFileSync(path.join(dir, 'Foo', 'manifest.json'), 'utf8'))
+        expect(m.name).toBe('Bar Site')
+        expect(m.short_name).toBe('Bar Site')
+        expect(r.stderr).toMatch(/--force only applies with --here/)
+        expect(r.stderr).not.toMatch(/--name/)
+    })
+
+    it('subfolder mode without --name names the project after the folder, no warnings', () => {
+        const r = run(['Foo'])
+        expect(r.status).toBe(0)
+        expect(r.stderr).toBe('')
+        expect(JSON.parse(fs.readFileSync(path.join(dir, 'Foo', 'manifest.json'), 'utf8')).name).toBe('Foo')
+    })
+
+    it('warns that a positional name is ignored with --here', () => {
+        const r = run(['--here', 'Foo', '--name', 'Site'])
+        expect(r.status).toBe(0)
+        expect(r.stderr).toMatch(/"Foo" ignored with --here/)
+        expect(json('manifest.json').name).toBe('Site')
+        expect(exists('Foo')).toBe(false)
+    })
+
+    it('--force lists the files it overwrote', () => {
+        write('index.html', 'mine')
+        write('components/header.html', 'mine')
+        const r = run(['--here', '--name', 'Site', '--force'])
+        expect(r.status).toBe(0)
+        expect(r.stderr).toMatch(/Overwriting 2 existing files:\n {2}components\/header\.html\n {2}index\.html/)
+    })
+
+    it('--force without --name keeps the existing manifest.json name', () => {
+        write('manifest.json', JSON.stringify({ name: 'Café Ünïcode', short_name: 'Café' }))
+        const r = run(['--here', '--force'])
+        expect(r.status).toBe(0)
+        const m = json('manifest.json')
+        expect(m.name).toBe('Café Ünïcode')
+        expect(m.short_name).toBe('Café')
+        expect(r.stderr).toMatch(/Keeping the existing manifest.json name "Café Ünïcode"/)
+        expect(r.stderr).toMatch(/Overwriting 1 existing file:\n  manifest\.json\n/)
+    })
+
+    it('--force with --name replaces the existing manifest.json name', () => {
+        write('manifest.json', JSON.stringify({ name: 'Old' }))
+        expect(run(['--here', '--force', '--name', 'New']).status).toBe(0)
+        expect(json('manifest.json').name).toBe('New')
+    })
 })
