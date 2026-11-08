@@ -185,7 +185,7 @@ try {
         else delete mf.short_name;
       } else {
         mf.name = name;
-        mf.short_name = name.length > 12 ? name.slice(0, 12) : name;
+        mf.short_name = name.length > 12 ? name.slice(0, 12).trimEnd() : name;
       }
       fs.writeFileSync(manifestPath, JSON.stringify(mf, null, 2) + '\n');
     } catch {
