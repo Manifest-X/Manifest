@@ -31,7 +31,7 @@
 
     /* Anchored popover positioning + open/close behavior */
     :where(.tooltip[popover]) {
-        position: absolute;
+        position: fixed;
         position-try-fallbacks: flip-inline, flip-block, flip-start;
         position-area: bottom;
         inset: auto;
