@@ -4,11 +4,11 @@
 
 import { readFileSync, readSync, mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, statSync, readdirSync, cpSync, unlinkSync, renameSync, linkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, resolve, dirname, relative, basename, sep } from 'node:path';
+import { join, resolve, dirname, relative, basename, sep, delimiter } from 'node:path';
 import { createServer } from 'node:http';
 import { cpus, hostname } from 'node:os';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import {
@@ -81,15 +81,71 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
-async function importFromProject(moduleName) {
-  // Ensure dependencies are resolved from the caller's project (cwd),
-  // not from this CLI package's own node_modules location.
+// --- Dependency resolution: project first, then device-wide --------------------
+
+/** Device-wide module roots: `npm root -g`, then NODE_PATH entries. Never throws. */
+function readGlobalModuleRoots({ env = process.env, spawn = spawnSync } = {}) {
+  const roots = [];
   try {
-    const resolved = require.resolve(moduleName, { paths: [process.cwd()] });
-    return await import(resolved);
+    const r = spawn('npm', ['root', '-g'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      shell: process.platform === 'win32',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const out = r && r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : '';
+    if (out) roots.push(out);
   } catch {
-    return await import(moduleName);
+    // npm unavailable
   }
+  for (const entry of String(env.NODE_PATH || '').split(delimiter)) {
+    const dir = entry.trim();
+    if (dir && !roots.includes(dir)) roots.push(dir);
+  }
+  return roots;
+}
+
+let cachedGlobalModuleRoots = null;
+function globalModuleRoots() {
+  if (!cachedGlobalModuleRoots) cachedGlobalModuleRoots = readGlobalModuleRoots();
+  return cachedGlobalModuleRoots;
+}
+
+/** Resolve `request` from projectDir, else from the global roots (looked up only when needed). */
+function resolveDependency(request, projectDir, roots = globalModuleRoots) {
+  try {
+    return { path: require.resolve(request, { paths: [projectDir] }), scope: 'project' };
+  } catch {
+    // not in the project
+  }
+  for (const root of typeof roots === 'function' ? roots() : roots) {
+    try {
+      return { path: require.resolve(request, { paths: [root] }), scope: 'global' };
+    } catch {
+      // not in this root
+    }
+  }
+  return null;
+}
+
+async function importProjectOnly(moduleName, projectDir = process.cwd()) {
+  const found = resolveDependency(moduleName, projectDir, []);
+  if (!found) throw new Error(`${moduleName} is not installed in this project`);
+  return await import(pathToFileURL(found.path).href);
+}
+
+async function importFromProject(moduleName, roots = globalModuleRoots) {
+  const found = resolveDependency(moduleName, process.cwd(), roots);
+  if (found) return await import(pathToFileURL(found.path).href);
+  return await import(moduleName);
+}
+
+function missingBrowserMessage() {
+  return [
+    'prerender: no browser runtime found in this project or globally. Install once for every project on this device:',
+    '  npm i -g puppeteer',
+    '(or per project: npm i -D puppeteer; serverless: npm i -D puppeteer-core @sparticuz/chromium)',
+  ].join('\n');
 }
 
 // --- Browser recycle gate ----------------------------------------------------
@@ -530,12 +586,55 @@ function indexHtmlUsesTailwind(rootDir) {
   return /\sdata-tailwind(?:=(["']).*?\1)?/i.test(html) && /<script[^>]*manifest\.min\.js/i.test(html);
 }
 
+function tailwindMissingMessage() {
+  return [
+    'prerender: tailwindcss not found in this project or globally. Install once for every project on this device:',
+    '  npm i -g tailwindcss @tailwindcss/cli',
+    '(or per project: npm i -D tailwindcss @tailwindcss/cli)',
+  ].join('\n');
+}
+
+/** Project Tailwind runs via `npx @tailwindcss/cli@4`; a global v4 runs its own CLI with NODE_PATH set. */
+function locateTailwind(rootDir, roots = globalModuleRoots) {
+  const tw = resolveDependency('tailwindcss', rootDir, roots);
+  if (!tw) return null;
+  if (tw.scope === 'project') return { scope: 'project' };
+  const twPkg = resolveDependency('tailwindcss/package.json', rootDir, roots);
+  // The v4 CLI can't compile against a global v3.
+  try {
+    if (twPkg && Number(JSON.parse(readFileSync(twPkg.path, 'utf8')).version?.split('.')[0]) < 4) return null;
+  } catch {
+    // unreadable version: try it
+  }
+  const modulesDir = twPkg ? dirname(dirname(twPkg.path)) : null;
+  const cliPkg = resolveDependency('@tailwindcss/cli/package.json', rootDir, roots);
+  let cliBin = null;
+  if (cliPkg) {
+    try {
+      const pkg = JSON.parse(readFileSync(cliPkg.path, 'utf8'));
+      const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.tailwindcss || Object.values(pkg.bin || {})[0];
+      if (bin) cliBin = join(dirname(cliPkg.path), bin);
+    } catch {
+      // fall back to npx
+    }
+  }
+  return { scope: 'global', modulesDir, cliBin };
+}
+
+/** Command, args and env for the Tailwind CLI. */
+function tailwindCliCommand(location, cliArgs, env = process.env) {
+  if (location?.scope !== 'global') {
+    return { cmd: 'npx', args: ['--yes', '@tailwindcss/cli@4', ...cliArgs], env };
+  }
+  const nodePath = [location.modulesDir, env.NODE_PATH].filter(Boolean).join(delimiter);
+  const runEnv = nodePath ? { ...env, NODE_PATH: nodePath } : env;
+  if (location.cliBin) return { cmd: process.execPath, args: [location.cliBin, ...cliArgs], env: runEnv };
+  return { cmd: 'npx', args: ['--yes', '@tailwindcss/cli@4', ...cliArgs], env: runEnv };
+}
+
 function promptContinueWithRuntimeTailwind(rootDir) {
   const installMsg = [
-    'prerender: tailwindcss package is not installed for this project.',
-    '',
-    'To enable static Tailwind CSS compilation, install:',
-    '  npm i -D tailwindcss @tailwindcss/cli',
+    tailwindMissingMessage(),
     '',
     `Project: ${rootDir}`,
     '',
@@ -581,9 +680,8 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
   if (!indexHtmlUsesTailwind(rootDir)) return false;
 
   const outCss = join(outputDir, 'prerender.tailwind.css');
-  try {
-    require.resolve('tailwindcss', { paths: [rootDir] });
-  } catch {
+  const tailwind = locateTailwind(rootDir);
+  if (!tailwind) {
     const proceed = promptContinueWithRuntimeTailwind(rootDir);
     if (!proceed) {
       throw new Error('prerender aborted: install tailwindcss/@tailwindcss/cli or remove data-tailwind from your manifest script tag.');
@@ -612,8 +710,6 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
   ];
 
   const args = [
-    '--yes',
-    '@tailwindcss/cli@4',
     '-i',
     inputPath,
     '-o',
@@ -624,10 +720,12 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
   }
 
   process.stdout.write('prerender: compiling Tailwind CSS (this may take a minute)...\n');
-  const r = spawnSync('npx', args, {
+  const run = tailwindCliCommand(tailwind, args);
+  const r = spawnSync(run.cmd, run.args, {
     cwd: rootDir,
     encoding: 'utf8',
-    shell: process.platform === 'win32',
+    env: run.env,
+    shell: process.platform === 'win32' && run.cmd === 'npx',
   });
   if (createdTempInput) {
     try {
@@ -637,7 +735,7 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
     }
   }
   if (r.status !== 0) {
-    console.error('prerender: Tailwind CLI failed; install with `npm i -D tailwindcss @tailwindcss/cli` or check tailwindInput in manifest.prerender.');
+    console.error('prerender: Tailwind CLI failed; install with `npm i -g tailwindcss @tailwindcss/cli` (or per project: `npm i -D tailwindcss @tailwindcss/cli`), or check tailwindInput in manifest.prerender.');
     if (r.stderr) console.error(r.stderr);
     if (r.stdout) console.error(r.stdout);
     return false;
@@ -2801,9 +2899,18 @@ async function runPrerender(config) {
   // the old browser and start a new one every `browserRecycleEvery` pages to
   // bound memory growth.
   async function launchBrowser() {
+    // Project installs first (no global lookup), then device-wide ones.
+    for (const load of [importProjectOnly, importFromProject]) {
+      const browser = await launchWith(load);
+      if (browser) return browser;
+    }
+    console.error(missingBrowserMessage());
+    process.exit(1);
+  }
+  async function launchWith(load) {
     try {
-      const chromium = await importFromProject('@sparticuz/chromium');
-      const pptr = await importFromProject('puppeteer-core');
+      const chromium = await load('@sparticuz/chromium');
+      const pptr = await load('puppeteer-core');
       const executablePath = await chromium.default.executablePath();
       return await pptr.default.launch({
         args: chromium.default.args,
@@ -2815,13 +2922,9 @@ async function runPrerender(config) {
     } catch (_serverlessErr) {
       let puppeteer;
       try {
-        puppeteer = await importFromProject('puppeteer');
+        puppeteer = await load('puppeteer');
       } catch {
-        console.error('prerender: missing browser runtime.');
-        console.error('Install one of the following, then rerun:');
-        console.error('  npm i -D puppeteer');
-        console.error('  npm i -D puppeteer-core @sparticuz/chromium');
-        process.exit(1);
+        return null;
       }
       // Headless shell: new headless can hang captureScreenshot on macOS
       return await puppeteer.default.launch({
@@ -3524,6 +3627,14 @@ if (_isDirectEntry) {
 // Exports for the CLI bin script and for unit testing.
 export {
   stripTailwindPreflightConflicts,
+  readGlobalModuleRoots,
+  resolveDependency,
+  importProjectOnly,
+  importFromProject,
+  missingBrowserMessage,
+  tailwindMissingMessage,
+  locateTailwind,
+  tailwindCliCommand,
   main,
   discoverRoutes,
   groupLlmsSections,
