@@ -176,4 +176,77 @@ describe('mnfst-starter', () => {
         expect(run(['--here', '--force', '--name', 'New']).status).toBe(0)
         expect(json('manifest.json').name).toBe('New')
     })
+
+    it('rejects an unknown option instead of folding it into the folder name', () => {
+        const r = run(['Foo', '--frce'])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toMatch(/unknown option "--frce"/)
+        expect(fs.readdirSync(dir)).toEqual([])
+    })
+
+    it('rejects unknown options in --key=value form and single-dash options', () => {
+        for (const bad of ['--frce=1', '-f']) {
+            const r = run(['--here', '--name', 'Site', bad])
+            expect(r.status).toBe(1)
+            expect(r.stderr).toMatch(/unknown option/)
+        }
+        expect(exists('index.html')).toBe(false)
+    })
+
+    it('keeps the manifest_init invocation working', () => {
+        const r = run(['--here', '--name', 'My Site', '--project-id=proj_1', '--mcp-url=https://mcp.example/mcp', `--key=${KEY}`])
+        expect(r.status).toBe(0)
+        expect(json('manifest.json').name).toBe('My Site')
+        expect(json('.mcp.json').mcpServers.manifest.url).toBe('https://mcp.example/mcp')
+    })
+
+    it('rejects a blank --name= or other blank value', () => {
+        for (const args of [['Foo', '--name='], ['Foo', '--name', '  '], ['--here', '--project-id=']]) {
+            const r = run(args)
+            expect(r.status).toBe(1)
+            expect(r.stderr).toMatch(/requires a value/)
+        }
+        expect(fs.readdirSync(dir)).toEqual([])
+    })
+
+    it('--name without a folder says why', () => {
+        const r = run(['--name', 'Site'])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toMatch(/no folder name given/)
+        expect(r.stderr).toMatch(/--here/)
+    })
+
+    it('no arguments says a folder or --here is needed', () => {
+        const r = run([])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toMatch(/give a folder name/)
+    })
+
+    it('display name may be any text; only the folder is path-checked', () => {
+        const r = run(['cafe', '--name', 'Café ☕ & Co'])
+        expect(r.status).toBe(0)
+        const m = JSON.parse(fs.readFileSync(path.join(dir, 'cafe', 'manifest.json'), 'utf8'))
+        expect(m.name).toBe('Café ☕ & Co')
+        expect(run(['--here', '--name', 'Ünïcode/Site']).status).toBe(0)
+        expect(json('manifest.json').name).toBe('Ünïcode/Site')
+        const bad = run(['Café'])
+        expect(bad.status).toBe(1)
+        expect(bad.stderr).toMatch(/Folder name/)
+    })
+
+    it('--force keeps short_name absent when the kept manifest.json had none', () => {
+        write('manifest.json', JSON.stringify({ name: 'Kept' }))
+        expect(run(['--here', '--force']).status).toBe(0)
+        const m = json('manifest.json')
+        expect(m.name).toBe('Kept')
+        expect('short_name' in m).toBe(false)
+    })
+
+    it('--force warns when the existing manifest.json is malformed', () => {
+        write('manifest.json', '{ nope')
+        const r = run(['--here', '--force'])
+        expect(r.status).toBe(0)
+        expect(r.stderr).toMatch(/existing manifest.json is not a valid JSON object/)
+        expect(json('manifest.json').name).toBe(path.basename(dir))
+    })
 })
