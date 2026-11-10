@@ -594,7 +594,7 @@
     }
 
     /* Group wrapper */
-    :where([role=group]:has(> .avatar)) {
+    :where([role=group]:has(> .avatar, > * > .avatar)) {
         display: flex;
         flex-flow: row nowrap;
         align-items: center;
@@ -2806,7 +2806,7 @@
         overflow-x: hidden;
 
         /* Options (labels only when flat items — field wrappers keep form layout) */
-        & :where(li, a, button, [role=button], label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label)))):not(.unstyle) {
+        & :where(li, a, button, [role=button], label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label, [role=group])))):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -2912,7 +2912,7 @@
     }
 
     /* Dark theme */
-    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label)))):hover {
+    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label, [role=group])))):hover {
         background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
     }
 
@@ -3377,7 +3377,7 @@
         gap: 0.375ch calc(var(--spacing, 0.25rem) * 2);
         width: 100%;
 
-        &:has(> [type=radio], > [type=checkbox], > :where(label, .label) > :where([type=radio], [type=checkbox])) {
+        &:has(> [type=radio], > [type=checkbox], > :where(label, .label) > :where([type=radio], [type=checkbox]), > :where(label, .label) > * > :where([type=radio], [type=checkbox])) {
             gap: calc(var(--spacing, 0.25rem) * 2)
         }
     }
@@ -3477,7 +3477,7 @@
         }
 
         /* Align textarea label to top */
-        &:has(> textarea) {
+        &:has(> textarea, > :where(.combobox) > textarea) {
             align-items: start;
 
             :where(data) {
@@ -4945,7 +4945,7 @@
     :where(ul):not(.unstyle) {
         padding-inline-start: 1.75ch;
 
-        &:has(> :where(li) > input[type=checkbox], > :where(li) > :where(p) > input[type=checkbox]) {
+        &:has(> :where(li) > input[type=checkbox], > :where(li) > :where(p, label) > input[type=checkbox]) {
             padding-inline-start: 0
         }
 
@@ -4979,7 +4979,7 @@
             }
 
             /* Checklist items */
-            &:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
+            &:has(> input[type=checkbox], > :where(p, label) > input[type=checkbox]) {
                 position: relative;
                 display: inherit;
                 list-style: none;
@@ -5015,7 +5015,7 @@
             }
         }
 
-        & li:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
+        & li:has(> input[type=checkbox], > :where(p, label) > input[type=checkbox]) {
             & input[type=checkbox] {
                 left: auto;
                 right: -1.25ch

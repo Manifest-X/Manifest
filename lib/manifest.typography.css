@@ -296,7 +296,7 @@
     :where(ul):not(.unstyle) {
         padding-inline-start: 1.75ch;
 
-        &:has(> :where(li) > input[type=checkbox], > :where(li) > :where(p) > input[type=checkbox]) {
+        &:has(> :where(li) > input[type=checkbox], > :where(li) > :where(p, label) > input[type=checkbox]) {
             padding-inline-start: 0
         }
 
@@ -330,7 +330,7 @@
             }
 
             /* Checklist items */
-            &:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
+            &:has(> input[type=checkbox], > :where(p, label) > input[type=checkbox]) {
                 position: relative;
                 display: inherit;
                 list-style: none;
@@ -366,7 +366,7 @@
             }
         }
 
-        & li:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
+        & li:has(> input[type=checkbox], > :where(p, label) > input[type=checkbox]) {
             & input[type=checkbox] {
                 left: auto;
                 right: -1.25ch
