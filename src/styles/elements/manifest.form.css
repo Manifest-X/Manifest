@@ -5,7 +5,7 @@
 @layer components {
 
     /* Group & tab bar wrappers */
-    :where([role=group]:has(button, [role=button], input, select, textarea, [onclick], [popovertarget], [x-dropdown], [\@click], [\@click\.stop], [\@click\.prevent], [x-on\:click], [x-on\:click\.stop], [x-on\:click\.prevent]),
+    :where([role=group]:has(> :where(button, [role=button], input, select, textarea, label, .label, .combobox, [onclick], [popovertarget], [x-dropdown], [\@click], [\@click\.stop], [\@click\.prevent], [x-on\:click], [x-on\:click\.stop], [x-on\:click\.prevent])),
         [role=tablist]:not(:has(>:not(button, a, [role=button], [role=tab], template)))):not(.unstyle) {
         display: flex;
         flex-flow: row nowrap;
@@ -31,30 +31,30 @@
 
         /* Own rule: a selector list is not forgiving, so a browser that can't
            parse the :has() would drop the two plain selectors above with it. */
-        & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
+        & :where(label, .label):has(> input:not([type=checkbox], [type=radio]), > select, > textarea, > .combobox) {
             width: fit-content
         }
 
         /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
                 /* First participant — only when something follows it. A lone
                    participant matched this AND the last rule, squaring all four
                    corners of what is really just a single field. */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
 
                 /* Middle participants */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-radius: 0
                 }
 
                 /* Last participant — only when something precedes it */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -149,7 +149,7 @@
         gap: 0.375ch calc(var(--spacing, 0.25rem) * 2);
         width: 100%;
 
-        &:has([type=radio], [type=checkbox]) {
+        &:has(> [type=radio], > [type=checkbox], > :where(label, .label) > :where([type=radio], [type=checkbox])) {
             gap: calc(var(--spacing, 0.25rem) * 2)
         }
     }
@@ -169,7 +169,7 @@
     }
 
     /* Label wrapper for radios and checkboxes */
-    :where(label, .label):has([type=radio], [type=checkbox]):not(.unstyle) {
+    :where(label, .label):has(> [type=radio], > [type=checkbox], > * > [type=radio], > * > [type=checkbox]):not(.unstyle) {
         display: flex;
         flex-flow: row;
         align-items: center;
@@ -183,7 +183,7 @@
     }
 
     /* Label wrapper */
-    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(:has(> button[command="--copy"])):not(.unstyle) {
+    :where(label:not(:has(> .label)), .label):has(> button, > [role=button], > [type=button], > [type=submit], > select, > input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), > textarea, > * > button, > * > [role=button], > * > [type=button], > * > [type=submit], > * > select, > * > input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), > * > textarea):not(:has(> data, > * > data)):not(:has(> button[command="--copy"])):not(.unstyle) {
         display: flex;
         flex-direction: column;
         gap: 0.2ch;
@@ -213,7 +213,7 @@
         }
 
         /* Space out stacked labels for search and file inputs */
-        :has([type=search], [type=file]) :where([type=search], [type=file]) {
+        :has(> [type=search], > [type=file]) :where([type=search], [type=file]) {
             margin-top: 0.2ch
         }
     }
@@ -249,7 +249,7 @@
         }
 
         /* Align textarea label to top */
-        &:has(textarea) {
+        &:has(> textarea) {
             align-items: start;
 
             :where(data) {

@@ -5,7 +5,7 @@
 @layer base {
 
     /* All text elements */
-    :where(abbr, address, blockquote, code, del, figcaption, h1, h2, h3, h4, h5, h6, ins, label:not(.avatar, :has([type=file], [type=search])), legend, p, small, cite, q):not(.unstyle),
+    :where(abbr, address, blockquote, code, del, figcaption, h1, h2, h3, h4, h5, h6, ins, label:not(.avatar, :has(> :where([type=file], [type=search]))), legend, p, small, cite, q):not(.unstyle),
     .h1,
     .h2,
     .h3,
@@ -109,7 +109,7 @@
             color: var(--color-content-neutral, oklch(43.9% 0 0))
         }
 
-        &:where(:has([x-icon])) {
+        &:where(:has(> [x-icon], > * > [x-icon])) {
             display: inline-flex;
             align-items: center;
             gap: 0.25em
@@ -296,7 +296,7 @@
     :where(ul):not(.unstyle) {
         padding-inline-start: 1.75ch;
 
-        &:has(input[type=checkbox]) {
+        &:has(> :where(li) > input[type=checkbox], > :where(li) > :where(p) > input[type=checkbox]) {
             padding-inline-start: 0
         }
 
@@ -317,7 +317,7 @@
             }
 
             /* Allow icons to replace markers */
-            &:has([x-icon]) {
+            &:has(> [x-icon]) {
                 position: relative;
                 display: inherit;
                 list-style: none;
@@ -330,7 +330,7 @@
             }
 
             /* Checklist items */
-            &:has(input[type=checkbox]) {
+            &:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
                 position: relative;
                 display: inherit;
                 list-style: none;
@@ -359,14 +359,14 @@
     /* RTL list overrides */
     [dir=rtl] :where(ol):not(nav ol):not(menu ol):not(.unstyle),
     [dir=rtl] :where(ul):not(nav ul):not(menu ul):not(.unstyle) {
-        & li:has([x-icon]) {
+        & li:has(> [x-icon]) {
             & [x-icon] {
                 left: auto;
                 right: -1.75ch
             }
         }
 
-        & li:has(input[type=checkbox]) {
+        & li:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
             & input[type=checkbox] {
                 left: auto;
                 right: -1.25ch

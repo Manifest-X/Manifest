@@ -133,7 +133,7 @@
     }
 
     /* Group wrapper */
-    :where([role=group]:has(.avatar, button.avatar)) {
+    :where([role=group]:has(> .avatar)) {
         display: flex;
         flex-flow: row nowrap;
         align-items: center;

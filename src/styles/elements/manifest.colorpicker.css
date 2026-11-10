@@ -164,7 +164,7 @@
                 gap: 0.75rem;
                 padding: 0.75rem;
 
-                & div:has(button[x-colorpicker\.set-color-space], input[x-colorpicker\.set-color-value], input[x-colorpicker\.set-alpha-value]) {
+                & div:has(> button[x-colorpicker\.set-color-space], > input[x-colorpicker\.set-color-value], > input[x-colorpicker\.set-alpha-value]) {
                     display: flex;
                     width: 100%
                 }

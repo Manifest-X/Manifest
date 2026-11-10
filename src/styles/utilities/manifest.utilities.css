@@ -231,7 +231,7 @@
             border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
 
             /* Auto format asides with icons */
-            &:has([x-icon]):not([x-code-group] aside, aside.frame) {
+            &:has(> [x-icon]):not([x-code-group] aside, aside.frame) {
                 display: flex;
                 flex-direction: row;
                 gap: 1rem;

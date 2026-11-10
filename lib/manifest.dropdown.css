@@ -58,7 +58,7 @@
         overflow-x: hidden;
 
         /* Options (labels only when flat items — field wrappers keep form layout) */
-        & :where(li, a, button, [role=button], label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):not(.unstyle) {
+        & :where(li, a, button, [role=button], label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label)))):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -129,7 +129,7 @@
                 background-color: transparent
             }
 
-            &:has(input[role=switch]) {
+            &:has(> input[role=switch]) {
                 justify-content: space-between
             }
         }
@@ -164,7 +164,7 @@
     }
 
     /* Dark theme */
-    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):hover {
+    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label)))):hover {
         background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
     }
 

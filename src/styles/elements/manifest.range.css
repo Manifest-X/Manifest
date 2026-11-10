@@ -56,7 +56,7 @@
         }
     }
 
-    :where(label:has(input[type=range])):not(.unstyle) {
+    :where(label:has(> input[type=range], > * > input[type=range])):not(.unstyle) {
         cursor: default;
     }
 }

@@ -594,7 +594,7 @@
     }
 
     /* Group wrapper */
-    :where([role=group]:has(.avatar, button.avatar)) {
+    :where([role=group]:has(> .avatar)) {
         display: flex;
         flex-flow: row nowrap;
         align-items: center;
@@ -1368,7 +1368,7 @@
                 gap: 0.75rem;
                 padding: 0.75rem;
 
-                & div:has(button[x-colorpicker\.set-color-space], input[x-colorpicker\.set-color-value], input[x-colorpicker\.set-alpha-value]) {
+                & div:has(> button[x-colorpicker\.set-color-space], > input[x-colorpicker\.set-color-value], > input[x-colorpicker\.set-alpha-value]) {
                     display: flex;
                     width: 100%
                 }
@@ -2004,7 +2004,10 @@
         &>[role=group] {
             display: flex;
             flex-direction: column;
+            align-items: center;
+            gap: 0;
             width: 100%;
+            max-width: 100%;
             padding: 0.5rem;
         }
 
@@ -2803,7 +2806,7 @@
         overflow-x: hidden;
 
         /* Options (labels only when flat items — field wrappers keep form layout) */
-        & :where(li, a, button, [role=button], label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):not(.unstyle) {
+        & :where(li, a, button, [role=button], label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label)))):not(.unstyle) {
             display: inline-flex;
             justify-content: start;
             align-items: center;
@@ -2874,7 +2877,7 @@
                 background-color: transparent
             }
 
-            &:has(input[role=switch]) {
+            &:has(> input[role=switch]) {
                 justify-content: space-between
             }
         }
@@ -2909,7 +2912,7 @@
     }
 
     /* Dark theme */
-    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label))):hover {
+    :where(.dark menu[popover]) :where(li, a, button, label:not(:has(> :where(input:not([type=checkbox], [type=radio], [type=hidden]), select, textarea, .combobox, .label, label)))):hover {
         background-color: var(--color-field-surface-hover, color-mix(in oklch, oklch(20.5% 0 0) 15%, transparent))
     }
 
@@ -3230,7 +3233,7 @@
 @layer components {
 
     /* Group & tab bar wrappers */
-    :where([role=group]:has(button, [role=button], input, select, textarea, [onclick], [popovertarget], [x-dropdown], [\@click], [\@click\.stop], [\@click\.prevent], [x-on\:click], [x-on\:click\.stop], [x-on\:click\.prevent]),
+    :where([role=group]:has(> :where(button, [role=button], input, select, textarea, label, .label, .combobox, [onclick], [popovertarget], [x-dropdown], [\@click], [\@click\.stop], [\@click\.prevent], [x-on\:click], [x-on\:click\.stop], [x-on\:click\.prevent])),
         [role=tablist]:not(:has(>:not(button, a, [role=button], [role=tab], template)))):not(.unstyle) {
         display: flex;
         flex-flow: row nowrap;
@@ -3256,30 +3259,30 @@
 
         /* Own rule: a selector list is not forgiving, so a browser that can't
            parse the :has() would drop the two plain selectors above with it. */
-        & :where(label, .label):has(input:not([type=checkbox], [type=radio]), select, textarea) {
+        & :where(label, .label):has(> input:not([type=checkbox], [type=radio]), > select, > textarea, > .combobox) {
             width: fit-content
         }
 
         /* Groups connect interactive elements */
         &:where([role=group]) {
 
-            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
+            &>:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) {
 
                 /* First participant — only when something follows it. A lone
                    participant matched this AND the last rule, squaring all four
                    corners of what is really just a single field. */
-                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:not(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-start-end-radius: 0;
                     border-end-end-radius: 0
                 }
 
                 /* Middle participants */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"])) {
                     border-radius: 0
                 }
 
                 /* Last participant — only when something precedes it */
-                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(input:not([type=checkbox], [type=radio]), select, textarea), .label:has(input:not([type=checkbox], [type=radio]), select, textarea)):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
+                &:where(:where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]) ~ &):not(:has(~ :where(button, [role=button], input:not([type=hidden]), select, textarea, .combobox, label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox)), .label:has(> :where(input:not([type=checkbox], [type=radio]), select, textarea, .combobox))):not([hidden]):not([popover]):not(.hidden):not([style*="display: none"]))) {
                     border-start-start-radius: 0;
                     border-end-start-radius: 0
                 }
@@ -3374,7 +3377,7 @@
         gap: 0.375ch calc(var(--spacing, 0.25rem) * 2);
         width: 100%;
 
-        &:has([type=radio], [type=checkbox]) {
+        &:has(> [type=radio], > [type=checkbox], > :where(label, .label) > :where([type=radio], [type=checkbox])) {
             gap: calc(var(--spacing, 0.25rem) * 2)
         }
     }
@@ -3394,7 +3397,7 @@
     }
 
     /* Label wrapper for radios and checkboxes */
-    :where(label, .label):has([type=radio], [type=checkbox]):not(.unstyle) {
+    :where(label, .label):has(> [type=radio], > [type=checkbox], > * > [type=radio], > * > [type=checkbox]):not(.unstyle) {
         display: flex;
         flex-flow: row;
         align-items: center;
@@ -3408,7 +3411,7 @@
     }
 
     /* Label wrapper */
-    :where(label:not(:has(.label)), .label):has(button, [role=button], [type=button], [type=submit], select, input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), textarea):not(:has(data)):not(:has(> button[command="--copy"])):not(.unstyle) {
+    :where(label:not(:has(> .label)), .label):has(> button, > [role=button], > [type=button], > [type=submit], > select, > input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), > textarea, > * > button, > * > [role=button], > * > [type=button], > * > [type=submit], > * > select, > * > input:not([role=button], [type=checkbox], [type=radio], [type=file], [type=search]), > * > textarea):not(:has(> data, > * > data)):not(:has(> button[command="--copy"])):not(.unstyle) {
         display: flex;
         flex-direction: column;
         gap: 0.2ch;
@@ -3438,7 +3441,7 @@
         }
 
         /* Space out stacked labels for search and file inputs */
-        :has([type=search], [type=file]) :where([type=search], [type=file]) {
+        :has(> [type=search], > [type=file]) :where([type=search], [type=file]) {
             margin-top: 0.2ch
         }
     }
@@ -3474,7 +3477,7 @@
         }
 
         /* Align textarea label to top */
-        &:has(textarea) {
+        &:has(> textarea) {
             align-items: start;
 
             :where(data) {
@@ -3589,7 +3592,7 @@
 
 @layer components {
 
-    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has([type=search], [type=file], > button[command="--copy"]), .label:has([type=search], [type=file], > button[command="--copy"])):not(.unstyle) {
+    :where(input:not([type=range], [type=color]), textarea, .textarea, label:has(> :where([type=search], [type=file], button[command="--copy"]), > .label > :where([type=search], [type=file])), .label:has(> :where([type=search], [type=file], button[command="--copy"]), > .label > :where([type=search], [type=file]))):not(.unstyle) {
         width: 100%;
         max-width: 100%;
         color: var(--color-field-inverse, oklch(43.9% 0 0));
@@ -3642,7 +3645,7 @@
     }
 
     /* Label wrapper for search and file inputs */
-    :where(label, .label):has([type=search], [type=file]):not(.unstyle) {
+    :where(label, .label):has(> [type=search], > [type=file], > :where(.label) > :where([type=search], [type=file])):not(.unstyle) {
         display: flex;
         flex-flow: row;
         align-items: center;
@@ -3665,18 +3668,18 @@
         }
 
         /* Spacing for trailing siblings */
-        &:has(input + *) {
+        &:has(> input + *, > :where(.label) > input + *) {
             padding-inline-end: 0.375rem
         }
 
         /* No spacing for file input + icon */
-        &:has(input[type=file] + [x-icon]) {
+        &:has(> input[type=file] + [x-icon], > :where(.label) > input[type=file] + [x-icon]) {
             padding-inline-end: 0
         }
     }
 
     /* Additional styles for label with file input */
-    :where(label, .label):has([type=file]):not(.unstyle) {
+    :where(label, .label):has(> [type=file], > :where(.label) > [type=file]):not(.unstyle) {
         justify-content: center;
         gap: var(--spacing, 0.25rem);
         min-height: var(--spacing-field-height, 2.25rem);
@@ -3684,7 +3687,7 @@
     }
 
     /* Additional styles for label with search input */
-    :where(label, .label):has([type=search]):not(.unstyle) {
+    :where(label, .label):has(> [type=search], > :where(.label) > [type=search]):not(.unstyle) {
         justify-content: start;
 
         /* Search icon */
@@ -3906,7 +3909,7 @@
         }
     }
 
-    :where(label:has(input[type=range])):not(.unstyle) {
+    :where(label:has(> input[type=range], > * > input[type=range])):not(.unstyle) {
         cursor: default;
     }
 }
@@ -4651,7 +4654,7 @@
 @layer base {
 
     /* All text elements */
-    :where(abbr, address, blockquote, code, del, figcaption, h1, h2, h3, h4, h5, h6, ins, label:not(.avatar, :has([type=file], [type=search])), legend, p, small, cite, q):not(.unstyle),
+    :where(abbr, address, blockquote, code, del, figcaption, h1, h2, h3, h4, h5, h6, ins, label:not(.avatar, :has(> :where([type=file], [type=search]))), legend, p, small, cite, q):not(.unstyle),
     .h1,
     .h2,
     .h3,
@@ -4755,7 +4758,7 @@
             color: var(--color-content-neutral, oklch(43.9% 0 0))
         }
 
-        &:where(:has([x-icon])) {
+        &:where(:has(> [x-icon], > * > [x-icon])) {
             display: inline-flex;
             align-items: center;
             gap: 0.25em
@@ -4942,7 +4945,7 @@
     :where(ul):not(.unstyle) {
         padding-inline-start: 1.75ch;
 
-        &:has(input[type=checkbox]) {
+        &:has(> :where(li) > input[type=checkbox], > :where(li) > :where(p) > input[type=checkbox]) {
             padding-inline-start: 0
         }
 
@@ -4963,7 +4966,7 @@
             }
 
             /* Allow icons to replace markers */
-            &:has([x-icon]) {
+            &:has(> [x-icon]) {
                 position: relative;
                 display: inherit;
                 list-style: none;
@@ -4976,7 +4979,7 @@
             }
 
             /* Checklist items */
-            &:has(input[type=checkbox]) {
+            &:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
                 position: relative;
                 display: inherit;
                 list-style: none;
@@ -5005,14 +5008,14 @@
     /* RTL list overrides */
     [dir=rtl] :where(ol):not(nav ol):not(menu ol):not(.unstyle),
     [dir=rtl] :where(ul):not(nav ul):not(menu ul):not(.unstyle) {
-        & li:has([x-icon]) {
+        & li:has(> [x-icon]) {
             & [x-icon] {
                 left: auto;
                 right: -1.75ch
             }
         }
 
-        & li:has(input[type=checkbox]) {
+        & li:has(> input[type=checkbox], > :where(p) > input[type=checkbox]) {
             & input[type=checkbox] {
                 left: auto;
                 right: -1.25ch
@@ -5712,7 +5715,7 @@
             border: 1px solid color-mix(in oklch, var(--color-field-surface, color-mix(in oklch, oklch(20.5% 0 0) 10%, transparent)) 15%, transparent);
 
             /* Auto format asides with icons */
-            &:has([x-icon]):not([x-code-group] aside, aside.frame) {
+            &:has(> [x-icon]):not([x-code-group] aside, aside.frame) {
                 display: flex;
                 flex-direction: row;
                 gap: 1rem;

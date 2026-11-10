@@ -257,7 +257,7 @@
             color: var(--color-content-neutral, oklch(43.9% 0 0));
             background-color: color-mix(in oklch, var(--color-content-stark, oklch(43.9% 0 0)) 8%, transparent);
 
-            &:has(button[role="tab"]) {
+            &:has(> :where([role="tablist"]) > button[role="tab"]) {
                 padding-inline-start: calc(var(--spacing, 0.25rem) * 2)
             }
 
