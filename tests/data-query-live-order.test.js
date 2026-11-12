@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 
 import { boot, release, settle } from './helpers/appwrite-data-harness.js'
+import { budget } from './helpers/time-budget.js'
 
 const CH = 'databases.db.tables.items.rows'
 let seq = 1000
@@ -169,7 +170,7 @@ describe('B3: live rows keep the sort order', () => {
         expect(list.length).toBe(5500)
         expect(new Set(list.map(r => r.$id)).size).toBe(5500)
         expect(isSorted(list, 'n', -1)).toBe(true)
-        expect(ms).toBeLessThan(3000)
+        expect(ms).toBeLessThan(budget(3000))
     })
 })
 

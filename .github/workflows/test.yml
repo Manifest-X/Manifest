@@ -1,0 +1,45 @@
+# Framework tests. Runs on every push and pull request, and gates npm releases (release.yml calls it).
+name: Test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow_ref }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref != 'refs/heads/master' }}
+
+jobs:
+  unit:
+    name: Unit tests + build drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TEST_TIME_SCALE: '3'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: lib/ and packages/ match a fresh build of src/
+        run: |
+          npm run build
+          if ! git diff --quiet; then
+            git diff --stat | while IFS= read -r line; do echo "::error title=Build drift::${line}"; done
+            echo "::error title=Build drift::Run npm run build and commit the result."
+            exit 1
+          fi

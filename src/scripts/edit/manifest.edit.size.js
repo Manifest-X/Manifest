@@ -95,7 +95,7 @@
         if ((right || left) && kx) { const w = clamp((parseFloat(cs.width) || 0) + kx * step * (right ? 1 : -1), minW, maxW); el.style.width = toUnit(w, wu, el, el.parentElement, 'w') + wu; }
         if ((top || bottom) && ky) { const h = clamp((parseFloat(cs.height) || 0) + ky * step * (bottom ? 1 : -1), minH, maxH); el.style.height = toUnit(h, hu, el, el.parentElement, 'h') + hu; }
         sizeEvent(el, false);
-        clearTimeout(el._keyTimer); el._keyTimer = setTimeout(() => { el._keyTimer = null; commitStyle(regionOf(el), el); sizeEvent(el, true); }, 350);
+        clearTimeout(el._keyTimer); el._keyTimer = setTimeout(() => { el._keyTimer = null; const r = el.isConnected && regionOf(el); if (!r) return; commitStyle(r, el); sizeEvent(el, true); }, 350);
     }
     // An axis value wins; an explicit axis `none` cancels the base value too.
     function axisVar(el, base, axis) {

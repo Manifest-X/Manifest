@@ -14,6 +14,7 @@
 #     types-v* -> mnfst-types, test-v* -> mnfst-test, export-v* -> mnfst-export,
 #     docs-v* -> mnfst-docs.
 #     (Tags let an agent trigger a release over git without the GitHub UI.)
+# Nothing publishes unless test.yml passes on the tagged commit.
 # Version numbers are derived from the npm registry by scripts/release-bump.mjs;
 # the tag name is only a trigger, it does not set the version.
 
@@ -53,8 +54,13 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+
   release:
     name: Publish ${{ matrix.pkg }}
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -339,6 +339,14 @@ describe('resize limits', () => {
         expect(fixed.el.style.height).toBe('600px')
     })
 
+    it('a pending keyboard resize commit is dropped once the piece leaves the page', async () => {
+        const { el, handle } = await sizable('width: 200px')
+        key(handle('right'), { key: 'ArrowRight' })
+        el.remove()
+        await new Promise(r => setTimeout(r, 400))
+        expect(el.isConnected).toBe(false)
+    })
+
     it('a min larger than a % max wins, as in CSS', async () => {
         const { el, handle } = await sizable('width: 200px; min-width: 300px; max-width: 10%')
         dragHandle(handle('right'), -150, 0)

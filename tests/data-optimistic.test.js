@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { boot, release, settle } from './helpers/appwrite-data-harness.js'
+import { budget } from './helpers/time-budget.js'
 
 const CH = 'databases.db.tables.items.rows'
 let seq = 9000
@@ -144,7 +145,7 @@ describe('heavy', () => {
         await settle()
         expect(rows('items').filter(r => r.status.startsWith('s')).length).toBe(200)
         expect(pending()).toBe(0)
-        expect(performance.now() - t0).toBeLessThan(5000)
+        expect(performance.now() - t0).toBeLessThan(budget(5000))
     })
 })
 

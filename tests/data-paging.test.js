@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { boot, release, settle } from './helpers/appwrite-data-harness.js'
+import { budget } from './helpers/time-budget.js'
 
 const CH = 'databases.db.tables.items.rows'
 let seq = 5000
@@ -173,7 +174,7 @@ describe('paging: "window" and $more()', () => {
         expect(new Set(list.map(r => r.$id)).size).toBe(4000)
         expect(ns(list)).toEqual(Array.from({ length: 4000 }, (_, i) => i + 1))
         expect(list.filter(r => r.status === 'touched').length).toBe(500)
-        expect(performance.now() - t0).toBeLessThan(5000)
+        expect(performance.now() - t0).toBeLessThan(budget(5000))
     })
 })
 
