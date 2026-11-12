@@ -662,32 +662,32 @@ function onFsChange(filename) {
 // so there every directory gets its own watcher, which survives renames inside it.
 function watchTree(top, onChange) {
   if (process.platform !== 'linux') return void watch(top, { recursive: true }, (_e, f) => onChange(f && relKey(f)));
-  const dirs = new Map();   // abs → { w, ino }: a re-created or swapped-in directory has a new inode
+  const dirs = new Map();   // abs → watcher
   const relOf = (abs) => relKey(relative(top, abs));
   let limitWarned = false;
-  const drop = (abs) => { for (const [d, x] of dirs) if (d === abs || d.startsWith(abs + sep)) { try { x.w.close(); } catch { } dirs.delete(d); } };
+  const drop = (abs) => { for (const [d, w] of dirs) if (d === abs || d.startsWith(abs + sep)) { try { w.close(); } catch { } dirs.delete(d); } };
   const addTree = (abs, report, depth = 0) => {
     const rel = relOf(abs);
     if (dirs.has(abs) || depth > 24 || (rel && IGNORE.test(rel))) return;
-    let w, ino;
+    let w;
     try {
-      ino = lstatSync(abs).ino;
-      w = watch(abs, (_e, f) => {
+      w = watch(abs, (event, f) => {
         if (!f) return;
         const child = join(abs, String(f));
         onChange(relOf(child));
         let st = null; try { st = lstatSync(child); } catch { }
         if (!st) return drop(child);
         if (!st.isDirectory()) return;
-        if (dirs.get(child)?.ino !== st.ino) drop(child);
+        // A directory rename event is a create, delete or swap: re-watch, since the old watcher may sit on a dead inode
+        if (event === 'rename') drop(child);
         addTree(child, true, depth + 1);
       });
     } catch (e) {
       if (e && e.code === 'ENOSPC' && !limitWarned) { limitWarned = true; console.warn('Live reload: the inotify watch limit is reached (fs.inotify.max_user_watches); some folders are not watched.'); }
       return;
     }
-    w.on('error', () => drop(abs));
-    dirs.set(abs, { w, ino });
+    w.on('error', () => { if (dirs.get(abs) === w) drop(abs); else try { w.close(); } catch { } });
+    dirs.set(abs, w);
     let entries = []; try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const child = join(abs, e.name);
