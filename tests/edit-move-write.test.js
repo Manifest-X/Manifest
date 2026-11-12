@@ -816,6 +816,22 @@ describe('startup sweep', () => {
         expect(msg.files).toEqual([{ rel: 'index.html', hash: res.base['index.html'] }])
     })
 
+    it('live reload keeps watching a folder that is deleted and re-created', async () => {
+        const events = []
+        const sse = http.get(`http://localhost:${port}/__mnfst_sse__?tabId=d-${Date.now()}`, res => res.on('data', c => events.push(String(c))))
+        await new Promise(r => setTimeout(r, 300))
+        const sub = path.join(dir, 'rebuilt')
+        mkdirSync(sub, { recursive: true }); writeFileSync(path.join(sub, 'a.html'), '1')
+        await new Promise(r => setTimeout(r, 500))
+        rmSync(sub, { recursive: true, force: true }); mkdirSync(sub)
+        await new Promise(r => setTimeout(r, 500)); events.length = 0
+        writeFileSync(path.join(sub, 'b.html'), '2')
+        await new Promise(r => setTimeout(r, 600))
+        sse.destroy()
+        const files = events.join('').split('\n').filter(l => l.startsWith('data:')).map(l => JSON.parse(l.slice(5))).filter(m => m.type === 'reload').flatMap(m => m.files.map(f => f.rel))
+        expect(files).toContain('rebuilt/b.html')
+    })
+
     it('SSE css messages carry the file and its new hash', async () => {
         const events = []
         const sse = http.get(`http://localhost:${port}/__mnfst_sse__?tabId=h-${Date.now()}`, res => res.on('data', c => events.push(String(c))))

@@ -56,7 +56,7 @@ import { createServer, get as httpGet, request as httpRequest }  from 'http';
 import { request as httpsRequest } from 'https';
 import { connect as tlsConnect } from 'tls';
 import {
-  readFileSync, statSync, watch,
+  readFileSync, statSync, lstatSync, watch,
   existsSync, writeFileSync, unlinkSync,
   mkdirSync, readdirSync, renameSync, accessSync, chmodSync, realpathSync, constants as fsConstants,
 } from 'fs';
@@ -662,24 +662,32 @@ function onFsChange(filename) {
 // so there every directory gets its own watcher, which survives renames inside it.
 function watchTree(top, onChange) {
   if (process.platform !== 'linux') return void watch(top, { recursive: true }, (_e, f) => onChange(f && relKey(f)));
-  const dirs = new Map();
+  const dirs = new Map();   // abs → { w, ino }: a re-created or swapped-in directory has a new inode
   const relOf = (abs) => relKey(relative(top, abs));
-  const drop = (abs) => { for (const [d, w] of dirs) if (d === abs || d.startsWith(abs + sep)) { try { w.close(); } catch { } dirs.delete(d); } };
+  let limitWarned = false;
+  const drop = (abs) => { for (const [d, x] of dirs) if (d === abs || d.startsWith(abs + sep)) { try { x.w.close(); } catch { } dirs.delete(d); } };
   const addTree = (abs, report, depth = 0) => {
     const rel = relOf(abs);
     if (dirs.has(abs) || depth > 24 || (rel && IGNORE.test(rel))) return;
-    let w;
+    let w, ino;
     try {
+      ino = lstatSync(abs).ino;
       w = watch(abs, (_e, f) => {
         if (!f) return;
         const child = join(abs, String(f));
         onChange(relOf(child));
-        let st = null; try { st = statSync(child); } catch { }
-        if (st && st.isDirectory()) addTree(child, true, depth + 1); else if (!st) drop(child);
+        let st = null; try { st = lstatSync(child); } catch { }
+        if (!st) return drop(child);
+        if (!st.isDirectory()) return;
+        if (dirs.get(child)?.ino !== st.ino) drop(child);
+        addTree(child, true, depth + 1);
       });
-    } catch { return; }
+    } catch (e) {
+      if (e && e.code === 'ENOSPC' && !limitWarned) { limitWarned = true; console.warn('Live reload: the inotify watch limit is reached (fs.inotify.max_user_watches); some folders are not watched.'); }
+      return;
+    }
     w.on('error', () => drop(abs));
-    dirs.set(abs, w);
+    dirs.set(abs, { w, ino });
     let entries = []; try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const child = join(abs, e.name);
