@@ -1215,6 +1215,7 @@ describe('auth store: a network failure is not a logout', () => {
             const initAccount = { ...online('u1'), deleteSession: async () => {} }
             const { store, events, storage } = await boot(noSession, { teams: true, teamsList: api.list, initAccount, mirror: u1 })
             expect(store.user?.$id).toBe('u1')
+            for (let i = 0; i < 100 && !api.calls.length; i++) await settle(10)   // the init team load starts after boot settles on slow machines
             expect(api.calls).toEqual(['u1'])
             events.length = 0
             const writes = watchTeams(store)
