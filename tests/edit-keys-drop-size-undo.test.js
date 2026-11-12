@@ -343,7 +343,7 @@ describe('resize limits', () => {
         const { el, handle } = await sizable('width: 200px')
         key(handle('right'), { key: 'ArrowRight' })
         el.remove()
-        await new Promise(r => setTimeout(r, 400))
+        await new Promise(r => setTimeout(r, 400))   // the timer used to throw here; vitest fails the run on it
         expect(el.isConnected).toBe(false)
     })
 

@@ -31,10 +31,11 @@ stranded fixes, and messy reconciliations. Keep everyone converged:
 ## Building & releasing
 
 - `npm run build` regenerates `lib/` from `src/` and re-syncs `packages/*`.
-- Publish with the `release:*` scripts (`release`, `release:render`,
-  `release:publish`, …). They derive the next version from npm
-  (`scripts/release-bump.mjs`), so a stale local checkout can't collide with an
-  already-published version.
+- Release by pushing a tag (`v*` → mnfst, `render-v*` → mnfst-render, …; see
+  `.github/workflows/release.yml`). CI runs the full test suite and a build-drift
+  check first and publishes nothing if either fails. The local `release:*` scripts
+  run `npm test` first too. Versions come from npm (`scripts/release-bump.mjs`),
+  so a stale checkout can't collide with an already-published version.
 
 ## Alpine version
 

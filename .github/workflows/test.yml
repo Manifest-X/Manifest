@@ -11,9 +11,10 @@ on:
 permissions:
   contents: read
 
+# Called runs (release.yml) get their own group so back-to-back releases never cancel each other.
 concurrency:
-  group: test-${{ github.workflow_ref }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref != 'refs/heads/master' }}
+  group: ${{ github.workflow == 'Test' && format('test-{0}', github.ref) || format('test-call-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.workflow == 'Test' && github.event_name == 'push' && github.ref != 'refs/heads/master' }}
 
 jobs:
   unit:
@@ -38,8 +39,8 @@ jobs:
       - name: lib/ and packages/ match a fresh build of src/
         run: |
           npm run build
-          if ! git diff --quiet; then
-            git diff --stat | while IFS= read -r line; do echo "::error title=Build drift::${line}"; done
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain | while IFS= read -r line; do echo "::error title=Build drift::${line}"; done
             echo "::error title=Build drift::Run npm run build and commit the result."
             exit 1
           fi
