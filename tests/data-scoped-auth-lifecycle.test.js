@@ -582,6 +582,20 @@ describe('async writes started before logout never land after it', () => {
         expect(fileIds()).toEqual([])
     })
 
+    it('a bucket $remove unlinks the file from table entries before deleting it', async () => {
+        await load(signedIn('u1'), null, { extra: FILES, listFiles: async () => [{ $id: 'u1-file' }] })
+        await window.ManifestDataMain.loadDataSource('files')
+        await settle(60)
+        window.ManifestDataAppwrite.deleteFile = async () => ({})
+        const unlinked = [], warns = []
+        const files = (window.ManifestDataProxiesFiles ||= {}), real = files.unlinkFileFromAllEntries
+        files.unlinkFileFromAllEntries = async (id) => { unlinked.push(id); return {} }
+        const warn = console.warn; console.warn = (...a) => warns.push(a.map(String).join(' '))
+        try { await methods('files')('$remove', 'u1-file') } finally { console.warn = warn; files.unlinkFileFromAllEntries = real }
+        expect(unlinked).toEqual(['u1-file'])
+        expect(warns.filter(w => w.includes('unlink'))).toEqual([])
+    })
+
     it('a realtime event mid-handler when the source resets does not land', async () => {
         const rt = mockRealtime()
         await load(signedIn('u1'), null, { realtime: rt, extra: MINE })

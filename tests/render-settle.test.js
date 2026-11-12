@@ -401,14 +401,14 @@ describe('settle reach per render run', () => {
     const state = createSettleState()
     const row = await renderAuto({ waitAfterIdle: 600, settleState: state })
     const { routeState, renderReady, flush, og } = row.stages
-    expect(og).toBeGreaterThanOrEqual(600)
+    expect(og).toBeGreaterThanOrEqual(590)
     expect(state.extra).toEqual([1000, routeState + renderReady + flush + og])
   }, 15000)
 
   it("one site's slow pages never widen another site's reach", async () => {
     const slowSite = createSettleState()
     await renderAuto({ waitAfterIdle: 2000, settleState: slowSite })
-    expect(settleExtraMs(slowSite)).toBeGreaterThanOrEqual(2000)
+    expect(settleExtraMs(slowSite)).toBeGreaterThanOrEqual(1990)   // ms clocks round; a timer can land a tick early
     // A timer due beyond the default reach (~3.5s from a fresh network) but within the slow site's
     const timers = []
     const script = () => { timers.push(setTimeout(() => {}, 3800)) }
@@ -418,7 +418,7 @@ describe('settle reach per render run', () => {
       expect(own.settle[0]).toMatchObject({ phase: 'load', ok: true })
       expect(own.settle[0].path).toBeUndefined()
       expect(otherSite.extra).toHaveLength(2)
-      expect(settleExtraMs(slowSite)).toBeGreaterThanOrEqual(2000)
+      expect(settleExtraMs(slowSite)).toBeGreaterThanOrEqual(1990)
       // No state passed: one per origin
       await renderAuto({ waitAfterIdle: 2000, baseUrl: 'http://slow.test' })
       const fresh = await renderAuto({ script, baseUrl: 'http://other.test' })
