@@ -17,27 +17,24 @@ function parseArgs(argv) {
   let force = false;       // --force: overwrite same-named files in --here mode
   const remaining = [];
 
+  const VALUE_FLAGS = ['--key', '--mcp-url', '--name', '--project-id'];
+  const set = (flag, value) => {
+    if (!value || !value.trim() || value.startsWith('--')) fail(`${flag} requires a value (e.g. ${flag}=value)`);
+    if (flag === '--key') apiKey = value;
+    else if (flag === '--mcp-url') mcpUrl = value;
+    else if (flag === '--project-id') projectId = value;
+    else displayName = value;
+  };
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--key' || arg === '--mcp-url' || arg === '--name' || arg === '--project-id') {
-      const value = argv[i + 1];
-      if (!value || value.startsWith('--')) {
-        console.error(`Error: ${arg} requires a value (e.g. ${arg}=value)`);
-        process.exit(1);
-      }
-      if (arg === '--key') apiKey = value;
-      else if (arg === '--mcp-url') mcpUrl = value;
-      else if (arg === '--project-id') projectId = value;
-      else displayName = value;
+    const eq = arg.indexOf('=');
+    const flag = arg.startsWith('--') && eq > 0 ? arg.slice(0, eq) : arg;
+    if (VALUE_FLAGS.includes(arg)) {
+      set(arg, argv[i + 1]);
       i++;
-    } else if (arg.startsWith('--key=')) {
-      apiKey = arg.slice('--key='.length);
-    } else if (arg.startsWith('--mcp-url=')) {
-      mcpUrl = arg.slice('--mcp-url='.length);
-    } else if (arg.startsWith('--project-id=')) {
-      projectId = arg.slice('--project-id='.length);
-    } else if (arg.startsWith('--name=')) {
-      displayName = arg.slice('--name='.length);
+    } else if (flag !== arg && VALUE_FLAGS.includes(flag)) {
+      set(flag, arg.slice(eq + 1));
     } else if (arg === '--here' || arg === '.') {
       here = true;
     } else if (arg === '--force') {
@@ -45,6 +42,8 @@ function parseArgs(argv) {
     } else if (arg === '--help' || arg === '-h') {
       printUsage();
       process.exit(0);
+    } else if (arg.startsWith('-')) {
+      fail(`unknown option "${flag}". Run npx mnfst-starter --help for the supported options.`);
     } else {
       remaining.push(arg);
     }
@@ -61,23 +60,32 @@ function parseArgs(argv) {
   };
 }
 
-function printUsage() {
-  console.log('Usage: npx mnfst-starter [<project-name> | --here [--force]] [--name "<name>"] [--project-id=<id>] [--key=<api-key>] [--mcp-url=<url>]');
-  console.log('');
-  console.log('Examples:');
-  console.log('  npx mnfst-starter MyProject                 # scaffold into ./MyProject');
-  console.log('  npx mnfst-starter "Playcom Platform"');
-  console.log('  npx mnfst-starter --here                    # scaffold into the current folder');
-  console.log('  npx mnfst-starter --here --name "My Site"   # current folder, explicit name');
-  console.log('  npx mnfst-starter my-site --name "My Site"  # ./my-site, named "My Site"');
-  console.log('');
-  console.log('--here never overwrites existing files unless --force is given; --force');
-  console.log('lists what it overwrote and keeps an existing manifest.json name unless --name is given.');
-  console.log('');
-  console.log('--project-id and/or --key (normally passed by Manifest\'s manifest_init)');
-  console.log('wire the project to the Manifest MCP server: .mcp.json and');
-  console.log('.claude/settings.json are merged, and --key is saved to .env (gitignored)');
-  console.log('for headless/CI publishing.');
+function fail(message, usage = false) {
+  console.error(`Error: ${message}`);
+  if (usage) {
+    console.error('');
+    printUsage(console.error);
+  }
+  process.exit(1);
+}
+
+function printUsage(log = console.log) {
+  log('Usage: npx mnfst-starter [<project-name> | --here [--force]] [--name "<name>"] [--project-id=<id>] [--key=<api-key>] [--mcp-url=<url>]');
+  log('');
+  log('Examples:');
+  log('  npx mnfst-starter MyProject                 # scaffold into ./MyProject');
+  log('  npx mnfst-starter "Playcom Platform"');
+  log('  npx mnfst-starter --here                    # scaffold into the current folder');
+  log('  npx mnfst-starter --here --name "My Site"   # current folder, explicit name');
+  log('  npx mnfst-starter my-site --name "My Site"  # ./my-site, named "My Site"');
+  log('');
+  log('--here never overwrites existing files unless --force is given; --force');
+  log('lists what it overwrote and keeps an existing manifest.json name unless --name is given.');
+  log('');
+  log('--project-id and/or --key (normally passed by Manifest\'s manifest_init)');
+  log('wire the project to the Manifest MCP server: .mcp.json and');
+  log('.claude/settings.json are merged, and --key is saved to .env (gitignored)');
+  log('for headless/CI publishing.');
 }
 
 const { apiKey, mcpUrl, projectId, here, force, displayName, projectName } = parseArgs(process.argv.slice(2));
@@ -87,20 +95,21 @@ if (!here && force) console.error('Warning: --force only applies with --here; ig
 
 // --here: --name, else an existing manifest.json name (kept on --force), else the folder name.
 // New folder: the positional is the folder; --name, if given, is the project name.
-const existingManifestName = here && !displayName ? readManifestName(path.join(process.cwd(), 'manifest.json')) : null;
+const existingManifest = here && !displayName ? readManifestName(path.join(process.cwd(), 'manifest.json')) : null;
+const existingManifestName = existingManifest && existingManifest.name ? existingManifest : null;
 const folder = here ? null : projectName;
 const name = here ? (displayName || path.basename(process.cwd())) : (displayName || projectName);
 
-if (!name || (!here && !folder)) {
-  printUsage();
-  process.exit(1);
+if (!here && !folder) {
+  fail(displayName
+    ? `no folder name given; --name only sets the project name. Add a folder (npx mnfst-starter my-site --name "${displayName}") or use --here.`
+    : 'give a folder name for the new project, or use --here to scaffold into the current folder.', true);
 }
+if (!name) fail('could not work out a project name; pass --name "<name>".', true);
 
-for (const n of new Set([existingManifestName ? null : name, folder].filter(Boolean))) {
-  if (!validName(n)) {
-    console.error('Error: Project name must contain only letters, numbers, spaces, dots, underscores, and hyphens. Cannot start/end with dots or spaces, or contain consecutive dots.');
-    process.exit(1);
-  }
+// Only the folder becomes a path; the display name may be any text.
+if (folder && !validName(folder)) {
+  fail('Folder name must contain only letters, numbers, spaces, dots, underscores, and hyphens. Cannot start/end with dots or spaces, or contain consecutive dots. Use --name for any other project name.');
 }
 
 // Validate API key shape if provided (defence-in-depth — wrong key still works at runtime as anonymous,
@@ -156,6 +165,7 @@ if (overwritten.length) {
   overwritten.forEach((f) => console.error('  ' + f));
 }
 if (existingManifestName) console.error(`Keeping the existing manifest.json name "${existingManifestName.name}"; pass --name to change it.`);
+if (existingManifest && existingManifest.invalid) console.error(`Warning: the existing manifest.json is not a valid JSON object, so its name could not be kept; using "${name}". Pass --name to set it.`);
 
 try {
   // Create project directory
@@ -185,7 +195,8 @@ try {
         else delete mf.short_name;
       } else {
         mf.name = name;
-        mf.short_name = name.length > 12 ? name.slice(0, 12).trimEnd() : name;
+        const chars = Array.from(name);
+        mf.short_name = chars.length > 12 ? chars.slice(0, 12).join('').trimEnd() : name;
       }
       fs.writeFileSync(manifestPath, JSON.stringify(mf, null, 2) + '\n');
     } catch {
@@ -359,14 +370,19 @@ function validName(n) {
   return /^[a-zA-Z0-9._ -]+$/.test(n) && !n.includes('..') && !n.startsWith('.') && !n.endsWith('.') && !/^\s|\s$/.test(n);
 }
 
-// { name, short_name } from an existing manifest.json, or null
+// { name, short_name } from an existing manifest.json; { invalid } if unreadable; null if absent or unnamed
 function readManifestName(file) {
+  if (!fs.existsSync(file)) return null;
+  let mf;
   try {
-    const mf = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (mf && typeof mf.name === 'string' && mf.name.trim()) {
-      return { name: mf.name, short_name: typeof mf.short_name === 'string' ? mf.short_name : null };
-    }
-  } catch {}
+    mf = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return { invalid: true };
+  }
+  if (!mf || typeof mf !== 'object' || Array.isArray(mf)) return { invalid: true };
+  if (typeof mf.name === 'string' && mf.name.trim()) {
+    return { name: mf.name, short_name: typeof mf.short_name === 'string' ? mf.short_name : null };
+  }
   return null;
 }
 
