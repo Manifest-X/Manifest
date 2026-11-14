@@ -157,9 +157,24 @@ function initializeLocalizationPlugin() {
             .filter(Boolean);
     }
 
+    // Base path split
+    function splitBasePath(pathname) {
+        const parts = String(pathname || '/').split('/').filter(Boolean);
+        const base = (typeof window.getManifestBasePath === 'function' ? window.getManifestBasePath() : '') || '';
+        const baseParts = base.split('/').filter(Boolean);
+        if (baseParts.length && baseParts.every((seg, i) => parts[i] === seg)) {
+            return { base: '/' + baseParts.join('/'), parts: parts.slice(baseParts.length) };
+        }
+        return { base: '', parts };
+    }
+
+    function joinBasePath(base, parts) {
+        return (base + '/' + parts.join('/')).replace(/\/{2,}/g, '/');
+    }
+
     function buildLocaleNavigationUrl(newLang, availableLocales) {
         const currentUrl = new URL(window.location.href);
-        const pathParts = currentUrl.pathname.split('/').filter(Boolean);
+        const { base, parts: pathParts } = splitBasePath(currentUrl.pathname);
         const hasLanguageInUrl = pathParts[0] && availableLocales.includes(pathParts[0]);
 
         const pathWithoutLocale = hasLanguageInUrl ? pathParts.slice(1) : pathParts;
@@ -192,7 +207,7 @@ function initializeLocalizationPlugin() {
 
         if (hasLanguageInUrl) pathParts[0] = newLang;
         else pathParts.unshift(newLang);
-        currentUrl.pathname = '/' + pathParts.join('/') + '/';
+        currentUrl.pathname = joinBasePath(base, pathParts) + '/';
         return currentUrl.toString();
     }
 
@@ -373,7 +388,7 @@ function initializeLocalizationPlugin() {
     function detectInitialLocale(availableLocales) {
 
         // URL path (direct links)
-        const pathParts = window.location.pathname.split('/').filter(Boolean);
+        const pathParts = splitBasePath(window.location.pathname).parts;
         if (pathParts[0] && isValidLanguageCode(pathParts[0]) && availableLocales.includes(pathParts[0])) {
             return pathParts[0];
         }
@@ -472,19 +487,19 @@ function initializeLocalizationPlugin() {
             // Skipped for scoped demo changes — the prefixed URL wasn't prerendered.
             try {
                 const currentUrl = new URL(window.location.href);
-                const pathParts = currentUrl.pathname.split('/').filter(Boolean);
+                const { base, parts: pathParts } = splitBasePath(currentUrl.pathname);
                 const hasLanguageInUrl = pathParts[0] && store.available.includes(pathParts[0]);
 
                 if (!isScopedDemoChange && (updateUrl || hasLanguageInUrl)) {
                     if (hasLanguageInUrl) {
                         if (pathParts[0] !== newLang) {
                             pathParts[0] = newLang;
-                            currentUrl.pathname = '/' + pathParts.join('/');
+                            currentUrl.pathname = joinBasePath(base, pathParts);
                             window.history.replaceState({}, '', currentUrl);
                         }
                     } else if (updateUrl && pathParts.length > 0) {
                         pathParts.unshift(newLang);
-                        currentUrl.pathname = '/' + pathParts.join('/');
+                        currentUrl.pathname = joinBasePath(base, pathParts);
                         window.history.replaceState({}, '', currentUrl);
                     }
                 }
@@ -555,11 +570,11 @@ function initializeLocalizationPlugin() {
         } catch {
             return false;
         }
-        const segs = target.pathname.split('/').filter(Boolean);
+        const { base: targetBase, parts: segs } = splitBasePath(target.pathname);
         if (segs.length && available.includes(segs[0])) {
             segs.shift();
         }
-        target.pathname = '/' + segs.join('/');
+        target.pathname = joinBasePath(targetBase, segs);
 
         // Apply default to live store + DOM before navigating
         if (store && store.current !== defaultLocale) {

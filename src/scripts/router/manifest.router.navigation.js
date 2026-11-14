@@ -313,6 +313,19 @@ if (typeof navigator !== 'undefined' && navigator.webdriver === true) {
 }
 
 // Resolve internal link to absolute pathname for pushState. Relative hrefs (e.g. "gadget") are resolved against the app base, not the current URL, so we never get additive paths like /src/dist/widget/gadget/widget/...
+// Href parts: path, ?query, #hash
+function splitHref(href) {
+    const hashAt = href.indexOf('#');
+    const hash = hashAt === -1 ? '' : href.slice(hashAt + 1);
+    const beforeHash = hashAt === -1 ? href : href.slice(0, hashAt);
+    const queryAt = beforeHash.indexOf('?');
+    return {
+        path: queryAt === -1 ? beforeHash : beforeHash.slice(0, queryAt),
+        search: queryAt === -1 ? '' : beforeHash.slice(queryAt),
+        hash
+    };
+}
+
 function resolveHref(href) {
     if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) return href;
     try {
@@ -447,21 +460,20 @@ function interceptLinkClicks() {
             return;
         }
 
+        const { path, search, hash } = splitHref(href);
+        const fullHref = (path ? resolveHref(path) : '') + search + (hash ? '#' + hash : '');
+
         // target=_blank: open the resolved URL (base path, locale) in a new tab
         if (target === '_blank') {
-            const [path, hash] = href.split('#');
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
-            window.open(resolveHref(path) + (hash ? '#' + hash : ''), '_blank', 'noopener');
+            window.open(fullHref, '_blank', link.relList?.contains('noreferrer') ? 'noopener,noreferrer' : 'noopener');
             return;
         }
 
         // Handle links with both route and anchor (e.g., /page#section)
-        if (href.includes('#')) {
-            const [path, hash] = href.split('#');
-            const fullHref = resolveHref(path) + (hash ? '#' + hash : '');
-
+        if (hash) {
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
@@ -497,7 +509,6 @@ function interceptLinkClicks() {
         isInternalNavigation = true;
 
         // Update URL without page reload (use base path when app is in a subpath, e.g. /src/dist/gadget)
-        const fullHref = resolveHref(href);
         history.pushState(null, '', fullHref);
 
         // Handle route change
