@@ -1112,14 +1112,14 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         await unlinkFileFromEntry(tableName, entryId, fileId.$id || fileId, fileIdsColumn || 'fileIds');
                     }
 
-                    // Auto-refresh: automatically refresh and return files list for this table/entry
-                    // This matches the pattern of $x.projects.$delete() which auto-reloads
+                    // Return the entry's refreshed files list
                     const getFilesForEntry = window.ManifestDataProxiesFiles?.getFilesForEntry;
                     if (getFilesForEntry) {
                         return await getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn || 'fileIds');
                     }
                     return null;
                 } else if (method === '$remove') {
+                    // Usage: $x.assets.$remove(fileIdOrArray)
                     return await deleteBucketFiles(args[0]);
                 }
             }

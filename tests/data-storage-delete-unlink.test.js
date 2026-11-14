@@ -40,13 +40,13 @@ afterEach(() => {
 })
 
 // Server: one bucket of files, one table whose rows link them in several columns
-async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [] } = {}) {
+async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [], delays = {} } = {}) {
     window.Alpine = Alpine
     Alpine.store('auth', { _initialized: true, isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, currentTeam: null, teams: [] })
     window.__manifestRenderReady = false
 
     const server = {
-        files: files.map($id => ({ $id })),
+        files: files.map(f => typeof f === 'string' ? { $id: f } : f),
         rows: new Map((rows || []).map(r => [r.$id, JSON.parse(JSON.stringify(r))])),
         listings: 0,
         updates: [],
@@ -70,7 +70,7 @@ async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [] 
             return { $id: id, ...server.rows.get(id) }
         },
         deleteFile: async (bucket, id) => {
-            await settle(5)
+            await settle(delays[id] ?? 5)
             server.deletes.push(id)
             if (failDelete.includes(id)) throw new Error(`denied ${id}`)
             server.files = server.files.filter(f => f.$id !== id)
@@ -191,5 +191,75 @@ describe('bucket delete return values', () => {
         expect(await call('$remove', ['b', 'c'])).toEqual([{}, {}])
         expect(await call('$remove', [])).toEqual([])
         expect(server.deletes).toEqual(['a', 'b', 'c'])
+    })
+})
+
+describe('failed array deletes return in their original order', () => {
+    it.each([
+        ['first settles first', ['a', 'c'], { a: 5, c: 40 }],
+        ['last settles first', ['a', 'c'], { a: 40, c: 5 }],
+        ['adjacent, later id settles first', ['b', 'a'], { a: 40, b: 5 }],
+        ['adjacent, earlier id settles first', ['b', 'a'], { a: 5, b: 40 }],
+    ])('unsorted source: %s', async (label, ids, delays) => {
+        await load({ files: ['a', 'b', 'c', 'd'], failDelete: ids, delays })
+        await expect(quiet(() => call('$remove', ids))).rejects.toThrow('denied')
+        await settle(60)
+        expect(fileIds()).toEqual(['a', 'b', 'c', 'd'])
+    })
+
+    it('a table array $delete restores order too', async () => {
+        await load({ rows: [{ $id: 'p1' }, { $id: 'p2' }, { $id: 'p3' }, { $id: 'p4' }] })
+        window.ManifestDataAppwrite.deleteRow = async (db, table, id) => { await settle(id === 'p1' ? 5 : 40); throw new Error(`denied ${id}`) }
+        const tableCall = window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler('projects', () => {})
+        await expect(quiet(() => tableCall('$delete', ['p1', 'p3']))).rejects.toThrow('denied')
+        await settle(60)
+        expect(Array.from(Alpine.store('data').projects).map(r => r.$id)).toEqual(['p1', 'p2', 'p3', 'p4'])
+    })
+
+    it('a sorted source re-sorts a returning row', async () => {
+        window.Appwrite = { Query: { orderAsc: attr => JSON.stringify({ method: 'orderAsc', attribute: attr }) } }
+        try {
+            await load({
+                data: { files: { appwriteBucketId: 'files', queries: [['orderAsc', 'name']] } },
+                files: ['a', 'b', 'c', 'd'].map(id => ({ $id: id, name: id })),
+                failDelete: ['a', 'c'], delays: { a: 5, c: 40 }
+            })
+            expect(window.ManifestDataMain.orderFor('files')).toBeTruthy()
+            await expect(quiet(() => call('$remove', ['a', 'c']))).rejects.toThrow('denied')
+            await settle(60)
+            expect(fileIds()).toEqual(['a', 'b', 'c', 'd'])
+        } finally {
+            delete window.Appwrite
+        }
+    })
+})
+
+describe('the default fileIds column follows its owning bucket', () => {
+    it("is not unlinked when the table maps it to another bucket", async () => {
+        const server = await load({
+            data: {
+                projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db', storage: { photos: { appwriteBucketId: 'other' }, files: 'docIds' } },
+            },
+            rows: [{ $id: 'p1', fileIds: ['a'], docIds: ['a'] }]
+        })
+        await call('$remove', 'a')
+        await settle(60)
+        expect(server.rows.get('p1').fileIds).toEqual(['a'])
+        expect(server.rows.get('p1').docIds).toEqual([])
+    })
+
+    it('a mapping whose bucket cannot be resolved is skipped', async () => {
+        const server = await load({
+            data: {
+                projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db', storage: { missing: 'ghostIds', loose: { column: 'looseIds' } } },
+            },
+            rows: [{ $id: 'p1', fileIds: ['a'], ghostIds: ['a'], looseIds: ['a'] }]
+        })
+        await call('$remove', 'a')
+        await settle(60)
+        const p1 = server.rows.get('p1')
+        expect(p1.ghostIds).toEqual(['a'])
+        expect(p1.looseIds).toEqual(['a'])
+        expect(p1.fileIds).toEqual([])
     })
 })

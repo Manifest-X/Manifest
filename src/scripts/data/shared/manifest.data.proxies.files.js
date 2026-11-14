@@ -1021,28 +1021,30 @@ async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
     }
 }
 
-// Link columns a table may hold a bucket's file ids in: fileIds, storage mappings, belongsTo
+// Link columns a table holds a bucket's file ids in: storage mappings, belongsTo, else fileIds
 function fileLinkColumns(manifest, tableName, tableConfig, bucketId) {
     const config = window.ManifestDataConfig;
-    const matches = id => !bucketId || !id || id === bucketId;
-    const columns = new Set(['fileIds']);
+    const links = [];
     const storage = tableConfig?.storage;
     if (storage && typeof storage === 'object') {
         for (const [bucketName, mapping] of Object.entries(storage)) {
             if (typeof mapping === 'string') {
                 const bucketSource = manifest.data[bucketName];
-                if (matches(bucketSource ? config.getAppwriteBucketId(bucketSource) : null)) columns.add(mapping);
+                links.push({ bucket: bucketSource ? config.getAppwriteBucketId(bucketSource) : null, column: mapping });
             } else if (mapping && typeof mapping === 'object') {
-                if (matches(mapping.appwriteBucketId)) columns.add(mapping.column || 'fileIds');
+                links.push({ bucket: mapping.appwriteBucketId || null, column: mapping.column || 'fileIds' });
             }
         }
     }
     for (const source of Object.values(manifest.data)) {
         const link = source && typeof source === 'object' ? source.belongsTo : null;
-        if (link?.table === tableName && link.fileIdsColumn && matches(config.getAppwriteBucketId(source))) {
-            columns.add(link.fileIdsColumn);
+        if (link?.table === tableName && link.fileIdsColumn) {
+            links.push({ bucket: config.getAppwriteBucketId(source) || null, column: link.fileIdsColumn });
         }
     }
+    const known = links.filter(link => link.bucket);
+    const columns = new Set(known.filter(link => !bucketId || link.bucket === bucketId).map(link => link.column));
+    if (!known.some(link => link.column === 'fileIds')) columns.add('fileIds');
     return [...columns];
 }
 

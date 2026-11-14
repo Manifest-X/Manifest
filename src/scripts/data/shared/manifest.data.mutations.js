@@ -138,14 +138,53 @@ function sameValue(a, b) {
     try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
 }
 
-// Re-insert a row at its old index (a failed delete); never duplicates one already back
+// Source order before overlapping deletes began: failed deletes return relative to it
+const deleteOrders = new Map();
+
+function beginDeleteOrder(dataSourceName) {
+    let entry = deleteOrders.get(dataSourceName);
+    if (!entry) {
+        const { arr } = findRawIndex(dataSourceName, null);
+        entry = { ids: arr ? arr.map(row => row?.$id) : [], count: 0 };
+        deleteOrders.set(dataSourceName, entry);
+    }
+    entry.count++;
+    return entry;
+}
+
+function endDeleteOrder(dataSourceName, entry) {
+    if (!entry || --entry.count > 0) return;
+    if (deleteOrders.get(dataSourceName) === entry) deleteOrders.delete(dataSourceName);
+}
+
+// Where a returning row goes: after its nearest present predecessor in the order, else before its successor
+function restoreIndex(arr, order, id, fallback) {
+    const at = order ? order.indexOf(id) : -1;
+    if (at !== -1) {
+        for (let i = at - 1; i >= 0; i--) {
+            const j = arr.findIndex(row => row?.$id === order[i]);
+            if (j !== -1) return j + 1;
+        }
+        for (let i = at + 1; i < order.length; i++) {
+            const j = arr.findIndex(row => row?.$id === order[i]);
+            if (j !== -1) return j;
+        }
+    }
+    return fallback >= 0 && fallback <= arr.length ? fallback : arr.length;
+}
+
+// Re-insert a row deleted optimistically (a failed delete); never duplicates one already back
 function insertEntryAt(dataSourceName, entry, index, options = {}) {
     if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
     const { store, arr, index: existing } = findRawIndex(dataSourceName, entry?.$id);
     if (!store || !arr || existing !== -1) return false;
     const ds = window.ManifestDataStore;
-    const at = index >= 0 && index <= arr.length ? index : arr.length;
-    store[dataSourceName].splice(at, 0, ds.createReactiveReferences(entry, dataSourceName));
+    const row = ds.createReactiveReferences(entry, dataSourceName);
+    if (window.ManifestDataMain?.orderFor?.(dataSourceName) && ds.insertRow) {
+        ds.insertRow(store, dataSourceName, row);
+    } else {
+        store[dataSourceName].splice(restoreIndex(arr, options.order, entry.$id, index), 0, row);
+    }
     ds.touchSource(dataSourceName);
     clearSourceCaches(dataSourceName);
     return true;
@@ -205,6 +244,7 @@ async function executeMutation(mutationConfig) {
     let resolvedEntryId = entryId;
     let held = null;          // pending-write token: re-applied over landings until settled
     let deletedAt = -1;       // a failed delete returns the row to its place
+    let deleteOrder = null;
     const ds0 = window.ManifestDataStore;
 
     // Get helper functions from store
@@ -259,6 +299,7 @@ async function executeMutation(mutationConfig) {
             // Snapshot for rollback
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
+                deleteOrder = beginDeleteOrder(dataSourceName);
                 deletedAt = findRawIndex(dataSourceName, entryId).index;
                 const found = deletedAt !== -1 ? store[dataSourceName][deletedAt] : null;
                 originalData = found ? { ...found } : null;
@@ -337,6 +378,7 @@ async function executeMutation(mutationConfig) {
 
         // Step 4: Clean up pending mutation
         pendingMutations.delete(mutationId);
+        endDeleteOrder(dataSourceName, deleteOrder);
 
         // Dispatch success event
         window.dispatchEvent(new CustomEvent('manifest:data-mutation-success', {
@@ -390,12 +432,13 @@ async function executeMutation(mutationConfig) {
                 }
                 if (Object.keys(restore).length) updateEntryInStore(dataSourceName, entryId, restore, writeOptions);
             } else if (type === 'delete' && originalData) {
-                insertEntryAt(dataSourceName, originalData, deletedAt, writeOptions);
+                insertEntryAt(dataSourceName, originalData, deletedAt, { ...writeOptions, order: deleteOrder?.ids });
             }
         };
 
         rollbackFn();
         pendingMutations.delete(mutationId);
+        endDeleteOrder(dataSourceName, deleteOrder);
 
         // Dispatch error event
         window.dispatchEvent(new CustomEvent('manifest:data-mutation-error', {
