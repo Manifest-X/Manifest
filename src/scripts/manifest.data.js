@@ -7590,27 +7590,48 @@ async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
     }
 }
 
-// Unlink a file from all table entries that reference it (used when deleting files)
-// This is a best-effort cleanup - uses already-loaded table data from Alpine store
-// Returns array of affected entry IDs grouped by table name: { tableName: [entryId1, entryId2, ...] }
-async function unlinkFileFromAllEntries(fileId) {
+// Link columns a table may hold a bucket's file ids in: fileIds, storage mappings, belongsTo
+function fileLinkColumns(manifest, tableName, tableConfig, bucketId) {
+    const config = window.ManifestDataConfig;
+    const matches = id => !bucketId || !id || id === bucketId;
+    const columns = new Set(['fileIds']);
+    const storage = tableConfig?.storage;
+    if (storage && typeof storage === 'object') {
+        for (const [bucketName, mapping] of Object.entries(storage)) {
+            if (typeof mapping === 'string') {
+                const bucketSource = manifest.data[bucketName];
+                if (matches(bucketSource ? config.getAppwriteBucketId(bucketSource) : null)) columns.add(mapping);
+            } else if (mapping && typeof mapping === 'object') {
+                if (matches(mapping.appwriteBucketId)) columns.add(mapping.column || 'fileIds');
+            }
+        }
+    }
+    for (const source of Object.values(manifest.data)) {
+        const link = source && typeof source === 'object' ? source.belongsTo : null;
+        if (link?.table === tableName && link.fileIdsColumn && matches(config.getAppwriteBucketId(source))) {
+            columns.add(link.fileIdsColumn);
+        }
+    }
+    return [...columns];
+}
+
+// Unlink file(s) from every loaded table entry that references them (after a delete)
+// Returns { tableName: [entryId, ...] }
+async function unlinkFileFromAllEntries(fileId, options = {}) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     if (!manifest?.data) {
         return {};
     }
 
-    const actualFileId = fileId?.$id || fileId;
-    if (!actualFileId) {
+    const fileIds = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id?.$id || id).filter(Boolean);
+    if (!fileIds.length) {
         return {};
     }
 
-    // Find all table data sources that might have fileIds arrays
     const tables = Object.entries(manifest.data).filter(([name, config]) =>
         config && typeof config === 'object' && window.ManifestDataConfig.getAppwriteTableId(config)
     );
 
-    // Use already-loaded data from Alpine store instead of querying Appwrite
-    // Check if Alpine is available before accessing store
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return {};
     }
@@ -7619,52 +7640,46 @@ async function unlinkFileFromAllEntries(fileId) {
         return {};
     }
 
-    const affectedEntries = {}; // { tableName: [entryId1, entryId2, ...] }
-
-    // Do all unlinks in parallel for speed
+    const affectedEntries = {};
     const unlinkPromises = [];
 
     for (const [tableName, tableConfig] of tables) {
         try {
-            const tableId = window.ManifestDataConfig.getAppwriteTableId(tableConfig);
             const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(tableConfig);
-
             if (!appwriteConfig) continue;
 
-            // Get already-loaded entries from Alpine store
             const entries = store[tableName];
             if (!Array.isArray(entries) || entries.length === 0) {
                 continue;
             }
 
-            // Find entries that have this fileId in their fileIds array
-            const entriesToUpdate = entries.filter(entry => {
-                const fileIds = entry.fileIds || [];
-                return Array.isArray(fileIds) && fileIds.includes(actualFileId);
-            });
+            const columns = fileLinkColumns(manifest, tableName, tableConfig, options.bucketId);
+            const affected = new Set();
 
-            if (entriesToUpdate.length > 0) {
-                affectedEntries[tableName] = entriesToUpdate.map(e => e.$id);
+            for (const entry of entries) {
+                for (const column of columns) {
+                    const linked = entry?.[column];
+                    if (!Array.isArray(linked)) continue;
+                    for (const id of fileIds) {
+                        if (!linked.includes(id)) continue;
+                        affected.add(entry.$id);
+                        unlinkPromises.push(
+                            unlinkFileFromEntry(tableName, entry.$id, id, column).catch(error => {
+                                console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
+                            })
+                        );
+                    }
+                }
             }
 
-            // Unlink file from each entry in parallel
-            for (const entry of entriesToUpdate) {
-                unlinkPromises.push(
-                    unlinkFileFromEntry(tableName, entry.$id, actualFileId, 'fileIds')
-                        .then(() => {
-                        })
-                        .catch(error => {
-                            console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
-                        })
-                );
+            if (affected.size > 0) {
+                affectedEntries[tableName] = [...affected];
             }
         } catch (error) {
-            // Silently continue - not all tables may have fileIds
             console.warn('[Manifest Data] Could not process', tableName, ':', error.message);
         }
     }
 
-    // Wait for all unlinks to complete
     await Promise.all(unlinkPromises);
 
     return affectedEntries;
@@ -8413,6 +8428,69 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
             // Handle storage operations
             if (bucketId) {
+                // $delete / $remove: delete each file, land successes locally, then unlink them
+                const deleteBucketFiles = async (fileId) => {
+                    const ids = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id?.$id || id);
+                    if (Array.isArray(fileId) && !ids.length) return [];
+                    if (ids.some(id => !id)) {
+                        throw new Error(`[Manifest Data] ${method} requires file ID`);
+                    }
+                    const ds = window.ManifestDataStore;
+                    const generation = ds?.sourceGeneration?.(dataSourceName);
+                    const executeMutation = window.ManifestDataMutations?.executeMutation;
+                    const deleteOne = id => executeMutation
+                        ? executeMutation({
+                            type: 'delete',
+                            dataSourceName,
+                            entryId: id,
+                            apiCall: () => window.ManifestDataAppwrite.deleteFile(bucketId, id),
+                            options: { scope, bucketId, appwriteConfig }
+                        })
+                        : window.ManifestDataAppwrite.deleteFile(bucketId, id);
+
+                    const settled = await Promise.allSettled(ids.map(deleteOne));
+                    const deleted = ids.filter((id, i) => settled[i].status === 'fulfilled');
+
+                    // Never a relist: an unfiltered listing would bypass the source's queries and scope
+                    if (deleted.length && ds?.landRemove) {
+                        await ds.landRemove(dataSourceName, deleted, { generation });
+                    }
+
+                    // Unlink only what the server deleted
+                    const unlink = window.ManifestDataProxiesFiles?.unlinkFileFromAllEntries;
+                    const affected = await Promise.all(deleted.map(async id => {
+                        try {
+                            return unlink ? await unlink(id, { bucketId }) || {} : {};
+                        } catch (unlinkError) {
+                            console.warn('[Manifest Data] Failed to unlink deleted file from entries:', unlinkError);
+                            return {};
+                        }
+                    }));
+
+                    const tables = new Set(affected.flatMap(entries => Object.keys(entries)));
+                    const reloadDataSourceFunc = window.ManifestDataMain?._loadDataSource;
+                    if (reloadDataSourceFunc) {
+                        for (const tableName of tables) {
+                            reloadDataSourceFunc(tableName).catch(err => {
+                                console.warn(`[Manifest Data] Failed to reload ${tableName} after file delete:`, err);
+                            });
+                        }
+                    }
+
+                    deleted.forEach((id, i) => {
+                        const linked = Object.entries(affected[i]).filter(([, entryIds]) => Array.isArray(entryIds) && entryIds.length);
+                        for (const [tableName, entryIds] of linked.length ? linked : [[null, []]]) {
+                            window.dispatchEvent(new CustomEvent('manifest:file-deleted', { detail: { fileId: id, tableName, entryIds } }));
+                        }
+                        window.dispatchEvent(new CustomEvent('manifest:file-deleted', { detail: { fileId: id, tableName: null, entryIds: [], bucketId } }));
+                    });
+
+                    const failed = settled.find(r => r.status === 'rejected');
+                    if (failed) throw failed.reason;
+                    const results = settled.map(r => r.value);
+                    return Array.isArray(fileId) ? results : results[0];
+                };
+
                 if (method === '$create') {
                     let [fileId, file, permissions, onProgress] = args;
 
@@ -8734,85 +8812,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                     return result;
                 } else if (method === '$delete') {
-                    const fileId = args[0];
-                    const actualFileId = fileId?.$id || fileId;
-
-                    // Before deleting, unlink file from any table entries that reference it
-                    // This prevents orphaned references (best-effort cleanup)
-                    try {
-                        const unlinkFileFromAllEntries = window.ManifestDataProxiesFiles?.unlinkFileFromAllEntries;
-                        if (unlinkFileFromAllEntries) {
-                            await unlinkFileFromAllEntries(actualFileId);
-                        }
-                    } catch (unlinkError) {
-                        console.warn('[Manifest Data] Failed to unlink file from entries before delete:', unlinkError);
-                        // Continue with delete even if unlink fails
-                    }
-
-                    const executeMutation = window.ManifestDataMutations?.executeMutation;
-                    const removeEntryFromStore = window.ManifestDataMutations?.removeEntryFromStore;
-
-                    if (Array.isArray(fileId)) {
-                        if (executeMutation) {
-                            // Use optimistic updates for batch delete
-                            const results = await Promise.all(
-                                fileId.map(id => {
-                                    const entryId = id.$id || id;
-                                    return executeMutation({
-                                        type: 'delete',
-                                        dataSourceName,
-                                        entryId,
-                                        apiCall: async () => {
-                                            return await window.ManifestDataAppwrite.deleteFile(bucketId, entryId);
-                                        },
-                                        options: {
-                                            scope,
-                                            bucketId,
-                                            appwriteConfig
-                                        }
-                                    });
-                                })
-                            );
-
-                            // No reload: optimistic delete + realtime sync. Reloading
-                            // races and can resurrect deleted files from stale data.
-                            return results;
-                        } else {
-                            // Fallback to old behavior
-                            const results = await Promise.all(
-                                fileId.map(id =>
-                                    window.ManifestDataAppwrite.deleteFile(bucketId, id.$id || id)
-                                )
-                            );
-                            // Note: No reload - rely on realtime events for sync
-                            return results;
-                        }
-                    } else {
-                        if (executeMutation) {
-                            const result = await executeMutation({
-                                type: 'delete',
-                                dataSourceName,
-                                entryId: actualFileId,
-                                apiCall: async () => {
-                                    return await window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
-                                },
-                                options: {
-                                    scope,
-                                    bucketId,
-                                    appwriteConfig
-                                }
-                            });
-
-                            // No reload: optimistic delete + realtime sync. Reloading
-                            // races and can resurrect deleted files from stale data.
-                            return result;
-                        } else {
-                            // Fallback to old behavior
-                            const result = await window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
-                            // Note: No reload - rely on realtime events for sync
-                            return result;
-                        }
-                    }
+                    return await deleteBucketFiles(args[0]);
                 } else if (method === '$duplicate') {
                     const [fileId, options = {}] = args;
                     const { newFileId, newName, ...overrides } = options;
@@ -9076,91 +9076,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
                     return null;
                 } else if (method === '$remove') {
-                    // Delete file(s), drop them from the source, unlink from table entries
-                    // Usage: $x.assets.$remove(fileId)
-                    const fileId = args[0];
-                    if (!fileId) {
-                        throw new Error('[Manifest Data] $remove requires file ID');
-                    }
-
-                    const actualFileId = fileId.$id || fileId;
-
-                    // Before deleting, unlink file from any table entries that reference it
-                    // This prevents orphaned references and ensures UI updates correctly
-                    let affectedEntries = {};
-                    try {
-                        const unlink = window.ManifestDataProxiesFiles?.unlinkFileFromAllEntries;
-                        if (unlink) affectedEntries = await unlink(actualFileId) || {};
-                    } catch (unlinkError) {
-                        console.warn('[Manifest Data] Failed to unlink file from entries before delete:', unlinkError);
-                        // Continue with delete even if unlink fails
-                    }
-
-                    const deletedIds = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id.$id || id);
-                    const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
-                    const result = Array.isArray(fileId)
-                        ? await Promise.all(deletedIds.map(id => window.ManifestDataAppwrite.deleteFile(bucketId, id)))
-                        : await window.ManifestDataAppwrite.deleteFile(bucketId, actualFileId);
-
-                    // Drop the deleted file(s) locally: a relisting would bypass the source's queries and scope
-                    if (window.ManifestDataStore?.landRemove) {
-                        await window.ManifestDataStore.landRemove(dataSourceName, deletedIds, { generation });
-                    }
-
-                    // Reload affected table data sources so fileIds arrays and counters
-                    // update in the UI (loadDataSource lands the rows itself)
-                    const reloadDataSourceFunc = window.ManifestDataMain?._loadDataSource;
-                    if (reloadDataSourceFunc && Object.keys(affectedEntries).length > 0) {
-                        const reloadPromises = [];
-                        for (const tableName of Object.keys(affectedEntries)) {
-                            reloadPromises.push(
-                                reloadDataSourceFunc(tableName).catch(err => {
-                                    console.warn(`[Manifest Data] Failed to reload ${tableName} after file delete:`, err);
-                                })
-                            );
-                        }
-                        // Don't await - let it happen in background
-                        Promise.all(reloadPromises).catch(() => { });
-                    }
-
-                    // Emit event for affected projects to auto-refresh
-                    // Always emit the event so UI can handle it optimistically, even if we couldn't find affected entries
-                    if (Object.keys(affectedEntries).length > 0) {
-                        for (const [tableName, entryIds] of Object.entries(affectedEntries)) {
-                            if (Array.isArray(entryIds) && entryIds.length > 0) {
-                                window.dispatchEvent(new CustomEvent('manifest:file-deleted', {
-                                    detail: {
-                                        fileId: actualFileId,
-                                        tableName,
-                                        entryIds
-                                    }
-                                }));
-                            }
-                        }
-                    } else {
-                        // If we couldn't find affected entries, still emit event with empty entryIds
-                        // This allows UI to handle it optimistically by checking if the file is in their local list
-                        window.dispatchEvent(new CustomEvent('manifest:file-deleted', {
-                            detail: {
-                                fileId: actualFileId,
-                                tableName: null,
-                                entryIds: []
-                            }
-                        }));
-                    }
-
-                    // Also dispatch event for storage bucket reactivity (so $x.assets updates)
-                    // The realtime handler will also update, but this ensures immediate UI update
-                    window.dispatchEvent(new CustomEvent('manifest:file-deleted', {
-                        detail: {
-                            fileId: actualFileId,
-                            tableName: null,
-                            entryIds: [],
-                            bucketId: bucketId  // Include bucketId so storage can filter if needed
-                        }
-                    }));
-
-                    return result;
+                    return await deleteBucketFiles(args[0]);
                 }
             }
 

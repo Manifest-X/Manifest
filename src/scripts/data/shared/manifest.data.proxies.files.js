@@ -1021,27 +1021,48 @@ async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
     }
 }
 
-// Unlink a file from all table entries that reference it (used when deleting files)
-// This is a best-effort cleanup - uses already-loaded table data from Alpine store
-// Returns array of affected entry IDs grouped by table name: { tableName: [entryId1, entryId2, ...] }
-async function unlinkFileFromAllEntries(fileId) {
+// Link columns a table may hold a bucket's file ids in: fileIds, storage mappings, belongsTo
+function fileLinkColumns(manifest, tableName, tableConfig, bucketId) {
+    const config = window.ManifestDataConfig;
+    const matches = id => !bucketId || !id || id === bucketId;
+    const columns = new Set(['fileIds']);
+    const storage = tableConfig?.storage;
+    if (storage && typeof storage === 'object') {
+        for (const [bucketName, mapping] of Object.entries(storage)) {
+            if (typeof mapping === 'string') {
+                const bucketSource = manifest.data[bucketName];
+                if (matches(bucketSource ? config.getAppwriteBucketId(bucketSource) : null)) columns.add(mapping);
+            } else if (mapping && typeof mapping === 'object') {
+                if (matches(mapping.appwriteBucketId)) columns.add(mapping.column || 'fileIds');
+            }
+        }
+    }
+    for (const source of Object.values(manifest.data)) {
+        const link = source && typeof source === 'object' ? source.belongsTo : null;
+        if (link?.table === tableName && link.fileIdsColumn && matches(config.getAppwriteBucketId(source))) {
+            columns.add(link.fileIdsColumn);
+        }
+    }
+    return [...columns];
+}
+
+// Unlink file(s) from every loaded table entry that references them (after a delete)
+// Returns { tableName: [entryId, ...] }
+async function unlinkFileFromAllEntries(fileId, options = {}) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     if (!manifest?.data) {
         return {};
     }
 
-    const actualFileId = fileId?.$id || fileId;
-    if (!actualFileId) {
+    const fileIds = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id?.$id || id).filter(Boolean);
+    if (!fileIds.length) {
         return {};
     }
 
-    // Find all table data sources that might have fileIds arrays
     const tables = Object.entries(manifest.data).filter(([name, config]) =>
         config && typeof config === 'object' && window.ManifestDataConfig.getAppwriteTableId(config)
     );
 
-    // Use already-loaded data from Alpine store instead of querying Appwrite
-    // Check if Alpine is available before accessing store
     if (typeof Alpine === 'undefined' || !Alpine.store) {
         return {};
     }
@@ -1050,52 +1071,46 @@ async function unlinkFileFromAllEntries(fileId) {
         return {};
     }
 
-    const affectedEntries = {}; // { tableName: [entryId1, entryId2, ...] }
-
-    // Do all unlinks in parallel for speed
+    const affectedEntries = {};
     const unlinkPromises = [];
 
     for (const [tableName, tableConfig] of tables) {
         try {
-            const tableId = window.ManifestDataConfig.getAppwriteTableId(tableConfig);
             const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(tableConfig);
-
             if (!appwriteConfig) continue;
 
-            // Get already-loaded entries from Alpine store
             const entries = store[tableName];
             if (!Array.isArray(entries) || entries.length === 0) {
                 continue;
             }
 
-            // Find entries that have this fileId in their fileIds array
-            const entriesToUpdate = entries.filter(entry => {
-                const fileIds = entry.fileIds || [];
-                return Array.isArray(fileIds) && fileIds.includes(actualFileId);
-            });
+            const columns = fileLinkColumns(manifest, tableName, tableConfig, options.bucketId);
+            const affected = new Set();
 
-            if (entriesToUpdate.length > 0) {
-                affectedEntries[tableName] = entriesToUpdate.map(e => e.$id);
+            for (const entry of entries) {
+                for (const column of columns) {
+                    const linked = entry?.[column];
+                    if (!Array.isArray(linked)) continue;
+                    for (const id of fileIds) {
+                        if (!linked.includes(id)) continue;
+                        affected.add(entry.$id);
+                        unlinkPromises.push(
+                            unlinkFileFromEntry(tableName, entry.$id, id, column).catch(error => {
+                                console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
+                            })
+                        );
+                    }
+                }
             }
 
-            // Unlink file from each entry in parallel
-            for (const entry of entriesToUpdate) {
-                unlinkPromises.push(
-                    unlinkFileFromEntry(tableName, entry.$id, actualFileId, 'fileIds')
-                        .then(() => {
-                        })
-                        .catch(error => {
-                            console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
-                        })
-                );
+            if (affected.size > 0) {
+                affectedEntries[tableName] = [...affected];
             }
         } catch (error) {
-            // Silently continue - not all tables may have fileIds
             console.warn('[Manifest Data] Could not process', tableName, ':', error.message);
         }
     }
 
-    // Wait for all unlinks to complete
     await Promise.all(unlinkPromises);
 
     return affectedEntries;
