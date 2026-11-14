@@ -435,7 +435,6 @@ if (typeof navigator !== 'undefined' && navigator.webdriver === true) {
     }
 }
 
-// Resolve internal link to absolute pathname for pushState. Relative hrefs (e.g. "gadget") are resolved against the app base, not the current URL, so we never get additive paths like /src/dist/widget/gadget/widget/...
 // Href parts: path, ?query, #hash
 function splitHref(href) {
     const hashAt = href.indexOf('#');
@@ -449,6 +448,7 @@ function splitHref(href) {
     };
 }
 
+// Resolve internal link to absolute pathname against the app base
 function resolveHref(href) {
     if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) return href;
     try {
