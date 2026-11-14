@@ -145,7 +145,7 @@ function beginDeleteOrder(dataSourceName) {
     let entry = deleteOrders.get(dataSourceName);
     if (!entry) {
         const { arr } = findRawIndex(dataSourceName, null);
-        entry = { ids: arr ? arr.map(row => row?.$id) : [], count: 0 };
+        entry = { positions: new Map((arr || []).map((row, i) => [row?.$id, i])), count: 0 };
         deleteOrders.set(dataSourceName, entry);
     }
     entry.count++;
@@ -158,17 +158,18 @@ function endDeleteOrder(dataSourceName, entry) {
 }
 
 // Where a returning row goes: after its nearest present predecessor in the order, else before its successor
-function restoreIndex(arr, order, id, fallback) {
-    const at = order ? order.indexOf(id) : -1;
-    if (at !== -1) {
-        for (let i = at - 1; i >= 0; i--) {
-            const j = arr.findIndex(row => row?.$id === order[i]);
-            if (j !== -1) return j + 1;
+function restoreIndex(arr, positions, id, fallback) {
+    const at = positions ? positions.get(id) : undefined;
+    if (at !== undefined) {
+        let before = -1, beforeAt = -1, after = -1, afterAt = Infinity;
+        for (let j = 0; j < arr.length; j++) {
+            const p = positions.get(arr[j]?.$id);
+            if (p === undefined) continue;
+            if (p < at && p > beforeAt) { beforeAt = p; before = j; }
+            else if (p > at && p < afterAt) { afterAt = p; after = j; }
         }
-        for (let i = at + 1; i < order.length; i++) {
-            const j = arr.findIndex(row => row?.$id === order[i]);
-            if (j !== -1) return j;
-        }
+        if (before !== -1) return before + 1;
+        if (after !== -1) return after;
     }
     return fallback >= 0 && fallback <= arr.length ? fallback : arr.length;
 }
@@ -378,7 +379,6 @@ async function executeMutation(mutationConfig) {
 
         // Step 4: Clean up pending mutation
         pendingMutations.delete(mutationId);
-        endDeleteOrder(dataSourceName, deleteOrder);
 
         // Dispatch success event
         window.dispatchEvent(new CustomEvent('manifest:data-mutation-success', {
@@ -432,13 +432,12 @@ async function executeMutation(mutationConfig) {
                 }
                 if (Object.keys(restore).length) updateEntryInStore(dataSourceName, entryId, restore, writeOptions);
             } else if (type === 'delete' && originalData) {
-                insertEntryAt(dataSourceName, originalData, deletedAt, { ...writeOptions, order: deleteOrder?.ids });
+                insertEntryAt(dataSourceName, originalData, deletedAt, { ...writeOptions, order: deleteOrder?.positions });
             }
         };
 
         rollbackFn();
         pendingMutations.delete(mutationId);
-        endDeleteOrder(dataSourceName, deleteOrder);
 
         // Dispatch error event
         window.dispatchEvent(new CustomEvent('manifest:data-mutation-error', {
@@ -452,6 +451,8 @@ async function executeMutation(mutationConfig) {
         }));
 
         throw error;
+    } finally {
+        endDeleteOrder(dataSourceName, deleteOrder);
     }
 }
 
@@ -549,6 +550,7 @@ if (typeof window !== 'undefined') {
         addEntryToStore,
         removeEntryFromStore,
         rollbackMutation,
+        restoreIndex,
         syncEntryFromServer,
         generateMutationId,
         setupEventDrivenReactivity

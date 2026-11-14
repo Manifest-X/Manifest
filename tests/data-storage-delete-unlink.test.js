@@ -263,3 +263,41 @@ describe('the default fileIds column follows its owning bucket', () => {
         expect(p1.fileIds).toEqual([])
     })
 })
+
+describe('failed delete restores stay linear and release their snapshot', () => {
+    it('a restore costs one pass over the source, however far its nearest neighbour is', async () => {
+        await load()
+        const { restoreIndex } = window.ManifestDataMutations
+        const order = Array.from({ length: 10000 }, (_, i) => 'r' + i)
+        const positions = new Map(order.map((id, i) => [id, i]))
+        const arr = order.slice(1, 1000).concat(order.slice(9000)).map($id => ({ $id }))
+        const t = Date.now()
+        for (let k = 0; k < 50; k++) expect(restoreIndex(arr, positions, 'r' + (8999 - k), -1)).toBe(999)
+        expect(Date.now() - t).toBeLessThan(1000)
+        expect(restoreIndex(arr, positions, 'r0', -1)).toBe(0)
+        expect(restoreIndex(arr, new Map(), 'x', 3)).toBe(3)
+    })
+
+    it('a failing array $remove restores 400 rows in order', async () => {
+        const files = Array.from({ length: 1000 }, (_, i) => 'f' + i)
+        const fail = files.slice(300, 700)
+        await load({ files, failDelete: fail, delays: Object.fromEntries(fail.map(id => [id, 1])) })
+        await quiet(() => call('$remove', [...fail].reverse()).catch(() => {}))
+        await settle(60)
+        expect(fileIds()).toEqual(files)
+    }, 30000)
+
+    it('a rollback that throws does not pin the order snapshot', async () => {
+        await load({ files: ['a', 'b', 'c', 'd'], failDelete: ['b', 'c'] })
+        const ds = window.ManifestDataStore
+        const real = ds.createReactiveReferences
+        ds.createReactiveReferences = () => { ds.createReactiveReferences = real; throw new Error('rollback broke') }
+        await expect(quiet(() => call('$remove', 'b'))).rejects.toThrow()
+        await ds.landRows('files', ['d', 'c', 'b', 'a'].map($id => ({ $id })), { mode: 'replace', generation: ds.sourceGeneration('files') })
+        await settle(60)
+        expect(fileIds()).toEqual(['d', 'c', 'b', 'a'])
+        await expect(quiet(() => call('$remove', 'c'))).rejects.toThrow('denied c')
+        await settle(60)
+        expect(fileIds()).toEqual(['d', 'c', 'b', 'a'])
+    })
+})
