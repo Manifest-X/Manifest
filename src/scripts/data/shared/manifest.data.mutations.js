@@ -138,14 +138,54 @@ function sameValue(a, b) {
     try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
 }
 
-// Re-insert a row at its old index (a failed delete); never duplicates one already back
+// Source order before overlapping deletes began: failed deletes return relative to it
+const deleteOrders = new Map();
+
+function beginDeleteOrder(dataSourceName) {
+    let entry = deleteOrders.get(dataSourceName);
+    if (!entry) {
+        const { arr } = findRawIndex(dataSourceName, null);
+        entry = { positions: new Map((arr || []).map((row, i) => [row?.$id, i])), count: 0 };
+        deleteOrders.set(dataSourceName, entry);
+    }
+    entry.count++;
+    return entry;
+}
+
+function endDeleteOrder(dataSourceName, entry) {
+    if (!entry || --entry.count > 0) return;
+    if (deleteOrders.get(dataSourceName) === entry) deleteOrders.delete(dataSourceName);
+}
+
+// Where a returning row goes: after its nearest present predecessor in the order, else before its successor
+function restoreIndex(arr, positions, id, fallback) {
+    const at = positions ? positions.get(id) : undefined;
+    if (at !== undefined) {
+        let before = -1, beforeAt = -1, after = -1, afterAt = Infinity;
+        for (let j = 0; j < arr.length; j++) {
+            const p = positions.get(arr[j]?.$id);
+            if (p === undefined) continue;
+            if (p < at && p > beforeAt) { beforeAt = p; before = j; }
+            else if (p > at && p < afterAt) { afterAt = p; after = j; }
+        }
+        if (before !== -1) return before + 1;
+        if (after !== -1) return after;
+    }
+    return fallback >= 0 && fallback <= arr.length ? fallback : arr.length;
+}
+
+// Re-insert a row deleted optimistically (a failed delete); never duplicates one already back
 function insertEntryAt(dataSourceName, entry, index, options = {}) {
     if (window.ManifestDataStore?.isStaleWrite?.(dataSourceName, options)) return false;
     const { store, arr, index: existing } = findRawIndex(dataSourceName, entry?.$id);
     if (!store || !arr || existing !== -1) return false;
     const ds = window.ManifestDataStore;
-    const at = index >= 0 && index <= arr.length ? index : arr.length;
-    store[dataSourceName].splice(at, 0, ds.createReactiveReferences(entry, dataSourceName));
+    const row = ds.createReactiveReferences(entry, dataSourceName);
+    if (window.ManifestDataMain?.orderFor?.(dataSourceName) && ds.insertRow) {
+        ds.insertRow(store, dataSourceName, row);
+    } else {
+        store[dataSourceName].splice(restoreIndex(arr, options.order, entry.$id, index), 0, row);
+    }
     ds.touchSource(dataSourceName);
     clearSourceCaches(dataSourceName);
     return true;
@@ -205,6 +245,7 @@ async function executeMutation(mutationConfig) {
     let resolvedEntryId = entryId;
     let held = null;          // pending-write token: re-applied over landings until settled
     let deletedAt = -1;       // a failed delete returns the row to its place
+    let deleteOrder = null;
     const ds0 = window.ManifestDataStore;
 
     // Get helper functions from store
@@ -259,6 +300,7 @@ async function executeMutation(mutationConfig) {
             // Snapshot for rollback
             const store = Alpine.store('data');
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
+                deleteOrder = beginDeleteOrder(dataSourceName);
                 deletedAt = findRawIndex(dataSourceName, entryId).index;
                 const found = deletedAt !== -1 ? store[dataSourceName][deletedAt] : null;
                 originalData = found ? { ...found } : null;
@@ -390,7 +432,7 @@ async function executeMutation(mutationConfig) {
                 }
                 if (Object.keys(restore).length) updateEntryInStore(dataSourceName, entryId, restore, writeOptions);
             } else if (type === 'delete' && originalData) {
-                insertEntryAt(dataSourceName, originalData, deletedAt, writeOptions);
+                insertEntryAt(dataSourceName, originalData, deletedAt, { ...writeOptions, order: deleteOrder?.positions });
             }
         };
 
@@ -409,6 +451,8 @@ async function executeMutation(mutationConfig) {
         }));
 
         throw error;
+    } finally {
+        endDeleteOrder(dataSourceName, deleteOrder);
     }
 }
 
@@ -506,6 +550,7 @@ if (typeof window !== 'undefined') {
         addEntryToStore,
         removeEntryFromStore,
         rollbackMutation,
+        restoreIndex,
         syncEntryFromServer,
         generateMutationId,
         setupEventDrivenReactivity

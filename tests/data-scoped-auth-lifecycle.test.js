@@ -582,7 +582,7 @@ describe('async writes started before logout never land after it', () => {
         expect(fileIds()).toEqual([])
     })
 
-    it('a bucket $remove unlinks the file from table entries before deleting it', async () => {
+    it('a bucket $remove unlinks the file from table entries once deleted', async () => {
         await load(signedIn('u1'), null, { extra: FILES, listFiles: async () => [{ $id: 'u1-file' }] })
         await window.ManifestDataMain.loadDataSource('files')
         await settle(60)
