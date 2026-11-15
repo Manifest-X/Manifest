@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
+import { budget } from './helpers/time-budget.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -71,7 +72,7 @@ beforeAll(async () => {
     window.dispatchEvent(new CustomEvent('manifest:ready'))
     drain()
     await wait(5100) // bootDrained fallback timer
-}, 10000)
+}, budget(10000))
 beforeEach(() => { counts.gbcr = 0; counts.qs = 0 })
 
 describe('gesture promotion geometry', () => {
@@ -93,7 +94,7 @@ describe('gesture promotion geometry', () => {
         const urgent = pending.filter((m) => m.__mnfstDefer.urgent)
         expect(urgent.length).toBeGreaterThanOrEqual(8) // cap per pass; later passes pick up the rest
         expect(urgent.every((m) => near.has(document.querySelector(`[popovertarget="${m.id}"]`)))).toBe(true)
-    }, 10000)
+    }, budget(10000))
 
     it('falls back to synchronous reads for records the observer has not reported yet', async () => {
         const host = mount(`<div x-data><div id="late-pane"><menu popover id="late-m"><li>x</li></menu></div></div>`)
@@ -102,7 +103,7 @@ describe('gesture promotion geometry', () => {
         document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
         await wait(700)
         expect(menu.__mnfstDefer.urgent).toBe(true)
-    }, 10000)
+    }, budget(10000))
 })
 
 describe('eviction', () => {
@@ -122,5 +123,5 @@ describe('eviction', () => {
         const st = window.ManifestDefer.stats()
         expect(st.warm).toBeLessThanOrEqual(st.cap)
         expect(idleQueue.length).toBe(0)
-    }, 30000)
+    }, budget(30000))
 })
