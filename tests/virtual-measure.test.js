@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import Alpine from 'alpinejs'
+import { budget } from './helpers/time-budget.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -123,7 +124,7 @@ beforeAll(() => {
 })
 afterEach(() => { document.body.innerHTML = ''; scroller = null; observers.length = 0 })
 
-describe('x-virtual measures display:contents rows with box-less children', { timeout: 20000 }, () => {
+describe('x-virtual measures display:contents rows with box-less children', { timeout: budget(20000) }, () => {
     it('nested <template x-for> in each row: sane spacer, end reachable, bounded DOM', async () => {
         const N = 1000
         mount(NESTED, N)
@@ -163,7 +164,7 @@ describe('x-virtual measures display:contents rows with box-less children', { ti
     })
 })
 
-describe('x-virtual mounted while hidden', { timeout: 20000 }, () => {
+describe('x-virtual mounted while hidden', { timeout: budget(20000) }, () => {
     it('grid container under x-show=false resolves its kind once shown', async () => {
         const N = 1000
         const host = mount(NESTED, N, { hidden: true })
@@ -188,7 +189,7 @@ describe('x-virtual mounted while hidden', { timeout: 20000 }, () => {
     })
 })
 
-describe('x-virtual row host inside the scroller (wrapper, like table > tbody)', { timeout: 20000 }, () => {
+describe('x-virtual row host inside the scroller (wrapper, like table > tbody)', { timeout: budget(20000) }, () => {
     const mountTable = (hidden) => {
         const host = document.createElement('div')
         host.innerHTML = `
@@ -251,7 +252,7 @@ describe('x-virtual row host inside the scroller (wrapper, like table > tbody)',
     })
 })
 
-describe('x-virtual gallery mounted while hidden', { timeout: 20000 }, () => {
+describe('x-virtual gallery mounted while hidden', { timeout: budget(20000) }, () => {
     const mountGallery = (cls, opts) => {
         const host = document.createElement('div')
         host.innerHTML = `
