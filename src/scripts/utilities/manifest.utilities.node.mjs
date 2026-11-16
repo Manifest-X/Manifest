@@ -241,18 +241,12 @@ export async function compileUtilities({ classes = [], themeCss = '', baseCss = 
     return `@layer base, components, utilities;\n\n${body}`;
 }
 
-// `class:token=` (per-class conditional binding) and the `:class="..."`
-// shorthand aren't matched by extractClassesFromHTML's `x-(data|bind:class|class)=`
-// regex (no `x-` prefix), so pick those up here too — cheap regex pass, not a
-// JS/expression parser, so only literal-looking quoted tokens are kept.
+// `class:token=` per-class conditional bindings; extractClassesFromHTML covers `:class`
 const CLASS_TOKEN_BINDING_RE = /\bclass:([a-zA-Z0-9_-]+(?:\\.[a-zA-Z0-9_-]+)*)\s*=/g;
-// Backreference to the opening quote so a nested quote char (`:class="'a b'"`)
-// doesn't truncate the match early.
-const SHORTHAND_CLASS_BINDING_RE = /\B:class=(["'])((?:(?!\1)[\s\S])*)\1/g;
 
 /**
  * Scan HTML for utility class tokens using the same extraction the browser
- * plugin uses (extractClassesFromHTML), plus `class:`/`:class` static tokens.
+ * plugin uses (extractClassesFromHTML, which reads `:class` literals), plus `class:` tokens.
  * Skips `x-`/`$` tokens. Returns a sorted, deduplicated array.
  *
  * `safelist` (manifest.json's `utilities.safelist`) is folded into the result
@@ -273,20 +267,6 @@ export function scanClasses(html, { safelist = [] } = {}) {
     while ((m = CLASS_TOKEN_BINDING_RE.exec(html)) !== null) {
         const cls = m[1].replace(/\\(.)/g, '$1');
         if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) set.add(cls);
-    }
-
-    SHORTHAND_CLASS_BINDING_RE.lastIndex = 0;
-    while ((m = SHORTHAND_CLASS_BINDING_RE.exec(html)) !== null) {
-        const content = m[2];
-        const quoted = content.match(/['"`]([^'"`\s]+)['"`]/g);
-        if (quoted) {
-            for (const q of quoted) {
-                const cls = q.replace(/['"`]/g, '');
-                // Reject punctuation-only "tokens" (e.g. a bare '/' from an
-                // unrelated string literal in the expression) — see helpers.js.
-                if (cls && !cls.startsWith('$') && !cls.startsWith('x-') && !cls.includes('(') && /[a-zA-Z0-9]/.test(cls)) set.add(cls);
-            }
-        }
     }
 
     return Array.from(set).sort();

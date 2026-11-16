@@ -2,11 +2,8 @@
 
 // Setup component load listener and MutationObserver
 TailwindCompiler.prototype.setupComponentLoadListener = function () {
-    const debouncedCompile = this.debounce(() => {
-        if (!this.isCompiling) {
-            this.compile();
-        }
-    }, this.options.debounceTime);
+    // compile() queues a retry when busy; dropping the call here lost classes seen mid-compile
+    const debouncedCompile = this.debounce(() => this.compile(), this.options.debounceTime);
 
     // Recompile when components load/process; re-scan so component HTML is covered.
     const handleComponentEvent = () => {
@@ -92,10 +89,31 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
 
 // Record classes not seen before; true when any were new. Quiet = collect without triggering
 TailwindCompiler.prototype.collectNewClasses = function (el, quiet) {
-    const value = el.getAttribute && el.getAttribute('class');
-    if (!value) return false;
+    if (!el.getAttribute) return false;
+    const value = el.getAttribute('class');
+    let fresh = value ? this.recordClasses(value.split(/\s+/), quiet) : false;
+    const bound = el.getAttribute(':class') || el.getAttribute('x-bind:class');
+    if (bound && this.recordClasses(this.bindingClasses(bound), quiet)) fresh = true;
+    return fresh;
+};
+
+// Binding literals per expression, cached: x-for clones repeat the same few
+TailwindCompiler.prototype.bindingClasses = function (expr) {
+    if (!this._bindingClasses) this._bindingClasses = new Map();
+    let list = this._bindingClasses.get(expr);
+    if (!list) {
+        const set = new Set();
+        this.collectBindingClasses(expr, set);
+        list = Array.from(set);
+        if (this._bindingClasses.size > 500) this._bindingClasses.clear();
+        this._bindingClasses.set(expr, list);
+    }
+    return list;
+};
+
+TailwindCompiler.prototype.recordClasses = function (list, quiet) {
     let fresh = false;
-    for (const cls of value.split(/\s+/)) {
+    for (const cls of list) {
         if (!cls || this.staticClassCache.has(cls)) continue;
         if (this.dynamicClassCache.has(cls)) {
             if (!quiet && this.quietClasses.delete(cls)) fresh = true;

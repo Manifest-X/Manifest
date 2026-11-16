@@ -56,6 +56,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 if (variantClass === baseClass) continue;
 
                 const parsed = this.parseClassName(variantClass);
+                if (parsed.unknown) continue; // never drop a condition and emit unconditionally
 
                 // Check if this is an important variant
                 const isImportant = parsed.important;
@@ -374,6 +375,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 if (variantClass === baseClass) continue;
 
                 const parsed = this.parseClassName(variantClass);
+                if (parsed.unknown) continue; // never drop a condition and emit unconditionally
 
                 // Check if this is an important variant
                 const isImportant = parsed.important;
@@ -705,7 +707,7 @@ TailwindCompiler.prototype.entriesMatchSheet = function (entries) {
 };
 
 // After a full write: remember its rules so later compiles can insert beside them
-TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss) {
+TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss, compiledClasses) {
     this._applied = null;
     if (window.__manifestRender === true || !this.entriesMatchSheet(entries)) return;
     this._applied = {
@@ -713,7 +715,7 @@ TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss)
         themeCss,           // keys index this exact variable order
         entries,
         rules: new Set(entries.map(e => e.rule)),
-        classes: new Set(this.dynamicClassCache),
+        classes: new Set(compiledClasses), // only what this write covered
         dirty: false        // inserted rules not yet in textContent
     };
 };
@@ -1061,7 +1063,9 @@ TailwindCompiler.prototype.compile = async function () {
                     });
                     this.lastClassesHash = dynamicClassesHash;
                     const entries = rulesOut.map((rule, i) => ({ rule, key: [isMediaRule(rule) ? 1 : 0].concat(keysOut[i]) }));
-                    this.recordAppliedUtilities(entries.filter(e => !e.key[0]).concat(entries.filter(e => e.key[0])), themeCss);
+                    this.recordAppliedUtilities(entries.filter(e => !e.key[0]).concat(entries.filter(e => e.key[0])), themeCss, dynamicClasses);
+                    // Classes that arrived during the await above still need a pass
+                    if (this.dynamicClassCache.size > dynamicClasses.length) this.compile();
 
                     // Save to cache for next page load
                     const themeHash = this.generateThemeHash(themeCss);

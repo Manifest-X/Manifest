@@ -354,58 +354,30 @@ function createVariants() {
         'android': 'html[data-os="android"] &',
         'apple': 'html[data-os="macos"] &, html[data-os="ios"] &',
 
-        // Data attribute variants (common patterns)
-        'data-open': '[data-state="open"] &',
-        'data-closed': '[data-state="closed"] &',
-        'data-checked': '[data-state="checked"] &',
-        'data-unchecked': '[data-state="unchecked"] &',
-        'data-on': '[data-state="on"] &',
-        'data-off': '[data-state="off"] &',
-        'data-visible': '[data-state="visible"] &',
-        'data-hidden': '[data-state="hidden"] &',
-        'data-disabled': '[data-disabled] &',
-        'data-loading': '[data-loading] &',
-        'data-error': '[data-error] &',
-        'data-success': '[data-success] &',
-        'data-warning': '[data-warning] &',
-        'data-selected': '[data-selected] &',
-        'data-highlighted': '[data-highlighted] &',
-        'data-pressed': '[data-pressed] &',
-        'data-expanded': '[data-expanded] &',
-        'data-collapsed': '[data-collapsed] &',
-        'data-active': '[data-active] &',
-        'data-inactive': '[data-inactive] &',
-        'data-valid': '[data-valid] &',
-        'data-invalid': '[data-invalid] &',
-        'data-required': '[data-required] &',
-        'data-optional': '[data-optional] &',
-        'data-readonly': '[data-readonly] &',
-        'data-write': '[data-write] &',
-
-        // Aria attribute variants (common patterns)
-        'aria-expanded': '[aria-expanded="true"] &',
-        'aria-collapsed': '[aria-expanded="false"] &',
-        'aria-pressed': '[aria-pressed="true"] &',
-        'aria-unpressed': '[aria-pressed="false"] &',
-        'aria-checked': '[aria-checked="true"] &',
-        'aria-unchecked': '[aria-checked="false"] &',
-        'aria-selected': '[aria-selected="true"] &',
-        'aria-unselected': '[aria-selected="false"] &',
-        'aria-invalid': '[aria-invalid="true"] &',
-        'aria-valid': '[aria-invalid="false"] &',
-        'aria-required': '[aria-required="true"] &',
-        'aria-optional': '[aria-required="false"] &',
-        'aria-disabled': '[aria-disabled="true"] &',
-        'aria-enabled': '[aria-disabled="false"] &',
-        'aria-hidden': '[aria-hidden="true"] &',
-        'aria-visible': '[aria-hidden="false"] &',
-        'aria-busy': '[aria-busy="true"] &',
-        'aria-available': '[aria-busy="false"] &',
-        'aria-current': '[aria-current="true"] &',
-        'aria-not-current': '[aria-current="false"] &',
-        'aria-live': '[aria-live="polite"] &, [aria-live="assertive"] &',
-        'aria-atomic': '[aria-atomic="true"] &',
-        'aria-relevant': '[aria-relevant="additions"] &, [aria-relevant="removals"] &, [aria-relevant="text"] &, [aria-relevant="all"] &'
+        // Attribute variants sit on the element itself (Tailwind v4); data-*, data-[…] and aria-[…] are parsed in parseClassName
+        'aria-expanded': '&[aria-expanded="true"]',
+        'aria-collapsed': '&[aria-expanded="false"]',
+        'aria-pressed': '&[aria-pressed="true"]',
+        'aria-unpressed': '&[aria-pressed="false"]',
+        'aria-checked': '&[aria-checked="true"]',
+        'aria-unchecked': '&[aria-checked="false"]',
+        'aria-selected': '&[aria-selected="true"]',
+        'aria-unselected': '&[aria-selected="false"]',
+        'aria-invalid': '&[aria-invalid="true"]',
+        'aria-valid': '&[aria-invalid="false"]',
+        'aria-required': '&[aria-required="true"]',
+        'aria-optional': '&[aria-required="false"]',
+        'aria-disabled': '&[aria-disabled="true"]',
+        'aria-enabled': '&[aria-disabled="false"]',
+        'aria-hidden': '&[aria-hidden="true"]',
+        'aria-visible': '&[aria-hidden="false"]',
+        'aria-busy': '&[aria-busy="true"]',
+        'aria-available': '&[aria-busy="false"]',
+        'aria-current': '&[aria-current="true"]',
+        'aria-not-current': '&[aria-current="false"]',
+        'aria-live': '&:is([aria-live="polite"], [aria-live="assertive"])',
+        'aria-atomic': '&[aria-atomic="true"]',
+        'aria-relevant': '&:is([aria-relevant="additions"], [aria-relevant="removals"], [aria-relevant="text"], [aria-relevant="all"])'
     };
 }
 
@@ -1521,25 +1493,46 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
         }
     }
 
-    // Also check for x-data and other Alpine directives that might contain classes
-    const alpineRegex = /x-(?:data|bind:class|class)=["']([^"']+)["']/g;
+    // Alpine class bindings: every literal they could apply
+    const bindingRegex = /(?<![\w-])(?::|x-bind:)class=(["'])((?:(?!\1)[\s\S])*)\1/g;
+    while ((match = bindingRegex.exec(html)) !== null) {
+        this.collectBindingClasses(match[2], classSet);
+    }
+
+    // x-data is arbitrary JS: keep single-token string literals only
+    const alpineRegex = /x-data=["']([^"']+)["']/g;
     while ((match = alpineRegex.exec(html)) !== null) {
-        // Simple extraction - could be enhanced for complex Alpine expressions
         const content = match[1];
         const classMatches = content.match(/['"`]([^'"`\s]+)['"`]/g);
         if (classMatches) {
             for (const classMatch of classMatches) {
                 const cls = classMatch.replace(/['"`]/g, '');
-                // x-data is arbitrary JS — a plain string literal in there
-                // (e.g. `location.pathname.split('/')`) matches this quoted-
-                // token scan too, so require a letter/digit; a punctuation-only
-                // "token" like a bare '/' is skipped (seen on a live page).
+                // Skip punctuation-only literals such as split('/')
                 if (cls && !cls.startsWith('$') && !cls.includes('(') && /[a-zA-Z0-9]/.test(cls)) {
                     classSet.add(cls);
                 }
             }
         }
     }
+};
+
+// Class names a :class / x-bind:class expression can apply: string literals and object keys
+TailwindCompiler.prototype.collectBindingClasses = function (expr, classSet) {
+    if (!expr) return;
+    if (expr.includes('&')) expr = expr.replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&amp;/g, '&');
+    const add = (token) => {
+        if (!token || token.startsWith('x-') || token.startsWith('$') || !/[a-zA-Z0-9]/.test(token)) return;
+        if ((token.includes('[') ? /[{}'"`$;]/ : /[(){}'"`$;,]/).test(token)) return;
+        classSet.add(token);
+    };
+    const literal = /(['"`])((?:\\[\s\S]|(?!\1)[^\\])*)\1/g;
+    let m;
+    while ((m = literal.exec(expr)) !== null) {
+        for (const token of m[2].split(/\s+/)) add(token);
+        if (m[1] === '`' && m[2].includes('${')) this.collectBindingClasses(m[2].replace(/`/g, ' '), classSet);
+    }
+    const bareKey = /[{,]\s*([A-Za-z_][\w-]*)\s*:/g;
+    while ((m = bareKey.exec(expr)) !== null) add(m[1]);
 };
 
 // Get all used classes from static and dynamic sources
@@ -1550,6 +1543,10 @@ TailwindCompiler.prototype.getUsedClasses = function () {
 
         // Add static classes (pre-scanned)
         for (const cls of this.staticClassCache) {
+            allClasses.add(cls);
+        }
+        // Classes seen so far, including binding literals not yet in the DOM
+        for (const cls of this.dynamicClassCache) {
             allClasses.add(cls);
         }
 
@@ -2237,6 +2234,19 @@ TailwindCompiler.prototype.isTailwindGeneratedClass = function (className) {
     return tailwindPatterns.some(pattern => pattern.test(className));
 };
 
+// `[data-good]`, `[data-tone="good"]`, `[aria-busy="true"]` for a data-/aria- variant's remainder
+function attributeVariantCondition(kind, rest) {
+    if (rest.startsWith('[') && rest.endsWith(']')) {
+        const m = rest.slice(1, -1).match(/^([a-zA-Z0-9_-]+)(?:([~|^$*]?=)(.+))?$/);
+        if (!m) return null;
+        if (!m[2]) return `[${kind}-${m[1]}]`;
+        const value = m[3].replace(/^(['"])(.*)\1$/, '$2').replace(/_/g, ' ').replace(/"/g, '\\"');
+        return `[${kind}-${m[1]}${m[2]}"${value}"]`;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(rest)) return null;
+    return kind === 'aria' ? `[aria-${rest}="true"]` : `[data-${rest}]`;
+}
+
 // Parse a class name into its components (variants, base class, important)
 TailwindCompiler.prototype.parseClassName = function (className) {
     // Check cache first
@@ -2314,20 +2324,17 @@ TailwindCompiler.prototype.parseClassName = function (className) {
 
         // THIRD: Handle parameterized variants (only if exact match not found)
 
-        // Handle data-[...] variants like data-[state=active] (not starting with bracket)
-        // These should be regular attribute selectors, not arbitrary
-        const dataMatch = variant.match(/^data-\[(.+)\]$/);
-        if (dataMatch) {
-            const attrValue = dataMatch[1];
-            // Add quotes around the value if it contains = (e.g., state=active -> state="active")
-            const quotedValue = attrValue.includes('=')
-                ? attrValue.replace(/^([^=]+)=(.+)$/, '$1="$2"')
-                : attrValue;
-            return {
-                name: variant,
-                selector: `[data-${quotedValue}] &`,
-                isArbitrary: false
-            };
+        // Attribute variants (Tailwind v4): the condition sits on the element; group-/peer- move it to the marker
+        const attrMatch = variant.match(/^(group-|peer-)?(data|aria)-(.+)$/);
+        if (attrMatch) {
+            const named = attrMatch[1] && /^&(\[[^\]]+\])$/.exec(this.variants[`${attrMatch[2]}-${attrMatch[3]}`] || '');
+            const condition = named ? named[1] : attributeVariantCondition(attrMatch[2], attrMatch[3]);
+            if (condition) {
+                const selector = !attrMatch[1] ? `&${condition}`
+                    : attrMatch[1] === 'group-' ? `:where(.group${condition}) &`
+                    : `:where(.peer${condition}) ~ &`;
+                return { name: variant, selector, isArbitrary: false };
+            }
         }
 
         // Handle parameterized nth variants: nth-3, nth-last-2, nth-of-type-2, nth-last-of-type-2
@@ -2435,6 +2442,7 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             this._warnedVariants.add(variant);
             console.warn(`Unknown variant: ${variant}`);
         }
+        result.unknown = true;
         return null;
     }).filter(Boolean);
 
@@ -2503,6 +2511,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 if (variantClass === baseClass) continue;
 
                 const parsed = this.parseClassName(variantClass);
+                if (parsed.unknown) continue; // never drop a condition and emit unconditionally
 
                 // Check if this is an important variant
                 const isImportant = parsed.important;
@@ -2821,6 +2830,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 if (variantClass === baseClass) continue;
 
                 const parsed = this.parseClassName(variantClass);
+                if (parsed.unknown) continue; // never drop a condition and emit unconditionally
 
                 // Check if this is an important variant
                 const isImportant = parsed.important;
@@ -3152,7 +3162,7 @@ TailwindCompiler.prototype.entriesMatchSheet = function (entries) {
 };
 
 // After a full write: remember its rules so later compiles can insert beside them
-TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss) {
+TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss, compiledClasses) {
     this._applied = null;
     if (window.__manifestRender === true || !this.entriesMatchSheet(entries)) return;
     this._applied = {
@@ -3160,7 +3170,7 @@ TailwindCompiler.prototype.recordAppliedUtilities = function (entries, themeCss)
         themeCss,           // keys index this exact variable order
         entries,
         rules: new Set(entries.map(e => e.rule)),
-        classes: new Set(this.dynamicClassCache),
+        classes: new Set(compiledClasses), // only what this write covered
         dirty: false        // inserted rules not yet in textContent
     };
 };
@@ -3508,7 +3518,9 @@ TailwindCompiler.prototype.compile = async function () {
                     });
                     this.lastClassesHash = dynamicClassesHash;
                     const entries = rulesOut.map((rule, i) => ({ rule, key: [isMediaRule(rule) ? 1 : 0].concat(keysOut[i]) }));
-                    this.recordAppliedUtilities(entries.filter(e => !e.key[0]).concat(entries.filter(e => e.key[0])), themeCss);
+                    this.recordAppliedUtilities(entries.filter(e => !e.key[0]).concat(entries.filter(e => e.key[0])), themeCss, dynamicClasses);
+                    // Classes that arrived during the await above still need a pass
+                    if (this.dynamicClassCache.size > dynamicClasses.length) this.compile();
 
                     // Save to cache for next page load
                     const themeHash = this.generateThemeHash(themeCss);
@@ -3935,11 +3947,8 @@ TailwindCompiler.prototype.setupUncoveredClassWatcher = function () {
 
 // Setup component load listener and MutationObserver
 TailwindCompiler.prototype.setupComponentLoadListener = function () {
-    const debouncedCompile = this.debounce(() => {
-        if (!this.isCompiling) {
-            this.compile();
-        }
-    }, this.options.debounceTime);
+    // compile() queues a retry when busy; dropping the call here lost classes seen mid-compile
+    const debouncedCompile = this.debounce(() => this.compile(), this.options.debounceTime);
 
     // Recompile when components load/process; re-scan so component HTML is covered.
     const handleComponentEvent = () => {
@@ -4025,10 +4034,31 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
 
 // Record classes not seen before; true when any were new. Quiet = collect without triggering
 TailwindCompiler.prototype.collectNewClasses = function (el, quiet) {
-    const value = el.getAttribute && el.getAttribute('class');
-    if (!value) return false;
+    if (!el.getAttribute) return false;
+    const value = el.getAttribute('class');
+    let fresh = value ? this.recordClasses(value.split(/\s+/), quiet) : false;
+    const bound = el.getAttribute(':class') || el.getAttribute('x-bind:class');
+    if (bound && this.recordClasses(this.bindingClasses(bound), quiet)) fresh = true;
+    return fresh;
+};
+
+// Binding literals per expression, cached: x-for clones repeat the same few
+TailwindCompiler.prototype.bindingClasses = function (expr) {
+    if (!this._bindingClasses) this._bindingClasses = new Map();
+    let list = this._bindingClasses.get(expr);
+    if (!list) {
+        const set = new Set();
+        this.collectBindingClasses(expr, set);
+        list = Array.from(set);
+        if (this._bindingClasses.size > 500) this._bindingClasses.clear();
+        this._bindingClasses.set(expr, list);
+    }
+    return list;
+};
+
+TailwindCompiler.prototype.recordClasses = function (list, quiet) {
     let fresh = false;
-    for (const cls of value.split(/\s+/)) {
+    for (const cls of list) {
         if (!cls || this.staticClassCache.has(cls)) continue;
         if (this.dynamicClassCache.has(cls)) {
             if (!quiet && this.quietClasses.delete(cls)) fresh = true;

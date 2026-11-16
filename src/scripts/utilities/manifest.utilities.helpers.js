@@ -187,25 +187,46 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
         }
     }
 
-    // Also check for x-data and other Alpine directives that might contain classes
-    const alpineRegex = /x-(?:data|bind:class|class)=["']([^"']+)["']/g;
+    // Alpine class bindings: every literal they could apply
+    const bindingRegex = /(?<![\w-])(?::|x-bind:)class=(["'])((?:(?!\1)[\s\S])*)\1/g;
+    while ((match = bindingRegex.exec(html)) !== null) {
+        this.collectBindingClasses(match[2], classSet);
+    }
+
+    // x-data is arbitrary JS: keep single-token string literals only
+    const alpineRegex = /x-data=["']([^"']+)["']/g;
     while ((match = alpineRegex.exec(html)) !== null) {
-        // Simple extraction - could be enhanced for complex Alpine expressions
         const content = match[1];
         const classMatches = content.match(/['"`]([^'"`\s]+)['"`]/g);
         if (classMatches) {
             for (const classMatch of classMatches) {
                 const cls = classMatch.replace(/['"`]/g, '');
-                // x-data is arbitrary JS — a plain string literal in there
-                // (e.g. `location.pathname.split('/')`) matches this quoted-
-                // token scan too, so require a letter/digit; a punctuation-only
-                // "token" like a bare '/' is skipped (seen on a live page).
+                // Skip punctuation-only literals such as split('/')
                 if (cls && !cls.startsWith('$') && !cls.includes('(') && /[a-zA-Z0-9]/.test(cls)) {
                     classSet.add(cls);
                 }
             }
         }
     }
+};
+
+// Class names a :class / x-bind:class expression can apply: string literals and object keys
+TailwindCompiler.prototype.collectBindingClasses = function (expr, classSet) {
+    if (!expr) return;
+    if (expr.includes('&')) expr = expr.replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&amp;/g, '&');
+    const add = (token) => {
+        if (!token || token.startsWith('x-') || token.startsWith('$') || !/[a-zA-Z0-9]/.test(token)) return;
+        if ((token.includes('[') ? /[{}'"`$;]/ : /[(){}'"`$;,]/).test(token)) return;
+        classSet.add(token);
+    };
+    const literal = /(['"`])((?:\\[\s\S]|(?!\1)[^\\])*)\1/g;
+    let m;
+    while ((m = literal.exec(expr)) !== null) {
+        for (const token of m[2].split(/\s+/)) add(token);
+        if (m[1] === '`' && m[2].includes('${')) this.collectBindingClasses(m[2].replace(/`/g, ' '), classSet);
+    }
+    const bareKey = /[{,]\s*([A-Za-z_][\w-]*)\s*:/g;
+    while ((m = bareKey.exec(expr)) !== null) add(m[1]);
 };
 
 // Get all used classes from static and dynamic sources
@@ -216,6 +237,10 @@ TailwindCompiler.prototype.getUsedClasses = function () {
 
         // Add static classes (pre-scanned)
         for (const cls of this.staticClassCache) {
+            allClasses.add(cls);
+        }
+        // Classes seen so far, including binding literals not yet in the DOM
+        for (const cls of this.dynamicClassCache) {
             allClasses.add(cls);
         }
 
@@ -903,6 +928,19 @@ TailwindCompiler.prototype.isTailwindGeneratedClass = function (className) {
     return tailwindPatterns.some(pattern => pattern.test(className));
 };
 
+// `[data-good]`, `[data-tone="good"]`, `[aria-busy="true"]` for a data-/aria- variant's remainder
+function attributeVariantCondition(kind, rest) {
+    if (rest.startsWith('[') && rest.endsWith(']')) {
+        const m = rest.slice(1, -1).match(/^([a-zA-Z0-9_-]+)(?:([~|^$*]?=)(.+))?$/);
+        if (!m) return null;
+        if (!m[2]) return `[${kind}-${m[1]}]`;
+        const value = m[3].replace(/^(['"])(.*)\1$/, '$2').replace(/_/g, ' ').replace(/"/g, '\\"');
+        return `[${kind}-${m[1]}${m[2]}"${value}"]`;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(rest)) return null;
+    return kind === 'aria' ? `[aria-${rest}="true"]` : `[data-${rest}]`;
+}
+
 // Parse a class name into its components (variants, base class, important)
 TailwindCompiler.prototype.parseClassName = function (className) {
     // Check cache first
@@ -980,20 +1018,17 @@ TailwindCompiler.prototype.parseClassName = function (className) {
 
         // THIRD: Handle parameterized variants (only if exact match not found)
 
-        // Handle data-[...] variants like data-[state=active] (not starting with bracket)
-        // These should be regular attribute selectors, not arbitrary
-        const dataMatch = variant.match(/^data-\[(.+)\]$/);
-        if (dataMatch) {
-            const attrValue = dataMatch[1];
-            // Add quotes around the value if it contains = (e.g., state=active -> state="active")
-            const quotedValue = attrValue.includes('=')
-                ? attrValue.replace(/^([^=]+)=(.+)$/, '$1="$2"')
-                : attrValue;
-            return {
-                name: variant,
-                selector: `[data-${quotedValue}] &`,
-                isArbitrary: false
-            };
+        // Attribute variants (Tailwind v4): the condition sits on the element; group-/peer- move it to the marker
+        const attrMatch = variant.match(/^(group-|peer-)?(data|aria)-(.+)$/);
+        if (attrMatch) {
+            const named = attrMatch[1] && /^&(\[[^\]]+\])$/.exec(this.variants[`${attrMatch[2]}-${attrMatch[3]}`] || '');
+            const condition = named ? named[1] : attributeVariantCondition(attrMatch[2], attrMatch[3]);
+            if (condition) {
+                const selector = !attrMatch[1] ? `&${condition}`
+                    : attrMatch[1] === 'group-' ? `:where(.group${condition}) &`
+                    : `:where(.peer${condition}) ~ &`;
+                return { name: variant, selector, isArbitrary: false };
+            }
         }
 
         // Handle parameterized nth variants: nth-3, nth-last-2, nth-of-type-2, nth-last-of-type-2
@@ -1101,6 +1136,7 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             this._warnedVariants.add(variant);
             console.warn(`Unknown variant: ${variant}`);
         }
+        result.unknown = true;
         return null;
     }).filter(Boolean);
 

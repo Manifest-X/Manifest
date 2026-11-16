@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- Scratch page: theme utilities that only appear in :class bindings, and attribute variants -->
+
+<head>
+    <meta charset="UTF-8">
+    <title>Utilities: dynamic classes</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/styles/core/manifest.theme.css">
+    <link rel="stylesheet" href="/styles/utilities/manifest.colors.css">
+    <script src="/scripts/manifest.js" data-plugin-base="/scripts/"></script>
+</head>
+
+<body x-data="{ ok: false }">
+    <p id="ternary" :class="ok ? 'text-positive-content' : 'text-negative-content'">ternary</p>
+    <p id="object" :class="{ 'bg-positive-surface': ok, 'bg-negative-surface': !ok }">object</p>
+    <p id="bind" x-bind:class="ok && 'border-positive-content'" class="border-2">x-bind</p>
+    <button id="toggle" @click="ok = !ok">toggle</button>
+
+    <p id="data-on" data-good class="data-good:text-positive-content text-negative-content">data-good set</p>
+    <p id="data-off" class="data-good:text-positive-content text-negative-content">data-good unset</p>
+    <p id="data-val-on" data-tone="good" class="data-[tone=good]:text-positive-content text-negative-content">data-[tone=good]</p>
+    <p id="aria-on" aria-busy="true" class="aria-busy:text-positive-content text-negative-content">aria-busy</p>
+    <p id="aria-off" class="aria-busy:text-positive-content text-negative-content">aria-busy unset</p>
+    <p id="aria-sort" aria-sort="ascending" class="aria-[sort=ascending]:text-positive-content text-negative-content">aria-[sort]</p>
+</body>
+
+</html>
