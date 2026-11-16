@@ -36,6 +36,7 @@ describe(':class binding scan', () => {
         const found = scanClasses('<p :class="ok ? \'bg-[rgb(1,2,3)]\' : `text-${tone}`"></p>')
         expect(found).toContain('bg-[rgb(1,2,3)]')
         expect(found.some(c => c.includes('$') || c.includes('{'))).toBe(false)
+        expect(scanClasses(`<a :class="href === 'https://x.com/a' ? 'p-2' : '10:30'"></a>`)).toEqual(['p-2'])
     })
 })
 
@@ -60,7 +61,8 @@ describe('attribute variants', () => {
     })
 
     it('group- and peer- put the condition on the marker', async () => {
-        const css = await compile(['group-data-[open]:text-brand', 'peer-aria-collapsed:text-brand'])
+        const css = await compile(['group-data-[open]:text-brand', 'peer-aria-collapsed:text-brand', 'group-aria-live:text-brand'])
+        expect(css).toContain(':where(.group:is([aria-live="polite"], [aria-live="assertive"])) .group-aria-live\\:text-brand')
         expect(css).toContain(':where(.group[data-open]) .group-data-\\[open\\]\\:text-brand')
         expect(css).toContain(':where(.peer[aria-expanded="false"]) ~ .peer-aria-collapsed\\:text-brand')
     })
