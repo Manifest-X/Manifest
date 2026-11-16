@@ -301,3 +301,56 @@ describe('failed delete restores stay linear and release their snapshot', () => 
         expect(fileIds()).toEqual(['d', 'c', 'b', 'a'])
     })
 })
+
+describe.each(['$delete', '$remove'])('bucket %s across a sign-out', (method) => {
+    const signOut = () => {
+        Object.assign(Alpine.store('auth'), { isAuthenticated: false, user: null })
+        window.dispatchEvent(new CustomEvent('manifest:auth:logout'))
+    }
+
+    it('skips the unlink when the user signed out during the delete', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }], delays: { a: 60 } })
+        const done = call(method, 'a')
+        await settle(15)
+        signOut()
+        await done
+        await settle(120)
+        expect(server.deletes).toEqual(['a'])
+        expect(server.updates).toEqual([])
+        expect(server.rows.get('p1').fileIds).toEqual(['a', 'b'])
+    })
+
+    it('skips the unlink when the user signed out while the unlink read its row', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }] })
+        const getRow = window.ManifestDataAppwrite.getTableRow
+        let reads = 0
+        window.ManifestDataAppwrite.getTableRow = async (...a) => {
+            reads++
+            signOut()
+            await settle(30)
+            return getRow(...a)
+        }
+        await call(method, 'a')
+        await settle(120)
+        expect(reads).toBe(1)
+        expect(server.updates).toEqual([])
+        expect(server.rows.get('p1').fileIds).toEqual(['a', 'b'])
+    })
+})
+
+describe('bucket delete input without a file id', () => {
+    it.each([
+        ['an object without $id', {}],
+        ['an array holding one', ['a', {}]],
+        ['an object with an empty $id', { $id: '' }],
+    ])('%s is refused before any delete', async (label, input) => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a'] }] })
+        for (const method of ['$delete', '$remove']) {
+            await expect(call(method, input)).rejects.toThrow(`${method} requires file ID`)
+        }
+        await settle(60)
+        expect(server.deletes).toEqual([])
+        expect(server.updates).toEqual([])
+        expect(fileIds()).toEqual(['a', 'b', 'c'])
+    })
+})

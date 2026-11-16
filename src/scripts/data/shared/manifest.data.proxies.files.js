@@ -1088,6 +1088,9 @@ async function unlinkFileFromAllEntries(fileId, options = {}) {
 
             const columns = fileLinkColumns(manifest, tableName, tableConfig, options.bucketId);
             const affected = new Set();
+            const generation = window.ManifestDataStore?.sourceGeneration?.(tableName);
+            const isCurrent = () => (!options.isCurrent || options.isCurrent())
+                && window.ManifestDataStore?.sourceGeneration?.(tableName) === generation;
 
             for (const entry of entries) {
                 for (const column of columns) {
@@ -1097,7 +1100,7 @@ async function unlinkFileFromAllEntries(fileId, options = {}) {
                         if (!linked.includes(id)) continue;
                         affected.add(entry.$id);
                         unlinkPromises.push(
-                            unlinkFileFromEntry(tableName, entry.$id, id, column).catch(error => {
+                            unlinkFileFromEntry(tableName, entry.$id, id, column, { isCurrent }).catch(error => {
                                 console.warn('[Manifest Data] Could not unlink from', tableName, 'entry', entry.$id, ':', error.message);
                             })
                         );
@@ -1120,11 +1123,14 @@ async function unlinkFileFromAllEntries(fileId, options = {}) {
 
 // Unlink a file from a table entry by removing the file ID from the entry's fileIds array
 // Generic function - works with any table and any scope
-function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
-    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileUnlink(tableName, entryId, fileId, fileIdsColumn));
+function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds', options = {}) {
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileUnlink(tableName, entryId, fileId, fileIdsColumn, options));
 }
 
-async function writeFileUnlink(tableName, entryId, fileId, fileIdsColumn) {
+// options.isCurrent: false once the identity that started the write is gone
+async function writeFileUnlink(tableName, entryId, fileId, fileIdsColumn, options = {}) {
+    const stale = () => !!options.isCurrent && !options.isCurrent();
+    if (stale()) return false;
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -1145,6 +1151,8 @@ async function writeFileUnlink(tableName, entryId, fileId, fileIdsColumn) {
         tableId,
         entryId
     );
+
+    if (stale()) return false;
 
     if (!entry) {
         throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
