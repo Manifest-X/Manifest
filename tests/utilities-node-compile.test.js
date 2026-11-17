@@ -145,6 +145,15 @@ describe('compileUtilities with an injected tailwind engine', () => {
 })
 
 describe('scanClasses', () => {
+    it('reads string literals in :class / x-bind:class (ternary, object, array, entity-quoted)', () => {
+        const html = [
+            `<div :class="open ? 'md:max-w-xl xl:col-span-1' : 'hidden'"></div>`,
+            `<div x-bind:class="{ &quot;lg:row&quot;: wide, 'sm:col': narrow }"></div>`,
+            `<div :class="['md:text-2xl', big && 'lg:text-5xl']"></div>`
+        ].join('')
+        expect(scanClasses(html)).toEqual(expect.arrayContaining(['md:max-w-xl', 'xl:col-span-1', 'hidden', 'lg:row', 'sm:col', 'md:text-2xl', 'lg:text-5xl']))
+    })
+
     it('finds tokens in class attributes and skips x-/$ tokens', () => {
         const html = '<div class="p-4 text-brand x-data $magic"></div>'
         expect(scanClasses(html)).toEqual(['p-4', 'text-brand'])

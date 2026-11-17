@@ -20,6 +20,10 @@ TailwindCompiler.prototype.findStaticUtilitiesElements = function () {
     }
 };
 
+TailwindCompiler.prototype.hasShippedUtilitiesSheet = function () {
+    return this.findStaticUtilitiesElements().length > 0;
+};
+
 // Top-level selector text only (skips declaration bodies, so values like
 // `margin: .5rem` can't be mistaken for a `.5` class selector).
 TailwindCompiler.prototype.extractSelectorsFromCssText = function (cssText) {

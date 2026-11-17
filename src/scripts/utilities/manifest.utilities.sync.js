@@ -2,6 +2,8 @@
 
 TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
     if (!this.criticalStyleElement) return;
+    // Unlayered guesses would override the shipped sheets' breakpoint rules
+    if (this.hasShippedUtilitiesSheet()) return;
 
     const syncStart = performance.now();
 
@@ -264,7 +266,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
 
 // Generate synchronous utilities (fallback method)
 TailwindCompiler.prototype.generateSynchronousUtilities = function () {
-    if (this.usesStaticPrerenderUtilities) return;
+    if (this.usesStaticPrerenderUtilities || this.hasShippedUtilitiesSheet()) return;
     try {
         // Always try to generate, even if cache exists, to catch any new classes
         const hasExistingStyles = this.styleElement.textContent && this.styleElement.textContent.trim();

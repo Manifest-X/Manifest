@@ -95,6 +95,29 @@ describe('static utilities sheet — runtime skip', () => {
         expect(generated).not.toMatch(/text-3xl/)
     })
 
+    it('emits no bare rule, at boot or after, for text-xl md:text-2xl held by the static sheet', async () => {
+        localStorage.setItem('tailwind-cache', JSON.stringify([['k', { css: '@layer utilities {\n.text-xl { font-size: 1.25rem }\n}', timestamp: Date.now(), themeHash: 'x' }]]))
+        const headHtml = [
+            '<style id="theme-vars">:root { --text-xl: 1.25rem; --text-2xl: 1.5rem; --color-page: #fff; }</style>',
+            '<style data-mnfst-utilities>@layer utilities{.text-xl{font-size:1.25rem}@media (min-width: 768px){.md\\:text-2xl{font-size:1.5rem}}}</style>',
+        ].join('')
+        const bodyHtml = '<p class="text-xl md:text-2xl"></p>'
+        document.head.innerHTML = headHtml
+        document.body.innerHTML = bodyHtml
+        window.tailwind = {}
+        window.ManifestComponentsRegistry = { manifest: {} }
+        delete window.__manifestUtilitiesReady
+        window.__manifestUtilitiesPending = 0
+        const ready = new Promise((resolve) => window.addEventListener('manifest:utilities-ready', resolve, { once: true }))
+        await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(bundleSrc + `\n//boot:${Math.random()}`))
+        const atBoot = ['manifest-styles', 'manifest-styles-critical'].map((id) => document.getElementById(id)?.textContent || '').join('\n')
+        expect(atBoot).not.toMatch(/\.text-xl\s*\{/)
+        await ready
+        const after = ['manifest-styles', 'manifest-styles-critical'].map((id) => document.getElementById(id)?.textContent || '').join('\n')
+        expect(after).not.toMatch(/\.text-xl\s*\{/)
+        localStorage.clear()
+    })
+
     it('counts mnfst-render prerender sheets as covered', async () => {
         const headHtml = [
             '<style id="theme-vars">:root { --spacing-4: 1rem; --spacing-8: 2rem; }</style>',

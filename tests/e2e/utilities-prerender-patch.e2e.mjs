@@ -7,8 +7,10 @@
  *
  *   a) text-3xl md:text-5xl — the bake lacks text-3xl (as on the reported site) but
  *      prerender.tailwind.css has it: 30px below md (600), 48px at 800 and 1440
- *   b) text-xl md:text-4xl — text-xl is in neither sheet, so the runtime must emit it,
- *      and md:text-4xl after it: 20px at 600, 36px at 800 and 1440
+ *   b) text-lg md:text-4xl — text-lg is in neither sheet, so the runtime must emit it,
+ *      and md:text-4xl after it: 18px at 600, 36px at 800 and up
+ *   c) text-xl md:text-2xl — both in the shipped sheets: the runtime emits no bare rule
+ *      (no boot-time sync/critical/cache guesses either): 20px at 600, 24px at 1280
  *
  * Line-height is checked where a sheet sets it, catching the split signature
  * (font-size from the bare rule, line-height from the md: one).
@@ -27,13 +29,14 @@ import puppeteer from 'puppeteer'
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const { compileUtilities } = await import(pathToFileURL(path.join(ROOT, 'lib', 'manifest.utilities.node.mjs')).href)
 
-const CLASSES = ['text-3xl', 'md:text-5xl', 'text-xl', 'md:text-4xl', 'row']
+const CLASSES = ['text-3xl', 'md:text-5xl', 'text-lg', 'md:text-4xl', 'text-xl', 'md:text-2xl', 'row']
 const INDEX = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <link rel="stylesheet" href="/fw/manifest.css">
 <script src="/fw/manifest.min.js" data-plugin-base="/fw" data-plugins="router,utilities" data-tailwind></script></head>
 <body>
   <h1 id="a" class="text-3xl md:text-5xl">a</h1>
-  <h2 id="b" class="text-xl md:text-4xl">b</h2>
+  <h2 id="b" class="text-lg md:text-4xl">b</h2>
+  <p id="c" class="text-xl md:text-2xl">c</p>
   <div class="row">r</div>
 </body></html>`
 
@@ -59,13 +62,13 @@ async function build() {
     const out = path.join(dir, 'website')
     const twPath = path.join(out, 'prerender.tailwind.css')
     check('prerender: exit 0 with prerender.tailwind.css', r.status === 0 && fs.existsSync(twPath), (r.stdout + r.stderr).split('\n').slice(-6).join(' / '))
-    fs.writeFileSync(twPath, dropRule(fs.readFileSync(twPath, 'utf8'), 'text-xl'))
+    fs.writeFileSync(twPath, dropRule(fs.readFileSync(twPath, 'utf8'), 'text-lg'))
 
     const bake = await compileUtilities({
         classes: CLASSES.filter((c) => c !== 'text-3xl'),
         baseCss: fs.readFileSync(path.join(ROOT, 'lib', 'manifest.css'), 'utf8')
     })
-    fs.writeFileSync(path.join(out, 'manifest.utilities.css'), dropRule(bake, 'text-xl'))
+    fs.writeFileSync(path.join(out, 'manifest.utilities.css'), dropRule(bake, 'text-lg'))
     const htmlPath = path.join(out, 'index.html')
     const html = fs.readFileSync(htmlPath, 'utf8')
     check('prerender: page links prerender.tailwind.css', html.includes('prerender.tailwind.css'))
@@ -86,7 +89,12 @@ function serve(out) {
     return new Promise((r) => server.listen(0, '127.0.0.1', () => r({ url: `http://localhost:${server.address().port}`, close: () => new Promise((c) => { server.closeAllConnections(); server.close(() => c()) }) })))
 }
 
-const WANT = { 600: { a: ['30px', '36px'], b: ['20px', null] }, 800: { a: ['48px', '48px'], b: ['36px', '40px'] }, 1440: { a: ['48px', '48px'], b: ['36px', '40px'] } }
+const WANT = {
+    600: { a: ['30px', '36px'], b: ['18px', null], c: ['20px', '28px'] },
+    800: { a: ['48px', '48px'], b: ['36px', '40px'], c: ['24px', '32px'] },
+    1280: { a: ['48px', '48px'], b: ['36px', '40px'], c: ['24px', '32px'] },
+    1440: { a: ['48px', '48px'], b: ['36px', '40px'], c: ['24px', '32px'] }
+}
 
 async function main() {
     const { dir, out } = await build()
@@ -94,7 +102,7 @@ async function main() {
     const srv = await serve(out)
     const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
     try {
-        for (const width of [600, 800, 1440]) {
+        for (const width of [600, 800, 1280, 1440]) {
             const ctx = await browser.createBrowserContext()
             const page = await ctx.newPage()
             await page.setViewport({ width, height: 900 })
@@ -102,12 +110,14 @@ async function main() {
             // Let the runtime finish its first compile (or decide there's nothing to do)
             await page.waitForFunction(() => window.__manifestUtilitiesReady === true || window.__manifestReady === true, { timeout: 15000 }).catch(() => { })
             await new Promise((r) => setTimeout(r, 1200))
-            const got = await page.evaluate(() => Object.fromEntries(['a', 'b'].map((id) => {
+            const got = await page.evaluate(() => Object.fromEntries(['a', 'b', 'c'].map((id) => {
                 const s = getComputedStyle(document.getElementById(id))
                 return [id, [s.fontSize, s.lineHeight]]
             })))
             const want = WANT[width]
-            for (const id of ['a', 'b']) {
+            const emitted = await page.evaluate(() => [document.getElementById('manifest-styles')?.textContent || '', document.getElementById('manifest-styles-critical')?.textContent || ''].join('\n'))
+            check(`@${width}px: runtime emits no bare rule for covered text-xl / text-3xl`, !/(^|[\s}])\.text-(xl|3xl)\s*\{/.test(emitted), emitted.slice(0, 200))
+            for (const id of ['a', 'b', 'c']) {
                 check(`@${width}px ${id}: font-size ${want[id][0]}`, got[id][0] === want[id][0], JSON.stringify(got[id]))
                 if (want[id][1]) check(`@${width}px ${id}: line-height ${want[id][1]} (same breakpoint as font-size)`, got[id][1] === want[id][1], JSON.stringify(got[id]))
             }

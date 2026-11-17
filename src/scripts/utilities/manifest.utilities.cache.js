@@ -69,7 +69,8 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
             const cacheToUse = bestMatch || Array.from(this.cache.entries())
                 .sort((a, b) => b[1].timestamp - a[1].timestamp)[0]?.[1];
 
-            if (cacheToUse && cacheToUse.css) {
+            // Pages with shipped utility sheets skip the replay: its bare rules would land after them
+            if (cacheToUse && cacheToUse.css && !this.hasShippedUtilitiesSheet()) {
                 const applyCacheStart = performance.now();
                 // The cached CSS may predate the static utilities sheet (or come
                 // from a visitor without one) — strip anything it already covers
