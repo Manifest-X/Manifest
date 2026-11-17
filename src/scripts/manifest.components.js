@@ -869,8 +869,8 @@ window.ManifestComponentsRouting = (function () {
             }
             const gate = window.ManifestComponentsRouting;
 
-            // Path from the route-change event, else the router's current route
-            const normalizedPath = normalizedPathFromEvent !== null ? normalizedPathFromEvent : gate.currentPath();
+            // Event path, or null: the gate reads the router's route when it decides (the router may land mid-pass)
+            const eventPath = normalizedPathFromEvent ?? undefined;
 
             const placeholders = Array.from(document.querySelectorAll('*')).filter(el =>
                 el.tagName.toLowerCase().startsWith('x-') &&
@@ -881,10 +881,10 @@ window.ManifestComponentsRouting = (function () {
             if (window.ManifestRouting) {
                 for (const instanceId of Array.from(swappedInstances)) {
                     const xRoute = instanceRouteMap.get(instanceId);
-                    if (xRoute && !gate.matches(xRoute, normalizedPath)) this.revert(instanceId);
+                    if (xRoute && !gate.matches(xRoute, eventPath ?? gate.currentPath())) this.revert(instanceId);
                 }
             }
-            const decide = gate.gate(normalizedPath);
+            const decide = gate.gate(eventPath);
             // Second pass: swap in matches. Routing is read per placeholder: it may arrive mid-pass.
             for (const placeholder of placeholders) {
                 const name = placeholder.tagName.toLowerCase().replace('x-', '');

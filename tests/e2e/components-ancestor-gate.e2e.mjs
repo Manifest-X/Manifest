@@ -9,6 +9,7 @@
  *      inside a routed wrapper waits for that route
  *   e) the same with the router held back (late) and as an early author tag
  *   f) mnfst-render: each route's page has its own nested components only
+ *   g) router base /app + a router landing mid-pass: the !* section stays unloaded
  *
  * Run: npm run build && node tests/e2e/components-ancestor-gate.e2e.mjs
  * FW_DIR=<dir> serves another build's lib (e.g. the old one, to see it fail).
@@ -28,7 +29,7 @@ const ALPINE = path.join(ROOT, 'node_modules', 'alpinejs', 'dist', 'cdn.min.js')
 const ROUTER_DELAY_MS = 1500
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const NAMES = ['wa', 'wb', 'comma', 'neg', 'gate', 'nested', 'inner', 'deep', 'late']
+const NAMES = ['wa', 'wb', 'comma', 'neg', 'gate', 'nested', 'inner', 'deep', 'late', 'slow', 'nf']
 const COMPONENTS = {
     ...Object.fromEntries(NAMES.map((n) => [n, `<div class="c-${n}">${n}</div>`])),
     shell: '<div class="c-shell"><div x-route="/b"><x-inner></x-inner></div></div>',
@@ -52,6 +53,17 @@ ${early ? '<script src="/fw/manifest.router.js"></script>' : ''}
   <div id="pane" x-route="/b"></div>
 </body></html>`
 
+// Served under /app; the ungated slow component holds the first pass open until the router lands
+const basePage = () => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
+<meta name="manifest:router-base" content="/app">
+<link rel="manifest" href="/manifest.json">
+<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="components,router" data-alpine="/alpine.js"></script></head>
+<body x-data>
+  <x-slow></x-slow>
+  <div x-route="/b"><x-wb></x-wb></div>
+  <div x-route="!*"><x-nf></x-nf></div>
+</body></html>`
+
 function serve() {
     const hits = []
     const server = http.createServer(async (req, res) => {
@@ -61,6 +73,7 @@ function serve() {
         if (p === '/alpine.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); return res.end(fs.readFileSync(ALPINE)) }
         if (p === '/manifest.json') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(MANIFEST)) }
         const comp = p.match(/^\/components\/(\w+)\.html$/)
+        if (comp && comp[1] === 'slow') await wait(ROUTER_DELAY_MS + 700)
         if (comp && COMPONENTS[comp[1]]) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(COMPONENTS[comp[1]]) }
         if (p.startsWith('/fw/')) {
             const file = path.join(FW, p.slice(4))
@@ -69,6 +82,7 @@ function serve() {
             res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' })
             return res.end(fs.readFileSync(file))
         }
+        if (p === '/app/b') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(basePage()) }
         if (['/a', '/b', '/s/t'].includes(p)) {
             res.writeHead(200, { 'Content-Type': 'text/html' })
             return res.end(page({ early: mode === 'early' }))
@@ -138,6 +152,23 @@ async function run(browser, srv, mode) {
     } finally { await pg2.close() }
 }
 
+async function runBase(browser, srv) {
+    const pg = await browser.newPage()
+    await pg.setCookie({ name: 'mode', value: 'late', url: srv.url })
+    const t0 = Date.now()
+    try {
+        await pg.goto(srv.url + '/app/b', { waitUntil: 'domcontentloaded' })
+        await pg.waitForSelector('.c-slow', { timeout: 15000 }).catch(() => {})
+        await wait(800)
+        const got = fetched(srv, t0)
+        const on = await rendered(pg)
+        check('base /app, router mid-pass: the !* section never loads', !got.includes('nf'), got.join(','))
+        check('base /app, router mid-pass: the /b section loads', on.includes('wb'), on.join(','))
+    } catch (e) {
+        check('base /app: run', false, e.message)
+    } finally { await pg.close() }
+}
+
 function prerender() {
     const dir = fs.mkdtempSync(path.join(tmpdir(), 'mnfst-components-ancestor-gate-'))
     try {
@@ -166,6 +197,7 @@ async function main() {
         try {
             await run(chrome, srv, 'late')
             await run(chrome, srv, 'early')
+            await runBase(chrome, srv)
         } finally { await chrome.close() }
     } finally { await srv.close() }
     console.log(failed ? `\n${failed} check(s) failed` : '\nall checks passed')

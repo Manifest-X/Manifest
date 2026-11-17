@@ -38,14 +38,15 @@ const TEMPLATES = {
     shell: '<div class="r-shell"><div x-route="/b"><x-inner></x-inner></div></div>'
 }
 
-function makeEnv({ path: p = '/a', router = true, mutation = true } = {}) {
+function makeEnv({ path: p = '/a', router = true, mutation = true, onLoad = null } = {}) {
     const loads = []
     const win = new Events()
     win.location = { pathname: p }
-    win.ManifestComponentsRegistry = { registered: new Set(['w', 'v', 'e', 'nf', 'inner', 'a', 'shell', 'own']) }
+    win.ManifestComponentsRegistry = { registered: new Set(['w', 'v', 'e', 'nf', 'inner', 'a', 'shell', 'own', 'slow']) }
     win.ManifestComponentsLoader = {
         async loadComponent(name) {
             loads.push(name)
+            if (onLoad) onLoad(name)
             await tick(1)
             return TEMPLATES[name] || `<div class="r-${name}"></div>`
         }
@@ -175,6 +176,21 @@ describe('ancestor route gate', () => {
         expect(rendered()).toEqual(['own', 'w'])
         await go('/b')
         expect(rendered()).toEqual(['w'])
+    })
+
+    it('base path + router landing mid-pass: decisions use the logical route, not the stale pathname', async () => {
+        document.head.innerHTML = '<script type="text/x-inert" src="/app/fw/manifest.router.js"></script>'
+        document.body.innerHTML = '<x-slow></x-slow><div x-route="/b"><x-w></x-w></div><div x-route="!*"><x-nf></x-nf></div>'
+        let env
+        // The router (base /app stripped) arrives while the ungated first component loads
+        const arrive = () => {
+            Object.assign(env.win, realRouter(document), { ManifestRoutingNavigation: { getCurrentRoute: () => '/b' } })
+            document.querySelector('script[src*="manifest.router"]').dispatchEvent(new window.Event('load'))
+        }
+        env = makeEnv({ path: '/app/b', router: false, onLoad: (n) => { if (n === 'slow') Promise.resolve().then(arrive) } })
+        await settle()
+        expect(env.loads).not.toContain('nf')
+        expect(env.rendered()).toEqual(['slow', 'w'])
     })
 
     it('no router: wrappers gate nothing', async () => {
