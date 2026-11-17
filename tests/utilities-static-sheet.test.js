@@ -68,6 +68,49 @@ describe('static utilities sheet — runtime skip', () => {
         expect(generated).toMatch(/\.text-brand\s*\{/)
     })
 
+    it('re-emits covered breakpoint partners after a bare class it has to generate', async () => {
+        const headHtml = [
+            '<style id="theme-vars">:root { --text-3xl: 1.875rem; --text-5xl: 3rem; --spacing-4: 1rem; }</style>',
+            '<style data-mnfst-utilities>@layer utilities{@media (min-width: 768px){.md\\:text-5xl{font-size:3rem}}.hover\\:p-4:hover{padding:1rem}}</style>',
+        ].join('')
+        const bodyHtml = '<h1 class="text-3xl md:text-5xl hover:p-4"></h1>'
+        await bootPluginWith({ headHtml, bodyHtml })
+        const generated = document.getElementById('manifest-styles').textContent
+        const bare = generated.search(/\.text-3xl\s*\{/)
+        const partner = generated.search(/\.md\\:text-5xl\s*\{/)
+        expect(bare).toBeGreaterThan(-1)
+        expect(partner).toBeGreaterThan(bare)
+        expect(generated).not.toMatch(/hover\\:p-4/)
+    })
+
+    it('counts mnfst-render prerender sheets as covered', async () => {
+        const headHtml = [
+            '<style id="theme-vars">:root { --spacing-4: 1rem; --spacing-8: 2rem; }</style>',
+            '<style data-mnfst-utilities>.p-8{padding:2rem}</style>',
+        ].join('')
+        const compiler = await bootPluginWith({ headHtml, bodyHtml: '<div class="p-4 p-8"></div>' })
+        expect(compiler.findStaticUtilitiesElements().length).toBe(1)
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = '/prerender.tailwind.css'
+        document.head.appendChild(link)
+        expect(compiler.findStaticUtilitiesElements()).toContain(link)
+    })
+
+    it('stripCoveredRulesFromCss keeps breakpoint rules when a bare cached rule survives', async () => {
+        const headHtml = [
+            '<style id="theme-vars">:root { --text-3xl: 1.875rem; --text-5xl: 3rem; }</style>',
+            '<style data-mnfst-utilities>@media (min-width: 768px){.md\\:text-5xl{font-size:3rem}}</style>',
+        ].join('')
+        const compiler = await bootPluginWith({ headHtml, bodyHtml: '<div></div>' })
+        const cached = '@layer utilities {\n.text-3xl { font-size: 1.875rem }\n\n@media (min-width: 768px) { .md\\:text-5xl { font-size: 3rem } }\n}'
+        const stripped = compiler.stripCoveredRulesFromCss(cached)
+        expect(stripped).toMatch(/\.text-3xl\s*\{/)
+        expect(stripped).toMatch(/\.md\\:text-5xl\s*\{/)
+        const onlyVariant = '@layer utilities {\n@media (min-width: 768px) { .md\\:text-5xl { font-size: 3rem } }\n}'
+        expect(compiler.stripCoveredRulesFromCss(onlyVariant)).not.toMatch(/text-5xl/)
+    })
+
     it('stripCoveredRulesFromCss drops a replayed cache rule the static sheet already covers', async () => {
         // manifest.utilities.cache.js replays a stylesheet cached before the
         // static sheet existed (or from a visitor without one) verbatim via

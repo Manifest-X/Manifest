@@ -11,6 +11,15 @@ TailwindCompiler.prototype.findStaticUtilitiesElement = function () {
     }
 };
 
+// Every shipped utilities sheet: the publish bake plus mnfst-render's prerender sheets
+TailwindCompiler.prototype.findStaticUtilitiesElements = function () {
+    try {
+        return Array.from(document.querySelectorAll('link[rel="stylesheet"][data-mnfst-utilities], style[data-mnfst-utilities], link[rel="stylesheet"][href*="prerender.tailwind.css"], link[rel="stylesheet"][href*="prerender.utilities.css"]'));
+    } catch (e) {
+        return [];
+    }
+};
+
 // Top-level selector text only (skips declaration bodies, so values like
 // `margin: .5rem` can't be mistaken for a `.5` class selector).
 TailwindCompiler.prototype.extractSelectorsFromCssText = function (cssText) {
@@ -123,39 +132,44 @@ TailwindCompiler.prototype.readStaticUtilitiesRules = function (el) {
 // covered) until a read actually succeeds, never cached as "covered".
 TailwindCompiler.prototype.detectStaticUtilitiesSheet = function () {
     this.staticUtilitiesCoveredClasses = null;
-    const el = this.findStaticUtilitiesElement();
-    if (!el) return Promise.resolve();
+    const els = this.findStaticUtilitiesElements();
+    if (!els.length) return Promise.resolve();
 
-    if (el.tagName === 'STYLE') {
-        this.staticUtilitiesCoveredClasses = this.classNamesFromCssText(el.textContent || '');
-        return Promise.resolve();
-    }
+    const merge = (classes) => {
+        if (!classes) return;
+        if (!this.staticUtilitiesCoveredClasses) this.staticUtilitiesCoveredClasses = new Set();
+        for (const c of classes) this.staticUtilitiesCoveredClasses.add(c);
+    };
 
-    const covered = this.readStaticUtilitiesRules(el);
-    if (covered) {
-        this.staticUtilitiesCoveredClasses = covered;
-        return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-        let settled = false;
-        const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            el.removeEventListener('load', onLoad);
-            el.removeEventListener('error', onError);
-            // staticUtilitiesCoveredClasses stays null (fail open) if this
-            // still can't be read — e.g. a cross-origin sheet without CORS.
-            this.staticUtilitiesCoveredClasses = this.readStaticUtilitiesRules(el);
-            resolve();
-        };
-        const onLoad = () => finish();
-        const onError = () => finish();
-        const timer = setTimeout(finish, 2000);
-        el.addEventListener('load', onLoad, { once: true });
-        el.addEventListener('error', onError, { once: true });
-    });
+    return Promise.all(els.map((el) => {
+        if (el.tagName === 'STYLE') {
+            merge(this.classNamesFromCssText(el.textContent || ''));
+            return null;
+        }
+        const covered = this.readStaticUtilitiesRules(el);
+        if (covered) {
+            merge(covered);
+            return null;
+        }
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                el.removeEventListener('load', onLoad);
+                el.removeEventListener('error', onError);
+                // Unreadable (e.g. cross-origin without CORS) stays uncounted: fail open
+                merge(this.readStaticUtilitiesRules(el));
+                resolve();
+            };
+            const onLoad = () => finish();
+            const onError = () => finish();
+            const timer = setTimeout(finish, 2000);
+            el.addEventListener('load', onLoad, { once: true });
+            el.addEventListener('error', onError, { once: true });
+        });
+    })).then(() => { });
 };
 
 // manifest.json's `utilities.safelist` (exact class names) / `utilities.patterns`
@@ -214,7 +228,42 @@ TailwindCompiler.prototype.hasSafelistEntries = function () {
 TailwindCompiler.prototype.filterStaticallyCoveredClasses = function (classes) {
     const covered = this.staticUtilitiesCoveredClasses;
     if ((!covered || covered.size === 0) && !this.hasSafelistEntries()) return classes;
-    return classes.filter(c => !this.isClassCovered(c));
+    const left = classes.filter(c => !this.isClassCovered(c));
+    if (!left.some(c => !hasClassVariant(c))) return left;
+    // A bare class emitted last would beat its breakpoint partners in the shipped sheets
+    // (text-3xl over md:text-5xl): re-emit the at-rule variant classes after it
+    const out = new Set(left);
+    const pageClasses = [classes, this.staticClassCache || [], this.dynamicClassCache || []];
+    for (const list of pageClasses) for (const c of list) if (this.isAtRuleVariantClass(c)) out.add(c);
+    return Array.from(out);
+};
+
+// Variant prefixes outside brackets (md:text-5xl, [&_p]:x — not w-[a:b])
+function classVariantTokens(cls) {
+    const parts = [];
+    let depth = 0, current = '';
+    for (const ch of cls) {
+        if (ch === '[') depth++;
+        else if (ch === ']') depth--;
+        if (ch === ':' && depth === 0) { parts.push(current); current = ''; }
+        else current += ch;
+    }
+    return parts;
+}
+
+function hasClassVariant(cls) {
+    return classVariantTokens(cls).length > 0;
+}
+
+// Only media/container/supports conditions: same specificity as the bare class, so order decides
+TailwindCompiler.prototype.isAtRuleVariantClass = function (cls) {
+    const tokens = classVariantTokens(cls.replace(/^!/, ''));
+    if (!tokens.length) return false;
+    return tokens.every(t => {
+        const sel = this.variants && this.variants[t];
+        if (sel) return sel.startsWith('@');
+        return t.startsWith('@') || /^(min-|max-)?(sm|md|lg|xl|2xl)$/.test(t) || /^(min|max)-\[.+\]$/.test(t);
+    });
 };
 
 // The localStorage cache (manifest.utilities.cache.js) stores a full compiled
@@ -284,11 +333,23 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
             // Only drop a rule once every class it references is covered — a
             // mixed selector (`:where(.row, .col)`) stays if either is new.
             const isFullyCovered = classes.length > 0 && classes.every(c => this.isClassCovered(c));
-            if (!isFullyCovered) out.push(fullRule);
+            const isVariant = classes.some(c => this.isAtRuleVariantClass(c));
+            if (!isFullyCovered) {
+                out.push(fullRule);
+                if (classes.length > 0 && !classes.some(hasClassVariant)) keptBare = true;
+            } else if (keepVariants && isVariant) {
+                out.push(fullRule);
+            }
         }
         return out.join('\n');
     };
 
+    // Kept bare rules sit last: keep the variant rules too so they still follow them
+    let keepVariants = false;
+    let keptBare = false;
+    const stripped = strip(cssText);
+    if (!keptBare) return stripped;
+    keepVariants = true;
     return strip(cssText);
 };
 
