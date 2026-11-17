@@ -134,7 +134,9 @@ function headTemplateHost(template) {
 function headTemplateIsActive(template, host, normalizedPath) {
     if (template.hasAttribute('data-component')) {
         const componentRoute = template.getAttribute('x-route');
-        return componentRoute ? window.ManifestRouting.matchesCondition(normalizedPath, componentRoute) : false;
+        if (componentRoute) return window.ManifestRouting.matchesCondition(normalizedPath, componentRoute);
+        // Rendered component without its own route: active while connected under active routes
+        return template.isConnected && shouldElementBeVisible(template, normalizedPath);
     }
     return host ? shouldElementBeVisible(host, normalizedPath) : true;
 }
@@ -159,21 +161,31 @@ function createHeadElements(template, headId) {
     return created;
 }
 
-// Nesting depth of a template's routes; deeper routes outrank their ancestors
-function headRouteDepth(node) {
-    let depth = 0;
-    for (let n = node; n; n = n.parentElement) if (n.hasAttribute && n.hasAttribute('x-route')) depth++;
-    return depth;
+// Route element a template answers to, for nesting comparisons
+function headRouteHost(template, host) {
+    const base = host || template;
+    return (base.closest && base.closest('[x-route]')) || base;
 }
 
-// Per identity, the highest-priority active template that provides it keeps all its tags
-// for it (og:image ×2, theme-color by media…); static tags of that identity step aside
-function applyHeadIdentities(activeIds) {
+// Later candidate wins, unless the current owner's route is nested inside it
+function headOutranks(candidate, current, routeHosts) {
+    const a = routeHosts.get(candidate), b = routeHosts.get(current);
+    if (a && b && a !== b && a.contains(b)) return false;
+    return true;
+}
+
+// Per identity, the winning active template keeps all its tags for it (og:image ×2,
+// theme-color by media…); static tags of that identity step aside as a group
+function applyHeadIdentities(activeIds, routeHosts) {
     const owner = new Map();
     for (const id of activeIds) {
+        const keys = new Set();
         for (const el of injectedHead.get(id) || []) {
             const key = headIdentity(el);
-            if (key) owner.set(key, id);
+            if (key) keys.add(key);
+        }
+        for (const key of keys) {
+            if (!owner.has(key) || headOutranks(id, owner.get(key), routeHosts)) owner.set(key, id);
         }
     }
     for (const id of activeIds) {
@@ -187,13 +199,19 @@ function applyHeadIdentities(activeIds) {
             }
         }
     }
-    for (const el of Array.from(document.head.children)) {
-        if (el.hasAttribute('data-route-head') || supersededStatic.has(el)) continue;
+    // Remember each static tag's place by the next sibling that stays, so a group restores in order
+    const aside = Array.from(document.head.children).filter(el => {
+        if (el.hasAttribute('data-route-head') || supersededStatic.has(el)) return false;
         const key = headIdentity(el);
-        if (!key || !owner.has(key)) continue;
-        supersededStatic.set(el, { key, next: el.nextElementSibling });
-        el.remove();
+        return !!key && owner.has(key);
+    });
+    const asideSet = new Set(aside);
+    for (const el of aside) {
+        let next = el.nextElementSibling;
+        while (next && asideSet.has(next)) next = next.nextElementSibling;
+        supersededStatic.set(el, { key: headIdentity(el), next });
     }
+    aside.forEach(el => el.remove());
     // A tag of the same identity added meanwhile takes the set-aside one's place
     const taken = new Set();
     for (const el of Array.from(document.head.children)) {
@@ -214,16 +232,16 @@ function processAllHeadContent(normalizedPath) {
 
     const activeIds = [];
     const active = new Map();
+    const routeHosts = new Map();
     document.querySelectorAll('template[data-head]').forEach(template => {
         const host = template.hasAttribute('data-component') ? template : headTemplateHost(template);
         if (!headTemplateIsActive(template, host, normalizedPath)) return;
         const headId = generateHeadId(template, host);
         if (active.has(headId)) return;
         active.set(headId, template);
-        activeIds.push({ id: headId, depth: headRouteDepth(host || template), order: activeIds.length });
+        routeHosts.set(headId, headRouteHost(template, host));
+        activeIds.push(headId);
     });
-    activeIds.sort((a, b) => a.depth - b.depth || a.order - b.order);
-    const orderedIds = activeIds.map(entry => entry.id);
 
     for (const [id, els] of injectedHead) {
         if (active.has(id)) continue;
@@ -234,13 +252,13 @@ function processAllHeadContent(normalizedPath) {
         if (!active.has(el.getAttribute('data-route-head'))) el.remove();
     });
 
-    for (const id of orderedIds) {
+    for (const id of activeIds) {
         if (injectedHead.has(id)) continue;
         const existing = Array.from(document.head.querySelectorAll(`[data-route-head="${id}"]`));
         injectedHead.set(id, existing.length ? existing : createHeadElements(active.get(id), id));
     }
 
-    applyHeadIdentities(orderedIds);
+    applyHeadIdentities(activeIds, routeHosts);
 }
 
 // Single-template entry point (kept for the public interface)
