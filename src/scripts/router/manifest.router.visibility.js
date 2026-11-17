@@ -211,5 +211,8 @@ window.ManifestRoutingVisibility = {
     initialize: initializeVisibility,
     processRouteVisibility,
     isRouteActive,
-    isPrerenderedStaticMPA
+    isPrerenderedStaticMPA,
+    // Raw match for other plugins (components gate): no static-MPA shortcut
+    routeMatches,
+    routesDefined: (normalizedPath) => isRouteDefined(normalizedPath, collectDefinedRoutes())
 };

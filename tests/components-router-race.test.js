@@ -5,13 +5,14 @@
  * hydrate off-route, whether the router script runs before or after the
  * components plugin. Real processor/routing/swapping/mutation source in a vm
  * context per test (as components-swap-reentrancy.test.js); the router's real
- * matchesCondition.
+ * matcher (tests/helpers/real-router.js).
  */
 import vm from 'vm'
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { realRouter } from './helpers/real-router.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const read = (f) => readFileSync(path.resolve(__dirname, '../src/scripts/', f), 'utf8')
@@ -19,19 +20,11 @@ const processorSrc = read('components/manifest.components.processor.js')
 const routingSrc = read('components/manifest.components.routing.js')
 const swappingSrc = read('components/manifest.components.swapping.js')
 const mutationSrc = read('components/manifest.components.mutation.js')
-const routerMainSrc = read('router/manifest.router.main.js')
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms))
 const settle = async (n = 6) => { for (let i = 0; i < n; i++) await tick(2) }
 
-// The router's own matcher, built in a throwaway context
-function realRouting() {
-    const w = { addEventListener() {}, dispatchEvent() {} }
-    const ctx = { window: w, document: { readyState: 'complete' }, CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o?.detail } } }
-    vm.createContext(ctx)
-    vm.runInContext(routerMainSrc, ctx)
-    return w.ManifestRouting
-}
+const realRouting = () => realRouter(document)
 
 class Events {
     constructor() { this.l = {} }
@@ -59,14 +52,14 @@ function makeEnv({ path: currentPath = '/a', routing = null, mutation = false } 
             return `<div class="r-${name}"></div>`
         }
     }
-    if (routing) win.ManifestRouting = routing
+    if (routing) Object.assign(win, routing)
     const ctx = { window: win, document, console: { ...console, debug() {} }, setTimeout, Promise, Set, Map, Array, WeakSet, CustomEvent: Evt, MutationObserver: TrackedObserver }
     vm.createContext(ctx)
     for (const s of [processorSrc, routingSrc, swappingSrc, mutationSrc]) vm.runInContext(s, ctx)
     win.ManifestComponentsSwapping.initialize()
     if (mutation) win.ManifestComponentsMutation.initialize()
     const routerArrives = () => {
-        win.ManifestRouting = realRouting()
+        Object.assign(win, realRouting())
         document.querySelector('script[src*="manifest.router"]')?.dispatchEvent(new window.Event('load'))
     }
     const rendered = () => [...document.querySelectorAll('[class^="r-"]')].map((e) => e.className.slice(2)).sort()

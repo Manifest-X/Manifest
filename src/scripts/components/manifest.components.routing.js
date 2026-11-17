@@ -51,15 +51,40 @@ window.ManifestComponentsRouting = (function () {
         return settled;
     }
 
-    // Same condition grammar as route visibility: comma list, ! negates
+    // The router's own element matcher; memo is per pass (path fixed)
+    function pass(path) {
+        const vis = window.ManifestRoutingVisibility;
+        const memo = new Map();
+        let defined;
+        const definedFor = () => {
+            if (defined === undefined) defined = vis.routesDefined ? !!vis.routesDefined(path) : undefined;
+            return defined;
+        };
+        return function active(el) {
+            let hit = memo.get(el);
+            if (hit !== undefined) return hit;
+            if (vis && vis.routeMatches) {
+                const cond = el.getAttribute('x-route') || '';
+                hit = vis.routeMatches(el, path, cond.includes('!*') ? definedFor() : undefined) !== false;
+            } else {
+                // Router predating the export: its condition matcher, comma list and ! only
+                const routing = window.ManifestRouting;
+                const conds = (el.getAttribute('x-route') || '').split(',').map(c => c.trim()).filter(Boolean);
+                const pos = conds.filter(c => !c.startsWith('!'));
+                hit = !conds.some(c => c.startsWith('!') && routing.matchesCondition(path, c.slice(1))) &&
+                    (pos.length === 0 || pos.some(c => routing.matchesCondition(path, c)));
+            }
+            memo.set(el, hit);
+            return hit;
+        };
+    }
+
+    // A route string checked as if on an element (reverts know only the string)
     function matches(xRoute, path) {
-        const routing = window.ManifestRouting;
-        if (!xRoute || !routing) return true;
-        const conditions = xRoute.split(',').map(c => c.trim()).filter(Boolean);
-        const positive = conditions.filter(c => !c.startsWith('!'));
-        const negative = conditions.filter(c => c.startsWith('!')).map(c => c.slice(1));
-        if (negative.some(c => routing.matchesCondition(path, c))) return false;
-        return positive.length === 0 || positive.some(c => routing.matchesCondition(path, c));
+        if (!xRoute || !window.ManifestRouting) return true;
+        const probe = document.createElement('div');
+        probe.setAttribute('x-route', xRoute);
+        return pass(path)(probe);
     }
 
     // One swapping pass once the router settles, for every placeholder deferred meanwhile
@@ -75,20 +100,33 @@ window.ManifestComponentsRouting = (function () {
         });
     }
 
+    // Logical route (router base stripped), as route visibility reads it
     function currentPath() {
-        const p = window.location.pathname;
+        const p = window.ManifestRoutingNavigation?.getCurrentRoute?.() ?? window.location.pathname;
         return p === '/' ? '/' : p.replace(/^\/+|\/+$/g, '');
     }
 
-    // 'swap' | 'skip' | 'defer' for a placeholder at a path
-    function decide(el, path) {
-        const xRoute = el.getAttribute('x-route');
-        if (!xRoute) return 'swap';
-        if (window.ManifestRouting) return matches(xRoute, path ?? currentPath()) ? 'swap' : 'skip';
-        if (!pending()) return 'swap';
-        rerunWhenSettled();
-        return 'defer';
+    // 'swap' | 'skip' | 'defer': own x-route and every x-route ancestor must be active.
+    // Reuse one gate(path) across a pass so ancestors are matched once.
+    function gate(path) {
+        let active = null;
+        return function decide(el) {
+            let n = el.closest('[x-route]');
+            if (!n) return 'swap';
+            if (!window.ManifestRouting) {
+                if (!pending()) return 'swap';
+                rerunWhenSettled();
+                return 'defer';
+            }
+            if (!active) active = pass(path ?? currentPath());
+            for (; n; n = n.parentElement && n.parentElement.closest('[x-route]')) {
+                if (!active(n)) return 'skip';
+            }
+            return 'swap';
+        };
     }
 
-    return { pending, whenSettled, matches, decide };
+    const decide = (el, path) => gate(path)(el);
+
+    return { pending, whenSettled, matches, gate, decide, currentPath };
 })();

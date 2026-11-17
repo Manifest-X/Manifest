@@ -123,14 +123,8 @@
             }
             const gate = window.ManifestComponentsRouting;
 
-            // Use normalized path from event if provided, otherwise compute from window.location
-            let normalizedPath;
-            if (normalizedPathFromEvent !== null) {
-                normalizedPath = normalizedPathFromEvent;
-            } else {
-                const currentPath = window.location.pathname;
-                normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/|\/$/g, '');
-            }
+            // Path from the route-change event, else the router's current route
+            const normalizedPath = normalizedPathFromEvent !== null ? normalizedPathFromEvent : gate.currentPath();
 
             const placeholders = Array.from(document.querySelectorAll('*')).filter(el =>
                 el.tagName.toLowerCase().startsWith('x-') &&
@@ -144,6 +138,7 @@
                     if (xRoute && !gate.matches(xRoute, normalizedPath)) this.revert(instanceId);
                 }
             }
+            const decide = gate.gate(normalizedPath);
             // Second pass: swap in matches. Routing is read per placeholder: it may arrive mid-pass.
             for (const placeholder of placeholders) {
                 const name = placeholder.tagName.toLowerCase().replace('x-', '');
@@ -153,7 +148,7 @@
                     placeholder.setAttribute('data-component', instanceId);
                 }
                 // 'defer' queues a re-run for when the router settles
-                if (gate.decide(placeholder, normalizedPath) === 'swap') await this.swapIn(placeholder);
+                if (decide(placeholder) === 'swap') await this.swapIn(placeholder);
             }
         },
         // Public entry point. Coalesces overlapping calls: while a run is active,

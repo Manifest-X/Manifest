@@ -10,8 +10,9 @@ window.ManifestComponentsMutation = {
             !el.hasAttribute('data-pre-rendered') &&
             !el.hasAttribute('data-processed')
         );
+        const decide = gate.gate();
         for (const el of placeholders) {
-            if (gate.decide(el) !== 'swap') continue;
+            if (decide(el) !== 'swap') continue;
             await processor.processComponent(el);
         }
     },
@@ -25,16 +26,17 @@ window.ManifestComponentsMutation = {
             !el.hasAttribute('data-pre-rendered') && !el.hasAttribute('data-processed');
         // Mutation observer for new placeholders
         const observer = new MutationObserver(async mutations => {
+            const decide = gate.gate();
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
                     if (node.nodeType !== 1) continue;
-                    if (isPlaceholder(node) && gate.decide(node) === 'swap') {
+                    if (isPlaceholder(node) && decide(node) === 'swap') {
                         await processor.processComponent(node);
                     }
                     // Also check for any <x-*> descendants
                     const descendants = Array.from(node.querySelectorAll('*')).filter(isPlaceholder);
                     for (const el of descendants) {
-                        if (gate.decide(el) !== 'swap') continue;
+                        if (decide(el) !== 'swap') continue;
                         await processor.processComponent(el);
                     }
                 }
