@@ -83,6 +83,18 @@ describe('static utilities sheet — runtime skip', () => {
         expect(generated).not.toMatch(/hover\\:p-4/)
     })
 
+    it('re-emits nothing when the bake covers every utility and only author classes are left', async () => {
+        const headHtml = [
+            '<style id="theme-vars">:root { --text-3xl: 1.875rem; --text-5xl: 3rem; }</style>',
+            '<style data-mnfst-utilities>@layer utilities{.text-3xl{font-size:1.875rem}@media (min-width: 768px){.md\\:text-5xl{font-size:3rem}}}</style>',
+        ].join('')
+        localStorage.clear()
+        await bootPluginWith({ headHtml, bodyHtml: '<h1 class="hero-title card text-3xl md:text-5xl"></h1>' })
+        const generated = document.getElementById('manifest-styles').textContent
+        expect(generated).not.toMatch(/text-5xl/)
+        expect(generated).not.toMatch(/text-3xl/)
+    })
+
     it('counts mnfst-render prerender sheets as covered', async () => {
         const headHtml = [
             '<style id="theme-vars">:root { --spacing-4: 1rem; --spacing-8: 2rem; }</style>',

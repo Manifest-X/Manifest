@@ -232,6 +232,12 @@ function topLevelDisplay(css) {
     return m ? m[1].trim() : null;
 }
 
+// Declarations other than display; nested blocks keep the whole rule
+function withoutTopLevelDisplay(css) {
+    if (css.includes('{')) return css;
+    return css.split(';').map(d => d.trim()).filter(d => d && !/^display\s*:/.test(d)).join('; ');
+}
+
 function responsiveDisplayDecl(baseClass, parsed, css) {
     if (!BUILTIN_DISPLAY_CLASSES.has(baseClass) || parsed.variants.length !== 1) return null;
     if (!Object.prototype.hasOwnProperty.call(BREAKPOINT_PX, parsed.variants[0].name)) return null;
@@ -439,7 +445,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 const isImportant = parsed.important;
                 // Ensure css is a string (handle cases where it might be an object)
                 const cssString = typeof css === 'string' ? css : (css && typeof css === 'object' && css.css ? css.css : String(css));
-                const cssContent = isImportant ?
+                let cssContent = isImportant ?
                     (cssString.includes(';') ? cssString.replace(/;/g, ' !important;') : cssString + ' !important') :
                     cssString;
 
@@ -483,7 +489,10 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 const display = !isImportant && !parsed.baseClass.startsWith('!') && typeof selector === 'string' && responsiveDisplayDecl(baseClass, parsed, cssString);
                 if (display) {
                     responsiveDisplay.push({ cls: variantClass, media: mediaQueryRule, rank: breakpointRank(parsed.variants[0].name), css: display });
-                    continue;
+                    // The rest of the rule (trailing's margin and color) stays a normal variant
+                    const rest = withoutTopLevelDisplay(cssString);
+                    if (!rest) continue;
+                    cssContent = rest;
                 }
 
                 // Generate the final rule
@@ -944,6 +953,18 @@ TailwindCompiler.prototype.filterCriticalUtilities = function(criticalText, laye
     return filteredCritical.join('\n').trim();
 };
 
+// Nothing left to generate over the shipped sheets: drop boot-time guesses (sync/critical/cache)
+// so no bare rule sits after the sheets' breakpoint rules
+TailwindCompiler.prototype.clearStaleUtilityPatches = function () {
+    if (!this.staticUtilitiesCoveredClasses) return;
+    this._applied = null;
+    if (this.styleElement) this.styleElement.textContent = '';
+    if (this.criticalStyleElement && this.criticalStyleElement.parentNode) {
+        this.criticalStyleElement.parentNode.removeChild(this.criticalStyleElement);
+        this.criticalStyleElement = null;
+    }
+};
+
 // Main compilation method
 TailwindCompiler.prototype.compile = async function () {
     if (this.usesStaticPrerenderUtilities) {
@@ -1060,6 +1081,8 @@ TailwindCompiler.prototype.compile = async function () {
                         themeHash: themeHash
                     });
                     this.savePersistentCache();
+                } else {
+                    this.clearStaleUtilityPatches();
                 }
             }
 
@@ -1155,6 +1178,8 @@ TailwindCompiler.prototype.compile = async function () {
                         themeHash: themeHash
                     });
                     this.savePersistentCache();
+                } else {
+                    this.clearStaleUtilityPatches();
                 }
             } else {
                 this._applied = null; // theme text moved: order keys are stale until the next full write

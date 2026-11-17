@@ -85,6 +85,12 @@ describe('compileUtilities', () => {
         }
     })
 
+    it('keeps the non-display declarations of a responsive trailing', async () => {
+        const css = await compileUtilities({ classes: ['md:trailing'], baseCss: ':where(.trailing) { display: inline-block; margin-inline-start: auto; color: red }' })
+        expect(css).toContain('.md\\:trailing.md\\:trailing { display: inline-block }')
+        expect(css).toMatch(/\.md\\:trailing \{\s*margin-inline-start: auto; color: red/)
+    })
+
     it('leaves Tailwind responsive display alone when no Manifest display class is responsive', async () => {
         const css = await compileUtilities({ classes: ['hidden', 'lg:flex', 'row'], baseCss: ':where(.row) { display: flex }' })
         expect(css).not.toContain('.lg\\:flex.lg\\:flex')

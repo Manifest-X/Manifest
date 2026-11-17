@@ -410,7 +410,8 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 
     // Order-free identity (fetches land in any order) for "theme unchanged" checks
     this.lastThemeKey = Array.from(themeContents).sort().join('\n');
-    return Array.from(themeContents).join('\n');
+    this.lastThemeCss = Array.from(themeContents).join('\n');
+    return this.lastThemeCss;
 };
 
 // Extract CSS variables from CSS text

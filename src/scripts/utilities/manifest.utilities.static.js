@@ -229,13 +229,26 @@ TailwindCompiler.prototype.filterStaticallyCoveredClasses = function (classes) {
     const covered = this.staticUtilitiesCoveredClasses;
     if ((!covered || covered.size === 0) && !this.hasSafelistEntries()) return classes;
     const left = classes.filter(c => !this.isClassCovered(c));
-    if (!left.some(c => !hasClassVariant(c))) return left;
+    if (!this.bareClassesEmitRules(left.filter(c => !hasClassVariant(c)))) return left;
     // A bare class emitted last would beat its breakpoint partners in the shipped sheets
     // (text-3xl over md:text-5xl): re-emit the at-rule variant classes after it
     const out = new Set(left);
     const pageClasses = [classes, this.staticClassCache || [], this.dynamicClassCache || []];
     for (const list of pageClasses) for (const c of list) if (this.isAtRuleVariantClass(c)) out.add(c);
     return Array.from(out);
+};
+
+// Whether any of these bare classes actually generates a rule (author classes like `card` don't)
+TailwindCompiler.prototype.bareClassesEmitRules = function (bare) {
+    if (!bare.length) return false;
+    const themeCss = this.lastThemeCss;
+    if (!themeCss) return true;
+    try {
+        const probe = { classes: bare, variableSuffixes: [] };
+        return !!((this.generateUtilitiesFromVars(themeCss, probe) || '').trim() || (this.generateCustomUtilities(probe) || '').trim());
+    } catch (e) {
+        return true;
+    }
 };
 
 // Variant prefixes outside brackets (md:text-5xl, [&_p]:x — not w-[a:b])
