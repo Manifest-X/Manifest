@@ -31,6 +31,7 @@ const CONFIG = {
         'manifest.components.registry.js',
         'manifest.components.loader.js',
         'manifest.components.processor.js',
+        'manifest.components.routing.js',
         'manifest.components.swapping.js',
         'manifest.components.mutation.js',
         'manifest.components.prefetch.js',

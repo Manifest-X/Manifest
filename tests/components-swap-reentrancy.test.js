@@ -18,6 +18,7 @@ import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const processorSrc = readFileSync(path.resolve(__dirname, '../src/scripts/components/manifest.components.processor.js'), 'utf8')
+const routingSrc = readFileSync(path.resolve(__dirname, '../src/scripts/components/manifest.components.routing.js'), 'utf8')
 const swappingSrc = readFileSync(path.resolve(__dirname, '../src/scripts/components/manifest.components.swapping.js'), 'utf8')
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms))
@@ -43,6 +44,7 @@ function makeEnv({ names = ['widget'], loadDelayMs = 5, routing = null, path: cu
     const ctx = { window: fakeWindow, document, console: fakeConsole, setTimeout, Promise, Set, Map, Array }
     vm.createContext(ctx)
     vm.runInContext(processorSrc, ctx)
+    vm.runInContext(routingSrc, ctx)
     vm.runInContext(swappingSrc, ctx)
     return { window: fakeWindow, swapping: fakeWindow.ManifestComponentsSwapping, loadCalls, debugCalls }
 }

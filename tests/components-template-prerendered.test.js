@@ -53,7 +53,7 @@ beforeAll(async () => {
     window.ManifestComponentsLoader = { async loadComponent(name) { return COMPONENTS[name] || null } }
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })))
     vi.spyOn(console, 'debug').mockImplementation(() => {})
-    for (const f of ['components/manifest.components.processor.js', 'components/manifest.components.mutation.js']) {
+    for (const f of ['components/manifest.components.processor.js', 'components/manifest.components.routing.js', 'components/manifest.components.mutation.js']) {
         await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(src(f)))
     }
     window.ManifestComponentsMutation.initialize()

@@ -1,8 +1,9 @@
 // Components mutation observer
+// Deferred placeholders are left for swapping's post-router pass.
 window.ManifestComponentsMutation = {
     async processAllPlaceholders() {
         const processor = window.ManifestComponentsProcessor;
-        const routing = window.ManifestRouting;
+        const gate = window.ManifestComponentsRouting;
         if (!processor) return;
         const placeholders = Array.from(document.querySelectorAll('*')).filter(el =>
             el.tagName.toLowerCase().startsWith('x-') &&
@@ -10,56 +11,31 @@ window.ManifestComponentsMutation = {
             !el.hasAttribute('data-processed')
         );
         for (const el of placeholders) {
-            if (routing) {
-                // Only process if route matches
-                const xRoute = el.getAttribute('x-route');
-                const currentPath = window.location.pathname;
-                const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/+|\/+$/g, '');
-                const matches = !xRoute || window.ManifestRouting.matchesCondition(normalizedPath, xRoute);
-                if (!matches) continue;
-            }
+            if (gate.decide(el) !== 'swap') continue;
             await processor.processComponent(el);
         }
     },
     initialize() {
         const processor = window.ManifestComponentsProcessor;
-        const routing = window.ManifestRouting;
+        const gate = window.ManifestComponentsRouting;
         if (!processor) return;
         // Initial scan
         this.processAllPlaceholders();
+        const isPlaceholder = el => el.tagName.toLowerCase().startsWith('x-') &&
+            !el.hasAttribute('data-pre-rendered') && !el.hasAttribute('data-processed');
         // Mutation observer for new placeholders
         const observer = new MutationObserver(async mutations => {
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
-                    if (node.nodeType === 1 && node.tagName.toLowerCase().startsWith('x-')) {
-                        if (!node.hasAttribute('data-pre-rendered') && !node.hasAttribute('data-processed')) {
-                            if (routing) {
-                                const xRoute = node.getAttribute('x-route');
-                                const currentPath = window.location.pathname;
-                                const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/+|\/+$/g, '');
-                                const matches = !xRoute || window.ManifestRouting.matchesCondition(normalizedPath, xRoute);
-                                if (!matches) continue;
-                            }
-                            await processor.processComponent(node);
-                        }
+                    if (node.nodeType !== 1) continue;
+                    if (isPlaceholder(node) && gate.decide(node) === 'swap') {
+                        await processor.processComponent(node);
                     }
                     // Also check for any <x-*> descendants
-                    if (node.nodeType === 1) {
-                        const descendants = Array.from(node.querySelectorAll('*')).filter(el =>
-                            el.tagName.toLowerCase().startsWith('x-') &&
-                            !el.hasAttribute('data-pre-rendered') &&
-                            !el.hasAttribute('data-processed')
-                        );
-                        for (const el of descendants) {
-                            if (routing) {
-                                const xRoute = el.getAttribute('x-route');
-                                const currentPath = window.location.pathname;
-                                const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/^\/+|\/+$/g, '');
-                                const matches = !xRoute || window.ManifestRouting.matchesCondition(normalizedPath, xRoute);
-                                if (!matches) continue;
-                            }
-                            await processor.processComponent(el);
-                        }
+                    const descendants = Array.from(node.querySelectorAll('*')).filter(isPlaceholder);
+                    for (const el of descendants) {
+                        if (gate.decide(el) !== 'swap') continue;
+                        await processor.processComponent(el);
                     }
                 }
             }
@@ -75,4 +51,4 @@ window.ManifestComponentsMutation = {
             });
         }
     }
-}; 
+};

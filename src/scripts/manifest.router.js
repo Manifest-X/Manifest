@@ -13,13 +13,6 @@ function initializeRouting() {
 
 }
 
-// Start initialization when DOM is ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeRouting);
-} else {
-    initializeRouting();
-}
-
 // Export main routing interface
 window.ManifestRouting = {
     initialize: initializeRouting,
@@ -88,6 +81,13 @@ window.ManifestRouting = {
         return pathToCheck.includes(condition);
     }
 };
+
+// Start when DOM is ready; after the export so routing-ready listeners can read ManifestRouting
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeRouting);
+} else {
+    initializeRouting();
+}
 
 
 // Router position

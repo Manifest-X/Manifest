@@ -121,7 +121,7 @@
                 console.debug('[Manifest Components] skipped processAll: registry unavailable');
                 return;
             }
-            const routing = window.ManifestRouting;
+            const gate = window.ManifestComponentsRouting;
 
             // Use normalized path from event if provided, otherwise compute from window.location
             let normalizedPath;
@@ -138,34 +138,13 @@
                 !el.hasAttribute('data-processed')
             );
             // First pass: revert any swapped-in instances that no longer match
-            if (routing) {
+            if (window.ManifestRouting) {
                 for (const instanceId of Array.from(swappedInstances)) {
                     const xRoute = instanceRouteMap.get(instanceId);
-                    if (!xRoute) {
-                        // No route condition means always visible, don't revert
-                        continue;
-                    }
-                    // Parse route conditions the same way as route visibility
-                    const conditions = xRoute.split(',').map(cond => cond.trim());
-                    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
-                    const negativeConditions = conditions
-                        .filter(cond => cond.startsWith('!'))
-                        .map(cond => cond.slice(1));
-
-                    const hasNegativeMatch = negativeConditions.some(cond =>
-                        window.ManifestRouting.matchesCondition(normalizedPath, cond)
-                    );
-                    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond =>
-                        window.ManifestRouting.matchesCondition(normalizedPath, cond)
-                    );
-
-                    const matches = hasPositiveMatch && !hasNegativeMatch;
-                    if (!matches) {
-                        this.revert(instanceId);
-                    }
+                    if (xRoute && !gate.matches(xRoute, normalizedPath)) this.revert(instanceId);
                 }
             }
-            // Second pass: swap in any placeholders that match
+            // Second pass: swap in matches. Routing is read per placeholder: it may arrive mid-pass.
             for (const placeholder of placeholders) {
                 const name = placeholder.tagName.toLowerCase().replace('x-', '');
                 let instanceId = placeholder.getAttribute('data-component');
@@ -173,38 +152,8 @@
                     instanceId = getComponentInstanceId(name);
                     placeholder.setAttribute('data-component', instanceId);
                 }
-                const xRoute = placeholder.getAttribute('x-route');
-                if (!routing) {
-                    // No routing: always swap in
-                    await this.swapIn(placeholder);
-                } else {
-                    // Routing present: check route using same logic as route visibility
-                    // Handle comma-separated route conditions (e.g., "/,page-1,page-2")
-                    let matches = !xRoute;
-                    if (xRoute) {
-                        const conditions = xRoute.split(',').map(cond => cond.trim());
-                        const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
-                        const negativeConditions = conditions
-                            .filter(cond => cond.startsWith('!'))
-                            .map(cond => cond.slice(1));
-
-                        // Check negative conditions first
-                        const hasNegativeMatch = negativeConditions.some(cond =>
-                            window.ManifestRouting.matchesCondition(normalizedPath, cond)
-                        );
-
-                        // Check positive conditions
-                        const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond =>
-                            window.ManifestRouting.matchesCondition(normalizedPath, cond)
-                        );
-
-                        matches = hasPositiveMatch && !hasNegativeMatch;
-                    }
-
-                    if (matches) {
-                        await this.swapIn(placeholder);
-                    }
-                }
+                // 'defer' queues a re-run for when the router settles
+                if (gate.decide(placeholder, normalizedPath) === 'swap') await this.swapIn(placeholder);
             }
         },
         // Public entry point. Coalesces overlapping calls: while a run is active,
@@ -247,17 +196,13 @@
                 // Dispatch event when components are fully processed
                 window.dispatchEvent(new CustomEvent('manifest:components-processed'));
             });
-            // If routing is present, listen for route changes
-            if (window.ManifestRouting) {
-                window.addEventListener('manifest:route-change', (event) => {
-                    // Use normalized path from event detail if available
-                    const normalizedPath = event.detail?.normalizedPath || null;
-                    this.processAll(normalizedPath).then(() => {
-                        // Dispatch event when components are fully processed after route change
-                        window.dispatchEvent(new CustomEvent('manifest:components-processed'));
-                    });
+            // Only the router dispatches route changes, whenever it arrives
+            window.addEventListener('manifest:route-change', (event) => {
+                const normalizedPath = event.detail?.normalizedPath || null;
+                this.processAll(normalizedPath).then(() => {
+                    window.dispatchEvent(new CustomEvent('manifest:components-processed'));
                 });
-            }
+            });
         }
     };
 })(); 
