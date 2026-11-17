@@ -1,13 +1,16 @@
 /**
  * Responsive Manifest display classes vs Tailwind's unprefixed `hidden`, in real Chromium.
  *
- *   hidden lg:row  → none below lg, flex at lg
- *   row lg:hidden  → flex below lg, none at lg
- *   col md:row     → flex at both
+ *   hidden lg:row          → none, none, flex   (at 600 / 800 / 1200px)
+ *   row lg:hidden          → flex, flex, none
+ *   col md:row             → flex, flex, flex
+ *   col md:row lg:hidden   → flex, flex, none
+ *   hidden md:row lg:hidden → none, flex, none
  *
  * Cases: runtime with data-tailwind on and off, each with a Tailwind sheet loaded
- * after Manifest's; and a publish-style static bake (compileUtilities) linked
- * before a later Tailwind sheet.
+ * after Manifest's (fresh storage per page, plus one reload on the localStorage
+ * cached path); and a publish-style static bake (compileUtilities) linked before
+ * a later Tailwind sheet.
  *
  * Run: npm run build && node tests/e2e/utilities-hidden-responsive.e2e.mjs
  */
@@ -22,8 +25,17 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const { compileUtilities } = await import(pathToFileURL(path.join(ROOT, 'lib', 'manifest.utilities.node.mjs')).href)
 
-const MARKUP = '<div id="a" class="hidden lg:row">a</div><div id="b" class="row lg:hidden">b</div><div id="c" class="col md:row">c</div>'
-const LATE_TAILWIND = '<style>@layer utilities{.hidden{display:none}.lg\\:hidden{@media (width >= 64rem){display:none}}}</style>'
+const CASES = {
+    a: ['hidden lg:row', ['none', 'none', 'flex']],
+    b: ['row lg:hidden', ['flex', 'flex', 'none']],
+    c: ['col md:row', ['flex', 'flex', 'flex']],
+    d: ['col md:row lg:hidden', ['flex', 'flex', 'none']],
+    e: ['hidden md:row lg:hidden', ['none', 'flex', 'none']]
+}
+const WIDTHS = [600, 800, 1200]
+const MARKUP = Object.entries(CASES).map(([id, [cls]]) => `<div id="${id}" class="${cls}">${id}</div>`).join('')
+const ALL_CLASSES = [...new Set(Object.values(CASES).flatMap(([cls]) => cls.split(' ')))]
+const LATE_TAILWIND = '<style>@layer utilities{.hidden{display:none}.md\\:flex{@media (width >= 48rem){display:flex}}.lg\\:hidden{@media (width >= 64rem){display:none}}}</style>'
 
 const runtimePage = (tw) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <link rel="stylesheet" href="/fw/manifest.css">
@@ -38,7 +50,7 @@ const bakedPage = () => `<!DOCTYPE html><html><head><meta charset="utf-8"><title
 
 async function serve() {
     const baked = await compileUtilities({
-        classes: ['hidden', 'lg:row', 'row', 'lg:hidden', 'col', 'md:row'],
+        classes: ALL_CLASSES,
         baseCss: fs.readFileSync(path.join(ROOT, 'lib', 'manifest.css'), 'utf8')
     })
     const late = LATE_TAILWIND.replace(/<\/?style>/g, '')
@@ -66,20 +78,45 @@ function check(name, ok, detail = '') {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`)
 }
 
+const displays = (page) => page.evaluate((ids) => Object.fromEntries(ids.map((id) => [id, getComputedStyle(document.getElementById(id)).display])), Object.keys(CASES))
+
+// Poll until the expected displays land (compiles are async), then report what's there
+async function expectDisplays(page, width, label) {
+    const i = WIDTHS.indexOf(width)
+    const want = Object.fromEntries(Object.entries(CASES).map(([id, [, d]]) => [id, d[i]]))
+    await page.waitForFunction((want) => Object.entries(want).every(([id, d]) => getComputedStyle(document.getElementById(id)).display === d), { timeout: 10000, polling: 50 }, want).catch(() => { })
+    const got = await displays(page)
+    check(`${label} @${width}px`, JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got))
+}
+
 async function main() {
     const srv = await serve()
     const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
     try {
         for (const route of ['/tw', '/plain', '/baked']) {
-            for (const [width, want] of [[800, { a: 'none', b: 'flex', c: 'flex' }], [1200, { a: 'flex', b: 'none', c: 'flex' }]]) {
-                const page = await browser.newPage()
+            for (const width of WIDTHS) {
+                // Fresh context: empty localStorage, so each page takes the cold compile path
+                const ctx = await browser.createBrowserContext()
+                const page = await ctx.newPage()
                 await page.setViewport({ width, height: 600 })
                 await page.goto(srv.url + route, { waitUntil: 'load' })
-                await wait(route === '/baked' ? 200 : 1500)
-                const got = await page.evaluate(() => Object.fromEntries(['a', 'b', 'c'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])))
-                check(`${route} @${width}px: hidden lg:row / row lg:hidden / col md:row`, JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got))
-                await page.close()
+                await expectDisplays(page, width, route)
+                await ctx.close()
             }
+        }
+        for (const route of ['/tw', '/plain']) {
+            const ctx = await browser.createBrowserContext()
+            const page = await ctx.newPage()
+            await page.setViewport({ width: 1200, height: 600 })
+            await page.goto(srv.url + route, { waitUntil: 'load' })
+            await expectDisplays(page, 1200, `${route} cold`)
+            const cached = await page.evaluate(() => Object.keys(localStorage).some((k) => /tailwind|utilit/i.test(k)))
+            check(`${route}: utilities cache written to localStorage`, cached)
+            await page.reload({ waitUntil: 'load' })
+            await expectDisplays(page, 1200, `${route} cached reload`)
+            await page.setViewport({ width: 800, height: 600 })
+            await expectDisplays(page, 800, `${route} cached reload`)
+            await ctx.close()
         }
     } finally {
         await browser.close()

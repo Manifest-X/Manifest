@@ -70,12 +70,24 @@ describe('compileUtilities', () => {
         expect(css).toContain('row')
     })
 
-    it('raises responsive display classes above an unprefixed hidden (hidden lg:row)', async () => {
+    it('orders responsive display classes at 0,2,0 by breakpoint, Manifest and Tailwind alike', async () => {
         const baseCss = ':where(.row, .col) { display: flex; } :where(.row) { flex-flow: row nowrap } .center { justify-content: center }'
-        const css = await compileUtilities({ classes: ['hidden', 'lg:row', 'hover:row', 'lg:center'], baseCss })
-        expect(css).toContain('.lg\\:row.lg\\:row {')
-        expect(css).not.toContain('.hover\\:row.hover\\:row')
-        expect(css).not.toContain('.lg\\:center.lg\\:center')
+            + ' .card { display: grid; padding: 1rem } .panel { padding: 1rem; @media (min-width: 1px) { display: grid } }'
+        const classes = ['hidden', 'col', 'lg:row', 'md:row', 'lg:hidden', 'xl:block', 'max-lg:flex', 'hover:row', 'lg:center', 'md:card', 'md:panel', 'md:hover:row', 'lg:!row']
+        const css = await compileUtilities({ classes, baseCss })
+        const order = ['.max-lg\\:flex.max-lg\\:flex', '.md\\:row.md\\:row', '.lg\\:hidden.lg\\:hidden', '.lg\\:row.lg\\:row', '.xl\\:block.xl\\:block']
+        const at = order.map((sel) => css.indexOf(sel + ' {'))
+        expect(at.every((i) => i > -1)).toBe(true)
+        expect([...at].sort((x, y) => x - y)).toEqual(at)
+        expect(css).toContain('@media (width < 1024px) { .max-lg\\:flex.max-lg\\:flex { display: flex } }')
+        for (const cls of ['hover\\:row', 'lg\\:center', 'md\\:card', 'md\\:panel', 'md\\:hover\\:row', 'lg\\:\\!row']) {
+            expect(css).not.toContain(`.${cls}.${cls}`)
+        }
+    })
+
+    it('leaves Tailwind responsive display alone when no Manifest display class is responsive', async () => {
+        const css = await compileUtilities({ classes: ['hidden', 'lg:flex', 'row'], baseCss: ':where(.row) { display: flex }' })
+        expect(css).not.toContain('.lg\\:flex.lg\\:flex')
     })
 
     it('generates a theme-var utility even when the last declaration has no trailing semicolon', async () => {
