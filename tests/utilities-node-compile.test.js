@@ -70,6 +70,14 @@ describe('compileUtilities', () => {
         expect(css).toContain('row')
     })
 
+    it('raises responsive display classes above an unprefixed hidden (hidden lg:row)', async () => {
+        const baseCss = ':where(.row, .col) { display: flex; } :where(.row) { flex-flow: row nowrap } .center { justify-content: center }'
+        const css = await compileUtilities({ classes: ['hidden', 'lg:row', 'hover:row', 'lg:center'], baseCss })
+        expect(css).toContain('.lg\\:row.lg\\:row {')
+        expect(css).not.toContain('.hover\\:row.hover\\:row')
+        expect(css).not.toContain('.lg\\:center.lg\\:center')
+    })
+
     it('generates a theme-var utility even when the last declaration has no trailing semicolon', async () => {
         // Regression: extractThemeVariables used to require a `;` terminator,
         // so the last declaration in a block (valid CSS without one) was
