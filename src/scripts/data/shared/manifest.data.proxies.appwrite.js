@@ -474,7 +474,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
             if (bucketId) {
                 // $delete / $remove: delete each file, land successes locally, then unlink them
                 const deleteBucketFiles = async (fileId) => {
-                    const ids = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id?.$id || id);
+                    const ids = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id && typeof id === 'object' ? id.$id : id);
                     if (Array.isArray(fileId) && !ids.length) return [];
                     if (ids.some(id => !id)) {
                         throw new Error(`[Manifest Data] ${method} requires file ID`);
@@ -500,11 +500,12 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         await ds.landRemove(dataSourceName, deleted, { generation });
                     }
 
-                    // Unlink only what the server deleted
+                    // Unlink only what the server deleted, and only for the identity that deleted it
+                    const isCurrent = () => !ds?.sourceGeneration || ds.sourceGeneration(dataSourceName) === generation;
                     const unlink = window.ManifestDataProxiesFiles?.unlinkFileFromAllEntries;
                     const affected = await Promise.all(deleted.map(async id => {
                         try {
-                            return unlink ? await unlink(id, { bucketId }) || {} : {};
+                            return unlink && isCurrent() ? await unlink(id, { bucketId, isCurrent }) || {} : {};
                         } catch (unlinkError) {
                             console.warn('[Manifest Data] Failed to unlink deleted file from entries:', unlinkError);
                             return {};
