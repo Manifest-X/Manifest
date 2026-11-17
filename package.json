@@ -55,6 +55,7 @@
         "test:e2e:data-paging": "node tests/e2e/data-paging.e2e.mjs",
         "test:e2e:modules": "node tests/e2e/modules.e2e.mjs",
         "test:e2e:router-xshow": "node tests/e2e/router-xshow.e2e.mjs",
+        "test:e2e:route-head": "node tests/e2e/route-head.e2e.mjs",
         "test:e2e:hidden-responsive": "node tests/e2e/utilities-hidden-responsive.e2e.mjs",
         "lint": "echo 'No linting configured'",
         "release:docs": "npm test && node scripts/release-bump.mjs packages/docs && cd packages/docs && npm publish --auth-type=web",
