@@ -387,7 +387,7 @@ export interface ManifestPresence {
 /** `$date(id?)` from the datepicker plugin — the picker API for the nearest (or given) instance. */
 export type ManifestDate = (id?: string) => Record<string, unknown>;
 
-/** `x-chart` config object. */
+/** `x-chart` config object (standalone; annotate config objects with it). */
 export interface ManifestChartConfig {
     type?: 'line' | 'area' | 'bar' | 'combo' | 'scatter' | 'candlestick' | 'ohlc' | 'pie' | 'donut' | 'gauge' | 'heatmap' | 'gantt' | 'map' | (string & {});
     labels?: unknown[];
@@ -404,10 +404,10 @@ export interface ManifestChartConfig {
     ticks?: Array<number | { at: number; label?: string }>;
     tickAnchor?: 'start' | 'end';
     /** Line/area/combo: `false` drops per-point dots; hover columns show every series at that label. Map: marker list. */
-    points?: false | Array<Record<string, unknown>>;
-    /** Cartesian: widens the y-axis to include it. Gauge: range start. Gantt: axis start. */
+    points?: boolean | Array<Record<string, unknown>>;
+    /** Cartesian (incl. candlestick): widens the y-axis to include it. Gauge: range start. Gantt: axis start (number or date). */
     min?: number | string | Date;
-    /** Cartesian: widens the y-axis to include it. Gauge: range end. Gantt: axis end. */
+    /** Cartesian (incl. candlestick): widens the y-axis to include it. Gauge: range end. Gantt: axis end (number or date). */
     max?: number | string | Date;
     /** Intl.NumberFormat options for tooltip and data-label values; axis ticks add compact notation. */
     format?: Intl.NumberFormatOptions;

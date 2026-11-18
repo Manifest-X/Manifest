@@ -193,13 +193,13 @@
 			if (opts) { try { const f = new Intl.NumberFormat(locale, opts); value = v => f.format(v); } catch (_) { } }
 			const ax = Object.assign({}, opts || {});
 			DIGIT_OPTS.forEach(k => delete ax[k]);
-			Object.assign(ax, { notation: 'compact', maximumFractionDigits: 1 });
+			Object.assign(ax, { notation: 'compact', minimumFractionDigits: 0, maximumFractionDigits: 1 });
 			try { axis = new Intl.NumberFormat(locale, ax); } catch (_) { try { axis = new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }); } catch (_) { } }
 			return { value, axis: t => axis.format(t) };
 		}
 
 		// Author `min`/`max` widen a cartesian y-domain (shared fixed scales); data still extends it.
-		function limit(v) { return v == null || v === '' || typeof v === 'boolean' ? NaN : Number(v); }
+		function limit(v) { return typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN; }
 
 		function configFromDom(el) {
 			// Declarative authoring: <figure x-chart.line><data series="Revenue" :values="..."></data></figure>
@@ -968,9 +968,9 @@
 			footer.className = 'heat-legend';
 			footer.style.paddingLeft = m.left + 'px';
 			footer.style.paddingRight = m.right + 'px';
-			const a = document.createElement('span'); a.textContent = lo;
+			const a = document.createElement('span'); a.textContent = state.nf.value(lo);
 			const bar = document.createElement('i');
-			const b = document.createElement('span'); b.textContent = hi;
+			const b = document.createElement('span'); b.textContent = state.nf.value(hi);
 			footer.append(a, bar, b);
 			state.el.appendChild(footer);
 		}

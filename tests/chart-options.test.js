@@ -232,7 +232,8 @@ describe('format', () => {
     it('invalid options fall back to the default', async () => {
         const el = await render({ type: 'line', labels: months, format: { style: 'currency' }, series: [{ name: 'S', data: [1234.5] }] })
         expect(el.querySelector('circle').getAttribute('aria-label')).toBe('Jan · S: 1234.5')
-        expect(yTicks(el).length).toBeGreaterThan(0)
+        const plain = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
+        expect(yTicks(el).at(-1)).toBe(plain.format(1234.5))
     })
 
     it('follows the document locale', async () => {
@@ -242,5 +243,35 @@ describe('format', () => {
             const de = new Intl.NumberFormat('de', format).format(1234)
             expect(el.querySelector('circle').getAttribute('aria-label')).toBe('Jan · S: ' + de)
         } finally { document.documentElement.lang = '' }
+    })
+})
+
+describe('review follow-ups', () => {
+    const format = { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }
+
+    it('points: false on a dense series: no dots, no data-label clutter, one column per label', async () => {
+        const labels = Array.from({ length: 200 }, (_, i) => 'd' + i)
+        const el = await render({ type: 'line', labels, points: false, dataLabels: true, series: [{ name: 'S', data: labels.map((_, i) => i) }] })
+        expect(el.querySelectorAll('circle:not(.focus)').length).toBe(0)
+        expect(el.querySelectorAll('text.value').length).toBe(0)
+        expect(el.querySelectorAll('rect.hit').length).toBe(200)
+    })
+
+    it('format reaches candlestick, heatmap (cells + legend) and gauge', async () => {
+        const candle = await render({ type: 'candlestick', labels: ['a'], format, series: [{ data: [[1000, 1200, 900, 1100]] }] })
+        expect(candle.querySelector('rect').getAttribute('aria-label')).toBe(`a · O ${eur(1000)} H ${eur(1200)} L ${eur(900)} C ${eur(1100)}`)
+        const heat = await render({ type: 'heatmap', labels: ['x', 'y'], format, series: [{ name: 'r', data: [100, 1500] }] })
+        expect(heat.querySelector('rect.heat-cell').getAttribute('aria-label')).toBe('r · x: ' + eur(100))
+        expect([...heat.querySelectorAll('.heat-legend span')].map(s => s.textContent)).toEqual([eur(100), eur(1500)])
+        const gauge = await render({ type: 'gauge', value: 1234, min: 0, max: 2000, format })
+        expect(gauge.querySelector('text.gauge-label').textContent).toBe(eur(1234))
+    })
+
+    it('min/max ignore non-numeric values (dates, arrays, blanks)', async () => {
+        const el = await render({ type: 'line', labels: months, min: [-50], max: '2026-01-01', series: [three[0]] })
+        expect(yTicks(el)[0]).toBe('0')
+        expect(yTicks(el).at(-1)).toBe('200')
+        const blank = await render({ type: 'candlestick', labels: ['a'], min: ' ', series: [{ data: [[100, 120, 90, 110]] }] })
+        expect(Number(yTicks(blank)[0])).toBeGreaterThan(50)
     })
 })
