@@ -84,7 +84,7 @@
             opacity: 0.85
         }
 
-        /* Dense line hover dot */
+        /* Line hover dot */
         & circle.focus {
             pointer-events: none
         }

@@ -20,6 +20,31 @@
 <body class="page" x-data>
   <main class="content col" style="gap: 3rem; padding: 3rem 0;">
 
+    <!-- ===================== POINTS / MIN-MAX / FORMAT ===================== -->
+    <section class="col gap-4">
+      <h1 class="h2">Points, shared scale, format</h1>
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Three series, points: false, max: 300000, EUR format</small>
+        <div id="scenario-a" x-chart="{
+          type: 'line', points: false, max: 300000,
+          format: { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 },
+          labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+          series: [
+            { name: 'Base', data: [42000, 48000, 51000, 57000, 63000, 70000, 76000, 81000, 88000, 95000, 104000, 112000] },
+            { name: 'Low', data: [38000, 40000, 42000, 44000, 47000, 50000, 52000, 55000, 58000, 61000, 64000, 67000] },
+            { name: 'High', data: [45000, 55000, 64000, 75000, 87000, 99000, 112000, 126000, 141000, 157000, 174500, 192250] }
+          ]
+        }"></div>
+        <small>Same scale, smaller data</small>
+        <div id="scenario-b" x-chart="{
+          type: 'area', points: false, max: 300000,
+          format: { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 },
+          labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+          series: [{ name: 'Base', data: [10000, 12000, 15000, 17000, 20000, 24000, 27000, 30000, 33000, 37000, 41000, 45000] }]
+        }"></div>
+      </div>
+    </section>
+
     <!-- ============================ GANTT ============================ -->
     <section class="col gap-4">
       <h1 class="h2">Gantt</h1>
