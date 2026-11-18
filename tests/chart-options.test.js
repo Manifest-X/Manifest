@@ -201,7 +201,7 @@ describe('format', () => {
         expect([...el.querySelector('.tooltip').querySelectorAll('div')].map(d => d.textContent))
             .toEqual(['Base: ' + eur(100), 'Low: ' + eur(80), 'High: ' + eur(120)])
         expect(el.querySelector('text.value').textContent).toBe(eur(100))
-        const compact = (v) => eur(v, { notation: 'compact', maximumFractionDigits: 1 })
+        const compact = (v) => eur(v, { notation: 'compact', minimumFractionDigits: 0, maximumFractionDigits: 1 })
         expect(yTicks(el)).toEqual([0, 300, 600, 900, 1200, 1500].map(compact))
     })
 
