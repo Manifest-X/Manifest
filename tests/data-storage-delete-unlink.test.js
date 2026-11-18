@@ -354,3 +354,104 @@ describe('bucket delete input without a file id', () => {
         expect(fileIds()).toEqual(['a', 'b', 'c'])
     })
 })
+
+const callArgs = (method, args) => window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler('files', () => {})(method, ...args)
+
+describe('link writes across a sign-out', () => {
+    const signOut = () => {
+        Object.assign(Alpine.store('auth'), { isAuthenticated: false, user: null })
+        window.dispatchEvent(new CustomEvent('manifest:auth:logout'))
+    }
+    const signOutOnRead = () => {
+        const getRow = window.ManifestDataAppwrite.getTableRow
+        const reads = { n: 0 }
+        window.ManifestDataAppwrite.getTableRow = async (...a) => {
+            if (++reads.n === 1) { signOut(); await settle(30) }
+            return getRow(...a)
+        }
+        return reads
+    }
+
+    it.each(['$unlinkFrom', '$removeFrom'])('%s skips the write when the user signed out while it read the row', async (method) => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }] })
+        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({ storage: { listFiles: async () => ({ files: [] }) } })
+        const reads = signOutOnRead()
+        await quiet(() => callArgs(method, ['projects', 'p1', 'a']).catch(() => {}))
+        await settle(120)
+        expect(reads.n).toBeGreaterThanOrEqual(1)
+        expect(server.updates).toEqual([])
+        expect(server.rows.get('p1').fileIds).toEqual(['a', 'b'])
+    })
+
+    it.each(['$unlinkFrom', '$removeFrom'])('%s still unlinks for a steady identity', async (method) => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }] })
+        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({ storage: { listFiles: async () => ({ files: [{ $id: 'b' }] }) } })
+        await callArgs(method, ['projects', 'p1', { $id: 'a' }])
+        await settle(60)
+        expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['b'] } }])
+    })
+
+    it('a write queued behind another lands only for the identity that queued it', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }] })
+        const { unlinkFileFromEntry } = window.ManifestDataProxiesFiles
+        const getRow = window.ManifestDataAppwrite.getTableRow
+        window.ManifestDataAppwrite.getTableRow = async (...a) => { await settle(30); return getRow(...a) }
+        const first = unlinkFileFromEntry('projects', 'p1', 'a')
+        const second = unlinkFileFromEntry('projects', 'p1', 'b')
+        await settle(5)
+        await first
+        signOut()
+        await settle(5)
+        await second
+        await settle(60)
+        expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['b'] } }])
+    })
+
+    const staleSetup = async ({ onMissing } = {}) => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'gone'] }] })
+        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({
+            storage: {
+                listFiles: async () => ({ files: [{ $id: 'a' }] }),
+                getFile: async () => {
+                    onMissing?.()
+                    await settle(30)
+                    const err = new Error('File could not be found'); err.code = 404; throw err
+                },
+            }
+        })
+        return server
+    }
+
+    it('the stale-id cleanup unlinks a missing file for a steady identity', async () => {
+        const server = await staleSetup()
+        const files = await quiet(() => callArgs('$filesFor', ['projects', 'p1']))
+        await settle(60)
+        expect(files.map(f => f.$id)).toEqual(['a'])
+        expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['a'] } }])
+    })
+
+    it('the stale-id cleanup is skipped when the user signed out during the check', async () => {
+        const server = await staleSetup({ onMissing: signOut })
+        await quiet(() => callArgs('$filesFor', ['projects', 'p1']))
+        await settle(120)
+        expect(server.updates).toEqual([])
+        expect(server.rows.get('p1').fileIds).toEqual(['a', 'gone'])
+    })
+})
+
+describe('link methods normalise file references', () => {
+    it.each(['$unlinkFrom', '$removeFrom'])('%s refuses an object without $id', async (method) => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a'] }] })
+        await expect(callArgs(method, ['projects', 'p1', {}])).rejects.toThrow(`${method} requires table name, entry ID, and file ID`)
+        await expect(callArgs(method, ['projects', 'p1', { $id: '' }])).rejects.toThrow('file ID')
+        expect(server.updates).toEqual([])
+    })
+
+    it('unlinkFileFromAllEntries takes ids and file objects, skipping ones without an id', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b', 'c'] }] })
+        const affected = await window.ManifestDataProxiesFiles.unlinkFileFromAllEntries([{ $id: 'a' }, {}, null, 'c'])
+        await settle(60)
+        expect(affected).toEqual({ projects: ['p1'] })
+        expect(server.rows.get('p1').fileIds).toEqual(['b'])
+    })
+})

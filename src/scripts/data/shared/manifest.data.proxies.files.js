@@ -675,7 +675,9 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
 
 // Get files for a specific table entry (generic - works with any table)
 // Supports any scope (user/team/teams) - files are filtered by permissions automatically
-async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'fileIds') {
+// options.isCurrent: false once the caller's identity is gone (gates the stale-id cleanup)
+async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'fileIds', options = {}) {
+    const isCurrent = identityGuard(tableName, options.isCurrent);
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -855,15 +857,15 @@ async function getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn = 'f
             }
         }
 
-        // Clean up confirmed-missing fileIds from the database entry
-        if (confirmedMissingFileIds.length > 0) {
+        // Clean up confirmed-missing fileIds from the database entry, only for the identity that read them
+        if (confirmedMissingFileIds.length > 0 && isCurrent()) {
             try {
                 const unlinkFileFromEntry = window.ManifestDataProxiesFiles?.unlinkFileFromEntry;
                 if (unlinkFileFromEntry) {
                     // Remove all confirmed-missing fileIds in parallel
                     await Promise.all(
                         confirmedMissingFileIds.map(fileId =>
-                            unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn)
+                            unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn, { isCurrent })
                                 .catch(err => {
                                     console.warn('[Manifest Data] Failed to unlink stale fileId:', {
                                         fileId,
@@ -1056,7 +1058,7 @@ async function unlinkFileFromAllEntries(fileId, options = {}) {
         return {};
     }
 
-    const fileIds = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id?.$id || id).filter(Boolean);
+    const fileIds = (Array.isArray(fileId) ? fileId : [fileId]).map(fileIdOf).filter(Boolean);
     if (!fileIds.length) {
         return {};
     }
@@ -1088,9 +1090,7 @@ async function unlinkFileFromAllEntries(fileId, options = {}) {
 
             const columns = fileLinkColumns(manifest, tableName, tableConfig, options.bucketId);
             const affected = new Set();
-            const generation = window.ManifestDataStore?.sourceGeneration?.(tableName);
-            const isCurrent = () => (!options.isCurrent || options.isCurrent())
-                && window.ManifestDataStore?.sourceGeneration?.(tableName) === generation;
+            const isCurrent = identityGuard(tableName, options.isCurrent);
 
             for (const entry of entries) {
                 for (const column of columns) {
@@ -1123,8 +1123,21 @@ async function unlinkFileFromAllEntries(fileId, options = {}) {
 
 // Unlink a file from a table entry by removing the file ID from the entry's fileIds array
 // Generic function - works with any table and any scope
+// The table's generation is captured at the call, so a queued write never lands for a later identity
 function unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds', options = {}) {
-    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileUnlink(tableName, entryId, fileId, fileIdsColumn, options));
+    const isCurrent = identityGuard(tableName, options.isCurrent);
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileUnlink(tableName, entryId, fileId, fileIdsColumn, { ...options, isCurrent }));
+}
+
+// A file reference as its id (none for an object without $id)
+function fileIdOf(id) {
+    return id && typeof id === 'object' ? id.$id : id;
+}
+
+// True while the source's generation (bumped on sign-out / account switch) and the caller's guard hold
+function identityGuard(dataSourceName, outer) {
+    const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
+    return () => (!outer || outer()) && window.ManifestDataStore?.sourceGeneration?.(dataSourceName) === generation;
 }
 
 // options.isCurrent: false once the identity that started the write is gone
@@ -1382,5 +1395,6 @@ window.ManifestDataProxiesFiles.getFilesForEntry = getFilesForEntry;
 window.ManifestDataProxiesFiles.linkFileToEntry = linkFileToEntry;
 window.ManifestDataProxiesFiles.unlinkFileFromEntry = unlinkFileFromEntry;
 window.ManifestDataProxiesFiles.unlinkFileFromAllEntries = unlinkFileFromAllEntries;
+window.ManifestDataProxiesFiles.identityGuard = identityGuard;
 window.ManifestDataProxiesFiles.buildStoragePermissions = buildStoragePermissions;
 window.ManifestDataProxiesFiles.reactiveFileManagers = reactiveFileManagers; // Legacy - will be removed

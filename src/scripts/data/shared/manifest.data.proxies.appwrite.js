@@ -472,6 +472,9 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
             // Handle storage operations
             if (bucketId) {
+                // Link writes a call starts land only for the identity that started it
+                const bucketCurrent = () => window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName) || (() => true);
+
                 // $delete / $remove: delete each file, land successes locally, then unlink them
                 const deleteBucketFiles = async (fileId) => {
                     const ids = (Array.isArray(fileId) ? fileId : [fileId]).map(id => id && typeof id === 'object' ? id.$id : id);
@@ -988,7 +991,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     if (!getFilesForEntry) {
                         throw new Error('[Manifest Data] File management functions not available');
                     }
-                    return await getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn || 'fileIds');
+                    return await getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn || 'fileIds', { isCurrent: bucketCurrent() });
                 } else if (method === '$preview') {
                     const [fileId, widthOrOptions, height] = args;
                     // Extract file ID - handle both object with $id property and string ID
@@ -1090,7 +1093,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         throw error;
                     }
                 } else if (method === '$unlinkFrom') {
-                    const [tableName, entryId, fileId, fileIdsColumn] = args;
+                    const [tableName, entryId, fileRef, fileIdsColumn] = args;
+                    const fileId = fileRef && typeof fileRef === 'object' ? fileRef.$id : fileRef;
                     if (!tableName || !entryId || !fileId) {
                         throw new Error('[Manifest Data] $unlinkFrom requires table name, entry ID, and file ID');
                     }
@@ -1098,25 +1102,27 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     if (!unlinkFileFromEntry) {
                         throw new Error('[Manifest Data] File management functions not available');
                     }
-                    return await unlinkFileFromEntry(tableName, entryId, fileId.$id || fileId, fileIdsColumn || 'fileIds');
+                    return await unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn || 'fileIds', { isCurrent: bucketCurrent() });
                 } else if (method === '$removeFrom') {
                     // Convenience method: unlink file from entry with automatic refresh
                     // Usage: $x.assets.$removeFrom('projects', projectId, fileId)
                     // Automatically refreshes and returns the files list for that table/entry
-                    const [tableName, entryId, fileId, fileIdsColumn] = args;
+                    const [tableName, entryId, fileRef, fileIdsColumn] = args;
+                    const fileId = fileRef && typeof fileRef === 'object' ? fileRef.$id : fileRef;
                     if (!tableName || !entryId || !fileId) {
                         throw new Error('[Manifest Data] $removeFrom requires table name, entry ID, and file ID');
                     }
 
+                    const isCurrent = bucketCurrent();
                     const unlinkFileFromEntry = window.ManifestDataProxiesFiles?.unlinkFileFromEntry;
                     if (unlinkFileFromEntry) {
-                        await unlinkFileFromEntry(tableName, entryId, fileId.$id || fileId, fileIdsColumn || 'fileIds');
+                        await unlinkFileFromEntry(tableName, entryId, fileId, fileIdsColumn || 'fileIds', { isCurrent });
                     }
 
                     // Return the entry's refreshed files list
                     const getFilesForEntry = window.ManifestDataProxiesFiles?.getFilesForEntry;
                     if (getFilesForEntry) {
-                        return await getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn || 'fileIds');
+                        return await getFilesForEntry(tableName, entryId, bucketId, fileIdsColumn || 'fileIds', { isCurrent });
                     }
                     return null;
                 } else if (method === '$remove') {
