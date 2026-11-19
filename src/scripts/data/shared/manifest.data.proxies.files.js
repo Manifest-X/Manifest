@@ -460,7 +460,6 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                 throw new Error(`[Manifest Data] Table "${tableName}" not found`);
             }
 
-            // Parse storage config directly; parseStorageConfig's getManifest() may be null here
             const storageConfigObj = tableDataSource?.storage;
             if (!storageConfigObj || typeof storageConfigObj !== 'object') {
                 throw new Error(`[Manifest Data] Storage bucket "${bucketName}" not configured for table "${tableName}"`);

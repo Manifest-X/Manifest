@@ -28,10 +28,11 @@ const check = (name, ok, detail) => {
 
 const setup = () => {
     const manifest = { data: { t: { appwriteTableId: 't', storage: { bkt: 'fileIds' } }, bkt: { appwriteBucketId: 'b' } } }
+    // Real ensureManifest/getManifest read the loaded manifest
+    window.__manifestLoaded = manifest
+    if (window.ManifestComponentsRegistry) window.ManifestComponentsRegistry.manifest = manifest
     window.ManifestDataConfig = {
         ...window.ManifestDataConfig,
-        ensureManifest: async () => manifest,
-        getManifest: () => manifest,
         isAppwriteCollection: d => !!(d?.appwriteTableId || d?.appwriteBucketId),
         getAppwriteConfig: async () => ({ databaseId: 'db' }),
         getAppwriteTableId: d => d?.appwriteTableId || null,
@@ -82,6 +83,20 @@ try {
         })
         check('all 3 links reach the server', res.ids.every(id => res.server.includes(id)) && res.server.includes('f1'), res.server)
         check('unread bucket landed with its rows', res.bucket.includes('old1') && res.ids.every(id => res.bucket.includes(id)), res.bucket)
+        await page.close()
+    }
+
+    // Real config, no bucket name: the table's single bucket is the default
+    {
+        const page = await open()
+        const res = await page.evaluate(async () => {
+            try {
+                const up = await window.ManifestDataProxiesMagic
+                    .createUploadMethod('t', (n, l) => window.ManifestDataMain.reloadDataSource(n, l))('e1', new Blob(['d']))
+                return { id: up.$id, linked: window.__server.fileIds.includes(up.$id), sync: !!window.ManifestDataConfig.getManifest?.()?.data?.t }
+            } catch (e) { return { error: e.message } }
+        })
+        check('default-bucket upload links without a stubbed getManifest', res.linked === true && res.sync === true, res)
         await page.close()
     }
 

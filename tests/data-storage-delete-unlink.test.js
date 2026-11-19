@@ -539,8 +539,6 @@ describe('link writes across a sign-out', () => {
 
     it('table $upload skips the link when the user signed out before the upload started', async () => {
         const server = await uploadSetup()
-        // As in upload-links.test.js: parseStorageConfig reads getManifest
-        window.ManifestDataConfig.getManifest = () => window.ManifestComponentsRegistry.manifest
         const ensure = window.ManifestDataConfig.ensureManifest
         let calls = 0
         window.ManifestDataConfig.ensureManifest = async () => {
@@ -551,17 +549,14 @@ describe('link writes across a sign-out', () => {
         await quiet(() => upload('p1', new window.Blob(['x'])).catch(() => {}))
         await settle(120)
         window.ManifestDataConfig.ensureManifest = ensure
-        delete window.ManifestDataConfig.getManifest
         expect(calls).toBeGreaterThan(1)
         expect(server.updates).toEqual([])
     })
 
     it('table $upload links for a steady identity', async () => {
         const server = await uploadSetup()
-        window.ManifestDataConfig.getManifest = () => window.ManifestComponentsRegistry.manifest
         await window.ManifestDataProxiesMagic.createUploadMethod('projects', () => {})('p1', new window.Blob(['x']))
         await settle(60)
-        delete window.ManifestDataConfig.getManifest
         expect(server.updates.length).toBe(1)
         expect(server.rows.get('p1').fileIds.length).toBe(1)
     })

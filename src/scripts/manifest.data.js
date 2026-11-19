@@ -11,25 +11,36 @@ const MANIFEST_BUILD_VERSION = '0.5.217';
 // doing `window.__manifestLoaded.foo = …` before the loader populates it (or in a
 // no-loader setup) can leave a stub without `data`/`components`, which would otherwise
 // mask every data source. Fall through to fetching the real manifest in that case.
-async function ensureManifest() {
-    const looksComplete = (m) => m && typeof m === 'object' &&
-        (m.data || m.components || m.preloadedComponents || m.appwrite || m.render);
+const looksComplete = (m) => m && typeof m === 'object' &&
+    (m.data || m.components || m.preloadedComponents || m.appwrite || m.render);
+let resolvedManifest = null;
+
+// Synchronous accessor: the manifest if already loaded, else null
+function getManifest() {
     if (looksComplete(window.ManifestComponentsRegistry?.manifest)) {
         return window.ManifestComponentsRegistry.manifest;
     }
     if (looksComplete(window.__manifestLoaded)) {
         return window.__manifestLoaded;
     }
+    return resolvedManifest;
+}
+
+async function ensureManifest() {
+    const loaded = getManifest();
+    if (loaded) return loaded;
 
     // One request per boot, shared with the loader and the other plugins (window.__manifestPromise)
     if (window.__manifestPromise) {
         const shared = await window.__manifestPromise.catch(() => null);
-        if (looksComplete(shared)) return shared;
+        if (looksComplete(shared)) return (resolvedManifest = shared);
     }
     try {
         const manifestUrl = (document.querySelector('link[rel="manifest"]')?.getAttribute('href')) || '/manifest.json';
         window.__manifestPromise = fetch(manifestUrl).then(r => r.json()).then(m => { interpolateManifest(m); return m; });
-        return await window.__manifestPromise;
+        const fetched = await window.__manifestPromise;
+        if (looksComplete(fetched)) resolvedManifest = fetched;
+        return fetched;
     } catch (error) {
         console.error('[Manifest Data] Failed to load manifest:', error);
         return null;
@@ -259,6 +270,7 @@ function getQueries(dataSource) {
 // Export functions to window for use by other subscripts
 window.ManifestDataConfig = {
     ensureManifest,
+    getManifest,
     interpolateEnvVars,
     interpolateManifest,
     getNestedValue,
@@ -7074,7 +7086,6 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                 throw new Error(`[Manifest Data] Table "${tableName}" not found`);
             }
 
-            // Parse storage config directly; parseStorageConfig's getManifest() may be null here
             const storageConfigObj = tableDataSource?.storage;
             if (!storageConfigObj || typeof storageConfigObj !== 'object') {
                 throw new Error(`[Manifest Data] Storage bucket "${bucketName}" not configured for table "${tableName}"`);

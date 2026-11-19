@@ -21,9 +21,10 @@ beforeAll(() => {
     window.Alpine = Alpine
     globalThis.Alpine = Alpine
     globalThis.clearAccessCache = () => {}
+    window.ManifestComponentsRegistry = { manifest }
+    new Function(readFileSync(path.join(dir, '../src/scripts/data/core/manifest.data.config.js'), 'utf8'))()
     window.ManifestDataConfig = {
-        ensureManifest: async () => manifest,
-        getManifest: () => manifest,
+        ...window.ManifestDataConfig,
         isAppwriteCollection: () => true,
         getAppwriteConfig: async () => ({ databaseId: 'db' }),
         getAppwriteTableId: (d) => (d.storage ? 'tid' : null),
