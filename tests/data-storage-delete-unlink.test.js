@@ -28,6 +28,7 @@ const SUBSCRIPTS = [
     'shared/manifest.data.proxies.appwrite.js',
     'shared/manifest.data.proxies.magic.state.js',
     'shared/manifest.data.proxies.magic.core.js',
+    'shared/manifest.data.proxies.magic.upload.js',
     'shared/manifest.data.main.js',
 ].map(f => [f, readFileSync(path.join(DATA, f), 'utf8')])
 
@@ -40,7 +41,7 @@ afterEach(() => {
 })
 
 // Server: one bucket of files, one table whose rows link them in several columns
-async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [], delays = {} } = {}) {
+async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [], delays = {}, loadRows = true } = {}) {
     window.Alpine = Alpine
     Alpine.store('auth', { _initialized: true, isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, currentTeam: null, teams: [] })
     window.__manifestRenderReady = false
@@ -94,7 +95,7 @@ async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [],
     await settle(200)
 
     await window.ManifestDataMain.loadDataSource('files')
-    if (rows) await window.ManifestDataMain.loadDataSource('projects')
+    if (rows && loadRows) await window.ManifestDataMain.loadDataSource('projects')
     await settle(60)
     server.listings = 0
     return server
@@ -453,5 +454,142 @@ describe('link methods normalise file references', () => {
         await settle(60)
         expect(affected).toEqual({ projects: ['p1'] })
         expect(server.rows.get('p1').fileIds).toEqual(['b'])
+    })
+})
+
+describe('link writes across a sign-out', () => {
+    const signOut = () => {
+        Object.assign(Alpine.store('auth'), { isAuthenticated: false, user: null })
+        window.dispatchEvent(new CustomEvent('manifest:auth:logout'))
+    }
+    const signOutOnRead = () => {
+        const getRow = window.ManifestDataAppwrite.getTableRow
+        const reads = { n: 0 }
+        window.ManifestDataAppwrite.getTableRow = async (...a) => {
+            if (++reads.n === 1) { signOut(); await settle(30) }
+            return getRow(...a)
+        }
+        return reads
+    }
+    const link = (...a) => window.ManifestDataProxiesFiles.linkFileToEntry('projects', 'p1', ...a)
+    const withStorage = { projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db', storage: { files: 'fileIds' } } }
+
+    it('links for a steady identity', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a'] }] })
+        await link('b')
+        await settle(60)
+        expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['a', 'b'] } }])
+    })
+
+    it('skips the write when the user signed out while it read the row', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a'] }] })
+        const reads = signOutOnRead()
+        await expect(link('b')).resolves.toBe(false)
+        await settle(120)
+        expect(reads.n).toBeGreaterThanOrEqual(1)
+        expect(server.updates).toEqual([])
+        expect(server.rows.get('p1').fileIds).toEqual(['a'])
+    })
+
+    it('skips the write for a table that was never loaded', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a'] }], loadRows: false })
+        signOutOnRead()
+        await link('b')
+        await settle(120)
+        expect(server.updates).toEqual([])
+    })
+
+    it('a link queued behind another lands only for the identity that queued it', async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: [] }] })
+        const getRow = window.ManifestDataAppwrite.getTableRow
+        window.ManifestDataAppwrite.getTableRow = async (...a) => { await settle(30); return getRow(...a) }
+        const first = link('a')
+        const second = link('b')
+        await settle(5)
+        await first
+        signOut()
+        await settle(5)
+        await second
+        await settle(60)
+        expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['a'] } }])
+    })
+
+    const uploadSetup = async ({ signOutOnCreate = false } = {}) => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: [] }], data: withStorage })
+        window.ManifestDataAppwrite.createFile = async (bucket, id) => {
+            if (signOutOnCreate) { signOut(); await settle(30) }
+            return { $id: id, name: 'n' }
+        }
+        return server
+    }
+
+    it('bucket $create links the upload for a steady identity', async () => {
+        const server = await uploadSetup()
+        await callArgs('$create', ['n1', new window.Blob(['x']), [], { entryId: 'p1', table: 'projects' }])
+        await settle(60)
+        expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['n1'] } }])
+    })
+
+    it('bucket $create skips the link when the user signed out during the upload', async () => {
+        const server = await uploadSetup({ signOutOnCreate: true })
+        await quiet(() => callArgs('$create', ['n1', new window.Blob(['x']), [], { entryId: 'p1', table: 'projects' }]).catch(() => {}))
+        await settle(120)
+        expect(server.updates).toEqual([])
+    })
+
+    it('table $upload skips the link when the user signed out before the upload started', async () => {
+        const server = await uploadSetup()
+        // As in upload-links.test.js: parseStorageConfig reads getManifest
+        window.ManifestDataConfig.getManifest = () => window.ManifestComponentsRegistry.manifest
+        const ensure = window.ManifestDataConfig.ensureManifest
+        let calls = 0
+        window.ManifestDataConfig.ensureManifest = async () => {
+            if (++calls === 1) { signOut(); await settle(30) }
+            return ensure()
+        }
+        const upload = window.ManifestDataProxiesMagic.createUploadMethod('projects', () => {})
+        await quiet(() => upload('p1', new window.Blob(['x'])).catch(() => {}))
+        await settle(120)
+        window.ManifestDataConfig.ensureManifest = ensure
+        delete window.ManifestDataConfig.getManifest
+        expect(calls).toBeGreaterThan(1)
+        expect(server.updates).toEqual([])
+    })
+
+    it('table $upload links for a steady identity', async () => {
+        const server = await uploadSetup()
+        window.ManifestDataConfig.getManifest = () => window.ManifestComponentsRegistry.manifest
+        await window.ManifestDataProxiesMagic.createUploadMethod('projects', () => {})('p1', new window.Blob(['x']))
+        await settle(60)
+        delete window.ManifestDataConfig.getManifest
+        expect(server.updates.length).toBe(1)
+        expect(server.rows.get('p1').fileIds.length).toBe(1)
+    })
+
+    const duplicateSetup = async () => {
+        const server = await load({ rows: [{ $id: 'p1', fileIds: ['a'] }], data: withStorage })
+        server.creates = []
+        window.ManifestDataAppwrite.createRow = async (db, table, data, id) => {
+            const created = { ...data, $id: id || 'copy' }
+            server.creates.push(created)
+            return created
+        }
+        return server
+    }
+    const duplicate = () => window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler('projects', () => {})('$duplicate', 'p1')
+
+    it('$duplicate copies the row and its file links for a steady identity', async () => {
+        const server = await duplicateSetup()
+        await quiet(() => duplicate())
+        await settle(60)
+        expect(server.creates.map(r => r.fileIds)).toEqual([['a']])
+    })
+
+    it('$duplicate creates nothing when the user signed out while it read the original', async () => {
+        const server = await duplicateSetup()
+        signOutOnRead()
+        await expect(quiet(() => duplicate())).rejects.toThrow('signed-in user changed')
+        await settle(120)
+        expect(server.creates).toEqual([])
     })
 })

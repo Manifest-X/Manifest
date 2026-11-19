@@ -290,6 +290,11 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                 } else if (method === '$duplicate') {
                     const [entryId, options = {}] = args;
                     const { files = 'same', newRowId, ...overrides } = options;
+                    // The copy (and its file links) lands only for the identity that read the original
+                    const isCurrent = window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName) || (() => true);
+                    const stopIfStale = () => {
+                        if (!isCurrent()) throw new Error('[Manifest Data] $duplicate stopped: the signed-in user changed');
+                    };
 
                     // Get the original entry
                     const originalEntry = await window.ManifestDataAppwrite.getTableRow(
@@ -359,6 +364,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                     // Duplicate each file
                                     const newFileIds = [];
                                     for (const file of originalFiles) {
+                                        stopIfStale();
                                         try {
                                             // Download file content
                                             const fileBlob = await window.ManifestDataAppwrite.getFileContentAsBlob(bucketId, file.$id);
@@ -398,6 +404,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
 
                     // Create the duplicate entry using existing $create logic
+                    stopIfStale();
                     return await handleMethod('$create', duplicateData, newRowId);
                 } else if (method === '$query') {
                     let [queries] = args;
@@ -541,6 +548,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                 if (method === '$create') {
                     let [fileId, file, permissions, onProgress] = args;
+                    // The entry link lands only for the identity that started the upload
+                    const linkCurrent = window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName, onProgress?.isCurrent) || (() => true);
 
                     // Appwrite requires fileId to be provided - it doesn't auto-generate
                     // If fileId is not provided or is a File object (first arg is file), generate one
@@ -822,7 +831,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         try {
                             const linkFileToEntry = window.ManifestDataProxiesFiles?.linkFileToEntry;
                             if (linkFileToEntry) {
-                                await linkFileToEntry(tableName, entryId, result.$id, fileIdsColumn);
+                                await linkFileToEntry(tableName, entryId, result.$id, fileIdsColumn, { isCurrent: linkCurrent });
                             }
                         } catch (linkError) {
                             // Check if error is about missing column

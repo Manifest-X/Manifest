@@ -904,11 +904,16 @@ function queueEntryFileWrite(tableName, entryId, fileIdsColumn, write) {
 
 // Link a file to a table entry by adding the file ID to the entry's fileIds array
 // Generic function - works with any table and any scope
-function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
-    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileLink(tableName, entryId, fileId, fileIdsColumn));
+// The table's generation is captured at the call, so a queued write never lands for a later identity
+function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds', options = {}) {
+    const isCurrent = identityGuard(tableName, options.isCurrent);
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileLink(tableName, entryId, fileId, fileIdsColumn, { ...options, isCurrent }));
 }
 
-async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
+// options.isCurrent: false once the identity that started the write is gone
+async function writeFileLink(tableName, entryId, fileId, fileIdsColumn, options = {}) {
+    const stale = () => !!options.isCurrent && !options.isCurrent();
+    if (stale()) return false;
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -929,6 +934,8 @@ async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
         tableId,
         entryId
     );
+
+    if (stale()) return false;
 
     if (!entry) {
         throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
@@ -1134,10 +1141,13 @@ function fileIdOf(id) {
     return id && typeof id === 'object' ? id.$id : id;
 }
 
-// True while the source's generation (bumped on sign-out / account switch) and the caller's guard hold
+// True while the identity epoch and the source's generation (both bumped on sign-out / account switch) and the caller's guard hold
 function identityGuard(dataSourceName, outer) {
+    const epoch = window.ManifestDataMain?.identityEpoch?.() ?? 0;
     const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
-    return () => (!outer || outer()) && window.ManifestDataStore?.sourceGeneration?.(dataSourceName) === generation;
+    return () => (!outer || outer())
+        && (window.ManifestDataMain?.identityEpoch?.() ?? 0) === epoch
+        && window.ManifestDataStore?.sourceGeneration?.(dataSourceName) === generation;
 }
 
 // options.isCurrent: false once the identity that started the write is gone

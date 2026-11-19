@@ -3,6 +3,8 @@
 
 function createUploadMethod(dataSourceName, reloadDataSource) {
     return async function (entryId, fileOrEvent, bucketName) {
+        // Links land only for the identity that started the upload
+        const isCurrent = window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName);
         const manifest = await window.ManifestDataConfig.ensureManifest();
         if (!manifest?.data) {
             throw new Error('[Manifest Data] Manifest not available');
@@ -106,7 +108,8 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
                     entryId: entryId,
                     table: dataSourceName,
                     fileIdsColumn: resolvedColumnName,
-                    sourceUnloaded
+                    sourceUnloaded,
+                    isCurrent
                 }).then(result => {
                     // Clear uploading state for this file
                     if (clearUploadingFile) {

@@ -120,6 +120,9 @@ function confirmedIdentity() {
     return auth.isAuthenticated === true ? (authUserId(auth) || '') : '';
 }
 
+// Bumped synchronously when an identity ends (sign-out, account switch), before any source reset; covers never-loaded sources
+let identityEpoch = 0;
+
 // Identity change (sign-in, sign-out, account switch): identity-bound sources reload for the new identity.
 // A previous user's rows drop at once; rows read signed out stay live until the reload lands.
 function setupAuthResetListener() {
@@ -166,6 +169,7 @@ function setupAuthResetListener() {
             return;
         }
         // An identity switch (A to B) starts clean with the defaults; a first sign-in keeps the $query
+        if (prev !== '') identityEpoch++;
         reset(prev !== '', prev === '' && next !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
@@ -1702,6 +1706,7 @@ async function initializeDataSourcesPlugin() {
         noteQueryIntent: (dataSourceName, queries) => queryIntents.set(dataSourceName, queries),
         dropQueryIntent: (dataSourceName, queries) => { if (queryIntents.get(dataSourceName) === queries) queryIntents.delete(dataSourceName); },
         withRetry,
+        identityEpoch: () => identityEpoch,
         pagingSpec,
         fetchPagedRows,
         pagedWant,

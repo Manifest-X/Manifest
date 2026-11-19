@@ -19,5 +19,11 @@ export const validUsage = component(() => ({
     return rows.length
   },
   async pages() { const p = await this.$x.tasks.$page(2, 10); return p.totalPages },
-  async refresh() { await this.$x.team.$reload(); await this.$x.tasks.$reload() }
+  async refresh() { await this.$x.team.$reload(); await this.$x.tasks.$reload() },
+  async detach(id) {
+    const files = await this.$x.attachments.$filesFor('tasks', id)
+    await this.$x.attachments.$unlinkFrom('tasks', id, files[0])
+    const left = await this.$x.attachments.$removeFrom('tasks', id, 'f1', 'fileIds')
+    return left?.length
+  }
 }))

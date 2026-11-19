@@ -194,13 +194,13 @@ export interface ManifestAppwriteBucketOps {
     $remove(fileId: string): Promise<void>;
     $delete(fileId: string | string[]): Promise<unknown>;
     $duplicate(fileId: string, options?: { newName?: string; newFileId?: string }): Promise<ManifestFile>;
-    $filesFor(parentId: string, fieldName?: string): ManifestFile[];
+    $filesFor(tableName: string, entryId: string, fileIdsColumn?: string): Promise<ManifestFile[]>;
     $first(limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
     $next(cursor: string, limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
     $prev(cursor: string, limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
     $page(page: number, limit?: number): Promise<ManifestOffsetPage<ManifestFile>>;
-    $unlinkFrom(parentId: string, fileId: string): Promise<void>;
-    $removeFrom(parentId: string, fileId: string): Promise<void>;
+    $unlinkFrom(tableName: string, entryId: string, file: string | { $id: string }, fileIdsColumn?: string): Promise<void>;
+    $removeFrom(tableName: string, entryId: string, file: string | { $id: string }, fileIdsColumn?: string): Promise<ManifestFile[] | null>;
 }
 
 /**

@@ -32,6 +32,9 @@
     "workspaces": {
       "appwriteTableId": "workspaces"
     },
+    "attachments": {
+      "appwriteBucketId": "attachments"
+    },
     "team": "/data/team.json"
   }
 }

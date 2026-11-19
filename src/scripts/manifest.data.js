@@ -7518,11 +7518,16 @@ function queueEntryFileWrite(tableName, entryId, fileIdsColumn, write) {
 
 // Link a file to a table entry by adding the file ID to the entry's fileIds array
 // Generic function - works with any table and any scope
-function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds') {
-    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileLink(tableName, entryId, fileId, fileIdsColumn));
+// The table's generation is captured at the call, so a queued write never lands for a later identity
+function linkFileToEntry(tableName, entryId, fileId, fileIdsColumn = 'fileIds', options = {}) {
+    const isCurrent = identityGuard(tableName, options.isCurrent);
+    return queueEntryFileWrite(tableName, entryId, fileIdsColumn, () => writeFileLink(tableName, entryId, fileId, fileIdsColumn, { ...options, isCurrent }));
 }
 
-async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
+// options.isCurrent: false once the identity that started the write is gone
+async function writeFileLink(tableName, entryId, fileId, fileIdsColumn, options = {}) {
+    const stale = () => !!options.isCurrent && !options.isCurrent();
+    if (stale()) return false;
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const tableDataSource = manifest?.data?.[tableName];
 
@@ -7543,6 +7548,8 @@ async function writeFileLink(tableName, entryId, fileId, fileIdsColumn) {
         tableId,
         entryId
     );
+
+    if (stale()) return false;
 
     if (!entry) {
         throw new Error(`[Manifest Data] Entry "${entryId}" not found in table "${tableName}"`);
@@ -7748,10 +7755,13 @@ function fileIdOf(id) {
     return id && typeof id === 'object' ? id.$id : id;
 }
 
-// True while the source's generation (bumped on sign-out / account switch) and the caller's guard hold
+// True while the identity epoch and the source's generation (both bumped on sign-out / account switch) and the caller's guard hold
 function identityGuard(dataSourceName, outer) {
+    const epoch = window.ManifestDataMain?.identityEpoch?.() ?? 0;
     const generation = window.ManifestDataStore?.sourceGeneration?.(dataSourceName);
-    return () => (!outer || outer()) && window.ManifestDataStore?.sourceGeneration?.(dataSourceName) === generation;
+    return () => (!outer || outer())
+        && (window.ManifestDataMain?.identityEpoch?.() ?? 0) === epoch
+        && window.ManifestDataStore?.sourceGeneration?.(dataSourceName) === generation;
 }
 
 // options.isCurrent: false once the identity that started the write is gone
@@ -8315,6 +8325,11 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                 } else if (method === '$duplicate') {
                     const [entryId, options = {}] = args;
                     const { files = 'same', newRowId, ...overrides } = options;
+                    // The copy (and its file links) lands only for the identity that read the original
+                    const isCurrent = window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName) || (() => true);
+                    const stopIfStale = () => {
+                        if (!isCurrent()) throw new Error('[Manifest Data] $duplicate stopped: the signed-in user changed');
+                    };
 
                     // Get the original entry
                     const originalEntry = await window.ManifestDataAppwrite.getTableRow(
@@ -8384,6 +8399,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                     // Duplicate each file
                                     const newFileIds = [];
                                     for (const file of originalFiles) {
+                                        stopIfStale();
                                         try {
                                             // Download file content
                                             const fileBlob = await window.ManifestDataAppwrite.getFileContentAsBlob(bucketId, file.$id);
@@ -8423,6 +8439,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     }
 
                     // Create the duplicate entry using existing $create logic
+                    stopIfStale();
                     return await handleMethod('$create', duplicateData, newRowId);
                 } else if (method === '$query') {
                     let [queries] = args;
@@ -8566,6 +8583,8 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
 
                 if (method === '$create') {
                     let [fileId, file, permissions, onProgress] = args;
+                    // The entry link lands only for the identity that started the upload
+                    const linkCurrent = window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName, onProgress?.isCurrent) || (() => true);
 
                     // Appwrite requires fileId to be provided - it doesn't auto-generate
                     // If fileId is not provided or is a File object (first arg is file), generate one
@@ -8847,7 +8866,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         try {
                             const linkFileToEntry = window.ManifestDataProxiesFiles?.linkFileToEntry;
                             if (linkFileToEntry) {
-                                await linkFileToEntry(tableName, entryId, result.$id, fileIdsColumn);
+                                await linkFileToEntry(tableName, entryId, result.$id, fileIdsColumn, { isCurrent: linkCurrent });
                             }
                         } catch (linkError) {
                             // Check if error is about missing column
@@ -9387,6 +9406,8 @@ window.ManifestDataProxiesMagic.createFilesMethod = createFilesMethod;
 
 function createUploadMethod(dataSourceName, reloadDataSource) {
     return async function (entryId, fileOrEvent, bucketName) {
+        // Links land only for the identity that started the upload
+        const isCurrent = window.ManifestDataProxiesFiles?.identityGuard?.(dataSourceName);
         const manifest = await window.ManifestDataConfig.ensureManifest();
         if (!manifest?.data) {
             throw new Error('[Manifest Data] Manifest not available');
@@ -9490,7 +9511,8 @@ function createUploadMethod(dataSourceName, reloadDataSource) {
                     entryId: entryId,
                     table: dataSourceName,
                     fileIdsColumn: resolvedColumnName,
-                    sourceUnloaded
+                    sourceUnloaded,
+                    isCurrent
                 }).then(result => {
                     // Clear uploading state for this file
                     if (clearUploadingFile) {
@@ -11434,6 +11456,8 @@ function registerFilesDirective() {
 
             // Set new timeout for debouncing
             loadTimeout = setTimeout(async () => {
+                // The fileIds sync writes only for the identity that read them
+                const isCurrent = window.ManifestDataProxiesFiles?.identityGuard?.('projects') || (() => true);
                 // Double-check project still exists before making API call using projectId
                 const store = Alpine.store('data');
                 const projects = store?.projects;
@@ -11586,7 +11610,7 @@ function registerFilesDirective() {
                             const databaseFileIdsJson = JSON.stringify(databaseFileIdsArray);
                             const databaseIsStale = databaseFileIds && databaseFileIdsJson !== lastFileIds;
 
-                            if (storeIsStale || databaseIsStale) {
+                            if ((storeIsStale || databaseIsStale) && isCurrent()) {
                                 console.warn('[Manifest Data] Store/Database fileIds is STALE - cleaning up:', {
                                     directiveInstanceId,
                                     projectId: currentProjectId,
@@ -11617,7 +11641,7 @@ function registerFilesDirective() {
                                             const tableId = window.ManifestDataConfig.getAppwriteTableId(tableDataSource);
                                             const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(tableDataSource);
 
-                                            if (appwriteConfig && window.ManifestDataAppwrite?.updateRow) {
+                                            if (appwriteConfig && window.ManifestDataAppwrite?.updateRow && isCurrent()) {
                                                 await window.ManifestDataAppwrite.updateRow(
                                                     appwriteConfig.databaseId,
                                                     tableId,
@@ -12012,6 +12036,9 @@ function confirmedIdentity() {
     return auth.isAuthenticated === true ? (authUserId(auth) || '') : '';
 }
 
+// Bumped synchronously when an identity ends (sign-out, account switch), before any source reset; covers never-loaded sources
+let identityEpoch = 0;
+
 // Identity change (sign-in, sign-out, account switch): identity-bound sources reload for the new identity.
 // A previous user's rows drop at once; rows read signed out stay live until the reload lands.
 function setupAuthResetListener() {
@@ -12058,6 +12085,7 @@ function setupAuthResetListener() {
             return;
         }
         // An identity switch (A to B) starts clean with the defaults; a first sign-in keeps the $query
+        if (prev !== '') identityEpoch++;
         reset(prev !== '', prev === '' && next !== '');
     };
     ['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
@@ -13594,6 +13622,7 @@ async function initializeDataSourcesPlugin() {
         noteQueryIntent: (dataSourceName, queries) => queryIntents.set(dataSourceName, queries),
         dropQueryIntent: (dataSourceName, queries) => { if (queryIntents.get(dataSourceName) === queries) queryIntents.delete(dataSourceName); },
         withRetry,
+        identityEpoch: () => identityEpoch,
         pagingSpec,
         fetchPagedRows,
         pagedWant,

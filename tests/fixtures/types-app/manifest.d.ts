@@ -194,13 +194,13 @@ export interface ManifestAppwriteBucketOps {
     $remove(fileId: string): Promise<void>;
     $delete(fileId: string | string[]): Promise<unknown>;
     $duplicate(fileId: string, options?: { newName?: string; newFileId?: string }): Promise<ManifestFile>;
-    $filesFor(parentId: string, fieldName?: string): ManifestFile[];
+    $filesFor(tableName: string, entryId: string, fileIdsColumn?: string): Promise<ManifestFile[]>;
     $first(limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
     $next(cursor: string, limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
     $prev(cursor: string, limit?: number): Promise<ManifestCursorPage<ManifestFile>>;
     $page(page: number, limit?: number): Promise<ManifestOffsetPage<ManifestFile>>;
-    $unlinkFrom(parentId: string, fileId: string): Promise<void>;
-    $removeFrom(parentId: string, fileId: string): Promise<void>;
+    $unlinkFrom(tableName: string, entryId: string, file: string | { $id: string }, fileIdsColumn?: string): Promise<void>;
+    $removeFrom(tableName: string, entryId: string, file: string | { $id: string }, fileIdsColumn?: string): Promise<ManifestFile[] | null>;
 }
 
 /**
@@ -988,6 +988,8 @@ export type Row_tasks = ManifestRowSystem & { [field: string]: any };
 /** Row shape for $x.workspaces (Appwrite table; declare ManifestRows.workspaces for checked fields). */
 export type Row_workspaces = ManifestRowSystem & { [field: string]: any };
 
+// attachments: Appwrite storage bucket
+
 /** Row shape for $x.team inferred from /data/team.json. */
 export interface Row_team {
     id: string;
@@ -998,6 +1000,7 @@ export interface Row_team {
 export interface ManifestSources {
     tasks: ManifestTableSource<ManifestRowFor<"tasks", Row_tasks>>;
     workspaces: ManifestTableSource<ManifestRowFor<"workspaces", Row_workspaces>>;
+    attachments: ManifestBucketSource;
     team: ManifestArraySource<Row_team>;
     /** Sources added at runtime ($x.$register) or since the last generation. */
     [sourceName: string]: any;

@@ -564,6 +564,8 @@ function registerFilesDirective() {
 
             // Set new timeout for debouncing
             loadTimeout = setTimeout(async () => {
+                // The fileIds sync writes only for the identity that read them
+                const isCurrent = window.ManifestDataProxiesFiles?.identityGuard?.('projects') || (() => true);
                 // Double-check project still exists before making API call using projectId
                 const store = Alpine.store('data');
                 const projects = store?.projects;
@@ -716,7 +718,7 @@ function registerFilesDirective() {
                             const databaseFileIdsJson = JSON.stringify(databaseFileIdsArray);
                             const databaseIsStale = databaseFileIds && databaseFileIdsJson !== lastFileIds;
 
-                            if (storeIsStale || databaseIsStale) {
+                            if ((storeIsStale || databaseIsStale) && isCurrent()) {
                                 console.warn('[Manifest Data] Store/Database fileIds is STALE - cleaning up:', {
                                     directiveInstanceId,
                                     projectId: currentProjectId,
@@ -747,7 +749,7 @@ function registerFilesDirective() {
                                             const tableId = window.ManifestDataConfig.getAppwriteTableId(tableDataSource);
                                             const appwriteConfig = await window.ManifestDataConfig.getAppwriteConfig(tableDataSource);
 
-                                            if (appwriteConfig && window.ManifestDataAppwrite?.updateRow) {
+                                            if (appwriteConfig && window.ManifestDataAppwrite?.updateRow && isCurrent()) {
                                                 await window.ManifestDataAppwrite.updateRow(
                                                     appwriteConfig.databaseId,
                                                     tableId,
