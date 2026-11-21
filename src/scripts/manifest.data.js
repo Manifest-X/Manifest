@@ -5160,11 +5160,6 @@ function createArrayProxyWithRoute(arrayTarget, dataSourceName = null, reloadDat
 
                 // Symbol.iterator needed for Alpine's x-for
                 if (key === Symbol.iterator) {
-                    const manifest = window.ManifestDataConfig?.getManifest?.();
-                    const ds = manifest?.data?.[dataSourceName];
-                    const isStorageBucket = ds && window.ManifestDataConfig?.getAppwriteBucketId?.(ds);
-                    if (isStorageBucket) {
-                    }
                     const iterator = target[Symbol.iterator].bind(target);
                     // Restore Function.prototype for Alpine's instanceof checks
                     if (iterator && typeof iterator === 'function') {
