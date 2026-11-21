@@ -545,11 +545,19 @@ describe('link writes across a sign-out', () => {
             if (++calls === 1) { signOut(); await settle(30) }
             return ensure()
         }
+        const create = window.ManifestDataAppwrite.createFile
+        const created = []
+        window.ManifestDataAppwrite.createFile = async (bucket, id, ...rest) => {
+            created.push(bucket)
+            return create(bucket, id, ...rest)
+        }
         const upload = window.ManifestDataProxiesMagic.createUploadMethod('projects', () => {})
-        await quiet(() => upload('p1', new window.Blob(['x'])).catch(() => {}))
+        let failure = null
+        await quiet(() => upload('p1', new window.Blob(['x'])).catch(e => { failure = e }))
         await settle(120)
         window.ManifestDataConfig.ensureManifest = ensure
-        expect(calls).toBeGreaterThan(1)
+        expect(failure?.message ?? '').not.toMatch(/Storage bucket|Multiple storage buckets/)
+        expect(created).toEqual(['files'])
         expect(server.updates).toEqual([])
     })
 

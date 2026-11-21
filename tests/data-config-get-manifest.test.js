@@ -79,7 +79,11 @@ describe('table $upload storage resolution', () => {
     })
 
     it('needs a bucket name when several are configured', () => {
-        expect(window.ManifestDataProxiesFiles.getDefaultBucketForTable('multi')).toBe(null)
+        const files = window.ManifestDataProxiesFiles
+        expect(files.getTableStorageConfig('multi')).toEqual({ media: 'fileIds', docs: 'docIds' })
+        expect(files.getDefaultBucketForTable('multi')).toBe(null)
+        expect(files.parseStorageConfig(manifest.data.multi, 'docs'))
+            .toEqual({ bucketId: 'docs-bucket', scope: null, column: 'docIds' })
     })
 
     it('parses a bucket reference', () => {
