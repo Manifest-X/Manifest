@@ -2575,7 +2575,6 @@ async function renderRouteDom(page, ctx) {
     const INTERACTIVE_DIRECTIVES = new Set([
       'x-color', 'x-dropdown', 'x-tooltip', 'x-tab', 'x-tabpanel',
       'x-toast', 'x-carousel', 'x-anchors', 'x-model',
-      'x-files', 'x-data-files',
     ]);
     // Runtime-only Alpine magics whose values change after the prerender
     // snapshot (e.g. via media query, route change, auth state).  Bindings

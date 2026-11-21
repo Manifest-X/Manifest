@@ -121,7 +121,6 @@ const CONFIG = {
         'shared/manifest.data.proxies.magic.upload.js',   // Magic method $upload handler
         'shared/manifest.data.proxies.magic.pagination.js', // Magic method pagination handlers
         'shared/manifest.data.proxies.magic.core.js',     // Magic method core registration (delegates CRUD to Appwrite handler)
-        'shared/manifest.data.proxies.directives.js', // Directives
         'shared/manifest.data.main.js'                // Core main (Appwrite loading is conditional)
     ],
 

@@ -1218,7 +1218,7 @@ function sanitizeHTML(html) {
 }
 
 // Plugin-rendered hosts: their children are produced at runtime, not authored.
-const RENDERED = ['x-html', 'x-text', 'x-markdown', 'x-icon', 'x-svg', 'x-code', 'x-code-group', 'x-chart', 'x-anchors', 'x-carousel', 'x-color', 'x-colorpicker', 'x-combobox', 'x-date', 'x-defer', 'x-virtual', 'x-import', 'x-files', 'x-data-files'];
+const RENDERED = ['x-html', 'x-text', 'x-markdown', 'x-icon', 'x-svg', 'x-code', 'x-code-group', 'x-chart', 'x-anchors', 'x-carousel', 'x-color', 'x-colorpicker', 'x-combobox', 'x-date', 'x-defer', 'x-virtual', 'x-import'];
 const isRenderedAttr = (a) => RENDERED.some(r => a === r || a.startsWith(r + '.'));
 
 // A static area's identities, mirroring the client: origin area + tag + the first 24

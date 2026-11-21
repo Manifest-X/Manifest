@@ -728,7 +728,7 @@ export type ManifestDirective =
     | 'x-icon' | 'x-svg' | 'x-markdown' | 'x-code' | 'x-code-group'
     | 'x-toast' | 'x-tooltip' | 'x-carousel' | 'x-virtual' | 'x-computed' | 'x-defer'
     | 'x-chart' | 'x-date' | 'x-color' | 'x-colorpicker' | 'x-combobox'
-    | 'x-export' | 'x-import' | 'x-pay' | 'x-files' | 'x-data-files'
+    | 'x-export' | 'x-import' | 'x-pay'
     | 'x-edit' | 'x-rich-text' | 'x-submit';
 
 /** Detail of the `submit:sent` / `submit:error` events an `x-submit` form dispatches. */
