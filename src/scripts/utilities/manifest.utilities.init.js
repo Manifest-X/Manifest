@@ -30,6 +30,9 @@ detectOS();
 function injectTailwindVariants() {
     try {
         if (document.getElementById('manifest-tailwind-variants')) return;
+        // Dark follows $color's .dark class; an author's own declaration wins
+        const authorDark = Array.from(document.querySelectorAll('style[type="text/tailwindcss"]'))
+            .some(s => /@custom-variant\s+dark[\s({]/.test(s.textContent || ''));
         const style = document.createElement('style');
         style.id = 'manifest-tailwind-variants';
         style.setAttribute('type', 'text/tailwindcss');
@@ -47,7 +50,8 @@ function injectTailwindVariants() {
             '@custom-variant offline (&:where([data-online="false"] *));',
             '@custom-variant standalone (&:where([data-standalone] *));',
             '@custom-variant native (&:where([data-native] *));',
-            '@custom-variant web (&:where(html:not([data-native]) *));'
+            '@custom-variant web (&:where(html:not([data-native]) *));',
+            ...(authorDark ? [] : ['@custom-variant dark (&:where(.dark, .dark *));'])
         ].join('\n');
         (document.head || document.documentElement).appendChild(style);
     } catch (e) {
