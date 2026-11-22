@@ -33,6 +33,12 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         });
     }
 
+    // Inline mapping: no bucket source in the store, so load by the mapping's appwriteBucketId
+    const mapping = window.ManifestDataConfig?.getManifest?.()?.data?.[tableName]?.storage?.[bucketName];
+    if (mapping && typeof mapping === 'object') {
+        return createInlineFilesArray(tableName, entryId, bucketName, columnName);
+    }
+
     // Create a reactive array that will be computed from bucket and fileIds
     const computedFiles = typeof Alpine !== 'undefined' && Alpine.reactive
         ? Alpine.reactive([])
@@ -199,6 +205,27 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         }
     });
     return computedProxy;
+}
+
+// Entry files for an inline storage mapping, backed by the shared file manager
+function createInlineFilesArray(tableName, entryId, bucketName, columnName) {
+    const manager = createReactiveFileManager(tableName, entryId, bucketName, columnName);
+    return new Proxy(manager.files, {
+        get(target, key) {
+            if (key === '$loading') return manager.loading();
+            if (key === '$error') return manager.error();
+            if (key === '$reload') return manager.reload;
+            if (key === Symbol.iterator) return target[Symbol.iterator].bind(target);
+            if (key in target) {
+                const value = target[key];
+                return typeof value === 'function' ? value.bind(target) : value;
+            }
+            return undefined;
+        },
+        has(target, key) {
+            return key in target || key === '$loading' || key === '$error' || key === '$reload';
+        }
+    });
 }
 
 // Create reactive file array that watches a function/expression for entryId changes
