@@ -138,7 +138,8 @@ function setupAuthResetListener() {
         const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
         if (!manifest || !ds?.resetSource || !store) return;
         const raw = ds.rawOf ? ds.rawOf(store) : store;
-        const configs = { ...(manifest.appwrite || {}), ...(manifest.data || {}) };
+        const configs = { ...(manifest.appwrite || {}) };
+        for (const name of Object.getOwnPropertyNames(manifest.data || {})) configs[name] = manifest.data[name]; // incl. hidden inline buckets
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;
