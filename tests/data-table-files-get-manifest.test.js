@@ -35,9 +35,17 @@ const SUBSCRIPTS = [
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
 let iso = null
 
+// The bucket's Appwrite id differs from its source name so a name-for-id mix-up fails
+const BUCKET_ID = 'files-bucket'
+let wrongBuckets = []
+const inBucket = (bucket) => { if (bucket !== BUCKET_ID) wrongBuckets.push(bucket) }
+
 afterEach(() => {
     iso?.release()
     iso = null
+    const seen = wrongBuckets
+    wrongBuckets = []
+    expect(seen).toEqual([])
 })
 
 async function load() {
@@ -48,9 +56,9 @@ async function load() {
     const files = [{ $id: 'a' }, { $id: 'b' }, { $id: 'c' }]
     window.ManifestDataAppwrite = {
         loadTableRows: async () => rows.map(r => JSON.parse(JSON.stringify(r))),
-        listBucketFiles: async () => files.map(f => ({ ...f })),
+        listBucketFiles: async (bucket) => (inBucket(bucket), files).map(f => ({ ...f })),
         getTableRow: async (db, table, id) => JSON.parse(JSON.stringify(rows.find(r => r.$id === id))),
-        _getAppwriteDataServices: async () => ({ storage: { listFiles: async () => ({ files: files.map(f => ({ ...f })) }) } }),
+        _getAppwriteDataServices: async () => ({ storage: { listFiles: async (bucket) => (inBucket(bucket), { files: files.map(f => ({ ...f })) }) } }),
     }
     delete window.ManifestDataRealtime
     delete window.__manifestLoaded
@@ -59,7 +67,7 @@ async function load() {
             appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db' },
             data: {
                 projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db', storage: { files: 'fileIds' } },
-                files: { appwriteBucketId: 'files' },
+                files: { appwriteBucketId: BUCKET_ID },
             }
         }
     }

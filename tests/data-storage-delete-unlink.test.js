@@ -35,9 +35,17 @@ const SUBSCRIPTS = [
 const settle = (ms = 20) => new Promise(r => setTimeout(r, ms))
 let iso = null
 
+// The bucket's Appwrite id differs from its source name so a name-for-id mix-up fails
+const BUCKET_ID = 'files-bucket'
+let wrongBuckets = []
+const inBucket = (bucket) => { if (bucket !== BUCKET_ID) wrongBuckets.push(bucket) }
+
 afterEach(() => {
     iso?.release()
     iso = null
+    const seen = wrongBuckets
+    wrongBuckets = []
+    expect(seen).toEqual([])
 })
 
 // Server: one bucket of files, one table whose rows link them in several columns
@@ -57,13 +65,13 @@ async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [],
         appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db' },
         data: {
             projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db' },
-            files: { appwriteBucketId: 'files' },
+            files: { appwriteBucketId: BUCKET_ID },
             ...data,
         }
     }
     window.ManifestDataAppwrite = {
         loadTableRows: async () => [...server.rows.values()].map(r => JSON.parse(JSON.stringify(r))),
-        listBucketFiles: async () => { server.listings++; return server.files.map(f => ({ ...f })) },
+        listBucketFiles: async (bucket) => { inBucket(bucket); server.listings++; return server.files.map(f => ({ ...f })) },
         getTableRow: async (db, table, id) => JSON.parse(JSON.stringify(server.rows.get(id))),
         updateRow: async (db, table, id, patch) => {
             server.updates.push({ id, patch })
@@ -71,6 +79,7 @@ async function load({ data = {}, rows, files = ['a', 'b', 'c'], failDelete = [],
             return { $id: id, ...server.rows.get(id) }
         },
         deleteFile: async (bucket, id) => {
+            inBucket(bucket)
             await settle(delays[id] ?? 5)
             server.deletes.push(id)
             if (failDelete.includes(id)) throw new Error(`denied ${id}`)
@@ -148,9 +157,9 @@ describe.each(['$delete', '$remove'])('bucket %s', (method) => {
             data: {
                 projects: {
                     appwriteTableId: 'projects', appwriteDatabaseId: 'db',
-                    storage: { files: 'imageIds', covers: { appwriteBucketId: 'files', column: 'coverIds' }, other: { appwriteBucketId: 'elsewhere', column: 'otherIds' } }
+                    storage: { files: 'imageIds', covers: { appwriteBucketId: BUCKET_ID, column: 'coverIds' }, other: { appwriteBucketId: 'elsewhere', column: 'otherIds' } }
                 },
-                attachments: { appwriteBucketId: 'files', belongsTo: { table: 'projects', id: 'p1', fileIdsColumn: 'attachmentIds' } },
+                attachments: { appwriteBucketId: BUCKET_ID, belongsTo: { table: 'projects', id: 'p1', fileIdsColumn: 'attachmentIds' } },
             },
             rows: [{ $id: 'p1', fileIds: ['a'], imageIds: ['a', 'b'], coverIds: ['a'], attachmentIds: ['a'], otherIds: ['a'] }]
         })
@@ -221,7 +230,7 @@ describe('failed array deletes return in their original order', () => {
         window.Appwrite = { Query: { orderAsc: attr => JSON.stringify({ method: 'orderAsc', attribute: attr }) } }
         try {
             await load({
-                data: { files: { appwriteBucketId: 'files', queries: [['orderAsc', 'name']] } },
+                data: { files: { appwriteBucketId: BUCKET_ID, queries: [['orderAsc', 'name']] } },
                 files: ['a', 'b', 'c', 'd'].map(id => ({ $id: id, name: id })),
                 failDelete: ['a', 'c'], delays: { a: 5, c: 40 }
             })
@@ -375,7 +384,7 @@ describe('link writes across a sign-out', () => {
 
     it.each(['$unlinkFrom', '$removeFrom'])('%s skips the write when the user signed out while it read the row', async (method) => {
         const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }] })
-        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({ storage: { listFiles: async () => ({ files: [] }) } })
+        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({ storage: { listFiles: async (bucket) => (inBucket(bucket), { files: [] }) } })
         const reads = signOutOnRead()
         await quiet(() => callArgs(method, ['projects', 'p1', 'a']).catch(() => {}))
         await settle(120)
@@ -386,7 +395,7 @@ describe('link writes across a sign-out', () => {
 
     it.each(['$unlinkFrom', '$removeFrom'])('%s still unlinks for a steady identity', async (method) => {
         const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'b'] }] })
-        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({ storage: { listFiles: async () => ({ files: [{ $id: 'b' }] }) } })
+        window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({ storage: { listFiles: async (bucket) => (inBucket(bucket), { files: [{ $id: 'b' }] }) } })
         await callArgs(method, ['projects', 'p1', { $id: 'a' }])
         await settle(60)
         expect(server.updates).toEqual([{ id: 'p1', patch: { fileIds: ['b'] } }])
@@ -412,8 +421,9 @@ describe('link writes across a sign-out', () => {
         const server = await load({ rows: [{ $id: 'p1', fileIds: ['a', 'gone'] }] })
         window.ManifestDataAppwrite._getAppwriteDataServices = async () => ({
             storage: {
-                listFiles: async () => ({ files: [{ $id: 'a' }] }),
-                getFile: async () => {
+                listFiles: async (bucket) => (inBucket(bucket), { files: [{ $id: 'a' }] }),
+                getFile: async (bucket) => {
+                    inBucket(bucket)
                     onMissing?.()
                     await settle(30)
                     const err = new Error('File could not be found'); err.code = 404; throw err
@@ -517,6 +527,7 @@ describe('link writes across a sign-out', () => {
     const uploadSetup = async ({ signOutOnCreate = false } = {}) => {
         const server = await load({ rows: [{ $id: 'p1', fileIds: [] }], data: withStorage })
         window.ManifestDataAppwrite.createFile = async (bucket, id) => {
+            inBucket(bucket)
             if (signOutOnCreate) { signOut(); await settle(30) }
             return { $id: id, name: 'n' }
         }
@@ -557,7 +568,7 @@ describe('link writes across a sign-out', () => {
         await settle(120)
         window.ManifestDataConfig.ensureManifest = ensure
         expect(failure?.message ?? '').not.toMatch(/Storage bucket|Multiple storage buckets/)
-        expect(created).toEqual(['files'])
+        expect(created).toEqual([BUCKET_ID])
         expect(server.updates).toEqual([])
     })
 
