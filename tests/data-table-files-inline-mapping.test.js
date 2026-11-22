@@ -39,7 +39,10 @@ let iso = null
 const BUCKET_ID = 'inline-bucket-id'
 let wrongBuckets = []
 let bucketCalls = 0
+let rowReads = 0
 const inBucket = (bucket) => { bucketCalls++; if (bucket !== BUCKET_ID) wrongBuckets.push(bucket) }
+// Files each user can list
+let visible = { u1: ['a', 'b', 'c'], u2: ['a', 'b'] }
 
 afterEach(() => {
     iso?.release()
@@ -47,20 +50,25 @@ afterEach(() => {
     const seen = wrongBuckets
     wrongBuckets = []
     bucketCalls = 0
+    rowReads = 0
+    visible = { u1: ['a', 'b', 'c'], u2: ['a', 'b'] }
     expect(seen).toEqual([])
 })
 
-async function load() {
+async function load(rowCount = 1) {
     window.Alpine = Alpine
     Alpine.store('auth', { _initialized: true, isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, currentTeam: null, teams: [] })
     window.__manifestRenderReady = false
-    const rows = [{ $id: 'p1', attachmentIds: ['a', 'c'] }]
-    const files = [{ $id: 'a' }, { $id: 'b' }, { $id: 'c' }]
+    const rows = Array.from({ length: rowCount }, (_, i) => ({ $id: `p${i + 1}`, attachmentIds: ['a', 'c'] }))
+    const files = () => (visible[Alpine.store('auth').user?.$id] || []).map($id => ({ $id }))
     window.ManifestDataAppwrite = {
         loadTableRows: async () => rows.map(r => JSON.parse(JSON.stringify(r))),
-        listBucketFiles: async (bucket) => (inBucket(bucket), files).map(f => ({ ...f })),
-        getTableRow: async (db, table, id) => JSON.parse(JSON.stringify(rows.find(r => r.$id === id))),
-        _getAppwriteDataServices: async () => ({ storage: { listFiles: async (bucket) => (inBucket(bucket), { files: files.map(f => ({ ...f })) }) } }),
+        listBucketFiles: async (bucket) => (inBucket(bucket), files()),
+        getTableRow: async (db, table, id) => (rowReads++, JSON.parse(JSON.stringify(rows.find(r => r.$id === id)))),
+        _getAppwriteDataServices: async () => ({ storage: {
+            listFiles: async (bucket) => (inBucket(bucket), { files: files() }),
+            getFile: async () => { throw Object.assign(new Error('not found'), { code: 404 }) },
+        } }),
     }
     delete window.ManifestDataRealtime
     delete window.__manifestLoaded
@@ -123,5 +131,42 @@ describe('table $files with an inline storage mapping', () => {
         expect(row.$filesError).toBe(null)
         expect(ids(row.$files)).toEqual(['a', 'c'])
         expect(bucketCalls).toBeGreaterThan(0)
+    })
+})
+
+describe('inline mapping requests', () => {
+    it('lists the bucket once for many rows, and not at all until $files is read', async () => {
+        await load(40)
+        const rows = Alpine.store('data').projects
+        expect(rows.length).toBe(40)
+        await settle(60)
+        expect(bucketCalls).toBe(0)
+        expect(rowReads).toBe(0)
+        for (const row of rows) row.$files.length
+        for (let i = 0; i < 40 && rows[39].$files.length !== 2; i++) await settle(10)
+        expect(rows.every(row => ids(row.$files).join() === 'a,c')).toBe(true)
+        expect(bucketCalls).toBe(1)
+        expect(rowReads).toBe(0)
+    })
+})
+
+describe('inline mapping identity switch', () => {
+    it('row.$files and $files(id) drop the previous user\'s files', async () => {
+        await load()
+        const before = Alpine.store('data').projects.find(r => r.$id === 'p1')
+        before.$files.length
+        for (let i = 0; i < 40 && before.$files.length !== 2; i++) await settle(10)
+        expect(ids(before.$files)).toEqual(['a', 'c'])
+
+        Alpine.store('auth').user = { $id: 'u2' }
+        window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+        await settle(300)
+
+        const row = Alpine.store('data').projects.find(r => r.$id === 'p1')
+        row.$files.length
+        for (let i = 0; i < 40 && row.$files.length !== 1; i++) await settle(10)
+        expect(ids(row.$files)).toEqual(['a'])
+        const direct = filesOf('projects')('p1')
+        expect(ids(direct)).toEqual(['a'])
     })
 })

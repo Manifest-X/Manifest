@@ -1284,7 +1284,7 @@ function setupTeamChangeListener() {
                 }
 
                 // Find team-scoped data sources (both "team" and "teams" scopes, including dual scope)
-                const teamScopedDataSources = Object.entries(manifest.data)
+                const teamScopedDataSources = Object.getOwnPropertyNames(manifest.data).map(name => [name, manifest.data[name]])
                     .filter(([name, config]) => {
                         if (typeof config === 'object' && config.scope) {
                             const scope = config.scope;
@@ -6654,11 +6654,15 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         });
     }
 
-    // Inline mapping: no bucket source in the store, so load by the mapping's appwriteBucketId
-    const mapping = window.ManifestDataConfig?.getManifest?.()?.data?.[tableName]?.storage?.[bucketName];
-    if (mapping && typeof mapping === 'object') {
-        return createInlineFilesArray(tableName, entryId, bucketName, columnName);
-    }
+    // Inline mapping: read a hidden bucket source, loaded once per bucket on first read
+    const inlineSource = inlineBucketSource(tableName, bucketName);
+    if (inlineSource) bucketName = inlineSource;
+    let inlineRequested = !inlineSource;
+    const requestInline = () => {
+        if (inlineRequested) return;
+        inlineRequested = true;
+        loadInlineBucket(inlineSource);
+    };
 
     // Create a reactive array that will be computed from bucket and fileIds
     const computedFiles = typeof Alpine !== 'undefined' && Alpine.reactive
@@ -6812,6 +6816,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
     // Create proxy that adds loading/error properties
     const computedProxy = new Proxy(computedFiles, {
         get(target, key) {
+            if (key !== 'toJSON') requestInline();
             if (key === '$loading') return loadingState.value;
             if (key === '$error') return errorState.value;
             if (key === Symbol.iterator) return target[Symbol.iterator].bind(target);
@@ -6822,31 +6827,41 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
             return undefined;
         },
         has(target, key) {
+            requestInline();
             return key in target || key === '$loading' || key === '$error';
         }
     });
     return computedProxy;
 }
 
-// Entry files for an inline storage mapping, backed by the shared file manager
-function createInlineFilesArray(tableName, entryId, bucketName, columnName) {
-    const manager = createReactiveFileManager(tableName, entryId, bucketName, columnName);
-    return new Proxy(manager.files, {
-        get(target, key) {
-            if (key === '$loading') return manager.loading();
-            if (key === '$error') return manager.error();
-            if (key === '$reload') return manager.reload;
-            if (key === Symbol.iterator) return target[Symbol.iterator].bind(target);
-            if (key in target) {
-                const value = target[key];
-                return typeof value === 'function' ? value.bind(target) : value;
-            }
-            return undefined;
-        },
-        has(target, key) {
-            return key in target || key === '$loading' || key === '$error' || key === '$reload';
+// Hidden bucket source for an inline mapping ({ appwriteBucketId }): non-enumerable on manifest.data,
+// so loadDataSource, resetSource and identity resets treat it as a named bucket
+function inlineBucketSource(tableName, bucketName) {
+    const manifest = window.ManifestDataConfig?.getManifest?.();
+    const table = manifest?.data?.[tableName];
+    const mapping = table?.storage?.[bucketName];
+    if (!mapping || typeof mapping !== 'object' || !mapping.appwriteBucketId) return null;
+    const scope = mapping.scope ? [].concat(mapping.scope).join('+') : '';
+    const name = `_inline_${mapping.appwriteBucketId}${scope ? `_${scope}` : ''}`;
+    if (!Object.prototype.hasOwnProperty.call(manifest.data, name)) {
+        const config = { appwriteBucketId: mapping.appwriteBucketId };
+        if (mapping.scope) config.scope = mapping.scope;
+        for (const key of ['appwriteProjectId', 'appwriteEndpoint', 'appwriteDevKey']) {
+            if (table[key]) config[key] = table[key];
         }
-    });
+        Object.defineProperty(manifest.data, name, { value: config, enumerable: false, configurable: true, writable: true });
+    }
+    return name;
+}
+
+// Load a hidden bucket source unless loaded or loading (resets reload it themselves)
+function loadInlineBucket(name) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const raw = window.ManifestDataStore?.rawOf ? window.ManifestDataStore.rawOf(store) : store;
+    const state = raw?.[`_${name}_state`];
+    if (state && (state.loading || state.ready || state.error)) return;
+    const locale = document.documentElement.lang || Alpine.store('locale')?.current || 'en';
+    Promise.resolve(window.ManifestDataMain?.loadDataSource?.(name, locale)).catch(() => { /* $error carries it */ });
 }
 
 // Create reactive file array that watches a function/expression for entryId changes
@@ -11063,7 +11078,8 @@ function setupAuthResetListener() {
         const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
         if (!manifest || !ds?.resetSource || !store) return;
         const raw = ds.rawOf ? ds.rawOf(store) : store;
-        const configs = { ...(manifest.appwrite || {}), ...(manifest.data || {}) };
+        const configs = { ...(manifest.appwrite || {}) };
+        for (const name of Object.getOwnPropertyNames(manifest.data || {})) configs[name] = manifest.data[name]; // incl. hidden inline buckets
         const locale = liveLocale();
         for (const [name, config] of Object.entries(configs)) {
             if (!isIdentityBound(config) || raw[`_${name}_state`] === undefined) continue;

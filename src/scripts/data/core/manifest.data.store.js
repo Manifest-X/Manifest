@@ -994,7 +994,7 @@ function setupTeamChangeListener() {
                 }
 
                 // Find team-scoped data sources (both "team" and "teams" scopes, including dual scope)
-                const teamScopedDataSources = Object.entries(manifest.data)
+                const teamScopedDataSources = Object.getOwnPropertyNames(manifest.data).map(name => [name, manifest.data[name]])
                     .filter(([name, config]) => {
                         if (typeof config === 'object' && config.scope) {
                             const scope = config.scope;
