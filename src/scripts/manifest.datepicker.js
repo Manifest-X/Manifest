@@ -398,7 +398,7 @@
 				// Write the value out to: x-model, hidden input, and the field display.
 				// Model shape: single → ISO string ('yyyy-mm-dd' or '…THH:mm');
 				// range → { start, end }; multiple → ISO[]; time-only → 'HH:mm'.
-				syncOut() {
+				syncOut(writeModel = true) {
 					let modelVal, hiddenVal;
 					if (this.selectionMode === 'range') {
 						const s = this.rangeStart ? D.toISO(this.rangeStart) : '', e = this.rangeEnd ? D.toISO(this.rangeEnd) : '';
@@ -411,7 +411,7 @@
 						const iso = this._primaryValue();
 						modelVal = iso; hiddenVal = iso;
 					}
-					if (this.modelSet) { try { this.modelSet(modelVal); } catch (_) { } }
+					if (writeModel && this.modelSet) { try { this.modelSet(modelVal); } catch (_) { } }
 					if (this.hiddenInput) {
 						this.hiddenInput.value = hiddenVal;
 						this.hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -429,6 +429,36 @@
 						// Text-only triggers swap their text; triggers with element children own theirs.
 						this.field.textContent = disp || this.fieldPlaceholder;
 					}
+				},
+
+				// Mirror an external model value; anything unparseable is empty. Returns true if the selection changed.
+				applyModel(v) {
+					const prev = this._primaryValue();
+					if (v instanceof Date) v = D.toISO(v);
+					if (this.timeOnly) {
+						const m = typeof v === 'string' && v.match(/^(\d{2}):(\d{2})/);
+						if (m) { this.time = m[1] + ':' + m[2]; this.timeSet = true; } else this.timeSet = false;
+					} else if (this.selectionMode === 'range') {
+						let s = '', e = '';
+						if (v && typeof v === 'object' && !Array.isArray(v)) { s = v.start; e = v.end; }
+						else if (typeof v === 'string') [s, e] = v.split('/');
+						this.rangeStart = D.fromISO(s); this.rangeEnd = this.rangeStart ? D.fromISO(e) : null;
+					} else if (this.selectionMode === 'multiple') {
+						const arr = Array.isArray(v) ? v : (typeof v === 'string' && v ? v.split(',') : []);
+						this.selectedDates = arr.map(x => D.fromISO(x)).filter(Boolean).sort((a, b) => D.compare(a, b));
+					} else {
+						const iso = typeof v === 'string' ? v : '';
+						const tm = iso.match(/T(\d{2}:\d{2})/);
+						if (tm) { this.time = tm[1]; this.timeSet = true; }
+						this.selected = D.fromISO(iso);
+					}
+					if (this._primaryValue() === prev) return false;
+					this.rangeHover = null;
+					const first = this.selectionMode === 'range' ? this.rangeStart : this.selectionMode === 'multiple' ? this.selectedDates[0] : this.selected;
+					const d = first || D.today();
+					this.view = { y: d.getFullYear(), m: d.getMonth() + 1 };
+					if (!this._primaryValue()) this.close();
+					return true;
 				},
 
 				// Pull an initial value from x-model, then hidden input, then value attr.
@@ -1026,7 +1056,8 @@
 				const first = state._uiKey === undefined;
 				state._uiKey = key;
 				if (state._destroyed || first) return; // initial render happens at mount
-				if (state._mounted) { state.render(); state.syncOut(); }
+				// Display only: the model holds ISO, which a locale change never alters.
+				if (state._mounted) { state.render(); state.syncOut(false); }
 			}));
 		}
 
@@ -1034,8 +1065,8 @@
 			const read = Alpine.evaluateLater(el, modelExpr);
 			state.modelGet = (cb) => { let out; read(v => { out = v; if (cb) cb(v); }); return out; };
 			state.modelSet = (v) => { try { Alpine.evaluate(el, `${modelExpr} = ${JSON.stringify(v)}`); } catch (_) { } };
-			// React to external model changes; syncOut writes the same value back (no loop).
-			state._effects.push(Alpine.effect(() => { read(v => { const iso = (v instanceof Date) ? D.toISO(v) : v; const cur = state._primaryValue(); if (typeof iso === 'string' && iso !== cur) { const tm = iso.match(/T(\d{2}:\d{2})/); if (tm) state.time = tm[1]; const d = D.fromISO(iso); state.selected = d; if (d) state.view = { y: d.getFullYear(), m: d.getMonth() + 1 }; state.bump(); if (state._mounted) { state.render(); state.syncOut(); } } }); }));
+			// Mirror external model changes; never write back (the model already holds the value).
+			state._effects.push(Alpine.effect(() => { read(v => { if (!state.applyModel(v)) return; state.bump(); if (state._mounted) { state.render(); state.syncOut(false); } }); }));
 		}
 
 		// Global effects stay subscribed to the stores (and pin the calendar) until released.
