@@ -132,8 +132,14 @@ function showRoute(element) {
 
 // Skip no-op writes: each one is a mutation record for every observer
 function hideRoute(element) {
-    if (!element.hasAttribute('hidden')) element.setAttribute('hidden', '');
-    if (hasXShow(element) || element.style.display === 'none') return;
+    const wasHidden = element.hasAttribute('hidden');
+    if (!wasHidden) element.setAttribute('hidden', '');
+    if (hasXShow(element)) return;
+    // An author's own display:none is recorded too, so showRoute puts it back
+    if (element.style.display === 'none') {
+        if (!wasHidden && !element.__manifestRouteDisplay) element.__manifestRouteDisplay = { value: 'none', priority: element.style.getPropertyPriority('display') };
+        return;
+    }
     // Restored on show, so an author's own inline display survives
     element.__manifestRouteDisplay = { value: element.style.display, priority: element.style.getPropertyPriority('display') };
     element.style.display = 'none';

@@ -35,6 +35,8 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
     <x-home x-route="/"></x-home>
     <x-docs x-route="=docs"></x-docs>
     <x-guide x-route="guide"></x-guide>
+    <div id="authored" x-route="=docs" style="display:none">authored</div>
+    <div id="flex" x-route="=docs" style="display:flex">flex</div>
   </main>
 </body></html>`
 
@@ -75,6 +77,8 @@ try {
     await page.click('#to-docs'); await wait(1500)
     check('docs shows after navigating from home', await visible(page, '#docs-h'))
     check('home hides', !(await visible(page, '#home-h')))
+    check("an author's display:none on a routed element stays", !(await visible(page, '#authored')))
+    check("an author's inline display survives hide and show", (await page.evaluate(() => document.querySelector('#flex').style.display)) === 'flex')
 
     await page.click('#to-guide'); await wait(1500)
     check('every root of a multi-root component shows', (await visible(page, '#guide-a')) && (await visible(page, '#guide-b')))
@@ -85,6 +89,8 @@ try {
 
     await page.click('#to-docs'); await wait(1000)
     check('docs shows on a second visit', await visible(page, '#docs-h'))
+    check("an author's display:none stays on a second visit", !(await visible(page, '#authored')))
+    check("an author's inline display survives a second visit", (await page.evaluate(() => document.querySelector('#flex').style.display)) === 'flex')
 } finally {
     await browser.close(); server.close()
 }

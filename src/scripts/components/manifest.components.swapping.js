@@ -49,6 +49,7 @@
                 const clone = placeholder.cloneNode(true);
                 clone.setAttribute('data-original-placeholder', '');
                 clone.setAttribute('data-component', instanceId);
+                if (placeholder.__manifestRouteDisplay) clone.__manifestRouteDisplay = { ...placeholder.__manifestRouteDisplay };
                 placeholderMap.set(instanceId, clone);
             }
             // Log before swap
