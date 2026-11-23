@@ -161,10 +161,14 @@ describe('dashFrom', () => {
     })
 
     it('index 0 and the last index are in range', async () => {
-        const first = await render({ type: 'line', labels: months, dashFrom: 0, series: [three[0]] })
+        const first = await render({ type: 'area', labels: months, dashFrom: 0, series: [three[0]] })
         expect(first.querySelectorAll('path.line.dashed').length).toBe(1)
-        const last = await render({ type: 'line', labels: months, dashFrom: 5, series: [three[0]] })
+        expect(clipX(first, first.querySelector('path.line.dashed').getAttribute('clip-path')).x).toBeCloseTo(xOfDot(first, 0), 6)
+        expect(clipX(first, first.querySelector('path.area:not(.dashed)').getAttribute('clip-path')).right).toBeCloseTo(xOfDot(first, 0), 6)
+        const last = await render({ type: 'area', labels: months, dashFrom: 5, series: [three[0]] })
         expect(last.querySelectorAll('path.line.dashed').length).toBe(1)
+        expect(clipX(last, last.querySelector('path.line.dashed').getAttribute('clip-path')).x).toBeCloseTo(xOfDot(last, 5), 6)
+        expect(clipX(last, last.querySelector('path.line:not(.dashed)').getAttribute('clip-path')).right).toBeCloseTo(xOfDot(last, 5) + 1, 6)
     })
 
     it('absent, out of range or not an integer: nothing changes', async () => {
