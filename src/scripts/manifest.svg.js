@@ -2,6 +2,38 @@
 
 (function () {
 
+// mnfst:vendor:start — synced by the build from scripts/snippets/manifest.vendor.js; edit there
+// Pinned third-party files (npm paths in src/scripts/vendor.lock.json), loaded with their hash.
+// Through the loader when present: CDN fallback, and its integrity map when checks are on.
+if (!window.ManifestVendor) {
+    const CDN = 'https://cdn.jsdelivr.net/npm/';
+    window.ManifestVendor = {
+        get checked() { return !!(window.Manifest && window.Manifest.integrity); },
+        script(path, hash) {
+            const M = window.Manifest;
+            if (M && M.loadVendor) return M.loadVendor(path, hash);
+            return new Promise((resolve, reject) => {
+                const src = CDN + path;
+                const found = document.querySelector(`script[src="${src}"]`);
+                if (found && found.dataset.vendorLoaded) return resolve();
+                const s = found || document.createElement('script');
+                s.addEventListener('load', () => { s.dataset.vendorLoaded = '1'; resolve(); });
+                s.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)));
+                if (found) return;
+                if (hash) { s.integrity = hash; s.crossOrigin = 'anonymous'; }
+                s.src = src;
+                document.head.appendChild(s);
+            });
+        },
+        fetch(path, hash) {
+            const M = window.Manifest;
+            if (M && M.fetchVendor) return M.fetchVendor(path, hash);
+            return fetch(CDN + path, hash ? { integrity: hash, mode: 'cors', credentials: 'omit' } : undefined)
+                .then(r => { if (!r.ok) throw new Error(`Failed to load ${CDN + path}`); return r; });
+        }
+    };
+}
+// mnfst:vendor:end
 
 const svgCache = new Map();
 
@@ -15,26 +47,12 @@ if (!window.ManifestDOMPurify) {
         load() {
             if (typeof window.DOMPurify !== 'undefined') return Promise.resolve(window.DOMPurify);
             if (this._promise) return this._promise;
-            this._promise = new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                // Pinned + SRI so a tampered/floating CDN file can't inject JS.
-                script.src = 'https://cdn.jsdelivr.net/npm/dompurify@3.4.10/dist/purify.min.js';
-                script.integrity = 'sha384-eguRoJERj8ghOpzO//Rl7+ScQsQIR1cH+ajll7+fG+IpbNPlkZsQn9h8ccr+wPXx';
-                script.crossOrigin = 'anonymous';
-                script.onload = () => {
-                    if (typeof window.DOMPurify !== 'undefined') {
-                        resolve(window.DOMPurify);
-                    } else {
-                        this._promise = null;
-                        reject(new Error('DOMPurify failed to load'));
-                    }
-                };
-                script.onerror = (err) => {
-                    this._promise = null;
-                    reject(err);
-                };
-                document.head.appendChild(script);
-            });
+            this._promise = window.ManifestVendor.script('dompurify@3.4.10/dist/purify.min.js', 'sha384-eguRoJERj8ghOpzO//Rl7+ScQsQIR1cH+ajll7+fG+IpbNPlkZsQn9h8ccr+wPXx')
+                .then(() => {
+                    if (typeof window.DOMPurify === 'undefined') throw new Error('DOMPurify failed to load');
+                    return window.DOMPurify;
+                })
+                .catch((err) => { this._promise = null; throw err; });
             return this._promise;
         }
     };

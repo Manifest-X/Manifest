@@ -918,6 +918,12 @@ declare global {
             getModuleUrl(name: string, version?: string): string;
             /** @deprecated Use getModuleUrl. */
             getPluginUrl(name: string, version?: string): string;
+            /** True while every script the loader adds is checked against published hashes (integrity= on the loader tag). */
+            readonly integrity?: boolean;
+            /** Load a pinned third-party script by npm path (e.g. `marked@15.0.12/marked.min.js`), checked by hash. */
+            loadVendor?(path: string, integrity?: string): Promise<unknown>;
+            /** Fetch a pinned third-party file by npm path, checked by hash. */
+            fetchVendor?(path: string, integrity?: string): Promise<Response>;
             /** Defer a closed container built at runtime (call before Alpine.initTree). */
             defer?(el: Element): unknown;
             /** App-shell service worker diagnostics; kill() unregisters and clears its caches. */

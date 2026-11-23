@@ -2580,6 +2580,39 @@ window.ManifestDataStore = {
 // Object.prototype and silently affecting every plain object on the page.
 const POLLUTING_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+// mnfst:vendor:start — synced by the build from scripts/snippets/manifest.vendor.js; edit there
+// Pinned third-party files (npm paths in src/scripts/vendor.lock.json), loaded with their hash.
+// Through the loader when present: CDN fallback, and its integrity map when checks are on.
+if (!window.ManifestVendor) {
+    const CDN = 'https://cdn.jsdelivr.net/npm/';
+    window.ManifestVendor = {
+        get checked() { return !!(window.Manifest && window.Manifest.integrity); },
+        script(path, hash) {
+            const M = window.Manifest;
+            if (M && M.loadVendor) return M.loadVendor(path, hash);
+            return new Promise((resolve, reject) => {
+                const src = CDN + path;
+                const found = document.querySelector(`script[src="${src}"]`);
+                if (found && found.dataset.vendorLoaded) return resolve();
+                const s = found || document.createElement('script');
+                s.addEventListener('load', () => { s.dataset.vendorLoaded = '1'; resolve(); });
+                s.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)));
+                if (found) return;
+                if (hash) { s.integrity = hash; s.crossOrigin = 'anonymous'; }
+                s.src = src;
+                document.head.appendChild(s);
+            });
+        },
+        fetch(path, hash) {
+            const M = window.Manifest;
+            if (M && M.fetchVendor) return M.fetchVendor(path, hash);
+            return fetch(CDN + path, hash ? { integrity: hash, mode: 'cors', credentials: 'omit' } : undefined)
+                .then(r => { if (!r.ok) throw new Error(`Failed to load ${CDN + path}`); return r; });
+        }
+    };
+}
+// mnfst:vendor:end
+
 // Dynamic js-yaml loader
 let jsyaml = null;
 let yamlLoadingPromise = null;
@@ -2620,30 +2653,17 @@ async function loadYamlLibrary() {
         return yamlLoadingPromise;
     }
 
-    yamlLoadingPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        // Pinned + Subresource Integrity — a floating version or tampered CDN
-        // file can't inject arbitrary JS into the user's page.
-        script.src = 'https://cdn.jsdelivr.net/npm/js-yaml@4.2.0/dist/js-yaml.min.js';
-        script.integrity = 'sha384-hyhT0yrWXjngXhDa5wpJTU0pt/Djmlx4KtZECqqS6ZHf3ah4fWkFeW/2eWX9cX5J';
-        script.crossOrigin = 'anonymous';
-        script.onload = () => {
-            if (typeof window.jsyaml !== 'undefined') {
-                jsyaml = window.jsyaml;
-                resolve(jsyaml);
-            } else {
-                console.error('[Manifest Data] js-yaml failed to load - jsyaml is undefined');
-                yamlLoadingPromise = null; // Reset so we can try again
-                reject(new Error('js-yaml failed to load'));
-            }
-        };
-        script.onerror = (error) => {
-            console.error('[Manifest Data] Script failed to load:', error);
-            yamlLoadingPromise = null; // Reset so we can try again
-            reject(error);
-        };
-        document.head.appendChild(script);
-    });
+    yamlLoadingPromise = window.ManifestVendor.script('js-yaml@4.2.0/dist/js-yaml.min.js', 'sha384-hyhT0yrWXjngXhDa5wpJTU0pt/Djmlx4KtZECqqS6ZHf3ah4fWkFeW/2eWX9cX5J')
+        .then(() => {
+            if (typeof window.jsyaml === 'undefined') throw new Error('js-yaml failed to load');
+            jsyaml = window.jsyaml;
+            return jsyaml;
+        })
+        .catch((error) => {
+            console.error('[Manifest Data] js-yaml failed to load:', error);
+            yamlLoadingPromise = null;
+            throw error;
+        });
 
     return yamlLoadingPromise;
 }
@@ -2659,30 +2679,17 @@ async function loadCSVParser() {
         return csvLoadingPromise;
     }
 
-    csvLoadingPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        // Pinned + Subresource Integrity — a floating version or tampered CDN
-        // file can't inject arbitrary JS into the user's page.
-        script.src = 'https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js';
-        script.integrity = 'sha384-Jd2/X5FXVKahwaY2nivvw4LfSTg9idSj8yNXWtT4qef0fHSYr6M7M8bJAfbFYoMc';
-        script.crossOrigin = 'anonymous';
-        script.onload = () => {
-            if (typeof window.Papa !== 'undefined') {
-                papaparse = window.Papa;
-                resolve(papaparse);
-            } else {
-                console.error('[Manifest Data] PapaParse failed to load - Papa is undefined');
-                csvLoadingPromise = null; // Reset so we can try again
-                reject(new Error('PapaParse failed to load'));
-            }
-        };
-        script.onerror = (error) => {
-            console.error('[Manifest Data] CSV parser script failed to load:', error);
-            csvLoadingPromise = null; // Reset so we can try again
-            reject(error);
-        };
-        document.head.appendChild(script);
-    });
+    csvLoadingPromise = window.ManifestVendor.script('papaparse@5.5.3/papaparse.min.js', 'sha384-Jd2/X5FXVKahwaY2nivvw4LfSTg9idSj8yNXWtT4qef0fHSYr6M7M8bJAfbFYoMc')
+        .then(() => {
+            if (typeof window.Papa === 'undefined') throw new Error('PapaParse failed to load');
+            papaparse = window.Papa;
+            return papaparse;
+        })
+        .catch((error) => {
+            console.error('[Manifest Data] CSV parser failed to load:', error);
+            csvLoadingPromise = null;
+            throw error;
+        });
 
     return csvLoadingPromise;
 }

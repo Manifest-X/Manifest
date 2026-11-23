@@ -292,8 +292,8 @@ function makeBrowserEnv() {
         document: {
             addEventListener() {},
             querySelector: () => null,
-            createElement: () => ({ dataset: {}, setAttribute() {}, _onload: null, set onload(f) { this._onload = f }, set onerror(_) {} }),
-            head: { appendChild: (s) => { s.dataset.mnfstLoaded = '1'; if (s._onload) s._onload() } }
+            createElement: () => ({ dataset: {}, setAttribute() {}, _onload: null, _ls: [], set onload(f) { this._onload = f }, set onerror(_) {}, addEventListener(t, f) { if (t === 'load') this._ls.push(f) } }),
+            head: { appendChild: (s) => { s.dataset.mnfstLoaded = '1'; if (s._onload) s._onload(); s._ls.forEach(f => f()) } }
         },
         location: { assign() {} },
         console, setTimeout: (fn) => fn(), URLSearchParams,

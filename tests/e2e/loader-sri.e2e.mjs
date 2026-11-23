@@ -6,7 +6,11 @@
  *   every mirror tampered  → loud error naming the file; the tampered body never runs
  *   module map tampered    → fails closed, nothing injected
  *   @latest, no integrity  → unchanged behaviour, no integrity attributes
- *   integrity + data-version="latest" → warns, loads unverified
+ *   integrity + data-version="latest" → fails closed; data-integrity="warn" loads unchecked
+ *   plugin third-party files (marked, DOMPurify, highlight.js + a grammar, d3) → verified; tampered → refused
+ *   service worker: a stub importing its module cross-origin stays off; a same-origin worker registers
+ *
+ * Third-party files are proxied from jsDelivr (network needed).
  *
  * Run: npm run build && node tests/e2e/loader-sri.e2e.mjs
  */
@@ -24,11 +28,26 @@ const ALPINE = fs.readFileSync(path.join(ROOT, 'src/scripts/manifest.js'), 'utf8
 const sri = (buf) => `sha384-${createHash('sha384').update(buf).digest('base64')}`
 const LOADER_SRI = sri(fs.readFileSync(path.join(ROOT, 'lib/manifest.min.js')))
 
+const upstream = new Map()
+async function vendorBytes(p) {
+    if (!upstream.has(p)) upstream.set(p, fetch('https://cdn.jsdelivr.net' + p).then(async (r) => (r.ok ? Buffer.from(await r.arrayBuffer()) : null)))
+    return upstream.get(p)
+}
+
 // A CDN mirror: jsDelivr-style /npm/<pkg>@<v>/<path>, CORS on, optional tampered files
 function mirror() {
     const tampered = new Set()
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
         const p = decodeURIComponent(new URL(req.url, 'http://x').pathname)
+        const cors0 = { 'Access-Control-Allow-Origin': '*' }
+        if (p.startsWith('/npm/') && !p.startsWith('/npm/mnfst@') && !p.startsWith(`/npm/alpinejs@${ALPINE}/`)) {
+            let body = await vendorBytes(p)
+            if (!body) { res.writeHead(404, cors0); return res.end() }
+            const name = path.basename(p)
+            if (tampered.has(name)) body = Buffer.concat([body, Buffer.from('\n;window.__tampered = (window.__tampered || []).concat(' + JSON.stringify(name) + ');')])
+            res.writeHead(200, { ...cors0, 'Content-Type': name.endsWith('.json') ? 'application/json' : 'text/javascript', 'Cache-Control': 'no-store' })
+            return res.end(body)
+        }
         let file = null
         let m = p.match(/^\/npm\/mnfst@[^/]+\/lib\/([\w.-]+)$/)
         if (m) file = path.join(ROOT, 'lib', m[1])
@@ -51,10 +70,12 @@ function mirror() {
 }
 
 let pages = {}
+let swStub = null
 function site() {
     const server = http.createServer((req, res) => {
         const p = new URL(req.url, 'http://x').pathname
         if (p === '/manifest.json') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"name":"x"}') }
+        if (p === '/sw.js' && swStub) { res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' }); return res.end(swStub) }
         if (!pages[p]) { res.writeHead(404); return res.end() }
         res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
         res.end(pages[p])
@@ -103,7 +124,16 @@ async function main() {
         '/latest': page(`src="${a.base}/mnfst@latest/lib/manifest.min.js" ${cdn}`),
         '/pinned-latest-modules': page(`${pinned} data-version="latest"`),
         '/pinned-defaults': page(pinned, ''),
+        '/pinned-warn': page(`${pinned} data-version="latest" data-integrity="warn"`),
+        '/plugins': `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
+<script ${pinned} data-plugins="markdown,code,charts"></script></head>
+<body><div x-data="{ md: '# Title' }"><div id="md" x-markdown="md"></div></div>
+<pre><code id="code" x-code="elixir">defmodule Hi do\n  def hi, do: :ok\nend</code></pre>
+<div id="chart" x-data x-chart="{ type: 'line', labels: ['a','b','c'], series: [{ name: 's', data: [1, 3, 2] }], height: 120 }"></div>
+<span id="t" x-data x-text="'booted'"></span></body></html>`,
+        '/sw': page(`${pinned} data-sw="on"`),
     }
+    pages['/plugins-unchecked'] = pages['/plugins'].replace(pinned, `src="${a.base}/mnfst@${VERSION}/lib/manifest.min.js" data-version="${VERSION}" ${cdn}`)
     const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
     try {
         let r = await visit(browser, s.url('/pinned'))
@@ -140,8 +170,77 @@ async function main() {
         check('@latest without integrity: no integrity attributes, modules at @latest', r.tags.every((t) => !t.integrity && !t.crossorigin) && r.tags.filter((t) => t.src.includes('/mnfst@')).every((t) => t.src.includes('/mnfst@latest/')))
 
         r = await visit(browser, s.url('/pinned-latest-modules'))
-        check('integrity + data-version="latest": warns', r.logs.some((l) => (l.type === 'warning' || l.type === 'warn') && l.text.includes(`set data-version="${VERSION}"`)))
-        check('integrity + data-version="latest": loads unverified and boots', r.booted && r.tags.every((t) => !t.integrity))
+        check('integrity + data-version="latest": fails closed with an error naming the fix', !r.booted && r.tags.length === 0 && r.errors.some((e) => e.includes(`Set data-version="${VERSION}" or remove it. No modules were loaded.`)), r.errors.join(' | '))
+
+        r = await visit(browser, s.url('/pinned-warn'))
+        check('data-integrity="warn" + data-version="latest": warns, loads unchecked, boots', r.booted && r.tags.every((t) => !t.integrity) && r.logs.some((l) => /warn/.test(l.type) && l.text.includes('data-integrity="warn"')))
+
+        const plugins = async (url = '/plugins') => {
+            const ctx = await browser.createBrowserContext()
+            const tab = await ctx.newPage()
+            const logs = []
+            tab.on('console', (m) => { if (!(m.location()?.url || '').endsWith('/favicon.ico')) logs.push({ type: m.type(), text: m.text() }) })
+            await tab.goto(s.url(url), { waitUntil: 'load' })
+            await tab.waitForFunction(() => document.querySelector('#md h1') && document.querySelector('[class*="hljs-"]') && document.querySelector('#chart svg path'), { timeout: 15000 }).catch(() => { })
+            await new Promise((r) => setTimeout(r, 300))
+            // DOMPurify loads for .safe content; load it directly through the plugin's shared loader
+            const purify = await tab.evaluate(() => window.ManifestDOMPurify.load().then(() => 'ok', (e) => String(e)))
+            // Export's libraries as the plugin loads them: html2canvas-pro UMD (was ESM import()) and jsPDF
+            const exportLibs = await tab.evaluate(async () => {
+                try {
+                    await window.ManifestVendor.script('html2canvas-pro@2.6.4/dist/html2canvas-pro.min.js')
+                    await window.ManifestVendor.script('jspdf@2.5.2/dist/jspdf.umd.min.js')
+                    const canvas = await window.html2canvas(document.getElementById('md'))
+                    return canvas instanceof HTMLCanvasElement && typeof window.jspdf.jsPDF === 'function' ? 'ok' : 'bad'
+                } catch (e) { return String(e) }
+            })
+            const st = await tab.evaluate(() => ({
+                h1: !!document.querySelector('#md h1'),
+                code: !!document.querySelector('[class*="hljs-"]'),
+                chart: !!document.querySelector('#chart svg path'),
+                tampered: window.__tampered || [],
+                vendor: [...document.querySelectorAll('script[src]')].filter((t) => !/\/mnfst@|alpinejs@/.test(t.src)).map((t) => ({ src: t.src, integrity: t.getAttribute('integrity'), crossorigin: t.getAttribute('crossorigin') })),
+            }))
+            await ctx.close()
+            return { ...st, purify, exportLibs, logs, errors: logs.filter((l) => l.type === 'error').map((l) => l.text) }
+        }
+        let pr = await plugins()
+        const vnames = pr.vendor.map((v) => v.src.split('/npm/')[1])
+        check('plugins: markdown renders via verified marked; DOMPurify loads verified', pr.h1 && pr.purify === 'ok' && ['marked@15.0.12/marked.min.js', 'dompurify@3.4.10/dist/purify.min.js'].every((n) => vnames.includes(n)), vnames.join(', '))
+        check('plugins: code highlights elixir via the verified bundle + grammar', pr.code && vnames.includes('@highlightjs/cdn-assets@11.11.1/highlight.min.js') && vnames.includes('@highlightjs/cdn-assets@11.11.1/languages/elixir.min.js'))
+        check('plugins: chart renders via verified d3 UMD builds', pr.chart && vnames.includes('d3-scale@4.0.3/dist/d3-scale.min.js'))
+        check('plugins: every third-party tag carries integrity + crossorigin, no esm.run', pr.vendor.length >= 10 && pr.vendor.every((v) => /^sha384-/.test(v.integrity) && v.crossorigin === 'anonymous' && !v.src.includes('esm.run')), JSON.stringify(pr.vendor.filter((v) => !v.integrity)))
+        check('plugins: export libraries load verified and work (html2canvas-pro UMD, jsPDF)', pr.exportLibs === 'ok', pr.exportLibs)
+        check('plugins: no console errors', pr.errors.length === 0, pr.errors.join(' | '))
+
+        pr = await plugins('/plugins-unchecked')
+        check('plugins without checks: markdown, code (esm.run lean, exact pins) and chart still work', pr.h1 && pr.code && pr.chart && pr.exportLibs === 'ok' && pr.errors.length === 0, pr.errors.join(' | '))
+
+        a.tampered.add('marked.min.js'); b.tampered.add('marked.min.js')
+        pr = await plugins()
+        check('plugins: tampered marked on every mirror is refused, loudly', !pr.h1 && pr.tampered.length === 0 && pr.errors.some((e) => e.includes('marked@15.0.12/marked.min.js did not match its integrity hash on any CDN')), pr.errors.join(' | '))
+        check('plugins: the rest of the page still works', pr.chart && pr.code)
+        a.tampered.clear(); b.tampered.clear()
+
+        // Service worker (localhost + data-sw="on" forces registration)
+        const swVisit = async () => {
+            const ctx = await browser.createBrowserContext()
+            const tab = await ctx.newPage()
+            const logs = []
+            tab.on('console', (m) => logs.push({ type: m.type(), text: m.text() }))
+            await tab.goto(s.url('/sw'), { waitUntil: 'load' })
+            await tab.waitForFunction(() => window.Manifest && window.Manifest.sw && window.Manifest.sw.registered, { timeout: 20000 }).catch(() => { })
+            const registered = await tab.evaluate(() => !!(window.Manifest.sw && window.Manifest.sw.registered))
+            await ctx.close()
+            return { registered, logs }
+        }
+        swStub = `try { importScripts('${a.base}/mnfst@${VERSION}/lib/manifest.sw.min.js'); } catch (e) { }\nif (!self.__mnfstSw) self.addEventListener('activate', function () { self.registration.unregister(); });\n`
+        let sw = await swVisit()
+        check('sw: a stub importing its module cross-origin stays off, with a warning naming the fix', !sw.registered && sw.logs.some((l) => /warn/.test(l.type) && l.text.includes('copy lib/manifest.sw.min.js')), sw.logs.map((l) => l.text).filter((t) => t.includes('sw')).join(' | '))
+        swStub = fs.readFileSync(path.join(ROOT, 'lib/manifest.sw.min.js'), 'utf8')
+        sw = await swVisit()
+        check('sw: a worker served from this origin registers', sw.registered)
+        swStub = null
     } finally {
         await browser.close()
         await Promise.all([a.close(), b.close(), s.close()])

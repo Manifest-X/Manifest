@@ -68,7 +68,9 @@
         "test:e2e:sri": "node tests/e2e/loader-sri.e2e.mjs",
         "lint": "echo 'No linting configured'",
         "release:docs": "npm test && node scripts/release-bump.mjs packages/docs && cd packages/docs && npm publish --auth-type=web",
-        "release:check": "node scripts/release-check.mjs"
+        "release:check": "node scripts/release-check.mjs",
+        "vendor:lock": "node scripts/vendor-lock.mjs",
+        "vendor:check": "node scripts/vendor-lock.mjs --check"
     },
     "devDependencies": {
         "@rollup/plugin-commonjs": "^28.0.1",

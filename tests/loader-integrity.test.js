@@ -14,7 +14,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SRC = readFileSync(path.join(__dirname, '../src/scripts/manifest.js'), 'utf8')
 const V = '9.9.9'
 const sri = (s) => `sha384-${createHash('sha384').update(s).digest('base64')}`
-const MAP = { 'manifest.toasts.min.js': sri('toasts'), 'manifest.toasts.js': sri('toasts-full'), 'manifest.defer.min.js': sri('d'), 'manifest.bindings.min.js': sri('b'), 'manifest.tooltips.min.js': sri('t'), 'alpinejs@3.17.5/dist/cdn.min.js': sri('alpine') }
+const FAMILY = { 'pkg@1.0.0/languages/rust.min.js': sri('rust') }
+const FAMILY_JSON = JSON.stringify(FAMILY)
+const MAP = { 'manifest.toasts.min.js': sri('toasts'), 'manifest.toasts.js': sri('toasts-full'), 'manifest.defer.min.js': sri('d'), 'manifest.bindings.min.js': sri('b'), 'manifest.tooltips.min.js': sri('t'), 'alpinejs@3.17.5/dist/cdn.min.js': sri('alpine'), 'marked@15.0.12/marked.min.js': sri('marked'), 'manifest.vendor.integrity.json': sri(FAMILY_JSON) }
 const MAP_JSON = JSON.stringify(MAP)
 const stamped = (map = MAP_JSON) => SRC
     .replace("const LOADER_VERSION = '0.0.0-dev';", `const LOADER_VERSION = '${V}';`)
@@ -44,6 +46,11 @@ beforeEach(() => {
     fetchCalls = []
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
         fetchCalls.push({ url: String(url), opts })
+        if (String(url).endsWith('/manifest.vendor.integrity.json')) {
+            if (opts?.integrity && opts.integrity !== sri(FAMILY_JSON)) throw new TypeError('integrity mismatch')
+            return new Response(FAMILY_JSON, { status: 200 })
+        }
+        if (String(url).includes('/data.json')) return new Response('{"ok":1}', { status: 200 })
         if (String(url).endsWith('/manifest.modules.integrity.json')) {
             // The browser enforces opts.integrity; mirror that here
             if (opts?.integrity && opts.integrity !== sri(mapBody)) throw new TypeError('integrity mismatch')
@@ -101,13 +108,68 @@ describe('loader integrity', () => {
         expect(injected().some(t => t.hasAttribute('integrity') || t.hasAttribute('crossorigin'))).toBe(false)
     })
 
-    it('data-version other than the loader\'s own (e.g. latest) warns and loads unverified', async () => {
+    it('data-version other than the loader\'s own (e.g. latest) fails closed, naming the fix', async () => {
         boot({ integrity: 'sha384-page', 'data-version': 'latest' })
         await settle()
-        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`data-version="${V}"`))
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`Set data-version="${V}" or remove it. No modules were loaded. data-integrity="warn"`))
+        expect(console.error).toHaveBeenCalledTimes(1)
         expect(fetchCalls.some(c => c.url.endsWith('integrity.json'))).toBe(false)
+        expect(injected().length).toBe(0)
+    })
+
+    it('data-integrity="warn": a data-version mismatch warns and loads unchecked', async () => {
+        boot({ integrity: 'sha384-page', 'data-version': 'latest', 'data-integrity': 'warn' })
+        await settle()
+        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Loading unchecked (data-integrity="warn")'))
         expect(injected().length).toBe(4)
         expect(injected().some(t => t.hasAttribute('integrity'))).toBe(false)
+        expect(window.Manifest.integrity).toBe(false)
+    })
+
+    it('data-integrity "off"/"false" opt out; an empty value opts in (boolean attribute)', async () => {
+        for (const v of ['off', 'false', 'FALSE']) {
+            for (const k of ['__manifestLoaderStarted', '__manifestSwArmed', 'Alpine']) delete window[k]
+            fetchCalls = []
+            boot({ integrity: 'sha384-page', 'data-integrity': v })
+            await settle()
+            expect(fetchCalls.some(c => c.url.endsWith('integrity.json')), v).toBe(false)
+        }
+        for (const k of ['__manifestLoaderStarted', '__manifestSwArmed', 'Alpine']) delete window[k]
+        boot({ 'data-integrity': '' })
+        await settle()
+        expect(window.Manifest.integrity).toBe(true)
+        expect(fetchCalls.some(c => c.url.endsWith('manifest.modules.integrity.json'))).toBe(true)
+    })
+
+    it('loadPlugin at another version is refused with checks on', async () => {
+        boot({ integrity: 'sha384-page' })
+        await settle()
+        await expect(window.Manifest.loadPlugin('tooltips', '0.5.1')).rejects.toThrow(/cover this loader's own version/)
+        expect(document.querySelector('script[src*="mnfst@0.5.1"]')).toBe(null)
+    })
+
+    it('plugin third-party files: map hash with checks on, the plugin\'s own pin otherwise; families from the second map', async () => {
+        boot({ integrity: 'sha384-page' })
+        await settle()
+        expect(window.Manifest.integrity).toBe(true)
+        await window.Manifest.loadVendor('marked@15.0.12/marked.min.js', 'sha384-ignored')
+        expect(document.querySelector('script[src$="marked@15.0.12/marked.min.js"]').getAttribute('integrity')).toBe(MAP['marked@15.0.12/marked.min.js'])
+        await window.Manifest.loadVendor('pkg@1.0.0/languages/rust.min.js')
+        expect(document.querySelector('script[src$="languages/rust.min.js"]').getAttribute('integrity')).toBe(FAMILY['pkg@1.0.0/languages/rust.min.js'])
+        expect(fetchCalls.find(c => c.url.endsWith('manifest.vendor.integrity.json')).opts.integrity).toBe(sri(FAMILY_JSON))
+        await expect(window.Manifest.loadVendor('evil@1.0.0/x.min.js')).rejects.toThrow(/no integrity hash/)
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('evil@1.0.0/x.min.js has no integrity hash in this release. Not loaded.'))
+        await expect(window.Manifest.fetchVendor('evil@1.0.0/data.json')).rejects.toThrow(/no integrity hash/)
+    })
+
+    it('without checks, plugin third-party files keep their own pinned hash', async () => {
+        boot({ 'data-version': V })
+        await settle()
+        expect(window.Manifest.integrity).toBe(false)
+        await window.Manifest.loadVendor('marked@15.0.12/marked.min.js', 'sha384-pinned')
+        const t = document.querySelector('script[src$="marked@15.0.12/marked.min.js"]')
+        expect(t.getAttribute('integrity')).toBe('sha384-pinned')
+        expect(t.getAttribute('crossorigin')).toBe('anonymous')
     })
 
     it('a tampered map on every CDN fails closed: error naming the file, nothing injected', async () => {
@@ -119,21 +181,26 @@ describe('loader integrity', () => {
         expect(injected().length).toBe(0)
     })
 
-    it('a data-alpine version with no known hash warns and loads unverified; data-alpine-integrity checks it', async () => {
+    it('a data-alpine version with no known hash fails closed; data-alpine-integrity checks it; warn mode loads it unchecked', async () => {
         boot({ integrity: 'sha384-page', 'data-alpine': '3.15.0' })
         await settle()
-        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('alpinejs@3.15.0/dist/cdn.min.js; loading it unverified'))
-        expect(document.querySelector('script[src*="alpinejs@3.15.0"]').hasAttribute('integrity')).toBe(false)
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Add data-alpine-integrity="sha384-…" for it, or remove data-alpine to use the default. Alpine was not loaded.'))
+        expect(document.querySelector('script[src*="alpinejs@3.15.0"]')).toBe(null)
         for (const k of ['__manifestLoaderStarted', '__manifestSwArmed', 'Alpine']) delete window[k]
         boot({ integrity: 'sha384-page', 'data-alpine': '3.15.0', 'data-alpine-integrity': sri('a315') })
         await settle()
         expect(document.querySelector('script[src*="alpinejs@3.15.0"]').getAttribute('integrity')).toBe(sri('a315'))
+        for (const k of ['__manifestLoaderStarted', '__manifestSwArmed', 'Alpine']) delete window[k]
+        document.head.innerHTML = ''
+        boot({ integrity: 'sha384-page', 'data-alpine': '3.16.0', 'data-integrity': 'warn' })
+        await settle()
+        expect(document.querySelector('script[src*="alpinejs@3.16.0"]').hasAttribute('integrity')).toBe(false)
     })
 
     it('a module missing from the map is refused, loudly', async () => {
         boot({ integrity: 'sha384-page', 'data-plugins': 'toasts,router' })
         await settle()
-        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('manifest.router.min.js has no integrity hash'))
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('manifest.router.min.js has no integrity hash in this release. Not loaded.'))
         expect(document.querySelector('script[src*="manifest.router"]')).toBe(null)
         expect(document.querySelector('script[src*="manifest.toasts.min.js"]')).toBeTruthy()
     })

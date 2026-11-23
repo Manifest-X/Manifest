@@ -205,6 +205,15 @@ const CONFIG = {
             'data/appwrite/manifest.data.realtime.js',
             'auth/manifest.appwrite.auth.config.js',
             'manifest.appwrite.presences.js'
+        ],
+        'manifest.vendor.js': [
+            'manifest.markdown.js',
+            'manifest.svg.js',
+            'manifest.code.js',
+            'manifest.charts.js',
+            'manifest.export.js',
+            'data/core/manifest.data.loaders.js',
+            'payments/manifest.payments.adapters.js'
         ]
     },
 
@@ -916,22 +925,31 @@ async function minifyScripts() {
 async function minifyScript(f, minify) {
     minify = minify || (await import('terser')).minify;
     const src = fs.readFileSync(path.join(LIB_DIR, f), 'utf8');
-    const { code } = await minify(src);
-    fs.writeFileSync(path.join(LIB_DIR, f.replace(/\.js$/, '.min.js')), code + '\n');
+    const out = f.replace(/\.js$/, '.min.js');
+    const { code, map } = await minify({ [f]: src }, { sourceMap: { filename: out, url: `${out}.map` } });
+    fs.writeFileSync(path.join(LIB_DIR, out), code + '\n');
+    fs.writeFileSync(path.join(LIB_DIR, `${out}.map`), map + '\n');
 }
 
 function sri(body) {
     return `sha384-${createHash('sha384').update(body).digest('base64')}`;
 }
 
-// Third-party files the loader injects at its pinned defaults
-function pinnedThirdParty() {
+// Third-party files (scripts/vendor.lock.json, from npm tarballs via scripts/vendor-lock.mjs).
+// Large families (grammars, locale packs) go in a second map, fetched only when one is needed.
+const VENDOR_FAMILY = /\/(languages|langs)\//;
+function vendorHashes() {
+    const lock = JSON.parse(fs.readFileSync('scripts/vendor.lock.json', 'utf8'));
     const loaderSrc = fs.readFileSync('scripts/manifest.js', 'utf8');
     const alpine = loaderSrc.match(/const DEFAULT_ALPINE_VERSION = '([^']+)'/)?.[1];
     const alpineDir = path.join('..', 'node_modules', 'alpinejs');
     const installed = JSON.parse(fs.readFileSync(path.join(alpineDir, 'package.json'), 'utf8')).version;
     if (!alpine || installed !== alpine) throw new Error(`DEFAULT_ALPINE_VERSION ${alpine} != installed alpinejs ${installed}`);
-    return { [`alpinejs@${alpine}/dist/cdn.min.js`]: sri(fs.readFileSync(path.join(alpineDir, 'dist', 'cdn.min.js'))) };
+    const key = `alpinejs@${alpine}/dist/cdn.min.js`;
+    if (lock[key] !== sri(fs.readFileSync(path.join(alpineDir, 'dist', 'cdn.min.js')))) throw new Error(`${key} missing from vendor.lock.json or stale: run node scripts/vendor-lock.mjs`);
+    const core = {}, family = {};
+    for (const [k, v] of Object.entries(lock)) (VENDOR_FAMILY.test(k) ? family : core)[k] = v;
+    return { core, family };
 }
 
 // manifest.modules.integrity.json: what the loader injects; its hash and the version are stamped
@@ -943,7 +961,10 @@ async function emitIntegrity() {
     const scripts = fs.readdirSync(lib).filter(f => f.endsWith('.js') && f !== 'manifest.js' && f !== 'manifest.min.js').sort();
     const modules = {};
     for (const f of scripts) modules[f] = sri(read(f));
-    Object.assign(modules, pinnedThirdParty());
+    const vendor = vendorHashes();
+    const familyJson = JSON.stringify(vendor.family, null, 2) + '\n';
+    fs.writeFileSync(path.join(lib, 'manifest.vendor.integrity.json'), familyJson);
+    Object.assign(modules, vendor.core, { 'manifest.vendor.integrity.json': sri(familyJson) });
     const modulesJson = JSON.stringify(modules, null, 2) + '\n';
     fs.writeFileSync(path.join(lib, 'manifest.modules.integrity.json'), modulesJson);
 
@@ -957,9 +978,9 @@ async function emitIntegrity() {
     await minifyScript('manifest.js');
 
     const all = {};
-    for (const f of fs.readdirSync(lib).filter(f => /\.(js|css)$/.test(f) || f === 'manifest.modules.integrity.json').sort()) all[f] = sri(read(f));
+    for (const f of fs.readdirSync(lib).filter(f => /\.(js|css)$/.test(f) || /^manifest\.(modules|vendor)\.integrity\.json$/.test(f)).sort()) all[f] = sri(read(f));
     fs.writeFileSync(path.join(lib, 'manifest.integrity.json'), JSON.stringify(all, null, 2) + '\n');
-    console.log(`  ✓ Wrote manifest.modules.integrity.json + manifest.integrity.json`);
+    console.log(`  ✓ Wrote manifest.modules.integrity.json, manifest.vendor.integrity.json, manifest.integrity.json`);
     console.log(`\n  Loader integrity (for <script integrity=> on user HTML):`);
     console.log(`    manifest.js      ${all['manifest.js']}`);
     console.log(`    manifest.min.js  ${all['manifest.min.js']}\n`);
