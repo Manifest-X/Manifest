@@ -39,4 +39,25 @@ describe('inline <style> theme vars', () => {
             expect(css).toContain('md\\:bg-brand')
         })
     }
+
+    it('skips Tailwind runtime output and the baked utilities sheet as theme sources', async () => {
+        const compiler = await boot({
+            headHtml: [
+                '<style data-mnfst-utilities>.baked-card{border:1px solid red}</style>',
+                '<style>/*! tailwindcss v4.1.0 | MIT License */ .tw-card{color:red}</style>',
+                '<style>:root{--color-brand: red}</style>'
+            ].join(''),
+            bodyHtml: '<div class="md:bg-brand md:baked-card md:tw-card"></div>'
+        })
+        const theme = await compiler.fetchThemeContent()
+        expect(theme).toContain('--color-brand')
+        expect(theme).not.toContain('baked-card')
+        expect(theme).not.toContain('tailwindcss')
+        expect(compiler.customUtilities.has('baked-card')).toBe(false)
+        expect(compiler.customUtilities.has('tw-card')).toBe(false)
+        const css = compiler.styleElement.textContent
+        expect(css).toContain('md\\:bg-brand')
+        expect(css).not.toContain('md\\:baked-card')
+        expect(css).not.toContain('md\\:tw-card')
+    })
 })
