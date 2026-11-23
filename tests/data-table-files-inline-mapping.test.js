@@ -43,6 +43,8 @@ let rowReads = 0
 const inBucket = (bucket) => { bucketCalls++; if (bucket !== BUCKET_ID) wrongBuckets.push(bucket) }
 // Files each user can list
 let visible = { u1: ['a', 'b', 'c'], u2: ['a', 'b'] }
+// Per-user listFiles delay (ms), to land a previous user's read after the switch
+let listDelay = {}
 
 afterEach(() => {
     iso?.release()
@@ -52,6 +54,7 @@ afterEach(() => {
     bucketCalls = 0
     rowReads = 0
     visible = { u1: ['a', 'b', 'c'], u2: ['a', 'b'] }
+    listDelay = {}
     expect(seen).toEqual([])
 })
 
@@ -66,7 +69,13 @@ async function load(rowCount = 1) {
         listBucketFiles: async (bucket) => (inBucket(bucket), files()),
         getTableRow: async (db, table, id) => (rowReads++, JSON.parse(JSON.stringify(rows.find(r => r.$id === id)))),
         _getAppwriteDataServices: async () => ({ storage: {
-            listFiles: async (bucket) => (inBucket(bucket), { files: files() }),
+            listFiles: async (bucket) => {
+                inBucket(bucket)
+                const listed = files()
+                const wait = listDelay[Alpine.store('auth').user?.$id]
+                if (wait) await settle(wait)
+                return { files: listed }
+            },
             getFile: async () => { throw Object.assign(new Error('not found'), { code: 404 }) },
         } }),
     }
@@ -168,5 +177,56 @@ describe('inline mapping identity switch', () => {
         expect(ids(row.$files)).toEqual(['a'])
         const direct = filesOf('projects')('p1')
         expect(ids(direct)).toEqual(['a'])
+    })
+
+    const switchUser = () => {
+        Alpine.store('auth').user = { $id: 'u2' }
+        window.dispatchEvent(new CustomEvent('manifest:auth:login'))
+    }
+    // Sample the array until it settles, recording every id it ever showed
+    const watch = async (arr, n) => {
+        const seen = new Set()
+        for (let i = 0; i < 60; i++) {
+            ids(arr).forEach(id => seen.add(id))
+            if (arr.length === n && !arr.$loading) break
+            await settle(10)
+        }
+        ids(arr).forEach(id => seen.add(id))
+        return seen
+    }
+
+    it('$files(getter) drops the previous user\'s files', async () => {
+        await load()
+        const linked = filesOf('projects')(() => 'p1')
+        await until(linked, 2)
+        expect(ids(linked)).toEqual(['a', 'c'])
+
+        switchUser()
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(ids(linked)).not.toContain('c')
+
+        const seen = await watch(linked, 1)
+        expect(seen.has('c')).toBe(false)
+        expect(ids(linked)).toEqual(['a'])
+
+        const fresh = filesOf('projects')(() => 'p1')
+        expect(ids(fresh)).not.toContain('c')
+        await until(fresh, 1)
+        expect(ids(fresh)).toEqual(['a'])
+    })
+
+    it('$files(getter) discards a previous user\'s read that lands after the switch', async () => {
+        listDelay = { u1: 150 }
+        await load()
+        const linked = filesOf('projects')(() => 'p1')
+        linked.length
+        await settle(20)
+        switchUser()
+        const seen = await watch(linked, 1)
+        await settle(200)
+        ids(linked).forEach(id => seen.add(id))
+        expect(seen.has('c')).toBe(false)
+        expect(ids(linked)).toEqual(['a'])
     })
 })

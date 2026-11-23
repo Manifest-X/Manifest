@@ -6905,6 +6905,9 @@ function createReactiveFileArrayFromGetter(tableName, entryIdGetter, bucketName,
                 entryId = null;
             }
 
+            // Identity ended: the manager was dropped, build one for the new identity
+            if (currentManager?.stale()) currentEntryId = undefined;
+
             // If entryId changed or manager doesn't exist, update manager
             if (entryId !== currentEntryId) {
                 currentEntryId = entryId;
@@ -7085,14 +7088,23 @@ function getDefaultBucketForTable(tableName) {
     return null;
 }
 
+// Identity end: drop every manager read under the previous identity
+['manifest:auth:logout', 'manifest:auth:session-cleared', 'manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:initialized']
+    .forEach(type => window.addEventListener(type, () => queueMicrotask(() => {
+        for (const manager of [...reactiveFileManagers.values()]) if (manager.stale()) manager.destroy();
+    })));
+
 // Create reactive file array manager for a table/entry/bucket combination
 function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
     const key = `${tableName}:${entryId}:${bucketName}`;
 
-    if (reactiveFileManagers.has(key)) {
-        const existing = reactiveFileManagers.get(key);
-        return existing;
-    }
+    const existing = reactiveFileManagers.get(key);
+    if (existing && !existing.stale()) return existing;
+    existing?.destroy();
+
+    // Bound to the identity (epoch + table generation) it was created under
+    const isCurrent = identityGuard(tableName);
+    let destroyed = false;
 
     const files = typeof Alpine !== 'undefined' && Alpine.reactive
         ? Alpine.reactive([])
@@ -7164,8 +7176,10 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
                 tableName,
                 entryId,
                 storageConfig.bucketId,
-                columnName || storageConfig.column
+                columnName || storageConfig.column,
+                { isCurrent }
             );
+            if (destroyed || !isCurrent()) return;
 
             // Update array in place (maintains reactivity)
             files.length = 0;
@@ -7185,7 +7199,7 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
             error = err.message || String(err);
         } finally {
             loading = false;
-            if (reloadQueued) {
+            if (reloadQueued && !destroyed) {
                 reloadQueued = false;
                 loadFiles();
             }
@@ -7262,6 +7276,10 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
 
         const unwatch = Alpine.effect(() => {
             const rows = tableRows();
+            if (!isCurrent()) {
+                queueMicrotask(() => manager.destroy());
+                return;
+            }
             if (Array.isArray(rows)) {
                 const entry = rows.find(item => item.$id === entryId);
                 if (entry) {
@@ -7323,10 +7341,16 @@ function createReactiveFileManager(tableName, entryId, bucketName, columnName) {
         loading: () => loading,
         error: () => error,
         reload: loadFiles,
+        stale: () => destroyed || !isCurrent(),
         destroy: () => {
+            if (destroyed) return;
+            destroyed = true;
             reloadQueued = false;
+            error = null;
             unsubscribeCallbacks.forEach(cb => cb());
-            reactiveFileManagers.delete(key);
+            unsubscribeCallbacks = [];
+            if (reactiveFileManagers.get(key) === manager) reactiveFileManagers.delete(key);
+            files.length = 0;
         }
     };
 
