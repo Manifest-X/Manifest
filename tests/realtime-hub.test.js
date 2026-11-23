@@ -545,6 +545,7 @@ describe('presence write and flush budget (Playcom many-tab audit)', () => {
         await settle(1300)
         expect(stats.upserts.length).toBe(2)
         presence.stop()
+        iso.release() // second boot below: release the first plugin's listeners and timers
         const b = await boot({ auth: authed() })
         await b.presence.start({ scope: 'global', heartbeatMs: 60 * 60 * 1000 })
         await settle(100)
@@ -600,5 +601,79 @@ describe('presence before start()', () => {
             await presence.set('online')
             expect(stats.upserts.at(-1).status).toBe('online')
         } finally { delete document.visibilityState }
+    })
+})
+
+describe('presence review fixes (9bd5d3d)', () => {
+    it('subscribes before listing; a live event during the list beats the stale row', async () => {
+        const { stats, rt, presence, records } = await boot({ presenceRows: [P('u2', ['read("users")'])], auth: authed() })
+        const proto = window.Appwrite.Presences.prototype
+        const orig = proto.list
+        let subscribedFirst = null
+        proto.list = async function () {
+            subscribedFirst = stats.subscribes.includes('presences')
+            const res = await orig.call(this)
+            // u2 leaves while the list response is in flight
+            rt().fire('presences', presenceEvt('delete', P('u2', ['read("users")'])))
+            return res
+        }
+        await presence.start({ scope: 'global' })
+        await settle(160)
+        expect(subscribedFirst).toBe(true)
+        expect(Object.keys(records())).not.toContain('u2')
+    })
+
+    it('expired peers drop locally without a delete event', async () => {
+        const soon = new Date(Date.now() + 300).toISOString()
+        const { presence, records } = await boot({ presenceRows: [{ ...P('u3', ['read("users")']), expiresAt: soon }], auth: authed() })
+        await presence.start({ scope: 'global' })
+        await settle(100)
+        expect(Object.keys(records())).toContain('u3')
+        await settle(400)
+        expect(Object.keys(records())).not.toContain('u3')
+    })
+
+    it('stop() clears the roster and own status', async () => {
+        const { presence, records } = await boot({ presenceRows: [P('u2', ['read("users")'])], auth: authed() })
+        await presence.start({ scope: 'global' })
+        await settle()
+        expect(Object.keys(records()).length).toBe(2)
+        presence.stop()
+        expect(records()).toEqual({})
+        expect(Alpine.store('presence').me).toBe(null)
+    })
+
+    it('a clear() during an in-flight write ends deleted, not re-written', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        const proto = window.Appwrite.Presences.prototype
+        const orig = proto.upsert
+        proto.upsert = async function (args) { await settle(80); return orig.call(this, args) }
+        const pending = presence.set('busy')
+        await settle(10)
+        await presence.clear()
+        await pending
+        expect(stats.calls.at(-1)).toBe('delete')
+        proto.upsert = orig
+    })
+
+    it('auth before-logout: the record is deleted (awaited) before the session goes', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        const pending = []
+        window.dispatchEvent(new window.CustomEvent('manifest:auth:before-logout', { detail: { waitUntil: p => pending.push(p) } }))
+        expect(pending.length).toBe(1)
+        await Promise.all(pending)
+        expect(stats.deletes.length).toBe(1)
+        expect(Alpine.store('presence').me).toBe(null)
+    })
+
+    it('a different user after logout (guest restore) stops tracking for the old one', async () => {
+        const { presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        Alpine.store('auth').user = { $id: 'guest2', name: '' }
+        await settle()
+        expect(Alpine.store('presence').ready).toBe(false)
+        expect(presence.leader).toBe(false)
     })
 })

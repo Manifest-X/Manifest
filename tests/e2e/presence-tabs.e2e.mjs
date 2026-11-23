@@ -207,7 +207,24 @@ if (!BASELINE) {
         check('closing the leader re-elects within 1 s', closeMs >= 0 && closeMs < 1000, closeMs)
         await sleep(1500)
         check('handover deletes nothing (no offline flicker)', !log.slice(mark).some(e => e.op === 'delete') && record?.status === 'online', log.slice(mark))
-        check('handover with unchanged state writes nothing', writes(mark).length === 0, writes(mark))
+        check('the new leader rewrites once (the row may have been deleted)', writes(mark).length === 1 && writes(mark)[0].status === 'online', writes(mark))
+
+        // A predecessor deleted the row (thought it was alone): the promoted tab restores it
+        {
+            const [cur] = await leaders(pages)
+            record = null
+            const m = log.length
+            await pages[cur].close()
+            delete pages[cur]
+            const back = await waitFor(() => record?.status === 'online', 2000)
+            check('promoted leader rewrites a deleted row within 1 s', back >= 0 && back < 1000, { back, log: log.slice(m) })
+            const p = await browser.newPage()
+            p.on('pageerror', e => errors.push(`D: ${e.message}`))
+            await p.goto(`${BASE}/tab?id=D`, { waitUntil: 'load' })
+            await p.evaluate(() => window.ManifestPresence.start({ keepAliveMs: 60000 }))
+            pages.D = p
+            await sleep(300)
+        }
 
         const [second] = await leaders(pages)
         const cdp = await pages[second].createCDPSession()
@@ -223,6 +240,54 @@ if (!BASELINE) {
         for (const p of Object.values(pages)) await p.close()
         await waitFor(() => record === null, 2000)
         check('closing the last tab deletes the record', record === null, record)
+        await browser.close()
+    }
+
+    // Follower clear(): deleted from the calling tab before it resolves; nobody rewrites
+    {
+        reset()
+        const browser = await puppeteer.launch({ headless: true })
+        const pages = await openTabs(browser, ['A', 'B'], { keepAliveMs: 60000 })
+        await sleep(300)
+        const m = log.length
+        const resolvedAfterDelete = await pages.B.evaluate(async () => { await window.ManifestPresence.clear(); return true })
+        const del = log.slice(m).filter(e => e.op === 'delete')
+        check('follower clear() resolves after its own delete', resolvedAfterDelete && del.length >= 1 && del[0].tab === 'B' && record === null, log.slice(m))
+        await sleep(1500)
+        check('the leader does not rewrite a cleared row', record === null && writes(m).length === 0, log.slice(m))
+        const mes = await Promise.all(Object.values(pages).map(p => p.evaluate(() => window.Alpine.store('presence').me)))
+        check('cleared in every tab', mes.every(x => x === null), mes)
+        await browser.close()
+    }
+
+    // Suspended leader (Safari has no freeze event): followers take over
+    {
+        reset()
+        const browser = await puppeteer.launch({ headless: true })
+        const pages = await openTabs(browser, ['A', 'B', 'C'], { keepAliveMs: 2000 })
+        await sleep(300)
+        const cdp = await pages.A.createCDPSession()
+        await cdp.send('Debugger.enable')
+        await cdp.send('Debugger.pause')
+        const m = log.length
+        await pages.B.evaluate(() => window.ManifestPresence.set('busy'))
+        const busyMs = await waitFor(() => record?.status === 'busy', 5000)
+        const w = writes(m).filter(e => e.status === 'busy')
+        check('set() against a suspended leader lands within 3 s via takeover', busyMs >= 0 && busyMs < 3000 && w.length >= 1 && w[0].tab !== 'A', { busyMs, w })
+        const rest = { B: pages.B, C: pages.C }
+        check('one leader among the live tabs', (await leaders(rest)).length === 1, await leaders(rest))
+        await cdp.send('Debugger.resume')
+        await sleep(800)
+        check('the resumed tab steps down: still one leader', (await leaders(pages)).length === 1, await leaders(pages))
+        // Idle watchdog: suspend the current leader, nobody calls set()
+        const [cur] = await leaders(pages)
+        const cdp2 = await pages[cur].createCDPSession()
+        await cdp2.send('Debugger.enable')
+        await cdp2.send('Debugger.pause')
+        const others = Object.fromEntries(Object.entries(pages).filter(([k]) => k !== cur))
+        const idleMs = await waitFor(async () => (await leaders(others)).length === 1, 6000, 100)
+        check('watchdog takes over from an idle suspended leader within keep-alive + grace', idleMs >= 0 && idleMs < 4500, idleMs)
+        await cdp2.send('Debugger.resume')
         await browser.close()
     }
 
