@@ -671,16 +671,73 @@ function stripTailwindPreflightConflicts(css) {
     .replace(/(\s*)hr\s*\{\s*height:\s*0;\s*color:\s*inherit;\s*border-top-width:\s*1px;?\s*\}/g, '');
 }
 
+// Mirror of injectTailwindVariants() in manifest.utilities.init.js (parity-tested).
+const TAILWIND_CUSTOM_VARIANTS = [
+  '@custom-variant touch (@media (pointer: coarse));',
+  '@custom-variant cursor (@media (pointer: fine) and (hover: hover));',
+  '@custom-variant pointer (@media (any-pointer: fine));',
+  '@custom-variant mac (&:where([data-os="macos"] *));',
+  '@custom-variant windows (&:where([data-os="windows"] *));',
+  '@custom-variant linux (&:where([data-os="linux"] *));',
+  '@custom-variant ios (&:where([data-os="ios"] *));',
+  '@custom-variant android (&:where([data-os="android"] *));',
+  '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));',
+  '@custom-variant online (&:where([data-online="true"] *));',
+  '@custom-variant offline (&:where([data-online="false"] *));',
+  '@custom-variant standalone (&:where([data-standalone] *));',
+  '@custom-variant native (&:where([data-native] *));',
+  '@custom-variant web (&:where(html:not([data-native]) *));',
+];
+const TAILWIND_DARK_VARIANT = '@custom-variant dark (&:where(.dark, .dark *));';
+const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
+const stripCssComments = (css) => String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+/** Author `@custom-variant dark` declarations from `<style type="text/tailwindcss">` blocks. */
+function authorTailwindDarkVariants(html) {
+  const out = [];
+  const styleRe = /<style\b[^>]*type\s*=\s*(["'])text\/tailwindcss\1[^>]*>([\s\S]*?)<\/style>/gi;
+  for (const m of String(html || '').matchAll(styleRe)) {
+    const css = stripCssComments(m[2]);
+    const declRe = /@custom-variant\s+dark[\s({]/g;
+    let d;
+    while ((d = declRe.exec(css))) {
+      let i = d.index;
+      let depth = 0;
+      let end = -1;
+      for (; i < css.length; i++) {
+        const c = css[i];
+        if (c === '(' || c === '{') depth++;
+        else if (c === ')' || c === '}') {
+          depth--;
+          if (depth === 0 && c === '}') { end = i + 1; break; }
+        } else if (c === ';' && depth === 0) { end = i + 1; break; }
+      }
+      if (end > 0) out.push(css.slice(d.index, end));
+      declRe.lastIndex = end > 0 ? end : css.length;
+    }
+  }
+  return out;
+}
+
+/** CLI entry CSS: Tailwind (or the author's input) + Manifest's variants; an author's dark wins. */
+function buildTailwindCliInput({ importPath = 'tailwindcss', inputCss = '', indexHtml = '' } = {}) {
+  const authorDark = authorTailwindDarkVariants(indexHtml);
+  const lines = [`@import ${JSON.stringify(importPath)};`, ...TAILWIND_CUSTOM_VARIANTS];
+  if (authorDark.length) lines.push(...authorDark);
+  else if (!AUTHOR_DARK_RE.test(stripCssComments(inputCss))) lines.push(TAILWIND_DARK_VARIANT);
+  return lines.join('\n') + '\n';
+}
+
 /**
  * Build a static Tailwind stylesheet via @tailwindcss/cli (v4+), scanning project sources.
  * Only runs when the project uses data-tailwind on the manifest script tag (auto-detected).
  * Set manifest.prerender.tailwindInput to a custom CSS entry file if needed.
  */
-function runTailwindCliForPrerender(rootDir, outputDir, pre) {
+function runTailwindCliForPrerender(rootDir, outputDir, pre, roots = globalModuleRoots) {
   if (!indexHtmlUsesTailwind(rootDir)) return false;
 
   const outCss = join(outputDir, 'prerender.tailwind.css');
-  const tailwind = locateTailwind(rootDir);
+  const tailwind = locateTailwind(rootDir, roots);
   if (!tailwind) {
     const proceed = promptContinueWithRuntimeTailwind(rootDir);
     if (!proceed) {
@@ -689,17 +746,18 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
     process.stdout.write('prerender: continuing with runtime data-tailwind behavior.\n');
     return false;
   }
-  let inputPath = null;
-  let createdTempInput = false;
+  let userPath = null;
   const userInput = pre?.tailwindInput;
   if (typeof userInput === 'string' && userInput.trim()) {
-    inputPath = resolve(rootDir, userInput.trim());
+    userPath = resolve(rootDir, userInput.trim());
+    if (!existsSync(userPath)) userPath = null;
   }
-  if (!inputPath || !existsSync(inputPath)) {
-    inputPath = join(rootDir, '.mnfst-prerender-tailwind-input.css');
-    writeFileSync(inputPath, '@import "tailwindcss";\n', 'utf8');
-    createdTempInput = true;
-  }
+  const inputPath = join(rootDir, `.mnfst-prerender-tailwind-input.${process.pid}-${Math.random().toString(36).slice(2, 8)}.css`);
+  writeFileSync(inputPath, buildTailwindCliInput({
+    importPath: userPath ? './' + relative(rootDir, userPath).split(sep).join('/') : 'tailwindcss',
+    inputCss: userPath ? readFileSync(userPath, 'utf8') : '',
+    indexHtml: readFileSync(join(rootDir, 'index.html'), 'utf8'),
+  }), 'utf8');
 
   const outputBasename = basename(outputDir);
   const contentGlobs = [
@@ -721,13 +779,15 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre) {
 
   process.stdout.write('prerender: compiling Tailwind CSS (this may take a minute)...\n');
   const run = tailwindCliCommand(tailwind, args);
-  const r = spawnSync(run.cmd, run.args, {
-    cwd: rootDir,
-    encoding: 'utf8',
-    env: run.env,
-    shell: process.platform === 'win32' && run.cmd === 'npx',
-  });
-  if (createdTempInput) {
+  let r;
+  try {
+    r = spawnSync(run.cmd, run.args, {
+      cwd: rootDir,
+      encoding: 'utf8',
+      env: run.env,
+      shell: process.platform === 'win32' && run.cmd === 'npx',
+    });
+  } finally {
     try {
       unlinkSync(inputPath);
     } catch {
@@ -3627,6 +3687,11 @@ if (_isDirectEntry) {
 // Exports for the CLI bin script and for unit testing.
 export {
   stripTailwindPreflightConflicts,
+  TAILWIND_CUSTOM_VARIANTS,
+  TAILWIND_DARK_VARIANT,
+  authorTailwindDarkVariants,
+  buildTailwindCliInput,
+  runTailwindCliForPrerender,
   readGlobalModuleRoots,
   resolveDependency,
   importProjectOnly,
