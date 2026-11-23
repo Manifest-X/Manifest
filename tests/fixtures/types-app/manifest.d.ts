@@ -248,7 +248,7 @@ export type ManifestData = ManifestSources & {
     $wipe(target?: string | { all: true }): Promise<void>;
 };
 
-/** `$auth` from the Appwrite auth plugin. Loose by design — auth API is broad. */
+/** `$auth` from the Appwrite auth module. Loose by design — auth API is broad. */
 export interface ManifestAuth {
     readonly current: { $id: string; email?: string; name?: string;[k: string]: unknown } | null;
     readonly isAuthenticated: boolean;
@@ -263,7 +263,7 @@ export interface ManifestAuth {
     [extra: string]: unknown;
 }
 
-/** `$locale` from the localization plugin. */
+/** `$locale` from the localization module. */
 export interface ManifestLocale {
     readonly current: string;
     readonly available: string[];
@@ -277,7 +277,7 @@ export interface ManifestToastVariant {
     fixed(message: string, opts?: Record<string, unknown>): void;
 }
 
-/** `$toast` from the toasts plugin. Typed variants: `$toast.brand(...)`, `$toast.positive.dismiss(...)`. */
+/** `$toast` from the toasts module. Typed variants: `$toast.brand(...)`, `$toast.positive.dismiss(...)`. */
 export interface ManifestToast extends ManifestToastVariant {
     brand: ManifestToastVariant;
     accent: ManifestToastVariant;
@@ -285,12 +285,12 @@ export interface ManifestToast extends ManifestToastVariant {
     negative: ManifestToastVariant;
 }
 
-/** `$color` from the color plugin — the current light/dark/system color mode. */
+/** `$color` from the color module — the current light/dark/system color mode. */
 export interface ManifestColor {
     current: 'light' | 'dark' | 'system' | string;
 }
 
-/** `$colorpicker` from the colorpicker plugin. Loose by design. */
+/** `$colorpicker` from the colorpicker module. Loose by design. */
 export interface ManifestColorpicker {
     (id?: string): Record<string, unknown>;
     [extra: string]: unknown;
@@ -310,7 +310,7 @@ export interface ManifestUrlParam {
     clear(): void;
 }
 
-/** `$url` from the url-parameters plugin: `$url.tab.value`, `$url.tag.add('x')`, ... */
+/** `$url` from the url-parameters module: `$url.tab.value`, `$url.tag.add('x')`, ... */
 export interface ManifestUrl {
     [param: string]: ManifestUrlParam;
 }
@@ -327,7 +327,7 @@ export type ManifestModify = (attr: string) => string | undefined;
 /** `$try(fn)` — run a callback and swallow any thrown error, returning undefined on failure. */
 export type ManifestTry = <T>(fn: () => T | Promise<T>, errorVar?: string) => Promise<T | undefined>;
 
-/** `$pay` from the payments plugin: callable to start checkout, plus portal/state helpers. */
+/** `$pay` from the payments module: callable to start checkout, plus portal/state helpers. */
 export interface ManifestPay {
     (ref: string, payload?: Record<string, unknown>): Promise<unknown>;
     portal(ref?: string, payload?: Record<string, unknown>): Promise<unknown>;
@@ -347,7 +347,7 @@ export interface ManifestChatHandle {
     [extra: string]: unknown;
 }
 
-/** `$chat` from the chat plugin — adapter-based conversation projection. */
+/** `$chat` from the chat module — adapter-based conversation projection. */
 export interface ManifestChat {
     open(conversationId: string, opts?: Record<string, unknown>): ManifestChatHandle;
     merge(handles: ManifestChatHandle[], opts?: Record<string, unknown>): ManifestChatHandle;
@@ -364,12 +364,12 @@ export interface ManifestStatusEntry {
     [extra: string]: unknown;
 }
 
-/** `$status` from the status plugin: `$status.api.state`, iterable, stringifies to the overall state. */
+/** `$status` from the status module: `$status.api.state`, iterable, stringifies to the overall state. */
 export interface ManifestStatus extends Iterable<ManifestStatusEntry> {
     readonly [name: string]: any;
 }
 
-/** `$presence` from the Appwrite presences plugin. */
+/** `$presence` from the Appwrite presences module. */
 export interface ManifestPresence {
     start(opts?: Record<string, unknown>): Promise<unknown>;
     stop(): void;
@@ -384,7 +384,7 @@ export interface ManifestPresence {
     readonly me: unknown;
 }
 
-/** `$date(id?)` from the datepicker plugin — the picker API for the nearest (or given) instance. */
+/** `$date(id?)` from the datepicker module — the picker API for the nearest (or given) instance. */
 export type ManifestDate = (id?: string) => Record<string, unknown>;
 
 /** `x-chart` config object (standalone; annotate config objects with it). */
@@ -416,10 +416,10 @@ export interface ManifestChartConfig {
     [key: string]: unknown;
 }
 
-/** `$chart(id?)` from the charts plugin — the chart API for the nearest (or given) instance. */
+/** `$chart(id?)` from the charts module — the chart API for the nearest (or given) instance. */
 export type ManifestChart = (id?: string) => Record<string, unknown>;
 
-/** `$export(opts)` from the export plugin — export the page or a data source (pdf/csv/json/...). */
+/** `$export(opts)` from the export module — export the page or a data source (pdf/csv/json/...). */
 export type ManifestExport = (opts?: {
     format?: string;
     filename?: string;
@@ -428,7 +428,7 @@ export type ManifestExport = (opts?: {
     [extra: string]: unknown;
 }) => Promise<unknown>;
 
-/** `$import(opts)` from the import plugin — pick a local file and parse it (json/csv). Resolves the parsed data, or null when the dialog is dismissed. */
+/** `$import(opts)` from the import module — pick a local file and parse it (json/csv). Resolves the parsed data, or null when the dialog is dismissed. */
 export type ManifestImport = (opts?: {
     format?: 'json' | 'csv';
     /** Data source to replace with the parsed content. */
@@ -438,7 +438,7 @@ export type ManifestImport = (opts?: {
     [extra: string]: unknown;
 }) => Promise<unknown>;
 
-/** `$device` from the utilities plugin (enriched by the device plugin when present). */
+/** `$device` from the utilities module (enriched by the device module when present). */
 export interface ManifestDevice {
     readonly os: string;
     readonly touch: boolean;
@@ -448,11 +448,11 @@ export interface ManifestDevice {
     readonly platform: string;
 }
 
-/** `$share` from the device plugin — native sheet, web share, or clipboard fallback. */
+/** `$share` from the device module — native sheet, web share, or clipboard fallback. */
 export type ManifestShare = (opts?: { title?: string; text?: string; url?: string }) =>
     Promise<{ shared: boolean; method: string; cancelled?: boolean }>;
 
-/** `$push` from the device plugin — push/notification permissions and token. */
+/** `$push` from the device module — push/notification permissions and token. */
 export interface ManifestPush {
     /** Ask for permission, on your schedule (never prompted on load). */
     request(): Promise<'granted' | 'denied' | 'prompt' | 'unsupported' | string>;
@@ -466,7 +466,7 @@ export interface ManifestPush {
     [extra: string]: unknown;
 }
 
-/** `$secure` from the device plugin — Keychain/Keystore via a native plugin; unencrypted localStorage on the web only; rejects on native without a plugin. */
+/** `$secure` from the device module — Keychain/Keystore via a native plugin; unencrypted localStorage on the web only; rejects on native without a module. */
 export interface ManifestSecure {
     get(key: string): Promise<string | null>;
     set(key: string, value: string): Promise<void>;
@@ -476,7 +476,7 @@ export interface ManifestSecure {
     use(adapter: unknown): void;
 }
 
-/** `$links` from the device plugin — deep/universal link handling. */
+/** `$links` from the device module — deep/universal link handling. */
 export interface ManifestLinks {
     /** Take over an inbound link: link.url is the full URL, link.path the route it maps to. */
     on(handler: (link: { url: string; path: string }) => void): void;
@@ -484,13 +484,13 @@ export interface ManifestLinks {
     readonly last: string | null;
 }
 
-/** `$app` from the device plugin — foreground/background state. */
+/** `$app` from the device module — foreground/background state. */
 export interface ManifestApp {
     readonly active: boolean;
     onChange(handler: (active: boolean) => void): void;
 }
 
-/** `$haptics` from the device plugin — haptic feedback with web vibration fallback. */
+/** `$haptics` from the device module — haptic feedback with web vibration fallback. */
 export interface ManifestHaptics {
     impact(style?: 'LIGHT' | 'MEDIUM' | 'HEAVY' | string): Promise<unknown>;
     notification(type?: 'SUCCESS' | 'WARNING' | 'ERROR' | string): Promise<unknown>;
@@ -499,7 +499,7 @@ export interface ManifestHaptics {
     [extra: string]: unknown;
 }
 
-/** `$biometric` from the device plugin. */
+/** `$biometric` from the device module. */
 export interface ManifestBiometric {
     available(): Promise<boolean>;
     verify(opts?: {
@@ -512,7 +512,7 @@ export interface ManifestBiometric {
     }): Promise<{ verified: boolean; error?: string; code?: string }>;
 }
 
-/** `$camera` from the device plugin. */
+/** `$camera` from the device module. */
 export interface ManifestCamera {
     photo(opts?: Record<string, unknown>): Promise<unknown>;
     pick(opts?: Record<string, unknown>): Promise<unknown>;
@@ -534,7 +534,7 @@ export interface ManifestEditClasses {
     list(el?: Element): string[];
 }
 
-/** Element editor (`x-edit`) — opt-in plugin. Modifiers: `.text` `.move` `.size`
+/** Element editor (`x-edit`) — opt-in module. Modifiers: `.text` `.move` `.size`
  *  `.data` (default text + move), `.lock[.action]`, `.gated`, `.persist`, `.bare`,
  *  `.theme`, `.cssvar`. Every edit is logged; actions default to `$edit.target`. */
 export interface ManifestEdit {
@@ -857,62 +857,66 @@ declare global {
      * Recomputed once per flush when a tracked dependency changes; reads as a plain property with a stable identity in between.
      */
     const $computed: <T>(fn: (this: any) => T) => T;
-    /** Appwrite auth plugin (present when the plugin is loaded). */
+    /** Appwrite auth module (present when the module is loaded). */
     const $auth: ManifestAuth;
-    /** Localization plugin. */
+    /** Localization module. */
     const $locale: ManifestLocale;
-    /** Toasts plugin. */
+    /** Toasts module. */
     const $toast: ManifestToast;
-    /** Color-mode plugin (`$color.current = 'dark'`). */
+    /** Color-mode module (`$color.current = 'dark'`). */
     const $color: ManifestColor;
-    /** Colorpicker plugin. */
+    /** Colorpicker module. */
     const $colorpicker: ManifestColorpicker;
-    /** URL parameters plugin (`$url.tab.value`). */
+    /** URL parameters module (`$url.tab.value`). */
     const $url: ManifestUrl;
-    /** Payments plugin. */
+    /** Payments module. */
     const $pay: ManifestPay;
-    /** Chat plugin. */
+    /** Chat module. */
     const $chat: ManifestChat;
-    /** Status plugin. */
+    /** Status module. */
     const $status: ManifestStatus;
-    /** Appwrite presences plugin. */
+    /** Appwrite presences module. */
     const $presence: ManifestPresence;
-    /** Datepicker plugin. */
+    /** Datepicker module. */
     const $date: ManifestDate;
-    /** Charts plugin. */
+    /** Charts module. */
     const $chart: ManifestChart;
-    /** Export plugin. */
+    /** Export module. */
     const $export: ManifestExport;
-    /** Import plugin. */
+    /** Import module. */
     const $import: ManifestImport;
-    /** Element editor (edit plugin; opt-in). */
+    /** Element editor (edit module; opt-in). */
     const $edit: ManifestEdit;
-    /** Rich text editor (rich-text plugin; loaded on use). */
+    /** Rich text editor (rich-text module; loaded on use). */
     const $rich: ManifestRichText;
-    /** Device/platform info (utilities; enriched by the device plugin). */
+    /** Device/platform info (utilities; enriched by the device module). */
     const $device: ManifestDevice;
-    /** Native share (device plugin). */
+    /** Native share (device module). */
     const $share: ManifestShare;
-    /** Push permissions (device plugin). */
+    /** Push permissions (device module). */
     const $push: ManifestPush;
-    /** Secure storage (device plugin). */
+    /** Secure storage (device module). */
     const $secure: ManifestSecure;
-    /** Deep links (device plugin). */
+    /** Deep links (device module). */
     const $links: ManifestLinks;
-    /** App foreground state (device plugin). */
+    /** App foreground state (device module). */
     const $app: ManifestApp;
-    /** Haptics (device plugin). */
+    /** Haptics (device module). */
     const $haptics: ManifestHaptics;
-    /** Biometric auth (device plugin). */
+    /** Biometric auth (device module). */
     const $biometric: ManifestBiometric;
-    /** Camera (device plugin). */
+    /** Camera (device module). */
     const $camera: ManifestCamera;
 
     /** Window-level Manifest namespace exposed by the loader. */
     interface Window {
         Manifest?: {
+            loadModule(name: string, version?: string): Promise<unknown>;
+            /** @deprecated Use loadModule. */
             loadPlugin(name: string, version?: string): Promise<unknown>;
             loadTailwind(version?: string): Promise<unknown>;
+            getModuleUrl(name: string, version?: string): string;
+            /** @deprecated Use getModuleUrl. */
             getPluginUrl(name: string, version?: string): string;
             /** Defer a closed container built at runtime (call before Alpine.initTree). */
             defer?(el: Element): unknown;
@@ -932,7 +936,7 @@ declare global {
             /** Mark a timer callback as housekeeping that never changes the page (auto settle ignores it). */
             background<T extends Function>(fn: T): T;
         };
-        /** Rich text engine (rich-text plugin). */
+        /** Rich text engine (rich-text module). */
         ManifestRichText?: {
             attach(el: Element, options?: ManifestRichTextAttachOptions): ManifestRichTextHandle | null;
             toMarkdown(root: Element): string;
@@ -940,7 +944,7 @@ declare global {
             sanitize(html: string, allowBlocks?: boolean, keepStyle?: boolean): string;
             commands(): string[];
         };
-        /** Form sending (submissions plugin; loaded on first x-submit). */
+        /** Form sending (submissions module; loaded on first x-submit). */
         ManifestSubmissions?: {
             readonly events: { sent: string; error: string };
             send(form: HTMLFormElement, submitter?: HTMLElement | null): Promise<ManifestSubmitDetail>;
