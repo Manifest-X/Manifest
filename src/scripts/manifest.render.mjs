@@ -690,13 +690,14 @@ const TAILWIND_CUSTOM_VARIANTS = [
 ];
 const TAILWIND_DARK_VARIANT = '@custom-variant dark (&:where(.dark, .dark *));';
 const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
+const stripCssComments = (css) => String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
 
 /** Author `@custom-variant dark` declarations from `<style type="text/tailwindcss">` blocks. */
 function authorTailwindDarkVariants(html) {
   const out = [];
   const styleRe = /<style\b[^>]*type\s*=\s*(["'])text\/tailwindcss\1[^>]*>([\s\S]*?)<\/style>/gi;
   for (const m of String(html || '').matchAll(styleRe)) {
-    const css = m[2];
+    const css = stripCssComments(m[2]);
     const declRe = /@custom-variant\s+dark[\s({]/g;
     let d;
     while ((d = declRe.exec(css))) {
@@ -722,10 +723,8 @@ function authorTailwindDarkVariants(html) {
 function buildTailwindCliInput({ importPath = 'tailwindcss', inputCss = '', indexHtml = '' } = {}) {
   const authorDark = authorTailwindDarkVariants(indexHtml);
   const lines = [`@import ${JSON.stringify(importPath)};`, ...TAILWIND_CUSTOM_VARIANTS];
-  if (AUTHOR_DARK_RE.test(inputCss)) {
-    // input file declares its own
-  } else if (authorDark.length) lines.push(...authorDark);
-  else lines.push(TAILWIND_DARK_VARIANT);
+  if (authorDark.length) lines.push(...authorDark);
+  else if (!AUTHOR_DARK_RE.test(stripCssComments(inputCss))) lines.push(TAILWIND_DARK_VARIANT);
   return lines.join('\n') + '\n';
 }
 
@@ -753,7 +752,7 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre, roots = globalModul
     userPath = resolve(rootDir, userInput.trim());
     if (!existsSync(userPath)) userPath = null;
   }
-  const inputPath = join(rootDir, '.mnfst-prerender-tailwind-input.css');
+  const inputPath = join(rootDir, `.mnfst-prerender-tailwind-input.${process.pid}-${Math.random().toString(36).slice(2, 8)}.css`);
   writeFileSync(inputPath, buildTailwindCliInput({
     importPath: userPath ? './' + relative(rootDir, userPath).split(sep).join('/') : 'tailwindcss',
     inputCss: userPath ? readFileSync(userPath, 'utf8') : '',
@@ -780,16 +779,20 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre, roots = globalModul
 
   process.stdout.write('prerender: compiling Tailwind CSS (this may take a minute)...\n');
   const run = tailwindCliCommand(tailwind, args);
-  const r = spawnSync(run.cmd, run.args, {
-    cwd: rootDir,
-    encoding: 'utf8',
-    env: run.env,
-    shell: process.platform === 'win32' && run.cmd === 'npx',
-  });
+  let r;
   try {
-    unlinkSync(inputPath);
-  } catch {
-    // ignore
+    r = spawnSync(run.cmd, run.args, {
+      cwd: rootDir,
+      encoding: 'utf8',
+      env: run.env,
+      shell: process.platform === 'win32' && run.cmd === 'npx',
+    });
+  } finally {
+    try {
+      unlinkSync(inputPath);
+    } catch {
+      // ignore
+    }
   }
   if (r.status !== 0) {
     console.error('prerender: Tailwind CLI failed; install with `npm i -g tailwindcss @tailwindcss/cli` (or per project: `npm i -D tailwindcss @tailwindcss/cli`), or check tailwindInput in manifest.prerender.');

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,14 @@ describe('Tailwind CLI variants', () => {
         expect(authorTailwindDarkVariants(shell(`<style type='text/tailwindcss'>${block}</style>`))).toEqual([block]);
     });
 
+    it('ignores commented-out author declarations', () => {
+        const html = shell(`<style type="text/tailwindcss">/* ${AUTHOR_DARK} */</style>`);
+        expect(authorTailwindDarkVariants(html)).toEqual([]);
+        expect(buildTailwindCliInput({ indexHtml: html })).toContain(TAILWIND_DARK_VARIANT);
+        const css = buildTailwindCliInput({ importPath: './app.css', inputCss: `@import "tailwindcss";\n/*\n${AUTHOR_DARK}\n*/` });
+        expect(css).toContain(TAILWIND_DARK_VARIANT);
+    });
+
     it('leaves dark to a tailwindInput file that declares it', () => {
         const css = buildTailwindCliInput({ importPath: './app.css', inputCss: `@import "tailwindcss";\n${AUTHOR_DARK}` });
         expect(css.startsWith('@import "./app.css";')).toBe(true);
@@ -66,7 +74,7 @@ describe.skipIf(!hasCli)('runTailwindCliForPrerender (real CLI)', () => {
         writeFileSync(join(site, 'index.html'), shell(head));
         if (pre?.files) for (const [f, c] of Object.entries(pre.files)) writeFileSync(join(site, f), c);
         expect(runTailwindCliForPrerender(site, out, pre, [repoModules])).toBe(true);
-        expect(existsSync(join(site, '.mnfst-prerender-tailwind-input.css'))).toBe(false);
+        expect(readdirSync(site).filter(f => f.startsWith('.mnfst-prerender-tailwind-input'))).toEqual([]);
         return readFileSync(join(out, 'prerender.tailwind.css'), 'utf8');
     };
     const rule = (css, cls) => css.slice(css.indexOf(cls), css.indexOf('}', css.indexOf(cls)));
@@ -84,6 +92,16 @@ describe.skipIf(!hasCli)('runTailwindCliForPrerender (real CLI)', () => {
         const dark = rule(css, '.dark\\:bg-black');
         expect(dark).toContain('[data-theme=dark]');
         expect(dark).not.toContain('.dark *');
+    }, 30000);
+
+    it('uses Manifest dark when author overrides are commented out', () => {
+        const css = build('commented', `<style type="text/tailwindcss">/* ${AUTHOR_DARK} */</style>`, {
+            tailwindInput: 'app.css',
+            files: { 'app.css': `@import "tailwindcss";\n/* ${AUTHOR_DARK} */\n` },
+        });
+        const dark = rule(css, '.dark\\:bg-black');
+        expect(dark).toContain(':where(.dark, .dark *)');
+        expect(dark).not.toContain('[data-theme=dark]');
     }, 30000);
 
     it('honours an author dark override in tailwindInput', () => {
