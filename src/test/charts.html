@@ -45,6 +45,27 @@
       </div>
     </section>
 
+    <!-- ============================ DASH FROM ============================ -->
+    <section class="col gap-4">
+      <h1 class="h2">Forecast (dashFrom)</h1>
+      <div class="col gap-2" style="width: 720px; max-width: 100%;">
+        <small>Area, three series, points: false, dashFrom: 6</small>
+        <div id="scenario-dash" x-chart="{
+          type: 'area', points: false, dashFrom: 6,
+          format: { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 },
+          labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+          series: [
+            { name: 'Base', data: [42000, 48000, 51000, 57000, 63000, 70000, 76000, 81000, 88000, 95000, 104000, 112000] },
+            { name: 'Low', data: [38000, 40000, 42000, 44000, 47000, 50000, 52000, 55000, 58000, 61000, 64000, 67000] },
+            { name: 'High', data: [45000, 55000, 64000, 75000, 87000, 99000, 112000, 126000, 141000, 157000, 174500, 192250] }
+          ]
+        }"></div>
+        <small>Line with points, dashFrom: 8; combo bar + line, dashFrom: 3</small>
+        <div id="scenario-dash-line" x-chart="{ type: 'line', dashFrom: 8, labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], series: [{ name: 'Visits', data: [5, 7, 6, 9, 11, 10, 13, 14, 15, 17, 18, 20] }] }"></div>
+        <div id="scenario-dash-combo" x-chart="{ type: 'combo', dashFrom: 3, labels: ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6'], series: [{ name: 'Orders', type: 'bar', data: [3, 4, 5, 6, 7, 8] }, { name: 'Trend', type: 'line', data: [2, 4, 5, 7, 8, 10] }] }"></div>
+      </div>
+    </section>
+
     <!-- ============================ GANTT ============================ -->
     <section class="col gap-4">
       <h1 class="h2">Gantt</h1>

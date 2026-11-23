@@ -411,6 +411,8 @@ export interface ManifestChartConfig {
     max?: number | string | Date;
     /** Intl.NumberFormat options for tooltip and data-label values; axis ticks add compact notation. */
     format?: Intl.NumberFormatOptions;
+    /** Line/area/combo: label index from which lines are dashed and area fills lighter (e.g. a forecast). */
+    dashFrom?: number;
     [key: string]: unknown;
 }
 
