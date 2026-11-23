@@ -34,6 +34,12 @@ TailwindCompiler.prototype.scheduleEnsureUtilityStylesLast = function () {
     });
 };
 
+// Tailwind browser runtime output and baked prerender utilities: not theme sources
+function isGeneratedUtilitiesStyle(style) {
+    return style.hasAttribute('data-mnfst-utilities') ||
+        (!style.id && (style.textContent || '').trimStart().startsWith('/*! tailwindcss'));
+}
+
 // Discover CSS files from stylesheets and imports
 TailwindCompiler.prototype.discoverCssFiles = function () {
     try {
@@ -73,8 +79,12 @@ TailwindCompiler.prototype.discoverCssFiles = function () {
         // Add any inline styles (exclude generated styles)
         const styleElements = document.querySelectorAll('style:not(#manifest-styles)');
         for (const style of styleElements) {
+            if (isGeneratedUtilitiesStyle(style)) continue;
             if (style.textContent && style.textContent.trim()) {
                 const id = style.id || `inline-style-${Array.from(styleElements).indexOf(style)}`;
+                // Synthetic ids aren't on the element: keep it for fetchThemeContent
+                if (!this.inlineStyleSources) this.inlineStyleSources = new Map();
+                this.inlineStyleSources.set(id, style);
                 this.cssFiles.add('inline:' + id);
             }
         }
@@ -345,7 +355,8 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
 
                 if (source.startsWith('inline:')) {
                     const styleId = source.replace('inline:', '');
-                    const styleElement = styleId ?
+                    const kept = this.inlineStyleSources && this.inlineStyleSources.get(styleId);
+                    const styleElement = (kept && kept.isConnected) ? kept : styleId ?
                         document.getElementById(styleId) :
                         document.querySelector('style');
                     if (styleElement) {
