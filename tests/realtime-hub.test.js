@@ -235,11 +235,11 @@ describe('scoped presence', () => {
         // live events: in-scope lands, out-of-scope drops before the store
         rt().fire('presences', presenceEvt('upsert', P('u5', ['read("team:teamA")'])))
         rt().fire('presences', presenceEvt('upsert', P('u6', ['read("team:teamB")'])))
-        await settle()
+        await settle(160) // presence events flush on a 100ms coalescing window
         expect(Object.keys(records()).sort()).toEqual(['me', 'u2', 'u5'])
         // delete classifies and removes
         rt().fire('presences', presenceEvt('delete', P('u2', ['read("team:teamA")'])))
-        await settle()
+        await settle(160) // presence events flush on a 100ms coalescing window
         expect(Object.keys(records()).sort()).toEqual(['me', 'u5'])
         // team scope is NOT server-side expressible: the subscription carries no queries
         const sub = stats.subscribeArgs.find(a => a.channel === 'presences')
@@ -264,7 +264,7 @@ describe('scoped presence', () => {
         await settle()
         expect(Object.keys(records()).sort()).toEqual(['me', 'u2', 'u3', 'u4'])
         rt().fire('presences', presenceEvt('upsert', P('u6', ['read("team:teamB")'])))
-        await settle()
+        await settle(160) // presence events flush on a 100ms coalescing window
         expect(Object.keys(records())).toContain('u6')
         expect(stats.upserts[0].permissions).toContain('read("users")')
     })
@@ -305,7 +305,7 @@ describe('classify once per message', () => {
         let filterCalls = 0
         hub().setFilter('presence:roster', () => { filterCalls++; return true })
         rt().fire('presences', presenceEvt('upsert', P('u7', ['read("team:teamA")'])))
-        await settle()
+        await settle(160) // presence events flush on a 100ms coalescing window
         expect(filterCalls).toBe(1) // 4 event-name variants, one classified dispatch
         expect(Object.keys(records())).toContain('u7')
         hub().setFilter('presence:roster', null)
@@ -412,7 +412,7 @@ describe('scope lifecycle', () => {
         expect(Object.keys(records())).toContain('u2')
         // u2's record moves to another team: delivery of the rewrite carries teamB perms
         rt().fire('presences', presenceEvt('upsert', P('u2', ['read("team:teamB")'])))
-        await settle()
+        await settle(160) // presence events flush on a 100ms coalescing window
         expect(Object.keys(records())).not.toContain('u2')
     })
 
@@ -508,5 +508,97 @@ describe('scope lifecycle', () => {
         await presence.start()
         await settle()
         expect(stats.upserts[0].permissions).toContain('read("users")')
+    })
+})
+
+describe('presence write and flush budget (Playcom many-tab audit)', () => {
+    const setVisibility = state => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+        document.dispatchEvent(new window.Event('visibilitychange'))
+    }
+    afterEach(() => { delete document.visibilityState })
+
+    it('sends on change only: an unchanged set() writes nothing', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        await settle()
+        expect(stats.upserts.length).toBe(1)
+        await presence.set('online')
+        expect(stats.upserts.length).toBe(1)
+        await presence.set('busy', { page: 'x' })
+        expect(stats.upserts.length).toBe(2)
+        expect(stats.upserts[1].metadata.page).toBe('x')
+    })
+
+    it('no fixed heartbeat: nothing is re-sent before the keep-alive', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global', keepAliveMs: 1000 })
+        await settle(600)
+        expect(stats.upserts.length).toBe(1)
+        await settle(700)
+        expect(stats.upserts.length).toBe(2) // keep-alive at 1 s
+    })
+
+    it('heartbeatMs is still accepted as the keep-alive interval, clamped inside the 15 min TTL', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global', heartbeatMs: 1000 })
+        await settle(1300)
+        expect(stats.upserts.length).toBe(2)
+        presence.stop()
+        const b = await boot({ auth: authed() })
+        await b.presence.start({ scope: 'global', heartbeatMs: 60 * 60 * 1000 })
+        await settle(100)
+        expect(b.stats.upserts.length).toBe(1) // an hour would outlive the TTL: clamped to 10 min, not sent early
+    })
+
+    it('a burst of incoming events is one store flush', async () => {
+        const { rt, presence, records } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        await settle(160)
+        let flushes = 0
+        const stopCount = Alpine.effect(() => { Alpine.store('presence').records; flushes++ })
+        flushes = 0
+        for (let i = 0; i < 30; i++) rt().fire('presences', presenceEvt('upsert', P('b' + i, ['read("users")'])))
+        expect(flushes).toBe(0) // nothing synchronous per event
+        await settle(160)
+        expect(flushes).toBe(1)
+        expect(Object.keys(records()).length).toBe(31)
+        Alpine.release?.(stopCount)
+    })
+
+    it('auto away follows visibility (debounced) and restores the base status, not "online"', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        await presence.set('busy')
+        const n = stats.upserts.length
+        setVisibility('hidden')
+        await settle(300)
+        expect(stats.upserts.length).toBe(n) // settle debounce absorbs tab switches
+        setVisibility('visible')
+        await settle(1200)
+        expect(stats.upserts.length).toBe(n) // back before the debounce: nothing sent
+        setVisibility('hidden')
+        await settle(1200)
+        expect(stats.upserts.at(-1).status).toBe('away')
+        setVisibility('visible')
+        await settle(200)
+        expect(stats.upserts.at(-1).status).toBe('busy')
+    })
+
+    it('solo fallback (no BroadcastChannel) leads its own tab', async () => {
+        const { presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        expect(presence.leader).toBe(true)
+    })
+})
+
+describe('presence before start()', () => {
+    it('a pre-start set() writes the given status, never an auto away', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+        try {
+            await presence.set('online')
+            expect(stats.upserts.at(-1).status).toBe('online')
+        } finally { delete document.visibilityState }
     })
 })

@@ -289,20 +289,44 @@ if (!window.ManifestRealtimeHub) {
 
     /* State */
 
+    // Appwrite's default presence TTL when upsert omits expiresAt: 15 minutes
+    const SERVER_TTL_MS = 15 * 60 * 1000;
+    // Keep-alive ceiling leaves room for background-timer throttling (≤1 min)
+    const KEEPALIVE_MAX_MS = SERVER_TTL_MS - 5 * 60 * 1000;
+    const KEEPALIVE_MIN_MS = 1000;
+
     const ctx = {
         client: null,
         presences: null,
         sub: null,
-        heartbeat: null,
         started: false,
-        status: 'online',
+        status: 'online',       // base status (set() / start option)
         metadata: null,
+        team: undefined,        // write scope of the most recent change, browser-wide
+        cleared: false,
+        stamp: 0,               // shared-state version, last writer wins
         scope: 'auto',          // 'auto'/'team' = current team, 'global', or an explicit team id
         teamsEnabled: false,    // manifest.appwrite.auth.teams (read in ensureServices)
-        auto: true,             // focus/blur auto-flip
-        heartbeatMs: 25000,     // TTL refresh cadence
-        onFocus: null,
-        onBlur: null
+        auto: true,             // away when none of the user's tabs is visible
+        keepAliveMs: 5 * 60 * 1000,
+        settleMs: 1000,         // activity-drop debounce (absorbs tab switches)
+        flushMs: 100,           // incoming-event coalescing window
+        tabId: Math.random().toString(36).slice(2) + Date.now().toString(36),
+        role: null,             // 'leader' | 'follower' | 'solo' | null
+        bc: null,
+        release: null,          // releases the held Web Lock
+        abort: null,            // cancels a queued lock request
+        tabs: new Map(),        // leader: tabId → activity rank
+        rank: 0,                // this tab: 2 focused, 1 visible, 0 hidden
+        sent: null,             // last published { status, metadata, team }
+        sentAt: 0,
+        mine: null,             // own record (published or optimistic)
+        roster: {},             // others, unfiltered: userId → { rec, perms }
+        timers: { keep: null, publish: null, flush: null, wait: null },
+        chain: Promise.resolve(),
+        onState: null,
+        suspended: false,
+        listening: false
     };
 
     /* Config */
@@ -417,30 +441,71 @@ if (!window.ManifestRealtimeHub) {
         };
     }
 
-    // Reactive map updates (reassign for Alpine tracking)
-    function putRecord(rec) {
-        const s = store(); if (!s || !rec) return;
-        s.records = { ...s.records, [rec.userId]: rec };
+    function permsOf(raw) {
+        return Array.isArray(raw?.$permissions) ? raw.$permissions.slice() : [];
     }
-    function removeRecord(userId) {
-        const s = store(); if (!s || !userId) return;
-        if (!s.records[userId]) return;
-        const next = { ...s.records }; delete next[userId]; s.records = next;
+
+    // name/color in metadata for rosters (name null when unknown — display label is the author's)
+    function ownMeta(metadata) {
+        const user = authUser();
+        return Object.assign({ name: user?.name || null, color: userColor(user?.$id) }, metadata || {});
+    }
+
+    // One store assignment per call, skipped when nothing changed
+    let lastJson = '';
+    let lastRecords = null;
+    function render() {
+        const s = store(); if (!s) return;
+        const next = {};
+        for (const id in ctx.roster) {
+            const e = ctx.roster[id];
+            if (e && inScope({ $permissions: e.perms }, id)) next[id] = e.rec;
+        }
+        const user = authUser();
+        if (user && ctx.mine) {
+            next[user.$id] = normalize({ userId: user.$id, status: ctx.mine.status, metadata: ownMeta(ctx.mine.metadata), $updatedAt: ctx.mine.at });
+        }
+        const json = JSON.stringify(next);
+        if (json === lastJson && s.records === lastRecords) return;
+        lastJson = json;
+        s.records = next;
+        lastRecords = s.records;
+    }
+
+    function setMine(d) {
+        ctx.mine = d ? { status: d.status, metadata: d.metadata, at: new Date().toISOString() } : null;
+        const s = store(); if (s) s.me = d ? d.status : null;
+        render();
+    }
+
+    // Coalesce incoming events: at most one store flush (and one roster
+    // broadcast) per flushMs window
+    function scheduleFlush() {
+        if (ctx.timers.flush) return;
+        ctx.timers.flush = setTimeout(flushNow, ctx.flushMs);
+    }
+    function flushNow() {
+        clearTimeout(ctx.timers.flush);
+        ctx.timers.flush = null;
+        render();
+        if (ctx.role === 'leader') post({ t: 'roster', roster: ctx.roster });
     }
 
     async function hydrate() {
-        const s = store();
         try {
             const res = await ctx.presences.list();
             const rows = res?.presences || res?.rows || res?.documents || [];
-            const map = {};
-            rows.forEach(r => { const n = normalize(r); if (n && inScope(r, n.userId)) map[n.userId] = n; });
-            if (s) s.records = map;
+            const meId = authUser()?.$id;
+            const next = {};
+            rows.forEach(r => { const n = normalize(r); if (n && n.userId !== meId) next[n.userId] = { rec: n, perms: permsOf(r) }; });
+            ctx.roster = next;
+            flushNow();
         } catch (e) {
-            if (s) s.error = e?.message || String(e);
+            const s = store(); if (s) s.error = e?.message || String(e);
         }
     }
 
+    // Writers only: followers get the roster from the leader
     function subscribe() {
         const A = window.Appwrite;
         const hub = window.ManifestRealtimeHub;
@@ -456,10 +521,9 @@ if (!window.ManifestRealtimeHub) {
                 // Ignore echoes of our own presence (tracked locally; delayed echoes would clobber newer status)
                 const meId = authUser()?.$id;
                 if (meId && rec.userId === meId) return;
-                // A known record that LEAVES scope is removed, not just ignored
-                if (!inScope(payload, rec.userId)) { removeRecord(rec.userId); return; }
-                if (action === 'delete') removeRecord(rec.userId);
-                else putRecord(rec);
+                if (action === 'delete') delete ctx.roster[rec.userId];
+                else ctx.roster[rec.userId] = { rec, perms: permsOf(payload) };
+                scheduleFlush();
             }
         }).catch(e => {
             const s = store(); if (s) s.error = e?.message || String(e);
@@ -467,42 +531,76 @@ if (!window.ManifestRealtimeHub) {
         ctx.sub = () => hub.unsubscribe('presence:roster');
     }
 
-    /* Operations */
+    /* Activity */
 
-    async function set(status, metadata) {
+    function computeRank() {
+        if (typeof document === 'undefined') return 2;
+        if (document.visibilityState === 'hidden') return 0;
+        try { if (typeof document.hasFocus === 'function' && document.hasFocus()) return 2; } catch (e) { }
+        return 1;
+    }
+
+    function maxRank() {
+        if (ctx.role !== 'leader') return ctx.rank;
+        let r = 0;
+        ctx.tabs.forEach(v => { if (v > r) r = v; });
+        return r;
+    }
+
+    function onActivity() {
+        const r = computeRank();
+        if (r === ctx.rank) return;
+        const up = r > ctx.rank;
+        ctx.rank = r;
+        if (isWriter()) {
+            ctx.tabs.set(ctx.tabId, r);
+            schedulePublish(up ? 50 : ctx.settleMs);
+        } else if (ctx.role === 'follower') {
+            post({ t: 'hello', from: ctx.tabId, rank: r });
+        }
+    }
+
+    /* Publishing */
+
+    function isWriter() {
+        return ctx.role === 'leader' || ctx.role === 'solo';
+    }
+
+    // What this browser should publish: base status, or away when no tab is visible
+    function desired() {
+        if (ctx.cleared) return null;
+        const away = ctx.auto && ctx.started && !!ctx.role && maxRank() === 0;
+        return { status: away ? 'away' : ctx.status, metadata: ctx.metadata, team: ctx.team === undefined ? scopeTeamId() : ctx.team };
+    }
+
+    function same(a, b) {
+        return !!(a && b) && a.status === b.status && a.team === b.team && JSON.stringify(a.metadata) === JSON.stringify(b.metadata);
+    }
+
+    // Writes run one at a time, in order
+    function enqueue(fn) {
+        const p = ctx.chain.then(fn, fn);
+        ctx.chain = p.catch(() => { });
+        return p;
+    }
+
+    async function write(d) {
         const A = window.Appwrite;
         const user = authUser();
         const s = store();
-        if (!user) { if (s) s.error = 'sign in required'; return false; }
-        if (!(await ensureServices())) { if (s) s.error = 'Appwrite Presences unavailable'; return false; }
-        ctx.status = status != null ? status : ctx.status;
-        ctx.metadata = metadata !== undefined ? metadata : ctx.metadata;
-
         // Read-scope + owner write (owner update/delete required, else updates 401).
         // Scoped (teams enabled, scope not global): team grant when resolved,
         // self-only until then — however long teams take — never the users()
         // broadcast. users() is only for global scope or teams-disabled projects.
-        // The team-switch effect rescopes reactively when a team resolves/changes.
-        const teamId = scopeTeamId();
         const scoped = ctx.teamsEnabled && ctx.scope !== 'global' && ctx.scope !== false && ctx.scope != null;
-        const readRole = teamId ? A.Role.team(teamId) : (scoped ? A.Role.user(user.$id) : A.Role.users());
+        const readRole = d.team ? A.Role.team(d.team) : (scoped ? A.Role.user(user.$id) : A.Role.users());
         const permissions = [
             A.Permission.read(readRole),
             A.Permission.update(A.Role.user(user.$id)),
             A.Permission.delete(A.Role.user(user.$id))
         ];
-
-        // name/color in metadata for rosters (name null when unknown — display label is the author's)
-        const meta = Object.assign(
-            { name: user.name || null, color: userColor(user.$id) },
-            ctx.metadata || {}
-        );
-
-        // Optimistic local update
-        putRecord(normalize({ userId: user.$id, status: ctx.status, metadata: meta, $updatedAt: new Date().toISOString() }));
-        if (s) s.me = ctx.status;
         try {
-            await ctx.presences.upsert({ presenceId: user.$id, status: ctx.status, metadata: meta, permissions });
+            await ctx.presences.upsert({ presenceId: user.$id, status: d.status, metadata: ownMeta(d.metadata), permissions });
             if (s) s.error = null;
             return true;
         } catch (e) {
@@ -511,21 +609,299 @@ if (!window.ManifestRealtimeHub) {
         }
     }
 
-    // Scope change: old-scope rosters never receive a perms rewrite (delivery
-    // follows the OLD read grant), so delete first — the delete event still
-    // carries it — then re-upsert under the new scope
-    async function rescope() {
+    // Send on change; force re-sends unchanged state (keep-alive)
+    function publish(force) {
+        return enqueue(async () => {
+            const user = authUser();
+            if (!user || !ctx.presences) return false;
+            const d = desired();
+            if (!d) {
+                clearTimeout(ctx.timers.keep);
+                if (ctx.sent || force) {
+                    ctx.sent = null;
+                    try { await ctx.presences.delete({ presenceId: user.$id }); } catch (e) { }
+                }
+                setMine(null);
+                announceState();
+                return true;
+            }
+            if (!force && same(d, ctx.sent)) return true;
+            // Scope change: old-scope rosters never receive a perms rewrite
+            // (delivery follows the OLD read grant), so delete first — the
+            // delete event still carries it — then re-upsert under the new scope
+            if (ctx.sent && ctx.sent.team !== d.team) {
+                try { await ctx.presences.delete({ presenceId: user.$id }); } catch (e) { }
+            }
+            setMine(d);
+            const ok = await write(d);
+            ctx.sent = ok ? d : null;
+            ctx.sentAt = Date.now();
+            armKeepAlive();
+            announceState();
+            return ok;
+        });
+    }
+
+    function schedulePublish(delay) {
+        if (!isWriter()) return;
+        clearTimeout(ctx.timers.publish);
+        ctx.timers.publish = setTimeout(() => { ctx.timers.publish = null; publish(false); }, delay);
+    }
+
+    function armKeepAlive(ms) {
+        clearTimeout(ctx.timers.keep);
+        ctx.timers.keep = null;
+        if (!isWriter() || ctx.cleared) return;
+        ctx.timers.keep = setTimeout(keepAlive, ms != null ? Math.max(0, ms) : ctx.keepAliveMs);
+    }
+
+    async function keepAlive() {
+        ctx.timers.keep = null;
+        if (!isWriter()) return;
+        // Roll call first: prunes tabs that died without a goodbye
+        if (ctx.role === 'leader' && ctx.bc) {
+            ctx.tabs = new Map([[ctx.tabId, ctx.rank]]);
+            post({ t: 'roll' });
+            await new Promise(r => { ctx.timers.wait = setTimeout(r, 300); });
+            if (ctx.role !== 'leader') return;
+        }
+        publish(true);
+    }
+
+    /* Tabs */
+
+    // Shared state change from this tab, mirrored to the others
+    function change(patch) {
+        Object.assign(ctx, patch);
+        ctx.stamp = Math.max(Date.now(), ctx.stamp + 1);
+        post({ t: 'set', from: ctx.tabId, stamp: ctx.stamp, status: ctx.status, metadata: ctx.metadata, team: ctx.team, cleared: ctx.cleared });
+    }
+
+    function adopt(m) {
+        if (!m || typeof m.stamp !== 'number' || m.stamp < ctx.stamp) return false;
+        ctx.stamp = m.stamp;
+        ctx.status = m.status;
+        ctx.metadata = m.metadata;
+        ctx.team = m.team;
+        ctx.cleared = !!m.cleared;
+        return true;
+    }
+
+    function announceState() {
+        if (ctx.role !== 'leader') return;
+        post({
+            t: 'state', from: ctx.tabId, stamp: ctx.stamp, status: ctx.status, metadata: ctx.metadata, team: ctx.team,
+            cleared: ctx.cleared, sent: ctx.sent, sentAt: ctx.sentAt, error: store()?.error || null
+        });
+    }
+
+    function post(m) {
+        if (!ctx.bc) return;
+        try { ctx.bc.postMessage(m); } catch (e) { }
+    }
+
+    function onMessage(m) {
+        if (!m || m.from === ctx.tabId) return;
+        const leader = ctx.role === 'leader';
+        switch (m.t) {
+            case 'hello':
+                if (!leader) return;
+                {
+                    const prev = ctx.tabs.get(m.from);
+                    ctx.tabs.set(m.from, m.rank);
+                    if (m.join) { post({ t: 'roster', roster: ctx.roster }); announceState(); }
+                    if (prev !== m.rank) schedulePublish(m.rank > (prev ?? -1) ? 50 : ctx.settleMs);
+                }
+                return;
+            case 'bye':
+                if (!leader) return;
+                if (ctx.tabs.delete(m.from)) schedulePublish(ctx.settleMs);
+                return;
+            case 'set':
+                if (adopt(m) && leader) schedulePublish(0);
+                return;
+            case 'lead':
+            case 'roll':
+                if (ctx.role === 'follower') post({ t: 'hello', from: ctx.tabId, rank: ctx.rank });
+                return;
+            case 'roster':
+                if (ctx.role !== 'follower') return;
+                ctx.roster = m.roster || {};
+                render();
+                return;
+            case 'state':
+                if (ctx.role !== 'follower') return;
+                adopt(m);
+                ctx.sent = m.sent || null;
+                ctx.sentAt = m.sentAt || 0;
+                setMine(m.sent || null);
+                { const s = store(); if (s) s.error = m.error || null; }
+                if (ctx.onState) { const fn = ctx.onState; ctx.onState = null; fn(); }
+                return;
+        }
+    }
+
+    /* Election */
+
+    // One writer per browser per user: Web Locks elect, BroadcastChannel fans out
+    function groupName() {
+        const cfg = ctx.client?.config || {};
+        return `manifest-presence:${cfg.endpoint || ''}:${cfg.project || ''}:${authUser()?.$id || ''}`;
+    }
+
+    async function join() {
+        ctx.rank = computeRank();
+        const locks = window.navigator?.locks;
+        const BC = window.BroadcastChannel;
+        if (!locks || typeof locks.request !== 'function' || typeof BC !== 'function') return becomeSolo();
+        const name = groupName();
+        try {
+            ctx.bc = new BC(name);
+            ctx.bc.onmessage = e => onMessage(e.data);
+        } catch (e) {
+            ctx.bc = null;
+            return becomeSolo();
+        }
+        // Free lock → lead now; held → follow and queue for it
+        const got = await new Promise(resolve => {
+            locks.request(name, { ifAvailable: true }, lock => {
+                if (!lock) { resolve(false); return null; }
+                resolve(true);
+                return new Promise(r => { ctx.release = r; });
+            }).catch(() => resolve(false));
+        });
+        if (!ctx.started) { if (ctx.release) { ctx.release(); ctx.release = null; } return; }
+        if (got) return becomeLeader();
+        ctx.role = 'follower';
+        const AC = window.AbortController;
+        const abort = typeof AC === 'function' ? new AC() : null;
+        ctx.abort = abort;
+        locks.request(name, abort ? { signal: abort.signal } : {}, () => {
+            if (!ctx.started || ctx.abort !== abort) return null;
+            ctx.abort = null;
+            return new Promise(r => { ctx.release = r; becomeLeader(); });
+        }).catch(() => { });
+        post({ t: 'hello', from: ctx.tabId, rank: ctx.rank, join: true });
+    }
+
+    async function becomeLeader() {
+        ctx.role = 'leader';
+        ctx.tabs = new Map([[ctx.tabId, ctx.rank]]);
+        post({ t: 'lead', from: ctx.tabId });
+        await hydrate();
+        if (ctx.role !== 'leader') return;
+        subscribe();
+        // Predecessor wrote recently: inherit its keep-alive, reconcile once tabs report in
+        if (ctx.sent && Date.now() - ctx.sentAt < ctx.keepAliveMs) {
+            armKeepAlive(ctx.keepAliveMs - (Date.now() - ctx.sentAt));
+            schedulePublish(300);
+        } else {
+            await publish(true);
+        }
+    }
+
+    async function becomeSolo() {
+        ctx.role = 'solo';
+        ctx.tabs = new Map([[ctx.tabId, ctx.rank]]);
+        await hydrate();
+        if (ctx.role !== 'solo') return;
+        subscribe();
+        await publish(true);
+    }
+
+    function resign() {
+        Object.keys(ctx.timers).forEach(k => { clearTimeout(ctx.timers[k]); ctx.timers[k] = null; });
+        if (ctx.abort) { try { ctx.abort.abort(); } catch (e) { } ctx.abort = null; }
+        if (ctx.release) { ctx.release(); ctx.release = null; }
+        if (typeof ctx.sub === 'function') { try { ctx.sub(); } catch (e) { } }
+        ctx.sub = null;
+        if (ctx.bc) {
+            post({ t: 'bye', from: ctx.tabId });
+            try { ctx.bc.close(); } catch (e) { }
+            ctx.bc = null;
+        }
+        if (ctx.onState) { const fn = ctx.onState; ctx.onState = null; fn(); }
+        ctx.role = null;
+    }
+
+    function waitForLeader(ms) {
+        return new Promise(resolve => {
+            const t = setTimeout(() => { ctx.onState = null; resolve(); }, ms);
+            ctx.onState = () => { clearTimeout(t); resolve(); };
+        });
+    }
+
+    /* Lifecycle */
+
+    // Last tab out deletes the record; others hand over (bfcache + freeze rejoin on return)
+    function onPageHide() {
+        if (!ctx.started || !ctx.role) return;
+        const alone = ctx.role !== 'follower' && ![...ctx.tabs.keys()].some(id => id !== ctx.tabId);
         const user = authUser();
-        if (user && ctx.presences) { try { await ctx.presences.delete({ presenceId: user.$id }); } catch (e) { } }
-        await set(ctx.status, ctx.metadata);
+        if (alone && user && ctx.presences) {
+            ctx.sent = null;
+            try { ctx.presences.delete({ presenceId: user.$id }).catch(() => { }); } catch (e) { }
+        }
+        resign();
+        ctx.suspended = true;
+    }
+    function onFreeze() {
+        if (!ctx.started || !ctx.role) return;
+        resign();
+        ctx.suspended = true;
+    }
+    function onReturn(e) {
+        if (e && e.type === 'pageshow' && !e.persisted) return;
+        if (!ctx.suspended || !ctx.started) return;
+        ctx.suspended = false;
+        join();
+    }
+
+    const LISTENERS = [
+        [() => document, 'visibilitychange', onActivity],
+        [() => window, 'focus', onActivity],
+        [() => window, 'blur', onActivity],
+        [() => window, 'pagehide', onPageHide],
+        [() => window, 'pageshow', onReturn],
+        [() => document, 'freeze', onFreeze],
+        [() => document, 'resume', onReturn]
+    ];
+    function listen(on) {
+        if (ctx.listening === on) return;
+        ctx.listening = on;
+        LISTENERS.forEach(([target, type, fn]) => {
+            const t = target();
+            if (!t) return;
+            if (on) t.addEventListener(type, fn);
+            else t.removeEventListener(type, fn);
+        });
+    }
+
+    /* Operations */
+
+    async function set(status, metadata) {
+        const user = authUser();
+        const s = store();
+        if (!user) { if (s) s.error = 'sign in required'; return false; }
+        if (!(await ensureServices())) { if (s) s.error = 'Appwrite Presences unavailable'; return false; }
+        const patch = { cleared: false, team: scopeTeamId() };
+        if (status != null) patch.status = status;
+        if (metadata !== undefined) patch.metadata = metadata;
+        change(patch);
+        if (ctx.role === 'follower') {
+            setMine({ status: ctx.status, metadata: ctx.metadata });
+            return true;
+        }
+        return publish(false);
     }
 
     async function clear() {
         const user = authUser();
-        if (!user || !ctx.presences) return;
-        try { await ctx.presences.delete({ presenceId: user.$id }); } catch (e) { }
-        removeRecord(user.$id);
-        const s = store(); if (s) s.me = null;
+        if (!user) return;
+        change({ cleared: true });
+        if (ctx.role === 'follower') { setMine(null); return; }
+        if (ctx.presences) await publish(true);
+        setMine(null);
     }
 
     function of(userId) {
@@ -541,8 +917,9 @@ if (!window.ManifestRealtimeHub) {
     async function start(options) {
         const opts = options || {};
         if (typeof opts.auto === 'boolean') ctx.auto = opts.auto;
-        if (typeof opts.heartbeatMs === 'number') ctx.heartbeatMs = opts.heartbeatMs;
-        if (typeof opts.status === 'string') ctx.status = opts.status;
+        // heartbeatMs: pre-0.5.301 name, now an alias of keepAliveMs
+        const keep = typeof opts.keepAliveMs === 'number' ? opts.keepAliveMs : opts.heartbeatMs;
+        if (typeof keep === 'number' && keep > 0) ctx.keepAliveMs = Math.min(KEEPALIVE_MAX_MS, Math.max(KEEPALIVE_MIN_MS, keep));
 
         // Scope: start() option > manifest appwrite.presences.scope > 'auto'
         const cfg = await getPresencesConfig();
@@ -555,20 +932,16 @@ if (!window.ManifestRealtimeHub) {
         if (ctx.started) return true;
 
         ctx.started = true;
+        ctx.cleared = false;
+        if (typeof opts.status === 'string') ctx.status = opts.status;
+        ctx.team = scopeTeamId();
+        listen(true);
 
-        await hydrate();
-        subscribe();
-        await set(ctx.status, ctx.metadata);
-
-        // Heartbeat (refresh TTL)
-        ctx.heartbeat = setInterval(() => { if (authUser()) set(ctx.status, ctx.metadata); }, ctx.heartbeatMs);
-
-        // Auto focus/blur flip
-        if (ctx.auto) {
-            ctx.onBlur = () => set('away');
-            ctx.onFocus = () => set('online');
-            window.addEventListener('blur', ctx.onBlur);
-            window.addEventListener('focus', ctx.onFocus);
+        await join();
+        if (ctx.role === 'follower') {
+            await waitForLeader(1000);
+            if (typeof opts.status === 'string') change({ status: opts.status, cleared: false });
+            else if (ctx.team !== scopeTeamId()) change({ team: scopeTeamId() });
         }
 
         if (s) { s.ready = true; s.error = null; }
@@ -576,11 +949,9 @@ if (!window.ManifestRealtimeHub) {
     }
 
     function stop() {
-        if (ctx.heartbeat) { clearInterval(ctx.heartbeat); ctx.heartbeat = null; }
-        if (ctx.onBlur) { window.removeEventListener('blur', ctx.onBlur); ctx.onBlur = null; }
-        if (ctx.onFocus) { window.removeEventListener('focus', ctx.onFocus); ctx.onFocus = null; }
-        if (typeof ctx.sub === 'function') { try { ctx.sub(); } catch (e) { } }
-        ctx.sub = null;
+        listen(false);
+        resign();
+        ctx.suspended = false;
         ctx.started = false;
         const s = store(); if (s) s.ready = false;
     }
@@ -597,9 +968,8 @@ if (!window.ManifestRealtimeHub) {
             });
         } catch (e) { }
 
-        // Re-scope on team switch: refilter the roster, delete + rewrite own
-        // presence (old teammates only see the delete; the rewrite isn't
-        // delivered to them once the read grant moves)
+        // Re-scope on team switch: refilter the roster locally; the writer
+        // deletes + rewrites own presence under the new grant
         let lastTeam;
         try {
             Alpine.effect(() => {
@@ -607,8 +977,11 @@ if (!window.ManifestRealtimeHub) {
                 if (team === lastTeam) return;
                 lastTeam = team;
                 if (!ctx.started) return;
-                hydrate();
-                rescope();
+                render();
+                const next = scopeTeamId();
+                if (next === ctx.team) return;
+                change({ team: next });
+                schedulePublish(0);
             });
         } catch (e) { }
 
@@ -618,14 +991,12 @@ if (!window.ManifestRealtimeHub) {
             get list() { return all(); },
             get ready() { return !!store()?.ready; },
             get error() { return store()?.error || null; },
-            get me() { return store()?.me || null; }
+            get me() { return store()?.me || null; },
+            get leader() { return isWriter(); }
         };
         Alpine.magic('presence', () => api);
     });
 
-    // Clear on tab close
-    window.addEventListener('beforeunload', () => { try { if (ctx.started) clear(); } catch (e) { } });
-
     // Non-Alpine handle
-    window.ManifestPresence = { start, stop, set, clear, of, all };
+    window.ManifestPresence = { start, stop, set, clear, of, all, get leader() { return isWriter(); } };
 })();
