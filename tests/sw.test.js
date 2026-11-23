@@ -82,8 +82,8 @@ function makeScope({ href = `${ORIGIN}/sw.js?v=1.2.3&d=dep1`, manifest = null, p
         await tick()
     }
     // Plain request objects: undici refuses mode 'navigate', and the worker only reads url/method/mode/destination/headers.
-    const mkReq = (url, { method = 'GET', mode = 'no-cors', destination = '', headers = {} } = {}) =>
-        ({ url: new URL(url, ORIGIN).href, method, mode, destination, headers: new Headers(headers) })
+    const mkReq = (url, { method = 'GET', mode = 'no-cors', destination = '', headers = {}, integrity = '' } = {}) =>
+        ({ url: new URL(url, ORIGIN).href, method, mode, destination, headers: new Headers(headers), integrity })
     const fetchEvent = async (url, opts) => {
         const request = mkReq(url, opts)
         const waits = []
@@ -362,6 +362,13 @@ describe('primary CDN mirror fallback', () => {
         await r.settle()
         expect(r.text).toBe('rescued')
         expect(s.fetchLog.some(f => f.url === taggedMirror)).toBe(true)
+    })
+
+    it('an integrity= request keeps its hash on the CORS refetch and the mirror, so a mismatch is never cached', async () => {
+        const s = makeScope({ files: { [primary]: 'throw', [mirror]: 'rescued' } })
+        await s.fetchEvent(primary, { integrity: 'sha384-abc' })
+        const sent = s.fetchLog.filter(f => f.url === primary || f.url === mirror).map(f => f.input.integrity)
+        expect(sent).toEqual(['sha384-abc', 'sha384-abc'])
     })
 
     it('never mirrors non-primary CDN hosts', async () => {

@@ -904,38 +904,65 @@ function scriptsOutEntry({ source, dest }) {
     };
 }
 
-// Compute SHA-384 of every plugin file in lib/ and write lib/manifest.integrity.json.
-// Covers the self-host path only (loader serves unminified `.js`, matching these hashes).
-// The default CDN path loads jsDelivr-auto-minified `.min.js`, whose bytes differ from the
-// shipped `.js`, so those can't be SRI-pinned from a build-time hash.
-function emitIntegrityMap() {
-    console.log('Emitting SRI integrity map...');
+// Every browser script gets a shipped .min.js, so all CDN mirrors serve the same bytes (SRI)
+const MIN_SKIP = new Set(['manifest.js']);
+async function minifyScripts() {
+    console.log('Minifying scripts...');
+    const { minify } = await import('terser');
+    const files = fs.readdirSync(LIB_DIR).filter(f => f.endsWith('.js') && !f.endsWith('.min.js') && !MIN_SKIP.has(f));
+    for (const f of files) await minifyScript(f, minify);
+    console.log(`  ✓ Minified ${files.length} file(s)\n`);
+}
+async function minifyScript(f, minify) {
+    minify = minify || (await import('terser')).minify;
+    const src = fs.readFileSync(path.join(LIB_DIR, f), 'utf8');
+    const { code } = await minify(src);
+    fs.writeFileSync(path.join(LIB_DIR, f.replace(/\.js$/, '.min.js')), code + '\n');
+}
 
-    const libDir = LIB_DIR;
-    const files = fs.readdirSync(libDir).filter(f =>
-        (f.endsWith('.js') || f.endsWith('.min.js')) && f !== 'manifest.js'
-    );
+function sri(body) {
+    return `sha384-${createHash('sha384').update(body).digest('base64')}`;
+}
 
-    function hashFile(filePath) {
-        const body = fs.readFileSync(filePath);
-        const digest = createHash('sha384').update(body).digest('base64');
-        return `sha384-${digest}`;
-    }
+// Third-party files the loader injects at its pinned defaults
+function pinnedThirdParty() {
+    const loaderSrc = fs.readFileSync('scripts/manifest.js', 'utf8');
+    const alpine = loaderSrc.match(/const DEFAULT_ALPINE_VERSION = '([^']+)'/)?.[1];
+    const alpineDir = path.join('..', 'node_modules', 'alpinejs');
+    const installed = JSON.parse(fs.readFileSync(path.join(alpineDir, 'package.json'), 'utf8')).version;
+    if (!alpine || installed !== alpine) throw new Error(`DEFAULT_ALPINE_VERSION ${alpine} != installed alpinejs ${installed}`);
+    return { [`alpinejs@${alpine}/dist/cdn.min.js`]: sri(fs.readFileSync(path.join(alpineDir, 'dist', 'cdn.min.js'))) };
+}
 
-    const integrity = {};
-    for (const f of files) {
-        integrity[f] = hashFile(path.join(libDir, f));
-    }
+// manifest.modules.integrity.json: what the loader injects; its hash and the version are stamped
+// into the loader. manifest.integrity.json: every browser file, loader included.
+async function emitIntegrity() {
+    console.log('Emitting SRI integrity maps...');
+    const lib = LIB_DIR;
+    const read = f => fs.readFileSync(path.join(lib, f));
+    const scripts = fs.readdirSync(lib).filter(f => f.endsWith('.js') && f !== 'manifest.js' && f !== 'manifest.min.js').sort();
+    const modules = {};
+    for (const f of scripts) modules[f] = sri(read(f));
+    Object.assign(modules, pinnedThirdParty());
+    const modulesJson = JSON.stringify(modules, null, 2) + '\n';
+    fs.writeFileSync(path.join(lib, 'manifest.modules.integrity.json'), modulesJson);
 
-    // Hash the loader itself so self-hosters can SRI-pin the loader <script> tag too.
-    const loaderPath = path.join(libDir, 'manifest.js');
-    integrity['manifest.js'] = hashFile(loaderPath);
+    const loaderPath = path.join(lib, 'manifest.js');
+    const loader = fs.readFileSync(loaderPath, 'utf8');
+    const stamped = loader
+        .replace("const LOADER_VERSION = '0.0.0-dev';", `const LOADER_VERSION = '${BUILD_VERSION}';`)
+        .replace("const MODULES_INTEGRITY = '';", `const MODULES_INTEGRITY = '${sri(modulesJson)}';`);
+    if (stamped === loader || !stamped.includes(sri(modulesJson))) throw new Error('loader integrity stamp markers not found');
+    fs.writeFileSync(loaderPath, stamped);
+    await minifyScript('manifest.js');
 
-    const mapPath = path.join(libDir, 'manifest.integrity.json');
-    fs.writeFileSync(mapPath, JSON.stringify(integrity, null, 2) + '\n');
-    console.log(`  ✓ Wrote ${mapPath}`);
+    const all = {};
+    for (const f of fs.readdirSync(lib).filter(f => /\.(js|css)$/.test(f) || f === 'manifest.modules.integrity.json').sort()) all[f] = sri(read(f));
+    fs.writeFileSync(path.join(lib, 'manifest.integrity.json'), JSON.stringify(all, null, 2) + '\n');
+    console.log(`  ✓ Wrote manifest.modules.integrity.json + manifest.integrity.json`);
     console.log(`\n  Loader integrity (for <script integrity=> on user HTML):`);
-    console.log(`    ${integrity['manifest.js']}\n`);
+    console.log(`    manifest.js      ${all['manifest.js']}`);
+    console.log(`    manifest.min.js  ${all['manifest.min.js']}\n`);
 }
 
 // Main build function
@@ -954,8 +981,9 @@ async function build() {
         // Step 4: Copy files to lib directory
         copyFilesToDist();
 
-        // Step 5: Emit SRI integrity map + inline into loader
-        emitIntegrityMap();
+        // Step 5: Minify scripts, emit SRI maps, stamp the loader
+        await minifyScripts();
+        await emitIntegrity();
 
         console.log('✅ Build process completed successfully!');
 

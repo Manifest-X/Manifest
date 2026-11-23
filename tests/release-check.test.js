@@ -32,6 +32,18 @@ describe('release-check', () => {
         n.set('lib/manifest.integrity.json', Buffer.from(JSON.stringify({ 'a.js': sri('other') })))
         expect(compareTrees(tree('1.0.9'), n, '1.0.9', '1.0.10', tmp).verdict).toBe('changes')
     })
+    it('a loader embedding the module map hash is a stamp when the map is', () => {
+        const withLoader = (v) => {
+            const t = tree(v)
+            const map = t.get('lib/manifest.integrity.json')
+            t.set('lib/manifest.js', Buffer.from(`const LOADER_VERSION = '${v}';\nconst MODULES_INTEGRITY = '${sri(map)}';\n`))
+            return t
+        }
+        expect(compareTrees(withLoader('1.0.9'), withLoader('1.0.10'), '1.0.9', '1.0.10', tmp).verdict).toBe('stamps-only')
+        const edited = withLoader('1.0.10')
+        edited.set('lib/manifest.js', Buffer.from(`const LOADER_VERSION = '1.0.10';\nconst MODULES_INTEGRITY = '${sri('other')}';\n`))
+        expect(compareTrees(withLoader('1.0.9'), edited, '1.0.9', '1.0.10', tmp).verdict).toBe('changes')
+    })
     it('normalise leaves longer versions alone', () => {
         expect(normalise('1.0.9 1.0.90 1.0.9.1 v1.0.9', '1.0.9', '1.0.10')).toBe('1.0.10 1.0.90 1.0.9.1 v1.0.9')
     })

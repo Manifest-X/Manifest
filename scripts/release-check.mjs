@@ -122,10 +122,28 @@ export function compareTrees(oldFiles, newFiles, oldV, newV, tmp) {
     if (norm === nb.toString('utf8')) { stamps.push(rel); stampOnly.add(rel); continue; }
     deferred.push(rel);
   }
-  for (const rel of deferred) {
+  // Integrity maps and files embedding a stamp-only file's hash (the loader) are stamps too; repeat until settled
+  const sha = buf => `sha384-${createHash('sha384').update(buf).digest('base64')}`;
+  const swapHashes = (text) => {
+    for (const f of stampOnly) text = text.split(sha(oldFiles.get(f))).join(sha(newFiles.get(f)));
+    return text;
+  };
+  let pending = deferred, progress = true;
+  while (progress) {
+    progress = false;
+    const next = [];
+    for (const rel of pending) {
+      const ob = oldFiles.get(rel), nb = newFiles.get(rel);
+      const bad = integrityVerdict(rel, ob, nb, oldFiles, newFiles, stampOnly);
+      if ((bad && bad.length === 0) || swapHashes(normalise(ob.toString('utf8'), oldV, newV)) === nb.toString('utf8')) {
+        stamps.push(rel); stampOnly.add(rel); progress = true;
+      } else next.push(rel);
+    }
+    pending = next;
+  }
+  for (const rel of pending) {
     const ob = oldFiles.get(rel), nb = newFiles.get(rel);
     const bad = integrityVerdict(rel, ob, nb, oldFiles, newFiles, stampOnly);
-    if (bad && bad.length === 0) { stamps.push(rel); continue; }
     const c = lineCounts(normalise(ob.toString('utf8'), oldV, newV), nb.toString('utf8'), tmp);
     changed.push({ file: rel, ...c, ...(bad ? { integrity: bad } : {}) });
   }
