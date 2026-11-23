@@ -804,12 +804,16 @@ function hasXShow(element) {
 // Activation hook fires before the route becomes visible so deferred content renders first
 function showRoute(element) {
     element.dispatchEvent(new CustomEvent('manifest:route-activate'));
-    if (element.hasAttribute('hidden')) element.removeAttribute('hidden');
+    const wasHidden = element.hasAttribute('hidden');
+    if (wasHidden) element.removeAttribute('hidden');
     const prior = element.__manifestRouteDisplay;
     if (prior) {
         element.__manifestRouteDisplay = null;
         // x-show added since (tabs panels, components) now owns the inline display
         if (!hasXShow(element) && element.style.display === 'none') element.style.setProperty('display', prior.value, prior.priority);
+    } else if (wasHidden && !hasXShow(element) && element.style.display === 'none') {
+        // Route-hidden markup cloned or copied without its record (component placeholders and roots)
+        element.style.removeProperty('display');
     }
 }
 

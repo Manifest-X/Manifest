@@ -264,6 +264,8 @@ window.ManifestComponentsProcessor = {
             // The file this markup came from (Edit writes regions authored in it back there)
             rootElement._manifestComponent = name;
             rootElement._manifestHost = host;
+            // The router's hide record travels with the copied inline display
+            if (element.__manifestRouteDisplay) rootElement.__manifestRouteDisplay = { ...element.__manifestRouteDisplay };
             // Set data-component=instanceId if provided
             if (instanceId) {
                 rootElement.setAttribute('data-component', instanceId);
