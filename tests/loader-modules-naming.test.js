@@ -64,6 +64,17 @@ describe('module naming', () => {
         expect(srcs().some(s => /\/fw\/manifest\.toasts\.js$/.test(s))).toBe(true)
     })
 
+    it('data-plugin-base alone still resolves module URLs', async () => {
+        boot({ 'data-plugins': 'toasts', 'data-plugin-base': '/old' }); await settle()
+        expect(srcs().some(s => /\/old\/manifest\.toasts\.js$/.test(s))).toBe(true)
+    })
+
+    it('data-module-base wins over data-plugin-base', async () => {
+        boot({ 'data-modules': 'toasts', 'data-module-base': '/fw', 'data-plugin-base': '/old' }); await settle()
+        expect(srcs().some(s => /\/fw\/manifest\.toasts\.js$/.test(s))).toBe(true)
+        expect(srcs().some(s => s.includes('/old/'))).toBe(false)
+    })
+
     it('Manifest.loadModule and getModuleUrl alias the plugin-named API', async () => {
         boot({ 'data-modules': 'toasts' }); await settle()
         expect(window.Manifest.loadModule).toBe(window.Manifest.loadPlugin)

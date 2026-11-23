@@ -466,7 +466,7 @@ export interface ManifestPush {
     [extra: string]: unknown;
 }
 
-/** `$secure` from the device module — Keychain/Keystore via a native plugin; unencrypted localStorage on the web only; rejects on native without a module. */
+/** `$secure` from the device module — Keychain/Keystore via a native plugin; unencrypted localStorage on the web only; rejects on native without a plugin. */
 export interface ManifestSecure {
     get(key: string): Promise<string | null>;
     set(key: string, value: string): Promise<void>;

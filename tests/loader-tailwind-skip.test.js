@@ -77,7 +77,7 @@ describe('loader: Manifest.loadPlugin("tailwind") — the uncovered-class watche
     // The utilities plugin's runtime safety net (manifest.utilities.static.js
     // setupUncoveredClassWatcher) calls this when it sees a class the "complete"
     // bake doesn't cover. It must be a recognized plugin, not rejected as unknown.
-    it('is accepted (not "Unknown plugin") and fetches manifest.tailwind.min.js', async () => {
+    it('is accepted (not "Unknown module") and fetches manifest.tailwind.min.js', async () => {
         boot({ tailwind: false })
         await settle()
         expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(0)
@@ -86,7 +86,7 @@ describe('loader: Manifest.loadPlugin("tailwind") — the uncovered-class watche
         await window.Manifest.loadPlugin('tailwind')
         await settle()
 
-        expect(warnSpy.mock.calls.some(args => String(args[0]).includes('Unknown plugin'))).toBe(false)
+        expect(warnSpy.mock.calls.some(args => String(args[0]).includes('Unknown module'))).toBe(false)
         expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(1)
     })
 
