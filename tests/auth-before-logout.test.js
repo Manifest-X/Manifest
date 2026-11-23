@@ -10,9 +10,11 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const STORE_SRC = readFileSync(path.join(__dirname, '../src/scripts/auth/manifest.appwrite.auth.store.js'), 'utf8')
+const AUTH = f => readFileSync(path.join(__dirname, '../src/scripts/auth', f), 'utf8')
+const STORE_SRC = AUTH('manifest.appwrite.auth.store.js')
+const OTP_SRC = AUTH('manifest.appwrite.auth.users.otp.js')
 
-function load(account) {
+function load(account, { otp = false, state } = {}) {
     const listeners = {}
     const stores = {}
     const alpineInit = []
@@ -31,14 +33,15 @@ function load(account) {
         Appwrite: { ID: { unique: () => 'id' } },
         addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn) },
         dispatchEvent: e => { (listeners[e.type] || []).forEach(fn => fn(e)) },
-        ManifestAppwriteAuthConfig: { getAppwriteClient: async () => ({ account }), getAppwriteConfig: async () => ({}) },
+        ManifestAppwriteAuthConfig: { getAppwriteClient: async () => ({ account }), getAppwriteConfig: async () => ({ otp: true }) },
     }
     vm.createContext(ctx)
     vm.runInContext(STORE_SRC, ctx)
+    if (otp) vm.runInContext(OTP_SRC, ctx)
     alpineInit.forEach(cb => cb())
     const auth = stores.auth
     auth._appwrite = { account }
-    Object.assign(auth, { isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, session: { $id: 's1' } })
+    Object.assign(auth, state || { isAuthenticated: true, isAnonymous: false, user: { $id: 'u1' }, session: { $id: 's1' } })
     return { auth, on: (type, fn) => ctx.window.addEventListener(type, fn) }
 }
 
@@ -61,4 +64,32 @@ describe('logout before-logout hook', () => {
         expect(account.deleteSession).toHaveBeenCalled()
         expect(Date.now() - t0).toBeLessThan(4000)
     }, 6000)
+
+    const slowPresence = order => e => e.detail.waitUntil(new Promise(r => setTimeout(() => { order.push('presence delete'); r() }, 50)))
+
+    it('clearSession() runs the hook before deleting the session', async () => {
+        const order = []
+        const account = { deleteSession: vi.fn(async () => { order.push('deleteSession') }) }
+        const { auth, on } = load(account)
+        on('manifest:auth:before-logout', slowPresence(order))
+        await auth.clearSession()
+        expect(order).toEqual(['presence delete', 'deleteSession'])
+    })
+
+    it('a guest ended by OTP sign-in runs the hook before its session is deleted', async () => {
+        const order = []
+        const account = {
+            deleteSession: vi.fn(async () => { order.push('deleteSession') }),
+            createSession: vi.fn(async () => ({ $id: 's2', userId: 'u-new' })),
+            get: vi.fn(async () => ({ $id: 'u-new' })),
+        }
+        const { auth, on } = load(account, {
+            otp: true,
+            state: { isAuthenticated: true, isAnonymous: true, user: { $id: 'guest-1' }, session: { $id: 'guest-session', provider: 'anonymous' }, otpSent: true, _otpUserId: 'u-new', teams: [] },
+        })
+        on('manifest:auth:before-logout', slowPresence(order))
+        await new Promise(r => setTimeout(r, 250)) // the OTP module attaches its methods on a timer
+        await auth.verifyOTP('123456').catch(() => { })
+        expect(order.slice(0, 2)).toEqual(['presence delete', 'deleteSession'])
+    })
 })

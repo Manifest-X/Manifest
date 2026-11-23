@@ -145,6 +145,8 @@ function initializeAuthStore() {
     }
 
     const authStore = {
+        // Awaited before any deleteSession: session-bound cleanup (presence) still authenticates
+        _beforeSessionEnd: beforeLogout,
         user: null,
         session: null,
         isAuthenticated: false,
@@ -515,6 +517,7 @@ function initializeAuthStore() {
                 // If guest is disabled but we have anonymous session, clear it
                 if (this.isAnonymous && !this._guestAuto && !this._guestManual) {
                     try {
+                        await beforeLogout();
                         await appwrite.account.deleteSession(this.session.$id);
                         this.isAuthenticated = false;
                         this.isAnonymous = false;
@@ -864,6 +867,7 @@ function initializeAuthStore() {
 
             try {
                 if (this.session) {
+                    await beforeLogout();
                     await this._appwrite.account.deleteSession(this.session.$id);
                 }
 

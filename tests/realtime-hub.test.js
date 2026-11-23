@@ -677,3 +677,40 @@ describe('presence review fixes (9bd5d3d)', () => {
         expect(presence.leader).toBe(false)
     })
 })
+
+describe('presence second-review fixes (3af8403)', () => {
+    it('expiry prunes on server time: a client clock 20 min fast keeps live peers', async () => {
+        const serverNow = Date.now() - 20 * 60 * 1000 // client is 20 min ahead
+        const row = { ...P('u4', ['read("users")']), expiresAt: new Date(serverNow + 10 * 60 * 1000).toISOString() }
+        const { presence, records } = await boot({ presenceRows: [row], auth: authed() })
+        const proto = window.Appwrite.Presences.prototype
+        const orig = proto.upsert
+        proto.upsert = async function (args) { const r = await orig.call(this, args); return { ...r, $updatedAt: new Date(serverNow).toISOString() } }
+        await presence.start({ scope: 'global' })
+        await settle(160)
+        expect(Object.keys(records())).toContain('u4') // client-time pruning would drop it
+        proto.upsert = orig
+    })
+
+    it('stop() resets own state: the next user in the tab starts clean', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global' })
+        await presence.set('busy', { page: 'secret' })
+        presence.stop()
+        Alpine.store('auth').user = { $id: 'other', name: 'Other' }
+        await settle()
+        await presence.start({ scope: 'global' })
+        const last = stats.upserts.at(-1)
+        expect(last.presenceId).toBe('other')
+        expect(last.status).toBe('online')
+        expect(last.metadata.page).toBe(undefined)
+    })
+
+    it('an unchanged set() sends nothing and writes nothing', async () => {
+        const { stats, presence } = await boot({ auth: authed() })
+        await presence.start({ scope: 'global', status: 'available' })
+        const n = stats.upserts.length
+        expect(await presence.set('available')).toBe(true)
+        expect(stats.upserts.length).toBe(n)
+    })
+})

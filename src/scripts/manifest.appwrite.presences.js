@@ -328,6 +328,8 @@ if (!window.ManifestRealtimeHub) {
         leaderKeep: 0,          // leader's keep-alive, for the follower watchdog
         touched: null,          // ids seen live while a list is in flight
         userId: null,           // user tracking started for
+        offset: 0,              // server clock − client clock (from upsert responses)
+        promotion: null,        // pending promotion wait { timer, resolve }
         chain: Promise.resolve(),
         onState: null,
         suspended: false,
@@ -461,7 +463,7 @@ if (!window.ManifestRealtimeHub) {
     let lastRecords = null;
     function render() {
         const s = store(); if (!s) return;
-        const now = Date.now();
+        const now = Date.now() + ctx.offset;
         let soonest = Infinity;
         const next = {};
         for (const id in ctx.roster) {
@@ -469,7 +471,7 @@ if (!window.ManifestRealtimeHub) {
             if (!e) continue;
             // Expired peers drop locally, without waiting for Appwrite's delete event
             const exp = e.rec?.expiresAt ? Date.parse(e.rec.expiresAt) : NaN;
-            if (exp <= now) { delete ctx.roster[id]; continue; }
+            if (exp <= now) continue;
             if (exp < soonest) soonest = exp;
             if (inScope({ $permissions: e.perms }, id)) next[id] = e.rec;
         }
@@ -621,7 +623,13 @@ if (!window.ManifestRealtimeHub) {
             A.Permission.delete(A.Role.user(user.$id))
         ];
         try {
-            await ctx.presences.upsert({ presenceId: user.$id, status: d.status, metadata: ownMeta(d.metadata), permissions });
+            const res = await ctx.presences.upsert({ presenceId: user.$id, status: d.status, metadata: ownMeta(d.metadata), permissions });
+            const server = Date.parse(res?.$updatedAt);
+            if (Number.isFinite(server)) {
+                const prev = ctx.offset;
+                ctx.offset = server - Date.now();
+                if (Math.abs(ctx.offset - prev) > 1000) render();
+            }
             if (s) s.error = null;
             return true;
         } catch (e) {
@@ -635,6 +643,8 @@ if (!window.ManifestRealtimeHub) {
         return enqueue(async () => {
             const user = authUser();
             if (!user || !ctx.presences) return false;
+            // Lost the lock while queued: the new leader owns the record
+            if (ctx.started && ctx.role && !isWriter()) return false;
             const d = desired();
             if (!d) {
                 clearTimeout(ctx.timers.keep);
@@ -654,6 +664,7 @@ if (!window.ManifestRealtimeHub) {
                 try { await ctx.presences.delete({ presenceId: user.$id }); } catch (e) { }
             }
             setMine(d);
+            if (ctx.started && ctx.role && !isWriter()) return false;
             const ok = await write(d);
             // Cleared (here or in another tab) while the write was in flight: undo it
             if (ctx.cleared) {
@@ -700,6 +711,12 @@ if (!window.ManifestRealtimeHub) {
     /* Tabs */
 
     // Shared state change from this tab, mirrored to the others
+    function differs(patch) {
+        return Object.keys(patch).some(k => k === 'metadata'
+            ? JSON.stringify(ctx.metadata) !== JSON.stringify(patch.metadata)
+            : ctx[k] !== patch[k]);
+    }
+
     function change(patch, extra) {
         Object.assign(ctx, patch);
         ctx.stamp = Math.max(Date.now(), ctx.stamp + 1);
@@ -726,7 +743,7 @@ if (!window.ManifestRealtimeHub) {
         if (ctx.role !== 'leader') return;
         post({
             t: 'state', from: ctx.tabId, stamp: ctx.stamp, status: ctx.status, metadata: ctx.metadata, team: ctx.team,
-            cleared: ctx.cleared, sent: ctx.sent, sentAt: ctx.sentAt, keepAliveMs: ctx.keepAliveMs, error: store()?.error || null
+            cleared: ctx.cleared, sent: ctx.sent, sentAt: ctx.sentAt, keepAliveMs: ctx.keepAliveMs, offset: ctx.offset, error: store()?.error || null
         });
     }
 
@@ -753,7 +770,12 @@ if (!window.ManifestRealtimeHub) {
                 if (ctx.tabs.delete(m.from)) schedulePublish(ctx.settleMs);
                 return;
             case 'set':
+                // Ack every set, changed or not: an unacked follower takes over
+                if (leader) post({ t: 'ack', from: ctx.tabId, stamp: m.stamp });
                 if (adopt(m) && leader) schedulePublish(0);
+                return;
+            case 'ack':
+                if (ctx.role === 'follower' && m.stamp >= ctx.stamp) { clearTimeout(ctx.timers.ack); ctx.timers.ack = null; armWatch(); }
                 return;
             case 'lead':
                 // Another tab took the lock from us (we were stuck): step down
@@ -774,6 +796,7 @@ if (!window.ManifestRealtimeHub) {
                 ctx.sent = m.sent || null;
                 ctx.sentAt = m.sentAt || 0;
                 ctx.leaderKeep = m.keepAliveMs || 0;
+                if (typeof m.offset === 'number' && m.offset !== ctx.offset) { ctx.offset = m.offset; render(); }
                 if (m.stamp >= ctx.stamp) { clearTimeout(ctx.timers.ack); ctx.timers.ack = null; }
                 armWatch();
                 setMine(m.sent || null);
@@ -869,6 +892,7 @@ if (!window.ManifestRealtimeHub) {
     // Lost the lock to a steal: back to follower, queue again
     function demote() {
         if (ctx.role !== 'leader') return;
+        cancelPromotion();
         ['keep', 'publish', 'wait'].forEach(k => { clearTimeout(ctx.timers[k]); ctx.timers[k] = null; });
         ctx.release = null;
         if (typeof ctx.sub === 'function') { try { ctx.sub(); } catch (e) { } }
@@ -891,7 +915,12 @@ if (!window.ManifestRealtimeHub) {
         if (ctx.role !== 'leader') return;
         // The row may be gone (a predecessor that thought it was alone deleted
         // it): always rewrite, after other tabs report their activity
-        if (promoted) await new Promise(r => setTimeout(r, 300));
+        if (promoted) {
+            await new Promise(resolve => {
+                ctx.promotion = { resolve, timer: setTimeout(resolve, 300) };
+            });
+            ctx.promotion = null;
+        }
         if (ctx.role !== 'leader') return;
         await publish(true);
     }
@@ -906,7 +935,17 @@ if (!window.ManifestRealtimeHub) {
         await publish(true);
     }
 
+    function cancelPromotion() {
+        if (!ctx.promotion) return;
+        clearTimeout(ctx.promotion.timer);
+        const { resolve } = ctx.promotion;
+        ctx.promotion = null;
+        resolve();
+    }
+
     function resign() {
+        ctx.role = null;
+        cancelPromotion();
         Object.keys(ctx.timers).forEach(k => { clearTimeout(ctx.timers[k]); ctx.timers[k] = null; });
         if (ctx.abort) { try { ctx.abort.abort(); } catch (e) { } ctx.abort = null; }
         if (ctx.release) { ctx.release(); ctx.release = null; }
@@ -918,7 +957,6 @@ if (!window.ManifestRealtimeHub) {
             ctx.bc = null;
         }
         if (ctx.onState) { const fn = ctx.onState; ctx.onState = null; fn(); }
-        ctx.role = null;
     }
 
     function waitForLeader(ms) {
@@ -986,6 +1024,7 @@ if (!window.ManifestRealtimeHub) {
         const patch = { cleared: false, team: scopeTeamId() };
         if (status != null) patch.status = status;
         if (metadata !== undefined) patch.metadata = metadata;
+        if (!differs(patch)) return ctx.role === 'follower' ? true : publish(false);
         change(patch);
         if (ctx.role === 'follower') {
             setMine({ status: ctx.status, metadata: ctx.metadata });
@@ -1048,8 +1087,10 @@ if (!window.ManifestRealtimeHub) {
         await join();
         if (ctx.role === 'follower') {
             await waitForLeader(1000);
-            if (typeof opts.status === 'string') change({ status: opts.status, cleared: false });
-            else if (ctx.team !== scopeTeamId()) change({ team: scopeTeamId() });
+            // Only real differences go to the leader (a no-op would still be acked, but costs a message)
+            const patch = { cleared: false, team: scopeTeamId() };
+            if (typeof opts.status === 'string') patch.status = opts.status;
+            if (differs(patch)) change(patch);
         }
 
         if (s) { s.ready = true; s.error = null; }
@@ -1064,6 +1105,14 @@ if (!window.ManifestRealtimeHub) {
         ctx.userId = null;
         ctx.roster = {};
         ctx.mine = null;
+        // The next user in this tab starts clean
+        ctx.status = 'online';
+        ctx.metadata = null;
+        ctx.team = undefined;
+        ctx.cleared = false;
+        ctx.stamp = 0;
+        ctx.sent = null;
+        ctx.sentAt = 0;
         const s = store(); if (s) { s.ready = false; s.records = {}; s.me = null; }
     }
 

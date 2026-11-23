@@ -201,6 +201,7 @@ function initializeEmailOTP() {
                     // checks the code, so the guest session must go first.
                     if (this.session && this.isAnonymous) {
                         try {
+                            await this._beforeSessionEnd?.();
                             await this._appwrite.account.deleteSession(this.session.$id);
                             guestEnded = true;
                         } catch (deleteError) {

@@ -32,7 +32,8 @@ let record = null          // the user's presence record (null = absent)
 let log = []               // { op, tab, status, t }
 const streams = new Set()  // { tab, res }
 let deliveries = {}        // tab → realtime messages received
-const reset = () => { record = null; log = []; deliveries = {}; for (const s of streams) s.res.end(); streams.clear() }
+let slow = null            // { tab, ms }: delay that tab's upsert responses
+const reset = () => { record = null; log = []; deliveries = {}; slow = null; for (const s of streams) s.res.end(); streams.clear() }
 const emit = (action, rec) => {
     const msg = JSON.stringify({ events: [`presences.${rec.$id}.${action}`, `presences.${action}`, 'presences'], payload: rec })
     for (const s of streams) { s.res.write(`data: ${msg}\n\n`); deliveries[s.tab] = (deliveries[s.tab] || 0) + 1 }
@@ -103,6 +104,7 @@ const server = http.createServer(async (req, res) => {
         record = { $id: b.presenceId, userId: b.presenceId, status: b.status, metadata: b.metadata, $permissions: b.permissions, $updatedAt: new Date().toISOString() }
         log.push({ op: 'upsert', tab: b.tab, status: b.status, t: Date.now() })
         emit('upsert', record)
+        if (slow && slow.tab === b.tab) await sleep(slow.ms)
         res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(record))
     }
     if (u.pathname === '/api/delete' && req.method === 'POST') {
@@ -288,6 +290,59 @@ if (!BASELINE) {
         const idleMs = await waitFor(async () => (await leaders(others)).length === 1, 6000, 100)
         check('watchdog takes over from an idle suspended leader within keep-alive + grace', idleMs >= 0 && idleMs < 4500, idleMs)
         await cdp2.send('Debugger.resume')
+        await browser.close()
+    }
+
+    // No-op sets never move leadership (Playcom: start({status}) + set(status) in every tab)
+    {
+        reset()
+        const browser = await puppeteer.launch({ headless: true })
+        const pages = await openTabs(browser, ['A', 'B', 'C'], { auto: false, status: 'available', keepAliveMs: 60000 })
+        await sleep(300)
+        for (const p of Object.values(pages)) await p.evaluate(() => window.ManifestPresence.set('available'))
+        await sleep(3000)
+        check('every tab start({status}) + same set(): one leader, unchanged', JSON.stringify(await leaders(pages)) === '["A"]', await leaders(pages))
+        check('…and one write in total', writes().length === 1 && writes()[0].tab === 'A', writes())
+        await browser.close()
+    }
+    {
+        reset()
+        const browser = await puppeteer.launch({ headless: true })
+        const pages = await openTabs(browser, ['A', 'B'], { keepAliveMs: 60000 })
+        const other = await browser.newPage()
+        await other.goto(`${BASE}/blank`)
+        await other.bringToFront()
+        await waitFor(() => record?.status === 'away', 4000)
+        const m = log.length
+        await pages.B.evaluate(() => window.ManifestPresence.set('busy'))
+        await sleep(3000)
+        check('a status change while every tab is hidden is acked: no takeover, no write', JSON.stringify(await leaders(pages)) === '["A"]' && writes(m).length === 0, { leaders: await leaders(pages), w: writes(m) })
+        await pages.B.bringToFront()
+        await waitFor(() => record?.status === 'busy', 2000)
+        check('…and lands from the leader once a tab is visible', record?.status === 'busy' && writes(m).length === 1 && writes(m)[0].tab === 'A', writes(m))
+        await browser.close()
+    }
+
+    // A demoted leader never finishes a queued write
+    {
+        reset()
+        const browser = await puppeteer.launch({ headless: true })
+        const pages = await openTabs(browser, ['A', 'B'], { keepAliveMs: 60000 })
+        await sleep(300)
+        slow = { tab: 'A', ms: 4000 }
+        // A: one write in flight (response held 4 s), a second queued behind it
+        await pages.A.evaluate(() => { window.ManifestPresence.set('one'); window.ManifestPresence.set('two') })
+        await sleep(100)
+        const cdp = await pages.A.createCDPSession()
+        await cdp.send('Debugger.enable')
+        await cdp.send('Debugger.pause')
+        await pages.B.evaluate(() => window.ManifestPresence.set('three'))
+        await waitFor(() => record?.status === 'three', 5000)
+        const m = log.length
+        await cdp.send('Debugger.resume')
+        await sleep(5000)
+        check('the stolen-from tab writes nothing after the takeover', writes(m).filter(e => e.tab === 'A').length === 0 && record?.status === 'three', log.slice(m))
+        check('one leader: B', JSON.stringify(await leaders(pages)) === '["B"]', await leaders(pages))
         await browser.close()
     }
 

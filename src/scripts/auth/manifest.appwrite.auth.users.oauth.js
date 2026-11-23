@@ -39,6 +39,7 @@ function initializeOAuth() {
                 // session stays so Appwrite links the OAuth identity to it (preserving teams)
                 if (this.isAnonymous && this.session && !appwriteConfig?.guestUpgrade) {
                     try {
+                        await this._beforeSessionEnd?.();
                         await this._appwrite.account.deleteSession(this.session.$id);
                         this.session = null;
                         this.user = null;
@@ -190,6 +191,7 @@ function handleOAuthCallbacks() {
             // account and the "prohibited" branch below reuses the upgraded session.
             if (store.session && store.isAnonymous && !upgradingGuest) {
                 try {
+                    await store._beforeSessionEnd?.();
                     await store._appwrite.account.deleteSession(store.session.$id);
                 } catch (deleteError) {
                     // Could not delete anonymous session

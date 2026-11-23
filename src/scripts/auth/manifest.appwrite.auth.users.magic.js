@@ -233,6 +233,7 @@ function initializeMagicLinks() {
                     // and force a brand-new user.
                     if (this.session && this.isAnonymous && !upgradingGuest) {
                         try {
+                            await this._beforeSessionEnd?.();
                             await this._appwrite.account.deleteSession(this.session.$id);
                         } catch (deleteError) {
                             // Could not delete anonymous session
