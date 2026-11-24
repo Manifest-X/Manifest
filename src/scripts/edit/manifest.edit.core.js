@@ -49,6 +49,23 @@
         }
         return false;
     }
+    // Full source content of an element (editor and runtime attributes left out), hashed:
+    // tells twins apart where keys cannot.
+    const VOLATILE_ATTR = /^(style$|data-edit-|data-rich-text|contenteditable$|draggable$|tabindex$|role$|aria-)/;
+    function contentId(el) {
+        const ser = (n) => {
+            if (n.nodeType === 3) return n.textContent.replace(/\s+/g, ' ');
+            if (n.nodeType !== 1 || pluginNode(n) || isGenerated(n)) return '';
+            let s = '<' + n.tagName + [...n.attributes].filter(a => !VOLATILE_ATTR.test(a.name)).map(a => ' ' + a.name + '=' + a.value).sort().join('') + '>';
+            if (n.tagName === 'TEMPLATE') s += n.innerHTML;
+            else if (!isRendered(n)) for (const c of n.childNodes) s += ser(c);
+            return s + '</>';
+        };
+        const str = ser(el);
+        let h1 = 0x811c9dc5, h2 = 5381;
+        for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619); h2 = (Math.imul(h2, 33) + c) | 0; }
+        return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36) + str.length.toString(36);
+    }
     function staticKeys(container) {
         const seen = Object.create(null);
         return sortableChildren(container).map(el => {

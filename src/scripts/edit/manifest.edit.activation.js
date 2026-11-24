@@ -7,7 +7,7 @@
         const region = key(area), first = !area._marked;
         area._marked = true;
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
-        const seen = Object.create(null);
+        const seen = Object.create(null), keyed = [];
         const markEl = (el, path) => {
             let k = el.getAttribute('data-edit-key');
             if (!k) {
@@ -16,6 +16,7 @@
                     const n = seen[base] = (seen[base] || 0) + 1;
                     k = canonKey(region, n > 1 ? base + '#' + n : base);
                     originAt.set(k, path);
+                    keyed.push([el, base]);
                 } else k = '!' + mint();
                 el.setAttribute('data-edit-key', k);
             }
@@ -53,6 +54,8 @@
             }
         };
         walk(area, '');
+        // Twins (keys told apart by position only) carry their source content's identity
+        keyed.forEach(([el, base]) => { if (seen[base] > 1) el._editId = contentId(el); else delete el._editId; });
     }
     const warnedRendered = new Set(), renderedRegions = new Set(), unwritableWhy = new Map();
     // A list whose records mnfst-run can't write: inline x-data, or a source manifest.json does not declare as a file.
@@ -180,7 +183,7 @@
                 if (ids && ids[originOf(id)]) n.fp = ids[originOf(id)];
                 const e = editsFor(id); if (e) n.edits = e;
                 if (scoped.has(el)) n.edits = Object.assign({}, n.edits, { style: ownStyle(el) || null });
-                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
+                if (!(e && 'text' in e) && !isRendered(el) && el.tagName !== 'TEMPLATE' && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
                     const structural = ss.touched.has(isRoot ? '#' + region : id);
                     if (id[0] === '~' || structural) { n.children = kids; const b = structural && id[0] !== '~' && baseOf(isRoot ? '' : id); if (b) n.base = b; }

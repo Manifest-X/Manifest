@@ -72,10 +72,8 @@ describe('twins under source changes', () => {
         expect(res.results.map(x => x.status)).toEqual(['written'])
         expect(fileIds().a).toEqual(['1', '3'])
     })
-    // Known bug (twin identity, WORK.md "Edit: twin identity by content"): with the reload, the
-    // pending delete of image 2 resolves by position in the swapped source and removes image 1.
     for (const reload of [false, true]) {
-        ;(reload ? it.fails : it)(`Q1/Q2 an image twin deleted, the twins swapped in the source${reload ? ', reload' : ''}`, async () => {
+        it(`Q1/Q2 an image twin deleted, the twins swapped in the source${reload ? ', reload' : ''}`, async () => {
             const t = await session(IMG3, ['<p data-m="g">G</p>'])
             await t.user(() => store().remove(kids(t.r.a)[1]))
             t.ext('a', swap('1', '2'))
@@ -145,6 +143,46 @@ describe('twins under source changes', () => {
         await t.check()
         await t.check({ rebase: true })
         expect(S.file()).toContain('B edited')
+    })
+    it('Q20 a twin deleted, the twins swapped in the source, reload: found by content, the page and the source lose that twin', async () => {
+        const t = await session(IMG3, ['<p data-m="g">G</p>'])
+        await t.user(() => store().remove(kids(t.r.a)[1]))
+        t.ext('a', swap('1', '2'))
+        await t.reload()
+        expect(ids(t.r.a)).toEqual(['1', '3'])
+        expect(store().conflicts).toEqual([])
+        expect((await t.check()).results.map(x => x.status)).toEqual(['written'])
+        expect(fileIds().a).toEqual(['1', '3'])
+    })
+    it('Q21 the same with text twins (same first 24 characters)', async () => {
+        const T1 = 'Lorem ipsum dolor sit amet one', T2 = 'Lorem ipsum dolor sit amet two'
+        const t = await session(['<p data-m="a">A</p>', `<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`], ['<p data-m="g">G</p>'])
+        await t.user(() => store().remove(kids(t.r.a)[2]))
+        t.ext('a', swap('1', '2'))
+        await t.reload()
+        expect(ids(t.r.a)).toEqual(['a', '1'])
+        await t.check()
+        expect(fileIds().a).toEqual(['a', '1'])
+    })
+    it('Q22 a twin deleted, the other twin replaced by a copy of it in the source, reload: ambiguous, reported, nothing removed', async () => {
+        const t = await session(IMG3, ['<p data-m="g">G</p>'])
+        await t.user(() => store().remove(kids(t.r.a)[1]))
+        t.ext('a', (ls) => ls.map(l => l.replace('data-m="1"', 'data-m="2"'))); t.removed('1'); t.added('2')
+        await t.reload()
+        expect(ids(t.r.a)).toEqual(['2', '2', '3'])
+        expect(store().conflicts.some(c => c.region === 'a' && c.prop === 'structure')).toBe(true)
+        await t.check()
+        expect(fileIds().a).toEqual(['2', '2', '3'])
+    })
+    it('Q23 a text edit on a twin, the twins swapped in the source, reload: reported, never written over the other twin', async () => {
+        const T1 = 'Lorem ipsum dolor sit amet one', T2 = 'Lorem ipsum dolor sit amet two'
+        const t = await session([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, '<h2 data-m="h">H</h2>'], ['<p data-m="g">G</p>'])
+        editText(kids(t.r.a)[0], 'Edited one')
+        t.ext('a', swap('1', '2'))
+        await t.reload()
+        expect(store().conflicts.some(c => c.region === 'a' && c.prop === 'text')).toBe(true)
+        await store().publish()
+        expect(S.file()).toContain(T1); expect(S.file()).toContain(T2)
     })
 })
 

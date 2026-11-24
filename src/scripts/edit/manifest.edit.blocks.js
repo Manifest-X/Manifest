@@ -51,7 +51,10 @@
         const c = el.cloneNode(true);
         const src = [el, ...el.querySelectorAll('*')], dst = [c, ...c.querySelectorAll('*')];
         dst.forEach((n, i) => { if (addedTab.has(src[i])) n.removeAttribute('tabindex'); });
+        // x-for / x-if output re-renders from the copied template
+        const gen = dst.filter((n, i) => i > 0 && isGenerated(src[i]));
         unrich(el, c);
+        gen.forEach(n => n.remove());
         c.querySelectorAll('[data-edit-handle], [data-edit-live], [data-edit-ghost]').forEach(n => n.remove());
         [c, ...c.querySelectorAll('*')].forEach(n => {
             [...n.attributes].forEach(a => { if (a.name.startsWith('data-edit-') && !(keepKeys && a.name === 'data-edit-key')) n.removeAttribute(a.name); });

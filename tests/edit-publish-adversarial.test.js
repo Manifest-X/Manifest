@@ -344,12 +344,8 @@ describe('source changed underneath pending structure (round 3)', () => {
         ['B5 duplicates, a move and a delete among twins', [`<p>${T1}</p>`, `<p>${T2}</p>`, '<h2>H</h2>', `<p>${T1}</p>`], ['<p>G</p>', `<p>${T2}</p>`],
             (r) => { store().duplicate(r.b.children[1]); store().duplicate(r.a.children[1]); store().move(r.b.children[1], r.a); store().remove(r.b.children[1]) }, (f) => f.replace('<h2>H</h2>', '<h2>H</h2>\n        <p>Agent</p>'), ['Agent', 'H']],
     ]
-    // Known bug (twin identity, WORK.md "Edit: twin identity by content"): siblings sharing a
-    // 24-character prefix are told apart by position only, so after an external swap and a
-    // reload the pending delete of "two" removes "one" from the source, with no conflict.
-    const knownBug = new Set(['P2 twin delete, external swap of the twins'])
     for (const [name, a, b, act, change, markers] of cases) {
-        ;(knownBug.has(name) ? it.fails : it)(name + ': reload, then publish', async () => {
+        it(name + ': reload, then publish', async () => {
             const r = R(await S.open(persist(a, b)))
             act(r)
             S.ext(change)

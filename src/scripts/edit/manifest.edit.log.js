@@ -158,7 +158,15 @@
         if (eq(before, order) && !Object.keys(markup || {}).length) return;
         const d = { kind: 'st-children', region: key(area), parent: parentKey(container, area), order, before, html: markup || {} };
         if (copies && Object.keys(copies).length) d.copies = copies;
+        withIds(d, [d.parent, ...before]);
         pushDelta(d);
+    }
+    // The source identity of each twin a structural edit names, checked after a reload
+    function withIds(d, keys) {
+        const m = keyMap(staticAreas()), ids = {};
+        keys.forEach(k => { if (!k || k[0] !== '@' || ids[k]) return; const el = m.get(k) || detached.get(k); if (el && el._editId) ids[k] = el._editId; });
+        if (Object.keys(ids).length) d.ids = ids;
+        return d;
     }
     const materialize = (markup, k) => {
         if (!markup) return null;
@@ -204,7 +212,20 @@
         // their new keys, so the reorder still applies, but only if no structural edit moved,
         // added or removed them. Otherwise every structural edit of that region goes (the
         // writer would refuse them), reported with the children that changed.
-        const first = new Map(), broken = new Map(), renames = new Map();
+        const first = new Map(), broken = new Map(), renames = new Map(), remapped = [];
+        // Twins: each element a structural edit named must still hold the source content recorded
+        const recId = {};
+        log.forEach(d => { if (d.ids) Object.entries(d.ids).forEach(([k, v]) => { if (!(k in recId)) recId[k] = v; }); });
+        const keyRegion = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));
+        const freshId = (k) => typeof k === 'string' && k[0] === '@' && regions.has(keyRegion(k)) && live.has(k) ? contentId(live.get(k)) : null;
+        // Only removals in this container: the edit names elements, not positions
+        const removalsOnly = (region, parent) => log.every(d => {
+            if (d.kind === 'st-move') return !((d.from === region && (d.fromParent || '') === parent) || (d.to === region && (d.toParent || '') === parent));
+            if ((d.kind !== 'st-order' && d.kind !== 'st-children') || d.region !== region || (d.parent || '') !== parent) return true;
+            if (d.kind === 'st-order' || d.order.some(k => k[0] !== '@')) return false;
+            let i = 0; for (const k of d.before) if (k === d.order[i]) i++;
+            return i === d.order.length;
+        });
         const note = (region, parent, before) => { const k = JSON.stringify([region, parent]); if (!first.has(k) && isStatic(region)) first.set(k, [region, parent, before || []]); };
         log.forEach(d => {
             if (d.kind === 'st-order' || d.kind === 'st-children') note(d.region, d.parent, d.before);
@@ -241,6 +262,19 @@
                 if (holders.size === 1) { c = [...holders][0]; renamedParent = c.getAttribute('data-edit-key'); }
             }
             const now = c ? staticKeys(c) : [];
+            const miss = c ? [parent, ...before].filter(k => recId[k] && freshId(k) != null && freshId(k) !== recId[k]) : [];
+            if (miss.length) {
+                // Swapped twins found again by content, each exactly once; anything else is a conflict
+                let map = !miss.includes(parent) && !renamedParent && now.join('\n') === before.join('\n') && removalsOnly(region, parent) ? new Map() : null;
+                if (map) for (const k of miss) {
+                    const at = now.filter(j => freshId(j) === recId[k]);
+                    if (at.length !== 1 || !miss.includes(at[0])) { map = null; break; }
+                    map.set(k, at[0]);
+                }
+                if (map && new Set(map.values()).size === miss.length) { remapped.push([region, parent, now, map]); return; }
+                broken.set(region, [...(broken.get(region) || []), { container: parent, changed: miss.map(k => { const l = k.slice(k.indexOf('@', 1) + 1); return { was: l, now: l }; }) }]);
+                return;
+            }
             if (c && now.join('\n') === before.join('\n') && !renamedParent) return;
             const changed = [];
             before.forEach((k, i) => { if (now[i] !== k) changed.push({ was: k, now: now[i] ?? null }); });
@@ -263,6 +297,24 @@
                 if (renamedParent && renamedParent !== parent) m.set(parent, renamedParent);
                 renames.set(region, m);
             } else broken.set(region, [...(broken.get(region) || []), { container: parent, changed: changed.map(x => ({ was: x.was && tagOf(x.was) && x.was.slice(x.was.indexOf('@', 1) + 1), now: x.now && x.now.slice(x.now.indexOf('@', 1) + 1) })) }]);
+        });
+        // Remapped twins: removals name the element found again; its own edits follow it
+        remapped.forEach(([region, parent, now, map]) => {
+            if (broken.has(region)) return;
+            const ren = (k) => typeof k === 'string' && map.has(k) ? map.get(k) : k;
+            const enc = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;'), dec = (v) => v.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+            let cur = now.slice();
+            log.forEach(d => {
+                if (d.kind === 'st-children' && d.region === region && (d.parent || '') === parent) {
+                    const out = d.before.filter(k => !d.order.includes(k)).map(ren);
+                    d.before = cur.slice(); cur = cur.filter(k => !out.includes(k)); d.order = cur.slice();
+                    if (d.html) d.html = Object.fromEntries(Object.entries(d.html).map(([k, h]) => [ren(k), typeof h === 'string' ? h.replace(/data-edit-key="([^"]*)"/g, (all, v) => `data-edit-key="${enc(ren(dec(v)))}"`) : h]));
+                }
+                if (d.ids && d.region === region) d.ids = Object.fromEntries(Object.entries(d.ids).map(([k, v]) => [ren(k), v]));
+                if (d.kind === 'st-node' && d.region === region && typeof d.path === 'string') d.path = ren(d.path);
+                if (d.kind === 'lock' && d.region === region) d.key = ren(d.key);
+            });
+            ver++;
         });
         // Renamed children keep their place in every structural edit (their own text edits stay conflicts)
         renames.forEach((m, region) => {
@@ -292,9 +344,9 @@
         });
         const structural = (d) => ((d.kind === 'st-order' || d.kind === 'st-children') && broken.has(d.region)) || (d.kind === 'st-move' && (broken.has(d.from) || broken.has(d.to)))
             || (d.kind === 'st-node' && broken.has(d.region) && typeof d.path === 'string' && d.path[0] === '~');
-        const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && !live.has(d.path)) || structural(d);
+        const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && (!live.has(d.path) || (!!d.id && freshId(d.path) != null && freshId(d.path) !== d.id))) || structural(d);
         log.forEach((d, i) => { if (gone(d) && i < cursor && d.kind === 'st-node' && d.path[0] === '@') lost.push(d); });
-        if (!log.some(gone)) { if (renames.size) saveState(); return []; }
+        if (!log.some(gone)) { if (renames.size || remapped.length) saveState(); return []; }
         const latest = new Map();
         lost.forEach(d => latest.set(d.path + '|' + d.prop, d));
         const label = (k) => typeof k === 'string' ? originOf(k).slice(originOf(k).indexOf('@', 1) + 1) : '';
@@ -415,7 +467,7 @@
             ver++; saveState(); refresh();
             return true;
         }
-        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, opts.join ? { join: true } : {}));
+        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, el._editId ? { id: el._editId } : {}, opts.join ? { join: true } : {}));
         if (opts.coalesce) stamps.set(d, Date.now());
         return true;
     }
@@ -462,7 +514,8 @@
     function commitOrder(area, container, before) {
         const order = staticKeys(container);
         if (eq(before, order)) return false;
-        pushDelta({ kind: 'st-order', region: key(area), parent: parentKey(container, area), order, before });
+        const d = { kind: 'st-order', region: key(area), parent: parentKey(container, area), order, before };
+        pushDelta(withIds(d, [d.parent, ...before]));
         return true;
     }
     // A piece that already sits in its new container. Identity never changes, so one
@@ -471,6 +524,7 @@
         const toContainer = item.parentElement;
         const d = { kind: 'st-move', from: key(fromArea), to: key(toArea), fromParent: parentKey(fromContainer, fromArea), toParent: parentKey(toContainer, toArea), key: idOf(item), fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore };
         if (opts.join) d.join = true;
+        withIds(d, [d.key, d.fromParent, d.toParent, ...fromBefore, ...toBefore]);
         pushDelta(d);
         resetAreas();
         markStatic(toArea);
