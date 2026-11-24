@@ -96,7 +96,7 @@ describe('static utilities sheet — runtime skip', () => {
     })
 
     it('emits no bare rule, at boot or after, for text-xl md:text-2xl held by the static sheet', async () => {
-        localStorage.setItem('tailwind-cache', JSON.stringify([['k', { css: '@layer utilities {\n.text-xl { font-size: 1.25rem }\n}', timestamp: Date.now(), themeHash: 'x' }]]))
+        localStorage.setItem('tailwind-cache:v2', JSON.stringify([['k', { css: '@layer utilities {\n.text-xl { font-size: 1.25rem }\n}', timestamp: Date.now(), themeHash: 'x' }]]))
         const headHtml = [
             '<style id="theme-vars">:root { --text-xl: 1.25rem; --text-2xl: 1.5rem; --color-page: #fff; }</style>',
             '<style data-mnfst-utilities>@layer utilities{.text-xl{font-size:1.25rem}@media (min-width: 768px){.md\\:text-2xl{font-size:1.5rem}}}</style>',

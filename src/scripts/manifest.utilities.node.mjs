@@ -2028,7 +2028,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 const finalRule = hasMediaQuery ? wrapAtRules(atRules, rule) : rule;
 
                 if (!generatedRules.has(finalRule)) {
-                    emit(finalRule, 2, mediaOrder(parsed.variants));
+                    emit(finalRule, 2, atRuleOrder(parsed.variants));
                     generatedRules.add(finalRule);
                 }
             }
@@ -2143,46 +2143,62 @@ function breakpointRank(name) {
     return bp.max ? -bp.px : bp.px;
 }
 
-// ---- @media rule order (Tailwind v4): early media, then breakpoints by rank, then other media ----
-const NO_RANK = -1e6;
-const EARLY_MEDIA_VARIANTS = new Set([
-    'motion-safe', 'motion-reduce', 'contrast-more', 'contrast-less',
-    'prefers-reduced-motion', 'prefers-reduced-motion-no-preference',
-    'prefers-contrast', 'prefers-contrast-less', 'prefers-contrast-no-preference'
-]);
+// ---- At-rule order (Tailwind v4 variant order; the highest-order variant decides, then the next) ----
+const NO_RANK = -1e9;
+const ORDER_STEP = 1e7;
+const BREAKPOINT_ORDER = 10;
+const MEDIA_ORDER = [
+    [/prefers-reduced-motion:\s*no-preference/, 1], [/prefers-reduced-motion:\s*reduce/, 2],
+    [/prefers-contrast:\s*more/, 3], [/prefers-contrast:\s*less/, 4],
+    [/orientation:\s*portrait/, 21], [/orientation:\s*landscape/, 22], [/prefers-color-scheme/, 23],
+    [/^@media print/, 25], [/forced-colors/, 26], [/inverted-colors/, 27],
+    [/\(pointer:\s*none/, 28], [/\(pointer:\s*coarse/, 29], [/\(pointer:\s*fine/, 30],
+    [/any-pointer:\s*none/, 31], [/any-pointer:\s*coarse/, 32], [/any-pointer:\s*fine/, 33],
+    [/scripting:\s*none/, 34]
+];
 
-// Named or arbitrary range variant → rank (max-* negative, min-width positive); null if not a range
-function rangeRank(name) {
-    if (!name) return null;
-    if (breakpointOf(name)) return breakpointRank(name);
-    const m = /^(min|max)-\[(.+)\]$/.exec(name);
-    if (!m) return null;
-    const u = /^(-?\d*\.?\d+)(px|rem|em)$/.exec(m[2].trim());
-    const px = u ? parseFloat(u[1]) * (u[2] === 'px' ? 1 : 16) : null;
-    if (m[1] === 'max') return px === null ? -1e5 : -px;
-    return px === null ? 1e5 : px;
+function toPx(size) {
+    const u = /^(-?\d*\.?\d+)(px|rem|em)$/.exec(size.trim());
+    return u ? parseFloat(u[1]) * (u[2] === 'px' ? 1 : 16) : null;
 }
 
-// [band, r1, r2, extra] for an @media rule built from these variants; the highest-order variant decides,
-// extra lower-order media variants sort after (md: before motion-safe:md:)
-function mediaOrder(variants) {
-    let band = -1, extra = 0;
-    const ranks = [];
+// Width condition → rank (max widest first, then min ascending); null if none
+function widthRank(selector) {
+    let m = /\((?:min-width:\s*|width\s*>=\s*)([^)]+)\)/.exec(selector);
+    if (m) { const px = toPx(m[1]); return px === null ? 1e5 : px; }
+    m = /\((?:max-width:\s*|width\s*<\s*)([^)]+)\)/.exec(selector);
+    if (m) { const px = toPx(m[1]); return px === null ? -1e5 : -px; }
+    return null;
+}
+
+// One at-rule variant's place in Tailwind's order; null for selector variants
+function variantOrder(selector) {
+    if (typeof selector !== 'string' || !selector.startsWith('@')) return null;
+    if (selector.startsWith('@supports')) return 0;
+    if (selector.startsWith('@container')) return 20 * ORDER_STEP + (widthRank(selector) || 0);
+    if (selector.startsWith('@starting-style')) return 24 * ORDER_STEP;
+    if (!selector.startsWith('@media')) return 40 * ORDER_STEP;
+    const r = widthRank(selector);
+    if (r !== null) return BREAKPOINT_ORDER * ORDER_STEP + r;
+    for (const [re, n] of MEDIA_ORDER) if (re.test(selector)) return n * ORDER_STEP;
+    return 40 * ORDER_STEP;
+}
+
+// Top three at-rule variant orders, highest first (md: before motion-safe:md: before lg:)
+function atRuleOrder(variants) {
+    const orders = [];
     for (const v of variants || []) {
-        if (!v || typeof v.selector !== 'string' || !v.selector.startsWith('@media')) continue;
-        const r = rangeRank(v.name);
-        if (r !== null) { ranks.push(r); band = Math.max(band, 1); }
-        else { band = Math.max(band, EARLY_MEDIA_VARIANTS.has(v.name) ? 0 : 2); extra++; }
+        const o = v && variantOrder(v.selector);
+        if (o !== null && o !== undefined) orders.push(o);
     }
-    ranks.sort((a, b) => b - a);
-    if (band === 1) extra = Math.min(extra, 1);
-    else extra = 0;
-    return [band < 0 ? 2 : band, ranks.length ? ranks[0] : NO_RANK, ranks.length > 1 ? ranks[1] : NO_RANK, extra];
+    orders.sort((a, b) => b - a);
+    return [0, 1, 2].map(i => i < orders.length ? orders[i] : NO_RANK);
 }
 
-// Full order key: [media, band, r1, r2, extra, section, var/entry, pair/array, opacity, sub]
+// Full order key: [at-rule, o1, o2, o3, section, var/entry, pair/array, opacity, sub]
+const KEY_SECTION = 4;
 function ruleKey(rule, order, slotKey) {
-    const head = isMediaRule(rule) ? [1].concat(order || [2, NO_RANK, NO_RANK, 0]) : [0, 0, 0, 0, 0];
+    const head = isAtRule(rule) ? [1].concat(order || [40 * ORDER_STEP, NO_RANK, NO_RANK]) : [0, 0, 0, 0];
     return head.concat(slotKey);
 }
 
@@ -2591,7 +2607,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 }
 
                 if (!generatedRules.has(finalRule)) {
-                    emit(finalRule, 2, mediaOrder(parsed.variants));
+                    emit(finalRule, 2, atRuleOrder(parsed.variants));
                     generatedRules.add(finalRule);
                 }
             }
@@ -2685,7 +2701,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 if (generatedRules.has(rule)) continue;
                 generatedRules.add(rule);
                 slot = [2, 0, 0, 0];
-                emit(rule, 2, [1, e.rank, NO_RANK, 0]);
+                emit(rule, 2, [BREAKPOINT_ORDER * ORDER_STEP + e.rank, NO_RANK, NO_RANK]);
             }
         }
 
@@ -2696,7 +2712,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
     }
 };
 
-// Rules + order keys for theme and custom utilities, in sheet order (base, then @media by breakpoint).
+// Rules + order keys for theme and custom utilities, in sheet order (base, then at-rules in Tailwind variant order).
 // Full compile, incremental apply, cache text and the node bake all write this order.
 TailwindCompiler.prototype.generateOrderedUtilities = function (themeCss, usedData) {
     const data = Object.assign({}, usedData, { rulesOut: [], keysOut: [] });
@@ -2714,7 +2730,7 @@ TailwindCompiler.prototype.orderedUtilitiesCss = function (entries) {
 // (see ruleKey); deltas are inserted at that index.
 
 const utilitiesCssFrom = (applied) => `@layer utilities {\n${applied.entries.map(e => e.rule).join('\n\n')}\n}`;
-const isMediaRule = (rule) => rule.trim().startsWith('@media');
+const isAtRule = (rule) => rule.trim().startsWith('@');
 
 function compareKeys(a, b) {
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
@@ -2742,7 +2758,7 @@ TailwindCompiler.prototype.entriesMatchSheet = function (entries) {
     const layer = this.utilitiesLayerRule();
     if (!layer || layer.cssRules.length !== entries.length) return false;
     for (let i = 0; i < entries.length; i++) {
-        if ((layer.cssRules[i] instanceof CSSMediaRule) !== !!entries[i].key[0]) return false;
+        if (!(layer.cssRules[i] instanceof CSSStyleRule) !== !!entries[i].key[0]) return false;
     }
     return true;
 };
@@ -2786,7 +2802,7 @@ TailwindCompiler.prototype.compileDelta = function (themeCss) {
     if (tailwindResponsiveDisplay(classes).length) return false;
     const fresh = classes.length ? this.generateKeyedUtilities(themeCss, classes).filter(e => !applied.rules.has(e.rule)) : [];
     // The display block's contents depend on every used class: a new block rule means a full regen
-    if (fresh.some(e => e.key[5] === 2)) return false;
+    if (fresh.some(e => e.key[KEY_SECTION] === 2)) return false;
     const entries = applied.entries;
 
     // Place every rule first; bail before touching the sheet if any is ambiguous

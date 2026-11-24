@@ -7,6 +7,8 @@
  * added after load in reverse breakpoint order, applied by compileDelta), and a
  * page carrying only the node-baked sheet (static bake, no runtime).
  * #v: Tailwind display classes added after load next to the display block (lg:hidden, xl:block).
+ * Other at-rules sort after breakpoints: #q container query, #o portrait (every width is portrait,
+ * height 1400), #pr print (checked under print media emulation).
  *
  * Run: npm run build && node tests/e2e/utilities-responsive-order.e2e.mjs
  */
@@ -31,7 +33,10 @@ const MARKUP = `<p id="t" class="text-e sm:text-d md:text-c lg:text-b xl:text-a"
 <p id="s" class="md:text-a md:max-lg:text-b lg:text-c">s</p>
 <p id="m" class="md:text-a min-[950px]:text-b lg:text-c">m</p>
 <p id="l" class="md:lead-b lg:lead-a">l</p>
-<div id="v" class="col md:row">v</div>`
+<div id="v" class="col md:row">v</div>
+<div style="container-type:inline-size;width:500px"><p id="q" class="md:text-a @sm:text-b">q</p></div>
+<p id="o" class="lg:text-b portrait:text-a">o</p>
+<p id="pr" class="lg:text-b print:text-a">pr</p>`
 
 // Never in MARKUP; added after load one class at a time, largest breakpoint first
 const DYN = {
@@ -42,12 +47,12 @@ const DYN = {
 
 // null = falls back to the unstyled value
 const EXPECT = {
-    500: { t: E, x: A, s: null, m: null, l: null, v: 'flex' },
-    700: { t: D, x: B, s: null, m: null, l: null, v: 'flex' },
-    900: { t: C, x: C, s: B, m: A, l: '20px', v: 'flex' },
-    1000: { t: C, x: C, s: B, m: B, l: '20px', v: 'flex' },
-    1100: { t: B, x: null, s: C, m: C, l: '10px', v: 'none' },
-    1300: { t: A, x: null, s: C, m: C, l: '10px', v: 'block' }
+    500: { t: E, x: A, s: null, m: null, l: null, v: 'flex', q: B, o: A, pr: null },
+    700: { t: D, x: B, s: null, m: null, l: null, v: 'flex', q: B, o: A, pr: null },
+    900: { t: C, x: C, s: B, m: A, l: '20px', v: 'flex', q: B, o: A, pr: null },
+    1000: { t: C, x: C, s: B, m: B, l: '20px', v: 'flex', q: B, o: A, pr: null },
+    1100: { t: B, x: null, s: C, m: C, l: '10px', v: 'none', q: B, o: A, pr: B },
+    1300: { t: A, x: null, s: C, m: C, l: '10px', v: 'block', q: B, o: A, pr: B }
 }
 const withDyn = (w) => ({ ...w, dt: w.t, dx: w.x })
 const PROP = { l: 'lineHeight', dt: 'backgroundColor', dx: 'backgroundColor', v: 'display' }
@@ -113,7 +118,7 @@ async function run(browser, srv, route, width) {
     const p = await ctx.newPage()
     const errors = []
     p.on('pageerror', (e) => errors.push(e.message))
-    await p.setViewport({ width, height: 600 })
+    await p.setViewport({ width, height: 1400 })
     await p.goto(srv.url + route, { waitUntil: 'load' })
     const base = await p.evaluate(() => {
         const q = document.createElement('p'); document.body.appendChild(q)
@@ -161,6 +166,10 @@ async function run(browser, srv, route, width) {
         const after = await p.evaluate(READ, ids, PROP)
         check(`${route} @${width}px computed styles after full regen`, matches(after, want, base, PROP), JSON.stringify(after))
     }
+    await p.emulateMediaType('print')
+    const printed = await p.evaluate(() => getComputedStyle(document.getElementById('pr')).color)
+    check(`${route} @${width}px print: beats lg: in print`, printed === A, printed)
+    await p.emulateMediaType('screen')
     check(`${route} @${width}px no page errors`, errors.length === 0, errors.join(' | '))
     await ctx.close()
 }

@@ -75,6 +75,18 @@ describe('responsive @media order', () => {
         expect(ascending(order(css, ['.sm\\:text-d', '.md\\:lead-b', '.lg\\:text-a', '.xl\\:lead-a']))).toBe(true)
     })
 
+    it('other at-rules follow Tailwind: breakpoints, container sizes, portrait, starting, print, forced-colors', async () => {
+        const classes = ['forced-colors:text-a', 'print:text-b', 'starting:text-c', 'portrait:text-d', '@md:text-a', '@max-md:text-b', '@sm:text-c', 'lg:text-d', 'md:text-a']
+        const css = await compileUtilities({ classes, themeCss: THEME })
+        expect(ascending(order(css, ['.md\\:text-a', '.lg\\:text-d', '.\\@max-md\\:text-b', '.\\@sm\\:text-c', '.\\@md\\:text-a',
+            '.portrait\\:text-d', '.starting\\:text-c', '.print\\:text-b', '.forced-colors\\:text-a']))).toBe(true)
+    })
+
+    it('Manifest media aliases sort with their Tailwind equivalents (touch = pointer-coarse after print)', async () => {
+        const css = await compileUtilities({ classes: ['touch:text-a', 'print:text-b', 'prefers-reduced-motion:text-c', 'md:text-d'], themeCss: THEME })
+        expect(ascending(order(css, ['.prefers-reduced-motion\\:text-c', '.md\\:text-d', '.print\\:text-b', '.touch\\:text-a']))).toBe(true)
+    })
+
     it('base rules stay before every @media rule', async () => {
         const css = await compileUtilities({ classes: ['md:text-a', 'text-d', 'hover:text-b', 'lead-a'], themeCss: THEME + '\n' + CUSTOM })
         const lastBase = Math.max(css.indexOf('.text-d {'), css.indexOf('.hover\\:text-b:hover'))
@@ -84,7 +96,8 @@ describe('responsive @media order', () => {
 
 describe('order keys', () => {
     const ALL = ['xl:text-a', 'lg:text-b', 'md:text-c', 'sm:text-d', 'max-lg:text-a', 'max-sm:text-b', 'md:max-lg:text-d',
-        'min-[900px]:text-a', 'text-a', 'hover:text-b', 'md:lead-a', 'lg:lead-b', 'print:text-c', 'motion-safe:text-d']
+        'min-[900px]:text-a', 'text-a', 'hover:text-b', 'md:lead-a', 'lg:lead-b', 'print:text-c', 'motion-safe:text-d',
+        '@md:text-a', '@sm:text-b', 'portrait:text-c', 'starting:text-d', 'forced-colors:text-a', 'print:md:text-b']
 
     it('the live compiler and the node bake write the same order', async () => {
         const live = compiler.orderedUtilitiesCss(compiler.generateOrderedUtilities(THEME, { classes: ALL, variableSuffixes: [] }))
@@ -93,18 +106,20 @@ describe('order keys', () => {
         expect(sel(baked)).toEqual(sel(live))
     })
 
-    it('keys are uniform, sorted, and carry the breakpoint rank', () => {
+    it('keys are uniform, sorted, and carry each at-rule variant\'s order', () => {
         const entries = compiler.generateKeyedUtilities(THEME, ALL)
-        expect(new Set(entries.map(e => e.key.length))).toEqual(new Set([10]))
+        expect(new Set(entries.map(e => e.key.length))).toEqual(new Set([9]))
         expect(entries.every((e, i) => i === 0 || cmp(entries[i - 1].key, e.key) <= 0)).toBe(true)
         const key = (needle) => entries.find(e => e.rule.includes(needle)).key
-        expect(key('.md\\:text-c').slice(0, 5)).toEqual([1, 1, 768, -1e6, 0])
-        expect(key('.max-sm\\:text-b').slice(0, 3)).toEqual([1, 1, -640])
-        expect(key('.md\\:max-lg\\:text-d').slice(0, 4)).toEqual([1, 1, 768, -1024])
-        expect(key('.min-\\[900px\\]\\:text-a')[2]).toBe(900)
-        expect(key('.motion-safe\\:text-d')[1]).toBe(0)
-        expect(key('.print\\:text-c')[1]).toBe(2)
-        expect(key('.text-a {').slice(0, 5)).toEqual([0, 0, 0, 0, 0])
+        const BP = 10e7, NO = -1e9
+        expect(key('.md\\:text-c').slice(0, 4)).toEqual([1, BP + 768, NO, NO])
+        expect(key('.max-sm\\:text-b').slice(0, 2)).toEqual([1, BP - 640])
+        expect(key('.md\\:max-lg\\:text-d').slice(0, 3)).toEqual([1, BP + 768, BP - 1024])
+        expect(key('.min-\\[900px\\]\\:text-a')[1]).toBe(BP + 900)
+        expect(key('.motion-safe\\:text-d')[1]).toBe(1e7)
+        expect(key('.\\@sm\\:text-b')[1]).toBe(20e7 + 384)
+        expect(key('.print\\:md\\:text-b').slice(0, 3)).toEqual([1, 25e7, BP + 768])
+        expect(key('.text-a {').slice(0, 4)).toEqual([0, 0, 0, 0])
     })
 
     it('placing a later class set by key reproduces the full regen (the order compileDelta inserts by)', () => {
@@ -120,5 +135,15 @@ describe('order keys', () => {
             }
         }
         expect(live.map(e => e.rule)).toEqual(full)
+    })
+})
+
+describe('utilities cache', () => {
+    it('a sheet cached under the pre-order key is dropped, not replayed', () => {
+        localStorage.setItem('tailwind-cache', JSON.stringify({ 'x-y': { css: '@layer utilities {\n.stale { color: red }\n}', timestamp: Date.now() } }))
+        compiler.cache = new Map()
+        compiler.loadPersistentCache()
+        expect(localStorage.getItem('tailwind-cache')).toBeNull()
+        expect([...compiler.cache.values()].some(v => v.css.includes('.stale'))).toBe(false)
     })
 })

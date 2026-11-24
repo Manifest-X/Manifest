@@ -1,11 +1,20 @@
 // Cache management
 // Methods for loading, saving, and managing cached utilities
 
+// Bump when generated rule order changes: older sheets would replay in the old order
+const UTILITIES_CACHE_KEY = 'tailwind-cache:v2';
+const LEGACY_CACHE_KEYS = ['tailwind-cache'];
+
+function dropLegacyUtilitiesCache() {
+    for (const k of LEGACY_CACHE_KEYS) { try { localStorage.removeItem(k); } catch (_) { } }
+}
+
 // Load and apply cached utilities
 TailwindCompiler.prototype.loadAndApplyCache = function () {
     const cacheStart = performance.now();
+    dropLegacyUtilitiesCache();
     try {
-        const cached = localStorage.getItem('tailwind-cache');
+        const cached = localStorage.getItem(UTILITIES_CACHE_KEY);
         if (cached) {
             const parsed = JSON.parse(cached);
             this.cache = new Map(Object.entries(parsed));
@@ -126,7 +135,7 @@ TailwindCompiler.prototype.savePersistentCache = function () {
     while (this.cache.size > 0 && attempts < 4) {
         try {
             const serialized = JSON.stringify(Object.fromEntries(this.cache));
-            localStorage.setItem('tailwind-cache', serialized);
+            localStorage.setItem(UTILITIES_CACHE_KEY, serialized);
             return;
         } catch (error) {
             // QuotaExceededError (name varies by browser): drop the oldest
@@ -149,13 +158,14 @@ TailwindCompiler.prototype.savePersistentCache = function () {
     // Last resort: cache is unusable in this origin right now, clear the slot
     // so the next session starts clean.  This is a perf optimization, not
     // correctness — drop quietly.
-    try { localStorage.removeItem('tailwind-cache'); } catch (_) {}
+    try { localStorage.removeItem(UTILITIES_CACHE_KEY); } catch (_) {}
 };
 
 // Load cache from localStorage
 TailwindCompiler.prototype.loadPersistentCache = function () {
+    dropLegacyUtilitiesCache();
     try {
-        const cached = localStorage.getItem('tailwind-cache');
+        const cached = localStorage.getItem(UTILITIES_CACHE_KEY);
         if (cached) {
             const parsed = JSON.parse(cached);
             this.cache = new Map(Object.entries(parsed));

@@ -157,7 +157,7 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
                 };
             } else {
                 // Fall back to the cache (only generate what was used before)
-                const cached = localStorage.getItem('tailwind-cache');
+                const cached = localStorage.getItem(UTILITIES_CACHE_KEY);
                 let cachedClasses = new Set();
 
                 if (cached) {
