@@ -60,6 +60,24 @@ describe('Tailwind CLI variants', () => {
         expect(at('@utility foo')).toBeLessThan(at(TAILWIND_CUSTOM_VARIANTS[0]));
     });
 
+    it('strips comments without touching strings or globs', () => {
+        const html = shell('<style type="text/tailwindcss">@source "./x/*.js"; .a { content: "/*"; } /* note */ .b { content: \'*/\'; }</style>');
+        expect(authorTailwindCss(html)).toBe('@source "./x/*.js"; .a { content: "/*"; }  .b { content: \'*/\'; }');
+    });
+
+    it('ignores blocks in HTML comments, templates and data-type attributes', () => {
+        const html = shell(`<!-- <style type="text/tailwindcss">@plugin "nope";</style> -->
+<template><style type="text/tailwindcss">@plugin "tpl";</style></template>
+<style data-type="text/tailwindcss">@plugin "data";</style>
+<style type="text/tailwindcss">@theme { --color-ok: #0f0; }</style>`);
+        expect(authorTailwindCss(html)).toBe('@theme { --color-ok: #0f0; }');
+    });
+
+    it('maps the live engine\'s relative Tailwind imports', () => {
+        const html = shell('<style type="text/tailwindcss">@import "./theme.css"; @import \'./utilities.css\';</style>');
+        expect(authorTailwindCss(html)).toBe('@import "tailwindcss/theme.css"; @import \'tailwindcss/utilities.css\';');
+    });
+
     it('lets an author @import replace the default, as the live engine does', () => {
         const html = shell('<style type="text/tailwindcss">@import "tailwindcss/utilities";</style>');
         const css = buildTailwindCliInput({ indexHtml: html });
@@ -154,6 +172,27 @@ describe.skipIf(!hasCli)('runTailwindCliForPrerender (real CLI)', () => {
         expect(rule(css, '.hocus\\:underline')).toContain('&:hover');
         expect(rule(css, '.touch\\:px-4')).toContain('pointer: coarse');
         expect(rule(css, '.touch\\:px-4')).not.toContain('author-touch');
+    }, 30000);
+
+    it('keeps @source globs intact next to comments', () => {
+        const site = join(tmp, 'source');
+        const out = join(site, 'dist');
+        mkdirSync(join(site, 'x'), { recursive: true });
+        mkdirSync(out, { recursive: true });
+        writeFileSync(join(site, 'x', 'a.js'), "el.className = 'text-brand';");
+        writeFileSync(join(site, 'index.html'), shell(`<style type="text/tailwindcss">@source "./x/*.js";
+@theme { --color-brand: #f00; }
+.q::before { content: "/*"; }
+/* trailing comment */</style>`));
+        expect(runTailwindCliForPrerender(site, out, {}, [repoModules])).toBe(true);
+        const css = readFileSync(join(out, 'prerender.tailwind.css'), 'utf8');
+        expect(rule(css, '.text-brand')).toContain('var(--color-brand)');
+        expect(css).toContain('content: "/*"');
+    }, 30000);
+
+    it('resolves the live engine\'s relative Tailwind imports', () => {
+        const css = build('virtual', '<style type="text/tailwindcss">@import "./theme.css"; @import "./utilities.css";</style>');
+        expect(rule(css, '.touch\\:px-4')).toContain('pointer: coarse');
     }, 30000);
 
     it('honours an author dark override in tailwindInput', () => {

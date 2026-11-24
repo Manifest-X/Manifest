@@ -690,12 +690,18 @@ const TAILWIND_CUSTOM_VARIANTS = [
 ];
 const TAILWIND_DARK_VARIANT = '@custom-variant dark (&:where(.dark, .dark *));';
 const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
-const stripCssComments = (css) => String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
+const stripCssComments = (css) => String(css || '')
+  .replace(/("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')|\/\*[\s\S]*?(?:\*\/|$)/g, (m, str) => str ?? '');
+// Live engine maps these relative imports to Tailwind's own files
+const LIVE_VIRTUAL_IMPORT_RE = /(@import\s+)(["'])\.\/(preflight|theme|utilities)\.css\2/g;
 
 /** Author `<style type="text/tailwindcss">` blocks, comments stripped, in document order. */
 function authorTailwindCss(html) {
-  const styleRe = /<style\b[^>]*\btype\s*=\s*(["']?)text\/tailwindcss\1(?=[\s>])[^>]*>([\s\S]*?)<\/style>/gi;
-  return [...String(html || '').matchAll(styleRe)].map(m => stripCssComments(m[2]).trim()).filter(Boolean).join('\n');
+  const styleRe = /<style\b[^>]*(?<![\w-])type\s*=\s*(["']?)text\/tailwindcss\1(?=[\s>])[^>]*>([\s\S]*?)<\/style>/gi;
+  const live = String(html || '').replace(/<!--[\s\S]*?(?:-->|$)/g, '').replace(/<template\b[\s\S]*?<\/template>/gi, '');
+  return [...live.matchAll(styleRe)]
+    .map(m => stripCssComments(m[2]).replace(LIVE_VIRTUAL_IMPORT_RE, '$1$2tailwindcss/$3.css$2').trim())
+    .filter(Boolean).join('\n');
 }
 
 /**
@@ -705,7 +711,7 @@ function authorTailwindCss(html) {
 function buildTailwindCliInput({ importPath = 'tailwindcss', inputCss = '', indexHtml = '' } = {}) {
   let author = authorTailwindCss(indexHtml);
   const custom = importPath !== 'tailwindcss';
-  if (custom) author = author.replace(/@import\s[^;]*;/g, '').trim();
+  if (custom) author = author.replace(/@import\s(?:"[^"]*"|'[^']*'|[^;"'])*;/g, '').trim();
   const lines = [];
   if (custom || !/@import\s/.test(author)) lines.push(`@import ${JSON.stringify(importPath)};`);
   if (author) lines.push(author);
@@ -781,7 +787,7 @@ function runTailwindCliForPrerender(rootDir, outputDir, pre, roots = globalModul
     }
   }
   if (r.status !== 0) {
-    console.error('prerender: Tailwind CLI failed; install with `npm i -g tailwindcss @tailwindcss/cli` (or per project: `npm i -D tailwindcss @tailwindcss/cli`), or check tailwindInput in manifest.prerender.');
+    console.error('prerender: Tailwind CLI failed; install with `npm i -g tailwindcss @tailwindcss/cli` (or per project: `npm i -D tailwindcss @tailwindcss/cli`), or check tailwindInput in manifest.prerender and the text/tailwindcss blocks in index.html.');
     if (r.stderr) console.error(r.stderr);
     if (r.stdout) console.error(r.stdout);
     return false;
