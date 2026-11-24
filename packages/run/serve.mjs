@@ -1259,9 +1259,9 @@ function indexRegion(html, name, node) {
     let own = open(n);
     for (const c of n.content) if (c.text != null) own += '\0' + c.text.replace(/\s+/g, ' ').trim();
     n.fp = fpHash(own);
-    // Content id: the element's whole source slice (tells twins apart after a reload)
-    n.cid = fpHash(html.slice(n.tagStart, n.closeEnd).replace(/\s+/g, ' '));
     if (count[n.base] > 1) {
+      // Twins: a content id from the whole source slice (tells them apart after a reload)
+      n.cid = fpHash(html.slice(n.tagStart, n.closeEnd).replace(/\s+/g, ' '));
       let ctx = String(count[n.base]);
       for (let a = n.parent; a && a !== node; a = a.parent) ctx += '\0' + open(a) + '\0' + a.base;
       n.fp += '.' + fpHash(ctx);
@@ -1292,7 +1292,7 @@ function sourceIds(file) {
     if (n.implied) continue;
     const a = (scanTag(openOf(html, n)) || { attrs: [] }).attrs.find(x => /^x-edit(\.|$)/.test(x.lower));
     if (!a || !a.value) continue;
-    for (const [k, m] of indexRegion(html, a.value, n).byKey) if (m.fp) { ids[k] = m.fp; cids[k] = m.cid; }
+    for (const [k, m] of indexRegion(html, a.value, n).byKey) if (m.fp) { ids[k] = m.fp; if (m.cid) cids[k] = m.cid; }
   }
   return { ids, cids };
 }

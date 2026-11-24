@@ -623,7 +623,7 @@
         if (eq(before, order) && !Object.keys(markup || {}).length) return;
         const d = { kind: 'st-children', region: key(area), parent: parentKey(container, area), order, before, html: markup || {} };
         if (copies && Object.keys(copies).length) d.copies = copies;
-        withIds(d, [d.parent, ...before, ...order.filter(k => k[0] === '~').map(originOf)]);
+        withIds(d, [...before, ...order.filter(k => k[0] === '~').map(originOf)]);
         pushDelta(d);
     }
     // Renames keys through every delta that `pick` selects
@@ -632,25 +632,28 @@
         const arr = (a) => Array.isArray(a) ? a.map(ren) : a;
         log.forEach(d => {
             if (pick && !pick(d)) return;
-            ['before', 'order', 'fromBefore', 'toBefore', 'fromOrder', 'toOrder', 'anc'].forEach(f => { if (d[f]) d[f] = arr(d[f]); });
+            ['before', 'order', 'fromBefore', 'toBefore', 'fromOrder', 'toOrder', 'unsure'].forEach(f => { if (d[f]) d[f] = arr(d[f]); });
             ['parent', 'fromParent', 'toParent', 'key', 'path'].forEach(f => { if (typeof d[f] === 'string') d[f] = ren(d[f]); });
             if (d.html) d.html = Object.fromEntries(Object.entries(d.html).map(([k, h]) => [ren(k), typeof h === 'string' ? h.replace(/data-edit-key="([^"]*)"/g, (all, v) => `data-edit-key="${enc(ren(dec(v)))}"`) : h]));
             if (d.copies) d.copies = Object.fromEntries(Object.entries(d.copies).map(([k, v]) => [ren(k), v]));
         });
     }
     // The source identity of each twin a structural edit names, checked after a reload
-    // A twin's text edit records its content id and the keys of the elements around it
-    function twinOf(area, el, path) {
-        const o = {}, c = cidOf(path); if (c) o.id = c;
-        const anc = []; for (let n = el.parentElement; n && n !== area; n = n.parentElement) { const k = n.getAttribute('data-edit-key'); if (k) anc.push(k); }
-        if (anc.length) o.anc = anc;
-        return o;
-    }
-    const twinKey = (k) => typeof k === 'string' && k[0] === '@' && (/#\d+$/.test(k) || !!cidOf(k + '#2'));
+    // A key told apart from its twins only by position (same tag and first 24 characters)
+    const familyOf = (k) => String(k).replace(/#\d+$/, '');
+    const twinKey = (k) => typeof k === 'string' && k[0] === '@' && (/#\d+$/.test(k) || keyMap(staticAreas()).has(k + '#2'));
+    // The content id of each twin an edit names, and of the rest of its family, as the base read them;
+    // twins of a file a rebase wrote over unseen are listed as unverifiable instead
     function withIds(d, keys) {
-        const ids = {};
-        keys.forEach(k => { if (ids[k] || !twinKey(k)) return; const c = cidOf(k); if (c) ids[k] = c; });
+        const ids = {}, unsure = new Set();
+        keys.forEach(k => {
+            if (!twinKey(k) || ids[k]) return;
+            const o = originOf(k), a = areaByKey(decodeURIComponent(o.slice(1, o.indexOf('@', 1)))), f = a && sourceFile(a), m = baseCids && f && baseCids[f];
+            if (m) Object.keys(m).forEach(j => { if (familyOf(j) === familyOf(o)) ids[j] = m[j]; });
+            else if (f && cidsUnsure.has(f)) unsure.add(o);
+        });
         if (Object.keys(ids).length) d.ids = ids;
+        if (unsure.size) d.unsure = [...unsure];
         return d;
     }
     const materialize = (markup, k) => {
@@ -702,7 +705,15 @@
         const recId = {};
         const cidLike = (v) => typeof v === 'string' && /^[0-9a-f]{12}$/.test(v);
         log.forEach(d => { if (d.ids) Object.entries(d.ids).forEach(([k, v]) => { if (!(k in recId) && cidLike(v)) recId[k] = v; }); });
-        const family = (k) => String(k).replace(/#\d+$/, '');
+        const family = familyOf;
+        // Positive evidence only: a twin's recorded content found at ANOTHER key of its family whose
+        // own content changed. Content changed in place (or not found) is the source's edit: positional.
+        const movedTo = (k) => {
+            if (!recId[k] || freshId(k) == null || freshId(k) === recId[k]) return null;
+            const a = areaByKey(keyRegion(k)), m = baseCids && a && baseCids[sourceFile(a)];
+            return Object.keys(m || {}).filter(j => j !== k && family(j) === family(k) && freshId(j) != null && freshId(j) === recId[k] && freshId(j) !== recId[j]);
+        };
+        const unsureKeys = new Set(); log.forEach(d => (d.unsure || []).forEach(k => unsureKeys.add(k)));
         const keyRegion = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));
         const freshId = (k) => typeof k === 'string' && k[0] === '@' && regions.has(keyRegion(k)) && live.has(k) ? cidOf(k) : null;
         // Only removals in this container: the edit names elements, not positions
@@ -749,23 +760,21 @@
                 if (holders.size === 1) { c = [...holders][0]; renamedParent = c.getAttribute('data-edit-key'); }
             }
             const now = c ? staticKeys(c) : [];
-            // Only the twins the edits act on (removed, moved, the container) must still be theirs;
-            // a bystander twin changed in the source is not, unless it now holds one of theirs.
-            const claimed = new Set([...moved(region, parent)].filter(k => typeof k === 'string' && k[0] === '@'));
-            if (parent) claimed.add(parent);
-            const changedIds = c ? [parent, ...before].filter(k => recId[k] && freshId(k) != null && freshId(k) !== recId[k]) : [];
-            const doubled = c ? [...claimed].filter(k => recId[k] && freshId(k) === recId[k] && now.some(j => j !== k && family(j) === family(k) && freshId(j) === recId[k] && recId[j] !== recId[k])) : [];
-            const miss = changedIds.filter(k => claimed.has(k));
-            if (miss.length || doubled.length) {
-                // Swapped twins found again by content, each exactly once; anything else is a conflict
-                let map = !doubled.length && !changedIds.includes(parent) && !renamedParent && now.join('\n') === before.join('\n') && removalsOnly(region, parent) ? new Map() : null;
-                if (map) for (const k of changedIds) {
-                    const at = now.filter(j => freshId(j) === recId[k]);
-                    if (at.length !== 1 || !changedIds.includes(at[0])) { map = null; break; }
+            // The twins the edits act on (removed, moved) must still be theirs, judged on evidence only
+            const claimed = [...moved(region, parent)].filter(k => typeof k === 'string' && k[0] === '@');
+            const unverifiable = claimed.filter(k => unsureKeys.has(k));
+            const swapped = claimed.filter(k => { const t = movedTo(k); return t && t.length; });
+            if (unverifiable.length || swapped.length) {
+                // Every moved twin found again exactly once, among those that moved: remap a pure delete
+                const evidence = Object.keys(recId).filter(k => family(k) && before.includes(k) && (movedTo(k) || []).length);
+                let map = !unverifiable.length && !renamedParent && now.join('\n') === before.join('\n') && removalsOnly(region, parent) ? new Map() : null;
+                if (map) for (const k of evidence) {
+                    const at = movedTo(k).filter(j => evidence.includes(j));
+                    if (at.length !== 1) { map = null; break; }
                     map.set(k, at[0]);
                 }
-                if (map && new Set(map.values()).size === changedIds.length) { remapped.push([region, parent, now, map]); return; }
-                broken.set(region, [...(broken.get(region) || []), { container: parent, changed: [...new Set([...miss, ...doubled])].map(k => { const l = k.slice(k.indexOf('@', 1) + 1); return { was: l, now: l }; }) }]);
+                if (map && new Set(map.values()).size === evidence.length) { remapped.push([region, parent, now, map]); return; }
+                broken.set(region, [...(broken.get(region) || []), { container: parent, changed: [...new Set([...swapped, ...unverifiable])].map(k => { const l = k.slice(k.indexOf('@', 1) + 1); return { was: l, now: l }; }) }]);
                 return;
             }
             if (c && now.join('\n') === before.join('\n') && !renamedParent) return;
@@ -802,14 +811,11 @@
         });
         const copyMap = new Map();
         copyRegions.forEach((rs, o) => {
-            if (!recId[o] || !regions.has(keyRegion(o))) return;
-            const area = areaByKey(keyRegion(o)), m = baseCids && area && baseCids[sourceFile(area)];
-            if (!m) return;
-            // Still the content copied: the copy is the same whichever identical twin it names
-            if (freshId(o) === recId[o]) return;
-            const holds = Object.keys(m).filter(j => family(j) === family(o) && m[j] === recId[o]);
-            const to = holds.find(j => live.has(j));
-            if (to) { copyMap.set(o, to); return; }
+            if (!regions.has(keyRegion(o))) return;
+            const t = unsureKeys.has(o) ? null : movedTo(o);
+            if (t && !t.length) return;
+            if (t && t.length === 1 && live.has(t[0])) { copyMap.set(o, t[0]); return; }
+            if (!t && !unsureKeys.has(o)) return;
             const l = o.slice(o.indexOf('@', 1) + 1);
             rs.forEach(r => { if (isStatic(r)) broken.set(r, [...(broken.get(r) || []), { container: '', changed: [{ was: l, now: l }], copy: true }]); });
         });
@@ -831,7 +837,7 @@
                     if (d.html) d.html = Object.fromEntries(Object.entries(d.html).map(([k, h]) => [ren(k), typeof h === 'string' ? h.replace(/data-edit-key="([^"]*)"/g, (all, v) => `data-edit-key="${enc(ren(dec(v)))}"`) : h]));
                 }
                 if (d.ids && d.region === region) d.ids = Object.fromEntries(Object.entries(d.ids).map(([k, v]) => [ren(k), v]));
-                if (d.kind === 'st-node' && d.region === region && typeof d.path === 'string') { d.path = ren(d.path); if (Array.isArray(d.anc)) d.anc = d.anc.map(ren); }
+                if (d.kind === 'st-node' && d.region === region && typeof d.path === 'string') d.path = ren(d.path);
                 if (d.kind === 'lock' && d.region === region) d.key = ren(d.key);
             });
             ver++;
@@ -864,18 +870,8 @@
         });
         const structural = (d) => ((d.kind === 'st-order' || d.kind === 'st-children') && broken.has(d.region)) || (d.kind === 'st-move' && (broken.has(d.from) || broken.has(d.to)))
             || (d.kind === 'st-node' && broken.has(d.region) && typeof d.path === 'string' && d.path[0] === '~');
-        // A twin's text edit: the element (and the elements around it) must still be the ones edited
-        const ancOf = (el, region) => { const a = []; for (let n = el.parentElement; n && n !== areaByKey(region); n = n.parentElement) { const k = n.getAttribute('data-edit-key'); if (k) a.push(k); } return a; };
-        const movedTwin = (d) => (cidLike(d.id) && freshId(d.path) != null && freshId(d.path) !== d.id)
-            || (Array.isArray(d.anc) && ancOf(live.get(d.path), d.region).join('\n') !== d.anc.join('\n'));
-        // Found again inside the same surrounding elements, when exactly one twin is there
-        log.forEach(d => {
-            if (d.kind !== 'st-node' || !Array.isArray(d.anc) || typeof d.path !== 'string' || d.path[0] !== '@' || !isStatic(d.region) || !live.has(d.path)) return;
-            if (ancOf(live.get(d.path), d.region).join('\n') === d.anc.join('\n')) return;
-            const holder = live.get(d.anc[0]); if (!holder) return;
-            const at = [...holder.querySelectorAll('[data-edit-key]')].filter(n => { const k = n.getAttribute('data-edit-key'); return family(k) === family(d.path) && ancOf(n, d.region).join('\n') === d.anc.join('\n') && (!cidLike(d.id) || freshId(k) === d.id); });
-            if (at.length === 1) { d.path = at[0].getAttribute('data-edit-key'); ver++; }
-        });
+        // A twin's text edit: on evidence its element moved (or it cannot be verified), reported
+        const movedTwin = (d) => (unsureKeys.has(d.path) && (d.unsure || []).includes(d.path)) || (cidLike(d.id) && (movedTo(d.path) || []).length > 0);
         const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && (!live.has(d.path) || movedTwin(d))) || structural(d);
         log.forEach((d, i) => { if (gone(d) && i < cursor && d.kind === 'st-node' && d.path[0] === '@') lost.push(d); });
         // What survives now applies to this source: its twins' ids are this source's
@@ -1008,7 +1004,7 @@
             ver++; saveState(); refresh();
             return true;
         }
-        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, twinKey(path) ? twinOf(area, el, path) : {}, opts.join ? { join: true } : {}));
+        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, twinKey(path) ? (() => { const t = withIds({}, [path]); if (t.ids && t.ids[path]) t.id = t.ids[path]; return t; })() : {}, opts.join ? { join: true } : {}));
         if (opts.coalesce) stamps.set(d, Date.now());
         return true;
     }
@@ -1056,7 +1052,7 @@
         const order = staticKeys(container);
         if (eq(before, order)) return false;
         const d = { kind: 'st-order', region: key(area), parent: parentKey(container, area), order, before };
-        pushDelta(withIds(d, [d.parent, ...before]));
+        pushDelta(withIds(d, before));
         return true;
     }
     // A piece that already sits in its new container. Identity never changes, so one
@@ -1065,7 +1061,7 @@
         const toContainer = item.parentElement;
         const d = { kind: 'st-move', from: key(fromArea), to: key(toArea), fromParent: parentKey(fromContainer, fromArea), toParent: parentKey(toContainer, toArea), key: idOf(item), fromOrder: staticKeys(fromContainer), toOrder: staticKeys(toContainer), fromBefore, toBefore };
         if (opts.join) d.join = true;
-        withIds(d, [originOf(d.key), d.fromParent, d.toParent, ...fromBefore, ...toBefore]);
+        withIds(d, [originOf(d.key), ...fromBefore, ...toBefore]);
         pushDelta(d);
         resetAreas();
         markStatic(toArea);
@@ -2818,6 +2814,7 @@
     // With them, each source element's fingerprint as loaded: the server refuses an edit
     // whose element no longer matches (changed, or a twin that moved).
     let baseFiles = null, baseIds = null, baseCids = null, basePending = null;
+    const cidsUnsure = new Set();
     // A source element's content id as the base read it (its whole source slice, hashed)
     const cidOf = (k) => {
         const o = originOf(k); if (typeof o !== 'string' || o[0] !== '@') return null;
@@ -2947,8 +2944,10 @@
             if (r && r.ids && baseIds) {
                 if (!overNewer) baseIds = r.ids;
                 else Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
-                // Content ids of the file as written: edits from here keep their twins' identity
-                baseCids = r.cids || null;
+                // Content ids of the file as written: edits from here keep their twins' identity. Over a
+                // newer file the page shows less than it: its twins are unverifiable until a reload.
+                if (!overNewer) { baseCids = r.cids || null; cidsUnsure.clear(); }
+                else Object.keys(r.ids).forEach(f => { if (!/\.html?$/i.test(f)) return; if (baseCids) baseCids[f] = null; cidsUnsure.add(f); });
             }
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;

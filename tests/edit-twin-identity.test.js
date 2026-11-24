@@ -122,15 +122,21 @@ describe('twins under source changes', () => {
         await t.check()
         expect(fileIds().a).toEqual(['a', '1'])
     })
-    it('Q22 a twin deleted, the other twin replaced by a copy of it in the source, reload: ambiguous, reported, nothing removed', async () => {
+    it('Q22 a twin deleted, the other twin replaced by a copy of it in the source, reload: no swap, as master', async () => {
         const t = await session(IMG3, ['<p data-m="g">G</p>'])
         await t.user(() => store().remove(kids(t.r.a)[1]))
         t.ext('a', (ls) => ls.map(l => l.replace('data-m="1"', 'data-m="2"'))); t.removed('1'); t.added('2')
         await t.reload()
-        expect(ids(t.r.a)).toEqual(['2', '2', '3'])
-        expect(store().conflicts.some(c => c.region === 'a' && c.prop === 'structure' && /deleted IMG:#2/.test(c.reason) && !/moved/.test(c.reason))).toBe(true)
         await t.check()
-        expect(fileIds().a).toEqual(['2', '2', '3'])
+    })
+    it('Q22b the conflict for a swapped twin delete names it deleted, not moved', async () => {
+        const t = await session(IMG3, ['<p data-m="g">G</p>'])
+        await t.user(() => store().remove(kids(t.r.a)[1]))
+        await t.user(() => kbMove(kids(t.r.a)[1], 'ArrowUp', 1))
+        t.ext('a', swap('1', '2'))
+        await t.reload()
+        expect(store().conflicts.some(c => /deleted IMG:#2/.test(c.reason) && !/moved IMG/.test(c.reason))).toBe(true)
+        await t.check()
     })
     it('Q23 a text edit on a twin, the twins swapped in the source, reload: reported, never written over the other twin', async () => {
         const T1 = 'Lorem ipsum dolor sit amet one', T2 = 'Lorem ipsum dolor sit amet two'

@@ -283,6 +283,7 @@
     // With them, each source element's fingerprint as loaded: the server refuses an edit
     // whose element no longer matches (changed, or a twin that moved).
     let baseFiles = null, baseIds = null, baseCids = null, basePending = null;
+    const cidsUnsure = new Set();
     // A source element's content id as the base read it (its whole source slice, hashed)
     const cidOf = (k) => {
         const o = originOf(k); if (typeof o !== 'string' || o[0] !== '@') return null;
@@ -412,8 +413,10 @@
             if (r && r.ids && baseIds) {
                 if (!overNewer) baseIds = r.ids;
                 else Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
-                // Content ids of the file as written: edits from here keep their twins' identity
-                baseCids = r.cids || null;
+                // Content ids of the file as written: edits from here keep their twins' identity. Over a
+                // newer file the page shows less than it: its twins are unverifiable until a reload.
+                if (!overNewer) { baseCids = r.cids || null; cidsUnsure.clear(); }
+                else Object.keys(r.ids).forEach(f => { if (!/\.html?$/i.test(f)) return; if (baseCids) baseCids[f] = null; cidsUnsure.add(f); });
             }
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;
