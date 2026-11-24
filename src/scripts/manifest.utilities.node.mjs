@@ -353,9 +353,6 @@ function createVariants() {
         'xl': '@media (min-width: 1280px)',
         '2xl': '@media (min-width: 1536px)',
 
-        // Supports queries
-        'supports': '@supports',
-
         // Starting style
         'starting': '@starting-style',
 

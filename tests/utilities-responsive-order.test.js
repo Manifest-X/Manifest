@@ -87,6 +87,14 @@ describe('responsive @media order', () => {
         expect(ascending(order(css, ['.prefers-reduced-motion\\:text-c', '.md\\:text-d', '.print\\:text-b', '.touch\\:text-a']))).toBe(true)
     })
 
+    it('bare supports: emits no condition-less @supports rule (browsers drop it, which disabled delta apply)', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        const css = await compileUtilities({ classes: ['supports:text-a', 'md:text-b'], themeCss: THEME })
+        expect(css).not.toContain('@supports')
+        expect(css).toContain('.md\\:text-b')
+        expect(warn.mock.calls.some(c => c.join(' ').includes('supports'))).toBe(true)
+    })
+
     it('base rules stay before every @media rule', async () => {
         const css = await compileUtilities({ classes: ['md:text-a', 'text-d', 'hover:text-b', 'lead-a'], themeCss: THEME + '\n' + CUSTOM })
         const lastBase = Math.max(css.indexOf('.text-d {'), css.indexOf('.hover\\:text-b:hover'))
