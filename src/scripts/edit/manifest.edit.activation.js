@@ -7,7 +7,7 @@
         const region = key(area), first = !area._marked;
         area._marked = true;
         area._baseClass = area._baseClass || {}; area._baseStyle = area._baseStyle || {}; area._baseText = area._baseText || {};
-        const seen = Object.create(null), keyed = [];
+        const seen = Object.create(null);
         const markEl = (el, path) => {
             let k = el.getAttribute('data-edit-key');
             if (!k) {
@@ -16,7 +16,6 @@
                     const n = seen[base] = (seen[base] || 0) + 1;
                     k = canonKey(region, n > 1 ? base + '#' + n : base);
                     originAt.set(k, path);
-                    keyed.push([el, base]);
                 } else k = '!' + mint();
                 el.setAttribute('data-edit-key', k);
             }
@@ -54,8 +53,6 @@
             }
         };
         walk(area, '');
-        // Twins (keys told apart by position only) carry their source content's identity
-        keyed.forEach(([el, base]) => { if (seen[base] > 1) el._editId = contentId(el); else delete el._editId; });
     }
     const warnedRendered = new Set(), renderedRegions = new Set(), unwritableWhy = new Map();
     // A list whose records mnfst-run can't write: inline x-data, or a source manifest.json does not declare as a file.
@@ -285,14 +282,22 @@
     // so the server can refuse when a file changed underneath this page.
     // With them, each source element's fingerprint as loaded: the server refuses an edit
     // whose element no longer matches (changed, or a twin that moved).
-    let baseFiles = null, baseIds = null;
+    let baseFiles = null, baseIds = null, baseCids = null, basePending = null;
+    // A source element's content id as the base read it (its whole source slice, hashed)
+    const cidOf = (k) => {
+        const o = originOf(k); if (typeof o !== 'string' || o[0] !== '@') return null;
+        const a = areaByKey(decodeURIComponent(o.slice(1, o.indexOf('@', 1)))), m = baseCids && a && baseCids[sourceFile(a)];
+        return m && m[o] || null;
+    };
     function loadBase(filesOnly) {
         if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return Promise.resolve(null);
-        return fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => {
+        const p = fetch('/__edit/base', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => {
             if (j && j.files) baseFiles = j.files;
-            if (j && j.ids && !filesOnly) baseIds = j.ids;
+            if (j && j.ids && !filesOnly) { baseIds = j.ids; baseCids = j.cids || null; }
             return baseFiles;
         }).catch(() => null);
+        if (!filesOnly) basePending = p;
+        return p;
     }
     // Stylesheets and data hot-swap: their new hash applies. HTML waits for the reload
     // (a cancelled one leaves the page on what it loaded); our own writes advance on publish.
@@ -405,8 +410,12 @@
         const done = (r, keep, heldRes) => {
             if (r && r.base && baseFiles) Object.entries(r.base).forEach(([f, h]) => { if (!overNewer || !/\.html?$/i.test(f)) baseFiles[f] = h; });
             if (r && r.ids && baseIds) {
-                if (!overNewer) baseIds = r.ids;
-                else Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
+                if (!overNewer) { baseIds = r.ids; baseCids = r.cids || null; }
+                else {
+                    Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
+                    // The page shows less than the file: no content ids there (twins unchecked until a reload)
+                    if (baseCids) Object.keys(r.ids).forEach(f => { if (/\.html?$/i.test(f)) baseCids[f] = null; });
+                }
             }
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;

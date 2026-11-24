@@ -162,9 +162,10 @@
         pushDelta(d);
     }
     // The source identity of each twin a structural edit names, checked after a reload
+    const twinKey = (k) => typeof k === 'string' && k[0] === '@' && (/#\d+$/.test(k) || !!cidOf(k + '#2'));
     function withIds(d, keys) {
-        const m = keyMap(staticAreas()), ids = {};
-        keys.forEach(k => { if (!k || k[0] !== '@' || ids[k]) return; const el = m.get(k) || detached.get(k); if (el && el._editId) ids[k] = el._editId; });
+        const ids = {};
+        keys.forEach(k => { if (ids[k] || !twinKey(k)) return; const c = cidOf(k); if (c) ids[k] = c; });
         if (Object.keys(ids).length) d.ids = ids;
         return d;
     }
@@ -215,9 +216,10 @@
         const first = new Map(), broken = new Map(), renames = new Map(), remapped = [];
         // Twins: each element a structural edit named must still hold the source content recorded
         const recId = {};
-        log.forEach(d => { if (d.ids) Object.entries(d.ids).forEach(([k, v]) => { if (!(k in recId)) recId[k] = v; }); });
+        const cidLike = (v) => typeof v === 'string' && /^[0-9a-f]{12}$/.test(v);
+        log.forEach(d => { if (d.ids) Object.entries(d.ids).forEach(([k, v]) => { if (!(k in recId) && cidLike(v)) recId[k] = v; }); });
         const keyRegion = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));
-        const freshId = (k) => typeof k === 'string' && k[0] === '@' && regions.has(keyRegion(k)) && live.has(k) ? contentId(live.get(k)) : null;
+        const freshId = (k) => typeof k === 'string' && k[0] === '@' && regions.has(keyRegion(k)) && live.has(k) ? cidOf(k) : null;
         // Only removals in this container: the edit names elements, not positions
         const removalsOnly = (region, parent) => log.every(d => {
             if (d.kind === 'st-move') return !((d.from === region && (d.fromParent || '') === parent) || (d.to === region && (d.toParent || '') === parent));
@@ -344,7 +346,7 @@
         });
         const structural = (d) => ((d.kind === 'st-order' || d.kind === 'st-children') && broken.has(d.region)) || (d.kind === 'st-move' && (broken.has(d.from) || broken.has(d.to)))
             || (d.kind === 'st-node' && broken.has(d.region) && typeof d.path === 'string' && d.path[0] === '~');
-        const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && (!live.has(d.path) || (!!d.id && freshId(d.path) != null && freshId(d.path) !== d.id))) || structural(d);
+        const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && (!live.has(d.path) || (cidLike(d.id) && freshId(d.path) != null && freshId(d.path) !== d.id))) || structural(d);
         log.forEach((d, i) => { if (gone(d) && i < cursor && d.kind === 'st-node' && d.path[0] === '@') lost.push(d); });
         if (!log.some(gone)) { if (renames.size || remapped.length) saveState(); return []; }
         const latest = new Map();
@@ -373,7 +375,9 @@
             const what = [moves.length && `moved ${moves.join(', ')}`, copies.length && `copied ${copies.map(c => `${c.of} ("${String(c.text).slice(0, 40)}")`).join(', ')}`].filter(Boolean).join('; ');
             found.push({ region, key: '', element: containers.map(c => c.container ? label(c.container) : region).join(', '), prop: 'structure',
                 value: { changed, moved: moves, copies }, before: null,
-                reason: `${names.join(', ')} changed in the source where the layout was edited, so the layout edits (${what || 'reordering'}) were not applied` });
+                reason: changed.every(x => x.was === x.now)
+                    ? `identical elements ${names.join(', ')} were reordered or replaced in the source where the layout was edited, so the layout edits (${what || 'reordering'}) were not applied`
+                    : `${names.join(', ')} changed in the source where the layout was edited, so the layout edits (${what || 'reordering'}) were not applied` });
         });
         found.forEach(f => { conflicts.push(f); if (persistOf(f.region)) keptConflicts.add(f); });
         let c = 0;
@@ -467,7 +471,7 @@
             ver++; saveState(); refresh();
             return true;
         }
-        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, el._editId ? { id: el._editId } : {}, opts.join ? { join: true } : {}));
+        const d = pushDelta(Object.assign({ kind: 'st-node', region, path, prop, value, before, sig: nodeSig(el) }, twinKey(path) && cidOf(path) ? { id: cidOf(path) } : {}, opts.join ? { join: true } : {}));
         if (opts.coalesce) stamps.set(d, Date.now());
         return true;
     }

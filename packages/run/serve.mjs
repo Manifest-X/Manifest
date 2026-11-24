@@ -1259,6 +1259,8 @@ function indexRegion(html, name, node) {
     let own = open(n);
     for (const c of n.content) if (c.text != null) own += '\0' + c.text.replace(/\s+/g, ' ').trim();
     n.fp = fpHash(own);
+    // Content id: the element's whole source slice (tells twins apart after a reload)
+    n.cid = fpHash(html.slice(n.tagStart, n.closeEnd).replace(/\s+/g, ' '));
     if (count[n.base] > 1) {
       let ctx = String(count[n.base]);
       for (let a = n.parent; a && a !== node; a = a.parent) ctx += '\0' + open(a) + '\0' + a.base;
@@ -1268,29 +1270,31 @@ function indexRegion(html, name, node) {
   return reg;
 }
 const fpHash = (s) => createHash('sha1').update(s).digest('hex').slice(0, 12);
-// Fingerprints of every static element by file: index.html and each component file.
+// Fingerprints and content ids of every static element by file: index.html and each component file.
 function allSourceIds(files) {
   let manifest = {}; try { manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')); } catch {}
-  const out = { 'index.html': sourceIds(join(root, 'index.html')) };
+  const ids = {}, cids = {};
+  const add = (rel) => { const r = sourceIds(join(root, rel)); ids[rel] = r.ids; cids[rel] = r.cids; };
+  add('index.html');
   for (const rel of files) {
     if (rel === 'index.html' || !/\.html$/i.test(rel)) continue;
     const names = [basename(rel, '.html'), rel.replace(/^components\//, '').replace(/\.html$/i, '')];
-    if (names.some(n => resolveComponentFile(manifest, n) === rel)) out[rel] = sourceIds(join(root, rel));
+    if (names.some(n => resolveComponentFile(manifest, n) === rel)) add(rel);
   }
-  return out;
+  return { ids, cids };
 }
 function sourceIds(file) {
-  const out = {};
-  let html; try { html = readFileSync(file, 'utf8'); } catch { return out; }
+  const ids = {}, cids = {};
+  let html; try { html = readFileSync(file, 'utf8'); } catch { return { ids, cids }; }
   const doc = parseHTML(html);
-  if (checkNesting(doc)) return out;
+  if (checkNesting(doc)) return { ids, cids };
   for (const n of allElements(doc)) {
     if (n.implied) continue;
     const a = (scanTag(openOf(html, n)) || { attrs: [] }).attrs.find(x => /^x-edit(\.|$)/.test(x.lower));
     if (!a || !a.value) continue;
-    for (const [k, m] of indexRegion(html, a.value, n).byKey) if (m.fp) out[k] = m.fp;
+    for (const [k, m] of indexRegion(html, a.value, n).byKey) if (m.fp) { ids[k] = m.fp; cids[k] = m.cid; }
   }
-  return out;
+  return { ids, cids };
 }
 // A comment directly above an element (whitespace between, no blank line) titles it.
 // A comment that opens its container titles the section, not the first child.
@@ -2134,7 +2138,7 @@ const server = createServer((req, res) => {
     if (listenPort && req.headers.origin && !isLocalOrigin(req.headers.origin, listenPort)) { res.writeHead(403); res.end(); return; }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     const files = baseHashes();
-    res.end(JSON.stringify({ files, ids: allSourceIds(Object.keys(files)) }));
+    res.end(JSON.stringify({ files, ...allSourceIds(Object.keys(files)) }));
     return;
   }
 
@@ -2210,7 +2214,7 @@ const server = createServer((req, res) => {
         }
       } finally { VFS = null; READS = null; }
       const stale = results.find(r => r && r.stale);
-      reply(200, written ? { results, base: written, ids: allSourceIds(Object.keys(baseHashes())) } : stale ? { results, stale: stale.stale } : { results });
+      reply(200, written ? { results, base: written, ...allSourceIds(Object.keys(baseHashes())) } : stale ? { results, stale: stale.stale } : { results });
     } catch (e) {
       console.error('[mnfst-run] /__edit/save failed:', e);
       reply(500, { results: [], error: String(e && e.message || e) });
