@@ -873,6 +873,8 @@ TailwindCompiler.prototype.compileDelta = function (themeCss) {
     // Tailwind display classes at a breakpoint join the display block, which only a full regen emits
     if (tailwindResponsiveDisplay(classes).length) return false;
     const fresh = classes.length ? this.generateKeyedUtilities(themeCss, classes).filter(e => !applied.rules.has(e.rule)) : [];
+    // The display block's contents depend on every used class: a new block rule means a full regen
+    if (fresh.some(e => e.key[5] === 2)) return false;
     const entries = applied.entries;
 
     // Place every rule first; bail before touching the sheet if any is ambiguous

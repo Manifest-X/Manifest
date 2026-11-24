@@ -144,7 +144,7 @@ async function run(browser, srv, route, width) {
     check(`${route} @${width}px computed styles`, matches(got, want, base, PROP), JSON.stringify({ got, base }))
     if (runtime) {
         const deltas = await p.evaluate(() => window.__deltaOk)
-        check(`${route} @${width}px dynamic classes applied by compileDelta`, deltas >= 3, `${deltas} delta applies`)
+        check(`${route} @${width}px dynamic classes applied by compileDelta`, deltas >= 1, `${deltas} delta applies`)
     }
 
     if (runtime) {
