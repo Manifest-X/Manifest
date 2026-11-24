@@ -176,6 +176,25 @@
     // The source identity of each twin a structural edit names, checked after a reload
     // A key told apart from its twins only by position (same tag and first 24 characters)
     const familyOf = (k) => String(k).replace(/#\d+$/, '');
+    const ord = (k) => { const m = /#(\d+)$/.exec(k); return m ? +m[1] : 1; };
+    const byOrd = (x, y) => ord(x) - ord(y);
+    // Where the content recorded at R[i] (a family's content ids by position) now is in F, on
+    // evidence of a move only. Same size: another member whose own content changed holds it (a
+    // permutation). Members added or removed: everything recorded from i on found again, in order,
+    // shifted. In place, not found, or shared with another recorded member: null or [] (positional).
+    function movedIn(R, F, i) {
+        const v = R[i];
+        if (v == null || F[i] == null || F[i] === v || R.some((x, j) => j !== i && x === v)) return null;
+        if (F.length === R.length) return F.map((x, j) => j).filter(j => j !== i && F[j] === v && F[j] !== R[j]);
+        const to = [];
+        for (let d = -i; d < F.length - i; d++) {
+            if (!d) continue;
+            let ok = true;
+            for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && F[t + d] === R[t];
+            if (ok) to.push(i + d);
+        }
+        return to;
+    }
     const twinKey = (k) => typeof k === 'string' && k[0] === '@' && (/#\d+$/.test(k) || keyMap(staticAreas()).has(k + '#2'));
     // The content id of each twin an edit names, and of the rest of its family, as the base read them;
     // twins of a file a rebase wrote over unseen are listed as unverifiable instead
@@ -245,24 +264,14 @@
         // another recorded member whose own content changed (a permutation). With members added or
         // removed: everything recorded from this twin on found again, in order, shifted. Content
         // changed in place, not found, or shared with another recorded twin: positional, as before.
-        const ord = (k) => { const m = /#(\d+)$/.exec(k); return m ? +m[1] : 1; };
-        const byOrd = (x, y) => ord(x) - ord(y);
         const movedTo = (k, v = recId[k]) => {
-            if (!cidLike(v) || freshId(k) == null || freshId(k) === v) return null;
-            const R = Object.keys(recId).filter(j => family(j) === family(k)).sort(byOrd);
-            if (R.some(j => j !== k && recId[j] === v)) return null;
+            if (!cidLike(v)) return null;
+            const Rk = Object.keys(recId).filter(j => family(j) === family(k)).sort(byOrd), i = Rk.indexOf(k);
+            if (i < 0) return null;
             const a = areaByKey(keyRegion(k)), m = baseCids && a && baseCids[sourceFile(a)];
-            const F = Object.keys(m || {}).filter(j => family(j) === family(k)).sort(byOrd);
-            if (F.length === R.length) return F.filter(j => j !== k && j in recId && freshId(j) === v && freshId(j) !== recId[j]);
-            const i = R.indexOf(k); if (i < 0) return [];
-            const to = [];
-            for (let d = -i; d < F.length - i; d++) {
-                if (!d) continue;
-                let ok = true;
-                for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && freshId(F[t + d]) === recId[R[t]];
-                if (ok) to.push(F[i + d]);
-            }
-            return to;
+            const Fk = Object.keys(m || {}).filter(j => family(j) === family(k)).sort(byOrd);
+            const at = movedIn(Rk.map(j => j === k ? v : recId[j]), Fk.map(freshId), i);
+            return at && at.map(j => Fk[j]);
         };
         const unsureKeys = new Set(); log.forEach(d => (d.unsure || []).forEach(k => unsureKeys.add(k)));
         const keyRegion = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));

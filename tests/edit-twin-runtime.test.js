@@ -493,3 +493,73 @@ describe('rebase window and insertions (fourth review)', () => {
         expect(Date.now() - t0).toBeLessThan(8000)
     }, 15000)
 })
+
+// Fifth review: the user's own published edit and in-place changes are no reorder; nothing is
+// editable while the page waits for the base
+describe('rebase window and the base wait (fifth review)', () => {
+    const rebase = async (r, ext, edit) => {
+        S.ext(ext)
+        edit(); await flush()
+        await store().publish(); await store().publish({ rebase: true })
+    }
+    const inB = (f) => f.replace('<p data-m="g">G</p>', '<p data-m="g">G2</p>')
+    it('X1 a rebase whose own edit was on twin #1, then twin #2 deleted, reload: the delete stays', async () => {
+        const r = R(await S.open(persist([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        await rebase(r, inB, () => editText(kids(r.a)[0], T1 + ' EDITED'))
+        store().remove(kids(r.a)[1]); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['1', '3']); expect(reg('a')).toContain(T1 + ' EDITED')
+    })
+    it('X1d a rebase whose own edit was on twin #1, then twin #2 text-edited, reload: the edit stays', async () => {
+        const r = R(await S.open(persist([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        await rebase(r, inB, () => editText(kids(r.a)[0], T1 + ' EDITED'))
+        editText(kids(r.a)[1], 'NewTwo'); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a')).toMatch(/data-m="2">NewTwo/)
+    })
+    it('X1e a rebase over a newer in-place change to twin #1, then twin #2 deleted, reload: the delete stays', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        await rebase(r, f => f.replace('<img data-m="1">', '<img data-m="1" class="z">'), () => editText(kids(r.a)[2], 'P2'))
+        store().remove(kids(r.a)[1]); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['1', '3'])
+    })
+    const delayedBase = async (fn) => {
+        const f0 = window.fetch
+        window.fetch = (u, o) => { const p = f0(u, o); return String(u).includes('/__edit/base') ? p.then(res => new Promise(ok => setTimeout(() => ok(res), 1000))) : p }
+        try { return await fn() } finally { window.fetch = f0 }
+    }
+    it('B2 the base arrives late: the page arms with its pending edits, and an edit made then stays', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        store().remove(kids(r.a)[1]); await flush()
+        await delayedBase(async () => {
+            const r2 = R(await S.reload())
+            expect(ids(r2.a)).toEqual(['1', '3'])
+            store().remove(r2.a.querySelector('[data-m="3"]')); await flush()
+            await new Promise(ok => setTimeout(ok, 1300))
+            expect(ids(R(document.body).a)).toEqual(['1'])
+        })
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['1'])
+    })
+    it('B4 the base arrives late: twin #1 deleted after the pending delete of #2 replays', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<img data-m="x">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        store().remove(kids(r.a)[1]); await flush()
+        await delayedBase(async () => {
+            const r2 = R(await S.reload())
+            store().remove(kids(r2.a)[0]); await flush()
+            await new Promise(ok => setTimeout(ok, 1300))
+        })
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['x', '3'])
+    })
+})
+

@@ -641,6 +641,25 @@
     // The source identity of each twin a structural edit names, checked after a reload
     // A key told apart from its twins only by position (same tag and first 24 characters)
     const familyOf = (k) => String(k).replace(/#\d+$/, '');
+    const ord = (k) => { const m = /#(\d+)$/.exec(k); return m ? +m[1] : 1; };
+    const byOrd = (x, y) => ord(x) - ord(y);
+    // Where the content recorded at R[i] (a family's content ids by position) now is in F, on
+    // evidence of a move only. Same size: another member whose own content changed holds it (a
+    // permutation). Members added or removed: everything recorded from i on found again, in order,
+    // shifted. In place, not found, or shared with another recorded member: null or [] (positional).
+    function movedIn(R, F, i) {
+        const v = R[i];
+        if (v == null || F[i] == null || F[i] === v || R.some((x, j) => j !== i && x === v)) return null;
+        if (F.length === R.length) return F.map((x, j) => j).filter(j => j !== i && F[j] === v && F[j] !== R[j]);
+        const to = [];
+        for (let d = -i; d < F.length - i; d++) {
+            if (!d) continue;
+            let ok = true;
+            for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && F[t + d] === R[t];
+            if (ok) to.push(i + d);
+        }
+        return to;
+    }
     const twinKey = (k) => typeof k === 'string' && k[0] === '@' && (/#\d+$/.test(k) || keyMap(staticAreas()).has(k + '#2'));
     // The content id of each twin an edit names, and of the rest of its family, as the base read them;
     // twins of a file a rebase wrote over unseen are listed as unverifiable instead
@@ -710,24 +729,14 @@
         // another recorded member whose own content changed (a permutation). With members added or
         // removed: everything recorded from this twin on found again, in order, shifted. Content
         // changed in place, not found, or shared with another recorded twin: positional, as before.
-        const ord = (k) => { const m = /#(\d+)$/.exec(k); return m ? +m[1] : 1; };
-        const byOrd = (x, y) => ord(x) - ord(y);
         const movedTo = (k, v = recId[k]) => {
-            if (!cidLike(v) || freshId(k) == null || freshId(k) === v) return null;
-            const R = Object.keys(recId).filter(j => family(j) === family(k)).sort(byOrd);
-            if (R.some(j => j !== k && recId[j] === v)) return null;
+            if (!cidLike(v)) return null;
+            const Rk = Object.keys(recId).filter(j => family(j) === family(k)).sort(byOrd), i = Rk.indexOf(k);
+            if (i < 0) return null;
             const a = areaByKey(keyRegion(k)), m = baseCids && a && baseCids[sourceFile(a)];
-            const F = Object.keys(m || {}).filter(j => family(j) === family(k)).sort(byOrd);
-            if (F.length === R.length) return F.filter(j => j !== k && j in recId && freshId(j) === v && freshId(j) !== recId[j]);
-            const i = R.indexOf(k); if (i < 0) return [];
-            const to = [];
-            for (let d = -i; d < F.length - i; d++) {
-                if (!d) continue;
-                let ok = true;
-                for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && freshId(F[t + d]) === recId[R[t]];
-                if (ok) to.push(F[i + d]);
-            }
-            return to;
+            const Fk = Object.keys(m || {}).filter(j => family(j) === family(k)).sort(byOrd);
+            const at = movedIn(Rk.map(j => j === k ? v : recId[j]), Fk.map(freshId), i);
+            return at && at.map(j => Fk[j]);
         };
         const unsureKeys = new Set(); log.forEach(d => (d.unsure || []).forEach(k => unsureKeys.add(k)));
         const keyRegion = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));
@@ -2969,11 +2978,13 @@
                     // Over a newer file: a twin family the file now holds differently than the page loaded
                     // it is unverifiable until a reload; unchanged families keep their identity
                     if (!/\.html?$/i.test(f)) return;
-                    const was = baseCids[f] || {}, fams = new Set([...Object.keys(was), ...Object.keys(next || {})].map(familyOf)), kept = {};
-                    fams.forEach(fam => {
-                        const ks = new Set([...Object.keys(was), ...Object.keys(next || {})].filter(k => familyOf(k) === fam));
-                        if ([...ks].every(k => was[k] === (next || {})[k])) ks.forEach(k => { kept[k] = was[k]; });
-                        else cidsUnsure.add(fam);
+                    // (on evidence of a reorder; this publish's own edits and in-place changes are not)
+                    const was = baseCids[f] || {}, now = next || {}, kept = {};
+                    new Set([...Object.keys(was), ...Object.keys(now)].map(familyOf)).forEach(fam => {
+                        const of = (m) => Object.keys(m).filter(k => familyOf(k) === fam).sort(byOrd).map(k => m[k]);
+                        const R = of(was), F = of(now);
+                        if (R.some((x, i) => (movedIn(R, F, i) || []).length)) cidsUnsure.add(fam);
+                        else Object.keys(now).forEach(k => { if (familyOf(k) === fam) kept[k] = now[k]; });
                     });
                     baseCids[f] = kept;
                 });
@@ -3183,7 +3194,13 @@
         if (window.__manifestEditStub) setTimeout(() => { window.__manifestEditStub.v++; }, 0);
         loadState();
         if (window.__mnfstEdit) loadBase();   // only mnfst-run --edit serves the base
-        setTimeout(() => { armAll(); restore(); }, 450);
+        // A log with twin ids waits (bounded) for the base before the page arms: nothing is editable
+        // while the source shows without its pending edits
+        setTimeout(() => {
+            const go = () => { armAll(); restore(); };
+            if (!baseCids && basePending && log.some(d => d.ids || d.id)) { const p = basePending; basePending = null; Promise.race([p, new Promise(r => setTimeout(r, BASE_WAIT))]).then(go, go); }
+            else go();
+        }, 450);
         document.addEventListener('keydown', onHistoryKey);
         window.addEventListener('click', onAreaLinkClick, true);
         window.addEventListener('auxclick', onAreaLinkClick, true);

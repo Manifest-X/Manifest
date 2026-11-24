@@ -1283,9 +1283,18 @@ function allSourceIds(files) {
   }
   return { ids, cids };
 }
+// Cached per file by content (the parse is the cost; the base is read on every page load)
+const sourceIdCache = new Map();
 function sourceIds(file) {
+  let html; try { html = readFileSync(file, 'utf8'); } catch { return { ids: {}, cids: {} }; }
+  const h = fpHash(html), hit = sourceIdCache.get(file);
+  if (hit && hit.h === h) return hit.r;
+  const r = readSourceIds(html);
+  sourceIdCache.set(file, { h, r });
+  return r;
+}
+function readSourceIds(html) {
   const ids = {}, cids = {};
-  let html; try { html = readFileSync(file, 'utf8'); } catch { return { ids, cids }; }
   const doc = parseHTML(html);
   if (checkNesting(doc)) return { ids, cids };
   for (const n of allElements(doc)) {

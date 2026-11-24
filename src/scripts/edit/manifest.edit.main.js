@@ -75,7 +75,13 @@
         if (window.__manifestEditStub) setTimeout(() => { window.__manifestEditStub.v++; }, 0);
         loadState();
         if (window.__mnfstEdit) loadBase();   // only mnfst-run --edit serves the base
-        setTimeout(() => { armAll(); restore(); }, 450);
+        // A log with twin ids waits (bounded) for the base before the page arms: nothing is editable
+        // while the source shows without its pending edits
+        setTimeout(() => {
+            const go = () => { armAll(); restore(); };
+            if (!baseCids && basePending && log.some(d => d.ids || d.id)) { const p = basePending; basePending = null; Promise.race([p, new Promise(r => setTimeout(r, BASE_WAIT))]).then(go, go); }
+            else go();
+        }, 450);
         document.addEventListener('keydown', onHistoryKey);
         window.addEventListener('click', onAreaLinkClick, true);
         window.addEventListener('auxclick', onAreaLinkClick, true);

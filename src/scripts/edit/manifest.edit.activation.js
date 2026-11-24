@@ -420,11 +420,13 @@
                     // Over a newer file: a twin family the file now holds differently than the page loaded
                     // it is unverifiable until a reload; unchanged families keep their identity
                     if (!/\.html?$/i.test(f)) return;
-                    const was = baseCids[f] || {}, fams = new Set([...Object.keys(was), ...Object.keys(next || {})].map(familyOf)), kept = {};
-                    fams.forEach(fam => {
-                        const ks = new Set([...Object.keys(was), ...Object.keys(next || {})].filter(k => familyOf(k) === fam));
-                        if ([...ks].every(k => was[k] === (next || {})[k])) ks.forEach(k => { kept[k] = was[k]; });
-                        else cidsUnsure.add(fam);
+                    // (on evidence of a reorder; this publish's own edits and in-place changes are not)
+                    const was = baseCids[f] || {}, now = next || {}, kept = {};
+                    new Set([...Object.keys(was), ...Object.keys(now)].map(familyOf)).forEach(fam => {
+                        const of = (m) => Object.keys(m).filter(k => familyOf(k) === fam).sort(byOrd).map(k => m[k]);
+                        const R = of(was), F = of(now);
+                        if (R.some((x, i) => (movedIn(R, F, i) || []).length)) cidsUnsure.add(fam);
+                        else Object.keys(now).forEach(k => { if (familyOf(k) === fam) kept[k] = now[k]; });
                     });
                     baseCids[f] = kept;
                 });
