@@ -654,3 +654,56 @@ describe('shown ids after inner and earlier edits (seventh review)', () => {
     })
 })
 
+describe('a reorder elsewhere beside an own edit in the family (eighth review)', () => {
+    const A = () => R(document.body).a
+    const m = (x) => A().querySelector(`[data-m="${x}"]`)
+    const pc = (t, d) => `<p class="c" data-m="${d}">Lorem ipsum dolor sit amet ${t}</p>`
+    const KC = (t, d) => `<div class="k" data-m="${d}"><h3>Card heading long enough</h3><span>${t}</span><b>x</b></div>`
+    const H = '<h2 data-m="h">P</h2>'
+    const over = async (body) => {
+        await S.open(persist([pc('one', '1'), pc('two', '2'), pc('three', '3'), H], ['<p data-m="g">G</p>']))
+        extRegion('a', swap('1', '2'))
+        body()
+        await flush()
+        await store().publish(); await store().publish({ rebase: true })
+    }
+    it('T1 twins swapped elsewhere, own text on the third; then the first deleted: reported, nothing deleted', async () => {
+        await over(() => editText(m('3'), 'Lorem ipsum dolor sit amet THREE'))
+        store().remove(m('1')); await flush()
+        await S.reload()
+        expect(conf().length).toBe(1)
+        await store().publish()
+        expect(fileIds().a).toEqual(['2', '1', '3', 'h'])
+    })
+    it('T2 the same, then a text edit on the first: reported, not written into the second', async () => {
+        await over(() => editText(m('3'), 'Lorem ipsum dolor sit amet THREE'))
+        editText(m('1'), 'Lorem ipsum dolor sit amet ONE-ED'); await flush()
+        await S.reload()
+        expect(conf().length).toBe(1)
+        await store().publish()
+        expect(S.file()).not.toContain('ONE-ED')
+        expect(S.file()).toContain(T2)
+    })
+    it('T1 control: no swap elsewhere, own text on the third; then the first deleted: the delete stays', async () => {
+        await S.open(persist([pc('one', '1'), pc('two', '2'), pc('three', '3'), H], ['<p data-m="g">G</p>']))
+        S.ext(f => f.replace('<p data-m="g">G</p>', '<p data-m="g">G2</p>'))
+        editText(m('3'), 'Lorem ipsum dolor sit amet THREE'); await flush()
+        await store().publish(); await store().publish({ rebase: true })
+        store().remove(m('1')); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['2', '3', 'h'])
+    })
+    it('T4 twin cards swapped elsewhere, a child deleted in the third; then the first deleted: reported, nothing deleted', async () => {
+        await S.open(persist([KC('one', 'k1'), KC('two', 'k2'), KC('three', 'k3'), H], ['<p data-m="g">G</p>']))
+        extRegion('a', swap('k1', 'k2'))
+        store().remove(m('k3').querySelector('b')); await flush()
+        await store().publish(); await store().publish({ rebase: true })
+        store().remove(m('k1')); await flush()
+        await S.reload()
+        expect(conf().length).toBe(1)
+        await store().publish()
+        expect(fileIds().a).toEqual(['k2', 'k1', 'k3', 'h'])
+    })
+})

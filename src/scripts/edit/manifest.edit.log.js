@@ -182,15 +182,16 @@
     // evidence of a move only. Same size: another member whose own content changed holds it (a
     // permutation). Members added or removed: everything recorded from i on found again, in order,
     // shifted. In place, not found, or shared with another recorded member: null or [] (positional).
+    // A recorded id that is null (unknown) is a wildcard: only known members are compared.
     function movedIn(R, F, i) {
         const v = R[i];
         if (v == null || F[i] == null || F[i] === v || R.some((x, j) => j !== i && x === v)) return null;
-        if (F.length === R.length) return F.map((x, j) => j).filter(j => j !== i && F[j] === v && F[j] !== R[j]);
+        if (F.length === R.length) return F.map((x, j) => j).filter(j => j !== i && R[j] != null && F[j] === v && F[j] !== R[j]);
         const to = [];
         for (let d = -i; d < F.length - i; d++) {
             if (!d) continue;
             let ok = true;
-            for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && F[t + d] === R[t];
+            for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && (R[t] == null || F[t + d] === R[t]);
             if (ok) to.push(i + d);
         }
         return to;

@@ -438,7 +438,7 @@
                 const ks = Object.keys(now).filter(k => familyOf(k) === fam).sort(byOrd);
                 const pk = [...live.keys()].filter(k => familyOf(k) === fam && (() => { const a = regionOf(live.get(k)); return a && sourceFile(a) === f; })()).sort(byOrd);
                 const R = pk.map(k => shown.has(live.get(k)) ? shown.get(live.get(k)) : null), F = ks.map(k => now[k]);
-                if (!R.includes(null) && R.some((x, i) => (movedIn(R, F, i) || []).length)) cidsUnsure.add(fam);
+                if (R.some((x, i) => (movedIn(R, F, i) || []).length)) cidsUnsure.add(fam);
                 else ks.forEach(k => { kept[k] = now[k]; });
             });
             baseCids[f] = kept;
