@@ -198,7 +198,8 @@
                                         "type": "string",
                                         "enum": [
                                             "user",
-                                            "team"
+                                            "team",
+                                            "teams"
                                         ]
                                     },
                                     {
@@ -207,7 +208,8 @@
                                             "type": "string",
                                             "enum": [
                                                 "user",
-                                                "team"
+                                                "team",
+                                                "teams"
                                             ]
                                         }
                                     }
@@ -480,6 +482,7 @@
                                     "guest-manual",
                                     "magic",
                                     "otp",
+                                    "phone",
                                     "oauth",
                                     "password"
                                 ]
@@ -499,6 +502,10 @@
                                     "items": {
                                         "type": "string"
                                     }
+                                },
+                                "pollInterval": {
+                                    "type": "number",
+                                    "description": "Poll team membership every N ms. Off by default."
                                 },
                                 "guests": {
                                     "type": "boolean",

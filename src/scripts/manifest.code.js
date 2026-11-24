@@ -62,15 +62,17 @@ const HLJS_LANG_BASE = 'https://esm.run/highlight.js@11.11.1/lib/languages/';
 
 let hljsCorePromise = null;
 let hljsFullPromise = null;
-const langLoadPromises = new Map();
+// Grammar loads per hljs instance (lean core, then possibly the full bundle); names that failed stay failed
+const langLoadPromises = new WeakMap();
+const failedLangs = new Set();
 // Set once we've committed to the full bundle; never resets.
 let usingFullBundle = false;
 
-// Detect whether window.hljs is the full bundle (~190 langs) vs lean core.
-// 50 separates the two reliably.
-function hljsIsFullBundle() {
-    return typeof window.hljs?.listLanguages === 'function'
-        && window.hljs.listLanguages().length > 50;
+// The lean core we imported; any other window.hljs is the full bundle or the host's own
+let hljsLean = null;
+
+function hljsIsForeign() {
+    return typeof window.hljs?.registerLanguage === 'function' && window.hljs !== hljsLean;
 }
 
 async function loadHighlightFull() {
@@ -83,9 +85,8 @@ async function loadHighlightFull() {
 }
 
 async function loadHighlightCore() {
-    // Don't downgrade: if the full bundle is already on window.hljs, returning
-    // the lean core would clobber its grammars. Hand back the full instance.
-    if (hljsIsFullBundle()) return window.hljs;
+    // Never replace the full bundle (or a host instance) with the lean core
+    if (hljsIsForeign()) return window.hljs;
     if (window.ManifestVendor.checked) return loadHighlightFull();
     if (hljsCorePromise) return hljsCorePromise;
     hljsCorePromise = import(HLJS_CORE_URL).then(mod => {
@@ -93,8 +94,9 @@ async function loadHighlightCore() {
         // onto window for call sites that read `hljs` as a global.
         const hl = mod.default;
         if (!hl) throw new Error('hljs undefined after core ESM import');
-        // Guard again: the full bundle's <script> may have raced our ESM fetch.
-        if (hljsIsFullBundle()) return window.hljs;
+        // The full bundle's <script> may have raced our ESM fetch
+        if (hljsIsForeign()) return window.hljs;
+        hljsLean = hl;
         window.hljs = hl;
         return hl;
     });
@@ -102,37 +104,44 @@ async function loadHighlightCore() {
 }
 
 async function registerLanguage(lang) {
-    if (!lang || lang === 'auto') return;
-    const resolved = LANGUAGE_ALIASES[lang] || lang;
+    const resolved = canonicalLang(lang);
+    if (!resolved || resolved === 'auto') return;
     // Plain-text "languages" have no grammar module — never fetch one.
-    if (PLAINTEXT_LANGS.has(resolved.toLowerCase())) return;
+    if (PLAINTEXT_LANGS.has(resolved)) return;
+    for (const dep of Object.hasOwn(LANGUAGE_DEPS, resolved) ? LANGUAGE_DEPS[resolved] : []) await registerLanguage(dep);
     const core = await loadHighlightCore();
     if (core.listLanguages().includes(resolved)) return;
-    if (langLoadPromises.has(resolved)) return langLoadPromises.get(resolved);
-    const p = (window.ManifestVendor.checked
-        ? (/^[a-z0-9-]+$/.test(resolved) ? window.ManifestVendor.script(HLJS_LANG_FILE(resolved)) : Promise.reject(new Error('unknown language')))
-        : import(`${HLJS_LANG_BASE}${resolved}`).then(mod => { core.registerLanguage(resolved, mod.default); }))
+    if (failedLangs.has(resolved)) { usingFullBundle = true; return; }
+    if (!langLoadPromises.has(core)) langLoadPromises.set(core, new Map());
+    const loads = langLoadPromises.get(core);
+    if (loads.has(resolved)) return loads.get(resolved);
+    // Grammar names only: anything else would resolve outside the languages folder
+    const p = (!/^[a-z0-9-]+$/.test(resolved) ? Promise.reject(new Error('unknown language'))
+        : window.ManifestVendor.checked
+            ? window.ManifestVendor.script(HLJS_LANG_FILE(resolved))
+            : import(`${HLJS_LANG_BASE}${resolved}`).then(mod => { core.registerLanguage(resolved, mod.default); }))
         .catch(() => {
             // Module load failed — fall back to the full bundle (auto-detect).
             usingFullBundle = true;
-            langLoadPromises.delete(resolved);
+            failedLangs.add(resolved);
+            loads.delete(resolved);
         });
-    langLoadPromises.set(resolved, p);
+    loads.set(resolved, p);
     return p;
 }
 
 // Public entry point. Returns hljs ready to highlight `requestedLang` (or to
 // auto-detect in full mode).
 async function loadHighlightJS(requestedLang = null) {
-    // Integrity checks on: the verified bundle, plus a verified grammar for a language outside it
-    if (window.ManifestVendor.checked) {
+    requestedLang = canonicalLang(requestedLang) || null;
+    // Integrity checks on, or already in full mode: the bundle, plus a grammar for a language outside it
+    if (window.ManifestVendor.checked || usingFullBundle || hljsFullPromise) {
         const hl = await loadHighlightFull();
-        if (requestedLang && requestedLang !== 'auto' && !PLAINTEXT_LANGS.has(requestedLang.toLowerCase())) await registerLanguage(requestedLang);
+        if (requestedLang && requestedLang !== 'auto' && !PLAINTEXT_LANGS.has(requestedLang)) await registerLanguage(requestedLang);
         return hl;
     }
-    if (usingFullBundle || hljsFullPromise) return loadHighlightFull();
     // Plain-text needs an hljs instance but must not escalate or fetch a module.
-    if (PLAINTEXT_LANGS.has((requestedLang || '').toLowerCase())) return loadHighlightCore();
+    if (PLAINTEXT_LANGS.has(requestedLang)) return loadHighlightCore();
     // Per-block auto-detect → escalate.
     if (!requestedLang || requestedLang === 'auto') {
         usingFullBundle = true;
@@ -182,20 +191,34 @@ if (window.ManifestUtilities) {
 
 // ─── Language resolution ─────────────────────────────────────────────────────
 
-// Common shortenings; resolved here to short-circuit the supported-language
-// check before calling hljs.
+// Fence names without their own grammar file → the file that has the grammar.
+// Targets must exist in vendor.lock.json; a missing file escalates to the full bundle.
 const LANGUAGE_ALIASES = {
-    js: 'javascript', ts: 'typescript', py: 'python', rb: 'ruby',
-    sh: 'bash', shell: 'bash', yml: 'yaml', html: 'xml', svg: 'xml'
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+    ts: 'typescript', tsx: 'typescript', py: 'python', rb: 'ruby',
+    rs: 'rust', kt: 'kotlin', cs: 'csharp', golang: 'go',
+    sh: 'bash', zsh: 'bash', console: 'shell', shellsession: 'shell',
+    env: 'bash', dotenv: 'bash', ps1: 'powershell',
+    yml: 'yaml', toml: 'ini', conf: 'ini', jsonc: 'json', json5: 'json',
+    html: 'xml', htm: 'xml', xhtml: 'xml', svg: 'xml', vue: 'xml', svelte: 'xml', astro: 'xml',
+    md: 'markdown', mdx: 'markdown', docker: 'dockerfile', patch: 'diff'
 };
 
-// "Render as plain text" languages — no module fetch, no auto-detect. `txt`
-// in particular has no CDN module (a 404 would escalate the page to full mode).
-const PLAINTEXT_LANGS = new Set(['txt', 'text', 'plain', 'plaintext', 'none', 'nohighlight']);
+// Grammars that embed another (shell sessions highlight their commands as bash)
+const LANGUAGE_DEPS = { shell: ['bash'] };
+
+// "Render as plain text" languages — no module fetch, no auto-detect.
+const PLAINTEXT_LANGS = new Set(['txt', 'text', 'plain', 'plaintext', 'none', 'nohighlight', 'csv', 'tsv', 'gitignore']);
+
+// Fence names are case-insensitive (ENV, Vue, CSV)
+function canonicalLang(name) {
+    const key = String(name || '').trim().toLowerCase();
+    return Object.hasOwn(LANGUAGE_ALIASES, key) ? LANGUAGE_ALIASES[key] : key;
+}
 
 function resolveLanguage(hljs, langAttr) {
-    if (!langAttr || langAttr === 'auto') return null;
-    const lang = LANGUAGE_ALIASES[langAttr] || langAttr;
+    const lang = canonicalLang(langAttr);
+    if (!lang || lang === 'auto') return null;
     return hljs.listLanguages().includes(lang) ? lang : null;
 }
 
@@ -259,14 +282,14 @@ function resolveSource(el) {
 
 // All map to "xml" internally; kept in one set so source-reading behaves the
 // same regardless of spelling.
-const HTML_LIKE_LANGS = new Set(['html', 'xml', 'svg', 'xhtml', 'rss', 'atom']);
+const HTML_LIKE_LANGS = new Set(['html', 'htm', 'xml', 'svg', 'xhtml', 'rss', 'atom', 'vue', 'svelte', 'astro']);
 
 // ─── Highlighting ────────────────────────────────────────────────────────────
 
 // Highlight a <code> element. Returns the language hljs used (or null).
 function highlightInto(codeEl, source, hljs, requestedLang) {
     // Explicit plain text: keep the code-block chrome, no token colours.
-    if (PLAINTEXT_LANGS.has((requestedLang || '').toLowerCase())) {
+    if (PLAINTEXT_LANGS.has(canonicalLang(requestedLang))) {
         codeEl.textContent = source;
         codeEl.className = 'hljs language-plaintext';
         codeEl.dataset.highlighted = 'yes';
@@ -413,7 +436,7 @@ function rebindBlock(pre) {
     if (pre.hasAttribute('edit')) {
         const m = (code.className || '').match(/language-([\w-]+)/);
         const lang = (m && m[1]) || pre.getAttribute('x-code') || pre.getAttribute('language') || '';
-        loadHighlightJS(lang).then(hljs => setupEditor(pre, code, lang, hljs)).catch(() => { });
+        loadHighlightJS(lang).then(hljs => setupEditor(pre, code, resolveLanguage(hljs, lang), hljs)).catch(() => { });
     }
 }
 
