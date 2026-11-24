@@ -69,6 +69,7 @@
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
         "test:e2e:presence-tabs": "node tests/e2e/presence-tabs.e2e.mjs",
         "test:e2e:sri": "node tests/e2e/loader-sri.e2e.mjs",
+        "test:e2e:edit-typing": "node tests/e2e/edit-typing.e2e.mjs",
         "lint": "echo 'No linting configured'",
         "release:docs": "npm test && node scripts/release-bump.mjs packages/docs && cd packages/docs && npm publish --auth-type=web",
         "release:check": "node scripts/release-check.mjs",
