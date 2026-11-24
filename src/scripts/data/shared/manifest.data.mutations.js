@@ -25,7 +25,8 @@ function findRawIndex(dataSourceName, entryId) {
     const raw = window.ManifestDataStore?.rawOf?.(store) || store;
     const arr = raw?.[dataSourceName];
     if (!Array.isArray(arr)) return { store, arr: null, index: -1 };
-    return { store, arr, index: arr.findIndex(entry => entry && entry.$id === entryId) };
+    const indexOfRow = window.ManifestDataStore?.indexOfRow;
+    return { store, arr, index: indexOfRow ? indexOfRow(arr, entryId) : arr.findIndex(entry => entry && entry.$id === entryId) };
 }
 
 // Update a single entry in the store (scoped update)
@@ -107,9 +108,9 @@ function removeEntryFromStore(dataSourceName, entryId, options = {}) {
     // Store original entry for rollback
     const originalEntry = arr[index];
 
-    // Local write: splice the tracked array, sync
+    // Local write: one structural write on the tracked source, sync
     const ds = window.ManifestDataStore;
-    store[dataSourceName].splice(index, 1);
+    ds.removeRowAt(store, dataSourceName, index);
     ds.noteLocalWrite(dataSourceName, entryId, { removed: true });
     ds.touchSource(dataSourceName);
     clearSourceCaches(dataSourceName);
@@ -184,7 +185,7 @@ function insertEntryAt(dataSourceName, entry, index, options = {}) {
     if (window.ManifestDataMain?.orderFor?.(dataSourceName) && ds.insertRow) {
         ds.insertRow(store, dataSourceName, row);
     } else {
-        store[dataSourceName].splice(restoreIndex(arr, options.order, entry.$id, index), 0, row);
+        ds.insertRowAt(store, dataSourceName, restoreIndex(arr, options.order, entry.$id, index), row);
     }
     ds.touchSource(dataSourceName);
     clearSourceCaches(dataSourceName);
@@ -281,7 +282,7 @@ async function executeMutation(mutationConfig) {
             const store = Alpine.store('data');
             // Snapshot only the patched fields: rollback restores those, nothing else
             if (store && store[dataSourceName] && Array.isArray(store[dataSourceName])) {
-                const found = store[dataSourceName].find(e => e.$id === entryId);
+                const found = ds0?.findRow ? ds0.findRow(dataSourceName, entryId) : store[dataSourceName].find(e => e.$id === entryId);
                 originalData = found && data ? Object.fromEntries(Object.keys(data).map(k => [k, cloneValue(found[k])])) : null;
             }
 
@@ -345,11 +346,11 @@ async function executeMutation(mutationConfig) {
                 // Ack: swap the temp row for the server row in place (new $id → new $files binding)
                 const { store, arr, index } = findRawIndex(dataSourceName, optimisticData.$id);
                 // Realtime echo of this create may have landed first under the real $id
-                const held = (arr && result.$id !== optimisticData.$id) ? arr.findIndex(r => r && r.$id === result.$id) : -1;
+                const held = (arr && result.$id !== optimisticData.$id) ? window.ManifestDataStore.indexOfRow(arr, result.$id) : -1;
                 if (store && arr && held !== -1) {
                     const ds = window.ManifestDataStore;
                     ds.mergeRowFields(store[dataSourceName][held], result, dataSourceName);
-                    if (index !== -1) store[dataSourceName].splice(index, 1);
+                    if (index !== -1) ds.removeRowAt(store, dataSourceName, index);
                     ds.touchSource(dataSourceName);
                     clearSourceCaches(dataSourceName);
                 } else if (store && arr) {
@@ -358,10 +359,10 @@ async function executeMutation(mutationConfig) {
                         const ds = window.ManifestDataStore;
                         const created = ds.createReactiveReferences(result, dataSourceName);
                         if (window.ManifestDataMain?.orderFor?.(dataSourceName)) {
-                            store[dataSourceName].splice(index, 1);
+                            ds.removeRowAt(store, dataSourceName, index);
                             ds.insertRow(store, dataSourceName, created);
                         } else {
-                            store[dataSourceName].splice(index, 1, created); // unsorted: keeps its place
+                            ds.removeRowAt(store, dataSourceName, index, created); // unsorted: keeps its place
                         }
                         ds.touchSource(dataSourceName);
                         clearSourceCaches(dataSourceName);

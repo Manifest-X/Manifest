@@ -17,6 +17,14 @@ let landingResolvers = [];
 let landingFrame = null;
 let landingTimer = null;
 const LANDING_FALLBACK_MS = 50;
+// Backpressure: a flush that ran long (store write + the effects it re-ran) is followed
+// by a cool-down of twice its cost; realtime rows arriving inside it land together when
+// it ends, so a burst costs one flush. Loads never wait; an idle source never waits
+const LANDING_BUSY_MS = 8;
+const LANDING_MAX_WAIT_MS = 250;
+let landingCost = 0;
+let landingEndedAt = 0;
+let landingDeferred = false;
 
 // Local writes made while a flush is pending win over it (local-last)
 const pendingLocal = new Map(); // source -> Map<$id, { patch, removed }>
@@ -67,6 +75,78 @@ const rowKey = (row) => (row && typeof row === 'object' && (typeof row.$id === '
     ? row.$id
     : null;
 
+// $id -> position per source array; rebuilt when the array's length moved or a hit no longer matches
+const rowIndexes = new WeakMap(); // raw array -> { map, len }
+
+function buildRowIndex(arr) {
+    const map = new Map();
+    for (let i = 0; i < arr.length; i++) { const id = rowKey(arr[i]); if (id !== null) map.set(id, i); }
+    const entry = { map, len: arr.length };
+    rowIndexes.set(arr, entry);
+    return entry;
+}
+
+function indexOfRow(arr, id) {
+    if (!Array.isArray(arr) || id === null || id === undefined) return -1;
+    let entry = rowIndexes.get(arr);
+    if (!entry || entry.len !== arr.length) entry = buildRowIndex(arr);
+    let i = entry.map.get(id);
+    if (i !== undefined && rowKey(arr[i]) !== id) i = buildRowIndex(arr).map.get(id);
+    return i === undefined ? -1 : i;
+}
+
+function dropRowIndex(arr) { if (arr) rowIndexes.delete(arr); }
+
+// Rows were pushed onto the end: extend the index instead of rebuilding it
+function extendRowIndex(arr) {
+    const entry = rowIndexes.get(arr);
+    if (!entry || entry.len > arr.length) return;
+    for (let i = entry.len; i < arr.length; i++) { const id = rowKey(arr[i]); if (id !== null) entry.map.set(id, i); }
+    entry.len = arr.length;
+}
+
+function findRow(dataSourceName, id) {
+    const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    const arr = store ? rawOf(store)[dataSourceName] : null;
+    const i = indexOfRow(arr, id);
+    return i === -1 ? null : arr[i];
+}
+
+// Structural edit, in place: the array keeps its identity. One reactive write
+// (length to 0) wakes every length, iteration and index reader; the rows are then
+// put back on the raw array, so no per-index writes run (a proxied splice makes one per shifted row)
+function setRows(store, dataSourceName, next) {
+    const raw = rawOf(store)[dataSourceName];
+    const cur = store[dataSourceName];
+    if (!Array.isArray(raw)) {
+        store[dataSourceName] = next;
+        const arr = rawOf(store)[dataSourceName];
+        rawDataStore.set(dataSourceName, arr);
+        attachMethods(arr, dataSourceName);
+        return arr;
+    }
+    dropRowIndex(raw);
+    if (!raw.length) {
+        for (const row of next) cur.push(row);
+        return raw;
+    }
+    cur.length = 0;
+    for (let i = 0; i < next.length; i++) raw.push(next[i]);
+    return raw;
+}
+
+function insertRowAt(store, dataSourceName, index, row) {
+    const next = rawOf(store)[dataSourceName].slice();
+    next.splice(index, 0, rawOf(row));
+    setRows(store, dataSourceName, next);
+}
+
+function removeRowAt(store, dataSourceName, index, replacement) {
+    const next = rawOf(store)[dataSourceName].slice();
+    if (replacement === undefined) next.splice(index, 1); else next.splice(index, 1, rawOf(replacement));
+    setRows(store, dataSourceName, next);
+}
+
 function ensureStoreShape(store) {
     if (!store._v) store._v = {};
 }
@@ -88,10 +168,11 @@ function touchSource(dataSourceName) {
 }
 
 // Post-settle hammer: re-run every `$x` reader (Alpine scheduler swallow)
-function bumpAllVersions() {
+function bumpAllVersions(only) {
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     if (!store) return;
     ensureStoreShape(store);
+    if (only) { if (only.size) touchSources(store, only); return; }
     const raw = rawOf(store);
     const sources = new Set(Object.keys(raw._v || {}));
     for (const key of Object.keys(raw)) {
@@ -119,6 +200,7 @@ function mergeRowFields(target, fields, dataSourceName) {
         if (key === '$files') continue;
         const value = fields[key];
         if (sameScalarOrList(raw[key], value)) continue;
+        if (key === '$id') dropRowIndex(rawDataStore.get(dataSourceName));
         target[key] = createReactiveReferences(value, dataSourceName);
     }
 }
@@ -276,8 +358,8 @@ function touchPending(dataSourceName) {
 function insertRow(store, dataSourceName, row) {
     const target = store[dataSourceName];
     const order = window.ManifestDataMain?.orderFor?.(dataSourceName);
-    if (!order) { target.push(row); return; }
-    target.splice(sortedIndex(rawOf(store)[dataSourceName], rawOf(row), compareBy(order)), 0, row);
+    if (!order) { target.push(row); extendRowIndex(rawOf(store)[dataSourceName]); return; }
+    insertRowAt(store, dataSourceName, sortedIndex(rawOf(store)[dataSourceName], rawOf(row), compareBy(order)), row);
 }
 
 // After a landing: held writes win over the landed payload. reads: this flush's read
@@ -285,12 +367,12 @@ function insertRow(store, dataSourceName, row) {
 function reapplyPending(store, dataSourceName, readLandings = []) {
     const byId = pendingWrites.get(dataSourceName);
     if (!byId) return false;
-    const curRaw = rawOf(store)[dataSourceName];
-    if (!Array.isArray(curRaw)) return false;
+    const rawRows = () => rawOf(store)[dataSourceName];
+    if (!Array.isArray(rawRows())) return false;
     const now = Date.now();
     let changed = false;
     for (const [id, list] of [...byId]) {
-        let i = curRaw.findIndex(row => rowKey(row) === id);
+        let i = indexOfRow(rawRows(), id);
         // Only reads that carried this row (a replace carries every row) speak for it
         const reads = readLandings.filter(r => r.ids === null || r.ids.has(id)).map(r => r.token);
         for (const write of [...list]) {
@@ -303,16 +385,16 @@ function reapplyPending(store, dataSourceName, readLandings = []) {
                 if (!reads.some(t => t <= write.settledAt)) continue; // realtime is newer than the write
             }
             if (write.kind === 'delete') {
-                if (i !== -1) { store[dataSourceName].splice(i, 1); i = -1; changed = true; }
+                if (i !== -1) { removeRowAt(store, dataSourceName, i); i = -1; changed = true; }
             } else if (write.kind === 'create') {
                 // A placeholder stays only where it belongs (a $query that excludes it drops it)
                 if (i === -1 && (window.ManifestDataMain?.rowFitsSource?.(dataSourceName, write.fields) ?? true)) {
                     insertRow(store, dataSourceName, createReactiveReferences(write.fields, dataSourceName));
-                    i = curRaw.findIndex(row => rowKey(row) === id);
+                    i = indexOfRow(rawRows(), id);
                     changed = true;
                 }
             } else if (i !== -1) {
-                const row = curRaw[i];
+                const row = rawRows()[i];
                 if (Object.keys(write.fields).some(k => !sameScalarOrList(row[k], write.fields[k]))) {
                     mergeRowFields(store[dataSourceName][i], write.fields, dataSourceName);
                     changed = true;
@@ -407,7 +489,7 @@ function upsertOrdered(store, dataSourceName, rows, order) {
     for (const row of rows) {
         const list = next || curRaw;
         const id = rowKey(row);
-        const i = id !== null ? list.findIndex(r => rowKey(r) === id) : -1;
+        const i = id === null ? -1 : (next ? next.findIndex(r => rowKey(r) === id) : indexOfRow(curRaw, id));
         if (i !== -1) {
             // Only a changed sort value moves a held row; the server's placement otherwise stands
             const keyChanged = order.some(([key]) => Object.prototype.hasOwnProperty.call(row, key) && !sameScalarOrList(list[i][key], row[key]));
@@ -440,15 +522,13 @@ function upsertRows(store, dataSourceName, rows, mode, order) {
         return;
     }
     const cur = store[dataSourceName];
-    const index = new Map();
-    curRaw.forEach((row, i) => { const id = rowKey(row); if (id !== null) index.set(id, i); });
     const fresh = new Map();
     const next = [];
     const appended = [];
     for (const row of rows) {
         const id = rowKey(row);
-        const i = id !== null ? index.get(id) : undefined;
-        if (i !== undefined) {
+        const i = indexOfRow(curRaw, id);
+        if (i !== -1) {
             mergeRowFields(cur[i], row, dataSourceName);
             if (mode === 'replace') next.push(curRaw[i]);
             continue;
@@ -465,20 +545,19 @@ function upsertRows(store, dataSourceName, rows, mode, order) {
         if (next.length !== curRaw.length || next.some((row, i) => row !== curRaw[i])) store[dataSourceName] = next;
     } else if (appended.length) {
         cur.push(...appended);
+        extendRowIndex(curRaw);
     }
 }
 
 function removeRows(store, dataSourceName, ids) {
     const curRaw = rawOf(store)[dataSourceName];
     if (!Array.isArray(curRaw) || !ids?.length) return false;
+    if (ids.length === 1 && indexOfRow(curRaw, ids[0]) === -1) return false;
     const set = new Set(ids);
-    const cur = store[dataSourceName];
-    let removed = false;
-    for (let i = curRaw.length - 1; i >= 0; i--) {
-        const id = rowKey(curRaw[i]);
-        if (id !== null && set.has(id)) { cur.splice(i, 1); removed = true; }
-    }
-    return removed;
+    const next = curRaw.filter(row => { const id = rowKey(row); return id === null || !set.has(id); });
+    if (next.length === curRaw.length) return false;
+    setRows(store, dataSourceName, next);
+    return true;
 }
 
 // Synchronous write of data + state for one source (no version bump); returns the new state
@@ -544,7 +623,7 @@ function updateStore(dataSourceName, data, options = {}) {
     const state = writeSource(dataSourceName, data, { ...options, mode: 'replace' });
     if (!state) return;
     touchSource(dataSourceName);
-    if (!state.loading) checkAndDispatchRenderReady();
+    if (!state.loading) checkAndDispatchRenderReady([dataSourceName]);
 }
 
 // Network landing (page load, paged append, realtime batch): buffered, applied
@@ -568,8 +647,27 @@ function queueLanding(op) {
     });
 }
 
+function isRealtimeOp(op) {
+    for (const key of Object.keys(op.options || {})) if (!MERGE_KEYS.has(key)) return false;
+    return !!op.remove || (Array.isArray(op.rows) && op.options?.mode === 'append');
+}
+
 function scheduleLandingFlush() {
+    const urgent = !isRealtimeOp(pendingLandings[pendingLandings.length - 1]);
+    if (landingDeferred && urgent) {
+        clearTimeout(landingTimer);
+        landingTimer = null;
+        landingDeferred = false;
+    }
     if (landingFrame !== null || landingTimer !== null) return;
+    if (!urgent && landingCost > LANDING_BUSY_MS && pendingLandings.every(isRealtimeOp)) {
+        const wait = Math.min(LANDING_MAX_WAIT_MS, landingCost * 2) - (performance.now() - landingEndedAt);
+        if (wait > 16) {
+            landingDeferred = true;
+            landingTimer = setTimeout(flushLandings, wait);
+            return;
+        }
+    }
     const hidden = typeof document !== 'undefined' && document.hidden;
     if (!hidden && typeof requestAnimationFrame === 'function') {
         landingFrame = requestAnimationFrame(flushLandings);
@@ -590,9 +688,40 @@ function noteLocalWrite(dataSourceName, id, note) {
     byId.set(id, { removed: false, patch: { ...base, ...note.patch } });
 }
 
+// Same-source appends (realtime rows) and removes queued back to back apply as one write
+const MERGE_KEYS = new Set(['mode', 'generation', 'order']);
+function mergesWith(prev, op) {
+    if (prev.remove || op.remove) return !!(prev.remove && op.remove);
+    const a = prev.options, b = op.options;
+    if (!Array.isArray(prev.rows) || !Array.isArray(op.rows) || a.mode !== 'append' || b.mode !== 'append') return false;
+    for (const key of Object.keys(a)) if (!MERGE_KEYS.has(key)) return false;
+    for (const key of Object.keys(b)) if (!MERGE_KEYS.has(key)) return false;
+    return a.generation === b.generation && (a.order === b.order || JSON.stringify(a.order) === JSON.stringify(b.order));
+}
+
+function groupLandings(ops) {
+    const groups = [];
+    const last = new Map();
+    for (const op of ops) {
+        const prev = last.get(op.source);
+        if (prev && mergesWith(prev, op)) {
+            if (op.remove) prev.remove = prev.remove.concat(op.remove); else prev.rows = prev.rows.concat(op.rows);
+            continue;
+        }
+        const group = { source: op.source, remove: op.remove, rows: op.rows, options: op.options, op };
+        groups.push(group);
+        last.set(op.source, group);
+    }
+    return groups;
+}
+
 function flushLandings() {
     if (landingFrame !== null) { cancelAnimationFrame(landingFrame); landingFrame = null; }
     if (landingTimer !== null) { clearTimeout(landingTimer); landingTimer = null; }
+    landingDeferred = false;
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+    // Measured on the next task: after the microtask flush of the effects this write re-runs
+    if (startedAt) setTimeout(() => { landingEndedAt = performance.now(); landingCost = landingEndedAt - startedAt; }, 0);
     const ops = pendingLandings.splice(0);
     const resolvers = landingResolvers.splice(0);
     const local = new Map(pendingLocal);
@@ -603,22 +732,23 @@ function flushLandings() {
     const touched = new Set();
     const landed = new Set(); // network-origin landings (persistence snapshots these)
     const skipped = new Set();
-    let settled = false;
+    const settled = new Set();
     if (store) {
-        for (const op of ops) {
+        for (const group of groupLandings(ops)) {
+            const op = group.op;
             try {
                 if (op.remove) {
-                    if (removeRows(store, op.source, op.remove)) { touched.add(op.source); landed.add(op.source); }
+                    if (removeRows(store, op.source, group.remove)) { touched.add(op.source); landed.add(op.source); }
                     continue;
                 }
                 // A newer read began since this landing was queued (e.g. an identity change): it never applies
                 if (typeof op.options?.readToken === 'number' && !isLatestRead(op.source, op.options.readToken)) { skipped.add(op); continue; }
-                const state = writeSource(op.source, op.rows, op.options);
+                const state = writeSource(op.source, group.rows, op.options);
                 if (!state) continue;
                 touched.add(op.source);
                 if (!op.options.persistHydration && op.rows !== null && op.rows !== undefined) landed.add(op.source);
                 // Only load completions (explicit loading state) feed render-ready; realtime upserts never do
-                if (op.options.loading !== undefined && !state.loading) settled = true;
+                if (op.options.loading !== undefined && !state.loading) settled.add(op.source);
             } catch (error) {
                 console.error(`[Manifest Data] Landing failed for "${op.source}":`, error);
             }
@@ -635,8 +765,7 @@ function flushLandings() {
                     if (removeRows(store, source, [id])) touched.add(source);
                     continue;
                 }
-                const curRaw = rawOf(store)[source];
-                const i = Array.isArray(curRaw) ? curRaw.findIndex(row => rowKey(row) === id) : -1;
+                const i = indexOfRow(rawOf(store)[source], id);
                 if (i !== -1) { mergeRowFields(store[source][i], note.patch, source); touched.add(source); }
             }
         }
@@ -644,7 +773,7 @@ function flushLandings() {
     }
     resolvers.forEach((resolve, i) => resolve(!skipped.has(ops[i])));
     if (landed.size) window.ManifestDataPersist?.onLanded?.(landed);
-    if (settled) checkAndDispatchRenderReady();
+    if (settled.size) checkAndDispatchRenderReady(settled);
 }
 
 // Cross-source `all`: built on first read after a change, versioned by _v.all
@@ -1107,7 +1236,12 @@ function setupTeamChangeListener() {
 }
 
 // Dispatch manifest:render-ready once all sources settle (debounced to coalesce).
-function checkAndDispatchRenderReady() {
+const settledSources = new Set(); // sources whose load completed since the last render-ready
+let hammeredAll = false;
+
+function checkAndDispatchRenderReady(sources) {
+    if (sources) for (const source of sources) settledSources.add(source);
+    else hammeredAll = false; // caller unknown: next bump covers every source
     if (_renderReadyTimer) {
         clearTimeout(_renderReadyTimer);
     }
@@ -1146,8 +1280,13 @@ function checkAndDispatchRenderReady() {
             // swallow) — an x-if that read this store before data arrived may
             // never re-run. One post-settle bump on a fresh task re-runs
             // anything dropped.
+            // The first bump of a page-load (and of a locale change) covers every
+            // source; later ones only the sources that settled since.
+            const only = hammeredAll ? new Set(settledSources) : null;
+            settledSources.clear();
+            hammeredAll = true;
             setTimeout(() => {
-                try { bumpAllVersions(); } catch (_) { /* no-op */ }
+                try { bumpAllVersions(only); } catch (_) { /* no-op */ }
             }, 50);
         } catch {
             // Silently fail — the render script has its own timeout fallback
@@ -1476,6 +1615,10 @@ window.ManifestDataStore = {
     setSourceState,
     runDeduped,
     insertRow,
+    insertRowAt,
+    removeRowAt,
+    indexOfRow,
+    findRow,
     holdWrite,
     releaseWrite,
     settleWrite,

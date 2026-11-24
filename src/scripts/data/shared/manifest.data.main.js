@@ -733,7 +733,7 @@ function realtimeAppend(dataSourceName, row, currentRows, generation, order) {
         let evicted = null;
         for (let i = 0; i < meta.appended.length; i++) {
             // Oldest appended row still landed; pending (unflushed) ids stay tracked
-            if (currentRows.some(r => r && r.$id === meta.appended[i])) {
+            if (window.ManifestDataStore.findRow(dataSourceName, meta.appended[i])) {
                 evicted = meta.appended.splice(i, 1)[0];
                 break;
             }
@@ -803,7 +803,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             // Scope AND queries must match before the row lands
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (rowMatchesScope && eventMatchesQueries(row, queriesConfig)) {
-                if (currentRows.find(r => r.$id === row.$id)) {
+                if (window.ManifestDataStore.findRow(dataSourceName, row.$id)) {
                     // Echo of a row already held (optimistic create): merge, never counts as growth
                     landRows(dataSourceName, [row], { mode: 'append', generation, order });
                 } else if (!beyondLoaded(dataSourceName, row)) {
@@ -816,7 +816,7 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
     } else if (eventType === 'update') {
         const row = payload?.$id ? payload : (payload?.row || payload);
         if (row && row.$id) {
-            const existingRow = currentRows.find(r => r.$id === row.$id);
+            const existingRow = window.ManifestDataStore.findRow(dataSourceName, row.$id);
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (!rowMatchesScope || !eventMatchesQueries(row, queriesConfig)) {
                 // Row stopped matching scope or queries, remove it
