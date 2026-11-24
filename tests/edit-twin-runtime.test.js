@@ -563,3 +563,47 @@ describe('rebase window and the base wait (fifth review)', () => {
     })
 })
 
+// Sixth review: the user's own published structural edits are no reorder in the rebase window
+describe('rebase window after own structural edits (sixth review)', () => {
+    const bumpB = () => S.ext(f => f.replace('<p data-m="g">G</p>', '<p data-m="g">G2</p>'))
+    const Ps = (xs) => xs.map(m => `<p data-m="${m}">Lorem ipsum dolor sit amet ${m}</p>`)
+    const publishOver = async () => { await store().publish(); await store().publish({ rebase: true }) }
+    const el = (m) => R(document.body).a.querySelector(`[data-m="${m}"]`)
+    it('W1 own delete of twin #1 published, then twin 3 deleted, reload', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<img data-m="3">', '<h2 data-m="h">P</h2>'], ['<p data-m="g">G</p>'])))
+        bumpB(); store().remove(kids(r.a)[0]); await flush(); await publishOver()
+        store().remove(el('3')); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['2', 'h'])
+    })
+    it('W2 own duplicate of twin #1 published, then twin 2 deleted, reload', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<h2 data-m="h">P</h2>'], ['<p data-m="g">G</p>'])))
+        bumpB(); store().duplicate(kids(r.a)[0]); await flush(); await publishOver()
+        store().remove(el('2')); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['1', '1', 'h'])
+    })
+    it('W3 own reorder of twins published, then twin 1 deleted, reload', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<img data-m="3">', '<h2 data-m="h">P</h2>'], ['<p data-m="g">G</p>'])))
+        bumpB(); kbMove(kids(r.a)[1], 'ArrowUp', 1); await flush(); await publishOver()
+        store().remove(el('1')); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['2', '3', 'h'])
+    })
+    it('W4 own delete of a text twin published, then twin 3 text-edited, reload', async () => {
+        const r = R(await S.open(persist([...Ps(['1', '2', '3']), '<h2 data-m="h">P</h2>'], ['<p data-m="g">G</p>'])))
+        bumpB(); store().remove(kids(r.a)[0]); await flush(); await publishOver()
+        editText(el('3'), 'EditedThree'); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['2', '3', 'h']); expect(reg('a')).toMatch(/data-m="3">EditedThree/)
+    })
+})
+
