@@ -410,12 +410,10 @@
         const done = (r, keep, heldRes) => {
             if (r && r.base && baseFiles) Object.entries(r.base).forEach(([f, h]) => { if (!overNewer || !/\.html?$/i.test(f)) baseFiles[f] = h; });
             if (r && r.ids && baseIds) {
-                if (!overNewer) { baseIds = r.ids; baseCids = r.cids || null; }
-                else {
-                    Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
-                    // The page shows less than the file: no content ids there (twins unchecked until a reload)
-                    if (baseCids) Object.keys(r.ids).forEach(f => { if (/\.html?$/i.test(f)) baseCids[f] = null; });
-                }
+                if (!overNewer) baseIds = r.ids;
+                else Object.entries(r.ids).forEach(([f, m]) => { baseIds[f] = Object.assign({}, baseIds[f]); Object.entries(m || {}).forEach(([k, fp]) => { if (!String(fp).includes('.')) baseIds[f][k] = fp; }); });
+                // Content ids of the file as written: edits from here keep their twins' identity
+                baseCids = r.cids || null;
             }
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;

@@ -57,6 +57,7 @@ describe('seeded twin sessions', () => {
         }
         await t.check()
     }
-    // Seed 46: the page duplicates image a3, the source swaps the twins a3/a4, reload: reported, no copy of a4
-    for (let seed = 1; seed <= 60; seed++) it('seed ' + seed, () => fuzz(seed), 20000)
+    // Seed 46: the page duplicates image a3, the source swaps the twins a3/a4, reload: no copy of a4.
+    // Seeds 116, 196: a twin copied to the other region, the twins swapped: the copy stays the twin copied.
+    for (let seed = 1; seed <= 300; seed++) it('seed ' + seed, () => fuzz(seed), 20000)
 })

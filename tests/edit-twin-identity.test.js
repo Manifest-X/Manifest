@@ -128,7 +128,7 @@ describe('twins under source changes', () => {
         t.ext('a', (ls) => ls.map(l => l.replace('data-m="1"', 'data-m="2"'))); t.removed('1'); t.added('2')
         await t.reload()
         expect(ids(t.r.a)).toEqual(['2', '2', '3'])
-        expect(store().conflicts.some(c => c.region === 'a' && c.prop === 'structure')).toBe(true)
+        expect(store().conflicts.some(c => c.region === 'a' && c.prop === 'structure' && /deleted IMG:#2/.test(c.reason) && !/moved/.test(c.reason))).toBe(true)
         await t.check()
         expect(fileIds().a).toEqual(['2', '2', '3'])
     })

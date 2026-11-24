@@ -39,5 +39,5 @@ async function session(seed) {
 }
 
 describe('seeded sessions', () => {
-    for (let seed = 1; seed <= 40; seed++) it('seed ' + seed, () => session(seed), 20000)
+    for (let seed = 1; seed <= 120; seed++) it('seed ' + seed, () => session(seed), 20000)
 })
