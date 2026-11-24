@@ -2450,6 +2450,16 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             // Unrecognised @-form falls through to the warning below.
         }
 
+        // Breakpoint ranges (Tailwind v4): max-md → width < md, min-md → width >= md, plus min-/max-[size]
+        const rangeMatch = variant.match(/^(min|max)-(?:\[(.+)\]|(sm|md|lg|xl|2xl))$/);
+        if (rangeMatch) {
+            const named = rangeMatch[3] && /\(min-width:\s*([^)]+)\)/.exec(this.variants[rangeMatch[3]] || '');
+            const size = rangeMatch[2] ? rangeMatch[2].replace(/_/g, ' ') : named && named[1].trim();
+            if (size) {
+                return { name: variant, selector: `@media (width ${rangeMatch[1] === 'max' ? '<' : '>='} ${size})`, isArbitrary: false };
+            }
+        }
+
         // If no match found, warn once per unique token and return null.
         // Deduped so unsupported variants (e.g. container queries like
         // `@[10rem]:`) don't flood the console on every compile pass.
@@ -2541,6 +2551,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 let selector = `.${escapeClassName(variantClass)}`;
                 let hasMediaQuery = false;
                 let mediaQueryRule = '';
+                const atRules = [];
 
                 for (const variant of parsed.variants) {
                     if (variant.isArbitrary) {
@@ -2566,9 +2577,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                         // For pseudo-classes, append to selector
                         selector = `${selector}${variant.selector}`;
                     } else if (variant.selector.startsWith('@')) {
-                        // For media queries, wrap the whole rule
+                        // At-rules wrap the rule; stacked ones nest outer to inner (md:max-lg:)
                         hasMediaQuery = true;
-                        mediaQueryRule = variant.selector;
+                        atRules.push(variant.selector);
+                        mediaQueryRule = atRules[0];
                     }
                 }
 
@@ -2582,9 +2594,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                     rule = `${selector} { ${cssContent} }`;
                 }
 
-                const finalRule = hasMediaQuery ?
-                    `${mediaQueryRule} { ${rule} }` :
-                    rule;
+                const finalRule = hasMediaQuery ? wrapAtRules(atRules, rule) : rule;
 
                 if (!generatedRules.has(finalRule)) {
                     emit(finalRule, 2);
@@ -2672,6 +2682,10 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
     }
 };
 
+function wrapAtRules(atRules, rule) {
+    return atRules.reduceRight((inner, at) => `${at} { ${inner} }`, rule);
+}
+
 // Responsive display ordering: every breakpoint display class sits at 0,2,0, in breakpoint order,
 // so it beats an unprefixed `hidden` from any sheet and larger breakpoints still win (col md:row lg:hidden)
 const BUILTIN_DISPLAY_CLASSES = new Set(['row', 'row-wrap', 'col', 'col-wrap', 'trailing']);
@@ -2711,7 +2725,8 @@ function withoutTopLevelDisplay(css) {
 
 function responsiveDisplayDecl(baseClass, parsed, css) {
     if (!BUILTIN_DISPLAY_CLASSES.has(baseClass) || parsed.variants.length !== 1) return null;
-    if (!Object.prototype.hasOwnProperty.call(BREAKPOINT_PX, parsed.variants[0].name)) return null;
+    const bp = parsed.variants[0].name;
+    if (!Object.prototype.hasOwnProperty.call(BREAKPOINT_PX, bp.startsWith('max-') ? bp.slice(4) : bp)) return null;
     return topLevelDisplay(css);
 }
 
@@ -2924,6 +2939,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 let selector = `.${escapeClassName(variantClass)}`;
                 let hasMediaQuery = false;
                 let mediaQueryRule = '';
+                const atRules = [];
                 let nestedSelector = null;
 
                 for (const variant of parsed.variants) {
@@ -2950,9 +2966,10 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                         // For pseudo-classes, append to selector
                         selector = `${selector}${variant.selector}`;
                     } else if (variant.selector.startsWith('@')) {
-                        // For media queries, wrap the whole rule
+                        // At-rules wrap the rule; stacked ones nest outer to inner (md:max-lg:)
                         hasMediaQuery = true;
-                        mediaQueryRule = variant.selector;
+                        atRules.push(variant.selector);
+                        mediaQueryRule = atRules[0];
                     }
                 }
 
@@ -3078,7 +3095,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                     if (typeof rule === 'string' && rule.trim().startsWith('@media')) {
                         finalRule = rule;
                     } else {
-                        finalRule = `${mediaQueryRule} { ${rule} }`;
+                        finalRule = wrapAtRules(atRules, rule);
                     }
                 } else {
                     finalRule = rule;

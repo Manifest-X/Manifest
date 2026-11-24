@@ -1141,6 +1141,16 @@ TailwindCompiler.prototype.parseClassName = function (className) {
             // Unrecognised @-form falls through to the warning below.
         }
 
+        // Breakpoint ranges (Tailwind v4): max-md → width < md, min-md → width >= md, plus min-/max-[size]
+        const rangeMatch = variant.match(/^(min|max)-(?:\[(.+)\]|(sm|md|lg|xl|2xl))$/);
+        if (rangeMatch) {
+            const named = rangeMatch[3] && /\(min-width:\s*([^)]+)\)/.exec(this.variants[rangeMatch[3]] || '');
+            const size = rangeMatch[2] ? rangeMatch[2].replace(/_/g, ' ') : named && named[1].trim();
+            if (size) {
+                return { name: variant, selector: `@media (width ${rangeMatch[1] === 'max' ? '<' : '>='} ${size})`, isArbitrary: false };
+            }
+        }
+
         // If no match found, warn once per unique token and return null.
         // Deduped so unsupported variants (e.g. container queries like
         // `@[10rem]:`) don't flood the console on every compile pass.
