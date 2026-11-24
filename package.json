@@ -79,6 +79,7 @@
         "@rollup/plugin-node-resolve": "^15.3.0",
         "@rollup/plugin-terser": "^0.4.4",
         "@tailwindcss/cli": "^4.2.4",
+        "ajv": "^8.20.0",
         "alpinejs": "3.17.5",
         "cssnano": "^7.1.1",
         "dompurify": "3.4.10",
