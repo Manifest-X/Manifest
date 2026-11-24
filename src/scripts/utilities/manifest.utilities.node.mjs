@@ -227,11 +227,7 @@ export async function compileUtilities({ classes = [], themeCss = '', baseCss = 
 
     const usedData = { classes: uniqueClasses, variableSuffixes: [] };
 
-    const varUtilities = compiler.generateUtilitiesFromVars(cssText, usedData);
-    const customUtilities = compiler.generateCustomUtilities(usedData);
-
-    let allUtilities = [varUtilities, customUtilities].filter(Boolean).join('\n\n');
-    allUtilities = compiler.sortUtilities(allUtilities);
+    const allUtilities = compiler.orderedUtilitiesCss(compiler.generateOrderedUtilities(cssText, usedData));
 
     const manifestLayer = allUtilities ? `@layer utilities {\n${allUtilities}\n}` : '';
     const tailwindLayer = await compileTailwindPass(uniqueClasses, tailwind);

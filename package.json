@@ -63,6 +63,7 @@
         "test:e2e:prerender-patch": "node tests/e2e/utilities-prerender-patch.e2e.mjs",
         "test:e2e:hidden-responsive": "node tests/e2e/utilities-hidden-responsive.e2e.mjs",
         "test:e2e:breakpoint-range": "node tests/e2e/utilities-breakpoint-range.e2e.mjs",
+        "test:e2e:responsive-order": "node tests/e2e/utilities-responsive-order.e2e.mjs",
         "test:e2e:tailwind-dark": "node tests/e2e/tailwind-dark-variant.e2e.mjs",
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
         "test:e2e:presence-tabs": "node tests/e2e/presence-tabs.e2e.mjs",

@@ -26,7 +26,7 @@ await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(
     readFileSync(join(__dirname, '../lib/manifest.utilities.js'), 'utf8')
 ))
 // The real, live compiler instance the browser bundle constructs on load —
-// generateUtilitiesFromVars/generateCustomUtilities/sortUtilities/parseClassName
+// generateOrderedUtilities/orderedUtilitiesCss/parseClassName
 // are the exact production methods, called the same way compileUtilities() does.
 const liveCompiler = window.ManifestUtilities
 
@@ -35,10 +35,7 @@ function browserManifestCompile(classes, themeCss, baseCss = '') {
     const discovered = liveCompiler.extractCustomUtilities(cssText)
     for (const [name, value] of discovered) liveCompiler.customUtilities.set(name, value)
     const usedData = { classes: Array.from(new Set(classes)), variableSuffixes: [] }
-    const varUtilities = liveCompiler.generateUtilitiesFromVars(cssText, usedData)
-    const customUtilities = liveCompiler.generateCustomUtilities(usedData)
-    let all = [varUtilities, customUtilities].filter(Boolean).join('\n\n')
-    all = liveCompiler.sortUtilities(all)
+    const all = liveCompiler.orderedUtilitiesCss(liveCompiler.generateOrderedUtilities(cssText, usedData))
     return all ? `@layer utilities {\n${all}\n}` : ''
 }
 

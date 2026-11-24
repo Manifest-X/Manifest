@@ -3,14 +3,14 @@
 // Generate utilities from CSS variables
 TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedData) {
     try {
-        const utilities = [];
+        const out = [];
         const generatedRules = new Set(); // Track generated rules to prevent duplicates
         const variables = this.extractThemeVariables(cssText);
         const { classes: usedClasses, variableSuffixes } = usedData;
         // Optional: raw rules + their full-regen order keys (incremental apply places deltas by them)
         const rulesOut = usedData.rulesOut, keysOut = usedData.keysOut;
         let slot = null;
-        const emit = (rule, sub) => { utilities.push(rule); if (rulesOut) { rulesOut.push(rule); keysOut.push(slot.concat(slot[3] ? 2 : sub)); } }; // opacity rules order by discovery
+        const emit = (rule, sub, order) => { out.push({ rule, key: ruleKey(rule, order, slot.concat(slot[3] ? 2 : sub)) }); }; // opacity rules order by discovery
 
         if (variables.size === 0) {
             return '';
@@ -116,7 +116,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
                 const finalRule = hasMediaQuery ? wrapAtRules(atRules, rule) : rule;
 
                 if (!generatedRules.has(finalRule)) {
-                    emit(finalRule, 2);
+                    emit(finalRule, 2, mediaOrder(parsed.variants));
                     generatedRules.add(finalRule);
                 }
             }
@@ -194,7 +194,7 @@ TailwindCompiler.prototype.generateUtilitiesFromVars = function (cssText, usedDa
             }
         }
 
-        return utilities.join('\n');
+        return flushEntries(out, rulesOut, keysOut);
     } catch (error) {
         console.error('Error generating utilities:', error);
         return '';
@@ -229,6 +229,60 @@ function breakpointOf(name) {
 function breakpointRank(name) {
     const bp = breakpointOf(name);
     return bp.max ? -bp.px : bp.px;
+}
+
+// ---- @media rule order (Tailwind v4): early media, then breakpoints by rank, then other media ----
+const NO_RANK = -1e6;
+const EARLY_MEDIA_VARIANTS = new Set([
+    'motion-safe', 'motion-reduce', 'contrast-more', 'contrast-less',
+    'prefers-reduced-motion', 'prefers-reduced-motion-no-preference',
+    'prefers-contrast', 'prefers-contrast-less', 'prefers-contrast-no-preference'
+]);
+
+// Named or arbitrary range variant → rank (max-* negative, min-width positive); null if not a range
+function rangeRank(name) {
+    if (!name) return null;
+    if (breakpointOf(name)) return breakpointRank(name);
+    const m = /^(min|max)-\[(.+)\]$/.exec(name);
+    if (!m) return null;
+    const u = /^(-?\d*\.?\d+)(px|rem|em)$/.exec(m[2].trim());
+    const px = u ? parseFloat(u[1]) * (u[2] === 'px' ? 1 : 16) : null;
+    if (m[1] === 'max') return px === null ? -1e5 : -px;
+    return px === null ? 1e5 : px;
+}
+
+// [band, r1, r2, extra] for an @media rule built from these variants; the highest-order variant decides,
+// extra lower-order media variants sort after (md: before motion-safe:md:)
+function mediaOrder(variants) {
+    let band = -1, extra = 0;
+    const ranks = [];
+    for (const v of variants || []) {
+        if (!v || typeof v.selector !== 'string' || !v.selector.startsWith('@media')) continue;
+        const r = rangeRank(v.name);
+        if (r !== null) { ranks.push(r); band = Math.max(band, 1); }
+        else { band = Math.max(band, EARLY_MEDIA_VARIANTS.has(v.name) ? 0 : 2); extra++; }
+    }
+    ranks.sort((a, b) => b - a);
+    if (band === 1) extra = Math.min(extra, 1);
+    else extra = 0;
+    return [band < 0 ? 2 : band, ranks.length ? ranks[0] : NO_RANK, ranks.length > 1 ? ranks[1] : NO_RANK, extra];
+}
+
+// Full order key: [media, band, r1, r2, extra, section, var/entry, pair/array, opacity, sub]
+function ruleKey(rule, order, slotKey) {
+    const head = isMediaRule(rule) ? [1].concat(order || [2, NO_RANK, NO_RANK, 0]) : [0, 0, 0, 0, 0];
+    return head.concat(slotKey);
+}
+
+function sortEntries(entries) {
+    return entries.slice().sort((a, b) => compareKeys(a.key, b.key));
+}
+
+// Sorted text; raw rules + keys go to rulesOut/keysOut when the caller asked for them
+function flushEntries(out, rulesOut, keysOut) {
+    const sorted = sortEntries(out);
+    if (rulesOut) for (const e of sorted) { rulesOut.push(e.rule); keysOut.push(e.key); }
+    return sorted.map(e => e.rule).join('\n');
 }
 
 // Top-level display declarations only (nested blocks ignored)
@@ -276,12 +330,12 @@ function tailwindResponsiveDisplay(usedClasses) {
 // Generate custom utilities from discovered custom utility classes
 TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
     try {
-        const utilities = [];
+        const out = [];
         const generatedRules = new Set();
         const { classes: usedClasses } = usedData;
         const rulesOut = usedData.rulesOut, keysOut = usedData.keysOut;
         let slot = null;
-        const emit = (rule, sub) => { utilities.push(rule); if (rulesOut) { rulesOut.push(rule); keysOut.push(slot.concat(sub)); } };
+        const emit = (rule, sub, order) => { out.push({ rule, key: ruleKey(rule, order, slot.concat(sub)) }); };
         const responsiveDisplay = [];
 
         // Helper to clean up [object Object] from CSS strings
@@ -625,7 +679,7 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 }
 
                 if (!generatedRules.has(finalRule)) {
-                    emit(finalRule, 2);
+                    emit(finalRule, 2, mediaOrder(parsed.variants));
                     generatedRules.add(finalRule);
                 }
             }
@@ -718,51 +772,34 @@ TailwindCompiler.prototype.generateCustomUtilities = function (usedData) {
                 const rule = `${e.media} { ${own}${own} { display: ${e.css} } }`;
                 if (generatedRules.has(rule)) continue;
                 generatedRules.add(rule);
-                slot = [2, e.rank, 0, 0];
-                emit(rule, 2);
+                slot = [2, 0, 0, 0];
+                emit(rule, 2, [1, e.rank, NO_RANK, 0]);
             }
         }
 
-        return utilities.join('\n');
+        return flushEntries(out, rulesOut, keysOut);
     } catch (error) {
         console.error('Error generating custom utilities:', error);
         return '';
     }
 };
 
-// Split generated CSS into top-level rules (each starts with . or an at-rule)
-TailwindCompiler.prototype.splitUtilityRules = function (utilitiesText) {
-    const rules = [];
-    let currentRule = '';
-    for (const line of utilitiesText.split('\n')) {
-        if (line.trim().match(/^(\.|@media|@layer|@supports)/)) {
-            if (currentRule.trim()) rules.push(currentRule.trim());
-            currentRule = line;
-        } else {
-            currentRule += '\n' + line;
-        }
-    }
-    if (currentRule.trim()) rules.push(currentRule.trim());
-    return rules;
+// Rules + order keys for theme and custom utilities, in sheet order (base, then @media by breakpoint).
+// Full compile, incremental apply, cache text and the node bake all write this order.
+TailwindCompiler.prototype.generateOrderedUtilities = function (themeCss, usedData) {
+    const data = Object.assign({}, usedData, { rulesOut: [], keysOut: [] });
+    this.generateUtilitiesFromVars(themeCss, data);
+    this.generateCustomUtilities(data);
+    return sortEntries(data.rulesOut.map((rule, i) => ({ rule, key: data.keysOut[i] })));
 };
 
-// Sort utilities so base classes come before variants (@media)
-TailwindCompiler.prototype.sortUtilities = function (utilitiesText) {
-    if (!utilitiesText) return '';
-    const rules = this.splitUtilityRules(utilitiesText);
-    rules.sort((a, b) => {
-        const aHasMedia = a.startsWith('@media');
-        const bHasMedia = b.startsWith('@media');
-        if (!aHasMedia && bHasMedia) return -1;
-        if (aHasMedia && !bHasMedia) return 1;
-        return 0;
-    });
-    return rules.join('\n\n');
+TailwindCompiler.prototype.orderedUtilitiesCss = function (entries) {
+    return entries.map(e => e.rule).join('\n\n');
 };
 
 // ---- Incremental apply: new rules go in through CSSOM, never a whole-sheet rewrite ----
 // Entries mirror the layer's cssRules 1:1, each keyed by where a full regen would emit it
-// ([media, section, var/entry, pair/array, region, sub]); deltas are inserted at that index.
+// (see ruleKey); deltas are inserted at that index.
 
 const utilitiesCssFrom = (applied) => `@layer utilities {\n${applied.entries.map(e => e.rule).join('\n\n')}\n}`;
 const isMediaRule = (rule) => rule.trim().startsWith('@media');
@@ -772,16 +809,9 @@ function compareKeys(a, b) {
     return 0;
 }
 
-// Raw rules + order keys for a class set, as a full regen would emit them (base before @media, stable)
+// Raw rules + order keys for a class set, as a full regen would emit them
 TailwindCompiler.prototype.generateKeyedUtilities = function (themeCss, classes) {
-    const usedData = { classes, variableSuffixes: [], rulesOut: [], keysOut: [] };
-    this.generateUtilitiesFromVars(themeCss, usedData);
-    this.generateCustomUtilities(usedData);
-    const out = usedData.rulesOut.map((rule, i) => {
-        const media = isMediaRule(rule) ? 1 : 0;
-        return { rule, key: [media].concat(usedData.keysOut[i]) };
-    });
-    return out.filter(e => !e.key[0]).concat(out.filter(e => e.key[0]));
+    return this.generateOrderedUtilities(themeCss, { classes, variableSuffixes: [] });
 };
 
 TailwindCompiler.prototype.utilitiesLayerRule = function () {
@@ -840,7 +870,11 @@ TailwindCompiler.prototype.compileDelta = function (themeCss) {
     const candidates = [];
     for (const cls of this.dynamicClassCache) if (!applied.classes.has(cls)) candidates.push(cls);
     const classes = this.filterStaticallyCoveredClasses(candidates);
+    // Tailwind display classes at a breakpoint join the display block, which only a full regen emits
+    if (tailwindResponsiveDisplay(classes).length) return false;
     const fresh = classes.length ? this.generateKeyedUtilities(themeCss, classes).filter(e => !applied.rules.has(e.rule)) : [];
+    // The display block's contents depend on every used class: a new block rule means a full regen
+    if (fresh.some(e => e.key[5] === 2)) return false;
     const entries = applied.entries;
 
     // Place every rule first; bail before touching the sheet if any is ambiguous
@@ -848,9 +882,10 @@ TailwindCompiler.prototype.compileDelta = function (themeCss) {
     for (const e of fresh) {
         let lo = 0, hi = entries.length;
         while (lo < hi) { const mid = (lo + hi) >> 1; if (compareKeys(entries[mid].key, e.key) <= 0) lo = mid + 1; else hi = mid; }
-        // Same utility, same group, both variants: full regen orders them by discovery
-        if (e.key[5] === 2) {
-            const sameSlot = (x) => x && compareKeys(x.key.slice(0, 5), e.key.slice(0, 5)) === 0 && x.key[5] === 2;
+        // Same utility, same media rank, both variants: full regen orders them by discovery
+        const last = e.key.length - 1;
+        if (e.key[last] === 2) {
+            const sameSlot = (x) => x && compareKeys(x.key.slice(0, last), e.key.slice(0, last)) === 0 && x.key[last] === 2;
             if (sameSlot(entries[lo - 1]) || sameSlot(entries[lo]) || plan.some(q => sameSlot(q.e))) return false;
         }
         plan.push({ e, at: lo });
@@ -1054,14 +1089,8 @@ TailwindCompiler.prototype.compile = async function () {
                     }
                 }
 
-                // Generate both variable-based and custom utilities
-                const varUtilities = this.generateUtilitiesFromVars(themeCss, staticUsedData);
-                const customUtilitiesGenerated = this.generateCustomUtilities(staticUsedData);
+                const allUtilities = this.orderedUtilitiesCss(this.generateOrderedUtilities(themeCss, staticUsedData));
 
-                let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
-                // Sort utilities so base classes come before variants
-                allUtilities = this.sortUtilities(allUtilities);
-                
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
 
@@ -1145,16 +1174,9 @@ TailwindCompiler.prototype.compile = async function () {
             // Generate utilities for all classes (static + dynamic) if needed
             if (hasVariableChanges || dynamicClassesHash !== this.lastClassesHash) {
 
-                // Generate both variable-based and custom utilities
-                const rulesOut = [], keysOut = [];
-                const keyedData = Object.assign({}, usedData, { rulesOut, keysOut });
-                const varUtilities = this.generateUtilitiesFromVars(themeCss, keyedData);
-                const customUtilitiesGenerated = this.generateCustomUtilities(keyedData);
+                const entries = this.generateOrderedUtilities(themeCss, usedData);
+                const allUtilities = this.orderedUtilitiesCss(entries);
 
-                let allUtilities = [varUtilities, customUtilitiesGenerated].filter(Boolean).join('\n\n');
-                // Sort utilities so base classes come before variants
-                allUtilities = this.sortUtilities(allUtilities);
-                
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
 
@@ -1175,8 +1197,7 @@ TailwindCompiler.prototype.compile = async function () {
                         });
                     });
                     this.lastClassesHash = dynamicClassesHash;
-                    const entries = rulesOut.map((rule, i) => ({ rule, key: [isMediaRule(rule) ? 1 : 0].concat(keysOut[i]) }));
-                    this.recordAppliedUtilities(entries.filter(e => !e.key[0]).concat(entries.filter(e => e.key[0])), themeCss, dynamicClasses);
+                    this.recordAppliedUtilities(entries, themeCss, dynamicClasses);
                     // Classes that arrived during the await above still need a pass
                     if (this.dynamicClassCache.size > dynamicClasses.length) this.compile();
 
