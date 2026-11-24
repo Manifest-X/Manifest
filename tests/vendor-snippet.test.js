@@ -1,5 +1,6 @@
 /**
  * @vitest-environment happy-dom
+ * @vitest-environment-options {"settings":{"disableJavaScriptFileLoading":true,"handleDisabledFileLoadingAsSuccess":false}}
  *
  * ManifestVendor without the loader: one jsDelivr tag carrying the pinned hash; a matching tag
  * that already ran (and never fires load again) settles instead of hanging.
@@ -21,7 +22,7 @@ beforeEach(() => {
 
 describe('ManifestVendor standalone', () => {
     it('injects one tag with integrity + crossorigin', () => {
-        window.ManifestVendor.script('marked@15.0.12/marked.min.js', 'sha384-abc')
+        window.ManifestVendor.script('marked@15.0.12/marked.min.js', 'sha384-abc').catch(() => {})
         const t = document.querySelector(`script[src="${SRC}"]`)
         expect(t.getAttribute('integrity')).toBe('sha384-abc')
         expect(t.getAttribute('crossorigin')).toBe('anonymous')
