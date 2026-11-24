@@ -3,7 +3,7 @@
  * and computed styles match at 600 / 900 / 1200px.
  *
  *   max-md:text-4xl lg:text-5xl max-lg:leading-tight lg:leading-none (the reported markup)
- *   max-md:text-brand, md:max-lg:text-accent, min-[1100px]:text-brand, max-lg:row
+ *   max-md:text-brand, md:max-lg:text-accent, min-[1100px]:text-brand, max-lg:row, md:row min-lg:hidden
  *
  * Routes: data-tailwind on and off (theme vars inline so Manifest compiles them alone).
  *
@@ -20,9 +20,10 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const THEME = `<style>:root{--color-brand:rgb(0, 0, 255);--color-accent:rgb(255, 0, 0);--text-4xl:36px;--text-5xl:48px;--leading-tight:1.25;--leading-none:1}</style>`
 const MARKUP = `<h1 id="h" class="max-md:text-4xl lg:text-5xl max-lg:leading-tight lg:leading-none">Heading</h1>
-<p id="c" class="max-md:text-brand md:max-lg:text-accent ">c</p>
+<p id="c" class="max-md:text-brand md:max-lg:text-accent">c</p>
 <p id="m" class="min-[1100px]:text-brand">m</p>
-<div id="r" class="max-lg:row">r</div>`
+<div id="r" class="max-lg:row">r</div>
+<div id="d" class="md:row min-lg:hidden">d</div>`
 
 const page = (tw) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <link rel="stylesheet" href="/fw/manifest.css">${THEME}
@@ -30,9 +31,9 @@ const page = (tw) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x<
 <body>${MARKUP}</body></html>`
 
 const EXPECT = {
-    600: { size: '36px', lh: '45px', color: 'rgb(0, 0, 255)', min: null, display: 'flex' },
-    900: { size: null, lh: null, color: 'rgb(255, 0, 0)', min: null, display: 'flex' },
-    1200: { size: '48px', lh: '48px', color: null, min: 'rgb(0, 0, 255)', display: 'block' }
+    600: { size: '36px', lh: '45px', color: 'rgb(0, 0, 255)', min: null, display: 'flex', d: 'block' },
+    900: { size: null, lh: null, color: 'rgb(255, 0, 0)', min: null, display: 'flex', d: 'flex' },
+    1200: { size: '48px', lh: '48px', color: null, min: 'rgb(0, 0, 255)', display: 'block', d: 'none' }
 }
 
 async function serve() {
@@ -63,7 +64,7 @@ const read = (p) => p.evaluate(() => {
     const c = getComputedStyle(document.getElementById('c'))
     return {
         size: h.fontSize, lh: h.lineHeight, color: c.color,
-        min: getComputedStyle(document.getElementById('m')).color, display: getComputedStyle(document.getElementById('r')).display
+        min: getComputedStyle(document.getElementById('m')).color, display: getComputedStyle(document.getElementById('r')).display, d: getComputedStyle(document.getElementById('d')).display
     }
 })
 
@@ -93,7 +94,7 @@ async function main() {
                 await p.waitForFunction((want, base) => {
                     const h = getComputedStyle(document.getElementById('h'))
                     const c = getComputedStyle(document.getElementById('c'))
-                    const got = { size: h.fontSize, lh: h.lineHeight, color: c.color, min: getComputedStyle(document.getElementById('m')).color, display: getComputedStyle(document.getElementById('r')).display }
+                    const got = { size: h.fontSize, lh: h.lineHeight, color: c.color, min: getComputedStyle(document.getElementById('m')).color, display: getComputedStyle(document.getElementById('r')).display, d: getComputedStyle(document.getElementById('d')).display }
                     return Object.entries(want).every(([k, v]) => v === null ? got[k] === base[k] : got[k] === v)
                 }, { timeout: 10000, polling: 50 }, EXPECT[width], base).catch(() => { })
                 await new Promise((r) => setTimeout(r, 300))

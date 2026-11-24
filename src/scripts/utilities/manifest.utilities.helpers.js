@@ -1146,7 +1146,7 @@ TailwindCompiler.prototype.parseClassName = function (className) {
         if (rangeMatch) {
             const named = rangeMatch[3] && /\(min-width:\s*([^)]+)\)/.exec(this.variants[rangeMatch[3]] || '');
             const size = rangeMatch[2] ? rangeMatch[2].replace(/_/g, ' ') : named && named[1].trim();
-            if (size) {
+            if (size && !/[{};]/.test(size)) {
                 return { name: variant, selector: `@media (width ${rangeMatch[1] === 'max' ? '<' : '>='} ${size})`, isArbitrary: false };
             }
         }

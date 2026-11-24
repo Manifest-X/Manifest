@@ -67,6 +67,25 @@ describe('breakpoint range variants', () => {
         expect(css).toContain('@media (width < 1024px) { .max-lg\\:row.max-lg\\:row')
     })
 
+    it('min-<bp> on display classes ranks like the bare breakpoint (md:row min-lg:hidden)', async () => {
+        const baseCss = fs.readFileSync(path.join(ROOT, 'lib', 'manifest.css'), 'utf8')
+        const { css } = await compile(['md:row', 'min-lg:hidden', 'min-sm:col'], { baseCss })
+        const sm = css.indexOf('.min-sm\\:col.min-sm\\:col { display: flex }')
+        const md = css.indexOf('.md\\:row.md\\:row { display: flex }')
+        const lg = css.indexOf('.min-lg\\:hidden.min-lg\\:hidden { display: none }')
+        expect(sm).toBeGreaterThan(-1)
+        expect(md).toBeGreaterThan(sm)
+        expect(lg).toBeGreaterThan(md)
+        expect(css).toContain('@media (min-width: 1024px) { .min-lg\\:hidden.min-lg\\:hidden')
+    })
+
+    it('rejects arbitrary range values that could break out of the rule', async () => {
+        const { css, warnings } = await compile(['max-[1px){}body{color:red}]:text-brand', 'min-[1px;x]:text-brand'])
+        expect(css).not.toContain('color:red')
+        expect(css).not.toMatch(/@media \(width [<>]=? 1px/)
+        expect(warnings.filter(w => w.includes('Unknown variant')).length).toBe(2)
+    })
+
     it('still warns for a genuinely unknown variant and emits no rule', async () => {
         const { css, warnings } = await compile(['max-huge:text-brand'])
         expect(css).not.toContain('max-huge')

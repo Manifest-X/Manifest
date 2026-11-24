@@ -2455,7 +2455,7 @@ TailwindCompiler.prototype.parseClassName = function (className) {
         if (rangeMatch) {
             const named = rangeMatch[3] && /\(min-width:\s*([^)]+)\)/.exec(this.variants[rangeMatch[3]] || '');
             const size = rangeMatch[2] ? rangeMatch[2].replace(/_/g, ' ') : named && named[1].trim();
-            if (size) {
+            if (size && !/[{};]/.test(size)) {
                 return { name: variant, selector: `@media (width ${rangeMatch[1] === 'max' ? '<' : '>='} ${size})`, isArbitrary: false };
             }
         }
@@ -2699,10 +2699,17 @@ const TAILWIND_DISPLAY = {
     'table-header-group': 'table-header-group', 'table-row-group': 'table-row-group', 'table-row': 'table-row'
 };
 
+// Breakpoint name (sm, min-sm, max-sm) → { px, max }; null if not a breakpoint
+function breakpointOf(name) {
+    const max = name.startsWith('max-');
+    const base = max ? name.slice(4) : name.startsWith('min-') ? name.slice(4) : name;
+    return Object.prototype.hasOwnProperty.call(BREAKPOINT_PX, base) ? { px: BREAKPOINT_PX[base], max } : null;
+}
+
 // max-* widest first, then min-width ascending (Tailwind's order)
 function breakpointRank(name) {
-    if (name.startsWith('max-')) return -BREAKPOINT_PX[name.slice(4)];
-    return BREAKPOINT_PX[name];
+    const bp = breakpointOf(name);
+    return bp.max ? -bp.px : bp.px;
 }
 
 // Top-level display declarations only (nested blocks ignored)
@@ -2725,8 +2732,7 @@ function withoutTopLevelDisplay(css) {
 
 function responsiveDisplayDecl(baseClass, parsed, css) {
     if (!BUILTIN_DISPLAY_CLASSES.has(baseClass) || parsed.variants.length !== 1) return null;
-    const bp = parsed.variants[0].name;
-    if (!Object.prototype.hasOwnProperty.call(BREAKPOINT_PX, bp.startsWith('max-') ? bp.slice(4) : bp)) return null;
+    if (!breakpointOf(parsed.variants[0].name)) return null;
     return topLevelDisplay(css);
 }
 
@@ -2736,14 +2742,12 @@ function tailwindResponsiveDisplay(usedClasses) {
     for (const cls of usedClasses) {
         const parts = cls.split(':');
         if (parts.length !== 2 || !Object.prototype.hasOwnProperty.call(TAILWIND_DISPLAY, parts[1])) continue;
-        const bp = parts[0];
-        const max = bp.startsWith('max-');
-        const px = BREAKPOINT_PX[max ? bp.slice(4) : bp];
-        if (!px) continue;
+        const bp = breakpointOf(parts[0]);
+        if (!bp) continue;
         out.push({
             cls,
-            media: max ? `@media (width < ${px}px)` : `@media (min-width: ${px}px)`,
-            rank: breakpointRank(bp),
+            media: bp.max ? `@media (width < ${bp.px}px)` : `@media (min-width: ${bp.px}px)`,
+            rank: breakpointRank(parts[0]),
             css: TAILWIND_DISPLAY[parts[1]]
         });
     }
