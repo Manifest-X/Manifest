@@ -4,6 +4,42 @@ var Iconify = function (t) { "use strict"; const e = Object.freeze({ left: 0, to
 
 /* Manifest Icons */
 
+// Iconify's own observer rescans every rendered icon in the document whenever any
+// node is added anywhere. It stays paused: icons are scanned where they are created.
+const RAW_ICONS = 'span.iconify, i.iconify, span.iconify-inline, i.iconify-inline';
+
+// Render the icon placeholders inside host now (sync when the icon data is held)
+function scanIcons(host, name) {
+    const iconify = window.Iconify;
+    if (!iconify || typeof iconify.scan !== 'function' || !host) return;
+    iconify.scan(host);
+    if (name && typeof iconify.iconExists === 'function' && !iconify.iconExists(name) && typeof iconify.loadIcons === 'function') {
+        iconify.loadIcons([name], () => iconify.scan(host));
+    }
+}
+
+function takeOverIconScanning() {
+    const iconify = window.Iconify;
+    if (!iconify || typeof iconify.pauseObserver !== 'function' || window.__manifestIconScanning) return;
+    window.__manifestIconScanning = true;
+    iconify.observe?.(document.documentElement);
+    iconify.pauseObserver();
+    iconify.scan();
+    // Authored Iconify placeholders added later (no x-icon) still render
+    new MutationObserver(records => {
+        for (const record of records) {
+            for (const node of record.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                if (node.matches(RAW_ICONS)) scanIcons(node.parentNode);
+                else if (node.firstElementChild && node.querySelector(RAW_ICONS)) scanIcons(node);
+            }
+        }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(takeOverIconScanning, 0));
+else setTimeout(takeOverIconScanning, 0);
+
 // Shared between directive and manual processing.
 function processIconElement(el, iconValue) {
     if (!iconValue) return;
@@ -39,18 +75,14 @@ function processIconElement(el, iconValue) {
             el.setAttribute('data-icon-processed', 'true');
 
             // Iconify swaps iconTarget for an inline SVG; wrapper stays put.
-            if (window.Iconify && typeof window.Iconify.scan === 'function') {
-                window.Iconify.scan(iconTarget);
-            }
+            scanIcons(wrapper, iconValue);
             return;
         } else {
             // Update existing icon
             const iconSpan = el.querySelector('.iconify');
             if (iconSpan) {
                 iconSpan.setAttribute('data-icon', iconValue);
-                if (window.Iconify && typeof window.Iconify.scan === 'function') {
-                    window.Iconify.scan(iconSpan);
-                }
+                scanIcons(iconSpan.parentNode, iconValue);
             }
             return;
         }
@@ -68,10 +100,7 @@ function processIconElement(el, iconValue) {
     // Set icon data
     iconEl.setAttribute('data-icon', iconValue);
 
-    // Use Iconify (already embedded in script)
-    if (window.Iconify && typeof window.Iconify.scan === 'function') {
-        window.Iconify.scan(iconEl);
-    }
+    scanIcons(el, iconValue);
 }
 
 function initializeIconPlugin() {
