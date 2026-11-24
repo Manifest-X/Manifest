@@ -68,7 +68,7 @@ function readAttrs(el) {
                 off: mods.includes('off'),
                 priority: mods.includes('priority') ? (parseInt(attrs[i].value, 10) || 0) : Infinity
             };
-        } else if (OWNS_CHILDREN.has(name)) {
+        } else if (OWNS_CHILDREN.has(name) || OWNS_CHILDREN.has(name.split('.')[0])) {
             owns = true;
         }
     }

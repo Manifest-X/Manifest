@@ -83,6 +83,10 @@
       <button id="markdown-reactive-btn" @click="note = 'second **note**'">Change</button>
       <div id="markdown-reactive-out" x-markdown="note"></div>
     </div>
+
+    <!-- Modifier forms (x-markdown.safe) bake and clean up like plain x-markdown. -->
+    <div id="markdown-safe-file" x-markdown.safe="data/safe.md"></div>
+    <div id="markdown-safe-expr" x-data="{ note: 'safe **expr** <img src=data:, onerror=window.__mdXss=3>' }" x-markdown.safe="note"></div>
   </section>
 
   <!-- Route: about -->

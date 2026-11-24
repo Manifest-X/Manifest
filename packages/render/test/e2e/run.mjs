@@ -207,6 +207,8 @@ async function runAssertions() {
     page.on('console', (msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
+    const safeMdRequests = [];
+    page.on('request', (r) => { if (r.url().includes('/data/safe.md')) safeMdRequests.push(r.url()); });
 
     // Record removals of the late-settling x-if clone (flicker check).
     await page.evaluateOnNewDocument(() => {
@@ -358,6 +360,36 @@ async function runAssertions() {
     assert(markdownReactive && markdownReactive.kept && markdownReactive.updated,
       'reactive x-markdown keeps its binding and updates at runtime',
       JSON.stringify(markdownReactive));
+
+    // ------- Test: x-markdown.safe (modifier form) baked + cleaned ---------
+    const rawHome = await readFile(join(FIXTURE_OUT_DIR, 'index.html'), 'utf8');
+    const baked = await page.evaluate((html) => {
+      const d = new DOMParser().parseFromString(html, 'text/html');
+      const pick = (id) => {
+        const el = d.getElementById(id);
+        return el && { attrs: el.getAttributeNames(), style: el.getAttribute('style') || '', html: el.innerHTML,
+          h1: el.querySelector('h1')?.textContent || null, strong: el.querySelector('strong')?.textContent || null,
+          unsafe: !!el.querySelector('script, [onerror]') };
+      };
+      return { file: pick('markdown-safe-file'), expr: pick('markdown-safe-expr') };
+    }, rawHome);
+    const bf = baked.file || {}, be = baked.expr || {};
+    assert(bf.h1 === 'Safe Article' && be.strong === 'expr',
+      'x-markdown.safe content (file + expression) baked in prerendered HTML', JSON.stringify(baked));
+    assert(bf.html && be.html && !bf.unsafe && !be.unsafe,
+      'x-markdown.safe baked content is sanitized (no handlers, no scripts)', JSON.stringify(baked));
+    assert(!/opacity\s*:\s*0/.test(bf.style + be.style),
+      'x-markdown.safe elements carry no leftover opacity:0', JSON.stringify({ file: bf.style, expr: be.style }));
+    assert(bf.attrs && !bf.attrs.some((n) => n.startsWith('x-markdown')) && (be.attrs || []).includes('x-markdown.safe'),
+      'file-backed x-markdown.safe frozen; reactive x-markdown.safe keeps its binding', JSON.stringify({ file: bf.attrs, expr: be.attrs }));
+    const safeRuntime = await page.evaluate(() => ({
+      file: document.querySelector('#markdown-safe-file h1')?.textContent || null,
+      expr: document.querySelector('#markdown-safe-expr strong')?.textContent || null,
+      xss: window.__mdXss || 0,
+    }));
+    assert(safeRuntime.file === 'Safe Article' && safeRuntime.expr === 'expr' && !safeRuntime.xss && safeMdRequests.length === 0,
+      'x-markdown.safe content visible at runtime, no handler ran, no re-fetch of the file-backed source',
+      JSON.stringify({ ...safeRuntime, safeMdRequests }));
 
     // ------- Test: locale switching -----------------------------------------
     const localeInitial = await page.$eval('#current-locale', (el) => el.textContent.trim()).catch(() => null);

@@ -95,6 +95,13 @@ describe('automatic detection', () => {
         expect(host.querySelector('#m').innerHTML).toBe('<b>x</b>')
     })
 
+    it('modifier forms of a child-owning directive (x-markdown.safe) own the children too', () => {
+        const host = mount(`<div x-data><div hidden x-markdown.safe="''" id="s"><p>baked</p></div><div hidden x-markdown="''" id="p"><p>baked</p></div></div>`)
+        expect(host.querySelector('#s').__mnfstDefer).toBeFalsy()
+        expect(host.querySelector('#p').__mnfstDefer).toBeFalsy()
+        expect(stash(host.querySelector('#s'))).toBeNull()
+    })
+
     it('runs the container\'s own directives while the children stay stashed', () => {
         const host = mount(`<div x-data><menu popover x-data="{ n: 7 }" :data-n="n" id="m"><li x-init="counts.m = 1">A</li></menu></div>`)
         const menu = host.querySelector('#m')

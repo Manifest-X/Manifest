@@ -1387,8 +1387,9 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
         let styleLen = 0;
         for (const s of document.querySelectorAll('style')) styleLen += (s.textContent || '').length;
         let mdEmpty = 0;
-        for (const e of document.querySelectorAll('[x-markdown]')) {
-          if (!e.innerHTML.trim()) mdEmpty++;
+        // [x-markdown] misses modifier forms (x-markdown.safe): match by attribute name
+        for (const e of document.querySelectorAll('*')) {
+          if (!e.innerHTML.trim() && e.getAttributeNames().some((n) => n === 'x-markdown' || n.startsWith('x-markdown.'))) mdEmpty++;
         }
         const sig = `${mdEmpty}:${document.body?.innerText.length || 0}:${styleLen}:${document.fonts ? document.fonts.status : ''}`;
         return { sig, mdEmpty };
@@ -2480,7 +2481,10 @@ async function renderRouteDom(page, ctx) {
   // plugin doesn't re-hide the element), leaving the inline style would
   // permanently hide authored content.
   await page.evaluate(() => {
-    document.querySelectorAll('[x-markdown]').forEach((el) => {
+    // [x-markdown] misses modifier forms (x-markdown.safe): match by attribute name
+    document.querySelectorAll('*').forEach((el) => {
+      const attr = el.getAttributeNames().find((n) => n === 'x-markdown' || n.startsWith('x-markdown.'));
+      if (!attr) return;
       if (!el.textContent.trim() && !el.innerHTML.trim()) return;
       // Only FILE-BACKED markdown is safe to freeze: its content is baked and
       // the runtime would only re-fetch and re-render the same thing (with an
@@ -2489,7 +2493,7 @@ async function renderRouteDom(page, ctx) {
       // reactive value (x-markdown="note") must KEEP its binding — stripping
       // it froze live-updating markdown mirrors on prerendered pages.
       const src = el.getAttribute('data-mnfst-md-src');
-      const literal = /^\s*(['"`]).*\1\s*$/.test(el.getAttribute('x-markdown') || '');
+      const literal = /^\s*(['"`]).*\1\s*$/.test(el.getAttribute(attr) || '');
       if (!src && !literal) {
         // Reactive: keep the binding, still clean the plugin's leftover styles.
         const s = el.getAttribute('style') || '';
@@ -2501,7 +2505,7 @@ async function renderRouteDom(page, ctx) {
         }
         return;
       }
-      el.removeAttribute('x-markdown');
+      el.removeAttribute(attr);
       // Clean up opacity-0 + transition inline styles the plugin left behind.
       const style = el.getAttribute('style') || '';
       if (style) {
