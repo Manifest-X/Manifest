@@ -692,39 +692,25 @@ const TAILWIND_DARK_VARIANT = '@custom-variant dark (&:where(.dark, .dark *));';
 const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
 const stripCssComments = (css) => String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
 
-/** Author `@custom-variant dark` declarations from `<style type="text/tailwindcss">` blocks. */
-function authorTailwindDarkVariants(html) {
-  const out = [];
-  const styleRe = /<style\b[^>]*type\s*=\s*(["'])text\/tailwindcss\1[^>]*>([\s\S]*?)<\/style>/gi;
-  for (const m of String(html || '').matchAll(styleRe)) {
-    const css = stripCssComments(m[2]);
-    const declRe = /@custom-variant\s+dark[\s({]/g;
-    let d;
-    while ((d = declRe.exec(css))) {
-      let i = d.index;
-      let depth = 0;
-      let end = -1;
-      for (; i < css.length; i++) {
-        const c = css[i];
-        if (c === '(' || c === '{') depth++;
-        else if (c === ')' || c === '}') {
-          depth--;
-          if (depth === 0 && c === '}') { end = i + 1; break; }
-        } else if (c === ';' && depth === 0) { end = i + 1; break; }
-      }
-      if (end > 0) out.push(css.slice(d.index, end));
-      declRe.lastIndex = end > 0 ? end : css.length;
-    }
-  }
-  return out;
+/** Author `<style type="text/tailwindcss">` blocks, comments stripped, in document order. */
+function authorTailwindCss(html) {
+  const styleRe = /<style\b[^>]*\btype\s*=\s*(["']?)text\/tailwindcss\1(?=[\s>])[^>]*>([\s\S]*?)<\/style>/gi;
+  return [...String(html || '').matchAll(styleRe)].map(m => stripCssComments(m[2]).trim()).filter(Boolean).join('\n');
 }
 
-/** CLI entry CSS: Tailwind (or the author's input) + Manifest's variants; an author's dark wins. */
+/**
+ * CLI entry CSS, mirroring the live engine: author blocks, then Manifest's variants
+ * (live appends them last); an author's dark wins. Author `@import`s replace the default.
+ */
 function buildTailwindCliInput({ importPath = 'tailwindcss', inputCss = '', indexHtml = '' } = {}) {
-  const authorDark = authorTailwindDarkVariants(indexHtml);
-  const lines = [`@import ${JSON.stringify(importPath)};`, ...TAILWIND_CUSTOM_VARIANTS];
-  if (authorDark.length) lines.push(...authorDark);
-  else if (!AUTHOR_DARK_RE.test(stripCssComments(inputCss))) lines.push(TAILWIND_DARK_VARIANT);
+  let author = authorTailwindCss(indexHtml);
+  const custom = importPath !== 'tailwindcss';
+  if (custom) author = author.replace(/@import\s[^;]*;/g, '').trim();
+  const lines = [];
+  if (custom || !/@import\s/.test(author)) lines.push(`@import ${JSON.stringify(importPath)};`);
+  if (author) lines.push(author);
+  lines.push(...TAILWIND_CUSTOM_VARIANTS);
+  if (!AUTHOR_DARK_RE.test(author) && !AUTHOR_DARK_RE.test(stripCssComments(inputCss))) lines.push(TAILWIND_DARK_VARIANT);
   return lines.join('\n') + '\n';
 }
 
@@ -3689,7 +3675,7 @@ export {
   stripTailwindPreflightConflicts,
   TAILWIND_CUSTOM_VARIANTS,
   TAILWIND_DARK_VARIANT,
-  authorTailwindDarkVariants,
+  authorTailwindCss,
   buildTailwindCliInput,
   runTailwindCliForPrerender,
   readGlobalModuleRoots,
