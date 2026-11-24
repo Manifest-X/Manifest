@@ -55,11 +55,35 @@ afterEach(() => { released.splice(0).forEach(e => Alpine.release(e)); document.b
 
 const rows = (n, from = 0) => Array.from({ length: n }, (_, i) => ({ $id: `r${from + i}`, name: `row ${from + i}`, n: from + i }))
 
-// Counts reactive writes to array indices (what a proxied splice does per shifted row)
-function countIndexWrites(effect, read) {
+function countReruns(effect, read) {
     let runs = 0
     effect(() => { runs++; read() })
     return () => runs - 1
+}
+
+// Structural array methods called through the reactive proxy (one reactive write per shifted row)
+async function proxiedStructuralCalls(rawArray, run) {
+    const proto = Array.prototype
+    const originals = { splice: proto.splice, unshift: proto.unshift, shift: proto.shift }
+    let calls = 0
+    for (const name of Object.keys(originals)) {
+        proto[name] = function (...args) {
+            if (this !== rawArray && Alpine.raw(this) === rawArray) calls++
+            return originals[name].apply(this, args)
+        }
+    }
+    try { await run() } finally { Object.assign(proto, originals) }
+    return calls
+}
+
+// writeSource runs once per applied group: it clears the source's access cache each time
+async function sourceWrites(run) {
+    const proxies = window.ManifestDataProxies
+    const original = proxies.clearAccessCache
+    let calls = 0
+    proxies.clearAccessCache = (...args) => { calls++; return original?.(...args) }
+    try { await run() } finally { proxies.clearAccessCache = original }
+    return calls
 }
 
 describe('structural edits are one reactive write', () => {
@@ -73,8 +97,9 @@ describe('structural edits are one reactive write', () => {
         effect(() => { heldRuns++; held = list.length })
         let first = null
         effect(() => { first = list[0].$id })
-        const reruns = countIndexWrites(effect, () => { for (const r of $x().chats) void r.$id })
-        await store.landRemove('chats', rows(100).map(r => r.$id))
+        const reruns = countReruns(effect, () => { for (const r of $x().chats) void r.$id })
+        const proxied = await proxiedStructuralCalls(before, () => store.landRemove('chats', rows(100).map(r => r.$id)))
+        expect(proxied).toBe(0)
         await tick()
         expect(reruns()).toBe(1)
         expect(raw('chats')).toBe(before) // same array: a holder of it stays live
@@ -91,10 +116,11 @@ describe('structural edits are one reactive write', () => {
         const { store, mut, raw, $x } = load()
         await store.landRows('chats', rows(5))
         let during = null
-        await mut.executeMutation({
+        const proxied = await proxiedStructuralCalls(raw('chats'), () => mut.executeMutation({
             type: 'delete', dataSourceName: 'chats', entryId: 'r2',
             apiCall: async () => { during = raw('chats').map(r => r.$id); throw new Error('offline') },
-        }).catch(() => {})
+        }).catch(() => {}))
+        expect(proxied).toBe(0)
         expect(during).toEqual(['r0', 'r1', 'r3', 'r4'])
         expect(raw('chats').map(r => r.$id)).toEqual(['r0', 'r1', 'r2', 'r3', 'r4'])
         expect($x().chats.length).toBe(5)
@@ -105,8 +131,10 @@ describe('structural edits are one reactive write', () => {
     it('a local create on a sorted source lands at its sort position in one write', async () => {
         const { store, mut, raw, $x, effect } = load({ order: [['n', -1]] })
         await store.landRows('chats', rows(50).reverse())
-        const reruns = countIndexWrites(effect, () => { for (const r of $x().chats) void r.$id })
-        mut.addEntryToStore('chats', { $id: 'new', name: 'new', n: 999 })
+        const reruns = countReruns(effect, () => { for (const r of $x().chats) void r.$id })
+        const held = raw('chats')
+        expect(await proxiedStructuralCalls(held, async () => { mut.addEntryToStore('chats', { $id: 'new', name: 'new', n: 999 }) })).toBe(0)
+        expect(raw('chats')).toBe(held)
         expect(raw('chats')[0].$id).toBe('new')
         expect($x().chats[0].name).toBe('new') // read-your-writes, same tick
         await tick()
@@ -182,7 +210,8 @@ describe('one write per source per flush', () => {
         await store.landRows('t', rows(500))
         const v = data()._v.t
         const before = raw('t')
-        await Promise.all(rows(100).map(r => store.landRows('t', [{ $id: r.$id, name: 'x' + r.n }], { mode: 'append' })))
+        const writes = await sourceWrites(() => Promise.all(rows(100).map(r => store.landRows('t', [{ $id: r.$id, name: 'x' + r.n }], { mode: 'append' }))))
+        expect(writes).toBe(1)
         expect(data()._v.t).toBe(v + 1)
         expect(raw('t')).toBe(before)
         expect(raw('t')[99].name).toBe('x99')
@@ -228,7 +257,35 @@ describe('one write per source per flush', () => {
     })
 })
 
+describe('rows still queued', () => {
+    it('isRowPending sees a realtime row before its flush, not after', async () => {
+        const { store } = load()
+        await store.landRows('t', rows(2))
+        const landing = store.landRows('t', [{ $id: 'q', name: 'q' }], { mode: 'append' })
+        expect(store.findRow('t', 'q')).toBe(null)
+        expect(store.isRowPending('t', 'q')).toBe(true)
+        expect(store.isRowPending('other', 'q')).toBe(false)
+        await landing
+        expect(store.isRowPending('t', 'q')).toBe(false)
+        expect(store.findRow('t', 'q').name).toBe('q')
+    })
+})
+
 describe('post-settle bump', () => {
+    it('a source written synchronously since the last settle is bumped with the next one', async () => {
+        const { store, mut, data } = load()
+        await store.landRows('a', rows(2), { mode: 'replace', loading: false, ready: true })
+        await store.landRows('b', rows(2), { mode: 'replace', loading: false, ready: true })
+        await wait(280)
+        mut.updateEntryInStore('a', 'r0', { name: 'local' }) // may have run inside an Alpine flush
+        const a = data()._v.a, b = data()._v.b
+        store.updateStore('c', rows(1))
+        await wait(280)
+        expect(data()._v.a).toBe(a + 1)
+        expect(data()._v.b).toBe(b)
+    })
+
+
     it('covers every source on the first settle, then only the sources that settled', async () => {
         const { store, data } = load()
         await store.landRows('a', rows(2), { mode: 'replace', loading: false, ready: true })

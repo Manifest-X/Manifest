@@ -4,18 +4,13 @@ var Iconify = function (t) { "use strict"; const e = Object.freeze({ left: 0, to
 
 /* Manifest Icons */
 
-// Iconify's own observer rescans every rendered icon in the document whenever any
-// node is added anywhere. It stays paused: icons are scanned where they are created.
+// Iconify's observer (a full-document rescan per insertion) stays paused; icons scan where they are created
 const RAW_ICONS = 'span.iconify, i.iconify, span.iconify-inline, i.iconify-inline';
 
-// Render the icon placeholders inside host now (sync when the icon data is held)
-function scanIcons(host, name) {
+// Render the placeholders inside host (sync when the icon data is held; Iconify rescans host once it loads)
+function scanIcons(host) {
     const iconify = window.Iconify;
-    if (!iconify || typeof iconify.scan !== 'function' || !host) return;
-    iconify.scan(host);
-    if (name && typeof iconify.iconExists === 'function' && !iconify.iconExists(name) && typeof iconify.loadIcons === 'function') {
-        iconify.loadIcons([name], () => iconify.scan(host));
-    }
+    if (iconify && typeof iconify.scan === 'function' && host) iconify.scan(host);
 }
 
 function takeOverIconScanning() {
@@ -75,14 +70,14 @@ function processIconElement(el, iconValue) {
             el.setAttribute('data-icon-processed', 'true');
 
             // Iconify swaps iconTarget for an inline SVG; wrapper stays put.
-            scanIcons(wrapper, iconValue);
+            scanIcons(wrapper);
             return;
         } else {
             // Update existing icon
             const iconSpan = el.querySelector('.iconify');
             if (iconSpan) {
                 iconSpan.setAttribute('data-icon', iconValue);
-                scanIcons(iconSpan.parentNode, iconValue);
+                scanIcons(iconSpan.parentNode);
             }
             return;
         }
@@ -100,7 +95,7 @@ function processIconElement(el, iconValue) {
     // Set icon data
     iconEl.setAttribute('data-icon', iconValue);
 
-    scanIcons(el, iconValue);
+    scanIcons(el);
 }
 
 function initializeIconPlugin() {

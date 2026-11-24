@@ -81,6 +81,30 @@ describe('B2: realtime follows the active $query', () => {
         expect(ids('items')).not.toContain('r1')
     })
 
+    it('a row created and updated out of the query before its create landed never lands', async () => {
+        const { ids, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['equal', 'status', 'active'], ['limit', 100]] } }, makeRows(10).map(r => ({ ...r, status: 'active' })))
+        await main.loadDataSource('items')
+        await settle()
+        rt().fire(CH, evt('create', { $id: 'x1', n: 99, status: 'active' }))
+        rt().fire(CH, evt('update', { $id: 'x1', n: 99, status: 'archived' }))
+        await settle()
+        expect(ids('items')).not.toContain('x1')
+    })
+
+    it('a row created and updated before its create landed lands once, with the update', async () => {
+        const { ids, main, rt } = await boot({ items: { appwriteTableId: 'items', queries: [['limit', 12]], realtime: { mode: 'window' } } }, makeRows(10))
+        await main.loadDataSource('items')
+        await settle()
+        rt().fire(CH, evt('create', { $id: 'x1', n: 99, status: 'active' }))
+        rt().fire(CH, evt('update', { $id: 'x1', n: 99, status: 'active', title: 'edited' }))
+        rt().fire(CH, evt('create', { $id: 'x2', n: 98, status: 'active' }))
+        await settle()
+        expect(ids('items').filter(id => id === 'x1')).toHaveLength(1)
+        expect(ids('items')).toContain('x2') // x1 counted once: the window still has room
+        expect(window.Alpine.store('data').items.find(r => r.$id === 'x1').title).toBe('edited')
+        expect(window.Alpine.store('data')._items_state.realtimeOverflow || 0).toBe(0)
+    })
+
     it("serverFilter 'all' re-binds the subscription to the active $query's filters", async () => {
         const { main, query, rt } = await boot(
             { items: { appwriteTableId: 'items', queries: [['equal', 'status', 'active'], ['limit', 100]], realtime: { serverFilter: 'all' } } },

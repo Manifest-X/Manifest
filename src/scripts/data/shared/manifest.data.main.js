@@ -803,8 +803,8 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
             // Scope AND queries must match before the row lands
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
             if (rowMatchesScope && eventMatchesQueries(row, queriesConfig)) {
-                if (window.ManifestDataStore.findRow(dataSourceName, row.$id)) {
-                    // Echo of a row already held (optimistic create): merge, never counts as growth
+                if (window.ManifestDataStore.findRow(dataSourceName, row.$id) || window.ManifestDataStore.isRowPending(dataSourceName, row.$id)) {
+                    // Echo of a row already held or queued (optimistic create): merge, never counts as growth
                     landRows(dataSourceName, [row], { mode: 'append', generation, order });
                 } else if (!beyondLoaded(dataSourceName, row)) {
                     realtimeAppend(dataSourceName, row, currentRows, generation, order);
@@ -818,12 +818,18 @@ async function handleTableRealtimeEvent(dataSourceName, databaseId, tableId, sco
         if (row && row.$id) {
             const existingRow = window.ManifestDataStore.findRow(dataSourceName, row.$id);
             const rowMatchesScope = await checkRowMatchesScope(row, scope, scopeColumns);
+            // Queued by an earlier event of this flush window, not yet in the store
+            const queued = !existingRow && window.ManifestDataStore.isRowPending(dataSourceName, row.$id);
             if (!rowMatchesScope || !eventMatchesQueries(row, queriesConfig)) {
                 // Row stopped matching scope or queries, remove it
-                if (existingRow) {
+                if (existingRow || queued) {
                     landRemove(dataSourceName, [row.$id], { generation });
                     forgetRealtimeRow(dataSourceName, row.$id);
                 }
+                return;
+            }
+            if (queued) {
+                landRows(dataSourceName, [row], { mode: 'append', generation, order });
                 return;
             }
             if (!existingRow) {

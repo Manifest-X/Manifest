@@ -17,9 +17,7 @@ let landingResolvers = [];
 let landingFrame = null;
 let landingTimer = null;
 const LANDING_FALLBACK_MS = 50;
-// Backpressure: a flush that ran long (store write + the effects it re-ran) is followed
-// by a cool-down of twice its cost; realtime rows arriving inside it land together when
-// it ends, so a burst costs one flush. Loads never wait; an idle source never waits
+// Backpressure: realtime rows arriving within twice the cost of a long flush land together; loads never wait
 const LANDING_BUSY_MS = 8;
 const LANDING_MAX_WAIT_MS = 250;
 let landingCost = 0;
@@ -112,9 +110,15 @@ function findRow(dataSourceName, id) {
     return i === -1 ? null : arr[i];
 }
 
-// Structural edit, in place: the array keeps its identity. One reactive write
-// (length to 0) wakes every length, iteration and index reader; the rows are then
-// put back on the raw array, so no per-index writes run (a proxied splice makes one per shifted row)
+// Queued by realtime, not yet in the store
+function isRowPending(dataSourceName, id) {
+    for (const op of pendingLandings) {
+        if (op.source === dataSourceName && Array.isArray(op.rows) && op.rows.some(row => rowKey(row) === id)) return true;
+    }
+    return false;
+}
+
+// Structural edit in place: one reactive write (length to 0) wakes every reader, rows return on the raw array
 function setRows(store, dataSourceName, next) {
     const raw = rawOf(store)[dataSourceName];
     const cur = store[dataSourceName];
@@ -123,16 +127,15 @@ function setRows(store, dataSourceName, next) {
         const arr = rawOf(store)[dataSourceName];
         rawDataStore.set(dataSourceName, arr);
         attachMethods(arr, dataSourceName);
-        return arr;
+        return;
     }
     dropRowIndex(raw);
     if (!raw.length) {
         for (const row of next) cur.push(row);
-        return raw;
+        return;
     }
     cur.length = 0;
     for (let i = 0; i < next.length; i++) raw.push(next[i]);
-    return raw;
 }
 
 function insertRowAt(store, dataSourceName, index, row) {
@@ -162,8 +165,12 @@ function touchSources(store, sources) {
     store._dataVersion = (store._dataVersion || 0) + 1;
 }
 
+// Sync writes (they can run inside Alpine's flush) are re-bumped by the next post-settle hammer
+const writtenSources = new Set();
+
 function touchSource(dataSourceName) {
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
+    writtenSources.add(dataSourceName);
     if (store) touchSources(store, [dataSourceName]);
 }
 
@@ -262,6 +269,7 @@ function resetSource(dataSourceName) {
     proxies?.clearArrayProxyCacheForDataSource?.(dataSourceName);
     proxies?.clearRouteProxyCacheForDataSource?.(dataSourceName);
     proxies?.clearNestedProxyCacheForDataSource?.(dataSourceName);
+    writtenSources.add(dataSourceName);
     touchSources(store, [dataSourceName]);
 }
 
@@ -274,6 +282,7 @@ function setSourceState(dataSourceName, patch) {
     const next = { ...current, ...patch };
     if (patch.error !== undefined) next.errorTime = patch.error ? (patch.errorTime || Date.now()) : null;
     store[key] = next;
+    writtenSources.add(dataSourceName);
     return next;
 }
 
@@ -351,7 +360,7 @@ function touchPending(dataSourceName) {
     const key = `_${dataSourceName}_state`;
     const current = store[key] || { loading: false, error: null, ready: false, stale: true };
     const pending = pendingCount(dataSourceName);
-    if (current.pending !== pending) store[key] = { ...current, pending };
+    if (current.pending !== pending) { store[key] = { ...current, pending }; writtenSources.add(dataSourceName); }
 }
 
 // Local row insert: at its sort position on a sorted source, else at the end
@@ -1236,12 +1245,11 @@ function setupTeamChangeListener() {
 }
 
 // Dispatch manifest:render-ready once all sources settle (debounced to coalesce).
-const settledSources = new Set(); // sources whose load completed since the last render-ready
 let hammeredAll = false;
 
 function checkAndDispatchRenderReady(sources) {
-    if (sources) for (const source of sources) settledSources.add(source);
-    else hammeredAll = false; // caller unknown: next bump covers every source
+    if (sources) for (const source of sources) writtenSources.add(source);
+    else hammeredAll = false;
     if (_renderReadyTimer) {
         clearTimeout(_renderReadyTimer);
     }
@@ -1280,10 +1288,9 @@ function checkAndDispatchRenderReady(sources) {
             // swallow) — an x-if that read this store before data arrived may
             // never re-run. One post-settle bump on a fresh task re-runs
             // anything dropped.
-            // The first bump of a page-load (and of a locale change) covers every
-            // source; later ones only the sources that settled since.
-            const only = hammeredAll ? new Set(settledSources) : null;
-            settledSources.clear();
+            // First bump of a page-load or locale change: every source. Later: sources written or settled since
+            const only = hammeredAll ? new Set(writtenSources) : null;
+            writtenSources.clear();
             hammeredAll = true;
             setTimeout(() => {
                 try { bumpAllVersions(only); } catch (_) { /* no-op */ }
@@ -1619,6 +1626,7 @@ window.ManifestDataStore = {
     removeRowAt,
     indexOfRow,
     findRow,
+    isRowPending,
     holdWrite,
     releaseWrite,
     settleWrite,

@@ -20,7 +20,12 @@ beforeAll(async () => {
     document.body.innerHTML = '<div id="list"></div>'
     new Function(SRC + '\nwindow.__processIcon = processIconElement;')()
     processIcon = window.__processIcon
-    window.Iconify._api.setFetch(() => new Promise(() => {})) // no network
+    // No network: the API answers after 30ms with every icon asked for
+    window.Iconify._api.setFetch(async (url) => {
+        await wait(30)
+        const names = new URL(url).searchParams.get('icons').split(',')
+        return { ok: true, status: 200, json: async () => ({ prefix: 'lucide', width: 24, height: 24, icons: Object.fromEntries(names.map(n => [n, { body: STAR.body }])) }) }
+    })
     window.Iconify.addIcon('lucide:house', HOUSE)
     window.Iconify.addIcon('lucide:star', STAR)
     await wait(30)
@@ -54,13 +59,12 @@ describe('icons scan where they are created', () => {
         expect(li.querySelector('svg').getAttribute('data-icon')).toBe('lucide:star')
     })
 
-    it('an icon whose data arrives later renders without another insertion', async () => {
+    it('an icon whose data is fetched renders when it arrives, with no further insertion', async () => {
         const el = host()
         processIcon(el, 'lucide:late')
         expect(el.querySelector('svg')).toBeNull()
-        window.Iconify.addIcon('lucide:late', STAR)
-        window.Iconify.scan(el)
-        expect(el.querySelector('svg')).not.toBeNull()
+        await wait(120)
+        expect(el.querySelector('svg')?.getAttribute('data-icon')).toBe('lucide:late')
     })
 
     it('authored Iconify placeholders added later still render', async () => {
