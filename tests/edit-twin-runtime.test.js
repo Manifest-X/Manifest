@@ -23,7 +23,7 @@ function extRegion(id, fn) {
 }
 const swap = (x, y) => (ls) => { const i = ls.findIndex(l => l.includes(`data-m="${x}"`)), j = ls.findIndex(l => l.includes(`data-m="${y}"`)); const c = ls.slice(); [c[i], c[j]] = [c[j], c[i]]; return c }
 const stripIds = () => { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); try { const s = JSON.parse(localStorage.getItem(k)); if (s && s.log) { s.log.forEach(d => { delete d.ids; delete d.id }); localStorage.setItem(k, JSON.stringify(s)) } } catch { } } }
-const T1 = 'Lorem ipsum dolor sit amet one', T2 = 'Lorem ipsum dolor sit amet two'
+const T1 = 'Lorem ipsum dolor sit amet one', T2 = 'Lorem ipsum dolor sit amet two', T3 = 'Lorem ipsum dolor sit amet three'
 
 describe('runtime attributes on twins, no source change', () => {
     it('P1 :class bound to stored state that changes across the reload: the delete stays', async () => {
@@ -219,7 +219,7 @@ describe('twins the edits act on (re-review probes)', () => {
         await store().publish()
         expect(fileIds().a).toEqual(['1', '4', '3'])
     })
-    it('Q6 a rebase publish over a newer file, then a twin deleted, the twins swapped, reload: reported, never the other twin', async () => {
+    it('Q6 a rebase publish over an unrelated newer change, then a twin deleted, the twins swapped, reload: remapped', async () => {
         const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
         S.ext(f => f.replace('<p data-m="g">G</p>', '<p data-m="g">G2</p>'))
         editText(kids(r.a)[2], 'P2'); await flush()
@@ -228,9 +228,9 @@ describe('twins the edits act on (re-review probes)', () => {
         store().remove(kids(r.a)[1]); await flush()
         extRegion('a', swap('1', '2'))
         await S.reload()
-        expect(store().conflicts.some(c => c.prop === 'structure')).toBe(true)
+        expect(store().conflicts).toEqual([])
         await store().publish()
-        expect(fileIds().a).toContain('1')
+        expect(fileIds().a).toEqual(['1', '3'])
     })
 })
 
@@ -382,4 +382,114 @@ describe('swaps: acted on, or reported', () => {
         const f = fileIds()
         expect(f.a.concat(f.b).sort()).toEqual(['1', '2', '3', 'g', 'p'])
     })
+})
+
+// Fourth review: false conflicts removed; better-than-master outcomes kept
+describe('rebase window and insertions (fourth review)', () => {
+    const rebaseOverUnrelated = async (r) => {
+        S.ext(f => f.replace('<p data-m="g">G</p>', '<p data-m="g">G2</p>'))
+        editText(kids(r.a)[2], 'P2'); await flush()
+        await store().publish(); await store().publish({ rebase: true })
+    }
+    it('N1 a rebase over an unrelated newer change, then a twin deleted, reload: the delete stays', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        await rebaseOverUnrelated(r)
+        store().remove(kids(r.a)[1]); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['1', '3'])
+    })
+    it('N1b a rebase over an unrelated newer change, then a twin text edit, reload: the edit stays', async () => {
+        const r = R(await S.open(persist([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        await rebaseOverUnrelated(r)
+        editText(kids(r.a)[1], 'EditedTwo'); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a')).toMatch(/data-m="2">EditedTwo/)
+    })
+    it('N1e an mnfst-run that sends no content ids: a rebase marks nothing unverifiable', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        const f0 = window.fetch
+        window.fetch = (u, o) => f0(u, o).then(res => ({ ...res, json: () => res.json().then(j => { delete j.cids; return j }) }))
+        try {
+            await rebaseOverUnrelated(r)
+            store().remove(kids(r.a)[1]); await flush()
+            expect(JSON.stringify(store().export().log)).not.toContain('"unsure"')
+            await S.reload()
+        } finally { window.fetch = f0 }
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(fileIds().a).toEqual(['1', '3'])
+    })
+    it('N2 a twin text edit; the source edits it in place and inserts a copy of its old self: the edit stays', async () => {
+        const r = R(await S.open(persist([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        editText(kids(r.a)[0], 'EditedOne'); await flush()
+        extRegion('a', (ls) => [ls[0].replace('<p data-m="1">', '<p data-m="1" class="z">'), ls[1], ls[0], ls[2]])
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a')).toMatch(/data-m="1" class="z">EditedOne/)
+    })
+    it('N2b identical twins: #2 edited; the source styles #2 and appends another: the edit stays', async () => {
+        const r = R(await S.open(persist(['<p>Item item item item item item</p>', '<p>Item item item item item item</p>', '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        editText(kids(r.a)[1], 'EditedTwo'); await flush()
+        extRegion('a', (ls) => [ls[0], ls[1].replace('<p>', '<p class="z">'), ls[0], ls[2]])
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a')).toMatch(/<p class="z">EditedTwo/)
+    })
+    it('N3 a three-way rotation of twins, one deleted and another text-edited: both land on their own', async () => {
+        const r = R(await S.open(persist([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, `<p data-m="x">${T3}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        editText(kids(r.a)[0], 'EditedOne'); await flush()
+        store().remove(kids(r.a)[1]); await flush()
+        extRegion('a', (ls) => [ls[1], ls[2], ls[0], ls[3]])
+        await S.reload()
+        await store().publish()
+        expect(fileIds().a).toEqual(['x', '1', '3'])
+        expect(reg('a')).toMatch(/data-m="1">EditedOne/)
+    })
+    it('N4 a copy of a copy of twin 2 into b, the twins swapped: both copies are of twin 2', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        store().copy(kids(r.a)[1]); store().paste(kids(r.b)[0]); await flush()
+        store().copy(kids(r.b)[1]); store().paste(kids(r.b)[1]); await flush()
+        extRegion('a', swap('1', '2'))
+        await S.reload()
+        await store().publish()
+        expect(fileIds().b).toEqual(['g', '2', '2'])
+    })
+    it('N11 another tab deletes twin 1; this tab edited twin 2: never written onto twin 3', async () => {
+        const r = R(await S.open(persist([`<p data-m="1">${T1}</p>`, `<p data-m="2">${T2}</p>`, `<p data-m="x">${T3}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        editText(kids(r.a)[1], 'EditedTwo'); await flush()
+        S.ext(f => f.replace(`        <p data-m="1">${T1}</p>\n`, ''))
+        await S.reload()
+        await store().publish()
+        expect(reg('a')).not.toMatch(/data-m="x">EditedTwo/)
+        expect(reg('a')).toContain(T3)
+    })
+    it('N14 a twin text edit; the source rewrites the twins so the other holds its old text: never written over the new text', async () => {
+        const r = R(await S.open(persist([`<p class="c">${T1}</p>`, `<p class="c">${T2}</p>`, '<h2 data-m="3">P</h2>'], ['<p data-m="g">G</p>'])))
+        editText(kids(r.a)[0], 'EditedOne'); await flush()
+        extRegion('a', (ls) => [ls[0].replace(T1, T3), ls[1].replace(T2, T1), ls[2]])
+        await S.reload()
+        await store().publish()
+        expect(reg('a')).toContain(T3)
+    })
+    it('the base never arriving: replay goes ahead after the wait, positionally', async () => {
+        const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
+        store().remove(kids(r.a)[1]); await flush()
+        const f0 = window.fetch
+        let release
+        window.fetch = (u, o) => String(u).includes('/__edit/base') ? new Promise(res => { release = () => { S.net.bases++; res({ ok: false, status: 500, json: () => Promise.resolve({}) }) } }) : f0(u, o)
+        const t0 = Date.now()
+        const load = S.reload()
+        await new Promise(res => setTimeout(res, 4300))
+        const page = ids(R(document.body).a)
+        release(); await load
+        window.fetch = f0
+        expect(page).toEqual(['1', '3'])
+        expect(Date.now() - t0).toBeLessThan(8000)
+    }, 15000)
 })

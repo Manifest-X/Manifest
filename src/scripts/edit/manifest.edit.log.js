@@ -184,8 +184,8 @@
         keys.forEach(k => {
             if (!twinKey(k) || ids[k]) return;
             const o = originOf(k), a = areaByKey(decodeURIComponent(o.slice(1, o.indexOf('@', 1)))), f = a && sourceFile(a), m = baseCids && f && baseCids[f];
-            if (m) Object.keys(m).forEach(j => { if (familyOf(j) === familyOf(o)) ids[j] = m[j]; });
-            else if (f && cidsUnsure.has(f)) unsure.add(o);
+            if (cidsUnsure.has(familyOf(o))) unsure.add(o);
+            else if (m) Object.keys(m).forEach(j => { if (familyOf(j) === familyOf(o)) ids[j] = m[j]; });
         });
         if (Object.keys(ids).length) d.ids = ids;
         if (unsure.size) d.unsure = [...unsure];
@@ -241,12 +241,28 @@
         const cidLike = (v) => typeof v === 'string' && /^[0-9a-f]{12}$/.test(v);
         log.forEach(d => { if (d.ids) Object.entries(d.ids).forEach(([k, v]) => { if (!(k in recId) && cidLike(v)) recId[k] = v; }); });
         const family = familyOf;
-        // Positive evidence only: a twin's recorded content found at ANOTHER key of its family whose
-        // own content changed. Content changed in place (or not found) is the source's edit: positional.
-        const movedTo = (k) => {
-            if (!recId[k] || freshId(k) == null || freshId(k) === recId[k]) return null;
+        // Positive evidence only. With the family's size unchanged: the recorded content found at
+        // another recorded member whose own content changed (a permutation). With members added or
+        // removed: everything recorded from this twin on found again, in order, shifted. Content
+        // changed in place, not found, or shared with another recorded twin: positional, as before.
+        const ord = (k) => { const m = /#(\d+)$/.exec(k); return m ? +m[1] : 1; };
+        const byOrd = (x, y) => ord(x) - ord(y);
+        const movedTo = (k, v = recId[k]) => {
+            if (!cidLike(v) || freshId(k) == null || freshId(k) === v) return null;
+            const R = Object.keys(recId).filter(j => family(j) === family(k)).sort(byOrd);
+            if (R.some(j => j !== k && recId[j] === v)) return null;
             const a = areaByKey(keyRegion(k)), m = baseCids && a && baseCids[sourceFile(a)];
-            return Object.keys(m || {}).filter(j => j !== k && family(j) === family(k) && freshId(j) != null && freshId(j) === recId[k] && freshId(j) !== recId[j]);
+            const F = Object.keys(m || {}).filter(j => family(j) === family(k)).sort(byOrd);
+            if (F.length === R.length) return F.filter(j => j !== k && j in recId && freshId(j) === v && freshId(j) !== recId[j]);
+            const i = R.indexOf(k); if (i < 0) return [];
+            const to = [];
+            for (let d = -i; d < F.length - i; d++) {
+                if (!d) continue;
+                let ok = true;
+                for (let t = i; t < R.length && ok; t++) ok = t + d >= 0 && t + d < F.length && freshId(F[t + d]) === recId[R[t]];
+                if (ok) to.push(F[i + d]);
+            }
+            return to;
         };
         const unsureKeys = new Set(); log.forEach(d => (d.unsure || []).forEach(k => unsureKeys.add(k)));
         const keyRegion = (k) => decodeURIComponent(k.slice(1, k.indexOf('@', 1)));
@@ -359,7 +375,7 @@
             renameKeys(ren, (d) => !broken.has(d.kind === 'st-move' ? d.to : d.region));
             ver++;
         }
-        // Remapped twins: removals name the element found again; its own edits follow it
+        // Remapped twins: removals name the element found again; its text edits follow it (re-checked below)
         remapped.forEach(([region, parent, now, map]) => {
             if (broken.has(region)) return;
             const ren = (k) => typeof k === 'string' && map.has(k) ? map.get(k) : k;
@@ -406,7 +422,7 @@
         const structural = (d) => ((d.kind === 'st-order' || d.kind === 'st-children') && broken.has(d.region)) || (d.kind === 'st-move' && (broken.has(d.from) || broken.has(d.to)))
             || (d.kind === 'st-node' && broken.has(d.region) && typeof d.path === 'string' && d.path[0] === '~');
         // A twin's text edit: on evidence its element moved (or it cannot be verified), reported
-        const movedTwin = (d) => (unsureKeys.has(d.path) && (d.unsure || []).includes(d.path)) || (cidLike(d.id) && (movedTo(d.path) || []).length > 0);
+        const movedTwin = (d) => (d.unsure || []).includes(d.path) || (movedTo(d.path, d.id) || []).length > 0;
         const gone = (d) => (d.kind === 'st-node' && typeof d.path === 'string' && d.path[0] === '@' && isStatic(d.region) && (!live.has(d.path) || movedTwin(d))) || structural(d);
         log.forEach((d, i) => { if (gone(d) && i < cursor && d.kind === 'st-node' && d.path[0] === '@') lost.push(d); });
         // What survives now applies to this source: its twins' ids are this source's
@@ -434,10 +450,12 @@
                 });
             });
             const changed = containers.flatMap(c => c.changed);
-            const names = [...new Set(changed.map(x => x.was || x.now))];
-            const moves = [...new Set([...movedKeys].filter(k => k && k[0] === '@' && !deleted.has(k)).map(label))];
-            const dels = [...new Set([...deleted].map(label))];
-            const what = [dels.length && `deleted ${dels.join(', ')}`, moves.length && `moved ${moves.join(', ')}`, copies.length && `copied ${copies.map(c => `${c.of} ("${String(c.text).slice(0, 40)}")`).join(', ')}`].filter(Boolean).join('; ');
+            // A key without text reads as its tag ("IMG:#2" as "<img> #2")
+            const readable = (l) => String(l).replace(/^([A-Za-z][\w-]*):(#\d+)?$/, (all, t, n) => `<${t.toLowerCase()}>${n ? ' ' + n : ''}`);
+            const names = [...new Set(changed.map(x => readable(x.was || x.now)))];
+            const moves = [...new Set([...movedKeys].filter(k => k && k[0] === '@' && !deleted.has(k)).map(k => readable(label(k))))];
+            const dels = [...new Set([...deleted].map(k => readable(label(k))))];
+            const what = [dels.length && `deleted ${dels.join(', ')}`, moves.length && `moved ${moves.join(', ')}`, copies.length && `copied ${copies.map(c => `${readable(c.of)} ("${String(c.text).slice(0, 40)}")`).join(', ')}`].filter(Boolean).join('; ');
             found.push({ region, key: '', element: containers.map(c => c.container ? label(c.container) : region).join(', '), prop: 'structure',
                 value: { changed, moved: moves, copies }, before: null,
                 reason: containers.some(c => c.copy) && changed.every(x => x.was === x.now)

@@ -135,7 +135,7 @@ describe('twins under source changes', () => {
         await t.user(() => kbMove(kids(t.r.a)[1], 'ArrowUp', 1))
         t.ext('a', swap('1', '2'))
         await t.reload()
-        expect(store().conflicts.some(c => /deleted IMG:#2/.test(c.reason) && !/moved IMG/.test(c.reason))).toBe(true)
+        expect(store().conflicts.some(c => /deleted <img> #2/.test(c.reason) && !/moved <img>/.test(c.reason))).toBe(true)
         await t.check()
     })
     it('Q23 a text edit on a twin, the twins swapped in the source, reload: reported, never written over the other twin', async () => {

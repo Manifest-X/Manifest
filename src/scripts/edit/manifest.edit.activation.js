@@ -416,7 +416,18 @@
                 // Content ids of the file as written: edits from here keep their twins' identity. Over a
                 // newer file the page shows less than it: its twins are unverifiable until a reload.
                 if (!overNewer) { baseCids = r.cids || null; cidsUnsure.clear(); }
-                else Object.keys(r.ids).forEach(f => { if (!/\.html?$/i.test(f)) return; if (baseCids) baseCids[f] = null; cidsUnsure.add(f); });
+                else if (r.cids && baseCids) Object.entries(r.cids).forEach(([f, next]) => {
+                    // Over a newer file: a twin family the file now holds differently than the page loaded
+                    // it is unverifiable until a reload; unchanged families keep their identity
+                    if (!/\.html?$/i.test(f)) return;
+                    const was = baseCids[f] || {}, fams = new Set([...Object.keys(was), ...Object.keys(next || {})].map(familyOf)), kept = {};
+                    fams.forEach(fam => {
+                        const ks = new Set([...Object.keys(was), ...Object.keys(next || {})].filter(k => familyOf(k) === fam));
+                        if ([...ks].every(k => was[k] === (next || {})[k])) ks.forEach(k => { kept[k] = was[k]; });
+                        else cidsUnsure.add(fam);
+                    });
+                    baseCids[f] = kept;
+                });
             }
             const stale = r && Array.isArray(r.stale) ? r.stale : [];
             if (estore) estore.stale = stale;

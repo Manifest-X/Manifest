@@ -11,10 +11,11 @@
         log = kept; cursor = c; ver++;
         saveState();
     }
+    const BASE_WAIT = 4000;   // then replay positionally, as without a base
     function restore() {
         if (!log.length) return;
         // Twin identities are checked against the base: wait for it once
-        if (!baseCids && basePending && log.some(d => d.ids || d.id)) { const p = basePending; basePending = null; p.then(restore, restore); return; }
+        if (!baseCids && basePending && log.some(d => d.ids || d.id)) { const p = basePending; basePending = null; Promise.race([p, new Promise(r => setTimeout(r, BASE_WAIT))]).then(restore, restore); return; }
         pruneLoaded();
         for (const [k, v] of Object.entries(fold())) { const area = areaByKey(k); if (area && v.kind === 'data') waitForData(area, () => applySnap(area, 'data', v.snap)); }
         if (log.some(d => /^st-/.test(d.kind))) { surfaceConflicts(areas()); applyStaticState(); }
