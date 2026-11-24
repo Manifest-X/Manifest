@@ -154,6 +154,17 @@ describe('the element written is the element edited', () => {
         expect(region('a').match(/<template x-if="on"><p>Shown<\/p><\/template>/g).length).toBe(2)
     })
 
+    it('T6d nested templates: a duplicated block with x-if inside x-for keeps both', async () => {
+        const root = await S.open(doc(`    <section id="a" x-edit="a" x-data="{ items: [1,2] }">
+        <div><template x-for="i in items"><div><template x-if="i > 1"><b x-text="i"></b></template><span>row</span></div></template></div>
+        <p>Tail</p>
+    </section>`))
+        store().duplicate(kids(root.querySelector('#a'))[0])
+        await new Promise(r => setTimeout(r, 50))
+        await store().publish()
+        expect(region('a').match(/<template x-for="i in items"><div><template x-if="i > 1"><b x-text="i"><\/b><\/template><span>row<\/span><\/div><\/template>/g).length).toBe(2)
+    })
+
     it('C5 a region with the same key earlier in the file (inside a template) is not the one written', async () => {
         const root = await S.open(doc(`    <template><section x-edit="a"><p>Template copy</p></section></template>
     <section id="a" x-edit="a">

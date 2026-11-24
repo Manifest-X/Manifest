@@ -129,18 +129,6 @@ describe('twins across reloads (review probes)', () => {
         await store().publish()
         expect(S.file()).toContain('data-m="i1"')
     })
-    it('P7 nested templates: a duplicated block with x-if inside x-for keeps both', async () => {
-        const doc = (body) => `<!doctype html>\n<html>\n<body>\n${body}\n</body>\n</html>\n`
-        const root = await S.open(doc(`    <section id="a" x-edit="a" x-data="{ items: [1,2] }">
-        <div><template x-for="i in items"><div><template x-if="i > 1"><b x-text="i"></b></template><span>row</span></div></template></div>
-        <p>Tail</p>
-    </section>`))
-        store().duplicate(kids(root.querySelector('#a'))[0])
-        await new Promise(r => setTimeout(r, 50))
-        await store().publish()
-        const reg = S.file().match(/<section id="a"[\s\S]*?<\/section>/)[0]
-        expect(reg.match(/<template x-for="i in items"><div><template x-if="i > 1"><b x-text="i"><\/b><\/template><span>row<\/span><\/div><\/template>/g).length).toBe(2)
-    })
     it('P8 delete a twin, reload (no change), then an external swap, reload again', async () => {
         const r = R(await S.open(persist(['<img data-m="1">', '<img data-m="2">', '<p data-m="3">P</p>'], ['<p data-m="g">G</p>'])))
         store().remove(kids(r.a)[0]); await flush()
