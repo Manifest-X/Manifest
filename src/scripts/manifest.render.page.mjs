@@ -1389,7 +1389,7 @@ async function waitForVisualSettle(page, { settleMs = 300, mdWaitMs = 5000, capM
         let mdEmpty = 0;
         // [x-markdown] misses modifier forms (x-markdown.safe): match by attribute name
         for (const e of document.querySelectorAll('*')) {
-          if (!e.innerHTML.trim() && e.getAttributeNames().some((n) => n === 'x-markdown' || n.startsWith('x-markdown.'))) mdEmpty++;
+          if (e.getAttributeNames().some((n) => n === 'x-markdown' || n.startsWith('x-markdown.')) && !e.innerHTML.trim()) mdEmpty++;
         }
         const sig = `${mdEmpty}:${document.body?.innerText.length || 0}:${styleLen}:${document.fonts ? document.fonts.status : ''}`;
         return { sig, mdEmpty };
