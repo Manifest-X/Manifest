@@ -299,7 +299,7 @@ describe('real auth store', () => {
         expect(ids(data().posts)).not.toContain('priv0')
     })
 
-    it('online boot same user: snapshot paints before init and init does not reload twice', async () => {
+    it('online boot as the same user: the snapshot paints before init, and init does not reload', async () => {
         lastKnown('u1'); cookie = 'u1'
         idb.seed(DB(), record('', 'posts', rows('u1-', 1), { identity: 'u1' }))
         let release
@@ -312,6 +312,7 @@ describe('real auth store', () => {
         const before = calls
         release(); await ip; await settle(80)
         expect(store.user.$id).toBe('u1')
+        expect(calls - before).toBe(0)   // rows were read under this same session
         expect(ids(data().posts)).toEqual(['u1-0'])
     })
 

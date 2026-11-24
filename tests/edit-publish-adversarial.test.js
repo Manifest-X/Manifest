@@ -10,7 +10,7 @@
  *   - an edit that cannot be placed after a source change is surfaced ($edit.conflicts)
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { editServer, twoRegions, view, fileView, editText, kbMove, flush } from './helpers/edit-sessions.js'
+import { editServer, twoRegions, view, fileView, editText, kbMove, regions as R, pageView as pv, publishShown as publishShownIn, freshShowsFile as freshShowsFileIn } from './helpers/edit-sessions.js'
 
 let S
 beforeAll(async () => { S = await editServer() }, 15000)
@@ -18,24 +18,11 @@ afterAll(() => S && S.stop())
 
 const store = () => S.store()
 const plain = twoRegions(''), persist = twoRegions('.persist')
-const R = (root) => ({ a: root.querySelector('#a'), b: root.querySelector('#b') })
-const pv = (r) => ({ a: view(r.a), b: view(r.b) })
 const statuses = (res) => res.results.map(x => x.status)
 const T0 = 'Lorem ipsum dolor sit amet zero', T1 = 'Lorem ipsum dolor sit amet one', T2 = 'Lorem ipsum dolor sit amet two'
 
-async function publishShown(r, opts) {
-    const res = await store().publish(opts)
-    expect(res.results.filter(x => x.status !== 'written' && x.status !== 'noop')).toEqual([])
-    expect(fileView(S.file())).toEqual(pv(r))
-    return res
-}
-// A fresh session on the written source shows what the file holds
-async function freshShowsFile() {
-    const fv = fileView(S.file())
-    const f = R(await S.reload())
-    expect(pv(f)).toEqual(fv)
-    return f
-}
+const publishShown = (r, opts) => publishShownIn(S, r, opts)
+const freshShowsFile = () => freshShowsFileIn(S)
 const refusedUnchanged = async (opts) => {
     const before = S.file()
     const res = await store().publish(opts)
@@ -435,36 +422,4 @@ describe('no source change across reloads (round 3)', () => {
             await freshShowsFile()
         })
     }
-})
-
-// Seeded random sessions (the round-3 fuzzer): duplicate, delete, paste, move, text, reorder,
-// publish, undo and reload in .persist regions. Every written publish matches the page;
-// every reload shows the page as it was; the final source loads as the page.
-describe('seeded sessions', () => {
-    let rs = 1
-    const rnd = (n) => { rs = (rs * 1103515245 + 12345) % 2147483648; return Math.floor(rs / 65536) % n }
-    const kids = (reg) => [...reg.children].filter(c => !c.hasAttribute('data-edit-handle') && !c.hasAttribute('data-edit-ghost'))
-    async function session(seed) {
-        rs = seed * 7919
-        let r = R(await S.open(persist([`<p>${T1}</p>`, `<p>${T2}</p>`, '<h2>H</h2>', `<p>${T1}</p>`], ['<p>G</p>', `<p>${T2}</p>`])))
-        const trace = []
-        for (let step = 0; step < 8; step++) {
-            const op = rnd(9), reg = rnd(2) ? r.a : r.b, ks = kids(reg)
-            if (!ks.length) continue
-            const el = ks[rnd(ks.length)]
-            if (op === 0) { store().duplicate(el); trace.push('dup') }
-            else if (op === 1 && ks.length > 1) { store().remove(el); trace.push('del') }
-            else if (op === 2) { store().copy(el); const o = rnd(2) ? r.a : r.b, ok = kids(o); store().paste(ok[rnd(ok.length)]); trace.push('paste') }
-            else if (op === 3 && ks.length > 1) { store().move(el, reg === r.a ? r.b : r.a); trace.push('mv') }
-            else if (op === 4) { editText(el, 'E' + seed + '-' + step); trace.push('txt') }
-            else if (op === 5) { kbMove(el, rnd(2) ? 'ArrowUp' : 'ArrowDown', 1 + rnd(2)); trace.push('kb') }
-            else if (op === 6) { trace.push('pub'); await publishShown(r) }
-            else if (op === 7) { await store().undo(); trace.push('undo') }
-            else if (op === 8) { const before = pv(r); r = R(await S.reload()); trace.push('reload'); expect(pv(r), trace.join(' ')).toEqual(before) }
-            await flush()
-        }
-        await publishShown(r)
-        await freshShowsFile()
-    }
-    for (let seed = 1; seed <= 40; seed++) it('seed ' + seed, () => session(seed), 20000)
 })

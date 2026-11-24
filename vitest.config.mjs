@@ -5,6 +5,7 @@ import { budget } from './tests/helpers/time-budget.js'
 const serial = [
     'tests/data-optimistic.test.js',
     'tests/data-paging.test.js',
+    'tests/data-persist-real-auth.test.js',
     'tests/data-query-live-order.test.js',
     'tests/minify-reactive-reads.test.js',
     'tests/virtual-measure.test.js',
