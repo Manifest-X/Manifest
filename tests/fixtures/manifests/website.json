@@ -1,0 +1,515 @@
+{
+    "name": "Manifest",
+    "short_name": "Manifest",
+    "description": "Build, publish, and run websites and apps by chatting with Claude.",
+    "live_url": "https://manifestx.dev",
+    "publishIgnore": [
+        "tools/",
+        "promote-manifest.json"
+    ],
+    "render": {
+        "pageTimeout": 240000,
+        "paths": [
+            "compare/lovable",
+            "compare/webflow",
+            "compare/bolt",
+            "compare/v0",
+            "compare/framer",
+            "compare/wordpress",
+            "compare/ai-chat-apps"
+        ],
+        "blockRequests": [
+            "fra.cloud.appwrite.io/v1/account"
+        ],
+        "icons": "lazy",
+        "locales": [
+            "en"
+        ],
+        "meta": {
+            "fallback": {
+                "image": "/icons/512x512.png"
+            }
+        },
+        "redirects": [
+            {
+                "from": "/ai",
+                "to": "/",
+                "status": 301
+            },
+            {
+                "from": "/pricing",
+                "to": "/#pricing",
+                "status": 301
+            },
+            {
+                "from": "/get-started",
+                "to": "/#setup",
+                "status": 301
+            },
+            {
+                "from": "/framework",
+                "to": "/docs/framework",
+                "status": 301
+            },
+            {
+                "from": "/platforms",
+                "to": "/docs/api",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/publishing/partner-api",
+                "to": "/docs/api",
+                "status": 301
+            },
+            {
+                "from": "/docs/resources/privacy",
+                "to": "/legal/privacy",
+                "status": 301
+            },
+            {
+                "from": "/terms",
+                "to": "/legal/terms",
+                "status": 301
+            },
+            {
+                "from": "/privacy",
+                "to": "/legal/privacy",
+                "status": 301
+            },
+            {
+                "from": "/docs/publishing/app-store-readiness",
+                "to": "/docs/framework/publishing/native-apps#passing-review",
+                "status": 301
+            },
+            {
+                "from": "/docs/publishing/native-capabilities",
+                "to": "/docs/framework/core-modules/device",
+                "status": 301
+            },
+            {
+                "from": "/docs/core-plugins/export",
+                "to": "/docs/framework/core-modules/import-export",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/connector",
+                "to": "/docs/platform/introduction#connect-claude",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/setup/quickstart",
+                "to": "/docs/platform/introduction",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/setup/claude-plugin",
+                "to": "/docs/platform/introduction#connect-claude",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/setup/plans",
+                "to": "/docs/platform/manage#plans",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/projects/forms",
+                "to": "/docs/framework/core-modules/submissions",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/setup/*",
+                "to": "/docs/platform/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/platform/projects/*",
+                "to": "/docs/platform/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/setup/quickstart",
+                "to": "/docs/platform/introduction",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/setup/claude-plugin",
+                "to": "/docs/platform/introduction#connect-claude",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/setup/plans",
+                "to": "/docs/platform/manage#plans",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/projects/forms",
+                "to": "/docs/framework/core-modules/submissions",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/setup/*",
+                "to": "/docs/platform/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/projects/*",
+                "to": "/docs/platform/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/setup/introduction",
+                "to": "/docs/api/getting-started/introduction",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/setup/quickstart",
+                "to": "/docs/api/getting-started/quickstart",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/setup/authentication",
+                "to": "/docs/api/reference/authentication",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/projects/manage",
+                "to": "/docs/api/guides/projects",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/projects/content",
+                "to": "/docs/api/guides/docs-template",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/guides/content",
+                "to": "/docs/api/guides/docs-template",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/reference/docs-template",
+                "to": "/docs/api/guides/docs-template",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/introduction",
+                "to": "/docs/api/getting-started/introduction",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/quickstart",
+                "to": "/docs/api/getting-started/quickstart",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/projects/*",
+                "to": "/docs/api/guides/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/reference/idempotency",
+                "to": "/docs/api/reference/errors#idempotency",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/reference/webhooks",
+                "to": "/docs/api/guides/webhooks",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/setup",
+                "to": "/docs/api",
+                "status": 301
+            },
+            {
+                "from": "/docs/api/projects",
+                "to": "/docs/api/guides",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai/*",
+                "to": "/docs/platform/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/ai",
+                "to": "/docs/platform",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/core-plugins/text-edit",
+                "to": "/docs/framework/core-modules/rich-text",
+                "status": 301
+            },
+            {
+                "from": "/docs/core-plugins/text-edit",
+                "to": "/docs/framework/core-modules/rich-text",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/core-plugins/resize",
+                "to": "/docs/framework/core-modules/edit",
+                "status": 301
+            },
+            {
+                "from": "/docs/core-plugins/resize",
+                "to": "/docs/framework/core-modules/resize",
+                "status": 301
+            },
+            {
+                "from": "/docs/getting-started/*",
+                "to": "/docs/framework/getting-started/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/getting-started",
+                "to": "/docs/framework/getting-started",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/core-plugins/*",
+                "to": "/docs/framework/core-modules/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/core-plugins",
+                "to": "/docs/framework/core-modules",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/appwrite-plugins/*",
+                "to": "/docs/framework/appwrite-modules/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/framework/appwrite-plugins",
+                "to": "/docs/framework/appwrite-modules",
+                "status": 301
+            },
+            {
+                "from": "/docs/core-plugins/*",
+                "to": "/docs/framework/core-modules/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/core-plugins",
+                "to": "/docs/framework/core-modules",
+                "status": 301
+            },
+            {
+                "from": "/docs/appwrite-plugins/*",
+                "to": "/docs/framework/appwrite-modules/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/appwrite-plugins",
+                "to": "/docs/framework/appwrite-modules",
+                "status": 301
+            },
+            {
+                "from": "/docs/publishing/*",
+                "to": "/docs/framework/publishing/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/publishing",
+                "to": "/docs/framework/publishing",
+                "status": 301
+            },
+            {
+                "from": "/docs/styles/*",
+                "to": "/docs/framework/styles/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/styles",
+                "to": "/docs/framework/styles",
+                "status": 301
+            },
+            {
+                "from": "/docs/elements/*",
+                "to": "/docs/framework/elements/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/elements",
+                "to": "/docs/framework/elements",
+                "status": 301
+            },
+            {
+                "from": "/docs/resources/*",
+                "to": "/docs/framework/resources/:splat",
+                "status": 301
+            },
+            {
+                "from": "/docs/resources",
+                "to": "/docs/framework/resources",
+                "status": 301
+            },
+            {
+                "from": "/manifest.schema.json",
+                "to": "https://cdn.manifestx.dev/npm/mnfst@latest/lib/manifest.schema.json",
+                "status": 302
+            }
+        ],
+        "structuredData": {
+            "WebSite": true,
+            "Article": true,
+            "BreadcrumbList": true
+        }
+    },
+    "start_url": "/",
+    "scope": "/",
+    "display": "browser",
+    "background_color": "#FFFFFF",
+    "theme_color": "#FFFFFF",
+    "icons": [
+        {
+            "src": "/assets/icons/192x192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/assets/icons/512x512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ],
+    "components": [
+        "components/pricing.html",
+        "components/compare.html",
+        "components/showcase.html",
+        "components/legal.html",
+        "components/support.html",
+        "components/docs-index.html",
+        "components/docs-platform.html",
+        "components/docs-api.html",
+        "assets/example-components/disclaimer.html",
+        "assets/example-components/header-basic.html",
+        "assets/example-components/header-nested.html",
+        "assets/example-components/header-modified.html",
+        "assets/example-components/appwrite-test.html",
+        "assets/example-components/appwrite-projects.html",
+        "assets/example-components/appwrite-storage.html",
+        "assets/example-components/appwrite-teams.html",
+        "assets/example-components/appwrite-users.html"
+    ],
+    "preloadedComponents": [
+        "components/docs-search.html",
+        "components/home.html",
+        "components/framework.html",
+        "components/hero-editor.html",
+        "components/docs.html",
+        "components/header.html",
+        "components/footer.html",
+        "components/docs-nav.html",
+        "components/docs-footer.html"
+    ],
+    "data": {
+        "framework": "/data/docs.yaml",
+        "platform": "/data/platform.yaml",
+        "api": "/data/api.yaml",
+        "site": "/data/site.yaml",
+        "faq": "/data/faq.yaml",
+        "features": "/data/features.yaml",
+        "comparisons": "/data/comparisons.yaml",
+        "compare": "/data/compare.yaml",
+        "example": "/data/example.json",
+        "feature-examples": {
+            "ar": "/data/ar.locale.yaml",
+            "en": "/data/en.locale.yaml",
+            "fr": "/data/fr.locale.yaml",
+            "zh": "/data/zh.locale.yaml"
+        },
+        "projects": {
+            "appwriteTableId": "projects",
+            "appwriteDatabaseId": "69272017000296721b73",
+            "scope": [
+                "user",
+                "teams"
+            ],
+            "storage": {
+                "assets": "fileIds"
+            }
+        },
+        "assets": {
+            "appwriteBucketId": "69285cd300373b8ddb7f"
+        }
+    },
+    "payments": {
+        "provider": "mockpay",
+        "endpoint": "https://fn.test/pay"
+    },
+    "chat": {
+        "appwriteDatabaseId": "69272017000296721b73",
+        "appwriteTableId": "chat_messages",
+        "ttlHours": 24
+    },
+    "status": {
+        "Website": {
+            "feed": "/data/status-demo.json",
+            "path": "website"
+        },
+        "api": {
+            "feed": "/data/status-demo.json",
+            "path": "API"
+        },
+        "Database": {
+            "feed": "/data/status-demo.json",
+            "path": "database"
+        },
+        "CDN": {
+            "feed": "/data/status-demo.json",
+            "path": "CDN"
+        },
+        "Search": {
+            "feed": "/data/status-demo.json",
+            "path": "search"
+        },
+        "Workers": {
+            "feed": "/data/status-demo.json",
+            "path": "workers"
+        }
+    },
+    "appwrite": {
+        "projectId": "68cfcc610014415b6f9a",
+        "endpoint": "https://fra.cloud.appwrite.io/v1",
+        "auth": {
+            "methods": [
+                "guest-manual",
+                "magic",
+                "otp",
+                "oauth"
+            ],
+            "teams": {
+                "permanent": [
+                    "Permanent Workspace"
+                ],
+                "template": [
+                    "Template Workspace",
+                    "Dream Team"
+                ]
+            },
+            "roles": {
+                "permanent": {
+                    "Admin": [
+                        "inviteMembers",
+                        "updateMembers",
+                        "removeMembers",
+                        "manageRoles",
+                        "renameTeam",
+                        "deleteTeam"
+                    ]
+                },
+                "template": {
+                    "Editor": [
+                        "inviteMembers"
+                    ],
+                    "Viewer": []
+                }
+            },
+            "creatorRole": "Admin"
+        },
+        "presence": {}
+    }
+}
