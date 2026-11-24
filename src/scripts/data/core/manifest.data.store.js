@@ -609,6 +609,8 @@ function flushLandings() {
                     if (removeRows(store, op.source, op.remove)) { touched.add(op.source); landed.add(op.source); }
                     continue;
                 }
+                // A newer read began since this landing was queued (e.g. an identity change): it never applies
+                if (typeof op.options?.readToken === 'number' && !isLatestRead(op.source, op.options.readToken)) continue;
                 const state = writeSource(op.source, op.rows, op.options);
                 if (!state) continue;
                 touched.add(op.source);

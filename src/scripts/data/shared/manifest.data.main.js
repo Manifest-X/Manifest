@@ -1049,6 +1049,11 @@ function liveLocale() {
 // cacheKey → { identity, bound, abandoned, replacement } of the load in flight
 const loadIdentities = new Map();
 
+// Callers and joiners of an abandoned load get the fresh load's result
+function followReplacement(load, promise) {
+    return load ? promise.then(value => (load.abandoned && load.replacement) ? load.replacement : value) : promise;
+}
+
 // Load dataSource data. options.reload: bypass the memory cache and refetch;
 // existing rows stay live ($loading only), fresh rows merge by $id.
 async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
@@ -1099,7 +1104,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     // joining makes it the latest read again
     if (loadingPromises.has(cacheKey)) {
         window.ManifestDataStore.adoptRead?.(dataSourceName, window.ManifestDataStore.loadReadTokens?.get(cacheKey));
-        return loadingPromises.get(cacheKey);
+        return followReplacement(loadIdentities.get(cacheKey), loadingPromises.get(cacheKey));
     }
 
     // Reads are ordered by call: a $query issued after this load wins over it
@@ -1526,8 +1531,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     });
     const done = () => { settled(); deferredLoads.delete(cacheKey); if (loadIdentities.get(cacheKey) === load) loadIdentities.delete(cacheKey); };
     run.then(done, done);
-    // Callers of an abandoned load get the fresh load's result
-    const result = run.then(value => (load.abandoned && load.replacement) ? load.replacement : value);
+    const result = followReplacement(load, run);
     if (replaced) replaced.replacement = result;
     return result;
 }

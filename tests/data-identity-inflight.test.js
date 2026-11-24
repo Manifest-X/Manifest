@@ -212,6 +212,43 @@ describe('identity change during an in-flight load', () => {
         expect(ids(await first)).toEqual(['u1-0'])
     })
 
+    it('a reload that joined the abandoned load gets the fresh rows', async () => {
+        lastKnown(null)
+        const { main, auth, dispatch } = await load({ manifest: pub(), auth: signedOut() })
+        main.loadDataSource('posts')
+        await settle(10)
+        const joiner = main.loadDataSource('posts', 'en', { reload: true })
+        expect(reads).toHaveLength(1)
+        signIn(auth, dispatch, 'u1')
+        await settle(10)
+        await releaseAll()
+        expect(ids(await joiner)).toEqual(['u1-0'])
+    })
+
+    it('a sign-in while the signed-out landing is queued: it never applies or saves for u1', async () => {
+        lastKnown(null)
+        const { data, main, auth, dispatch, persist, records, store } = await load({ manifest: pub(), auth: signedOut() })
+        const landRows = store.landRows
+        let fired = false
+        store.landRows = (name, list, options) => {
+            const queued = landRows(name, list, options)
+            if (!fired && ids(list).includes('anon-0')) { fired = true; signIn(auth, dispatch, 'u1') }
+            return queued
+        }
+        main.loadDataSource('posts')
+        await settle(10)
+        reads[0].open(); await settle(80)
+        expect(fired).toBe(true)
+        expect(ids(data().posts)).not.toContain('anon-0')
+        await persist.flushPending()
+        expect(savedFor(records, 'u1', 'anon')).toEqual([])
+        store.landRows = landRows
+        await releaseAll()
+        expect(ids(data().posts)).toEqual(['u1-0'])
+        await persist.flushPending()
+        expect(savedFor(records, 'u1', 'anon')).toEqual([])
+    })
+
     it('a sign-out while the signed-in load is in flight: u1 rows never show and are never saved signed out', async () => {
         lastKnown('u1')
         const { data, main, auth, dispatch, persist, records } = await load({ manifest: pub(), auth: signedIn('u1') })
