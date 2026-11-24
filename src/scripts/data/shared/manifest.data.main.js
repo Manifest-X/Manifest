@@ -149,6 +149,9 @@ function setupAuthResetListener() {
             if (clear) {
                 window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
                 ds.resetSource(name);
+            } else if (ds.dataSourceCache) {
+                // Rows read under the previous identity never serve a lazy read while this reload runs
+                for (const key of [...ds.dataSourceCache.keys()]) if (key.startsWith(`${name}:`)) ds.dataSourceCache.delete(key);
             }
             const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
             if (handler) Promise.resolve(handler('$query', active)).catch(() => { /* $error carries it */ });
@@ -683,7 +686,11 @@ async function loadMoreOnce(dataSourceName) {
         }
         // Overtaken by a load or $query: its window replaces the rows, then this runs again
         if (!page || !isCurrent()) { if (page) requeueMore(dataSourceName); return 0; }
-        await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined });
+        // Skipped (a newer read began): the cursor stays; this runs again after that read
+        if (await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined }) === false) {
+            if (sourceGeneration(dataSourceName) === generation) requeueMore(dataSourceName);
+            return 0;
+        }
         setPagingState(dataSourceName, { ...page, spec }, { append: true });
         return page.rows.length;
     } finally {
@@ -1046,6 +1053,14 @@ function liveLocale() {
         || 'en';
 }
 
+// cacheKey → { identity, bound, abandoned, replacement } of the load in flight
+const loadIdentities = new Map();
+
+// Callers and joiners of an abandoned load get the fresh load's result
+function followReplacement(load, promise) {
+    return load ? promise.then(value => (load.abandoned && load.replacement) ? load.replacement : value) : promise;
+}
+
 // Load dataSource data. options.reload: bypass the memory cache and refetch;
 // existing rows stay live ($loading only), fresh rows merge by $id.
 async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
@@ -1081,11 +1096,23 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             .then(() => loadDataSource(dataSourceName, locale, { ...options, issuedRead: issued }));
     }
 
+    // A reload under another identity than the load in flight started with never joins it:
+    // that load is abandoned (never lands, binds or saves) and a fresh one starts
+    let replaced = loadIdentities.get(cacheKey);
+    const inflight = replaced;
+    if (options.reload && inflight && loadingPromises.has(cacheKey) && inflight.bound !== false
+        && confirmedIdentity() !== null && inflight.identity !== confirmedIdentity()) {
+        inflight.abandoned = true;
+        loadingPromises.delete(cacheKey);
+        dataSourceCache.delete(cacheKey);
+        window.ManifestDataStore.loadReadTokens?.delete(cacheKey);
+    } else replaced = null;
+
     // In flight for this source+locale: share it (every entry path lands here);
     // joining makes it the latest read again
     if (loadingPromises.has(cacheKey)) {
         window.ManifestDataStore.adoptRead?.(dataSourceName, window.ManifestDataStore.loadReadTokens?.get(cacheKey));
-        return loadingPromises.get(cacheKey);
+        return followReplacement(loadIdentities.get(cacheKey), loadingPromises.get(cacheKey));
     }
 
     // Reads are ordered by call: a $query issued after this load wins over it
@@ -1107,9 +1134,11 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         else updateStore(dataSourceName, null, { loading: true, error: null, ready: false });
     }
 
-    // Scope reset (persistence) during this load → its result is discarded
+    // Scope reset (persistence) or a reload under another identity during this load → its result is discarded
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
-    const superseded = () => sourceGeneration && sourceGeneration(dataSourceName) !== generation;
+    const load = { identity: confirmedIdentity(), bound: undefined, abandoned: false, replacement: null };
+    loadIdentities.set(cacheKey, load);
+    const superseded = () => load.abandoned || (sourceGeneration && sourceGeneration(dataSourceName) !== generation);
 
     // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
     // A pending sign-in holds the source unsettled (one render-ready), bounded by its deadline.
@@ -1157,6 +1186,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 // This prevents warnings for test references that might exist in HTML
                 return null;
             }
+            load.bound = isIdentityBound(dataSource);
 
             // Get bucketId early to check if this is a bucket (needed for data enhancement)
             const bucketId = window.ManifestDataConfig.getAppwriteBucketId?.(dataSource) || null;
@@ -1507,9 +1537,11 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!landed && keepRows && !isInitializing && !superseded()) setSourceState(dataSourceName, { loading: false });
         }
     });
-    const done = () => { settled(); deferredLoads.delete(cacheKey); };
+    const done = () => { settled(); deferredLoads.delete(cacheKey); if (loadIdentities.get(cacheKey) === load) loadIdentities.delete(cacheKey); };
     run.then(done, done);
-    return run;
+    const result = followReplacement(load, run);
+    if (replaced) replaced.replacement = result;
+    return result;
 }
 
 // $reload(): fetch again what the source shows — its active $query, else its default

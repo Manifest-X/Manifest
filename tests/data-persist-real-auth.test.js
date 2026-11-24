@@ -400,10 +400,8 @@ describe('identity changes before and during the first load', () => {
         expect(ids(data().posts)).toEqual(['u1-0'])
         expect(calls).toBe(2)
     })
-    // Known bug: the sign-in's reload (setupAuthResetListener → loadDataSource({ reload: true }))
-    // joins the signed-out read still in flight (main.js "In flight for this source+locale: share
-    // it"), so it never runs: the signed-out rows land, stay, and are saved as u1's snapshot.
-    it.fails('a sign-in while the signed-out load is in flight: only the signed-in rows land, and only they are saved for u1', async () => {
+    // Fixed: a reload under a new identity no longer joins the signed-out read in flight
+    it('a sign-in while the signed-out load is in flight: only the signed-in rows land, and only they are saved for u1', async () => {
         lastKnown(null)
         let open; const gateP = new Promise(r => { open = r })
         window.ManifestDataAppwrite.loadTableRows = async () => { calls++; const who = cookie || 'anon'; await gateP; return rows(`${who}-`, 1) }

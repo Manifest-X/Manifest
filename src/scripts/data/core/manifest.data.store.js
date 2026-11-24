@@ -167,7 +167,7 @@ function resetSource(dataSourceName) {
     for (let i = pendingLandings.length - 1; i >= 0; i--) {
         if (pendingLandings[i].source !== dataSourceName) continue;
         pendingLandings.splice(i, 1);
-        landingResolvers.splice(i, 1)[0]?.();
+        landingResolvers.splice(i, 1)[0]?.(false);
     }
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     if (!store) return;
@@ -549,8 +549,9 @@ function updateStore(dataSourceName, data, options = {}) {
 
 // Network landing (page load, paged append, realtime batch): buffered, applied
 // with every other landing of the same frame in ONE flush. Resolves once visible.
+// Resolves true once applied, false when skipped (stale generation, or a newer read began)
 function landRows(dataSourceName, rows, options = {}) {
-    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve(false);
     return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
 }
 
@@ -601,6 +602,7 @@ function flushLandings() {
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     const touched = new Set();
     const landed = new Set(); // network-origin landings (persistence snapshots these)
+    const skipped = new Set();
     let settled = false;
     if (store) {
         for (const op of ops) {
@@ -609,6 +611,8 @@ function flushLandings() {
                     if (removeRows(store, op.source, op.remove)) { touched.add(op.source); landed.add(op.source); }
                     continue;
                 }
+                // A newer read began since this landing was queued (e.g. an identity change): it never applies
+                if (typeof op.options?.readToken === 'number' && !isLatestRead(op.source, op.options.readToken)) { skipped.add(op); continue; }
                 const state = writeSource(op.source, op.rows, op.options);
                 if (!state) continue;
                 touched.add(op.source);
@@ -621,7 +625,7 @@ function flushLandings() {
         }
         for (const source of [...touched]) {
             const reads = ops
-                .filter(op => op.source === source && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
+                .filter(op => op.source === source && !skipped.has(op) && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
                 .map(op => ({ token: op.options.readToken, ids: op.options.mode === 'append' ? new Set(op.rows.map(rowKey)) : null }));
             reapplyPending(store, source, reads);
         }
@@ -638,7 +642,7 @@ function flushLandings() {
         }
         if (touched.size) touchSources(store, touched);
     }
-    resolvers.forEach(resolve => resolve());
+    resolvers.forEach((resolve, i) => resolve(!skipped.has(ops[i])));
     if (landed.size) window.ManifestDataPersist?.onLanded?.(landed);
     if (settled) checkAndDispatchRenderReady();
 }
