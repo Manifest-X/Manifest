@@ -64,19 +64,23 @@ copy('src/styles/elements/manifest.edit.css', 'edit.css')
 copy('src/styles/elements/manifest.rich.text.css', 'rich.css')
 const source = () => fs.readFileSync(path.join(dir, 'index.html'), 'utf8')
 
-const port = 46000 + Math.floor(Math.random() * 3000)
-const server = spawn(process.execPath, [path.join(ROOT, 'packages/run/serve.mjs'), dir, '--edit', '--no-open', '--no-idle-shutdown', '--port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] })
-const origin = await new Promise((resolve, reject) => {
-    let out = ''
-    const t = setTimeout(() => reject(new Error('server did not start: ' + out)), 15000)
-    const scan = (c) => { out += c; const m = out.match(/running at (http:\/\/localhost:\d+)/); if (m) { clearTimeout(t); resolve(m[1]) } }
-    server.stdout.on('data', scan); server.stderr.on('data', scan)
-})
-
-const browser = await puppeteer.launch({ headless: 'shell' })
-const cleanup = async () => { await browser.close().catch(() => { }); server.kill(); fs.rmSync(dir, { recursive: true, force: true }) }
+let server = null, browser = null
+const cleanup = async () => {
+    if (browser) await browser.close().catch(() => { })
+    if (server) server.kill()
+    fs.rmSync(dir, { recursive: true, force: true })
+}
 
 try {
+    const port = 46000 + Math.floor(Math.random() * 3000)
+    server = spawn(process.execPath, [path.join(ROOT, 'packages/run/serve.mjs'), dir, '--edit', '--no-open', '--no-idle-shutdown', '--port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const origin = await new Promise((resolve, reject) => {
+        let out = ''
+        const t = setTimeout(() => reject(new Error('server did not start: ' + out)), 15000)
+        const scan = (c) => { out += c; const m = out.match(/running at (http:\/\/localhost:\d+)/); if (m) { clearTimeout(t); resolve(m[1]) } }
+        server.stdout.on('data', scan); server.stderr.on('data', scan)
+    })
+    browser = await puppeteer.launch({ headless: 'shell' })
     const page = await browser.newPage()
     const errors = []
     page.on('pageerror', (e) => errors.push(String(e)))
