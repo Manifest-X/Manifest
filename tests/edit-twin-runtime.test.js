@@ -706,4 +706,16 @@ describe('a reorder elsewhere beside an own edit in the family (eighth review)',
         await store().publish()
         expect(fileIds().a).toEqual(['k2', 'k1', 'k3', 'h'])
     })
+    it('X30 an own edit joins the family, the source edits a member and adds a twin: a later edit on an unmoved twin stays', async () => {
+        const L = 'Lorem ipsum dolor sit amet ', p = (t) => `<p class="c">${L}${t}</p>`
+        await S.open(persist([p('two'), p('one'), '<p class="c">Other words here</p>', H], ['<p data-m="g">G</p>']))
+        editText(kids(A())[2], L + 'one'); await flush()
+        extRegion('a', (ls) => { const c = ls.map(l => l.replace(L + 'one<', L + 'one EXT<')); c.splice(c.findIndex(l => l.includes('data-m="h"')), 0, '        ' + p('new')); return c })
+        await store().publish(); await store().publish({ rebase: true })
+        editText(kids(A())[0], L + 'TWO-ED'); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(S.file()).toContain(L + 'TWO-ED')
+    })
 })
