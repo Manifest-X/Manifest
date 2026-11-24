@@ -175,6 +175,20 @@ describe('payments engine — initiate', () => {
         expect(env.navs).toEqual(['https://PAYMENTS.worldpay.com/x'])
     })
 
+    it('redirectHosts suffix form allows a domain and its subdomains only', async () => {
+        const cfg = { ...CFG, redirectHosts: ['.worldpay.com'] }
+        for (const url of ['https://payments.worldpay.com/x', 'https://hpp-sandbox.worldpay.com/x', 'https://worldpay.com/x']) {
+            env = makeEnv({ payments: cfg, fetchImpl: reply({ mode: 'redirect', url }) })
+            await env.PAY.initiate('deposit')
+            expect(env.navs).toEqual([url])
+        }
+        for (const url of ['https://evilworldpay.com/x', 'https://worldpay.com.evil.io/x']) {
+            env = makeEnv({ payments: cfg, fetchImpl: reply({ mode: 'redirect', url }) })
+            await expect(env.PAY.initiate('deposit')).rejects.toThrow()
+            expect(env.navs).toEqual([])
+        }
+    })
+
     it('injects identity context from the auth store', async () => {
         let body = null
         env = makeEnv({
