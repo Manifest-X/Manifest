@@ -120,12 +120,8 @@ describe('the element written is the element edited', () => {
         expect(r).not.toContain('>Bob<'); expect(r).not.toContain('display: none')
     })
 
-    // Known bug: duplicating (or pasting) a block holding a <template>. The copy's tree lists the
-    // template's DOM children (none: its markup is in .content), so the writer empties the copied
-    // template: the source gets <template x-for="i in items"></template> and the copied list renders
-    // nothing. On the page the copy also carries the rendered rows, which Alpine evaluates out of the
-    // loop's scope ("i is not defined").
-    it.fails('T6b a duplicated block keeps the content of its <template x-for>, and the page copy raises no errors', async () => {
+    // A copied <template> keeps its source content; the copy's rendered rows are not cloned.
+    it('T6b a duplicated block keeps the content of its <template x-for>, and the page copy raises no errors', async () => {
         const errors = []
         Alpine.setErrorHandler((e, el, expression) => errors.push(expression))
         try {
@@ -134,6 +130,9 @@ describe('the element written is the element edited', () => {
         <p>Tail</p>
     </section>`))
             store().duplicate(kids(root.querySelector('#a'))[0])
+            await new Promise(r => setTimeout(r, 50))
+            // the page copy renders its own rows from its template
+            expect(kids(root.querySelector('#a')).slice(0, 2).map(d => d.textContent.trim())).toEqual(['r1r2', 'r1r2'])
             await store().publish()
             await new Promise(r => setTimeout(r, 50))
             expect(region('a').match(/<template x-for="i in items"><p x-text="i"><\/p><\/template>/g).length).toBe(2)
@@ -144,7 +143,7 @@ describe('the element written is the element edited', () => {
         }
     })
 
-    it.fails('T6c a pasted block keeps the content of its <template x-if> (same bug)', async () => {
+    it('T6c a pasted block keeps the content of its <template x-if> (same bug)', async () => {
         const root = await S.open(doc(`    <section id="a" x-edit="a" x-data="{ on: true }">
         <div><template x-if="on"><p>Shown</p></template></div>
         <p>Tail</p>
@@ -153,6 +152,17 @@ describe('the element written is the element edited', () => {
         store().copy(kids(a)[0]); store().paste(kids(a)[1])
         await store().publish()
         expect(region('a').match(/<template x-if="on"><p>Shown<\/p><\/template>/g).length).toBe(2)
+    })
+
+    it('T6d nested templates: a duplicated block with x-if inside x-for keeps both', async () => {
+        const root = await S.open(doc(`    <section id="a" x-edit="a" x-data="{ items: [1,2] }">
+        <div><template x-for="i in items"><div><template x-if="i > 1"><b x-text="i"></b></template><span>row</span></div></template></div>
+        <p>Tail</p>
+    </section>`))
+        store().duplicate(kids(root.querySelector('#a'))[0])
+        await new Promise(r => setTimeout(r, 50))
+        await store().publish()
+        expect(region('a').match(/<template x-for="i in items"><div><template x-if="i > 1"><b x-text="i"><\/b><\/template><span>row<\/span><\/div><\/template>/g).length).toBe(2)
     })
 
     it('C5 a region with the same key earlier in the file (inside a template) is not the one written', async () => {

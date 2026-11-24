@@ -180,7 +180,7 @@
                 if (ids && ids[originOf(id)]) n.fp = ids[originOf(id)];
                 const e = editsFor(id); if (e) n.edits = e;
                 if (scoped.has(el)) n.edits = Object.assign({}, n.edits, { style: ownStyle(el) || null });
-                if (!(e && 'text' in e) && !isRendered(el) && !el.hasAttribute('data-rich-text')) {
+                if (!(e && 'text' in e) && !isRendered(el) && el.tagName !== 'TEMPLATE' && !el.hasAttribute('data-rich-text')) {
                     const kids = treeKids(el).map(c => build(c)).filter(Boolean);
                     const structural = ss.touched.has(isRoot ? '#' + region : id);
                     if (id[0] === '~' || structural) { n.children = kids; const b = structural && id[0] !== '~' && baseOf(isRoot ? '' : id); if (b) n.base = b; }
