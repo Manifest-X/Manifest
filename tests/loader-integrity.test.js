@@ -170,6 +170,8 @@ describe('loader integrity', () => {
         const t = document.querySelector('script[src$="marked@15.0.12/marked.min.js"]')
         expect(t.getAttribute('integrity')).toBe('sha384-pinned')
         expect(t.getAttribute('crossorigin')).toBe('anonymous')
+        // Third-party files run as they arrive, never queued behind the ordered module scripts
+        expect(t.async).toBe(true)
     })
 
     it('a tampered map on every CDN fails closed: error naming the file, nothing injected', async () => {

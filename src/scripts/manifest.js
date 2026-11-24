@@ -566,7 +566,7 @@
 		return false;
 	}
 
-	function injectScript(url, integrity) {
+	function injectScript(url, integrity, ordered = true) {
 		return new Promise((resolve, reject) => {
 			// Same src already in the DOM (author tag, prerendered HTML, second loader run)
 			const existing = document.querySelector(`script[src="${url}"]`);
@@ -588,7 +588,7 @@
 				script.crossOrigin = 'anonymous';
 			}
 			script.src = url;
-			script.async = false; // Ensure scripts execute in order
+			script.async = !ordered; // Modules execute in order; third-party files as they arrive
 			script.setAttribute('data-mnfst-loading', '');
 			script.onload = () => { script.removeAttribute('data-mnfst-loading'); script.setAttribute('data-mnfst-loaded', ''); resolve(); };
 			script.onerror = () => { script.removeAttribute('data-mnfst-loading'); script.remove(); reject(new Error(`Failed to load ${url}`)); };
@@ -668,7 +668,7 @@
 	// First candidate that loads (and matches its hash). A fallback insert lands after
 	// already-inserted scripts: execution order is traded for availability.
 	// key: map entry for every candidate (third-party files); hash: the caller's own pin when checks are off.
-	async function injectFrom(urls, { key = null, hash: pinned = null, alpine = false, unchecked = false } = {}) {
+	async function injectFrom(urls, { key = null, hash: pinned = null, alpine = false, unchecked = false, ordered = true } = {}) {
 		const map = integrityReady && !unchecked ? await integrityReady : null;
 		const file = key || fileOf(urls[0] || '');
 		let lastErr = null;
@@ -683,7 +683,7 @@
 				}
 			}
 			try {
-				return await injectScript(url, hash);
+				return await injectScript(url, hash, ordered);
 			} catch (e) {
 				lastErr = e;
 				if (hash) console.error(`[Manifest Loader] ${fileOf(url)} ${refusedOnHash(url) ? 'failed its integrity check' : 'failed to load or failed its integrity check'} from ${url}${urls.length > 1 ? ' — trying next CDN' : ''}`);
@@ -696,7 +696,7 @@
 
 	// Pinned third-party files for plugins (npm path, e.g. marked@15.0.12/marked.min.js)
 	function loadVendor(path, hash) {
-		return injectFrom(CDN_HOSTS.map(h => `${h}/${path}`), { key: path, hash });
+		return injectFrom(CDN_HOSTS.map(h => `${h}/${path}`), { key: path, hash, ordered: false });
 	}
 	async function fetchVendor(path, pinned) {
 		const map = integrityReady ? await integrityReady : null;
