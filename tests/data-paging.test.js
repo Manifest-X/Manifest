@@ -344,3 +344,31 @@ describe('$more() landing skipped', () => {
         expect(ns(rows('items'))).toEqual(Array.from({ length: 100 }, (_, i) => i + 1))
     })
 })
+
+describe('$more() cancelled by a source reset', () => {
+    it('a reset while its page is queued: the old cursor is never written back', async () => {
+        const SRC = { items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 50 } } }
+        const { rows, main, stats } = await boot(SRC, makeRows(120))
+        await main.loadDataSource('items')
+        await settle()
+        const ds = window.ManifestDataStore
+        const landRows = ds.landRows
+        let reset = false
+        ds.landRows = (name, list, options) => {
+            const queued = landRows(name, list, options)
+            if (!reset && options?.mode === 'append') { reset = true; ds.resetSource(name) }
+            return queued
+        }
+        expect(await main.loadMore('items')).toBe(0)
+        ds.landRows = landRows
+        await settle()
+        expect(reset).toBe(true)
+        expect(state()?.hasMore).not.toBe(true)
+        const lists = stats.lists.length
+        expect(await main.loadMore('items')).toBe(0)
+        expect(stats.lists.length).toBe(lists)
+        await main.loadDataSource('items')
+        await settle()
+        expect(ns(rows('items'))).toEqual(Array.from({ length: 50 }, (_, i) => i + 1))
+    })
+})

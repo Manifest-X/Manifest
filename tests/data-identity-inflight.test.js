@@ -271,6 +271,26 @@ describe('identity change during an in-flight load', () => {
         expect(savedFor(records, 'u1', 'anon')).toEqual([])
     })
 
+    it("a sign-in after the signed-out load landed: a lazy read during the reload never serves or saves the signed-out cache for u1", async () => {
+        lastKnown(null)
+        const { data, main, auth, dispatch, persist, records } = await load({ manifest: pub(), auth: signedOut() })
+        main.loadDataSource('posts')
+        await settle(10)
+        reads[0].open(); await settle(60)
+        expect(ids(data().posts)).toEqual(['anon-0'])
+        signIn(auth, dispatch, 'u1')
+        await settle(10)
+        const lazy = main.loadDataSource('posts')
+        await settle(60)
+        await persist.flushPending()
+        expect(savedFor(records, 'u1', 'anon')).toEqual([])
+        await releaseAll()
+        expect(ids(await lazy)).toEqual(['u1-0'])
+        expect(ids(data().posts)).toEqual(['u1-0'])
+        await persist.flushPending()
+        expect(savedFor(records, 'u1', 'anon')).toEqual([])
+    })
+
     it('a sign-out while the signed-in load is in flight: u1 rows never show and are never saved signed out', async () => {
         lastKnown('u1')
         const { data, main, auth, dispatch, persist, records } = await load({ manifest: pub(), auth: signedIn('u1') })

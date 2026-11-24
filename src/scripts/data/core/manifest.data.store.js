@@ -167,7 +167,7 @@ function resetSource(dataSourceName) {
     for (let i = pendingLandings.length - 1; i >= 0; i--) {
         if (pendingLandings[i].source !== dataSourceName) continue;
         pendingLandings.splice(i, 1);
-        landingResolvers.splice(i, 1)[0]?.();
+        landingResolvers.splice(i, 1)[0]?.(false);
     }
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     if (!store) return;
