@@ -839,8 +839,9 @@ function updateStore(dataSourceName, data, options = {}) {
 
 // Network landing (page load, paged append, realtime batch): buffered, applied
 // with every other landing of the same frame in ONE flush. Resolves once visible.
+// Resolves true once applied, false when skipped (stale generation, or a newer read began)
 function landRows(dataSourceName, rows, options = {}) {
-    if (isStaleWrite(dataSourceName, options)) return Promise.resolve();
+    if (isStaleWrite(dataSourceName, options)) return Promise.resolve(false);
     return queueLanding({ source: dataSourceName, rows, options: { mode: 'replace', ...options } });
 }
 
@@ -891,6 +892,7 @@ function flushLandings() {
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     const touched = new Set();
     const landed = new Set(); // network-origin landings (persistence snapshots these)
+    const skipped = new Set();
     let settled = false;
     if (store) {
         for (const op of ops) {
@@ -900,7 +902,7 @@ function flushLandings() {
                     continue;
                 }
                 // A newer read began since this landing was queued (e.g. an identity change): it never applies
-                if (typeof op.options?.readToken === 'number' && !isLatestRead(op.source, op.options.readToken)) continue;
+                if (typeof op.options?.readToken === 'number' && !isLatestRead(op.source, op.options.readToken)) { skipped.add(op); continue; }
                 const state = writeSource(op.source, op.rows, op.options);
                 if (!state) continue;
                 touched.add(op.source);
@@ -913,7 +915,7 @@ function flushLandings() {
         }
         for (const source of [...touched]) {
             const reads = ops
-                .filter(op => op.source === source && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
+                .filter(op => op.source === source && !skipped.has(op) && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
                 .map(op => ({ token: op.options.readToken, ids: op.options.mode === 'append' ? new Set(op.rows.map(rowKey)) : null }));
             reapplyPending(store, source, reads);
         }
@@ -930,7 +932,7 @@ function flushLandings() {
         }
         if (touched.size) touchSources(store, touched);
     }
-    resolvers.forEach(resolve => resolve());
+    resolvers.forEach((resolve, i) => resolve(!skipped.has(ops[i])));
     if (landed.size) window.ManifestDataPersist?.onLanded?.(landed);
     if (settled) checkAndDispatchRenderReady();
 }
@@ -11129,6 +11131,9 @@ function setupAuthResetListener() {
             if (clear) {
                 window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
                 ds.resetSource(name);
+            } else if (ds.dataSourceCache) {
+                // Rows read under the previous identity never serve a lazy read while this reload runs
+                for (const key of [...ds.dataSourceCache.keys()]) if (key.startsWith(`${name}:`)) ds.dataSourceCache.delete(key);
             }
             const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
             if (handler) Promise.resolve(handler('$query', active)).catch(() => { /* $error carries it */ });
@@ -11663,7 +11668,11 @@ async function loadMoreOnce(dataSourceName) {
         }
         // Overtaken by a load or $query: its window replaces the rows, then this runs again
         if (!page || !isCurrent()) { if (page) requeueMore(dataSourceName); return 0; }
-        await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined });
+        // Skipped (a newer read began): the cursor stays; this runs again after that read
+        if (await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined }) === false) {
+            if (sourceGeneration(dataSourceName) === generation) requeueMore(dataSourceName);
+            return 0;
+        }
         setPagingState(dataSourceName, { ...page, spec }, { append: true });
         return page.rows.length;
     } finally {
@@ -12077,6 +12086,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         && confirmedIdentity() !== null && inflight.identity !== confirmedIdentity()) {
         inflight.abandoned = true;
         loadingPromises.delete(cacheKey);
+        dataSourceCache.delete(cacheKey);
         window.ManifestDataStore.loadReadTokens?.delete(cacheKey);
     } else replaced = null;
 

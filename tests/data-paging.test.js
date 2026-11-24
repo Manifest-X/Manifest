@@ -319,3 +319,28 @@ describe('review 2: ties, local rows past the boundary, overtaken $more()', () =
         expect(rows('items').length).toBe(100)
     })
 })
+
+describe('$more() landing skipped', () => {
+    it('a newer read beginning while its page is queued: the cursor stays, the next $more() fetches that page again', async () => {
+        const SRC = { items: { appwriteTableId: 'items', queries: [['orderAsc', 'n']], paging: { mode: 'window', size: 50 } } }
+        const { rows, main } = await boot(SRC, makeRows(120))
+        await main.loadDataSource('items')
+        await settle()
+        const ds = window.ManifestDataStore
+        const landRows = ds.landRows
+        let token = null
+        ds.landRows = (name, list, options) => {
+            const queued = landRows(name, list, options)
+            if (token === null && options?.mode === 'append') token = ds.beginRead(name)
+            return queued
+        }
+        expect(await main.loadMore('items')).toBe(0)
+        ds.landRows = landRows
+        await settle()
+        expect(rows('items').length).toBe(50)
+        ds.endRead('items', token)
+        expect(await main.loadMore('items')).toBe(50)
+        await settle()
+        expect(ns(rows('items'))).toEqual(Array.from({ length: 100 }, (_, i) => i + 1))
+    })
+})

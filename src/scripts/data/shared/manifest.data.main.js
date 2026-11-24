@@ -149,6 +149,9 @@ function setupAuthResetListener() {
             if (clear) {
                 window.ManifestDataRealtime?.unsubscribeFromDataSource?.(name);
                 ds.resetSource(name);
+            } else if (ds.dataSourceCache) {
+                // Rows read under the previous identity never serve a lazy read while this reload runs
+                for (const key of [...ds.dataSourceCache.keys()]) if (key.startsWith(`${name}:`)) ds.dataSourceCache.delete(key);
             }
             const handler = active && window.ManifestDataProxiesAppwrite?.createAppwriteMethodsHandler?.(name, reloadDataSource);
             if (handler) Promise.resolve(handler('$query', active)).catch(() => { /* $error carries it */ });
@@ -683,7 +686,11 @@ async function loadMoreOnce(dataSourceName) {
         }
         // Overtaken by a load or $query: its window replaces the rows, then this runs again
         if (!page || !isCurrent()) { if (page) requeueMore(dataSourceName); return 0; }
-        await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined });
+        // Skipped (a newer read began): the cursor stays; this runs again after that read
+        if (await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined }) === false) {
+            if (sourceGeneration(dataSourceName) === generation) requeueMore(dataSourceName);
+            return 0;
+        }
         setPagingState(dataSourceName, { ...page, spec }, { append: true });
         return page.rows.length;
     } finally {
@@ -1097,6 +1104,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         && confirmedIdentity() !== null && inflight.identity !== confirmedIdentity()) {
         inflight.abandoned = true;
         loadingPromises.delete(cacheKey);
+        dataSourceCache.delete(cacheKey);
         window.ManifestDataStore.loadReadTokens?.delete(cacheKey);
     } else replaced = null;
 
