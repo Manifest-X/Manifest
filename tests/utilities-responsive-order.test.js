@@ -46,7 +46,7 @@ describe('responsive @media order', () => {
         expect(ascending(order(css, ['.md\\:text-b', '.lg\\:text-a']))).toBe(true)
     })
 
-    it('matches Tailwind: early media, max-* widest first, min-width ascending, other media last', async () => {
+    it('Tailwind order: early media, max-* widest first, min-width ascending (arbitrary sizes by value), other media last', async () => {
         const classes = ['print:text-a', 'xl:text-a', 'lg:text-a', 'min-[900px]:text-b', 'md:text-b', 'max-md:text-b',
             'max-[50rem]:text-a', 'max-lg:text-a', 'motion-reduce:text-b', 'sm:text-c', 'min-xl:text-d']
         const css = await compileUtilities({ classes, themeCss: THEME })
@@ -58,6 +58,11 @@ describe('responsive @media order', () => {
     it('stacked md:max-lg: sits after md: and before lg:', async () => {
         const css = await compileUtilities({ classes: ['lg:text-a', 'md:max-lg:text-b', 'md:text-c'], themeCss: THEME })
         expect(ascending(order(css, ['.md\\:text-c', '.md\\:max-lg\\:text-b', '.lg\\:text-a']))).toBe(true)
+    })
+
+    it('an extra lower-order media variant sorts after the bare breakpoint (motion-safe:md: after md:)', async () => {
+        const css = await compileUtilities({ classes: ['motion-safe:md:text-a', 'md:text-b', 'lg:text-c'], themeCss: THEME })
+        expect(ascending(order(css, ['.md\\:text-b', '.motion-safe\\:md\\:text-a', '.lg\\:text-c']))).toBe(true)
     })
 
     it('a range plus a later media variant sorts with that media (print:md: after lg:)', async () => {
@@ -90,19 +95,19 @@ describe('order keys', () => {
 
     it('keys are uniform, sorted, and carry the breakpoint rank', () => {
         const entries = compiler.generateKeyedUtilities(THEME, ALL)
-        expect(new Set(entries.map(e => e.key.length))).toEqual(new Set([9]))
+        expect(new Set(entries.map(e => e.key.length))).toEqual(new Set([10]))
         expect(entries.every((e, i) => i === 0 || cmp(entries[i - 1].key, e.key) <= 0)).toBe(true)
         const key = (needle) => entries.find(e => e.rule.includes(needle)).key
-        expect(key('.md\\:text-c').slice(0, 4)).toEqual([1, 1, 768, -1e6])
+        expect(key('.md\\:text-c').slice(0, 5)).toEqual([1, 1, 768, -1e6, 0])
         expect(key('.max-sm\\:text-b').slice(0, 3)).toEqual([1, 1, -640])
         expect(key('.md\\:max-lg\\:text-d').slice(0, 4)).toEqual([1, 1, 768, -1024])
         expect(key('.min-\\[900px\\]\\:text-a')[2]).toBe(900)
         expect(key('.motion-safe\\:text-d')[1]).toBe(0)
         expect(key('.print\\:text-c')[1]).toBe(2)
-        expect(key('.text-a {').slice(0, 4)).toEqual([0, 0, 0, 0])
+        expect(key('.text-a {').slice(0, 5)).toEqual([0, 0, 0, 0, 0])
     })
 
-    it('placing a later class set by key reproduces the full regen (incremental apply)', () => {
+    it('placing a later class set by key reproduces the full regen (the order compileDelta inserts by)', () => {
         const full = compiler.generateKeyedUtilities(THEME, ALL).map(e => e.rule)
         // Discovery order the reverse of breakpoint order, one class at a time
         const live = []

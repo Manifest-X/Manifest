@@ -3,9 +3,10 @@
  * (max-* widest first, then min-width ascending) whatever the theme-variable
  * order, at 500 / 700 / 900 / 1000 / 1100 / 1300px.
  *
- * Routes: runtime with data-tailwind on and off (static markup + classes added
- * after load in reverse breakpoint order, i.e. the incremental path), and a
+ * Routes: runtime with data-tailwind on and off (static markup + never-seen classes
+ * added after load in reverse breakpoint order, applied by compileDelta), and a
  * page carrying only the node-baked sheet (static bake, no runtime).
+ * #v: Tailwind display classes added after load next to the display block (lg:hidden, xl:block).
  *
  * Run: npm run build && node tests/e2e/utilities-responsive-order.e2e.mjs
  */
@@ -29,25 +30,27 @@ const MARKUP = `<p id="t" class="text-e sm:text-d md:text-c lg:text-b xl:text-a"
 <p id="x" class="max-sm:text-a max-md:text-b max-lg:text-c">x</p>
 <p id="s" class="md:text-a md:max-lg:text-b lg:text-c">s</p>
 <p id="m" class="md:text-a min-[950px]:text-b lg:text-c">m</p>
-<p id="l" class="md:lead-b lg:lead-a">l</p>`
+<p id="l" class="md:lead-b lg:lead-a">l</p>
+<div id="v" class="col md:row">v</div>`
 
-// Added after load one class at a time, largest breakpoint first
+// Never in MARKUP; added after load one class at a time, largest breakpoint first
 const DYN = {
-    dt: ['xl:text-a', 'lg:text-b', 'md:text-c', 'sm:text-d', 'text-e'],
-    dx: ['max-lg:text-c', 'max-md:text-b', 'max-sm:text-a']
+    dt: ['xl:bg-a', 'lg:bg-b', 'md:bg-c', 'sm:bg-d', 'bg-e'],
+    dx: ['max-lg:bg-c', 'max-md:bg-b', 'max-sm:bg-a'],
+    v: ['lg:hidden', 'xl:block']
 }
-const DYN_MARKUP = Object.entries(DYN).map(([id, cls]) => `<p id="${id}" class="${cls.join(' ')}">${id}</p>`).join('\n')
 
 // null = falls back to the unstyled value
 const EXPECT = {
-    500: { t: E, x: A, s: null, m: null, l: null },
-    700: { t: D, x: B, s: null, m: null, l: null },
-    900: { t: C, x: C, s: B, m: A, l: '20px' },
-    1000: { t: C, x: C, s: B, m: B, l: '20px' },
-    1100: { t: B, x: null, s: C, m: C, l: '10px' },
-    1300: { t: A, x: null, s: C, m: C, l: '10px' }
+    500: { t: E, x: A, s: null, m: null, l: null, v: 'flex' },
+    700: { t: D, x: B, s: null, m: null, l: null, v: 'flex' },
+    900: { t: C, x: C, s: B, m: A, l: '20px', v: 'flex' },
+    1000: { t: C, x: C, s: B, m: B, l: '20px', v: 'flex' },
+    1100: { t: B, x: null, s: C, m: C, l: '10px', v: 'none' },
+    1300: { t: A, x: null, s: C, m: C, l: '10px', v: 'block' }
 }
 const withDyn = (w) => ({ ...w, dt: w.t, dx: w.x })
+const PROP = { l: 'lineHeight', dt: 'backgroundColor', dx: 'backgroundColor', v: 'display' }
 
 const runtimePage = (tw) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <link rel="stylesheet" href="/fw/manifest.css">${THEME}
@@ -56,7 +59,9 @@ const runtimePage = (tw) => `<!DOCTYPE html><html><head><meta charset="utf-8"><t
 
 async function staticPage() {
     const baseCss = fs.readFileSync(path.join(ROOT, 'lib', 'manifest.css'), 'utf8')
-    const html = MARKUP + DYN_MARKUP
+    // Final classes baked up front
+    const html = MARKUP.replace('class="col md:row"', `class="col md:row ${DYN.v.join(' ')}"`) +
+        ['dt', 'dx'].map((id) => `<p id="${id}" class="${DYN[id].join(' ')}">${id}</p>`).join('\n')
     const css = await compileUtilities({ classes: scanClasses(html), themeCss: VARS + CUSTOM, baseCss })
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <link rel="stylesheet" href="/fw/manifest.css">${THEME}<style>${css}</style></head><body>${html}</body></html>`
@@ -85,16 +90,18 @@ function check(name, ok, detail = '') {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`)
 }
 
-const READ = (ids) => {
+const READ = (ids, prop) => {
     const out = {}
     for (const id of ids) {
         const el = document.getElementById(id)
-        if (!el) continue
-        out[id] = id === 'l' ? getComputedStyle(el).lineHeight : getComputedStyle(el).color
+        if (el) out[id] = getComputedStyle(el)[prop[id] || 'color']
     }
     return out
 }
-const matches = (got, want, base) => Object.entries(want).every(([k, v]) => got[k] === (v === null ? (k === 'l' ? base.lh : base.color) : v))
+const matches = (got, want, base, prop) => Object.entries(want).every(([k, v]) => got[k] === (v === null ? base[prop[k] || 'color'] : v))
+
+// First compile settled and nothing queued
+const idle = (p) => p.waitForFunction(() => window.__manifestUtilitiesReady && !window.__manifestUtilitiesPending, { timeout: 8000, polling: 50 })
 
 const liveRules = (p) => p.evaluate(() => {
     const layer = [...document.getElementById('manifest-styles').sheet.cssRules].find((r) => r instanceof CSSLayerBlockRule)
@@ -110,25 +117,35 @@ async function run(browser, srv, route, width) {
     await p.goto(srv.url + route, { waitUntil: 'load' })
     const base = await p.evaluate(() => {
         const q = document.createElement('p'); document.body.appendChild(q)
-        const s = getComputedStyle(q); const out = { color: s.color, lh: s.lineHeight }; q.remove()
+        const s = getComputedStyle(q); const out = { color: s.color, lineHeight: s.lineHeight, backgroundColor: s.backgroundColor }; q.remove()
         return out
     })
     const runtime = route !== '/static'
     if (runtime) {
-        await new Promise((r) => setTimeout(r, 800))
-        await p.evaluate(() => { for (const id of ['dt', 'dx']) { const d = document.createElement('p'); d.id = id; d.textContent = id; document.body.appendChild(d) } })
+        await idle(p)
+        await p.evaluate(() => {
+            const c = window.ManifestUtilities, orig = c.compileDelta
+            window.__deltaOk = 0
+            c.compileDelta = function (...a) { const ok = orig.apply(this, a); if (ok) window.__deltaOk++; return ok }
+            for (const id of ['dt', 'dx']) { const d = document.createElement('p'); d.id = id; d.textContent = id; document.body.appendChild(d) }
+        })
         const steps = Math.max(...Object.values(DYN).map((c) => c.length))
         for (let i = 0; i < steps; i++) {
             await p.evaluate((dyn, i) => { for (const [id, cls] of Object.entries(dyn)) if (cls[i]) document.getElementById(id).classList.add(cls[i]) }, DYN, i)
-            await new Promise((r) => setTimeout(r, 350))
+            await new Promise((r) => setTimeout(r, 250))
+            await idle(p)
         }
     }
     const want = withDyn(EXPECT[width])
     const ids = Object.keys(want)
-    await p.waitForFunction(`(() => { const READ = ${READ.toString()}; const matches = ${matches.toString()}; return matches(READ(${JSON.stringify(ids)}), ${JSON.stringify(want)}, ${JSON.stringify(base)}) })()`, { timeout: 8000, polling: 50 }).catch(() => { })
+    await p.waitForFunction(`(() => { const READ = ${READ.toString()}; const matches = ${matches.toString()}; return matches(READ(${JSON.stringify(ids)}, ${JSON.stringify(PROP)}), ${JSON.stringify(want)}, ${JSON.stringify(base)}, ${JSON.stringify(PROP)}) })()`, { timeout: 8000, polling: 50 }).catch(() => { })
     await new Promise((r) => setTimeout(r, 200))
-    const got = await p.evaluate(READ, ids)
-    check(`${route} @${width}px computed styles`, matches(got, want, base), JSON.stringify({ got, base }))
+    const got = await p.evaluate(READ, ids, PROP)
+    check(`${route} @${width}px computed styles`, matches(got, want, base, PROP), JSON.stringify({ got, base }))
+    if (runtime) {
+        const deltas = await p.evaluate(() => window.__deltaOk)
+        check(`${route} @${width}px dynamic classes applied by compileDelta`, deltas >= 3, `${deltas} delta applies`)
+    }
 
     if (runtime) {
         // Incremental inserts must leave the same rule order a full regen writes
@@ -141,8 +158,8 @@ async function run(browser, srv, route, width) {
         const full = await liveRules(p)
         const i = full.findIndex((r, k) => r !== live[k])
         check(`${route} @${width}px live rule order equals full regen`, live.length > 0 && live.length === full.length && i === -1, i === -1 ? `${live.length} vs ${full.length} rules` : `#${i}: live ${live[i]} | full ${full[i]}`)
-        const after = await p.evaluate(READ, ids)
-        check(`${route} @${width}px computed styles after full regen`, matches(after, want, base), JSON.stringify(after))
+        const after = await p.evaluate(READ, ids, PROP)
+        check(`${route} @${width}px computed styles after full regen`, matches(after, want, base, PROP), JSON.stringify(after))
     }
     check(`${route} @${width}px no page errors`, errors.length === 0, errors.join(' | '))
     await ctx.close()
