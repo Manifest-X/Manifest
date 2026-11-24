@@ -53,6 +53,15 @@ async function postSession(config, ref, payload, preferMode) {
     return res.json();
 }
 
+// Refuse a checkout address outside payments.redirectHosts, when set.
+function checkedUrl(url, config) {
+    if (!config?.redirectHosts) return url;
+    let host = '';
+    try { const u = window.location.href ? new URL(url, window.location.href) : new URL(url); host = u.protocol === 'https:' ? u.hostname.toLowerCase() : ''; } catch (_) { /* invalid */ }
+    if (!host || !config.redirectHosts.includes(host)) throw new Error("Checkout couldn't be started. Please try again.");
+    return url;
+}
+
 // Drive a server response into the right modality; overlay degrades to redirect
 // when no adapter supports it.
 async function dispatch(response, config) {
@@ -66,17 +75,23 @@ async function dispatch(response, config) {
             window.dispatchEvent(new CustomEvent('manifest:pay:result', { detail: { ...result, provider } }));
             return result;
         }
-        if (response.url) { _navigate(response.url); return { status: 'redirected' }; }
+        if (response.url) { _navigate(checkedUrl(response.url, config)); return { status: 'redirected' }; }
         throw new Error(`No overlay adapter for "${provider}" and no fallback url`);
     }
     if (!response?.url) throw new Error('Redirect response missing url');
-    _navigate(response.url);
+    _navigate(checkedUrl(response.url, config));
     return { status: 'redirected' };
 }
 
 // Public: initiate a payment flow for an opaque ref (or an absolute URL for a
 // zero-server link-through).
 async function initiate(ref, payload = {}) {
+    // Object form: { ref, ...payload }, e.g. x-pay="{ ref: 'panel', quantity: qty }"
+    if (ref && typeof ref === 'object' && typeof ref.ref === 'string') {
+        const { ref: inner, ...rest } = ref;
+        payload = { ...rest, ...payload };
+        ref = inner;
+    }
     setStore({ loading: true, error: null });
     try {
         // Zero-server link-through: an absolute URL just navigates.

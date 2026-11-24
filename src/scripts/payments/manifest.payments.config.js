@@ -58,7 +58,9 @@ async function getPaymentsConfig() {
         environment: environmentOf(p.environment),
         state: p.state && typeof p.state === 'object' ? p.state : null,
         // Pass-through bag for adapter-specific options (locale, theme, etc.)
-        options: p.options && typeof p.options === 'object' ? p.options : {}
+        options: p.options && typeof p.options === 'object' ? p.options : {},
+        // Optional allowlist of checkout hostnames the function may redirect to
+        redirectHosts: Array.isArray(p.redirectHosts) ? p.redirectHosts.map((h) => String(h).toLowerCase()) : null
     };
     return _cache;
 }

@@ -166,7 +166,7 @@ register('razorpay', {
 /* ---- Redirect-floor providers --------------------------------------------- */
 // Registered for discoverability; no overlay, so they degrade to the redirect
 // floor. Unlisted providers work the same way with zero config.
-['stripe', 'square', 'paypal', 'braintree', 'adyen', 'mollie']
+['stripe', 'square', 'paypal', 'braintree', 'adyen', 'mollie', 'worldpay']
     .forEach((name) => register(name, { supportsOverlay: false, redirectOnly: true }));
 
 window.ManifestPaymentsAdapters = { register, get, list, loadScript };

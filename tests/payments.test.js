@@ -37,6 +37,7 @@ function makeEnv({ payments, fetchImpl, auth } = {}) {
         history: { replaceState() {} },
         fetch: (...a) => (fetchImpl ? fetchImpl(...a) : Promise.resolve({ ok: true, json: async () => ({}) })),
         URLSearchParams,
+        URL,
         CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o?.detail } },
         console,
         setTimeout: (fn) => fn()
@@ -152,6 +153,26 @@ describe('payments engine — initiate', () => {
         expect(body.ref).toBe('pro-monthly')
         expect(body.payload.qty).toBe(2)
         expect(body.context.preferMode).toBe('redirect')
+    })
+
+    it('object ref form splits into ref + payload', async () => {
+        let body = null
+        env = makeEnv({ payments: CFG, fetchImpl: async (u, o) => { body = JSON.parse(o.body); return reply({ mode: 'redirect', url: 'x' })() } })
+        await env.PAY.initiate({ ref: 'panel', quantity: 3 }, { mode: 'redirect' })
+        expect(body.ref).toBe('panel')
+        expect(body.payload).toEqual({ quantity: 3, mode: 'redirect' })
+    })
+
+    it('redirectHosts refuses checkout addresses outside the list', async () => {
+        const cfg = { ...CFG, redirectHosts: ['payments.worldpay.com'] }
+        env = makeEnv({ payments: cfg, fetchImpl: reply({ mode: 'redirect', url: 'https://payments.worldpay.com.evil.io/x' }) })
+        await expect(env.PAY.initiate('deposit')).rejects.toThrow(/couldn't be started/)
+        expect(env.navs).toEqual([])
+        env = makeEnv({ payments: cfg, fetchImpl: reply({ mode: 'redirect', url: 'http://payments.worldpay.com/x' }) })
+        await expect(env.PAY.initiate('deposit')).rejects.toThrow()
+        env = makeEnv({ payments: cfg, fetchImpl: reply({ mode: 'redirect', url: 'https://PAYMENTS.worldpay.com/x' }) })
+        await env.PAY.initiate('deposit')
+        expect(env.navs).toEqual(['https://PAYMENTS.worldpay.com/x'])
     })
 
     it('injects identity context from the auth store', async () => {
@@ -340,7 +361,7 @@ describe('overlay adapter contracts (stubbed SDKs)', () => {
 })
 
 describe('provider roster', () => {
-    const ALL = ['stripe', 'revolut', 'paddle', 'lemonsqueezy', 'polar', 'razorpay', 'square', 'paypal', 'braintree', 'adyen', 'mollie']
+    const ALL = ['stripe', 'revolut', 'paddle', 'lemonsqueezy', 'polar', 'razorpay', 'square', 'paypal', 'braintree', 'adyen', 'mollie', 'worldpay']
     const OVERLAY = ['lemonsqueezy', 'paddle', 'polar', 'razorpay', 'revolut']
 
     it('registers every major SaaS / merchant / donation provider', () => {
