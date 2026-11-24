@@ -23,6 +23,7 @@ const LOCKED_LANGS = new Set(Object.keys(LOCK)
 const literal = (re) => new Function(`return ${SRC.match(re)[1]}`)()
 const ALIASES = literal(/const LANGUAGE_ALIASES = (\{[\s\S]*?\});/)
 const PLAINTEXT = literal(/const PLAINTEXT_LANGS = (new Set\(\[[\s\S]*?\]\));/)
+const DEPS = literal(/const LANGUAGE_DEPS = (\{[\s\S]*?\});/)
 
 const FENCES = ['env', 'dotenv', 'csv', 'tsv', 'text', 'txt', 'plain', 'console', 'shell', 'sh', 'zsh',
     'shellsession', 'jsonc', 'json5', 'vue', 'svelte', 'astro', 'mdx', 'md', 'gitignore', 'conf', 'toml',
@@ -66,6 +67,21 @@ describe('code fence language aliases', () => {
         }
     })
 
+    it('every grammar dependency is a locked file', () => {
+        for (const [from, deps] of Object.entries(DEPS)) {
+            expect(LOCKED_LANGS.has(from), from).toBe(true)
+            for (const d of deps) expect(LOCKED_LANGS.has(d), `${from} needs ${d}`).toBe(true)
+        }
+    })
+
+    it('console sessions use the shell grammar; sh/zsh/env stay bash', () => {
+        expect(ALIASES.console).toBe('shell')
+        expect(ALIASES.shellsession).toBe('shell')
+        expect(ALIASES.shell).toBeUndefined()
+        expect(DEPS.shell).toEqual(['bash'])
+        for (const n of ['sh', 'zsh', 'env', 'dotenv']) expect(ALIASES[n], n).toBe('bash')
+    })
+
     it('env/dotenv highlight as bash; csv/tsv as plain text', () => {
         expect(ALIASES.env).toBe('bash')
         expect(ALIASES.dotenv).toBe('bash')
@@ -81,8 +97,8 @@ describe('code fence language aliases', () => {
             for (const p of paths) expect(p in LOCK, `${name}: ${p}`).toBe(true)
             const resolved = ALIASES[name] || name
             const langPaths = paths.filter(p => p.startsWith(LANG_PREFIX))
-            if (PLAINTEXT.has(resolved)) expect(langPaths, name).toEqual([])
-            else expect(langPaths, name).toEqual([`${LANG_PREFIX}${resolved}.min.js`])
+            const want = PLAINTEXT.has(resolved) ? [] : [...(DEPS[resolved] || []), resolved]
+            expect(langPaths, name).toEqual(want.map(l => `${LANG_PREFIX}${l}.min.js`))
         }
     })
 
