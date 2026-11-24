@@ -461,7 +461,7 @@ async function initializeMarkdownPlugin() {
         });
 
         // Check if there are any elements with x-markdown already on the page
-        const existingMarkdownElements = document.querySelectorAll('[x-markdown]');
+        const existingMarkdownElements = findMarkdownElements();
 
         // Prerendered pages arrive with x-markdown content already rendered —
         // don't hide on init or the user sees a flash of empty content.
@@ -840,10 +840,10 @@ async function initializeMarkdownPlugin() {
         if (existingMarkdownElements.length > 0) {
 
             existingMarkdownElements.forEach(el => {
-                const expression = el.getAttribute('x-markdown');
-
                 // Modifiers live in the attribute name in this pre-registration path.
-                const safe = el.getAttributeNames().some(n => n.startsWith('x-markdown.') && n.split('.').includes('safe'));
+                const attrName = el.getAttributeNames().find(isMarkdownAttr);
+                const expression = el.getAttribute(attrName);
+                const safe = attrName.split('.').includes('safe');
 
                 // Create a temporary Alpine component context for this element
                 const tempComponent = Alpine.$data(el) || {};
@@ -940,10 +940,10 @@ async function initializeMarkdownPlugin() {
                     // Complex expressions: remove + re-add the attribute to force
                     // Alpine to re-process once the directive is registered.
                     const originalExpression = expression;
-                    el.removeAttribute('x-markdown');
+                    el.removeAttribute(attrName);
 
                     setTimeout(() => {
-                        el.setAttribute('x-markdown', originalExpression);
+                        el.setAttribute(attrName, originalExpression);
                     }, 50);
                 }
             });
@@ -952,6 +952,12 @@ async function initializeMarkdownPlugin() {
     } catch (error) {
         console.error('[Manifest] Failed to initialize markdown plugin:', error);
     }
+}
+
+// [x-markdown] misses modifier forms (x-markdown.safe); match by attribute name
+const isMarkdownAttr = (n) => n === 'x-markdown' || n.startsWith('x-markdown.');
+function findMarkdownElements() {
+    return [...document.querySelectorAll('*')].filter(el => el.getAttributeNames().some(isMarkdownAttr));
 }
 
 // Track initialization to prevent duplicates
@@ -975,7 +981,7 @@ async function ensureMarkdownPluginInitialized() {
     // Only walk existing subtrees ourselves when Alpine already finished its boot
     // walk (late load). Walking during boot would drop nested plugin content.
     if (markdownAlpineHasWalked && typeof window.Alpine.initTree === 'function') {
-        const existingMarkdownElements = document.querySelectorAll('[x-markdown]');
+        const existingMarkdownElements = findMarkdownElements();
         existingMarkdownElements.forEach(el => {
             if (!el.__x) {
                 window.Alpine.initTree(el);
