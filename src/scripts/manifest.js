@@ -654,15 +654,23 @@
 
 	// Grammar and locale-pack hashes live in a second map, fetched the first time one is needed
 	let vendorFamily = null;
+	const SRI_VALUE = /^sha(256|384|512)-[A-Za-z0-9+/=]+$/;
+	// Own entries holding a hash only ("constructor" and friends are missing, not inherited)
+	function entry(map, key) {
+		const v = map && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+		return typeof v === 'string' && SRI_VALUE.test(v) ? v : null;
+	}
 	async function hashOf(map, key) {
-		if (map[key]) return map[key];
-		if (!map[VENDOR_FILE] || !/\/(languages|langs)\//.test(key)) return null;
+		const own = entry(map, key);
+		if (own) return own;
+		const familyHash = entry(map, VENDOR_FILE);
+		if (!familyHash || !/\/(languages|langs)\//.test(key)) return null;
 		if (!vendorFamily) {
-			vendorFamily = verifiedFetch(CDN_HOSTS.map(h => `${getBaseUrl(LOADER_VERSION, h)}/${VENDOR_FILE}`), map[VENDOR_FILE], VENDOR_FILE)
+			vendorFamily = verifiedFetch(CDN_HOSTS.map(h => `${getBaseUrl(LOADER_VERSION, h)}/${VENDOR_FILE}`), familyHash, VENDOR_FILE)
 				.then(r => r.json())
 				.catch(e => { vendorFamily = null; throw e; });
 		}
-		return (await vendorFamily)[key] || null;
+		return entry(await vendorFamily, key);
 	}
 
 	// First candidate that loads (and matches its hash). A fallback insert lands after
@@ -1284,7 +1292,7 @@
 		// Modules follow the loader's own version unless data-version says otherwise
 		if (!config.versionSet && MODULES_INTEGRITY) RESOLVED_VERSION = config.version = LOADER_VERSION;
 		integrityActive = !!MODULES_INTEGRITY && config.version === LOADER_VERSION;
-		alpineIntegrity = config.alpineIntegrity || null;
+		alpineIntegrity = config.alpineIntegrity && SRI_VALUE.test(config.alpineIntegrity.trim()) ? config.alpineIntegrity.trim() : null;
 		integrityReady = loadIntegrity(config);
 		integrityReady.catch(() => { });
 	}

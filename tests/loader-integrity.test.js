@@ -16,7 +16,7 @@ const V = '9.9.9'
 const sri = (s) => `sha384-${createHash('sha384').update(s).digest('base64')}`
 const FAMILY = { 'pkg@1.0.0/languages/rust.min.js': sri('rust') }
 const FAMILY_JSON = JSON.stringify(FAMILY)
-const MAP = { 'manifest.toasts.min.js': sri('toasts'), 'manifest.toasts.js': sri('toasts-full'), 'manifest.defer.min.js': sri('d'), 'manifest.bindings.min.js': sri('b'), 'manifest.tooltips.min.js': sri('t'), 'alpinejs@3.17.5/dist/cdn.min.js': sri('alpine'), 'marked@15.0.12/marked.min.js': sri('marked'), 'manifest.vendor.integrity.json': sri(FAMILY_JSON) }
+const MAP = { 'manifest.toasts.min.js': sri('toasts'), 'manifest.toasts.js': sri('toasts-full'), 'manifest.defer.min.js': sri('d'), 'manifest.bindings.min.js': sri('b'), 'manifest.tooltips.min.js': sri('t'), 'alpinejs@3.17.5/dist/cdn.min.js': sri('alpine'), 'marked@15.0.12/marked.min.js': sri('marked'), 'bad@1.0.0/x.min.js': 'not-a-hash', 'manifest.vendor.integrity.json': sri(FAMILY_JSON) }
 const MAP_JSON = JSON.stringify(MAP)
 const stamped = (map = MAP_JSON) => SRC
     .replace("const LOADER_VERSION = '0.0.0-dev';", `const LOADER_VERSION = '${V}';`)
@@ -160,6 +160,23 @@ describe('loader integrity', () => {
         await expect(window.Manifest.loadVendor('evil@1.0.0/x.min.js')).rejects.toThrow(/no integrity hash/)
         expect(console.error).toHaveBeenCalledWith(expect.stringContaining('evil@1.0.0/x.min.js has no integrity hash in this release. Not loaded.'))
         await expect(window.Manifest.fetchVendor('evil@1.0.0/data.json')).rejects.toThrow(/no integrity hash/)
+    })
+
+    it('map lookups take own entries holding a hash only: inherited keys and bad values are missing', async () => {
+        boot({ integrity: 'sha384-page' })
+        await settle()
+        for (const key of ['constructor', '__proto__', 'toString', 'bad@1.0.0/x.min.js']) {
+            await expect(window.Manifest.loadVendor(key), key).rejects.toThrow(/no integrity hash/)
+            await expect(window.Manifest.fetchVendor(key), key).rejects.toThrow(/no integrity hash/)
+        }
+        expect(document.querySelector('script[src$="/constructor"], script[src$="/x.min.js"]')).toBe(null)
+    })
+
+    it('an invalid data-alpine-integrity counts as missing', async () => {
+        boot({ integrity: 'sha384-page', 'data-alpine': '3.15.0', 'data-alpine-integrity': 'constructor' })
+        await settle()
+        expect(document.querySelector('script[src*="alpinejs@3.15.0"]')).toBe(null)
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('No integrity hash is known for Alpine'))
     })
 
     it('without checks, plugin third-party files keep their own pinned hash', async () => {
