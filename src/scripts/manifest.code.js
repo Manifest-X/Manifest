@@ -62,7 +62,9 @@ const HLJS_LANG_BASE = 'https://esm.run/highlight.js@11.11.1/lib/languages/';
 
 let hljsCorePromise = null;
 let hljsFullPromise = null;
-const langLoadPromises = new Map();
+// Grammar loads per hljs instance (lean core, then possibly the full bundle); names that failed stay failed
+const langLoadPromises = new WeakMap();
+const failedLangs = new Set();
 // Set once we've committed to the full bundle; never resets.
 let usingFullBundle = false;
 
@@ -106,19 +108,25 @@ async function registerLanguage(lang) {
     if (!resolved || resolved === 'auto') return;
     // Plain-text "languages" have no grammar module — never fetch one.
     if (PLAINTEXT_LANGS.has(resolved)) return;
-    for (const dep of LANGUAGE_DEPS[resolved] || []) await registerLanguage(dep);
+    for (const dep of Object.hasOwn(LANGUAGE_DEPS, resolved) ? LANGUAGE_DEPS[resolved] : []) await registerLanguage(dep);
     const core = await loadHighlightCore();
     if (core.listLanguages().includes(resolved)) return;
-    if (langLoadPromises.has(resolved)) return langLoadPromises.get(resolved);
-    const p = (window.ManifestVendor.checked
-        ? (/^[a-z0-9-]+$/.test(resolved) ? window.ManifestVendor.script(HLJS_LANG_FILE(resolved)) : Promise.reject(new Error('unknown language')))
-        : import(`${HLJS_LANG_BASE}${resolved}`).then(mod => { core.registerLanguage(resolved, mod.default); }))
+    if (failedLangs.has(resolved)) { usingFullBundle = true; return; }
+    if (!langLoadPromises.has(core)) langLoadPromises.set(core, new Map());
+    const loads = langLoadPromises.get(core);
+    if (loads.has(resolved)) return loads.get(resolved);
+    // Grammar names only: anything else would resolve outside the languages folder
+    const p = (!/^[a-z0-9-]+$/.test(resolved) ? Promise.reject(new Error('unknown language'))
+        : window.ManifestVendor.checked
+            ? window.ManifestVendor.script(HLJS_LANG_FILE(resolved))
+            : import(`${HLJS_LANG_BASE}${resolved}`).then(mod => { core.registerLanguage(resolved, mod.default); }))
         .catch(() => {
             // Module load failed — fall back to the full bundle (auto-detect).
             usingFullBundle = true;
-            langLoadPromises.delete(resolved);
+            failedLangs.add(resolved);
+            loads.delete(resolved);
         });
-    langLoadPromises.set(resolved, p);
+    loads.set(resolved, p);
     return p;
 }
 
@@ -205,7 +213,7 @@ const PLAINTEXT_LANGS = new Set(['txt', 'text', 'plain', 'plaintext', 'none', 'n
 // Fence names are case-insensitive (ENV, Vue, CSV)
 function canonicalLang(name) {
     const key = String(name || '').trim().toLowerCase();
-    return LANGUAGE_ALIASES[key] || key;
+    return Object.hasOwn(LANGUAGE_ALIASES, key) ? LANGUAGE_ALIASES[key] : key;
 }
 
 function resolveLanguage(hljs, langAttr) {

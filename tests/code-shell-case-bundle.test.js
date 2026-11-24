@@ -191,10 +191,11 @@ describe('full bundle detection', () => {
         const full = await code.loadHighlightJS('auto')
         expect(full.name).toBe('full')
         expect(window.hljs).toBe(full)
-        document.body.innerHTML = '<div x-code-group><pre x-code="elixir" name="A">x</pre><pre x-code="haskell" name="B">x</pre></div>'
+        document.body.innerHTML = '<div x-code-group><pre x-code="elixir" name="A">x</pre><pre x-code="haskell" name="B">x</pre><pre x-code="dockerfile" name="C">x</pre></div>'
         await code.setupCodeGroup(document.querySelector('[x-code-group]'))
         expect(window.hljs).toBe(full)
-                expect(full.listLanguages()).toEqual(expect.arrayContaining(['elixir', 'haskell']))
+        expect(full.listLanguages()).toEqual(expect.arrayContaining(['elixir', 'haskell', 'dockerfile']))
+        expect(await code.loadHighlightJS('Dockerfile')).toBe(full)
     })
 
     it('a host page instance is reused, not replaced by the lean core', async () => {
@@ -205,5 +206,51 @@ describe('full bundle detection', () => {
         expect(window.hljs).toBe(host)
         expect(imports).not.toContain(CORE_URL)
         expect(host.listLanguages()).toContain('rust')
+    })
+
+    it('a grammar load still in flight when the full bundle lands is registered on the full bundle', async () => {
+        const code = boot()
+        await code.loadHighlightJS('bash')
+        const gate = deferred()
+        const orig = window.__imp.getMockImplementation()
+        window.__imp.mockImplementation(async (url) => { if (url.endsWith('/dockerfile')) await gate.promise; return orig(url) })
+        const pending = code.loadHighlightJS('dockerfile')
+        await Promise.resolve()
+        const full = await code.loadHighlightJS('auto')
+        gate.resolve()
+        await pending
+        await code.loadHighlightJS('dockerfile')
+        expect(full.listLanguages()).toContain('dockerfile')
+    })
+})
+
+describe('grammar names', () => {
+    it('a path-like fence name never reaches import(), in lean or full mode', async () => {
+        for (const auto of [false, true]) {
+            const code = boot()
+            if (auto) await code.loadHighlightJS('auto')
+            await code.loadHighlightJS('../../../left-pad')
+            await code.loadHighlightJS('a/b')
+            expect(imports.filter(u => u !== CORE_URL), String(auto)).toEqual([])
+        }
+    })
+
+    it('a name that failed to load is not fetched again', async () => {
+        const code = boot()
+        window.__imp.mockImplementation(async (url) => {
+            imports.push(url)
+            if (url === CORE_URL) return { default: fakeHljs('lean') }
+            throw new Error('404')
+        })
+        await code.loadHighlightJS('jsonl')
+        await code.loadHighlightJS('jsonl')
+        await code.loadHighlightJS('JSONL')
+        expect(imports.filter(u => u.endsWith('/jsonl'))).toHaveLength(1)
+    })
+
+    it('Object.prototype keys are not aliases', async () => {
+        const code = boot({ checked: true })
+        await code.loadHighlightJS('constructor')
+        expect(langScripts()).toEqual(['constructor'])
     })
 })
