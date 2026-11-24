@@ -82,10 +82,11 @@ function printUsage(log = console.log) {
   log('--here never overwrites existing files unless --force is given; --force');
   log('lists what it overwrote and keeps an existing manifest.json name unless --name is given.');
   log('');
-  log('--project-id and/or --key (normally passed by Manifest\'s manifest_init)');
-  log('wire the project to the Manifest MCP server: .mcp.json and');
+  log('--project-id and/or --key (passed by Manifest\'s manifest_init for API-key');
+  log('sessions) wire the project to the Manifest MCP server: .mcp.json and');
   log('.claude/settings.json are merged, and --key is saved to .env (gitignored)');
-  log('for headless/CI publishing.');
+  log('for headless/CI publishing. Without them nothing is wired: the Manifest');
+  log('connector or plugin already provides the server.');
 }
 
 const { apiKey, mcpUrl, projectId, here, force, displayName, projectName } = parseArgs(process.argv.slice(2));

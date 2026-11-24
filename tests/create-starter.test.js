@@ -1,7 +1,8 @@
 /**
  * mnfst-starter CLI: no env-var key fallback, --here refuses to overwrite
- * without --force, .mcp.json/.claude/settings.json/.env are merged, and the
- * ui-guard hook is registered only when its script exists.
+ * without --force, .mcp.json/.claude/settings.json/.env are merged only with
+ * --project-id/--key (connector callers pass neither), and the ui-guard hook
+ * is registered only when its script exists.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
@@ -34,6 +35,25 @@ describe('mnfst-starter', () => {
         expect(exists('.env')).toBe(false)
         expect(exists('.mcp.json')).toBe(false)
         expect(exists('.claude/settings.json')).toBe(false)
+    })
+
+    it('connector invocation (no wiring flags) leaves .mcp.json and settings untouched', () => {
+        const mcp = JSON.stringify({ mcpServers: { other: { type: 'stdio', command: 'x' } } })
+        write('.mcp.json', mcp)
+        write('.claude/settings.json', '{"model":"opus"}')
+        const r = run(['--here', '--name', 'My Site'])
+        expect(r.status).toBe(0)
+        expect(json('manifest.json').name).toBe('My Site')
+        expect(read('.mcp.json')).toBe(mcp)
+        expect(read('.claude/settings.json')).toBe('{"model":"opus"}')
+        expect(exists('.env')).toBe(false)
+        expect(r.stdout).not.toContain('.mcp.json')
+    })
+
+    it('help says no wiring happens without --project-id/--key', () => {
+        const r = run(['--help'])
+        expect(r.status).toBe(0)
+        expect(r.stdout).toMatch(/Without them nothing is wired/)
     })
 
     it('fresh folder with project id + key wires production MCP, no hook, key not printed', () => {
