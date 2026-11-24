@@ -607,3 +607,50 @@ describe('rebase window after own structural edits (sixth review)', () => {
     })
 })
 
+// Seventh review: an element's shown id is unknown where a structural edit was made inside it,
+// or for a copy whose source was edited before it was copied
+describe('shown ids after inner and earlier edits (seventh review)', () => {
+    const bumpB = () => S.ext(f => f.replace('<p data-m="g">G</p>', '<p data-m="g">G2</p>'))
+    const publishOver = async () => { await store().publish(); await store().publish({ rebase: true }) }
+    const A = () => R(document.body).a
+    const pc = (t) => `<p class="c">Lorem ipsum dolor sit amet ${t}</p>`
+    const KC = (t) => `<div class="k"><h3>Card heading long enough</h3><span>${t}</span><b>x</b></div>`
+    const H = '<h2 data-m="h">P</h2>'
+    const s11 = async () => {
+        await S.open(persist([pc('one'), pc('two'), H], ['<p data-m="g">G</p>']))
+        bumpB()
+        editText(kids(A())[0], 'Lorem ipsum dolor sit amet three'); await flush()
+        store().duplicate(kids(A())[0]); await flush()
+        editText(kids(A())[2], 'Lorem ipsum dolor sit amet one'); await flush()
+        await publishOver()
+    }
+    it('S11 a twin edited then duplicated, the other edited to match: a later text edit on the copy stays', async () => {
+        await s11()
+        editText(kids(A())[1], 'Lorem ipsum dolor sit amet EDITED'); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a').replace(/\s+/g, ' ')).toBe(`<section id="a" x-edit.persist="a"> ${pc('three')} ${pc('EDITED')} ${pc('one')} ${H} </section>`)
+    })
+    it('S11b the same, then the first deleted: the delete stays', async () => {
+        await s11()
+        store().remove(kids(A())[0]); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a').replace(/\s+/g, ' ')).toBe(`<section id="a" x-edit.persist="a"> ${pc('three')} ${pc('one')} ${H} </section>`)
+    })
+    it('S12 twin cards: a child deleted inside one, the other edited to match; then the first card deleted: the delete stays', async () => {
+        await S.open(persist([KC('one'), KC('two'), H], ['<p data-m="g">G</p>']))
+        bumpB()
+        store().remove(kids(A())[0].querySelector('b')); await flush()
+        editText(kids(A())[1].querySelector('span'), 'one'); await flush()
+        await publishOver()
+        store().remove(kids(A())[0]); await flush()
+        await S.reload()
+        expect(conf()).toEqual([])
+        await store().publish()
+        expect(reg('a').replace(/\s+/g, ' ')).toBe(`<section id="a" x-edit.persist="a"> ${KC('one')} ${H} </section>`)
+    })
+})
+

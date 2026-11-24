@@ -2967,10 +2967,18 @@
     let overNewer = false;
     // Each page element's content id as this page holds it (its loaded one; a copy its source's),
     // or null where an edit in it changed its content
+    // (unknown, too, where a structural edit was made inside it, or for a copy whose source was
+    // edited before it was copied)
     function shownCids() {
-        const edited = new Set(log.slice(0, cursor).filter(d => d.kind === 'st-node').map(d => d.path)), out = new Map();
-        keyMap(staticAreas()).forEach((el, k) => {
-            if (k[0] === '!' || [el, ...el.querySelectorAll('[data-edit-key]')].some(n => edited.has(n.getAttribute('data-edit-key')))) return out.set(el, null);
+        const done = log.slice(0, cursor), live = keyMap(staticAreas()), out = new Map();
+        const edited = new Set(done.filter(d => d.kind === 'st-node').map(d => d.path));
+        const parents = new Set();
+        done.forEach(d => { if (d.kind === 'st-children' || d.kind === 'st-order') parents.add(d.parent); if (d.kind === 'st-move') { parents.add(d.fromParent); parents.add(d.toParent); } });
+        const changedIn = (el) => !!el && ([el, ...el.querySelectorAll('[data-edit-key]')].some(n => edited.has(n.getAttribute('data-edit-key')))
+            || [...parents].some(p => { if (!p) return false; const c = live.get(p); return !!c && (c === el || el.contains(c)); }));
+        live.forEach((el, k) => {
+            if (k[0] === '!' || changedIn(el)) return out.set(el, null);
+            if (k[0] === '~') { const o = originOf(k); if (edited.has(o) || [...edited].some(e => { const n = live.get(e), src = live.get(o); return n && src && src.contains(n); }) || changedIn(live.get(o))) return out.set(el, null); }
             out.set(el, cidOf(originOf(k)));
         });
         return out;
@@ -2988,7 +2996,7 @@
                 const ks = Object.keys(now).filter(k => familyOf(k) === fam).sort(byOrd);
                 const pk = [...live.keys()].filter(k => familyOf(k) === fam && (() => { const a = regionOf(live.get(k)); return a && sourceFile(a) === f; })()).sort(byOrd);
                 const R = pk.map(k => shown.has(live.get(k)) ? shown.get(live.get(k)) : null), F = ks.map(k => now[k]);
-                if (R.some((x, i) => (movedIn(R, F, i) || []).length)) cidsUnsure.add(fam);
+                if (!R.includes(null) && R.some((x, i) => (movedIn(R, F, i) || []).length)) cidsUnsure.add(fam);
                 else ks.forEach(k => { kept[k] = now[k]; });
             });
             baseCids[f] = kept;
