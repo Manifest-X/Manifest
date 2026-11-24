@@ -300,6 +300,33 @@ describe('payments engine — portal / state / return / navigate', () => {
         expect(env.events.some(e => e.type === 'manifest:pay:return')).toBe(true)
     })
 
+    it('handleReturn forwards ?order= and keeps polling while the order is being confirmed', async () => {
+        const urls = []
+        let state = { status: 'created', checking: true }
+        const env = makeEnv({
+            payments: { ...CFG, state: { url: 'https://fn.test/state' } },
+            fetchImpl: async (u) => { urls.push(u); return reply(state)() }
+        })
+        env.ctx.location.search = '?checkout=success&order=ordabc123'
+        env.PAY.handleReturn()
+        for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0))
+        expect(urls[0]).toBe('https://fn.test/state?order=ordabc123')
+        expect(urls).toHaveLength(8) // first read + 3 backoff + 4 extended
+    })
+
+    it('handleReturn stops after the short backoff once the order is settled', async () => {
+        const urls = []
+        const env = makeEnv({
+            payments: { ...CFG, state: { url: 'https://fn.test/state' } },
+            fetchImpl: async (u) => { urls.push(u); return reply({ status: 'settled', paid: true })() }
+        })
+        env.ctx.location.search = '?checkout=success&order=bad%20id'
+        env.PAY.handleReturn()
+        for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0))
+        expect(urls).toHaveLength(4)
+        expect(urls[0]).toBe('https://fn.test/state')
+    })
+
     it('handleReturn is a no-op without the marker', () => {
         const env = makeEnv({ payments: CFG })
         env.ctx.location.search = '?foo=1'
