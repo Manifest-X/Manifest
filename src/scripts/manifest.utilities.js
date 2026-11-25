@@ -4626,6 +4626,10 @@ function isTailwindBlock(node) {
     return node && node.nodeType === 1 && node.localName === 'style' && node.getAttribute('type') === 'text/tailwindcss';
 }
 
+function holdsTailwindBlock(node) {
+    return isTailwindBlock(node) || !!(node && node.nodeType === 1 && node.firstElementChild && node.querySelector('style[type="text/tailwindcss"]'));
+}
+
 // Runs before the next frame is drawn (or soon, in a hidden tab)
 function beforeNextFrame(fn) {
     if (document.hidden || typeof requestAnimationFrame !== 'function') setTimeout(fn, 0);
@@ -4762,7 +4766,7 @@ function watchCachedTailwind(state) {
                     continue;
                 }
                 if (isTailwindBlock(m.target)) blocks = true;
-                for (const n of m.removedNodes) if (isTailwindBlock(n)) blocks = true;
+                for (const n of m.removedNodes) if (holdsTailwindBlock(n)) blocks = true;
                 for (const n of m.addedNodes) {
                     if (n.nodeType !== 1 || n.hasAttribute('data-tailwind-seed')) continue;
                     if (isTailwindBlock(n)) { blocks = true; watchBlock(n); }
@@ -4806,12 +4810,12 @@ function readTailwindCacheIndex(state) {
     try {
         const index = JSON.parse(localStorage.getItem(state.key) || 'null');
         if (index && Array.isArray(index.ids) && index.sizes && typeof index.sizes === 'object') {
-            if (!Array.isArray(index.skip)) index.skip = [];
+            if (!index.skip || typeof index.skip !== 'object' || Array.isArray(index.skip)) index.skip = {};
             if (!index.over || typeof index.over !== 'object') index.over = {};
             return index;
         }
     } catch (e) { /* rebuilt below */ }
-    return { ids: [], sizes: {}, skip: [], over: {} };
+    return { ids: [], sizes: {}, skip: {}, over: {} };
 }
 
 function saveTailwindCacheIndex(state, index) {
@@ -4833,13 +4837,15 @@ function touchTailwindCacheEntry(state) {
     } catch (e) { /* order only */ }
 }
 
-// This page needed a block in <body>: later visits go straight to the engine
+// This page (by pathname) needed a block in <body>: visits in the next 7 days go straight to the engine
 function skipTailwindCachePath(state) {
     try {
         if (!state.pathId) return;
         state.skipped = true;
         const index = readTailwindCacheIndex(state);
-        index.skip = [state.pathId, ...index.skip.filter(x => x !== state.pathId)].slice(0, TAILWIND_CACHE_SKIP_PATHS);
+        index.skip[state.pathId] = Date.now();
+        const paths = Object.keys(index.skip).sort((a, b) => index.skip[b] - index.skip[a]);
+        for (const old of paths.slice(TAILWIND_CACHE_SKIP_PATHS)) delete index.skip[old];
         saveTailwindCacheIndex(state, index);
     } catch (e) { /* replay only */ }
 }
@@ -4914,6 +4920,7 @@ function writeTailwindCache(state, record) {
 function recordTailwindEngine(state, seedTokens) {
     if (state.recording) return;
     state.recording = true;
+    if (state.parsedMismatch && !state.skipped) skipTailwindCachePath(state);
     const blockId = () => state.idFor(tailwindAuthorBlockTexts());
     if (isTailwindCacheOver(readTailwindCacheIndex(state), blockId())) return;
 
@@ -5001,11 +5008,14 @@ function recordTailwindEngine(state, seedTokens) {
         schedule();
     };
 
-    // The engine rebuilds from the page's classes alone: everything is shown again under the new blocks
+    // Any block change ends recording for this page view: the engine rebuilds on some changes and not
+    // others (a removal keeps the removed theme), and no later sheet can be attributed to a full build
     const blockChanged = () => {
+        if (state.parsedMismatch && !state.skipped) skipTailwindCachePath(state);
         gen++;
         fed = new Set();
-        scheduleFeed();
+        state.recordingEnded = 'blocks';
+        stop();
     };
     const watchBlock = (el) => {
         const o = new MutationObserver(blockChanged);
@@ -5025,7 +5035,7 @@ function recordTailwindEngine(state, seedTokens) {
                 continue;
             }
             if (isTailwindBlock(m.target)) blocks = true;
-            for (const n of m.removedNodes) if (isTailwindBlock(n)) blocks = true;
+            for (const n of m.removedNodes) if (holdsTailwindBlock(n)) blocks = true;
             for (const n of m.addedNodes) {
                 if (n.nodeType !== 1 || n.hasAttribute('data-tailwind-seed')) continue;
                 if (isTailwindBlock(n)) { blocks = true; watchBlock(n); }
