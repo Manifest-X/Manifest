@@ -1976,6 +1976,7 @@ window.ManifestDataStore = {
     const STORE_NAME = 'sources';
     const DB_VERSION = 1;
     const WRITE_DEBOUNCE_MS = 500;
+    const WRITE_MAX_WAIT_MS = 5000; // a source landing more often than the debounce still snapshots
     const BOOT_HYDRATE_MAX_WAIT_MS = 100;
     const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const DEFAULT_MAX_ROWS = 1000;
@@ -2005,6 +2006,7 @@ window.ManifestDataStore = {
         scope: '',
         generation: 0,
         pending: new Map(),    // source -> time its debounced write is due
+        pendingSince: new Map(), // source -> when its unwritten landings began
         landedIdentity: new Map(), // source -> identity its pending rows were read under
         writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
@@ -2470,7 +2472,7 @@ window.ManifestDataStore = {
     // Every source whose debounce has elapsed is written in ONE transaction
     function flush(sources) {
         const landedIdentity = new Map(sources.map(source => [source, state.landedIdentity.get(source)]));
-        for (const source of sources) { state.pending.delete(source); state.landedIdentity.delete(source); }
+        for (const source of sources) { state.pending.delete(source); state.pendingSince.delete(source); state.landedIdentity.delete(source); }
         if (!state.enabled || state.disabled) return Promise.resolve();
         const records = sources.map(source => snapshotRecord(source, landedIdentity.get(source))).filter(Boolean);
         if (!records.length) return Promise.resolve();
@@ -2504,8 +2506,9 @@ window.ManifestDataStore = {
     }
 
     function cancelWrites(source) {
-        if (source !== undefined) { state.pending.delete(source); state.landedIdentity.delete(source); return; }
+        if (source !== undefined) { state.pending.delete(source); state.pendingSince.delete(source); state.landedIdentity.delete(source); return; }
         state.pending.clear();
+        state.pendingSince.clear();
         state.landedIdentity.clear();
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
     }
@@ -2513,11 +2516,12 @@ window.ManifestDataStore = {
     // Landing hook (store flush): each landing restarts that source's 500ms debounce
     function onLanded(sources) {
         if (!state.enabled || state.disabled || state.scopePending) return;   // nothing is keyed under an unresolved scope
-        const at = Date.now() + WRITE_DEBOUNCE_MS;
+        const now = Date.now();
         const identity = hydrationIdentity();
         for (const source of sources) {
             if (!state.sources.has(source)) continue;
-            state.pending.set(source, at);
+            if (!state.pendingSince.has(source)) state.pendingSince.set(source, now);
+            state.pending.set(source, Math.min(now + WRITE_DEBOUNCE_MS, state.pendingSince.get(source) + WRITE_MAX_WAIT_MS));
             if (state.sources.get(source).authDependent) state.landedIdentity.set(source, identity);
         }
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
@@ -2702,6 +2706,7 @@ window.ManifestDataStore = {
     window.ManifestDataPersist = {
         BOOT_HYDRATE_MAX_WAIT_MS,
         WRITE_DEBOUNCE_MS,
+        WRITE_MAX_WAIT_MS,
         configure,
         register,
         setScope,
@@ -4682,11 +4687,49 @@ function untracked(fn) {
     return out;
 }
 
+const IDENTITY = (value) => value;
+const toRaw = (value) => (value && typeof Alpine !== 'undefined' && Alpine.raw ? Alpine.raw(value) : value);
+
+// Operators read raw rows (no proxy traps, no dependency bookkeeping) and hand back the rows the array holds:
+// live (reactive) ones when the array itself is, so bindings on a result row still update
+function operatorRows(array) {
+    const base = toRaw(array);
+    const live = base !== array && typeof Alpine !== 'undefined' && !!Alpine.reactive;
+    // Already raw rows on a raw array: nothing to unwrap or map back
+    if (!live && (base.length === 0 || (toRaw(base[0]) === base[0] && toRaw(base[base.length - 1]) === base[base.length - 1]))) {
+        return { raws: base, out: IDENTITY };
+    }
+    const raws = new Array(base.length);
+    let back = null;
+    for (let i = 0; i < base.length; i++) {
+        const item = base[i];
+        const raw = toRaw(item);
+        raws[i] = raw;
+        if (raw !== item) (back || (back = new Map())).set(raw, item);
+    }
+    const out = (raw) => {
+        if (raw === null || typeof raw !== 'object') return raw;
+        if (back && back.has(raw)) return back.get(raw);
+        return live ? Alpine.reactive(raw) : raw;
+    };
+    return { raws, out };
+}
+
+// Searchable text of a field: scalars and lists of scalars (an object would read "[object Object]")
+function searchText(value) {
+    if (value == null) return '';
+    if (typeof value !== 'object') return String(value).toLowerCase();
+    if (!Array.isArray(value)) return '';
+    let text = '';
+    for (const part of value) if (part != null && typeof part !== 'object') text += (text ? ',' : '') + part;
+    return text.toLowerCase();
+}
+
 function memoOp(array, dataSourceName, op, args, compute) {
     const version = sourceVersion(dataSourceName);
-    if (version === undefined) return compute();
+    if (version === undefined) return compute(null);
     const argsKey = stableStringify(args);
-    if (argsKey === undefined) return compute();
+    if (argsKey === undefined) return compute(null);
     const raw = Alpine.raw ? Alpine.raw(array) : array;
     let entry = opCaches.get(raw);
     if (!entry || entry.v !== version) {
@@ -4701,7 +4744,7 @@ function memoOp(array, dataSourceName, op, args, compute) {
         map.set(key, hit);
         return hit;
     }
-    const result = untracked(compute);
+    const result = untracked(() => compute(entry));
     map.set(key, result);
     if (map.size > OP_CACHE_MAX) map.delete(map.keys().next().value);
     return result;
@@ -4822,12 +4865,13 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 return array;
             }
 
-            return memoOp(array, dataSourceName, 'search', [searchTerm, ...attributes], () => runSearch(searchTerm, attributes));
+            return memoOp(array, dataSourceName, 'search', [searchTerm, ...attributes], (memo) => runSearch(searchTerm, attributes, memo));
         }
     });
 
-    function runSearch(searchTerm, attributes) {
+    function runSearch(searchTerm, attributes, memo) {
         const term = searchTerm.toLowerCase().trim();
+        const { raws, out } = operatorRows(array);
 
         // Weighted mode: $search(term, { title: 3, body: 1 }) — ranks by the
         // best-matching field's weight per whitespace-separated term (prefix
@@ -4837,16 +4881,14 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             const fields = Object.keys(first);
             const terms = term.split(/\s+/).filter(Boolean);
             const scored = [];
-            for (const item of array) {
+            for (const item of raws) {
                 if (!item || typeof item !== 'object') continue;
                 let total = 0, ok = true;
                 for (const t of terms) {
                     let best = 0;
                     for (const f of fields) {
-                        const v = item[f];
-                        if (v == null) continue;
-                        const s = String(v).toLowerCase();
-                        if (!s.includes(t)) continue;
+                        const s = searchText(item[f]);
+                        if (!s || !s.includes(t)) continue;
                         let w = Number(first[f]) || 0;
                         if (s.startsWith(t)) w *= 1.2;
                         if (w > best) best = w;
@@ -4857,21 +4899,37 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 if (ok) scored.push([total, item]);
             }
             scored.sort((a, b) => b[0] - a[0]);
-            const ranked = scored.map(e => e[1]);
+            const ranked = scored.map(e => out(e[1]));
             attachArrayMethods(ranked, dataSourceName, reloadDataSource);
             return ranked;
         }
 
-        const attrs = attributes.length > 0 ? attributes : Object.keys(array[0] || {});
+        const attrs = attributes.length > 0 ? attributes : Object.keys(raws[0] || {}).filter(key => key !== '$files');
 
-        const filtered = array.filter(item => {
-            if (!item || typeof item !== 'object') return false;
-            return attrs.some(attr => {
-                const value = item[attr];
-                if (value == null) return false;
-                return String(value).toLowerCase().includes(term);
-            });
-        });
+        // One lowercase string per row, kept for this source version: each keystroke is one includes() per row
+        const SEP = '\u0000';
+        const hays = memo ? (memo.hay || (memo.hay = new Map())) : null;
+        const hayKey = hays ? attrs.join(SEP) : '';
+        let hay = hays ? hays.get(hayKey) : null;
+        if (!hay) {
+            hay = new Array(raws.length);
+            for (let i = 0; i < raws.length; i++) {
+                const item = raws[i];
+                if (!item || typeof item !== 'object') { hay[i] = null; continue; }
+                let text = '';
+                for (const attr of attrs) text += searchText(item[attr]) + SEP;
+                hay[i] = text;
+            }
+            if (hays) {
+                if (hays.size >= 4) hays.delete(hays.keys().next().value);
+                hays.set(hayKey, hay);
+            }
+        }
+
+        const filtered = [];
+        for (let i = 0; i < raws.length; i++) {
+            if (hay[i] !== null && hay[i].includes(term)) filtered.push(out(raws[i]));
+        }
 
         // Re-attach so chaining works (.$search().$query())
         attachArrayMethods(filtered, dataSourceName, reloadDataSource);
@@ -5012,7 +5070,8 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
     }
 
     function runQuery(queries) {
-        let result = [...array];
+        const { raws, out } = operatorRows(array);
+        let result = raws;
 
         // Process each query in order
         for (const query of queries) {
@@ -5064,6 +5123,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             // Sorting methods
             else if (method === 'orderAsc' && args.length >= 1) {
                 const [attr] = args;
+                if (result === raws) result = raws.slice();
                 result.sort((a, b) => {
                     const aVal = a && a[attr];
                     const bVal = b && b[attr];
@@ -5077,6 +5137,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 });
             } else if (method === 'orderDesc' && args.length >= 1) {
                 const [attr] = args;
+                if (result === raws) result = raws.slice();
                 result.sort((a, b) => {
                     const aVal = a && a[attr];
                     const bVal = b && b[attr];
@@ -5089,6 +5150,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
                 });
             } else if (method === 'orderRandom') {
+                if (result === raws) result = raws.slice();
                 // Fisher-Yates shuffle
                 for (let i = result.length - 1; i > 0; i--) {
                     const j = Math.floor(Math.random() * (i + 1));
@@ -5105,6 +5167,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             }
         }
 
+        result = out === IDENTITY ? (result === raws ? raws.slice() : result) : result.map(out);
         // Re-attach so chaining works (.$query().$search())
         attachArrayMethods(result, dataSourceName, reloadDataSource);
 
@@ -6847,6 +6910,14 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         ? Alpine.reactive({ value: null })
         : { value: null };
 
+    // Position of a row in a source by $id (cached index; -1 when absent)
+    const positionOf = (rows, id) => {
+        const ds = window.ManifestDataStore;
+        const raw = ds?.rawOf ? ds.rawOf(rows) : rows;
+        if (ds?.indexOfRow) return ds.indexOfRow(raw, id);
+        return raw.findIndex(row => row && row.$id === id);
+    };
+
     // Function to recompute files array from bucket and entry's fileIds
     const recomputeFiles = () => {
         try {
@@ -6882,7 +6953,8 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
                 return;
             }
 
-            const entry = entries.find(e => e.$id === entryId);
+            const entryAt = positionOf(entries, entryId);
+            const entry = entryAt === -1 ? null : entries[entryAt];
             if (!entry) {
                 computedFiles.length = 0;
                 loadingState.value = bucketLoading;
@@ -6899,10 +6971,14 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
                 return;
             }
 
-            // Filter bucket files by fileIds
-            const filteredFiles = bucketFiles.filter(file =>
-                file && file.$id && fileIds.includes(file.$id)
-            );
+            // The entry's files, in bucket order
+            const positions = [];
+            for (const id of new Set(fileIds)) {
+                const at = positionOf(bucketFiles, id);
+                if (at !== -1) positions.push(at);
+            }
+            positions.sort((a, b) => a - b);
+            const filteredFiles = positions.map(at => bucketFiles[at]);
 
             // Update computed array (maintains reactivity)
             computedFiles.length = 0;
@@ -6919,74 +6995,61 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         }
     };
 
-    // Set up Alpine effect to watch both bucket array and entry's fileIds
+    // Started on first read: a row whose $files nobody reads costs no effect.
+    // Tracks the table and bucket membership (length), the entry's fileIds and the bucket state.
     let filesEffect = null;
-    if (typeof Alpine !== 'undefined' && Alpine.effect) {
+    let started = false;
+    const start = () => {
+        if (started) return;
+        started = true;
+        if (typeof Alpine === 'undefined' || !Alpine.effect) { recomputeFiles(); return; }
         filesEffect = Alpine.effect(() => {
-            // Access store to track changes
             const store = Alpine.store('data');
             if (!store) {
                 recomputeFiles();
                 return;
             }
 
-            if (owner) {
-                const rows = store[tableName];
-                if (Array.isArray(rows) && !rows.some(row => (Alpine.raw ? Alpine.raw(row) : row) === owner)) {
+            const rows = store[tableName];
+            if (owner && Array.isArray(rows)) {
+                void rows.length;
+                const raw = Alpine.raw ? Alpine.raw(rows) : rows;
+                const at = positionOf(rows, entryId);
+                const held = at === -1 ? null : raw[at];
+                // Another row may hold the same $id for a moment (a rebuilt row): then look for this one itself
+                if ((Alpine.raw && held ? Alpine.raw(held) : held) !== owner && !raw.includes(owner)) {
                     queueMicrotask(() => { if (filesEffect) Alpine.release(filesEffect); });
                     return;
                 }
             }
 
-            // Track bucket array changes - access the array itself and iterate to track all elements
             const bucketFiles = store[bucketName];
-            if (bucketFiles && Array.isArray(bucketFiles)) {
-                // Access length and iterate to track all file changes
-                const _ = bucketFiles.length;
-                // Iterate through files to track individual file changes
-                bucketFiles.forEach(file => {
-                    if (file && file.$id) {
-                        const __ = file.$id; // Track file ID changes
-                    }
-                });
-            }
+            if (Array.isArray(bucketFiles)) void bucketFiles.length;
 
-            // Track entry's fileIds changes - access entry and fileIds array
-            const entries = store[tableName];
-            if (entries && Array.isArray(entries)) {
-                const entry = entries.find(e => e.$id === entryId);
-                if (entry) {
-                    // Access fileIds array to track changes
-                    const fileIds = entry[columnName] || [];
-                    if (Array.isArray(fileIds)) {
-                        const _ = fileIds.length;
-                        // Iterate through fileIds to track individual ID changes
-                        fileIds.forEach(id => {
-                            const __ = id; // Track individual fileId changes
-                        });
-                    }
+            if (Array.isArray(rows)) {
+                const at = positionOf(rows, entryId);
+                const entry = at === -1 ? null : rows[at];
+                const fileIds = entry ? entry[columnName] : null;
+                if (Array.isArray(fileIds)) {
+                    void fileIds.length;
+                    for (let i = 0; i < fileIds.length; i++) void fileIds[i];
                 }
             }
 
-            // Track bucket loading state
             const bucketState = store[`_${bucketName}_state`];
             if (bucketState) {
-                const _ = bucketState.loading;
-                const __ = bucketState.error;
+                void bucketState.loading;
+                void bucketState.error;
             }
 
-            // Recompute files after tracking all dependencies
             recomputeFiles();
         });
-    }
-
-    // Initial computation
-    recomputeFiles();
+    };
 
     // Create proxy that adds loading/error properties
     const computedProxy = new Proxy(computedFiles, {
         get(target, key) {
-            if (key !== 'toJSON') requestInline();
+            if (key !== 'toJSON') { requestInline(); start(); }
             if (key === '$loading') return loadingState.value;
             if (key === '$error') return errorState.value;
             if (key === Symbol.iterator) return target[Symbol.iterator].bind(target);
@@ -6998,6 +7061,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         },
         has(target, key) {
             requestInline();
+            start();
             return key in target || key === '$loading' || key === '$error';
         }
     });

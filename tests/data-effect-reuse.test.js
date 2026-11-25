@@ -77,6 +77,7 @@ describe('computed $files', () => {
         store.a.push(twin)
         const files = make('a', 'e2', 'bucket', 'fileIds', { owner: row })
         const twinFiles = make('a', 'e2', 'bucket', 'fileIds', { owner: Alpine.raw(store.a[2]) })
+        void twinFiles.length // the effect starts on first read
         await tick()
         expect(files.map(f => f.$id)).toEqual(['f2'])
         expect(release).not.toHaveBeenCalled()
@@ -91,6 +92,32 @@ describe('computed $files', () => {
         await tick()
         expect(release).toHaveBeenCalledTimes(2)
         release.mockRestore()
+    })
+
+    it('creates no effect until it is read', async () => {
+        effect.mockClear()
+        const files = make('a', 'e1', 'bucket', 'fileIds')
+        await tick()
+        expect(effect).not.toHaveBeenCalled()
+        expect(files.length).toBe(1)
+        expect(effect).toHaveBeenCalledTimes(1)
+        void files.$loading
+        expect(effect).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps bucket order whatever the order of fileIds', async () => {
+        const store = Alpine.store('data')
+        store.a[0].fileIds.push('f2')
+        const files = make('a', 'e1', 'bucket', 'fileIds')
+        expect(files.map(f => f.$id)).toEqual(['f1', 'f2'])
+        store.a[0].fileIds.reverse()
+        await tick()
+        expect(files.map(f => f.$id)).toEqual(['f1', 'f2'])
+        store.a[0].fileIds.push('missing', 'f1')
+        await tick()
+        expect(files.map(f => f.$id)).toEqual(['f1', 'f2'])
+        store.a[0].fileIds = ['f1']
+        await tick()
     })
 
     it('stays in sync with the bucket and the entry', async () => {

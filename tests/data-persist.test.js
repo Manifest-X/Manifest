@@ -250,6 +250,22 @@ describe('write path', () => {
         expect(records().map(r => r.key).sort()).toEqual(['|chats', '|settings'])
     })
 
+    it('a source landing more often than the debounce still snapshots within the maximum wait', async () => {
+        const { main, persist, records } = await load()
+        await main.loadDataSource('chats')
+        const store = window.ManifestDataStore
+        let n = 0
+        const busy = setInterval(() => { store.landRows('chats', [{ $id: 'c0', name: 'tick ' + (++n) }], { mode: 'append' }) }, 200)
+        try {
+            await settle(persist.WRITE_MAX_WAIT_MS - 1200)
+            expect(records()).toEqual([]) // every landing restarts the debounce
+            await settle(1700)
+            const rec = records().find(r => r.source === 'chats')
+            expect(rec).toBeTruthy()
+            expect(rec.rows[0].name).toMatch(/^tick /)
+        } finally { clearInterval(busy) }
+    }, 15000)
+
     it('strips configured names, globs and the built-in secret patterns', async () => {
         const { main, persist, records, net } = await load()
         net.rows.contacts = [{ $id: 'k0', name: 'Ann', email: 'a@x', customFields: { a: 1 }, customNote: 'n', apiToken: 't', clientSecret: 's', PASSWORD: 'p', credentialsBlob: 'c', ok: true }]
