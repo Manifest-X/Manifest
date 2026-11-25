@@ -4,7 +4,7 @@
  * 2. component HTML for the first view is requested in one round, nested components in the next;
  * 3. no component file is requested more than twice (loader + utilities scan share in-flight fetches);
  * 4. the hints never delay the first view: its component requests start within two round trips
- *    of the manifest, and every component is in the DOM before Alpine starts;
+ *    of the manifest, and every component is in the DOM before manifest:ready;
  * 5. the page still boots: data renders, every component lands, no page errors, no hint left in <head>.
  *
  * Run: node tests/e2e/boot-waterfall.e2e.mjs
@@ -74,7 +74,8 @@ check(Math.max(...nested) <= Math.max(...top) + LAT * 1.5 + 60, 'nested componen
 const counts = Object.fromEntries(['header', 'hero', 'features', 'footer', 'logo', 'card'].map(n => [n, starts(n).length]))
 check(['header', 'hero', 'features', 'footer'].every(n => counts[n] === 1) && Object.values(counts).every(c => c <= 2), 'first-view component files are requested once (nested: at most twice)', counts)
 check(Math.min(...top) - r.manifestEnd < LAT * 2, 'first-view component requests start within two round trips of the manifest', { manifestEnd: r.manifestEnd, top })
-check(runs.every(x => x.t.allComponentsInDom <= x.t.alpineInit + 30), 'every component is in the DOM by the time Alpine starts', runs.map(x => [x.t.allComponentsInDom, x.t.alpineInit]))
+// Alpine no longer waits on the on-use directive modules, so it can start before components (which wait for data) land; Alpine's observer starts them
+check(runs.every(x => x.t.allComponentsInDom > 0 && x.t.allComponentsInDom <= x.t.ready), 'every component is in the DOM before the page is ready', runs.map(x => [x.t.allComponentsInDom, x.t.alpineInit, x.t.ready]))
 check(runs.every(x => x.hintsLeft === 0), 'no hint is left in <head> after boot', runs.map(x => x.hintsLeft))
 check(runs.every(x => x.text === 'Boot' && x.t.allComponentsInDom > 0), 'the page boots: data renders and every component lands', runs.map(x => [x.text, x.t.allComponentsInDom]))
 check(runs.every(x => x.errors.length === 0), 'no page errors', runs.flatMap(x => x.errors))

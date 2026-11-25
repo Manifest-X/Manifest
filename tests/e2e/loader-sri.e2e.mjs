@@ -86,9 +86,11 @@ function site() {
     })))
 }
 
-const page = (loaderAttrs, plugins = 'data-plugins="toasts,tooltips"') => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
+const page = (loaderAttrs, plugins = 'data-plugins="toasts,tooltips"', extra = '') => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <script ${loaderAttrs} ${plugins} data-tailwind></script></head>
-<body><div x-data="{ m: 'booted' }"><span id="t" x-text="m"></span></div></body></html>`
+<body><div x-data="{ m: 'booted' }"><span id="t" x-text="m"></span>${extra}</div></body></html>`
+// Uses every on-use directive module, so the default set plus all of them load
+const ON_USE = `<div x-markdown="'# T'"></div><pre x-code="js"><code>1</code></pre><span x-svg.safe="''"></span><input x-combobox="o"><div x-carousel><div class="carousel-slides"><div>a</div></div></div><template x-colorpicker></template><div x-date></div><div x-chart="{ type: 'bar', series: [{ data: [1] }] }"></div><div x-virtual><template x-for="r in []"><p></p></template></div><button x-export.csv>e</button>`
 
 let failed = 0
 function check(name, ok, detail = '') {
@@ -124,6 +126,7 @@ async function main() {
         '/latest': page(`src="${a.base}/mnfst@latest/lib/manifest.min.js" ${cdn}`),
         '/pinned-latest-modules': page(`${pinned} data-version="latest"`),
         '/pinned-defaults': page(pinned, ''),
+        '/pinned-defaults-used': page(pinned, '', ON_USE),
         '/pinned-warn': page(`${pinned} data-version="latest" data-integrity="warn"`),
         '/plugins': `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 <script ${pinned} data-plugins="markdown,code,charts"></script></head>
@@ -144,7 +147,11 @@ async function main() {
         check('pinned: no console errors', r.errors.length === 0, r.errors.join(' | '))
 
         r = await visit(browser, s.url('/pinned-defaults'))
-        check('pinned, default module set (all shipped .min.js): boots verified with no errors', r.booted && r.tags.length >= 20 && r.tags.every((t) => t.integrity) && r.errors.length === 0, `${r.tags.length} tags; ${r.errors.join(' | ')}`)
+        // The default set no longer carries the on-use directive modules: 12 core modules, Tailwind, Alpine
+        check('pinned, default module set: boots verified with no errors', r.booted && r.tags.length >= 14 && r.tags.every((t) => t.integrity) && r.errors.length === 0, `${r.tags.length} tags; ${r.errors.join(' | ')}`)
+        r = await visit(browser, s.url('/pinned-defaults-used'))
+        const used = ['markdown', 'svg', 'code', 'combobox', 'slides', 'colorpicker', 'datepicker', 'charts', 'virtual', 'export'].filter((m) => !r.tags.some((t) => t.src.endsWith(`manifest.${m}.min.js`)))
+        check('pinned, default set plus every on-use module (all shipped .min.js): boots verified with no errors', r.booted && used.length === 0 && r.tags.length >= 24 && r.tags.every((t) => t.integrity) && r.errors.length === 0, `${r.tags.length} tags; missing ${used.join(',')}; ${r.errors.join(' | ')}`)
 
         a.tampered.add('manifest.toasts.min.js')
         r = await visit(browser, s.url('/pinned'))
