@@ -821,7 +821,8 @@
 	// into template content, which the parser detaches) and inline scripts.
 	// Rendered text is deliberately not scanned — code samples on a page
 	// must not pull plugins in.
-	// attr matches x-name, x-name.mod and x-name:arg (family: also x-name-*)
+	// attr matches x-name, x-name.mod and x-name:arg (family: also x-name-*); late: held until
+	// its module registers when Alpine walks it first (Rich Text and Submissions handle that themselves)
 	const USAGE_PLUGINS = [
 		{ magic: '$chat', plugin: 'chat' },
 		{ magic: '$presence', plugin: 'appwrite-presences' },
@@ -831,30 +832,29 @@
 		{ plugin: 'charts', attr: 'x-chart', magic: '$chart', present: 'ensureChartsPluginInitialized' },
 		{ plugin: 'colorpicker', attr: 'x-colorpicker', magic: '$colorpicker', present: 'ensureColorpickerPluginInitialized' },
 		{ plugin: 'datepicker', attr: 'x-date', magic: '$date', present: 'ensureDatepickerPluginInitialized' },
-		{ plugin: 'combobox', attr: 'x-combobox' },
-		{ plugin: 'code', attr: 'x-code' },
-		{ plugin: 'code', attr: 'x-code-group' },
-		{ plugin: 'markdown', attr: 'x-markdown' },
-		{ plugin: 'export', attr: 'x-export', magic: '$export', present: 'ensureExportPluginInitialized' },
-		{ plugin: 'export', attr: 'x-import', magic: '$import', present: 'ensureImportPluginInitialized' },
-		{ plugin: 'virtual', attr: 'x-virtual' },
-		{ plugin: 'slides', attr: 'x-carousel' },
-		{ plugin: 'svg', attr: 'x-svg' }
-	// late: adopted generically when it arrives after Alpine started (Rich Text adopts itself)
-	]
-	.map(u => ({ ...u, late: USAGE_LOADED_PLUGINS.includes(u.plugin) && !['rich-text', 'submissions'].includes(u.plugin), re: u.magic ? new RegExp('\\' + u.magic + '\\b') : null }));
+		{ plugin: 'combobox', attr: 'x-combobox', present: 'ensureComboboxPluginInitialized' },
+		{ plugin: 'code', attr: 'x-code', present: 'ensureCodePluginInitialized' },
+		{ plugin: 'code', attr: 'x-code-group', present: 'ensureCodePluginInitialized' },
+		{ plugin: 'markdown', attr: 'x-markdown', present: 'ensureMarkdownPluginInitialized' },
+		{ plugin: 'export', attr: 'x-export', magic: '$export', present: 'ensureExportPluginInitialized', call: true },
+		{ plugin: 'export', attr: 'x-import', magic: '$import', present: 'ensureImportPluginInitialized', call: true },
+		{ plugin: 'virtual', attr: 'x-virtual', present: 'ensureVirtualPluginInitialized' },
+		{ plugin: 'slides', attr: 'x-carousel', present: 'ensureSlidesPluginInitialized' },
+		{ plugin: 'svg', attr: 'x-svg', present: 'ensureSvgPluginInitialized' }
+	].map(u => ({ ...u, late: USAGE_LOADED_PLUGINS.includes(u.plugin) && !['rich-text', 'submissions'].includes(u.plugin), re: u.magic ? new RegExp('\\' + u.magic + '\\b') : null }));
 	const USAGE_NAMES = [...new Set(USAGE_PLUGINS.map(u => u.plugin))];
-	const USAGE_ATTRS = new Map(USAGE_PLUGINS.filter(u => u.attr).map(u => [u.attr, u.plugin]));
-	const USAGE_FAMILIES = USAGE_PLUGINS.filter(u => u.family).map(u => [u.attr + '-', u.plugin]);
-	// Plugin for a directive attribute name, or undefined
-	function attrPlugin(name) {
+	const USAGE_ATTRS = new Map(USAGE_PLUGINS.filter(u => u.attr).map(u => [u.attr, u]));
+	const USAGE_FAMILIES = USAGE_PLUGINS.filter(u => u.family).map(u => [u.attr + '-', u]);
+	const attrPlugin = (name) => { const u = attrEntry(name); return u && u.plugin; };
+	// Usage entry for a directive attribute name, or undefined
+	function attrEntry(name) {
 		if (name.charCodeAt(0) !== 120 || name.charCodeAt(1) !== 45) return;
 		let end = name.length;
 		for (let i = 2; i < end; i++) { const c = name.charCodeAt(i); if (c === 46 || c === 58) { end = i; break; } }
 		const base = end === name.length ? name : name.slice(0, end);
-		const p = USAGE_ATTRS.get(base);
-		if (p) return p;
-		for (const [pre, plugin] of USAGE_FAMILIES) if (base.startsWith(pre)) return plugin;
+		const u = USAGE_ATTRS.get(base);
+		if (u) return u;
+		for (const [pre, entry] of USAGE_FAMILIES) if (base.startsWith(pre)) return entry;
 	}
 	// Plain-HTML trigger: <pre><code class="language-x"> and <code copy> (Code)
 	function elementPlugin(el) {
@@ -924,71 +924,163 @@
 	stubEditMagic();
 	// Plugins loaded after Alpine started adopt what its first walk already passed
 	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => { window.__manifestAlpineStarted = true; }, { once: true });
-	// On-use modules that arrive after Alpine started: elements Alpine walked before the
-	// directive existed get its attributes re-set (handled as newly added directives), and
-	// their magics answer with an idle stand-in until then, so expressions never throw.
+	// On-use modules not registered when Alpine walks their element: the element and its subtree
+	// are held uninitialised (Alpine.deferInit, inert like a deferred container, x-cloak stays) and
+	// started once, after the directive registers. Their magics answer through a forwarding
+	// stand-in until the module arrives, so expressions never throw.
+	const lateEntries = USAGE_PLUGINS.filter(u => u.late);
+	const LATE_ATTRS = lateEntries.filter(u => u.attr).map(u => u.attr);
+	// Ran before this loader: registered during alpine:init ahead of the wrappers below
+	const preloaded = typeof window === 'undefined' ? [] : lateEntries.filter(u => window[u.present]).map(u => u.plugin);
+	const registered = new Set();
+	const waiters = new Map();
+	const whenRegistered = (name) => {
+		if (registered.has(name)) return Promise.resolve();
+		if (!waiters.has(name)) { let resolve; const promise = new Promise(r => { resolve = r; }); waiters.set(name, { promise, resolve }); }
+		return waiters.get(name).promise;
+	};
+	// Attributes added to live elements before their directive existed (no hold possible): re-set once it registers
+	const reset = new Map();
+	const warnedLate = new Set();
+	const lateDirective = (attr) => { const u = attrEntry(attr); return u && u.late && !preloaded.includes(u.plugin) ? u : null; };
+	// Will this module arrive? Starts its load when the page may load it on use
+	function bringLate(plugin) {
+		if (usageFailed.has(plugin)) return null;
+		if (!pluginLoads.has(plugin)) {
+			if (!usageSniff || _omitted.includes(plugin)) return null;
+			fetchUsed(resolveDependencies([plugin]).filter(p => !usageLoaded(p)));
+		}
+		const load = pluginLoads.get(plugin);
+		return load ? load.promise : null;
+	}
+	const heldEls = new WeakSet();
+	let heldCount = 0;
+	let heldRelease = null;
+	function hold(A, el, u) {
+		const load = bringLate(u.plugin);
+		if (!load) return false;
+		const name = u.attr.slice(2);
+		heldEls.add(el);
+		if (!heldCount++ && window.ManifestPending) heldRelease = window.ManifestPending.hold('held');
+		const ready = new Promise((resolve) => {
+			whenRegistered(name).then(resolve);
+			load.catch(() => {
+				if (!warnedLate.has(u.plugin)) { warnedLate.add(u.plugin); console.warn(`[Manifest Loader] ${u.plugin} failed to load; starting the elements that use it without it.`); }
+				resolve();
+			});
+		});
+		A.deferInit(el, ready.then(() => {
+			heldEls.delete(el);
+			if (!--heldCount && heldRelease) { heldRelease(); heldRelease = null; }
+		}));
+		return true;
+	}
 	let lateArmed = false;
 	function armLateModules() {
 		const A = typeof window === 'undefined' ? null : window.Alpine;
 		if (lateArmed || !A || !A.directive || !A.magic) return;
 		lateArmed = true;
-		const late = USAGE_PLUGINS.filter(u => u.late);
-		const directives = new Set(late.filter(u => u.attr).map(u => u.attr.slice(2)));
+		const directive = A.directive, magic = A.magic;
+		A.directive = function (name) {
+			const out = directive.apply(this, arguments);
+			if (!registered.has(name)) {
+				registered.add(name);
+				const w = waiters.get(name);
+				if (w) { waiters.delete(name); w.resolve(); }
+				const els = reset.get(name);
+				if (els) {
+					reset.delete(name);
+					setTimeout(() => els.forEach(([el, attr]) => { if (el.isConnected && el.hasAttribute(attr)) el.setAttribute(attr, el.getAttribute(attr)); }), 0);
+				}
+			}
+			return out;
+		};
+		if (typeof A.interceptInit === 'function') {
+			const canHold = typeof A.deferInit === 'function';
+			const intercept = (el) => {
+				if (heldEls.has(el)) return;
+				for (const attr of el.attributes) {
+					const u = lateDirective(attr.name);
+					if (!u || registered.has(u.attr.slice(2))) continue;
+					if (canHold) { if (hold(A, el, u)) return; continue; }
+					// Older Alpine without deferInit: run just that directive once it registers
+					if (bringLate(u.plugin)) note(u, el, attr.name);
+				}
+			};
+			A.interceptInit(typeof A.skipDuringClone === 'function' ? A.skipDuringClone(intercept) : intercept);
+		}
+		armStandIns(A, magic);
+	}
+	function note(u, el, attr) {
+		const name = u.attr.slice(2);
+		if (registered.has(name)) return;
+		if (!reset.has(name)) reset.set(name, []);
+		reset.get(name).push([el, attr]);
+	}
+	// Forwarding stand-in for a magic whose module has not registered yet
+	function armStandIns(A, magic) {
 		const real = {};
 		const state = A.reactive ? A.reactive({ v: 0 }) : { v: 0 };
-		const idle = new Proxy(() => idle, { get: (t, k) => k === Symbol.toPrimitive ? () => '' : (typeof k === 'symbol' || k === 'then') ? undefined : idle });
-		const magic = A.magic, directive = A.directive;
-		for (const u of late) {
-			if (!u.magic || window[u.present]) continue;
+		// Probing must not count as a read (a second loader's stand-ins would start loads)
+		const has = (name) => { window.__manifestProbing = true; try { return A.evaluate(document.createElement('div'), `typeof $${name}`) !== 'undefined'; } catch (_) { return false; } finally { window.__manifestProbing = false; } };
+		// Reads the real value once there; until then reads as empty text, is callable and never thenable
+		const forward = (resolve, settle) => new Proxy(function () { }, {
+			get(t, k) {
+				const v = resolve();
+				if (v != null) { const r = v[k]; return typeof r === 'function' && k !== 'constructor' ? r.bind(v) : r; }
+				if (k === Symbol.toPrimitive) return () => '';
+				if (typeof k === 'symbol' || k === 'then') return undefined;
+				return forward(() => { const b = resolve(); return b == null ? undefined : b[k]; }, settle);
+			},
+			apply(t, self, args) {
+				const f = resolve();
+				if (typeof f === 'function') return f.apply(self, args);
+				// Function-valued magics: the call waits for the module, then runs once
+				if (settle) return settle().then(() => { const g = resolve(); return typeof g === 'function' ? g.apply(self, args) : undefined; });
+				let done = false, out;
+				return forward(() => { if (done) return out; const g = resolve(); if (typeof g !== 'function') return undefined; done = true; return (out = g.apply(self, args)); }, settle);
+			}
+		});
+		for (const u of lateEntries) {
+			if (!u.magic || preloaded.includes(u.plugin) || pluginsSettled.has(u.plugin)) continue;
 			const name = u.magic.slice(1);
+			// An app's own magic of the same name stays
+			if (has(name)) continue;
 			let asked = false;
+			const arrived = () => new Promise((resolve) => {
+				if (real[name]) return resolve();
+				const load = bringLate(u.plugin);
+				if (!load) return resolve();
+				const check = () => real[name] ? resolve() : null;
+				load.then(() => setTimeout(() => { check(); setTimeout(resolve, 0); }, 0), resolve);
+			});
 			magic.call(A, name, (el, utils) => {
 				void state.v;
 				if (real[name]) return real[name](el, utils);
-				// Read with no markup trigger (e.g. from a script file): load it now, derive path only
-				if (!asked && usageSniff && !_omitted.includes(u.plugin)) { asked = true; fetchUsed(resolveDependencies([u.plugin]).filter(p => !usageLoaded(p))); }
-				return idle;
+				if (!asked && !window.__manifestProbing) {
+					asked = true;
+					// No markup trigger (e.g. a script file): load it now, or say why it never will
+					if (!bringLate(u.plugin) && !warnedLate.has(name) && !warnedLate.has(u.plugin)) {
+						warnedLate.add(name);
+						const fix = _omitted.includes(u.plugin) ? `remove ${u.plugin} from data-omit` : `add data-modules="+${u.plugin}"`;
+						console.warn(`[Manifest Loader] ${u.magic} is used but ${u.plugin} is not loaded on this page: ${fix}.`);
+					}
+				}
+				const fn = u.call ? arrived : null;
+				return forward(() => real[name] ? real[name](el, utils) : undefined, fn);
 			});
 		}
 		A.magic = function (name, cb) {
-			if (late.some(u => u.magic === '$' + name)) { real[name] = cb; setTimeout(() => { state.v++; }, 0); }
+			if (lateEntries.some(u => u.magic === '$' + name)) { real[name] = cb; setTimeout(() => { state.v++; }, 0); }
 			return magic.apply(this, arguments);
-		};
-		const queued = new Map();
-		let timer = null;
-		// Re-walked from the outermost such element, as if inserted now (scope-providing directives need the subtree)
-		const adopt = () => {
-			timer = null;
-			const names = [...queued];
-			queued.clear();
-			const stale = (n, attr) => { for (const [d, mark] of names) { const a = 'x-' + d; if (n < mark && (attr === a || (attr.startsWith(a) && (attr.charCodeAt(a.length) === 46 || attr.charCodeAt(a.length) === 58)))) return true; } return false; };
-			const roots = [];
-			for (const el of document.querySelectorAll('*')) {
-				const n = el._x_marker;
-				if (!n || (roots.length && roots[roots.length - 1].contains(el))) continue;
-				for (const attr of el.attributes) if (stale(n, attr.name)) { roots.push(el); break; }
-			}
-			for (const el of roots) {
-				if (!el.isConnected) continue;
-				try { A.destroyTree(el); A.initTree(el); } catch (e) { console.warn('[Manifest Loader] Could not start a late module on', el, e); }
-			}
-		};
-		A.directive = function (name) {
-			const out = directive.apply(this, arguments);
-			if (directives.has(name) && window.__manifestAlpineStarted && typeof A.initTree === 'function' && !queued.has(name)) {
-				// Walked before now: a detached probe takes the next walk number
-				const probe = document.createElement('div');
-				try { A.initTree(probe); } catch (_) { /* no probe, no adoption */ }
-				if (probe._x_marker) queued.set(name, probe._x_marker);
-				if (!timer) timer = setTimeout(adopt, 0);
-			}
-			return out;
 		};
 	}
 	if (typeof document !== 'undefined') {
 		document.addEventListener('alpine:init', armLateModules, { once: true });
 		if (typeof window !== 'undefined' && window.Alpine && window.Alpine.magic) armLateModules();
 	}
+	// Inside a held subtree: modules that walk elements themselves leave these to the hold
+	if (typeof window !== 'undefined') window.__manifestHeld = (el) => { if (!heldCount) return false; for (let n = el; n; n = n.parentElement) if (heldEls.has(n)) return true; return false; };
 	// Framework web components — <x-*> tags that are NOT project components.
 	const FRAMEWORK_TAG_RE = /^x-(code|code-group)$/;
 	// Attribute values seen to hold no usage magic at all; repeated rows hit this instead of the regexes
@@ -1111,7 +1203,10 @@
 		let queued = false;
 		const allLoaded = () => USAGE_PLUGINS.every(u => usageLoaded(u.plugin) || _omitted.includes(u.plugin));
 		const observer = new MutationObserver((records) => {
-			for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) pending.add(n);
+			for (const r of records) {
+				if (r.type === 'attributes') { attrAdded(r.target, r.attributeName); continue; }
+				for (const n of r.addedNodes) if (n.nodeType === 1) pending.add(n);
+			}
 			if (queued || !pending.size) return;
 			queued = true;
 			setTimeout(() => {
@@ -1122,7 +1217,13 @@
 				if (allLoaded()) observer.disconnect();
 			}, 0);
 		});
-		observer.observe(document.documentElement, { childList: true, subtree: true });
+		// Attribute additions on live elements, on-use directive names only (exact: setAttribute('x-date', …))
+		observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: LATE_ATTRS });
+	}
+	function attrAdded(el, name) {
+		const u = lateDirective(name);
+		if (!u || !el.hasAttribute(name) || registered.has(u.attr.slice(2)) || window.__manifestHeld(el)) return;
+		if (bringLate(u.plugin)) note(u, el, name);
 	}
 
 	const RENAMED_PLUGINS = { 'text-edit': 'rich-text' };
@@ -1611,6 +1712,7 @@
 					const all = sniffBoot().take();
 					// An omitted module the page uses fails far from the cause: say so once
 					const blocked = all.filter(p => _omitted.includes(p) && !pluginsToLoad.includes(p));
+					blocked.forEach(p => warnedLate.add(p));
 					if (blocked.length) console.warn(`[Manifest Loader] data-omit lists ${blocked.join(', ')}, but this page uses ${blocked.length > 1 ? 'them' : 'it'}. Not loaded: remove ${blocked.length > 1 ? 'them' : 'it'} from data-omit to load.`);
 					const used = all.filter(p => !pluginsToLoad.includes(p) && !_omitted.includes(p));
 					if (used.length > 0) {
