@@ -4523,6 +4523,10 @@ const TAILWIND_CACHE_BUDGET = 1024 * 1024;
 const TAILWIND_CACHE_QUIET = 1000;
 const TAILWIND_CACHE_MIN_INTERVAL = 10000;
 const TAILWIND_CACHE_FEED_DELAY = 250;
+const TAILWIND_CACHE_SKIP_PATHS = 32;
+const TAILWIND_CACHE_OVER_IDS = 16;
+const TAILWIND_CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+const TAILWIND_CACHE_STRINGS = 4000;
 
 function tailwindAuthorBlockTexts() {
     return Array.from(document.querySelectorAll('style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)'), s => s.textContent);
@@ -4551,6 +4555,14 @@ function addClassTokens(value, into) {
     if (!value) return into;
     for (const t of value.split(/\s+/)) if (t && !TAILWIND_CACHE_IGNORED.has(t)) into.add(t);
     return into;
+}
+
+// Class strings already split: churn mostly toggles between a few, so each is split once
+function addClassString(value, into, done) {
+    if (!value || done.has(value)) return;
+    if (done.size > TAILWIND_CACHE_STRINGS) done.clear();
+    done.add(value);
+    addClassTokens(value, into);
 }
 
 function documentClassTokens(into) {
@@ -4650,10 +4662,12 @@ function feedTailwindEngine(tokens, done) {
 function watchCachedTailwind(state) {
     const rec = state.record;
     const known = new Set(rec.tokens);
+    const known_strings = new Set();
     const blockObservers = [];
     let loading = false;
     let observer = null;
     let swap = null;
+    let ready = document.readyState !== 'loading';
 
     const stop = () => {
         if (observer) observer.disconnect();
@@ -4699,12 +4713,21 @@ function watchCachedTailwind(state) {
         });
     };
 
-    const checkBlocks = () => {
+    // parsed: the mismatch was in the document by DOMContentLoaded (or when the watcher armed)
+    const checkBlocks = (parsed = !ready) => {
         const variants = tailwindVariantsText();
         const ok = sameTailwindSequence(tailwindAuthorBlockTexts(), rec.blocks) &&
             (variants === null || rec.variants === undefined || variants === rec.variants);
-        if (!ok) load('config');
-        return ok;
+        if (ok) return true;
+        // A block in the parsed page: the cached sheet is another page's theme, so drop it now.
+        // One added by script later: keep the previous, correct sheet until the engine's replaces it.
+        if (parsed) {
+            if (state.style) state.style.remove();
+            state.style = null;
+            skipTailwindCachePath(state);
+        }
+        load('config');
+        return false;
     };
 
     const watchBlock = (el) => {
@@ -4713,24 +4736,29 @@ function watchCachedTailwind(state) {
         blockObservers.push(o);
     };
 
-    const checkTokens = (tokens) => {
-        const unseen = [];
-        for (const t of tokens) if (!known.has(t)) unseen.push(t);
-        if (unseen.length) load('unseen', unseen);
+    const unseenIn = (value, unseen) => {
+        if (!value || known_strings.has(value)) return;
+        let all = true;
+        for (const t of value.split(/\s+/)) {
+            if (t && !TAILWIND_CACHE_IGNORED.has(t) && !known.has(t)) { unseen.add(t); all = false; }
+        }
+        if (all) {
+            if (known_strings.size > TAILWIND_CACHE_STRINGS) known_strings.clear();
+            known_strings.add(value);
+        }
     };
 
     const arm = () => {
         observer = new MutationObserver((mutations) => {
             if (loading) return;
-            const tokens = new Set();
+            const unseen = new Set();
             let blocks = false;
             for (const m of mutations) {
                 if (m.type === 'attributes') {
                     if (m.attributeName === 'type') { if (m.target.localName === 'style') blocks = true; continue; }
-                    if (m.target.hasAttribute('data-tailwind-seed')) continue;
                     // Old values catch classes that came and went within one task (x-transition)
-                    addClassTokens(m.oldValue, tokens);
-                    addClassTokens(m.target.getAttribute('class'), tokens);
+                    unseenIn(m.oldValue, unseen);
+                    unseenIn(m.target.getAttribute('class'), unseen);
                     continue;
                 }
                 if (isTailwindBlock(m.target)) blocks = true;
@@ -4738,40 +4766,61 @@ function watchCachedTailwind(state) {
                 for (const n of m.addedNodes) {
                     if (n.nodeType !== 1 || n.hasAttribute('data-tailwind-seed')) continue;
                     if (isTailwindBlock(n)) { blocks = true; watchBlock(n); }
-                    addClassTokens(n.getAttribute('class'), tokens);
+                    unseenIn(n.getAttribute('class'), unseen);
                     if (n.firstElementChild) {
-                        for (const d of n.querySelectorAll('[class]')) addClassTokens(d.getAttribute('class'), tokens);
+                        for (const d of n.querySelectorAll('[class]')) unseenIn(d.getAttribute('class'), unseen);
                         for (const s of n.querySelectorAll('style[type="text/tailwindcss"]')) { blocks = true; watchBlock(s); }
                     }
                 }
             }
             if (blocks && !checkBlocks()) return;
-            if (tokens.size) checkTokens(tokens);
+            if (unseen.size) load('unseen', Array.from(unseen));
         });
         observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['class', 'type'] });
         document.querySelectorAll('style[type="text/tailwindcss"]').forEach(watchBlock);
     };
 
+    const scanAll = () => {
+        const unseen = new Set();
+        for (const el of document.querySelectorAll('[class]')) if (!el.hasAttribute('data-tailwind-seed')) unseenIn(el.getAttribute('class'), unseen);
+        if (unseen.size) load('unseen', Array.from(unseen));
+    };
+
     touchTailwindCacheEntry(state);
     arm();
-    if (!checkBlocks()) return;
-    checkTokens(documentClassTokens(new Set()));
+    if (!checkBlocks(true)) return;
+    scanAll();
     const onReady = () => {
         if (loading) return;
         // A shipped sheet means the eager path; blocks parsed in <body> must match too
         if (shippedUtilitiesSheetPresent()) return load('shipped');
-        if (checkBlocks()) checkTokens(documentClassTokens(new Set()));
+        const ok = checkBlocks(true);
+        ready = true;
+        if (ok) scanAll();
     };
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', onReady, { once: true });
+    if (!ready) document.addEventListener('DOMContentLoaded', onReady, { once: true });
     else onReady();
 }
 
 function readTailwindCacheIndex(state) {
     try {
         const index = JSON.parse(localStorage.getItem(state.key) || 'null');
-        if (index && Array.isArray(index.ids) && index.sizes && typeof index.sizes === 'object') return index;
+        if (index && Array.isArray(index.ids) && index.sizes && typeof index.sizes === 'object') {
+            if (!Array.isArray(index.skip)) index.skip = [];
+            if (!index.over || typeof index.over !== 'object') index.over = {};
+            return index;
+        }
     } catch (e) { /* rebuilt below */ }
-    return { ids: [], sizes: {} };
+    return { ids: [], sizes: {}, skip: [], over: {} };
+}
+
+function saveTailwindCacheIndex(state, index) {
+    try {
+        localStorage.setItem(state.key, JSON.stringify(index));
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
 
 // A replayed entry counts as recently used
@@ -4780,8 +4829,48 @@ function touchTailwindCacheEntry(state) {
         const index = readTailwindCacheIndex(state);
         if (!state.id || index.ids[0] === state.id || !index.ids.includes(state.id)) return;
         index.ids = [state.id, ...index.ids.filter(x => x !== state.id)];
-        localStorage.setItem(state.key, JSON.stringify(index));
+        saveTailwindCacheIndex(state, index);
     } catch (e) { /* order only */ }
+}
+
+// This page needed a block in <body>: later visits go straight to the engine
+function skipTailwindCachePath(state) {
+    try {
+        if (!state.pathId) return;
+        state.skipped = true;
+        const index = readTailwindCacheIndex(state);
+        index.skip = [state.pathId, ...index.skip.filter(x => x !== state.pathId)].slice(0, TAILWIND_CACHE_SKIP_PATHS);
+        saveTailwindCacheIndex(state, index);
+    } catch (e) { /* replay only */ }
+}
+
+function isTailwindCacheOver(index, id) {
+    const t = index.over[id];
+    return typeof t === 'number' && Date.now() - t >= 0 && Date.now() - t <= TAILWIND_CACHE_MAX_AGE;
+}
+
+// Over the cap for this block set: no entry, and later visits skip recording
+function markTailwindCacheOver(state, id) {
+    try {
+        const index = readTailwindCacheIndex(state);
+        index.over[id] = Date.now();
+        const ids = Object.keys(index.over).sort((a, b) => index.over[b] - index.over[a]);
+        for (const old of ids.slice(TAILWIND_CACHE_OVER_IDS)) delete index.over[old];
+        index.ids = index.ids.filter(x => x !== id);
+        delete index.sizes[id];
+        localStorage.removeItem(`${state.key}:${id}`);
+        saveTailwindCacheIndex(state, index);
+    } catch (e) { /* recording stops anyway */ }
+}
+
+// Keys under this cache's prefix that the index doesn't list (lost multi-tab races, older versions)
+function sweepTailwindCache(state, index) {
+    const prefix = state.key.slice(0, state.key.lastIndexOf(':') + 1);
+    const keep = new Set([state.key, ...index.ids.map(id => `${state.key}:${id}`)]);
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix) && !keep.has(k)) localStorage.removeItem(k);
+    }
 }
 
 // Bounded LRU: at most TAILWIND_CACHE_ENTRIES entries within TAILWIND_CACHE_BUDGET
@@ -4795,16 +4884,13 @@ function writeTailwindCache(state, record) {
             delete index.sizes[old];
             localStorage.removeItem(`${state.key}:${old}`);
         };
-        if (record.css.length > TAILWIND_CACHE_MAX_CSS || record.tokens.length > TAILWIND_CACHE_MAX_TOKENS) {
-            drop(id);
-            localStorage.setItem(state.key, JSON.stringify(index));
-            return false;
-        }
         const json = JSON.stringify(record);
         index.ids = [id, ...index.ids.filter(x => x !== id)];
         index.sizes[id] = json.length;
+        delete index.over[id];
         const total = () => index.ids.reduce((n, x) => n + (index.sizes[x] || 0), 0);
         while (index.ids.length > 1 && (index.ids.length > TAILWIND_CACHE_ENTRIES || total() > TAILWIND_CACHE_BUDGET)) drop(index.ids[index.ids.length - 1]);
+        sweepTailwindCache(state, index);
         for (;;) {
             try {
                 localStorage.setItem(entryKey, json);
@@ -4813,7 +4899,7 @@ function writeTailwindCache(state, record) {
             } catch (e) {
                 if (index.ids.length <= 1) {
                     drop(id);
-                    localStorage.setItem(state.key, JSON.stringify(index));
+                    saveTailwindCacheIndex(state, index);
                     return false;
                 }
                 drop(index.ids[index.ids.length - 1]);
@@ -4824,43 +4910,70 @@ function writeTailwindCache(state, record) {
     }
 }
 
-// Engine mode: record its output and every token it has been shown
+// Engine mode: record its output and every token it has been shown under the current blocks
 function recordTailwindEngine(state, seedTokens) {
     if (state.recording) return;
     state.recording = true;
+    const blockId = () => state.idFor(tailwindAuthorBlockTexts());
+    if (isTailwindCacheOver(readTailwindCacheIndex(state), blockId())) return;
+
+    const seenStrings = new Set();
     const seen = documentClassTokens(new Set(seedTokens || []));
-    const fed = new Set(seedTokens || []);
+    // Tokens the engine has compiled under the current blocks; a block change empties it
+    let fed = new Set(seedTokens || []);
+    let gen = 0;
+    let engineGen = findTailwindEngineStyle() ? 0 : -1;
     let dirty = true;
     let saveTimer = null;
     let feedTimer = null;
     let lastSave = 0;
     let feeding = false;
+    let stopped = false;
+    const blockObservers = [];
+
+    const overCap = (engine) => (engine && engine.textContent.length > TAILWIND_CACHE_MAX_CSS) || seen.size > TAILWIND_CACHE_MAX_TOKENS;
+    const giveUp = () => {
+        stop();
+        markTailwindCacheOver(state, blockId());
+        state.over = true;
+    };
 
     const write = (tokens) => {
-        if (shippedUtilitiesSheetPresent()) return;
+        if (state.parsedMismatch && !state.skipped) skipTailwindCachePath(state);
+        if (stopped || shippedUtilitiesSheetPresent()) return;
         const engine = findTailwindEngineStyle();
         if (!engine) return;
+        // Only a sheet built from the current blocks, with tokens shown under them
+        if (engineGen !== gen) return schedule();
+        if (overCap(engine)) return giveUp();
         dirty = false;
         lastSave = Date.now();
-        const record = { v: state.v, t: lastSave, blocks: tailwindAuthorBlockTexts(), variants: tailwindVariantsText(), tokens: Array.from(tokens), css: engine.textContent };
+        const body = !!(document.body && document.body.querySelector('style[type="text/tailwindcss"]'));
+        const record = { v: state.v, t: lastSave, blocks: tailwindAuthorBlockTexts(), variants: tailwindVariantsText(), body, tokens: Array.from(tokens), css: engine.textContent };
         if (writeTailwindCache(state, record)) state.saved = record;
     };
 
     // Shows the engine every pending token; the next frame sees it compiled
     const feed = (then) => {
+        if (stopped) return;
+        if (feeding && !then) { feedTimer = setTimeout(() => feed(), TAILWIND_CACHE_FEED_DELAY); return; }
+        const engine = findTailwindEngineStyle();
+        if (feeding || !engine || engineGen !== gen) return then && then();
+        if (overCap(engine)) return giveUp();
+        // On the page now: the engine compiled it in its own pass
+        const present = documentClassTokens(new Set());
         const pending = [];
         for (const t of seen) {
             if (fed.has(t)) continue;
-            // On the page now: the engine has compiled it already
-            if (document.getElementsByClassName(t).length) fed.add(t);
+            if (present.has(t)) fed.add(t);
             else pending.push(t);
         }
-        if (feeding && !then) { feedTimer = setTimeout(() => feed(), TAILWIND_CACHE_FEED_DELAY); return; }
-        if (!pending.length || feeding || !findTailwindEngineStyle()) return then && then();
+        if (!pending.length) return then && then();
         feeding = true;
+        const startGen = gen;
         feedTailwindEngine(pending, () => {
-            pending.forEach(t => fed.add(t));
             feeding = false;
+            if (gen === startGen) pending.forEach(t => fed.add(t));
             if (then) then();
         });
     };
@@ -4868,13 +4981,15 @@ function recordTailwindEngine(state, seedTokens) {
     // Full save: static scan, stringify and write. Throttled; feeding is not
     const save = () => {
         saveTimer = null;
-        if (!dirty) return;
+        if (!dirty || stopped) return;
         if (feeding) return schedule();
+        if (overCap(findTailwindEngineStyle())) return giveUp();
         staticClassTokens(seen);
         feed(() => write(fed));
     };
 
     const schedule = () => {
+        if (stopped) return;
         dirty = true;
         clearTimeout(saveTimer);
         saveTimer = setTimeout(save, Math.max(TAILWIND_CACHE_QUIET, lastSave + TAILWIND_CACHE_MIN_INTERVAL - Date.now()));
@@ -4886,37 +5001,64 @@ function recordTailwindEngine(state, seedTokens) {
         schedule();
     };
 
+    // The engine rebuilds from the page's classes alone: everything is shown again under the new blocks
+    const blockChanged = () => {
+        gen++;
+        fed = new Set();
+        scheduleFeed();
+    };
+    const watchBlock = (el) => {
+        const o = new MutationObserver(blockChanged);
+        o.observe(el, { characterData: true, childList: true, subtree: true });
+        blockObservers.push(o);
+    };
+
     const tokenObserver = new MutationObserver((mutations) => {
         const before = seen.size;
+        let blocks = false;
         for (const m of mutations) {
             if (m.type === 'attributes') {
+                if (m.attributeName === 'type') { if (m.target.localName === 'style') blocks = true; continue; }
                 if (m.target.hasAttribute('data-tailwind-seed')) continue;
-                addClassTokens(m.oldValue, seen);
-                addClassTokens(m.target.getAttribute('class'), seen);
+                addClassString(m.oldValue, seen, seenStrings);
+                addClassString(m.target.getAttribute('class'), seen, seenStrings);
                 continue;
             }
+            if (isTailwindBlock(m.target)) blocks = true;
+            for (const n of m.removedNodes) if (isTailwindBlock(n)) blocks = true;
             for (const n of m.addedNodes) {
                 if (n.nodeType !== 1 || n.hasAttribute('data-tailwind-seed')) continue;
-                addClassTokens(n.getAttribute('class'), seen);
-                if (n.firstElementChild) for (const d of n.querySelectorAll('[class]')) addClassTokens(d.getAttribute('class'), seen);
+                if (isTailwindBlock(n)) { blocks = true; watchBlock(n); }
+                addClassString(n.getAttribute('class'), seen, seenStrings);
+                if (n.firstElementChild) {
+                    for (const d of n.querySelectorAll('[class]')) addClassString(d.getAttribute('class'), seen, seenStrings);
+                    for (const s of n.querySelectorAll('style[type="text/tailwindcss"]')) { blocks = true; watchBlock(s); }
+                }
             }
         }
-        if (seen.size !== before) scheduleFeed();
+        if (blocks) blockChanged();
+        else if (seen.size !== before) scheduleFeed();
     });
-    tokenObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['class'] });
+    tokenObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['class', 'type'] });
+    document.querySelectorAll('style[type="text/tailwindcss"]').forEach(watchBlock);
 
+    // Engine sheet updates: it now reflects the current blocks
     const headObserver = new MutationObserver((mutations) => {
         for (const m of mutations) {
             const el = m.target.nodeType === 1 ? m.target : m.target.parentNode;
-            if (el && el.localName === 'style' && !el.id) return schedule();
-            for (const n of m.addedNodes) if (n.localName === 'style') return schedule();
+            if ((el && isTailwindEngineStyle(el)) || Array.from(m.addedNodes).some(n => n.nodeType === 1 && isTailwindEngineStyle(n))) {
+                // First sheet built from the current blocks: show it what it lost in the rebuild
+                const rebuilt = engineGen !== gen;
+                engineGen = gen;
+                return rebuilt ? scheduleFeed() : schedule();
+            }
         }
     });
     headObserver.observe(document.head, { childList: true, subtree: true, characterData: true });
 
     // Leaving: what the engine has compiled is the fed tokens plus what is on the page now
     const flush = () => {
-        if (!dirty) return;
+        if (!dirty || stopped || engineGen !== gen) return;
         clearTimeout(saveTimer);
         write(documentClassTokens(new Set(fed)));
     };
@@ -4924,14 +5066,17 @@ function recordTailwindEngine(state, seedTokens) {
     window.addEventListener('pagehide', flush);
     document.addEventListener('visibilitychange', onHidden);
 
-    state.stop = () => {
+    const stop = () => {
+        stopped = true;
         tokenObserver.disconnect();
         headObserver.disconnect();
+        blockObservers.forEach(o => o.disconnect());
         clearTimeout(saveTimer);
         clearTimeout(feedTimer);
         window.removeEventListener('pagehide', flush);
         document.removeEventListener('visibilitychange', onHidden);
     };
+    state.stop = stop;
     schedule();
 }
 
@@ -4939,6 +5084,13 @@ function armTailwindCache() {
     const state = window.__tailwindCache;
     if (!state || state.armed) return;
     state.armed = true;
+    // Replay is decided once <head> is parsed: watch or record after that
+    if (state.decision) state.decision.then(() => startTailwindCache(state));
+    else startTailwindCache(state);
+}
+
+function startTailwindCache(state) {
+    if (state.parsedMismatch && !state.skipped) skipTailwindCachePath(state);
     if (state.record && state.style && state.style.isConnected) watchCachedTailwind(state);
     else recordTailwindEngine(state, null);
 }
