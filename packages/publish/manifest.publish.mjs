@@ -20,8 +20,8 @@ let jsonMode = false;
 function log(msg) {
   (jsonMode ? process.stderr : process.stdout).write(msg + '\n');
 }
-function fail(msg) {
-  if (jsonMode) process.stdout.write(JSON.stringify({ ok: false, error: 'failed', message: msg }) + '\n');
+function fail(msg, code = 'failed') {
+  if (jsonMode) process.stdout.write(JSON.stringify({ ok: false, error: code, message: msg }) + '\n');
   console.error('mnfst-publish: ' + msg);
   process.exit(1);
 }
@@ -30,8 +30,24 @@ export const LABEL_MAX_LENGTH = 200;
 // C0/C1 controls, DEL, line/paragraph separators, zero-width and bidi override/isolate characters.
 const NON_PRINTABLE = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff]');
 
-/** Parse argv; throws an Error with a user-facing message on a bad combination. */
+/** An Error with a machine-readable code (the `error` field under --json). */
+export function codedError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+/** Parse argv; throws an Error with a user-facing message on an unknown option or a bad combination. */
 export function parseArgs(argv) {
+  try {
+    return parseArgsInner(argv);
+  } catch (e) {
+    if (!e.code) e.code = 'usage';
+    throw e;
+  }
+}
+
+function parseArgsInner(argv) {
   const out = { env: 'production', render: undefined, promote: false };
   let envGiven = false;
   const value = (flag, i) => {
@@ -57,10 +73,19 @@ export function parseArgs(argv) {
     else if (a === '--key') out.key = value(a, ++i);
     else if (a === '--mcp') out.mcp = value(a, ++i);
     else if (a === '--root') out.root = value(a, ++i);
+    else if (a === '--list') out.list = true;
     else if (a === '-h' || a === '--help') out.help = true;
+    else if (a === '-v' || a === '--version') out.version = true;
+    // An unknown option must never fall through to a publish, which defaults to production.
+    else throw new Error(`unknown option "${a}", so nothing was published. Run \`npx mnfst-publish --help\` for the options.`);
   }
+  if (out.help || out.version) return out;
   if (out.env !== 'staging' && out.env !== 'production') throw new Error(`--env must be "staging" or "production" (got "${out.env}")`);
-  if (out.promote) {
+  if (out.list) {
+    for (const [given, flag] of [[out.promote, '--promote'], [out.live === false, '--no-live'], [out.label !== undefined, '--label'], [out.deployment !== undefined, '--deployment'], [out.expectLive !== undefined, '--expect-live'], [out.source !== undefined, '--source'], [out.outputDir !== undefined, '--output-dir'], [out.render !== undefined, '--render/--no-render']]) {
+      if (given) throw new Error(`${flag} does not apply to --list`);
+    }
+  } else if (out.promote) {
     if (out.live === false) throw new Error('--no-live applies to a publish, not to --promote');
     if (out.label !== undefined) throw new Error('--label is set when publishing; --promote carries the label of the deployment it promotes');
   } else {
@@ -230,7 +255,10 @@ async function callTool(url, key, name, args) {
   if (!result) throw new Error(`unexpected response from ${name} (HTTP ${res.status})`);
   const textPart = (result.content || []).find((c) => c.type === 'text');
   const payloadText = textPart ? textPart.text : '';
-  if (result.isError) throw new Error(payloadText || `${name} failed`);
+  if (result.isError) {
+    const sc = result.structuredContent;
+    throw codedError(sc && typeof sc.error === 'string' ? sc.error : 'refused', payloadText || `${name} failed`);
+  }
   try {
     return JSON.parse(payloadText);
   } catch {
@@ -882,12 +910,12 @@ export async function runPromote(opts, { url, key, callToolImpl = callTool, tool
   if (Object.keys(args).length) {
     const missing = unsupportedPromoteArgs(args, await toolParamsImpl(url, key, 'manifest_promote'));
     if (missing.length) {
-      throw new Error(`this Manifest server does not support ${missing.map((k) => (k === 'deployment_id' ? '--deployment' : '--expect-live')).join(' or ')} yet, so nothing was promoted.`);
+      throw codedError('unsupported_server', `this Manifest server does not support ${missing.map((k) => (k === 'deployment_id' ? '--deployment' : '--expect-live')).join(' or ')} yet, so nothing was promoted.`);
     }
   }
   const res = await callToolImpl(url, key, 'manifest_promote', args);
   if (opts.deployment && res.from_deployment_id && res.from_deployment_id !== opts.deployment) {
-    throw new Error(`the server promoted ${res.from_deployment_id}, not ${opts.deployment}. Check production now.`);
+    throw codedError('promoted_other', `the server promoted ${res.from_deployment_id}, not ${opts.deployment}. Check production now.`);
   }
   return res;
 }
@@ -895,10 +923,10 @@ export async function runPromote(opts, { url, key, callToolImpl = callTool, tool
 /** The handshake must confirm a held publish and the label before anything is uploaded; an older server drops both. */
 export function checkHeldHandshake(opts, handshake) {
   if (opts.live === false && handshake.live !== false) {
-    throw new Error('this Manifest server does not support --no-live yet, so nothing was uploaded.');
+    throw codedError('unsupported_server', 'this Manifest server does not support --no-live yet, so nothing was uploaded.');
   }
   if (opts.label && handshake.label !== opts.label) {
-    throw new Error('this Manifest server does not support --label yet, so nothing was uploaded.');
+    throw codedError('unsupported_server', 'this Manifest server does not support --label yet, so nothing was uploaded.');
   }
 }
 
@@ -915,7 +943,7 @@ export async function checkHeldLink(uploadUrl, { fetchImpl = fetch } = {}) {
     /* unreadable: treated as unconfirmed */
   }
   if (!json || json.live !== false) {
-    throw new Error('--no-live was given, but this upload link was not minted as a held publish, so nothing was uploaded. Call manifest_publish with live=false for a new link.');
+    throw codedError('link_not_held', '--no-live was given, but this upload link was not minted as a held publish, so nothing was uploaded. Call manifest_publish with live=false for a new link.');
   }
 }
 
@@ -945,17 +973,47 @@ export function publishSummary(opts, up) {
   return { lines, json };
 }
 
+/** The --json object and human lines for a deployment listing. */
+export function listSummary(res) {
+  const deployments = (res.deployments || []).map((d) => ({
+    deployment_id: d.deployment_id,
+    status: d.status,
+    is_live: !!d.is_live,
+    held: !!d.held,
+    label: d.label ?? null,
+    preview_url: d.preview_url ?? null,
+    published_at: d.published_at ?? null,
+    source: d.source ?? null,
+  }));
+  const json = { ok: true, env: res.env, live_deployment_id: res.live_deployment_id ?? null, deployments };
+  const lines = [`${res.env}: ${json.live_deployment_id ? `live ${json.live_deployment_id}` : 'nothing live'}`];
+  for (const d of deployments) {
+    const tags = [d.is_live ? 'live' : null, d.held ? 'held' : null, d.status].filter(Boolean).join(', ');
+    lines.push(`  ${d.deployment_id}  ${d.published_at || ''}  [${tags}]${d.label ? `  ${d.label}` : ''}`);
+  }
+  return { lines, json };
+}
+
+/** This package's version. */
+export function packageVersion() {
+  return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+}
+
 const USAGE = [
   'Usage: npx mnfst-publish [--staging|--production] [--source spa|render] [--output-dir <dir>] [--no-render]',
   '                         [--no-live] [--label <text>] [--json]',
   '       npx mnfst-publish --promote [--deployment <id>] [--expect-live <id>] [--json]',
+  '       npx mnfst-publish --list [--staging|--production] [--json]',
   'Publishes the current Manifest project to managed hosting and prints the live URL.',
   '  --no-live            staging only: store the build without changing what staging serves; prints its preview URL',
   '  --label <text>       name the deployment (up to 200 characters)',
   '  --promote            promote what staging serves to production',
   '  --deployment <id>    with --promote: promote exactly this staging deployment',
   '  --expect-live <id>   with --promote: refuse unless production is serving this deployment now',
+  '  --list               list recent deployments and which is live (production unless --staging); publishes nothing',
   '  --json               print the result as one JSON object on stdout (progress goes to stderr)',
+  '  --version            print the version; publishes nothing',
+  'Unknown options are refused, so nothing is published.',
 ];
 
 export async function main() {
@@ -966,10 +1024,16 @@ export async function main() {
   try {
     opts = parseArgs(argv);
   } catch (e) {
-    fail(e.message);
+    fail(e.message, e.code);
   }
   if (opts.help) {
     for (const line of USAGE) log(line);
+    return;
+  }
+  if (opts.version) {
+    const version = packageVersion();
+    if (jsonMode) process.stdout.write(JSON.stringify({ ok: true, version }) + '\n');
+    else console.log(version);
     return;
   }
 
@@ -984,17 +1048,31 @@ export async function main() {
   const injectedUpload = process.env.MNFST_PUBLISH_UPLOAD_URL || null;
   const key = readApiKey(root, opts.key);
 
+  if (opts.list) {
+    if (!key) fail('no API key found for --list. Set MANIFEST_API_KEY in .env for headless use, or list deployments from Claude with the Manifest connector (no key needed).', 'no_api_key');
+    let res;
+    try {
+      res = await callTool(url, key, 'manifest_deployments', { env: opts.env });
+    } catch (e) {
+      fail(e.message, e.code);
+    }
+    const { lines, json } = listSummary(res);
+    if (jsonMode) process.stdout.write(JSON.stringify(json) + '\n');
+    for (const line of lines) log(line);
+    return;
+  }
+
   // Promote a previously-staged build straight to production (no upload). Headless
   // convenience; interactive users promote via the connector's manifest_promote
   // tool (no key). Needs a key.
   if (opts.promote) {
-    if (!key) fail('no API key found for --promote. Set MANIFEST_API_KEY in .env for headless use, or promote from Claude with the Manifest connector (no key needed).');
+    if (!key) fail('no API key found for --promote. Set MANIFEST_API_KEY in .env for headless use, or promote from Claude with the Manifest connector (no key needed).', 'no_api_key');
     log(opts.deployment ? `Promoting ${opts.deployment} to production…` : 'Promoting the staged version to production…');
     let res;
     try {
       res = await runPromote(opts, { url, key });
     } catch (e) {
-      fail(e.message);
+      fail(e.message, e.code);
     }
     if (jsonMode) {
       process.stdout.write(
@@ -1016,7 +1094,7 @@ export async function main() {
   // A normal publish needs either the injected one-time URL (connector) or a
   // stored key (headless/CI). Without either, there's nothing to authorise with.
   if (!injectedUpload && !key) {
-    fail('no API key found. Publish from Claude with the Manifest connector (no key needed), or set MANIFEST_API_KEY in .env for headless/CI use.');
+    fail('no API key found. Publish from Claude with the Manifest connector (no key needed), or set MANIFEST_API_KEY in .env for headless/CI use.', 'no_api_key');
   }
 
   // Checked before rendering, since the link is renewed while the render runs.
@@ -1026,7 +1104,7 @@ export async function main() {
     try {
       await checkHeldLink(injectedUpload);
     } catch (e) {
-      fail(e.message);
+      fail(e.message, e.code);
     }
   }
   if (injectedUpload && opts.label) log('  note: --label is ignored here; the connector set the label when it minted this upload link.');
@@ -1071,7 +1149,7 @@ export async function main() {
     try {
       checkHeldHandshake(opts, handshake);
     } catch (e) {
-      fail(e.message);
+      fail(e.message, e.code);
     }
     checkUploadUrl(uploadUrl, url);
   }
@@ -1094,7 +1172,7 @@ export async function main() {
     if (e.code === 'link_expired') {
       fail(/--no-render/.test(e.message) || !recovery.rendered ? e.message : `${e.message} ${noRenderHint(recovery.outputDir)}`);
     }
-    fail(e.message);
+    fail(e.message, e.code);
   }
 
   const summary = publishSummary(opts, upJson);
