@@ -955,6 +955,9 @@
 		return load ? load.promise : null;
 	}
 	const heldEls = new WeakSet();
+	// Holds not yet released (restore included), and controls an outer restore left to an inner one: outer root
+	const holding = new WeakSet();
+	const passedOn = new WeakMap();
 	let heldCount = 0;
 	let heldRelease = null;
 	// Rendered from source: hidden while held so raw markdown/code never shows
@@ -979,23 +982,34 @@
 		const focus = a && root.contains(a) ? [a, a.selectionStart, a.selectionEnd] : null;
 		return () => {
 			// Outside the held element these edits were already seen live: stop the replay at its root
-			const replay = new WeakSet();
-			const stop = (e) => { if (replay.has(e)) e.stopPropagation(); };
-			root.addEventListener('input', stop);
-			root.addEventListener('change', stop);
-			const fire = (c, type) => { const e = new Event(type, { bubbles: true }); replay.add(e); c.dispatchEvent(e); };
+			const replay = new WeakMap();
+			const stop = (e) => { if (replay.get(e) === e.currentTarget) e.stopPropagation(); };
+			const plan = [];
 			for (const [c, k, v] of typed) {
 				try {
 					// Taken over by its directive on start (e.g. a date field turned read-only): not typable there
 					if (!c.isConnected || c.readOnly || c.disabled) continue;
-					if (k === 'options') [...c.options].forEach((o, i) => { o.selected = !!v[i]; });
-					else if (k !== 'files') c[k] = v;
-					fire(c, 'input');
-					fire(c, 'change');
+					// Inside a nested hold still to restore: that one replays it, up to this root
+					let inner = false;
+					for (let n = c; n && n !== root; n = n.parentElement) if (holding.has(n)) { inner = true; break; }
+					if (inner) { if (!passedOn.has(c)) passedOn.set(c, root); continue; }
+					const at = passedOn.get(c) || root;
+					passedOn.delete(c);
+					plan.push([c, k, v, at]);
 				} catch (_) { /* skipped */ }
 			}
-			root.removeEventListener('input', stop);
-			root.removeEventListener('change', stop);
+			const stops = new Set(plan.map(p => p[3]));
+			stops.forEach(s => { s.addEventListener('input', stop); s.addEventListener('change', stop); });
+			const fire = (c, type, at) => { const e = new Event(type, { bubbles: true }); replay.set(e, at); c.dispatchEvent(e); };
+			for (const [c, k, v, at] of plan) {
+				try {
+					if (k === 'options') [...c.options].forEach((o, i) => { o.selected = !!v[i]; });
+					else if (k !== 'files') c[k] = v;
+					fire(c, 'input', at);
+					fire(c, 'change', at);
+				} catch (_) { /* skipped */ }
+			}
+			stops.forEach(s => { s.removeEventListener('input', stop); s.removeEventListener('change', stop); });
 			if (focus && focus[0].isConnected) {
 				try { focus[0].focus({ preventScroll: true }); if (focus[1] != null) focus[0].setSelectionRange(focus[1], focus[2]); } catch (_) { }
 			}
@@ -1006,6 +1020,7 @@
 		if (!load) return false;
 		const name = u.attr.slice(2);
 		heldEls.add(el);
+		holding.add(el);
 		if (!heldCount++ && window.ManifestPending) heldRelease = window.ManifestPending.hold('held');
 		// Once per hold, whatever throws on the way
 		let released = false;
@@ -1013,6 +1028,7 @@
 			if (released) return;
 			released = true;
 			heldEls.delete(el);
+			holding.delete(el);
 			if (!--heldCount && heldRelease) { const r = heldRelease; heldRelease = null; r(); }
 		};
 		const early = [];
@@ -1268,12 +1284,16 @@
 	// Post-boot usage: component HTML, x-html and markdown content load the
 	// on-use plugins they reference. Derive path only, like the boot sniff.
 	let usageSniff = false;
+	// Derive path: loadUsed works once the loader has queued its own modules; earlier calls wait for that
+	let usageArmed = false;
+	let usageGate = null;
 	// A failed on-use load is not retried within this page load
 	const usageFailed = new Set();
 	// Settled loads only: a second caller waits on a load still in flight
 	const usageLoaded = (p) => pluginsSettled.has(p) || usageFailed.has(p);
 	function loadUsed(source, version = RESOLVED_VERSION) {
-		if (!usageSniff || !source || typeof document === 'undefined') return Promise.resolve([]);
+		if (!usageArmed) return usageGate && source ? usageGate.promise.then(() => usageArmed ? loadUsed(source, version) : []) : Promise.resolve([]);
+		if (!source || typeof document === 'undefined') return Promise.resolve([]);
 		let root = source;
 		if (typeof source === 'string') {
 			if (source.indexOf('x-') === -1 && source.indexOf('$') === -1 && source.indexOf('<code') === -1) return Promise.resolve([]);
@@ -1638,6 +1658,7 @@
 			return;
 		}
 		window.__manifestLoaderStarted = true;
+		if (config.deriveFromManifest) { let resolve; usageGate = { promise: new Promise(r => { resolve = r; }), resolve }; }
 
 		const MANIFEST_DEPENDENT_PLUGINS = [
 			'data', 'localization', 'components',
@@ -1800,6 +1821,8 @@
 					console.warn(`[Manifest Loader] Failed to load plugin ${pluginName}:`, error);
 				});
 			});
+			// Content fetched before the document is parsed (components) loads its modules now
+			if (config.deriveFromManifest) { usageArmed = true; usageGate.resolve(); }
 			if (config.tailwind && !staticUtilitiesFullyCovered()) {
 				pluginPromises.push(loadTailwind(config.version).catch(() => { }));
 			}
@@ -1887,6 +1910,7 @@
 		}
 
 		hintEarlyFetches();
-		loadPlugins();
+		// Never leaves a loadUsed caller waiting, whatever stops the boot
+		loadPlugins().finally(() => { if (usageGate) usageGate.resolve(); });
 	}
 })();
