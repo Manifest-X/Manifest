@@ -410,6 +410,7 @@ function isRowPending(dataSourceName, id) {
 
 // Structural edit in place: one reactive write (length to 0) wakes every reader, rows return on the raw array
 function setRows(store, dataSourceName, next) {
+    markStructural(dataSourceName);
     const raw = rawOf(store)[dataSourceName];
     const cur = store[dataSourceName];
     if (!Array.isArray(raw)) {
@@ -442,6 +443,7 @@ function removeRowAt(store, dataSourceName, index, replacement) {
 
 function ensureStoreShape(store) {
     if (!store._v) store._v = {};
+    if (!store._f) store._f = {};
 }
 
 // Version bump: per-source (`$x` reads subscribe here), `all`, and the legacy
@@ -458,10 +460,43 @@ function touchSources(store, sources) {
 // Sync writes (they can run inside Alpine's flush) are re-bumped by the next post-settle hammer
 const writtenSources = new Set();
 
-function touchSource(dataSourceName) {
+// Granular sources (manifest.json data.<source>.granular): a change to row fields alone bumps
+// _f[source] instead of _v[source], so readers of the list do not re-run; operator memos read both
+const structural = new Set();   // sources whose membership or order changed in the write under way
+function markStructural(dataSourceName) { if (dataSourceName) structural.add(dataSourceName); }
+function isGranular(dataSourceName) {
+    try {
+        const config = window.ManifestDataConfig?.getManifest?.()?.data?.[dataSourceName];
+        return !!config && typeof config === 'object' && config.granular === true;
+    } catch (_) {
+        return false;
+    }
+}
+function touchFields(store, sources) {
+    ensureStoreShape(store);
+    const f = store._f;
+    for (const source of sources) f[source] = (f[source] || 0) + 1;
+    f.all = (f.all || 0) + 1;   // $x.all operators read these rows too
+    store._dataVersion = (store._dataVersion || 0) + 1;
+}
+// Bump for a finished write: fields-only where the source opted in and nothing structural happened
+function touchWritten(store, sources) {
+    const full = [], fields = [];
+    for (const source of sources) {
+        (isGranular(source) && !structural.has(source) ? fields : full).push(source);
+        structural.delete(source);
+    }
+    if (full.length) touchSources(store, full);
+    if (fields.length) touchFields(store, fields);
+}
+
+// fieldsOnly: the caller changed fields of existing rows and nothing else
+function touchSource(dataSourceName, fieldsOnly = false) {
     const store = typeof Alpine !== 'undefined' ? Alpine.store('data') : null;
     writtenSources.add(dataSourceName);
-    if (store) touchSources(store, [dataSourceName]);
+    if (!fieldsOnly) markStructural(dataSourceName);
+    if (store) touchWritten(store, [dataSourceName]);
+    else structural.delete(dataSourceName);
 }
 
 // Post-settle hammer: re-run every `$x` reader (Alpine scheduler swallow)
@@ -500,7 +535,8 @@ function mergeRowFields(target, fields, dataSourceName) {
         if (key === '$files') continue;
         const value = fields[key];
         if (sameScalarOrList(raw[key], value)) continue;
-        if (key === '$id') dropRowIndex(rawDataStore.get(dataSourceName));
+        if (target === raw) markStructural(dataSourceName);   // not reactive: only the version can announce it
+        if (key === '$id') { dropRowIndex(rawDataStore.get(dataSourceName)); markStructural(dataSourceName); }
         target[key] = createReactiveReferences(value, dataSourceName);
     }
 }
@@ -660,7 +696,7 @@ function touchPending(dataSourceName) {
 function insertRow(store, dataSourceName, row) {
     const target = store[dataSourceName];
     const order = window.ManifestDataMain?.orderFor?.(dataSourceName);
-    if (!order) { target.push(row); extendRowIndex(rawOf(store)[dataSourceName]); return; }
+    if (!order) { markStructural(dataSourceName); target.push(row); extendRowIndex(rawOf(store)[dataSourceName]); return; }
     insertRowAt(store, dataSourceName, sortedIndex(rawOf(store)[dataSourceName], rawOf(row), compareBy(order)), row);
 }
 
@@ -806,7 +842,7 @@ function upsertOrdered(store, dataSourceName, rows, order) {
         if (!next) next = curRaw.slice();
         next.splice(sortedIndex(next, row, cmp), 0, rawOf(createReactiveReferences(row, dataSourceName)));
     }
-    if (next) store[dataSourceName] = next;
+    if (next) { markStructural(dataSourceName); store[dataSourceName] = next; }
 }
 
 // Identity-preserving upsert by $id: existing rows are merged in place, new
@@ -816,6 +852,7 @@ function upsertRows(store, dataSourceName, rows, mode, order) {
     const raw = rawOf(store);
     const curRaw = Array.isArray(raw[dataSourceName]) ? raw[dataSourceName] : null;
     if (!curRaw) {
+        markStructural(dataSourceName);
         store[dataSourceName] = rows.map(row => createReactiveReferences(row, dataSourceName));
         return;
     }
@@ -844,8 +881,9 @@ function upsertRows(store, dataSourceName, rows, mode, order) {
         (mode === 'replace' ? next : appended).push(created);
     }
     if (mode === 'replace') {
-        if (next.length !== curRaw.length || next.some((row, i) => row !== curRaw[i])) store[dataSourceName] = next;
+        if (next.length !== curRaw.length || next.some((row, i) => row !== curRaw[i])) { markStructural(dataSourceName); store[dataSourceName] = next; }
     } else if (appended.length) {
+        markStructural(dataSourceName);
         cur.push(...appended);
         extendRowIndex(curRaw);
     }
@@ -868,6 +906,8 @@ function writeSource(dataSourceName, data, options = {}) {
     if (!store) return null;
     ensureStoreShape(store);
     const mode = options.mode === 'append' ? 'append' : 'replace';
+    // Loads and non-list data always announce on the list version
+    if (options.loading !== undefined || !Array.isArray(data)) markStructural(dataSourceName);
 
     if (data === null || data === undefined) {
         if (mode === 'replace') {
@@ -1026,6 +1066,7 @@ function flushLandings() {
     if (startedAt) setTimeout(() => { landingEndedAt = performance.now(); landingCost = landingEndedAt - startedAt; }, 0);
     const ops = pendingLandings.splice(0);
     const resolvers = landingResolvers.splice(0);
+    structural.clear();
     const local = new Map(pendingLocal);
     pendingLocal.clear();
     if (!ops.length) return;
@@ -1059,7 +1100,7 @@ function flushLandings() {
             const reads = ops
                 .filter(op => op.source === source && !skipped.has(op) && typeof op.options?.readToken === 'number' && Array.isArray(op.rows))
                 .map(op => ({ token: op.options.readToken, ids: op.options.mode === 'append' ? new Set(op.rows.map(rowKey)) : null }));
-            reapplyPending(store, source, reads);
+            if (reapplyPending(store, source, reads)) markStructural(source);
         }
         for (const [source, byId] of local) {
             for (const [id, note] of byId) {
@@ -1071,7 +1112,7 @@ function flushLandings() {
                 if (i !== -1) { mergeRowFields(store[source][i], note.patch, source); touched.add(source); }
             }
         }
-        if (touched.size) touchSources(store, touched);
+        if (touched.size) touchWritten(store, touched);
     }
     resolvers.forEach((resolve, i) => resolve(!skipped.has(ops[i])));
     if (landed.size) window.ManifestDataPersist?.onLanded?.(landed);
@@ -1371,6 +1412,7 @@ function initializeStore() {
         _initialized: false,
         _ready: false, // Flag to indicate when data is ready for Alpine evaluation
         _v: {}, // Per-source versions: `$x.<source>` reads subscribe to _v[source]; _v.all for `$x.all`
+        _f: {}, // Per-source field versions (granular sources): operator results read these too
         _dataVersion: 0, // Legacy global counter, bumped once per flush for external readers
         _currentUrl: window.location.pathname,
         // Operation-specific loading states (for UI reactivity)
@@ -3397,7 +3439,7 @@ function updateEntryInStore(dataSourceName, entryId, updates, options = {}) {
     const ds = window.ManifestDataStore;
     ds.mergeRowFields(store[dataSourceName][index], updates, dataSourceName);
     ds.noteLocalWrite(dataSourceName, entryId, { patch: updates });
-    ds.touchSource(dataSourceName);
+    ds.touchSource(dataSourceName, true);
     clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
@@ -4677,11 +4719,16 @@ function stableStringify(value, depth = 0) {
     return `{${parts.join(',')}}`;
 }
 
-// Reactive read of _v[source]: subscribes the caller exactly like the raw $x read
+// Reactive read of the source's list and field versions: subscribes the caller
 function sourceVersion(dataSourceName) {
     if (!dataSourceName || typeof Alpine === 'undefined') return undefined;
-    const v = Alpine.store('data')?._v;
-    return v ? v[dataSourceName] : undefined;
+    const store = Alpine.store('data');
+    const v = store?._v;
+    if (!v) return undefined;
+    const list = v[dataSourceName];
+    // Field-only changes of a granular source: results depend on them too
+    const fields = store._f ? store._f[dataSourceName] : undefined;
+    return list === undefined || fields === undefined ? list : `${list}:${fields}`;
 }
 
 // Run without tracking deps on the caller's effect (throwaway inner effect)

@@ -348,6 +348,11 @@
                             "includeVelocity": {
                                 "type": "boolean"
                             },
+                            "granular": {
+                                "description": "Opt in to field-level updates for a row source. A change to the fields of existing rows (a realtime update, a local $update) then re-runs what reads those fields and $search/$query/$route results, instead of every reader of the source; readers of the list itself re-run when rows are added, removed, reordered or reloaded, and once more after the next load settles following a local $update. $x.<source> keeps the same array identity across field-only changes, so do not memoize on that identity for values derived from row fields: use x-computed.",
+                                "type": "boolean",
+                                "default": false
+                            },
                             "persist": {
                                 "description": "Persist this source's rows in IndexedDB and hydrate them before the network on the next visit (stale until the first fresh landing). `true` = boot tier with defaults.",
                                 "oneOf": [

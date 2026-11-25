@@ -62,11 +62,16 @@ function stableStringify(value, depth = 0) {
     return `{${parts.join(',')}}`;
 }
 
-// Reactive read of _v[source]: subscribes the caller exactly like the raw $x read
+// Reactive read of the source's list and field versions: subscribes the caller
 function sourceVersion(dataSourceName) {
     if (!dataSourceName || typeof Alpine === 'undefined') return undefined;
-    const v = Alpine.store('data')?._v;
-    return v ? v[dataSourceName] : undefined;
+    const store = Alpine.store('data');
+    const v = store?._v;
+    if (!v) return undefined;
+    const list = v[dataSourceName];
+    // Field-only changes of a granular source: results depend on them too
+    const fields = store._f ? store._f[dataSourceName] : undefined;
+    return list === undefined || fields === undefined ? list : `${list}:${fields}`;
 }
 
 // Run without tracking deps on the caller's effect (throwaway inner effect)
