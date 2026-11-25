@@ -1525,6 +1525,11 @@
 						if (!window.Alpine && !document.querySelector('script[src*="alpinejs"]')) {
 							hint('preload', alpineUrlCandidates(config.alpine)[0], 'script');
 						}
+						// On-use modules this page uses, while manifest.json may still be in flight
+						if (config.deriveFromManifest) {
+							const used = detectUsagePlugins([...ALWAYS_ON, ...config.plugins, ..._omitted, 'components']);
+							for (const p of resolveDependencies(used)) if (!config.plugins.includes(p)) hint('preload', getPluginUrl(p, config.version), 'script');
+						}
 					} catch (_) { /* optional */ }
 				});
 			} catch (_) { /* hints are optional */ }

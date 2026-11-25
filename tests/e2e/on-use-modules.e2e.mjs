@@ -2,7 +2,8 @@
  * Real-Chrome guard for on-use directive modules (markdown, code, svg, combobox, slides,
  * colorpicker, datepicker, charts, virtual, export):
  * 1. a page that uses none of them requests none of them, and boots;
- * 2. a page that uses one at boot works: the module's visible effect is in the DOM;
+ * 2. a page that uses one at boot works: the module's visible effect is in the DOM, and the
+ *    module is requested while manifest.json is still in flight;
  * 3. late content works, including the element that triggered the load: innerHTML, x-html,
  *    x-if template, a component (Manifest.loadUsed before insertion), and markdown output
  *    that needs Code (charts and datepicker for directives, code and markdown for content);
@@ -73,6 +74,8 @@ const server = await new Promise((r) => {
         const u = new URL(req.url, 'http://x')
         requested.push(u.pathname)
         if (u.pathname === '/__alpine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(ALPINE)) }
+        // Latency on the manifest, so the request order of the boot shows
+        if (u.pathname === '/manifest.json') return setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(FILES[u.pathname]) }, 250)
         if (FILES[u.pathname]) { res.writeHead(200, { 'content-type': u.pathname.endsWith('.json') ? 'application/json' : u.pathname.endsWith('.svg') ? 'image/svg+xml' : u.pathname.endsWith('.js') ? 'text/javascript' : 'text/html' }); return res.end(FILES[u.pathname]) }
         if (u.pathname.startsWith('/scripts/')) {
             const f = path.join(SRC, u.pathname)
@@ -137,6 +140,8 @@ for (const [name, effect] of Object.entries(EFFECTS)) {
     const mod = MODULE_OF[name] || name
     check(ok, `boot: ${name} works`, await pg.evaluate(() => document.body.innerHTML.slice(0, 400)))
     check(modules.filter((m) => m === mod).length === 1, `boot: ${name} requests its module once`, modules)
+    const order = await pg.evaluate((m) => { const e = performance.getEntriesByType('resource'); const f = (k) => e.find((r) => new URL(r.name).pathname.endsWith(k)); return { mod: f(`/manifest.${m}.js`)?.startTime, manifest: f('/manifest.json')?.responseEnd } }, mod)
+    check(order.mod < order.manifest, `boot: ${name} is requested while manifest.json is in flight`, order)
     check(modules.filter((m) => MOVED.includes(m) && m !== mod).length === 0, `boot: ${name} requests no other on-use module`, modules)
     // Colorpicker's library reads $x, which only exists with the data module: same on the old loader
     const known = name === 'colorpicker' ? quiet(logs).filter((l) => !/\$x is not defined/.test(l)) : quiet(logs)

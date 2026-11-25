@@ -98,6 +98,21 @@ describe('on-use directive modules: default bundle', () => {
         await settle()
     })
 
+    it('the ones the parsed page uses are hinted while manifest.json is in flight', async () => {
+        boot({}, '<div x-chart="c"></div><template><pre x-code="js"></pre></template>')
+        const h = hints()
+        expect(h.some(u => u.includes('manifest.charts.')) && h.some(u => u.includes('manifest.code.'))).toBe(true)
+        expect(h.some(u => u.includes('manifest.markdown.'))).toBe(false)
+        await settle()
+        expect(moved().sort()).toEqual(['charts', 'code'])
+    })
+
+    it('no on-use hint with an explicit module list', async () => {
+        boot({ 'data-modules': 'tabs' }, '<div x-chart="c"></div>')
+        expect(hints().some(u => u.includes('manifest.charts.'))).toBe(false)
+        await settle()
+    })
+
     it('Manifest.loadPlugin still knows every one of them', async () => {
         boot({ 'data-modules': 'tabs' }); await settle()
         for (const m of [...MOVED, 'import']) await window.Manifest.loadPlugin(m, V)
