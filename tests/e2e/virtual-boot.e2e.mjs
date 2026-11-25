@@ -10,11 +10,12 @@
  *    a masonry `height` function re-packs when an item's field changes.
  *
  * Run: node tests/e2e/virtual-boot.e2e.mjs      (VIRTUAL_SRC=<dir with scripts/> to A/B)
+ *      --on-use (or VIRTUAL_ONUSE=1) loads x-virtual through the loader, on use, instead of a script tag
  */
 import http from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { readFileSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import puppeteer from 'puppeteer'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -22,6 +23,9 @@ const ROOT = path.join(__dirname, '..', '..')
 const SRC = process.env.VIRTUAL_SRC || path.join(ROOT, 'src')
 const ALPINE = path.join(ROOT, 'node_modules', 'alpinejs', 'dist', 'cdn.js')
 const N = 5000
+const ONUSE = !!process.env.VIRTUAL_ONUSE || process.argv.includes('--on-use')
+const TAGS = /<script src="\/scripts\/manifest\.virtual\.js"><\/script><script defer src="\/__alpine\.js"><\/script>/g
+const LOADER = '<link rel="manifest" href="/manifest.json"><script src="/scripts/manifest.js" data-module-base="/scripts" data-alpine="/__alpine.js"></script>'
 
 const page = (forExpr, key) => `<!doctype html><html><head><meta charset="utf-8">
 <script>
@@ -66,10 +70,15 @@ function serve() {
         const server = http.createServer((req, res) => {
             const u = new URL(req.url, 'http://x')
             if (u.pathname === '/__alpine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(ALPINE)) }
-            if (u.pathname === '/scripts/manifest.virtual.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(path.join(SRC, 'scripts/manifest.virtual.js'))) }
+            if (u.pathname === '/manifest.json') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"name":"v"}') }
+            if (/^\/scripts\/manifest\.[\w.]+\.js$/.test(u.pathname) || u.pathname === '/scripts/manifest.js') {
+                const f = path.join(SRC, u.pathname)
+                if (!existsSync(f)) { res.writeHead(404); return res.end() }
+                res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(f))
+            }
             res.writeHead(200, { 'content-type': 'text/html' })
-            if (EXTRA[u.pathname]) return res.end(EXTRA[u.pathname])
-            res.end(u.pathname === '/tuple' ? page('(row, i) in items', 'row.id') : page('row in items', 'row.id'))
+            const html = EXTRA[u.pathname] || (u.pathname === '/tuple' ? page('(row, i) in items', 'row.id') : page('row in items', 'row.id'))
+            res.end(ONUSE ? html.replace(TAGS, LOADER) : html)
         })
         server.listen(0, '127.0.0.1', () => resolve(server))
     })
