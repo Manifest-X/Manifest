@@ -83,10 +83,11 @@ describe('gesture promotion geometry', () => {
         expect(pending.length).toBeGreaterThan(200)
         // The last 12 invokers sit under the pointer; everything else is off-screen
         const near = new Set(pending.slice(-12).map((m) => document.querySelector(`[popovertarget="${m.id}"]`)))
-        report((el) => near.has(el) ? { top: 40, bottom: 60, left: 10, right: 110, width: 100, height: 20 } : null)
 
         counts.gbcr = 0; counts.qs = 0
         document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
+        // The rows the click revealed report on screen right after it
+        report((el) => near.has(el) ? { top: 40, bottom: 60, left: 10, right: 110, width: 100, height: 20 } : null)
         await wait(700) // all three promotion passes (50 / +150 / +400ms)
 
         expect(counts.gbcr).toBe(0)
