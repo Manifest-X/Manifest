@@ -6,9 +6,6 @@
     // <x-*> tag pattern — lowercase, hyphenated.
     const TAG_RE = /^x-[a-z][a-z0-9-]*$/;
 
-    // Framework web components (not project components) — skip when scanning.
-    const FRAMEWORK_TAGS = new Set(['code', 'code-group']);
-
     // Anchors already hover-prefetched. WeakSet so detached nodes GC naturally.
     const prefetchedAnchors = new WeakSet();
 
@@ -58,7 +55,7 @@
             const tag = el.tagName.toLowerCase();
             if (!tag.startsWith('x-') || !TAG_RE.test(tag)) return;
             const name = tag.slice(2);
-            if (!FRAMEWORK_TAGS.has(name)) names.add(name);
+            if (!loader()?.frameworkTags?.has(name)) names.add(name);
         });
         return names;
     }

@@ -14,9 +14,6 @@ function escapeForSingleQuotedJsString(s) {
         .replace(/\t/g, '\\t');
 }
 
-// Framework web components (not project components) — never fetched.
-const FRAMEWORK_COMPONENT_TAGS = new Set(['code', 'code-group']);
-
 // Classic JS or module; anything else (JSON, templates) is a data block
 function isExecutableScript(el) {
     const type = (el.getAttribute('type') || '').split(';')[0].trim().toLowerCase();
@@ -73,7 +70,7 @@ window.ManifestComponentsProcessor = {
             console.debug('[Manifest Components] skipped: registry or loader unavailable', element);
             return;
         }
-        if (FRAMEWORK_COMPONENT_TAGS.has(name)) return;
+        if (loader.frameworkTags?.has(name)) return;
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
             // Pre-rendered content skips re-fetch but still needs Alpine init.
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
