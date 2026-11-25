@@ -179,6 +179,7 @@ function initializeVirtualPlugin() {
         let ro = null;
         let destroyed = false;
         let lastStart = 0;                     // last render's first unit
+        let builtAvg = 0;                      // the unmeasured-row estimate at the last full rebuild
         let aboveAvg = null;                   // estimate for unmeasured rows before the window, held until the source changes
 
         const keyFn = buildKeyFn(itemName, indexName, keyExpr);
@@ -242,6 +243,31 @@ function initializeVirtualPlugin() {
                 y += i < held ? (heights.get(k) ?? aboveAvg) : heightFor(k);
             }
             cumulative[n] = y;
+            builtAvg = avgH();
+        }
+
+        // Re-measured rendered rows: shift the offsets after each by its change, without re-reading the list.
+        // A full rebuild instead when a row's index is unknown or the estimate for unmeasured rows moved by 10%
+        function applyMeasured(keys) {
+            const n = raw.length;
+            if (isMasonry || isGallery || cumulative.length !== n + 1 || Math.abs(avgH() - builtAvg) > builtAvg * 0.1) return rebuild();
+            const changes = [];
+            for (const key of keys) {
+                const entry = rendered.get(key);
+                const i = entry ? entry.i : -1;
+                if (!(i >= 0 && i < n) || keyFn(raw[i], i) !== key) return rebuild();
+                const d = heights.get(key) - (cumulative[i + 1] - cumulative[i]);
+                if (d) changes.push(i, d);
+            }
+            if (!changes.length) return;
+            const order = [];
+            for (let c = 0; c < changes.length; c += 2) order.push(c);
+            order.sort((a, b) => changes[a] - changes[b]);
+            let acc = 0, c = 0;
+            for (let j = changes[order[0]] + 1; j <= n; j++) {
+                while (c < order.length && changes[order[c]] < j) acc += changes[order[c++] + 1];
+                cumulative[j] += acc;
+            }
         }
 
         function rebuildGallery() {
@@ -414,6 +440,7 @@ function initializeVirtualPlugin() {
 
         // Rebind by key: same row, possibly a new item object or position
         function rebind(entry, item, i) {
+            entry.i = i;
             if (entry.scope[itemName] !== item) entry.scope[itemName] = item;
             if (indexName && entry.scope[indexName] !== i) entry.scope[indexName] = i;
         }
@@ -425,7 +452,7 @@ function initializeVirtualPlugin() {
             const scope = Alpine.reactive(indexName ? { [itemName]: item, [indexName]: i } : { [itemName]: item });
             const removeScope = Alpine.addScopeToNode(node, scope);
             Alpine.initTree(node);
-            const entry = { node, scope, removeScope, targets: null, seen: false };
+            const entry = { node, scope, removeScope, targets: null, seen: false, i };
             rendered.set(key, entry);
             observe(entry, key, node);
             return entry;
@@ -503,15 +530,15 @@ function initializeVirtualPlugin() {
             requestAnimationFrame(() => {
                 frameScheduled = false;
                 if (destroyed) return;
-                let changed = false;
+                const changed = [];
                 for (const key of pending) {
                     const entry = rendered.get(key);
-                    if (entry && measureRow(key, entry)) changed = true;
+                    if (entry && measureRow(key, entry)) changed.push(key);
                 }
                 pending.clear();
-                const doRender = changed || renderPending;
+                const doRender = changed.length > 0 || renderPending;
                 renderPending = false;
-                if (changed) rebuild();
+                if (changed.length) applyMeasured(changed);
                 if (doRender) render();
             });
         }
