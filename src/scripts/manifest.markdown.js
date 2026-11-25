@@ -494,7 +494,7 @@ async function initializeMarkdownPlugin() {
             };
         };
 
-        Alpine.directive('markdown', (el, { expression, modifiers }, { effect, evaluateLater }) => {
+        Alpine.directive('markdown', (el, { expression, modifiers }, { effect, evaluateLater, cleanup }) => {
         // `.safe` runs parsed HTML through DOMPurify before injection. Default
         // is unsanitized (raw HTML + custom-element extensions); use .safe for
         // untrusted source (Appwrite, API responses, crowdsourced translations).
@@ -682,6 +682,13 @@ async function initializeMarkdownPlugin() {
             // hides the element like it always did.
             let bakedOnly = hasBakedContent;
 
+            let headingsSectionId = null;
+            let destroyed = false;
+            cleanup(() => {
+                destroyed = true;
+                if (headingsSectionId && window._manifestHeadings) delete window._manifestHeadings[headingsSectionId];
+            });
+
             effect(() => {
                 getMarkdownContent(async (pathOrContent) => {
                     const mdDone = mdTrack();
@@ -818,28 +825,22 @@ async function initializeMarkdownPlugin() {
                     bakedOnly = false;
                     el.style.opacity = '1';
 
-                    // Extract headings for anchor links
-                    const headings = [];
-                    const headingElements = el.querySelectorAll('h1, h2, h3');
-                    headingElements.forEach(heading => {
-                        headings.push({
-                            id: heading.id,
-                            text: heading.textContent,
-                            level: parseInt(heading.tagName.charAt(1))
+                    // Headings registry (.headings): one entry per element
+                    if (modifiers.includes('headings') && !destroyed) {
+                        const headings = [];
+                        el.querySelectorAll('h1, h2, h3').forEach(heading => {
+                            headings.push({
+                                id: heading.id,
+                                text: heading.textContent,
+                                level: parseInt(heading.tagName.charAt(1))
+                            });
                         });
-                    });
-
-                    // Store headings in Alpine data if 'headings' modifier is used
-                    if (modifiers.includes('headings')) {
-                        // Generate a unique ID for this markdown section
-                        const sectionId = 'markdown-' + Math.random().toString(36).substr(2, 9);
-                        el.setAttribute('data-headings-section', sectionId);
-
-                        // Store headings in a global registry
+                        if (!headingsSectionId) headingsSectionId = 'markdown-' + Math.random().toString(36).substr(2, 9);
+                        el.setAttribute('data-headings-section', headingsSectionId);
                         if (!window._manifestHeadings) {
                             window._manifestHeadings = {};
                         }
-                        window._manifestHeadings[sectionId] = headings;
+                        window._manifestHeadings[headingsSectionId] = headings;
                     }
                     } finally {
                         mdDone();
