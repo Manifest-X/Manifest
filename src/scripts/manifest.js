@@ -400,23 +400,13 @@
 		'data',
 		'icons',
 		'localization',
-		'markdown',
-		'svg',
-		'code',
 		'color',
 		'toasts',
 		'tooltips',
 		'dropdowns',
-		'combobox',
 		'computed',
 		'tabs',
-		'slides',
-		'colorpicker',
-		'datepicker',
-		'charts',
 		'url-parameters',
-		'virtual',
-		'export',
 		'status'
 	];
 
@@ -436,8 +426,8 @@
 		'appwrite-presences'
 	];
 
-	// Loaded on use (x-rich-text / $rich, x-submit), with data-plugins, or as a dependency
-	const USAGE_LOADED_PLUGINS = ['rich-text', 'submissions'];
+	// Loaded on use (see USAGE_PLUGINS), with data-modules, or as a dependency
+	const USAGE_LOADED_PLUGINS = ['rich-text', 'submissions', 'markdown', 'svg', 'code', 'combobox', 'slides', 'colorpicker', 'datepicker', 'charts', 'virtual', 'export'];
 
 	// Plugin dependencies: plugins that require other plugins to be loaded first
 	const PLUGIN_DEPENDENCIES = {
@@ -736,6 +726,7 @@
 	// owns page-level state (utilities' style element and its order observer)
 	// fights the first. A failed load is forgotten so a retry can still run.
 	const pluginLoads = new Map();
+	const pluginsSettled = new Set();
 
 	async function addScript(pluginName, version = RESOLVED_VERSION) {
 		const prior = pluginLoads.get(pluginName);
@@ -747,7 +738,7 @@
 		}
 		const promise = fetchPluginScript(pluginName, version);
 		pluginLoads.set(pluginName, { version, promise });
-		promise.catch(() => pluginLoads.delete(pluginName));
+		promise.then(() => pluginsSettled.add(pluginName), () => pluginLoads.delete(pluginName));
 		return promise;
 	}
 
@@ -830,13 +821,46 @@
 	// into template content, which the parser detaches) and inline scripts.
 	// Rendered text is deliberately not scanned — code samples on a page
 	// must not pull plugins in.
+	// attr matches x-name, x-name.mod and x-name:arg (family: also x-name-*)
 	const USAGE_PLUGINS = [
 		{ magic: '$chat', plugin: 'chat' },
 		{ magic: '$presence', plugin: 'appwrite-presences' },
-		{ magic: '$rich', plugin: 'rich-text', attr: 'x-rich-text' },
-		{ plugin: 'submissions', attr: 'x-submit' },
-		...['$share', '$secure', '$links', '$push', '$app', '$haptics', '$biometric', '$camera'].map(magic => ({ magic, plugin: 'device' }))
+		{ magic: '$rich', plugin: 'rich-text', attr: 'x-rich-text', family: true },
+		{ plugin: 'submissions', attr: 'x-submit', family: true },
+		...['$share', '$secure', '$links', '$push', '$app', '$haptics', '$biometric', '$camera'].map(magic => ({ magic, plugin: 'device' })),
+		{ plugin: 'charts', attr: 'x-chart', magic: '$chart' },
+		{ plugin: 'colorpicker', attr: 'x-colorpicker', magic: '$colorpicker' },
+		{ plugin: 'datepicker', attr: 'x-date', magic: '$date' },
+		{ plugin: 'combobox', attr: 'x-combobox' },
+		{ plugin: 'code', attr: 'x-code' },
+		{ plugin: 'code', attr: 'x-code-group' },
+		{ plugin: 'markdown', attr: 'x-markdown' },
+		{ plugin: 'export', attr: 'x-export', magic: '$export' },
+		{ plugin: 'export', attr: 'x-import', magic: '$import' },
+		{ plugin: 'virtual', attr: 'x-virtual' },
+		{ plugin: 'slides', attr: 'x-carousel' },
+		{ plugin: 'svg', attr: 'x-svg' }
 	].map(u => ({ ...u, re: u.magic ? new RegExp('\\' + u.magic + '\\b') : null }));
+	const USAGE_NAMES = [...new Set(USAGE_PLUGINS.map(u => u.plugin))];
+	const USAGE_ATTRS = new Map(USAGE_PLUGINS.filter(u => u.attr).map(u => [u.attr, u.plugin]));
+	const USAGE_FAMILIES = USAGE_PLUGINS.filter(u => u.family).map(u => [u.attr + '-', u.plugin]);
+	// Plugin for a directive attribute name, or undefined
+	function attrPlugin(name) {
+		if (name.charCodeAt(0) !== 120 || name.charCodeAt(1) !== 45) return;
+		let end = name.length;
+		for (let i = 2; i < end; i++) { const c = name.charCodeAt(i); if (c === 46 || c === 58) { end = i; break; } }
+		const base = end === name.length ? name : name.slice(0, end);
+		const p = USAGE_ATTRS.get(base);
+		if (p) return p;
+		for (const [pre, plugin] of USAGE_FAMILIES) if (base.startsWith(pre)) return plugin;
+	}
+	// Plain-HTML trigger: <pre><code class="language-x"> and <code copy> (Code)
+	function elementPlugin(el) {
+		if (el.tagName !== 'CODE') return;
+		if (el.hasAttribute('copy')) return 'code';
+		const c = el.getAttribute('class');
+		if (c && c.indexOf('language-') !== -1 && el.parentElement && el.parentElement.tagName === 'PRE') return 'code';
+	}
 	// $rich before Rich Text arrives (it loads on use, and SPA routes or component HTML can
 	// need it later): an idle stand-in, so expressions never throw. Rich Text bumps `v` when
 	// it registers the real magic, so effects that read $rich run again; Alpine binds magics
@@ -910,8 +934,11 @@
 		const wantComponents = !alreadyLoaded.includes('components');
 		if ((wanted.length === 0 && !wantComponents) || !root) return [];
 		const found = new Set();
-		const target = new Set(wanted.map(u => u.plugin)).size + (wantComponents ? 1 : 0);
+		const open = new Set(wanted.map(u => u.plugin));
+		const target = open.size + (wantComponents ? 1 : 0);
 		const done = () => found.size === target;
+		const take = (p) => { if (p && open.has(p) && !found.has(p)) found.add(p); };
+		const wantCode = open.has('code');
 
 		for (const s of root.querySelectorAll('script:not([src])')) {
 			const t = s.textContent || '';
@@ -924,8 +951,9 @@
 				const tag = el.tagName.toLowerCase();
 				if (tag.startsWith('x-') && !FRAMEWORK_TAG_RE.test(tag)) found.add('components');
 			}
+			if (wantCode) take(elementPlugin(el));
 			for (const attr of el.attributes || []) {
-				for (const u of wanted) if (u.attr && !found.has(u.plugin) && (attr.name === u.attr || attr.name.startsWith(u.attr + '-') || attr.name.startsWith(u.attr + '.'))) found.add(u.plugin);
+				take(attrPlugin(attr.name));
 				const v = attr.value;
 				if (!v || v.indexOf('$') === -1 || usageClean.has(v)) continue;
 				if (!USAGE_ANY_RE.test(v)) {
@@ -959,25 +987,29 @@
 	let usageSniff = false;
 	// A failed on-use load is not retried within this page load
 	const usageFailed = new Set();
-	const usageLoaded = (p) => pluginLoads.has(p) || usageFailed.has(p);
+	// Settled loads only: a second caller waits on a load still in flight
+	const usageLoaded = (p) => pluginsSettled.has(p) || usageFailed.has(p);
 	function loadUsed(source, version = RESOLVED_VERSION) {
 		if (!usageSniff || !source || typeof document === 'undefined') return Promise.resolve([]);
 		let root = source;
 		if (typeof source === 'string') {
-			if (source.indexOf('x-') === -1 && source.indexOf('$') === -1) return Promise.resolve([]);
+			if (source.indexOf('x-') === -1 && source.indexOf('$') === -1 && source.indexOf('<code') === -1) return Promise.resolve([]);
 			root = document.createElement('template');
 			root.innerHTML = source;
 			root = root.content;
 		}
-		const loaded = [...new Set(USAGE_PLUGINS.map(u => u.plugin))].filter(usageLoaded).concat('components', _omitted);
+		const loaded = USAGE_NAMES.filter(usageLoaded).concat('components', _omitted);
 		const used = detectUsagePlugins(loaded, root);
 		if (!used.length) return Promise.resolve([]);
 		const list = resolveDependencies(used).filter(p => !usageLoaded(p));
+		if (!list.length) return Promise.resolve([]);
+		// Prerender waits for the module and the adoption it schedules
+		const release = window.ManifestPending ? window.ManifestPending.hold('module') : () => { };
 		return Promise.all(list.map(p => addScript(p, version).catch(error => {
 			if (usageFailed.has(p)) return;
 			usageFailed.add(p);
 			console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
-		}))).then(() => list);
+		}))).then(() => new Promise(r => setTimeout(r, 0))).then(() => { release(); return list; });
 	}
 
 	function watchUsage(version) {
@@ -1472,6 +1504,27 @@
 			if (config.tailwind && !staticUtilitiesFullyCovered()) {
 				pluginPromises.push(loadTailwind(config.version).catch(() => { }));
 			}
+			// Usage sniff once the document is parsed: on-use modules download alongside the
+			// rest and run before Alpine. Derive path only — an explicit data-modules list is an
+			// intentional constraint, not a default.
+			const sniffed = !config.deriveFromManifest ? null : new Promise((resolve) => whenDomReady(() => {
+				let late = [];
+				try {
+					// An omitted module the page uses fails far from the cause: say so once
+					const blocked = _omitted.length ? detectUsagePlugins(pluginsToLoad).filter(p => _omitted.includes(p)) : [];
+					if (blocked.length) console.warn(`[Manifest Loader] data-omit lists ${blocked.join(', ')}, but this page uses ${blocked.length > 1 ? 'them' : 'it'}. Not loaded: remove ${blocked.length > 1 ? 'them' : 'it'} from data-omit to load.`);
+					const used = detectUsagePlugins([...pluginsToLoad, ..._omitted]);
+					if (used.length > 0) {
+						late = resolveDependencies(used).filter(p => !pluginsToLoad.includes(p)).map(p => addScript(p, config.version).catch(error => {
+							usageFailed.add(p);
+							console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
+						}));
+					}
+				} catch (_) { /* sniffing must never block Alpine */ }
+				usageSniff = true;
+				watchUsage(config.version);
+				resolve(Promise.all(late));
+			}));
 			await Promise.all(pluginPromises);
 			if (manifestPromise) {
 				manifest = await manifestPromise;
@@ -1483,28 +1536,8 @@
 					window.ManifestComponentsRegistry.manifest = manifest;
 				}
 			}
-			// Usage sniff: Alpine is DCL-gated anyway, so the parsed document can
-			// be checked for magics with no declarative trigger and the missing
-			// plugins fetched before Alpine boots. Derive path only — an explicit
-			// data-plugins list is an intentional constraint, not a default.
 			whenDomReady(async () => {
-				if (config.deriveFromManifest) {
-					try {
-						// An omitted module the page uses fails far from the cause: say so once
-						const blocked = _omitted.length ? detectUsagePlugins(pluginsToLoad).filter(p => _omitted.includes(p)) : [];
-						if (blocked.length) console.warn(`[Manifest Loader] data-omit lists ${blocked.join(', ')}, but this page uses ${blocked.length > 1 ? 'them' : 'it'}. Not loaded: remove ${blocked.length > 1 ? 'them' : 'it'} from data-omit to load.`);
-						const used = detectUsagePlugins([...pluginsToLoad, ..._omitted]);
-						if (used.length > 0) {
-							const late = resolveDependencies(used).filter(p => !pluginsToLoad.includes(p));
-							await Promise.all(late.map(p => addScript(p, config.version).catch(error => {
-								usageFailed.add(p);
-								console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
-							})));
-						}
-					} catch (_) { /* sniffing must never block Alpine */ }
-					usageSniff = true;
-					watchUsage(config.version);
-				}
+				if (sniffed) await sniffed;
 				startReadyCoordinator(pluginsToLoad, config.tailwind);
 				loadAlpine(alpineUrlCandidates(config.alpine));
 			});
