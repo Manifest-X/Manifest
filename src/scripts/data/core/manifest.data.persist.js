@@ -7,6 +7,7 @@
     const STORE_NAME = 'sources';
     const DB_VERSION = 1;
     const WRITE_DEBOUNCE_MS = 500;
+    const WRITE_MAX_WAIT_MS = 5000; // a source landing more often than the debounce still snapshots
     const BOOT_HYDRATE_MAX_WAIT_MS = 100;
     const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const DEFAULT_MAX_ROWS = 1000;
@@ -36,6 +37,7 @@
         scope: '',
         generation: 0,
         pending: new Map(),    // source -> time its debounced write is due
+        pendingSince: new Map(), // source -> when its unwritten landings began
         landedIdentity: new Map(), // source -> identity its pending rows were read under
         writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
@@ -501,7 +503,7 @@
     // Every source whose debounce has elapsed is written in ONE transaction
     function flush(sources) {
         const landedIdentity = new Map(sources.map(source => [source, state.landedIdentity.get(source)]));
-        for (const source of sources) { state.pending.delete(source); state.landedIdentity.delete(source); }
+        for (const source of sources) { state.pending.delete(source); state.pendingSince.delete(source); state.landedIdentity.delete(source); }
         if (!state.enabled || state.disabled) return Promise.resolve();
         const records = sources.map(source => snapshotRecord(source, landedIdentity.get(source))).filter(Boolean);
         if (!records.length) return Promise.resolve();
@@ -535,20 +537,22 @@
     }
 
     function cancelWrites(source) {
-        if (source !== undefined) { state.pending.delete(source); state.landedIdentity.delete(source); return; }
+        if (source !== undefined) { state.pending.delete(source); state.pendingSince.delete(source); state.landedIdentity.delete(source); return; }
         state.pending.clear();
+        state.pendingSince.clear();
         state.landedIdentity.clear();
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
     }
 
-    // Landing hook (store flush): each landing restarts that source's 500ms debounce
+    // Landing hook (store flush): each landing restarts that source's 500ms debounce, up to the maximum wait
     function onLanded(sources) {
         if (!state.enabled || state.disabled || state.scopePending) return;   // nothing is keyed under an unresolved scope
-        const at = Date.now() + WRITE_DEBOUNCE_MS;
+        const now = Date.now();
         const identity = hydrationIdentity();
         for (const source of sources) {
             if (!state.sources.has(source)) continue;
-            state.pending.set(source, at);
+            if (!state.pendingSince.has(source)) state.pendingSince.set(source, now);
+            state.pending.set(source, Math.min(now + WRITE_DEBOUNCE_MS, state.pendingSince.get(source) + WRITE_MAX_WAIT_MS));
             if (state.sources.get(source).authDependent) state.landedIdentity.set(source, identity);
         }
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
@@ -733,6 +737,7 @@
     window.ManifestDataPersist = {
         BOOT_HYDRATE_MAX_WAIT_MS,
         WRITE_DEBOUNCE_MS,
+        WRITE_MAX_WAIT_MS,
         configure,
         register,
         setScope,

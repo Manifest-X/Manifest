@@ -189,8 +189,11 @@ function bumpAllVersions(only) {
     touchSources(store, sources);
 }
 
+const isDateValue = (value) => Object.prototype.toString.call(value) === '[object Date]';
+
 function sameScalarOrList(a, b) {
     if (a === b) return true;
+    if (isDateValue(a) && isDateValue(b)) return a.getTime() === b.getTime();
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const x = a[i];
@@ -828,6 +831,9 @@ function createReactiveReferences(data, dataSourceName = null) {
         // Create new array with new references for each item
         return data.map(item => createReactiveReferences(item, dataSourceName));
     }
+
+    // A date (YAML sources parse them) stays a date: copied key by key it would become {}
+    if (isDateValue(data)) return new Date(data.getTime());
 
     if (typeof data === 'object') {
         // Object.keys, not for…in + .hasOwnProperty (see deepSeal). Hot path for

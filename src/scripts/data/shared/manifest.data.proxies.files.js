@@ -56,6 +56,14 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         ? Alpine.reactive({ value: null })
         : { value: null };
 
+    // Position of a row in a source by $id (cached index; -1 when absent)
+    const positionOf = (rows, id) => {
+        const ds = window.ManifestDataStore;
+        const raw = ds?.rawOf ? ds.rawOf(rows) : rows;
+        if (ds?.indexOfRow) return ds.indexOfRow(raw, id);
+        return raw.findIndex(row => row && row.$id === id);
+    };
+
     // Function to recompute files array from bucket and entry's fileIds
     const recomputeFiles = () => {
         try {
@@ -91,7 +99,8 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
                 return;
             }
 
-            const entry = entries.find(e => e.$id === entryId);
+            const entryAt = positionOf(entries, entryId);
+            const entry = entryAt === -1 ? null : entries[entryAt];
             if (!entry) {
                 computedFiles.length = 0;
                 loadingState.value = bucketLoading;
@@ -108,10 +117,14 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
                 return;
             }
 
-            // Filter bucket files by fileIds
-            const filteredFiles = bucketFiles.filter(file =>
-                file && file.$id && fileIds.includes(file.$id)
-            );
+            // The entry's files, in bucket order
+            const positions = [];
+            for (const id of new Set(fileIds)) {
+                const at = positionOf(bucketFiles, id);
+                if (at !== -1) positions.push(at);
+            }
+            positions.sort((a, b) => a - b);
+            const filteredFiles = positions.map(at => bucketFiles[at]);
 
             // Update computed array (maintains reactivity)
             computedFiles.length = 0;
@@ -128,74 +141,61 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         }
     };
 
-    // Set up Alpine effect to watch both bucket array and entry's fileIds
+    // Started on first read: a row whose $files nobody reads costs no effect.
+    // Tracks the table and bucket membership (length), the entry's fileIds and the bucket state.
     let filesEffect = null;
-    if (typeof Alpine !== 'undefined' && Alpine.effect) {
+    let started = false;
+    const start = () => {
+        if (started) return;
+        started = true;
+        if (typeof Alpine === 'undefined' || !Alpine.effect) { recomputeFiles(); return; }
         filesEffect = Alpine.effect(() => {
-            // Access store to track changes
             const store = Alpine.store('data');
             if (!store) {
                 recomputeFiles();
                 return;
             }
 
-            if (owner) {
-                const rows = store[tableName];
-                if (Array.isArray(rows) && !rows.some(row => (Alpine.raw ? Alpine.raw(row) : row) === owner)) {
+            const rows = store[tableName];
+            if (owner && Array.isArray(rows)) {
+                void rows.length;
+                const raw = Alpine.raw ? Alpine.raw(rows) : rows;
+                const at = positionOf(rows, entryId);
+                const held = at === -1 ? null : raw[at];
+                // Another row may hold the same $id for a moment (a rebuilt row): then look for this one itself
+                if ((Alpine.raw && held ? Alpine.raw(held) : held) !== owner && !raw.includes(owner)) {
                     queueMicrotask(() => { if (filesEffect) Alpine.release(filesEffect); });
                     return;
                 }
             }
 
-            // Track bucket array changes - access the array itself and iterate to track all elements
             const bucketFiles = store[bucketName];
-            if (bucketFiles && Array.isArray(bucketFiles)) {
-                // Access length and iterate to track all file changes
-                const _ = bucketFiles.length;
-                // Iterate through files to track individual file changes
-                bucketFiles.forEach(file => {
-                    if (file && file.$id) {
-                        const __ = file.$id; // Track file ID changes
-                    }
-                });
-            }
+            if (Array.isArray(bucketFiles)) void bucketFiles.length;
 
-            // Track entry's fileIds changes - access entry and fileIds array
-            const entries = store[tableName];
-            if (entries && Array.isArray(entries)) {
-                const entry = entries.find(e => e.$id === entryId);
-                if (entry) {
-                    // Access fileIds array to track changes
-                    const fileIds = entry[columnName] || [];
-                    if (Array.isArray(fileIds)) {
-                        const _ = fileIds.length;
-                        // Iterate through fileIds to track individual ID changes
-                        fileIds.forEach(id => {
-                            const __ = id; // Track individual fileId changes
-                        });
-                    }
+            if (Array.isArray(rows)) {
+                const at = positionOf(rows, entryId);
+                const entry = at === -1 ? null : rows[at];
+                const fileIds = entry ? entry[columnName] : null;
+                if (Array.isArray(fileIds)) {
+                    void fileIds.length;
+                    for (let i = 0; i < fileIds.length; i++) void fileIds[i];
                 }
             }
 
-            // Track bucket loading state
             const bucketState = store[`_${bucketName}_state`];
             if (bucketState) {
-                const _ = bucketState.loading;
-                const __ = bucketState.error;
+                void bucketState.loading;
+                void bucketState.error;
             }
 
-            // Recompute files after tracking all dependencies
             recomputeFiles();
         });
-    }
-
-    // Initial computation
-    recomputeFiles();
+    };
 
     // Create proxy that adds loading/error properties
     const computedProxy = new Proxy(computedFiles, {
         get(target, key) {
-            if (key !== 'toJSON') requestInline();
+            if (key !== 'toJSON') { requestInline(); start(); }
             if (key === '$loading') return loadingState.value;
             if (key === '$error') return errorState.value;
             if (key === Symbol.iterator) return target[Symbol.iterator].bind(target);
@@ -207,6 +207,7 @@ function createComputedFilesArray(tableName, entryId, bucketName, columnName = '
         },
         has(target, key) {
             requestInline();
+            start();
             return key in target || key === '$loading' || key === '$error';
         }
     });

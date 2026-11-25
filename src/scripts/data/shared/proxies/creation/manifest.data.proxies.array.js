@@ -78,11 +78,56 @@ function untracked(fn) {
     return out;
 }
 
+const IDENTITY = (value) => value;
+const toRaw = (value) => (value && typeof Alpine !== 'undefined' && Alpine.raw ? Alpine.raw(value) : value);
+
+// Operators read raw rows (no proxy traps, no dependency bookkeeping) and hand back the rows the array holds:
+// live (reactive) ones when the array itself is, so bindings on a result row still update
+function operatorRows(array) {
+    const base = toRaw(array);
+    const live = base !== array && typeof Alpine !== 'undefined' && !!Alpine.reactive;
+    // Already raw rows on a raw array: nothing to unwrap or map back
+    if (!live && (base.length === 0 || (toRaw(base[0]) === base[0] && toRaw(base[base.length - 1]) === base[base.length - 1]))) {
+        return { raws: base, out: IDENTITY };
+    }
+    const raws = new Array(base.length);
+    let back = null;
+    for (let i = 0; i < base.length; i++) {
+        const item = base[i];
+        const raw = toRaw(item);
+        raws[i] = raw;
+        if (raw !== item) (back || (back = new Map())).set(raw, item);
+    }
+    const out = (raw) => {
+        if (raw === null || typeof raw !== 'object') return raw;
+        if (back && back.has(raw)) return back.get(raw);
+        return live ? Alpine.reactive(raw) : raw;
+    };
+    return { raws, out };
+}
+
+const SEARCH_SEP = '\u0000';
+const isDate = (value) => Object.prototype.toString.call(value) === '[object Date]';
+
+// Searchable text of a field: scalars, dates and lists of them (a plain object would read "[object Object]")
+function searchText(value, depth = 0) {
+    if (value == null) return '';
+    if (typeof value !== 'object') return String(value).toLowerCase();
+    if (isDate(value)) return String(value).toLowerCase();
+    if (!Array.isArray(value) || depth > 3) return '';
+    let text = '';
+    for (const part of value) {
+        const piece = searchText(part, depth + 1);
+        if (piece) text += (text ? ',' : '') + piece;
+    }
+    return text;
+}
+
 function memoOp(array, dataSourceName, op, args, compute) {
     const version = sourceVersion(dataSourceName);
-    if (version === undefined) return compute();
+    if (version === undefined) return compute(null);
     const argsKey = stableStringify(args);
-    if (argsKey === undefined) return compute();
+    if (argsKey === undefined) return compute(null);
     const raw = Alpine.raw ? Alpine.raw(array) : array;
     let entry = opCaches.get(raw);
     if (!entry || entry.v !== version) {
@@ -97,7 +142,7 @@ function memoOp(array, dataSourceName, op, args, compute) {
         map.set(key, hit);
         return hit;
     }
-    const result = untracked(compute);
+    const result = untracked(() => compute(entry));
     map.set(key, result);
     if (map.size > OP_CACHE_MAX) map.delete(map.keys().next().value);
     return result;
@@ -218,12 +263,13 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 return array;
             }
 
-            return memoOp(array, dataSourceName, 'search', [searchTerm, ...attributes], () => runSearch(searchTerm, attributes));
+            return memoOp(array, dataSourceName, 'search', [searchTerm, ...attributes], (memo) => runSearch(searchTerm, attributes, memo));
         }
     });
 
-    function runSearch(searchTerm, attributes) {
+    function runSearch(searchTerm, attributes, memo) {
         const term = searchTerm.toLowerCase().trim();
+        const { raws, out } = operatorRows(array);
 
         // Weighted mode: $search(term, { title: 3, body: 1 }) — ranks by the
         // best-matching field's weight per whitespace-separated term (prefix
@@ -233,16 +279,14 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             const fields = Object.keys(first);
             const terms = term.split(/\s+/).filter(Boolean);
             const scored = [];
-            for (const item of array) {
+            for (const item of raws) {
                 if (!item || typeof item !== 'object') continue;
                 let total = 0, ok = true;
                 for (const t of terms) {
                     let best = 0;
                     for (const f of fields) {
-                        const v = item[f];
-                        if (v == null) continue;
-                        const s = String(v).toLowerCase();
-                        if (!s.includes(t)) continue;
+                        const s = searchText(item[f]);
+                        if (!s || !s.includes(t)) continue;
                         let w = Number(first[f]) || 0;
                         if (s.startsWith(t)) w *= 1.2;
                         if (w > best) best = w;
@@ -253,21 +297,40 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 if (ok) scored.push([total, item]);
             }
             scored.sort((a, b) => b[0] - a[0]);
-            const ranked = scored.map(e => e[1]);
+            const ranked = scored.map(e => out(e[1]));
             attachArrayMethods(ranked, dataSourceName, reloadDataSource);
             return ranked;
         }
 
-        const attrs = attributes.length > 0 ? attributes : Object.keys(array[0] || {});
+        const attrs = attributes.length > 0 ? attributes : Object.keys(raws[0] || {}).filter(key => key !== '$files');
 
-        const filtered = array.filter(item => {
-            if (!item || typeof item !== 'object') return false;
-            return attrs.some(attr => {
-                const value = item[attr];
-                if (value == null) return false;
-                return String(value).toLowerCase().includes(term);
-            });
-        });
+        // One lowercase string per row, kept for this source version and checked against the row it was
+        // built from (an array changed in place re-reads the rows that moved): a keystroke is one includes() per row
+        const rowText = (item) => {
+            if (!item || typeof item !== 'object') return null;
+            let text = '';
+            for (const attr of attrs) text += searchText(item[attr]) + SEARCH_SEP;
+            return text;
+        };
+        const hays = memo && !term.includes(SEARCH_SEP) ? (memo.hay || (memo.hay = new Map())) : null;
+        const hayKey = hays ? attrs.map(String).join(SEARCH_SEP) : '';
+        let hay = hays ? hays.get(hayKey) : null;
+        if (!hay) {
+            hay = { rows: [], text: [] };
+            if (hays) {
+                if (hays.size >= 4) hays.delete(hays.keys().next().value);
+                hays.set(hayKey, hay);
+            }
+        }
+        hay.rows.length = hay.text.length = raws.length;
+
+        const filtered = [];
+        for (let i = 0; i < raws.length; i++) {
+            const item = raws[i];
+            if (hay.rows[i] !== item) { hay.rows[i] = item; hay.text[i] = rowText(item); }
+            const text = hay.text[i];
+            if (text !== null && text !== undefined && text.includes(term)) filtered.push(out(item));
+        }
 
         // Re-attach so chaining works (.$search().$query())
         attachArrayMethods(filtered, dataSourceName, reloadDataSource);
@@ -401,14 +464,18 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     return array;
                 }
                 // orderRandom reshuffles per call — never memoized
-                if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) return runQuery(queries);
+                if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) {
+                    void sourceVersion(dataSourceName); // still re-runs the caller when the source changes
+                    return runQuery(queries);
+                }
                 return memoOp(array, dataSourceName, 'query', [queries], () => runQuery(queries));
             }
         });
     }
 
     function runQuery(queries) {
-        let result = [...array];
+        const { raws, out } = operatorRows(array);
+        let result = raws;
 
         // Process each query in order
         for (const query of queries) {
@@ -460,6 +527,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             // Sorting methods
             else if (method === 'orderAsc' && args.length >= 1) {
                 const [attr] = args;
+                if (result === raws) result = raws.slice();
                 result.sort((a, b) => {
                     const aVal = a && a[attr];
                     const bVal = b && b[attr];
@@ -473,6 +541,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                 });
             } else if (method === 'orderDesc' && args.length >= 1) {
                 const [attr] = args;
+                if (result === raws) result = raws.slice();
                 result.sort((a, b) => {
                     const aVal = a && a[attr];
                     const bVal = b && b[attr];
@@ -485,6 +554,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
                 });
             } else if (method === 'orderRandom') {
+                if (result === raws) result = raws.slice();
                 // Fisher-Yates shuffle
                 for (let i = result.length - 1; i > 0; i--) {
                     const j = Math.floor(Math.random() * (i + 1));
@@ -501,6 +571,7 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
             }
         }
 
+        result = out === IDENTITY ? (result === raws ? raws.slice() : result) : result.map(out);
         // Re-attach so chaining works (.$query().$search())
         attachArrayMethods(result, dataSourceName, reloadDataSource);
 
