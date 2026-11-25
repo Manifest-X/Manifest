@@ -15,6 +15,29 @@ project, zips it gitignore-aware, uploads it, and prints the live URL.
 Flags: `--staging` / `--production` (default), `--no-render`, `--promote`,
 `--source render|spa` (auto-detected), `--key <key>`, `--mcp <url>`.
 
+## Release scripts
+
+Review a build at its own address before it reaches production, then ship
+exactly that build:
+
+```bash
+npx mnfst-publish --no-live --label "v2.4.0" --json
+# {"ok":true,"env":"staging","deployment_id":"dep_…","live":false,"preview_url":"https://preview--….manifestx.ai",…}
+npx mnfst-publish --promote --deployment dep_… --expect-live dep_… --json
+```
+
+- `--no-live`: staging only. Stores the deployment without changing what
+  staging serves and prints its preview URL (unlisted, noindex).
+- `--label <text>`: names the deployment (up to 200 characters).
+- `--promote --deployment <id>`: promotes exactly that staging deployment;
+  staging is unchanged. Without `--deployment`, promotes what staging serves.
+- `--expect-live <id>`: with `--promote`, refuses unless production is serving
+  that deployment, checked in the same step as the switch.
+- `--json`: the result as one JSON object on stdout; progress goes to stderr.
+
+Against a server that doesn't support these yet, mnfst-publish stops before
+uploading or promoting anything.
+
 Publishing from Claude with the Manifest connector needs no key: the command it
 gives you carries a one-time upload link. While the site renders, mnfst-publish
 keeps that link alive (up to 3 hours). If a link still expires, ask Claude to
