@@ -241,23 +241,41 @@ function initializeVirtualPlugin() {
             let p = 0;
             for (; p < limit; p++) if ((keys[p] = keyFn(raw[p], p)) !== prevKeys[p]) break;
             const oldLimit = Math.min(lastStart, prevKeys.length, prev.length - 1);
-            let steps = null;
-            for (let i = p; i < oldLimit; i++) {
-                const k = prevKeys[i];
-                if (k == null) continue;
-                if (!steps) steps = new Map();
-                const step = prev[i + 1] - prev[i], had = steps.get(k);
-                if (had === undefined) steps.set(k, step);
-                else if (typeof had === 'number') steps.set(k, [had, step]);   // a repeated key: steps in order of occurrence
-                else had.push(step);
-            }
-            let seen = null;
+            // Old rows are matched in order (a few skipped rows tolerated); many misses switch to a key map of the rest
+            let j = p, misses = 0, steps = null, seen = null;
+            const skipped = [];                // recently passed old rows: a row moved down a little (a swap)
             const carried = (k) => {
-                const v = steps ? steps.get(k) : undefined;
-                if (!Array.isArray(v)) return v;
-                const j = (seen || (seen = new Map())).get(k) || 0;
-                seen.set(k, j + 1);
-                return v[j];
+                if (steps) {
+                    const v = steps.get(k);
+                    if (!Array.isArray(v)) return v;
+                    const c = (seen || (seen = new Map())).get(k) || 0;
+                    seen.set(k, c + 1);
+                    return v[c];
+                }
+                if (j >= oldLimit) return undefined;
+                for (let d = 0; d < 8 && j + d < oldLimit; d++) {
+                    if (prevKeys[j + d] !== k) continue;
+                    for (let o = j; o < j + d; o++) { skipped.push(o); if (skipped.length > 8) skipped.shift(); }
+                    j += d + 1;
+                    return prev[j] - prev[j - 1];
+                }
+                for (let q = 0; q < skipped.length; q++) {
+                    const o = skipped[q];
+                    if (prevKeys[o] === k) { skipped.splice(q, 1); return prev[o + 1] - prev[o]; }
+                }
+                if (++misses > 16) {
+                    steps = new Map();
+                    for (let i = j; i < oldLimit; i++) {
+                        const ok = prevKeys[i];
+                        if (ok == null) continue;
+                        const step = prev[i + 1] - prev[i], had = steps.get(ok);
+                        if (had === undefined) steps.set(ok, step);
+                        else if (typeof had === 'number') steps.set(ok, [had, step]);   // a repeated key: steps in order
+                        else had.push(step);
+                    }
+                    return carried(k);
+                }
+                return undefined;
             };
             cumulative = new Float64Array(n + 1);
             if (p) cumulative.set(prev.subarray(0, p + 1));
@@ -266,7 +284,8 @@ function initializeVirtualPlugin() {
                 cumulative[i] = y;
                 const k = i === p && keys[i] !== undefined ? keys[i] : keyFn(raw[i], i);
                 keys[i] = k;
-                y += carried(k) ?? heights.get(k) ?? avgH();   // a carried step is the row's measured height if it had one
+                const c = j < oldLimit || steps ? carried(k) : undefined;   // a carried step is the row's measured height if it had one
+                y += c ?? heights.get(k) ?? avgH();
             }
             cumulative[n] = y;
             builtKeys = keys;
