@@ -21,14 +21,14 @@ function log(msg) {
   (jsonMode ? process.stderr : process.stdout).write(msg + '\n');
 }
 function fail(msg) {
-  if (jsonMode) process.stdout.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+  if (jsonMode) process.stdout.write(JSON.stringify({ ok: false, error: 'failed', message: msg }) + '\n');
   console.error('mnfst-publish: ' + msg);
   process.exit(1);
 }
 
 export const LABEL_MAX_LENGTH = 200;
-// C0/C1 controls, DEL, and the Unicode line/paragraph separators.
-const NON_PRINTABLE = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]');
+// C0/C1 controls, DEL, line/paragraph separators, zero-width and bidi override/isolate characters.
+const NON_PRINTABLE = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff]');
 
 /** Parse argv; throws an Error with a user-facing message on a bad combination. */
 export function parseArgs(argv) {
@@ -76,7 +76,7 @@ export function parseArgs(argv) {
     out.label = out.label.trim();
     if (!out.label) throw new Error('--label must not be empty');
     if (out.label.length > LABEL_MAX_LENGTH) throw new Error(`--label must be at most ${LABEL_MAX_LENGTH} characters`);
-    if (NON_PRINTABLE.test(out.label)) throw new Error('--label must be printable (no control characters or line breaks)');
+    if (NON_PRINTABLE.test(out.label)) throw new Error('--label must be printable (no control, zero-width or bidi characters, no line breaks)');
   }
   return out;
 }
@@ -835,6 +835,22 @@ function checkUploadUrl(uploadUrl, mcpUrl) {
   }
 }
 
+/** Child process stdio: with --json, the child's stdout joins stderr so stdout stays one JSON object. */
+export function childStdio(json) {
+  return json ? ['inherit', 2, 'inherit'] : 'inherit';
+}
+
+/** Whether --json is on (the bin reports uncaught errors as JSON then). */
+export function isJsonMode() {
+  return jsonMode;
+}
+
+/** The --json failure object for an error. */
+export function jsonFailure(err) {
+  const message = err && err.message ? err.message : String(err);
+  return { ok: false, error: (err && err.code) || 'failed', message };
+}
+
 /** manifest_promote arguments for these options. */
 export function promoteToolArgs(opts) {
   const args = {};
@@ -876,10 +892,13 @@ export async function runPromote(opts, { url, key, callToolImpl = callTool, tool
   return res;
 }
 
-/** The handshake must confirm a held publish before anything is uploaded; an older server would take it live. */
+/** The handshake must confirm a held publish and the label before anything is uploaded; an older server drops both. */
 export function checkHeldHandshake(opts, handshake) {
   if (opts.live === false && handshake.live !== false) {
     throw new Error('this Manifest server does not support --no-live yet, so nothing was uploaded.');
+  }
+  if (opts.label && handshake.label !== opts.label) {
+    throw new Error('this Manifest server does not support --label yet, so nothing was uploaded.');
   }
 }
 
@@ -940,13 +959,15 @@ const USAGE = [
 ];
 
 export async function main() {
+  const argv = process.argv.slice(2);
+  // Set before parsing, so a bad flag is reported as JSON too.
+  jsonMode = argv.includes('--json');
   let opts;
   try {
-    opts = parseArgs(process.argv.slice(2));
+    opts = parseArgs(argv);
   } catch (e) {
     fail(e.message);
   }
-  jsonMode = !!opts.json;
   if (opts.help) {
     for (const line of USAGE) log(line);
     return;
@@ -1015,7 +1036,7 @@ export async function main() {
   if (rendering) {
     log('Rendering the site…');
     // Async, so the renewal timer runs during the render.
-    const code = await runCommand('npx', ['mnfst-render'], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
+    const code = await runCommand('npx', ['mnfst-render'], { cwd: root, stdio: childStdio(jsonMode), shell: process.platform === 'win32' });
     if (code !== 0) fail('render failed — fix the errors above and try again.');
   }
 

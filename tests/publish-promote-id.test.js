@@ -14,7 +14,16 @@ import {
     checkHeldHandshake,
     checkHeldLink,
     publishSummary,
+    childStdio,
+    jsonFailure,
 } from '../packages/publish/manifest.publish.mjs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const BIN = fileURLToPath(new URL('../packages/publish/bin/mnfst-publish.js', import.meta.url))
 
 describe('parseArgs', () => {
     it('--no-live implies staging and keeps the label', () => {
@@ -34,6 +43,10 @@ describe('parseArgs', () => {
         expect(() => parseArgs(['--label', '   '])).toThrow(/empty/)
         expect(() => parseArgs(['--label'])).toThrow(/needs a value/)
         expect(() => parseArgs(['--label', '--staging'])).toThrow(/needs a value/)
+        for (const ch of ['\u200b', '\u200f', '\u202a', '\u202e', '\u2066', '\u2069', '\ufeff']) {
+            expect(() => parseArgs(['--label', `a${ch}b`])).toThrow(/printable/)
+        }
+        expect(parseArgs(['--label', 'release — ✓ 日本']).label).toBe('release — ✓ 日本')
     })
 
     it('takes --deployment and --expect-live only with --promote', () => {
@@ -124,6 +137,12 @@ describe('held publish confirmation', () => {
         expect(() => checkHeldHandshake(parseArgs([]), { upload_url: 'u' })).not.toThrow()
     })
 
+    it('the handshake must echo the label, or nothing is uploaded', () => {
+        const opts = parseArgs(['--staging', '--label', 'v2'])
+        expect(() => checkHeldHandshake(opts, { upload_url: 'u', label: 'v2' })).not.toThrow()
+        expect(() => checkHeldHandshake(opts, { upload_url: 'u' })).toThrow(/does not support --label yet, so nothing was uploaded/)
+    })
+
     it('a connector link must report live=false on its status before upload', async () => {
         const seen = []
         const fetchImpl = (body) => async (url) => {
@@ -166,4 +185,41 @@ describe('publishSummary', () => {
         expect(lines).toContain('✓ Published to staging: https://s-staging.manifestx.ai')
         expect(lines).toContain('  Deployment: dep_s')
     })
+})
+
+describe('--json output', () => {
+    it("routes a child's stdout to stderr", () => {
+        expect(childStdio(true)).toEqual(['inherit', 2, 'inherit'])
+        expect(childStdio(false)).toBe('inherit')
+        const r = spawnSync(process.execPath, ['-e', "require('child_process').spawnSync(process.execPath, ['-e', 'console.log(1)'], { stdio: ['inherit', 2, 'inherit'] })"], { encoding: 'utf8' })
+        expect(r.stdout).toBe('')
+        expect(r.stderr.trim()).toBe('1')
+    })
+
+    it('shapes failures as {ok:false, error, message}', () => {
+        expect(jsonFailure(new Error('boom'))).toEqual({ ok: false, error: 'failed', message: 'boom' })
+        const e = new Error('gone')
+        e.code = 'link_expired'
+        expect(jsonFailure(e)).toEqual({ ok: false, error: 'link_expired', message: 'gone' })
+    })
+
+    it('a bad flag prints one JSON failure on stdout and exits 1', () => {
+        const r = spawnSync(process.execPath, [BIN, '--json', '--production', '--no-live'], { encoding: 'utf8' })
+        expect(r.status).toBe(1)
+        const lines = r.stdout.trim().split('\n')
+        expect(lines).toHaveLength(1)
+        expect(JSON.parse(lines[0])).toMatchObject({ ok: false, error: 'failed', message: expect.stringMatching(/only applies to staging/) })
+    })
+
+    it('an uncaught error in json mode is reported as JSON by the bin', () => {
+        // No server at this address: the publish handshake throws, uncaught by main, so the bin reports it.
+        const root = mkdtempSync(join(tmpdir(), 'mnfst-publish-json-'))
+        writeFileSync(join(root, 'index.html'), '<h1>x</h1>')
+        const r = spawnSync(process.execPath, [BIN, '--json', '--staging', '--key', 'k', '--mcp', 'http://127.0.0.1:9/mcp', '--root', root], { encoding: 'utf8', timeout: 30000 })
+        rmSync(root, { recursive: true, force: true })
+        expect(r.status).toBe(1)
+        const lines = r.stdout.trim().split('\n')
+        expect(lines).toHaveLength(1)
+        expect(JSON.parse(lines[0])).toMatchObject({ ok: false, error: 'failed', message: expect.any(String) })
+    }, 40000)
 })
