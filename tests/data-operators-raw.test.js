@@ -133,6 +133,34 @@ describe('$search on raw rows', () => {
         expect(array.$search('2', 'n').map(r => r.$id)).toEqual(['c'])
     })
 
+    it('an array changed in place within one source version is searched as it now is', async () => {
+        const { array, raw } = await live()
+        expect(array.$search('ada', 'name').map(r => r.$id)).toEqual(['a'])
+        raw.push({ $id: 'z', name: 'Zed Shaw', email: 'zed@example.com' }) // no version bump
+        expect(array.$search('zed', 'name').map(r => r.$id)).toEqual(['z'])
+        raw.reverse()
+        expect(array.$search('ad', 'name').map(r => r.$id)).toEqual(['a'])
+        expect(array.$search('grace', 'name').map(r => r.$id)).toEqual(['b'])
+        raw.length = 2
+        expect(array.$search('a', 'name').map(r => r.$id)).toEqual(['z', 'c'])
+    })
+
+    it('dates and nested lists of scalars are searchable', async () => {
+        const ctx = load()
+        await ctx.store.landRows('posts', [
+            { $id: 'p1', title: 'One', date: new Date('2024-05-01T12:00:00Z'), grid: [['p', 'q'], ['r']] },
+            { $id: 'p2', title: 'Two', date: new Date('2021-01-15T12:00:00Z'), grid: [1, [2, 3]], seen: [new Date('2020-02-02T12:00:00Z')] },
+        ], { mode: 'replace' })
+        const posts = ctx.data().posts
+        expect(Alpine.raw(posts)[0].date.getTime()).toBe(Date.parse('2024-05-01T12:00:00Z')) // a landed date is still a date
+        window.ManifestDataProxies.attachArrayMethods(posts, 'posts', async () => null)
+        expect(posts.$search('2024', 'date').map(r => r.$id)).toEqual(['p1'])
+        expect(posts.$search('jan').map(r => r.$id)).toEqual(['p2'])
+        expect(posts.$search('2020', 'seen').map(r => r.$id)).toEqual(['p2'])
+        expect(posts.$search('p,q', 'grid').map(r => r.$id)).toEqual(['p1'])
+        expect(posts.$search('2,3', 'grid').map(r => r.$id)).toEqual(['p2'])
+    })
+
     it('weighted search ranks by field weight and still returns live rows', async () => {
         const { array } = await live()
         const ranked = array.$search('a', { name: 1, email: 5 })
@@ -167,6 +195,17 @@ describe('$query on raw rows', () => {
         expect(Alpine.raw(sorted)).not.toBe(raw)
         const same = array.$query([['limit', 10]])
         expect(Alpine.raw(same)).not.toBe(raw)
+    })
+
+    it('orderRandom is never cached but still re-runs its caller when the source changes', async () => {
+        const { array, effect, store } = await live()
+        let runs = 0, size = 0
+        effect(() => { runs++; size = array.$query([['orderRandom']]).length })
+        expect(size).toBe(3)
+        await store.landRows('people', [{ $id: 'd', name: 'Dorothy Vaughan' }], { mode: 'append' })
+        await tick()
+        expect(runs).toBe(2)
+        expect(size).toBe(4)
     })
 
     it('chains across results: $search().$query() and $query().$search()', async () => {

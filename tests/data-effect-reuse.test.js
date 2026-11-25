@@ -118,6 +118,22 @@ describe('computed $files', () => {
         expect(files.map(f => f.$id)).toEqual(['f1', 'f2'])
         store.a[0].fileIds = ['f1']
         await tick()
+        expect(files.map(f => f.$id)).toEqual(['f1'])
+    })
+
+    it('a lazily started effect is released once its row leaves the table', async () => {
+        const release = vi.spyOn(Alpine, 'release')
+        const store = Alpine.store('data')
+        store.a.push({ $id: 'e3', fileIds: ['f2'] })
+        const row = store.a[store.a.length - 1]
+        const files = make('a', 'e3', 'bucket', 'fileIds', { owner: Alpine.raw(row) })
+        await tick()
+        expect(release).not.toHaveBeenCalled()
+        expect(files.map(f => f.$id)).toEqual(['f2'])
+        store.a.splice(store.a.length - 1, 1)
+        await tick()
+        expect(release).toHaveBeenCalledTimes(1)
+        release.mockRestore()
     })
 
     it('stays in sync with the bucket and the entry', async () => {

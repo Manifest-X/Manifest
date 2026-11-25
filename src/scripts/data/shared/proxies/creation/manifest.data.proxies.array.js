@@ -106,14 +106,21 @@ function operatorRows(array) {
     return { raws, out };
 }
 
-// Searchable text of a field: scalars and lists of scalars (an object would read "[object Object]")
-function searchText(value) {
+const SEARCH_SEP = '\u0000';
+const isDate = (value) => Object.prototype.toString.call(value) === '[object Date]';
+
+// Searchable text of a field: scalars, dates and lists of them (a plain object would read "[object Object]")
+function searchText(value, depth = 0) {
     if (value == null) return '';
     if (typeof value !== 'object') return String(value).toLowerCase();
-    if (!Array.isArray(value)) return '';
+    if (isDate(value)) return String(value).toLowerCase();
+    if (!Array.isArray(value) || depth > 3) return '';
     let text = '';
-    for (const part of value) if (part != null && typeof part !== 'object') text += (text ? ',' : '') + part;
-    return text.toLowerCase();
+    for (const part of value) {
+        const piece = searchText(part, depth + 1);
+        if (piece) text += (text ? ',' : '') + piece;
+    }
+    return text;
 }
 
 function memoOp(array, dataSourceName, op, args, compute) {
@@ -297,29 +304,32 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
 
         const attrs = attributes.length > 0 ? attributes : Object.keys(raws[0] || {}).filter(key => key !== '$files');
 
-        // One lowercase string per row, kept for this source version: each keystroke is one includes() per row
-        const SEP = '\u0000';
-        const hays = memo ? (memo.hay || (memo.hay = new Map())) : null;
-        const hayKey = hays ? attrs.join(SEP) : '';
+        // One lowercase string per row, kept for this source version and checked against the row it was
+        // built from (an array changed in place re-reads the rows that moved): a keystroke is one includes() per row
+        const rowText = (item) => {
+            if (!item || typeof item !== 'object') return null;
+            let text = '';
+            for (const attr of attrs) text += searchText(item[attr]) + SEARCH_SEP;
+            return text;
+        };
+        const hays = memo && !term.includes(SEARCH_SEP) ? (memo.hay || (memo.hay = new Map())) : null;
+        const hayKey = hays ? attrs.map(String).join(SEARCH_SEP) : '';
         let hay = hays ? hays.get(hayKey) : null;
         if (!hay) {
-            hay = new Array(raws.length);
-            for (let i = 0; i < raws.length; i++) {
-                const item = raws[i];
-                if (!item || typeof item !== 'object') { hay[i] = null; continue; }
-                let text = '';
-                for (const attr of attrs) text += searchText(item[attr]) + SEP;
-                hay[i] = text;
-            }
+            hay = { rows: [], text: [] };
             if (hays) {
                 if (hays.size >= 4) hays.delete(hays.keys().next().value);
                 hays.set(hayKey, hay);
             }
         }
+        hay.rows.length = hay.text.length = raws.length;
 
         const filtered = [];
         for (let i = 0; i < raws.length; i++) {
-            if (hay[i] !== null && hay[i].includes(term)) filtered.push(out(raws[i]));
+            const item = raws[i];
+            if (hay.rows[i] !== item) { hay.rows[i] = item; hay.text[i] = rowText(item); }
+            const text = hay.text[i];
+            if (text !== null && text !== undefined && text.includes(term)) filtered.push(out(item));
         }
 
         // Re-attach so chaining works (.$search().$query())
@@ -454,7 +464,10 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
                     return array;
                 }
                 // orderRandom reshuffles per call — never memoized
-                if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) return runQuery(queries);
+                if (queries.some(q => Array.isArray(q) && q[0] === 'orderRandom')) {
+                    void sourceVersion(dataSourceName); // still re-runs the caller when the source changes
+                    return runQuery(queries);
+                }
                 return memoOp(array, dataSourceName, 'query', [queries], () => runQuery(queries));
             }
         });

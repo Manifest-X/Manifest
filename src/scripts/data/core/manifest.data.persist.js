@@ -544,7 +544,7 @@
         if (state.writeTimer !== null) { clearTimeout(state.writeTimer); state.writeTimer = null; }
     }
 
-    // Landing hook (store flush): each landing restarts that source's 500ms debounce
+    // Landing hook (store flush): each landing restarts that source's 500ms debounce, up to the maximum wait
     function onLanded(sources) {
         if (!state.enabled || state.disabled || state.scopePending) return;   // nothing is keyed under an unresolved scope
         const now = Date.now();
