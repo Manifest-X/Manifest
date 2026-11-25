@@ -70,6 +70,7 @@
         "test:e2e:on-use": "node tests/e2e/on-use-modules.e2e.mjs",
         "test:e2e:virtual-boot": "node tests/e2e/virtual-boot.e2e.mjs",
         "test:e2e:virtual-onuse": "node tests/e2e/virtual-boot.e2e.mjs --on-use",
+        "test:e2e:virtual-heights": "node tests/e2e/virtual-heights.e2e.mjs",
         "test:e2e:tailwind-dark": "node tests/e2e/tailwind-dark-variant.e2e.mjs",
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
         "test:e2e:presence-tabs": "node tests/e2e/presence-tabs.e2e.mjs",
