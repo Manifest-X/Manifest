@@ -1274,6 +1274,12 @@ function waitForAuthInit(authStore) {
     });
 }
 
+// The team a build used rides on its result (non-enumerable): read once, with the build
+function tagTeam(queries, team) {
+    Object.defineProperty(queries, 'scopeTeam', { value: team, enumerable: false, configurable: true });
+    return queries;
+}
+
 // Build queries with scope injection. Returns null ("not ready") instead of a
 // query array when a $auth. arg or a required scope value hasn't resolved yet
 // — callers must skip the read (never send a null/undefined/empty-equal arg to
@@ -1290,6 +1296,9 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
     // user query (queries.default) needs this regardless of whether `scope` is set.
     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
     await waitForAuthInit(authStore);
+    // No await below: everything this build reads, including the team, is one snapshot
+    const currentTeam = authStore?.currentTeam;
+    const team = currentTeam?.$id || currentTeam?.id || null;
 
     // Interpolate user-provided queries
     let userQueries;
@@ -1312,7 +1321,7 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
     // - ["user", "team"] or ["team", "user"] - dual scope (both userId AND teamId)
     // - ["user", "teams"] - user AND all teams
     if (!scope) {
-        return userQueries;
+        return tagTeam(userQueries, team);
     }
 
     const scopeArray = Array.isArray(scope) ? scope : [scope];
@@ -1346,9 +1355,8 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
         let teamIds = [];
         if (hasTeamScope) {
             // Single team scope - use currentTeam
-            const currentTeamId = authStore?.currentTeam?.$id || authStore?.currentTeam?.id;
-            if (currentTeamId) {
-                teamIds.push(currentTeamId);
+            if (team) {
+                teamIds.push(team);
             }
         }
         if (hasTeamsScope) {
@@ -1404,14 +1412,8 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
 
         // Handle team scope (single team - takes precedence over teams)
         if (hasTeamScope) {
-            // Try multiple paths to get team ID
-            const teamId = getAuthValue('currentTeam.$id') ||
-                getAuthValue('currentTeam.id') ||
-                authStore?.currentTeam?.$id ||
-                authStore?.currentTeam?.id;
-
-            if (teamId) {
-                scopeQueries.push(['equal', cols.team, teamId]);
+            if (team) {
+                scopeQueries.push(['equal', cols.team, team]);
             } else {
                 // No current team (yet) — skip the read; caller retries on manifest:auth:teams-loaded
                 return null;
@@ -1444,7 +1446,7 @@ async function buildQueries(queriesConfig, scope, scopeColumns) {
     // SECURITY: Prepend scope queries to user queries
     // This ensures scope restrictions are ALWAYS applied and cannot be bypassed
     // User queries that conflict with scope will be ANDed together (both must match)
-    return [...scopeQueries, ...userQueries];
+    return tagTeam([...scopeQueries, ...userQueries], team);
 }
 
 // Query methods buildAppwriteQueries serializes (anything else is dropped at
@@ -1631,9 +1633,10 @@ async function buildRealtimeQueries(queriesConfig, scope, scopeColumns, mode = '
 async function buildAppwriteQueries(queriesConfig, scope, scopeColumns) {
     const queries = await buildQueries(queriesConfig, scope, scopeColumns);
     if (queries === null) return null;
-    return queries
+    const built = queries
         .map(query => toAppwriteQuery(query))
         .filter(query => query !== null);
+    return 'scopeTeam' in queries ? tagTeam(built, queries.scopeTeam) : built;
 }
 
 // Export functions to window for use by other subscripts
@@ -1644,6 +1647,7 @@ window.ManifestDataQueries = {
     getAuthValue,
     buildQueries,
     buildAppwriteQueries,
+    tagTeam,
     buildRealtimeQueries,
     rowMatchesQueries,
     toAppwriteQuery,

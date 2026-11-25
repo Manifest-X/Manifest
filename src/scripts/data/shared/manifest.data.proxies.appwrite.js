@@ -416,64 +416,76 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries = named;
                     }
                     window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                    // A $auth. value or scope not resolved yet: wait for auth once, then run
-                    const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
-                    let appwriteQueries = await build();
-                    if (appwriteQueries === null) {
-                        const waiting = window.ManifestDataMain?.awaitingQueries;
-                        waiting?.add(dataSourceName);
-                        try {
-                            await window.ManifestDataMain?.waitForAuthChange?.();
-                            // Let any reload of this source already running finish, then run as the newest read
-                            window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
-                            await window.ManifestDataMain?.settledReads?.(dataSourceName);
-                        } finally {
-                            waiting?.delete(dataSourceName);
+                    // Team listener waits while this $query builds; its landing records the team the build used
+                    const teamRead = window.ManifestDataStore?.beginTeamRead?.(dataSourceName) || { building() {}, built() {}, end() {} };
+                    let builtTeam;
+                    const noteTeam = (team) => { builtTeam = team; teamRead.built(team); };
+                    try {
+                        // A $auth. value or scope not resolved yet: wait for auth once, then run
+                        const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
+                        let appwriteQueries = await build();
+                        if (appwriteQueries === null) {
+                            noteTeam(undefined);
+                            const waiting = window.ManifestDataMain?.awaitingQueries;
+                            waiting?.add(dataSourceName);
+                            try {
+                                await window.ManifestDataMain?.waitForAuthChange?.();
+                                // Let any reload of this source already running finish, then run as the newest read
+                                window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
+                                await window.ManifestDataMain?.settledReads?.(dataSourceName);
+                            } finally {
+                                waiting?.delete(dataSourceName);
+                            }
+                            readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
+                            window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
+                            teamRead.building();
+                            appwriteQueries = await build();
                         }
-                        readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
-                        window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                        appwriteQueries = await build();
-                    }
-                    if (appwriteQueries === null) {
-                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
-                    }
-                    // Dedupe key: source + serialized queries (never across different queries)
-                    const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
-                    const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
-                    const generation = sourceGeneration?.(dataSourceName);
-                    const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
-                    // Paged sources: the new filter set starts again at its first window (or walks all)
-                    const main = window.ManifestDataMain;
-                    const spec = main?.pagingSpec?.(dataSource);
-                    const want = spec ? main.pagedWant(dataSourceName, spec) : 0;
-                    let paged = null;
-                    const run = spec
-                        ? async () => {
-                            const fetchPaged = () => main.fetchPagedRows(dataSourceName, queries || [], {
-                                want,
-                                isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken)
-                            });
-                            paged = await fetchPaged();
-                            if (paged === null) { await main.waitForAuthChange(); paged = await fetchPaged(); }
-                            if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
-                            return paged.rows;
+                        if (appwriteQueries === null) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
                         }
-                        : () => (main?.withRetry || ((_, fn) => fn()))(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
-                            appwriteConfig.databaseId,
-                            tableId,
-                            appwriteQueries,
-                            { requireAuth }
-                        ), () => sourceGeneration?.(dataSourceName) === generation); // shared by identical calls: stop only on a reset
-                    const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
-                    // Network landing: query result replaces the source (coalesced, identity-preserving);
-                    // only the last-issued read of this source lands
-                    const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
-                    if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
-                        window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
-                        if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
-                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
+                        if (!window.ManifestDataMain?.pagingSpec?.(dataSource)) noteTeam(appwriteQueries.scopeTeam);
+                        // Dedupe key: source + serialized queries (never across different queries)
+                        const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
+                        const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
+                        const generation = sourceGeneration?.(dataSourceName);
+                        const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
+                        // Paged sources: the new filter set starts again at its first window (or walks all)
+                        const main = window.ManifestDataMain;
+                        const spec = main?.pagingSpec?.(dataSource);
+                        const want = spec ? main.pagedWant(dataSourceName, spec) : 0;
+                        let paged = null;
+                        const run = spec
+                            ? async () => {
+                                const fetchPaged = () => main.fetchPagedRows(dataSourceName, queries || [], {
+                                    want,
+                                    isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken),
+                                    onTeam: noteTeam
+                                });
+                                paged = await fetchPaged();
+                                if (paged === null) { noteTeam(undefined); await main.waitForAuthChange(); teamRead.building(); paged = await fetchPaged(); }
+                                if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                                return paged.rows;
+                            }
+                            : () => (main?.withRetry || ((_, fn) => fn()))(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
+                                appwriteConfig.databaseId,
+                                tableId,
+                                appwriteQueries,
+                                { requireAuth }
+                            ), () => sourceGeneration?.(dataSourceName) === generation); // shared by identical calls: stop only on a reset
+                        const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
+                        // Network landing: query result replaces the source (coalesced, identity-preserving);
+                        // only the last-issued read of this source lands
+                        const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
+                        if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
+                            window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
+                            if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
+                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken, ...(builtTeam === undefined ? {} : { scopeTeam: builtTeam }) });
+                        }
+                        return result;
+                    } finally {
+                        teamRead.end();
                     }
-                    return result;
                 }
             }
 
