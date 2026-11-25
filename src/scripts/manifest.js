@@ -498,8 +498,11 @@
 
 	// Has DOMContentLoaded fired? readyState can't tell ('interactive' spans
 	// both DCL-pending and DCL-done); the navigation timing entry disambiguates.
+	// Its end stays 0 while DCL listeners run: seen here first, so code run from them doesn't wait for load
+	let dclStarted = false;
+	if (typeof document !== 'undefined' && document.readyState !== 'complete') document.addEventListener('DOMContentLoaded', () => { dclStarted = true; }, { once: true });
 	function domContentLoadedFired() {
-		if (document.readyState === 'complete') return true;
+		if (dclStarted || document.readyState === 'complete') return true;
 		if (document.readyState === 'loading') return false;
 		try {
 			const nav = performance.getEntriesByType('navigation')[0];
@@ -710,7 +713,7 @@
 		return verifiedFetch(CDN_HOSTS.map(h => `${h}/${path}`), hash, path);
 	}
 
-	async function fetchPluginScript(pluginName, version) {
+	async function fetchPluginScript(pluginName, version, ordered = true) {
 		let unchecked = false;
 		if (integrityActive && version !== LOADER_VERSION) {
 			integrityProblem(`Integrity checks cover this loader's own version (${LOADER_VERSION}); ${pluginName} was requested at ${version}.`, 'Not loaded.');
@@ -718,7 +721,7 @@
 		}
 		// Known only once manifest.json lands, and the first view waits on them: ahead of the hinted modules
 		const priority = ['components', 'data', 'localization'].includes(pluginName) ? 'high' : null;
-		return injectFrom(getPluginUrlCandidates(pluginName, version), { unchecked, priority });
+		return injectFrom(getPluginUrlCandidates(pluginName, version), { unchecked, priority, ordered });
 	}
 
 	// One execution per plugin per page. injectScript dedupes by URL, which two
@@ -728,7 +731,7 @@
 	const pluginLoads = new Map();
 	const pluginsSettled = new Set();
 
-	async function addScript(pluginName, version = RESOLVED_VERSION) {
+	async function addScript(pluginName, version = RESOLVED_VERSION, ordered = true) {
 		const prior = pluginLoads.get(pluginName);
 		if (prior) {
 			if (prior.version !== version) {
@@ -736,7 +739,7 @@
 			}
 			return prior.promise;
 		}
-		const promise = fetchPluginScript(pluginName, version);
+		const promise = fetchPluginScript(pluginName, version, ordered);
 		pluginLoads.set(pluginName, { version, promise });
 		promise.then(() => pluginsSettled.add(pluginName), () => pluginLoads.delete(pluginName));
 		return promise;
@@ -1310,11 +1313,18 @@
 		if (!list.length) return Promise.resolve([]);
 		// Prerender waits for the module and the adoption it schedules
 		const release = window.ManifestPending ? window.ManifestPending.hold('module') : () => { };
-		return Promise.all(list.map(p => addScript(p, version).catch(error => {
+		// On-use modules run as they arrive: nothing (Alpine included) queues behind them
+		return Promise.all(list.map(p => addScript(p, version, !lateEntries.some(u => u.plugin === p)).catch(error => {
 			if (usageFailed.has(p)) return;
 			usageFailed.add(p);
 			console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
-		}))).then(() => new Promise(r => setTimeout(r, 0))).then(() => { release(); return list; });
+		}))).then(() => Promise.all(list.map(started))).then(() => new Promise(r => setTimeout(r, 0))).then(() => { release(); return list; });
+	}
+	// Its directive registered (Markdown waits for its parser first), or given up on as a hold would; only once the file ran
+	function started(p) {
+		const u = lateEntries.find(e => e.plugin === p && e.attr);
+		if (!u || !window[u.present] || usageFailed.has(p) || preloaded.includes(p) || registered.has(u.attr.slice(2))) return null;
+		return Promise.race([whenRegistered(u.attr.slice(2)), new Promise(r => setTimeout(r, 10000))]);
 	}
 
 	function watchUsage(version) {
@@ -1774,7 +1784,7 @@
 						// On-use modules this page uses, while manifest.json may still be in flight
 						if (config.deriveFromManifest) {
 							const used = sniffBoot().used.filter(p => p !== 'components' && !_omitted.includes(p));
-							for (const p of resolveDependencies(used)) if (!config.plugins.includes(p)) hint('preload', getPluginUrl(p, config.version), 'script');
+							for (const p of resolveDependencies(used)) if (!config.plugins.includes(p) && !pluginLoads.has(p)) hint('preload', getPluginUrl(p, config.version), 'script');
 						}
 					} catch (_) { /* optional */ }
 				});

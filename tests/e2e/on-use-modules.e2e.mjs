@@ -19,7 +19,9 @@
  *    bakes it; hydration loads the modules the baked page still needs and keeps the content;
  * 8. component HTML fetched before DOMContentLoaded (a slow deferred script) loads its modules
  *    before it is inserted: nothing held, over 20 loads;
- * 9. nested holds: input typed while held reaches each handler once, in either module order.
+ * 9. nested holds: input typed while held reaches each handler once, in either module order;
+ * 10. with DOMContentLoaded late, a slow early module or a slow image never holds up Alpine, and
+ *    manifest:ready never fires before it; sibling held elements each wait only for their own module.
  *
  * Run: node tests/e2e/on-use-modules.e2e.mjs      (ONUSE_SRC=<dir with scripts/> to A/B)
  */
@@ -103,6 +105,8 @@ new MutationObserver(() => { if (!window.__ins && document.getElementById('pf'))
 </head><body x-data>${body}</body></html>`
 PAGES['/pf/xif'] = PF('<template x-if="true"><x-pfpanel></x-pfpanel></template>')
 PAGES['/pf/direct'] = PF('<x-pfpanel></x-pfpanel>')
+PAGES['/pf/s2500'] = PAGES['/pf/s5000'] = PAGES['/pf/xif']
+PAGES['/pf/img'] = PF('<p id="live" x-text="\'live\'">raw</p><img src="/pf-big.svg">')
 const FILES = {
     '/manifest-pf.json': JSON.stringify({ name: 'pf', components: ['components/pfpanel.html'], preloadedComponents: ['components/pfpanel.html'], data: { m: '/data-pf.json' } }),
     '/data-pf.json': JSON.stringify({ v: 1 }),
@@ -122,6 +126,7 @@ const server = await new Promise((r) => {
         if (u.pathname === '/__alpine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(ALPINE)) }
         if (u.pathname.startsWith('/ping/')) { res.writeHead(204); return res.end() }
         // Latency on the manifest, so the request order of the boot shows
+        if (u.pathname === '/pf-big.svg') return setTimeout(() => { res.writeHead(200, { 'content-type': 'image/svg+xml' }); res.end('<svg xmlns="http://www.w3.org/2000/svg"/>') }, 3000)
         if (u.pathname === '/pf-slow.js') return setTimeout(() => { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(FILES[u.pathname]) }, 1200)
         if (u.pathname === '/manifest.json') return setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(FILES[u.pathname]) }, 250)
         if (FILES[u.pathname]) { res.writeHead(200, { 'content-type': u.pathname.endsWith('.json') ? 'application/json' : u.pathname.endsWith('.svg') ? 'image/svg+xml' : u.pathname.endsWith('.js') ? 'text/javascript' : 'text/html' }); return res.end(FILES[u.pathname]) }
@@ -136,7 +141,7 @@ const server = await new Promise((r) => {
             const mod = /manifest\.([\w.]+)\.js$/.exec(u.pathname)
             const slow = mod && MOVED.includes(mod[1]) && (ref.startsWith('/late/') || (ref.startsWith('/md/') && mod[1] === 'code'))
             const nest = { '/nest/same': { slides: 1500, export: 500 }, '/nest/outer': { slides: 300, export: 1500 } }[ref]
-            const ms = nest && mod ? nest[mod[1]] || 0 : ref.startsWith('/pf/') && mod && mod[1] === 'charts' ? 300 : slow ? SLOW : 0
+            const ms = nest && mod ? nest[mod[1]] || 0 : ref.startsWith('/pf/') && mod && mod[1] === 'charts' ? (Number(ref.slice(5)) || 300) : slow ? SLOW : 0
             return setTimeout(() => { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(readFileSync(f)) }, ms)
         }
         if (PAGES[u.pathname]) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(PAGES[u.pathname]) }
@@ -490,6 +495,32 @@ for (const [p, runs] of [['/pf/xif', 20], ['/pf/direct', 5]]) {
         await ctx.close()
     }
     check(bad.length === 0, `prefetched component ${p}: HTML in before DOMContentLoaded, module registered before insertion, nothing held, charts once, ${runs} loads`, bad.slice(0, 2))
+}
+
+// 10. Late DOMContentLoaded: a slow early module or image never holds up Alpine
+for (const p of ['/pf/s2500', '/pf/s5000', '/pf/img']) {
+    const { pg, ctx, logs } = await open(p, { before: (pg) => pg.evaluateOnNewDocument(() => {
+        window.__tt = {}; const T = () => performance.now()
+        document.addEventListener('alpine:init', () => { window.__tt.alpine = T() }); window.addEventListener('manifest:ready', () => { window.__tt.ready = T() })
+        const iv = setInterval(() => { if (!window.ManifestPending) return; clearInterval(iv); const h = window.ManifestPending.hold; window.ManifestPending.hold = function (l) { if (l === 'held') window.__tt.held = (window.__tt.held || 0) + 1; return h.apply(this, arguments) } }, 0)
+    }) })
+    const done = p === '/pf/img' ? () => document.getElementById('live')?.textContent === 'live' && window.__manifestReady : () => !!document.querySelector('#pfch svg') && window.__manifestReady
+    check(await until(pg, done), `late DOMContentLoaded ${p}: boots`)
+    const r = await pg.evaluate(() => ({ ...window.__tt, dcl: window.__ev.find((x) => x[0] === 'dcl')[1], ins: window.__ev.find((x) => x[0] === 'inserted') }))
+    check(r.alpine - r.dcl < 300 && r.ready > r.alpine, `late DOMContentLoaded ${p}: Alpine starts with DOMContentLoaded, manifest:ready after it`, r)
+    if (p !== '/pf/img') check(!r.held && r.ins && r.ins[2], `late DOMContentLoaded ${p}: the component waits for its module, nothing held`, r)
+    check(quiet(logs).length === 0, `late DOMContentLoaded ${p}: logs nothing`, quiet(logs))
+    await ctx.close()
+}
+{
+    const { pg, ctx, logs } = await open('/nest/same')
+    await until(pg, () => window.__manifestReady); await wait(200)
+    await pg.evaluate(() => { Alpine.$data(document.body).html = `<div id="sc" x-carousel x-data x-init="window.__sAt = performance.now()"><div class="carousel-slides"><div>a</div></div></div><button id="se" x-export.csv="{ data: [] }" x-data x-init="window.__eAt = performance.now()">e</button>` })
+    check(await until(pg, () => window.__sAt && window.__eAt), 'siblings held: both start')
+    const r = await pg.evaluate(() => ({ s: window.__sAt, e: window.__eAt, slides: performance.getEntriesByType('resource').find((x) => /manifest\.slides\.js$/.test(x.name))?.responseEnd }))
+    check(r.e < r.slides - 500, 'siblings held: export starts on its own module, not behind slides', r)
+    check(quiet(logs).length === 0, 'siblings held: logs nothing', quiet(logs))
+    await ctx.close()
 }
 
 // 9. Nested holds (slides outside, export inside): each handler sees typed input once

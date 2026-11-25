@@ -350,3 +350,26 @@ describe('on-use directive modules: content fetched before the boot sniff', () =
         expect(moved()).toEqual([])
     })
 })
+
+describe('on-use directive modules: execution order', () => {
+    const asyncOf = (m) => [...document.querySelectorAll(`script[src*="/lib/manifest.${m}."]`)].map(s => s.async)
+    it('a module requested through Manifest.loadUsed runs as it arrives; the boot sniff keeps order', async () => {
+        boot({}, '<div x-date></div>'); await settle()
+        await window.Manifest.loadUsed('<div x-chart></div>')
+        expect(asyncOf('charts')).toEqual([true])
+        expect(asyncOf('datepicker')).toEqual([false])
+        expect(asyncOf('tabs')).toEqual([false])
+    })
+    it('a module already requested early is not hinted again at DOMContentLoaded', async () => {
+        Object.defineProperty(document, 'readyState', { configurable: true, get: () => 'interactive' })
+        vi.spyOn(performance, 'getEntriesByType').mockReturnValue([{ domContentLoadedEventEnd: 0 }])
+        boot({}, '<div x-chart="a"></div>')
+        await settle()
+        window.Manifest.loadUsed('<div x-chart="b"></div>')
+        delete document.readyState; performance.getEntriesByType.mockRestore()
+        document.dispatchEvent(new Event('DOMContentLoaded'))
+        await settle()
+        expect(hints().some(u => u.includes('manifest.charts.'))).toBe(false)
+        expect(injected().filter(p => p === 'charts').length).toBe(1)
+    })
+})
