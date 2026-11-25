@@ -175,9 +175,9 @@ function initializeVirtualPlugin() {
         let maxItemH = 0;                      // masonry: back-scan bound
         let ready = false;                     // becomes true once container is sized
         let ro = null;
-        let lastWidth = 0;                     // container width the stored heights were measured at
         let destroyed = false;
-        let winKeys = [], winIdx = [];         // last render's rows, in window order
+        let lastStart = 0;                     // last render's first unit
+        let aboveAvg = null;                   // estimate for unmeasured rows before the window, held until the source changes
 
         const keyFn = buildKeyFn(itemName, indexName, keyExpr);
         const avgH = () => (measuredCount > 0 ? measuredSum / measuredCount : estimateH);
@@ -232,9 +232,12 @@ function initializeVirtualPlugin() {
             const n = data.length;
             cumulative = new Float64Array(n + 1);
             let y = 0;
+            // Rows before the window keep their estimate: a new measurement moves nothing above the view
+            const held = aboveAvg === null ? 0 : Math.min(lastStart, n);
             for (let i = 0; i < n; i++) {
                 cumulative[i] = y;
-                y += heightFor(keyFn(raw[i], i));
+                const k = keyFn(raw[i], i);
+                y += i < held ? (heights.get(k) ?? aboveAvg) : heightFor(k);
             }
             cumulative[n] = y;
         }
@@ -292,21 +295,22 @@ function initializeVirtualPlugin() {
             el.dispatchEvent(new CustomEvent('virtual-end', { bubbles: true, detail: { length: data.length } }));
         }
 
-        // `at`: the scroll offset to render for (default: the current one)
-        function render(at) {
-            if (isMasonry) return renderMasonry(at);
+        function render() {
+            if (isMasonry) return renderMasonry();
             if (!data.length) { clearRows(); setHeight(topSpacer, 0); setHeight(botSpacer, 0); return; }
             const vh = scrollEl.clientHeight;
             if (!vh || !resolveKind()) return false;             // defer until sized
             ready = true;
             const total = isGallery ? lines.length : data.length;   // after resolveKind (may enable gallery)
 
-            const eff = Math.max(0, (at ?? scrollEl.scrollTop) - regionTop());
+            const eff = Math.max(0, scrollEl.scrollTop - regionTop());
             let startUnit = findStart(eff, total) - overscan;
             if (startUnit < 0) startUnit = 0;
             let endUnit = findStart(eff + vh, total) + 1 + overscan;
             if (endUnit > total) endUnit = total;
 
+            lastStart = startUnit;
+            if (aboveAvg === null || startUnit === 0) aboveAvg = avgH();
             setHeight(topSpacer, cumulative[startUnit]);
             setHeight(botSpacer, cumulative[total] - cumulative[endUnit]);
 
@@ -356,14 +360,13 @@ function initializeVirtualPlugin() {
                 else host.insertBefore(entry.node, cursor);
             }
 
-            winKeys = keys; winIdx = indices;
             // Measure anything not yet measured, then reconcile offsets once.
             scheduleMeasure(keys);
         }
 
         // Masonry: render items whose packed box intersects the viewport, positioned
         // absolutely at their computed (x, y, w).
-        function renderMasonry(at) {
+        function renderMasonry() {
             if (!data.length) { clearRows(); sizer.style.height = '0px'; return; }
             const vh = scrollEl.clientHeight;
             if (!vh) return false;                               // defer until sized
@@ -371,9 +374,8 @@ function initializeVirtualPlugin() {
             sizer.style.height = totalHeight + 'px';
 
             const opx = overscan * avgH();
-            const st = at ?? scrollEl.scrollTop;
-            const winTop = st - opx;
-            const winBot = st + vh + opx;
+            const winTop = scrollEl.scrollTop - opx;
+            const winBot = scrollEl.scrollTop + vh + opx;
             // First candidate whose top could reach the window (bounded by tallest item).
             let lo = 0, hi = sortedTop.length;
             const target = winTop - maxItemH;
@@ -381,7 +383,6 @@ function initializeVirtualPlugin() {
 
             const visible = new Set();
             const keys = [];
-            const indices = [];
             for (let k = lo; k < sortedTop.length; k++) {
                 const i = sortedTop[k];
                 const p = pos[i];
@@ -393,7 +394,6 @@ function initializeVirtualPlugin() {
                 if (key == null) continue;
                 visible.add(key);
                 keys.push(key);
-                indices.push(i);
                 let entry = rendered.get(key);
                 if (!entry) entry = mountRow(item, key, anchor, i);
                 else rebind(entry, item, i);
@@ -407,7 +407,6 @@ function initializeVirtualPlugin() {
                 if (!visible.has(key)) removeRow(key, entry);
             }
             notifyEnd(visible.has(keyFn(data[data.length - 1], data.length - 1)));
-            winKeys = keys; winIdx = indices;
             scheduleMeasure(keys);
         }
 
@@ -466,13 +465,29 @@ function initializeVirtualPlugin() {
             targetKey.set(node, key);
             rowRo.observe(node);
         }
-        // display:contents rows have no box: their cells are observed instead
+        // display:contents rows have no box: their cells are observed instead, and cells added later
+        // (x-if in the row) are found by one subtree observer on the host, created with the first such row
+        let cellMo = null;
+        function watchCells() {
+            if (cellMo) return;
+            cellMo = new MutationObserver((records) => {
+                for (const r of records) {
+                    let n = r.target;
+                    if (n === host) continue;
+                    while (n && n.parentNode !== host) n = n.parentNode;
+                    const key = n && targetKey.get(n);
+                    if (key !== undefined && rendered.get(key)?.node === n) pending.add(key);
+                }
+                if (pending.size) schedule();
+            });
+            cellMo.observe(host, { childList: true, subtree: true });
+        }
         function observeCells(entry, key, node) {
             for (const c of node.children) {
                 if (c.tagName === 'TEMPLATE') continue;
                 const d = getComputedStyle(c).display;
                 if (d === 'contents') observeCells(entry, key, c);
-                else if (d !== 'none') observe(entry, key, c);
+                else if (d !== 'none' && !targetKey.has(c)) observe(entry, key, c);
             }
         }
 
@@ -494,8 +509,8 @@ function initializeVirtualPlugin() {
                 pending.clear();
                 const doRender = changed || renderPending;
                 renderPending = false;
-                if (changed) reflow();
-                else if (doRender) render();
+                if (changed) rebuild();
+                if (doRender) render();
             });
         }
 
@@ -513,7 +528,7 @@ function initializeVirtualPlugin() {
             const node = entry.node;
             if (!node.isConnected) return false;
             const contents = getComputedStyle(node).display === 'contents';
-            if (contents && rowRo && !entry.seen) observeCells(entry, key, node);
+            if (contents && rowRo) { watchCells(); observeCells(entry, key, node); }
             entry.seen = true;
             const h = contents ? unionHeight(node) : node.offsetHeight;
             if (!h) return false;
@@ -540,72 +555,6 @@ function initializeVirtualPlugin() {
             const b = { top: Infinity, bottom: -Infinity };
             unionCellRects(node, b);
             return b.bottom > b.top ? b.bottom - b.top : 0;
-        }
-
-        // Rebuild offsets, keeping the first visible row where it is on screen
-        function reflow() {
-            const a = ready ? firstVisible() : null;
-            rebuild();
-            // Sizes that keep changing with the scroll position: stop chasing them
-            if (!a || ownScrolls > 20) return render();
-            // Render for the target first: the spacers then make room for it
-            const target = Math.max(0, offsetOf(a.i) - a.off);
-            render(target);
-            if (Math.abs(target - scrollEl.scrollTop) >= 1) setTop(target);
-            // Rows just mounted were placed by estimate: correct what is left from the real layout
-            const entry = rendered.get(a.key);
-            if (entry && entry.node.isConnected) {
-                const d = rowRect(entry.node).top - viewTop() - a.view;
-                if (Math.abs(d) >= 1) setTop(scrollEl.scrollTop + d);
-            }
-        }
-        let ownTop = -1, ownScrolls = 0;          // scroll offsets set here, counted until the user scrolls
-        function setTop(v) {
-            scrollEl.scrollTop = v;
-            ownTop = scrollEl.scrollTop;
-            ownScrolls++;
-        }
-        const viewTop = () => scrollEl.getBoundingClientRect().top + scrollEl.clientTop;
-        function firstVisible() {
-            const top = viewTop();
-            let best = null;
-            for (let j = 0; j < winKeys.length; j++) {
-                const entry = rendered.get(winKeys[j]);
-                if (!entry || !entry.node.isConnected) continue;
-                const r = rowRect(entry.node);
-                if (r.bottom > top && (!best || r.top < best.top)) best = { i: winIdx[j], key: winKeys[j], top: r.top };
-                else if (best && !isMasonry) break;
-            }
-            if (!best || best.i >= raw.length || keyFn(raw[best.i], best.i) !== best.key) return null;
-            return { i: best.i, key: best.key, view: best.top - top, off: best.top - top - (isMasonry ? 0 : regionTop()) };
-        }
-        // Scroll offset of item i's line (masonry: its packed top), relative to the region top
-        function offsetOf(i) {
-            if (isMasonry) return pos[i] ? pos[i].y : 0;
-            let unit = i;
-            if (isGallery) {
-                let lo = 0, hi = lines.length - 1;
-                while (lo < hi) { const mid = (lo + hi + 1) >>> 1; if (lines[mid].start <= i) lo = mid; else hi = mid - 1; }
-                unit = lo;
-            }
-            return cumulative[Math.min(unit, cumulative.length - 1)];
-        }
-        function rowRect(node) {
-            if (getComputedStyle(node).display !== 'contents') return node.getBoundingClientRect();
-            const b = { top: Infinity, bottom: -Infinity };
-            unionCellRects(node, b);
-            return b;
-        }
-
-        // Heights measured at another width are stale: drop those of rows not rendered (rendered ones re-measure)
-        function forgetOffWindow() {
-            for (const [key, h] of heights) {
-                if (rendered.has(key)) continue;
-                heights.delete(key);
-                measuredSum -= h;
-                measuredCount--;
-                widths.delete(key);
-            }
         }
 
         // Keys that left the source: their sizes go, and stop counting toward the estimate
@@ -651,6 +600,7 @@ function initializeVirtualPlugin() {
                 trackList(value);
                 data = Array.isArray(value) ? value : (value ? Array.from(value) : []);
                 raw = Alpine.raw ? Alpine.raw(data) : data;
+                aboveAvg = null;
                 if (heights.size > raw.length * 2 + 100) forgetLeft();   // amortised: only once the store outgrows the list
                 rebuild();
                 // render() drops rows that left the window or the list; unsized (hidden), it cannot
@@ -660,22 +610,14 @@ function initializeVirtualPlugin() {
 
         // ---- Scroll / resize ----
 
-        const onScroll = () => {
-            if (Math.abs(scrollEl.scrollTop - ownTop) >= 1) ownScrolls = 0;
-            schedule(true);
-        };
+        const onScroll = () => schedule(true);
         scrollEl.addEventListener('scroll', onScroll, { passive: true });
 
         let resizeTimer = null;
         ro = new ResizeObserver(() => {
-            if (!ready) { requestAnimationFrame(() => { lastWidth = scrollEl.clientWidth; rebuild(); render(); }); return; } // first paint once sized, off the observer tick
+            if (!ready) { requestAnimationFrame(() => { rebuild(); render(); }); return; } // first paint once sized, off the observer tick
             clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => {   // debounced re-pack
-                const w = scrollEl.clientWidth;
-                if (w && lastWidth && w !== lastWidth && !(isMasonry && heightFn)) forgetOffWindow();
-                if (w) lastWidth = w;
-                reflow();
-            }, 100);
+            resizeTimer = setTimeout(() => { rebuild(); render(); }, 100);  // debounced re-pack
         });
         ro.observe(scrollEl);
         if (!kind && !isMasonry && host !== scrollEl) ro.observe(host);   // only until a hidden host is classified
@@ -685,6 +627,7 @@ function initializeVirtualPlugin() {
             scrollEl.removeEventListener('scroll', onScroll);
             ro.disconnect();
             rowRo && rowRo.disconnect();
+            cellMo && cellMo.disconnect();
             clearTimeout(resizeTimer);
             clearRows();
             if (isMasonry) sizer.remove();
