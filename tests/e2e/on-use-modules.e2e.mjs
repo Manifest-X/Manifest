@@ -21,7 +21,9 @@
  *    before it is inserted: nothing held, over 20 loads;
  * 9. nested holds: input typed while held reaches each handler once, in either module order;
  * 10. with DOMContentLoaded late, a slow early module or a slow image never holds up Alpine, and
- *    manifest:ready never fires before it; sibling held elements each wait only for their own module.
+ *    manifest:ready never fires before it; sibling held elements each wait only for their own module;
+ * 11. a module whose file runs but registers late or never: content waits at most 1.5 s, then the
+ *    hold covers the rest, and one 10 s give-up in all.
  *
  * Run: node tests/e2e/on-use-modules.e2e.mjs      (ONUSE_SRC=<dir with scripts/> to A/B)
  */
@@ -105,12 +107,12 @@ new MutationObserver(() => { if (!window.__ins && document.getElementById('pf'))
 </head><body x-data>${body}</body></html>`
 PAGES['/pf/xif'] = PF('<template x-if="true"><x-pfpanel></x-pfpanel></template>')
 PAGES['/pf/direct'] = PF('<x-pfpanel></x-pfpanel>')
-PAGES['/pf/s2500'] = PAGES['/pf/s5000'] = PAGES['/pf/xif']
+PAGES['/pf/s2500'] = PAGES['/pf/s5000'] = PAGES['/pf/never'] = PAGES['/pf/at3'] = PAGES['/pf/xif']
 PAGES['/pf/img'] = PF('<p id="live" x-text="\'live\'">raw</p><img src="/pf-big.svg">')
 const FILES = {
     '/manifest-pf.json': JSON.stringify({ name: 'pf', components: ['components/pfpanel.html'], preloadedComponents: ['components/pfpanel.html'], data: { m: '/data-pf.json' } }),
     '/data-pf.json': JSON.stringify({ v: 1 }),
-    '/components/pfpanel.html': `<section id="pf" x-data x-init="count('pf')"><div id="pfch" x-chart="{ type: 'bar', series: [{ data: [1, 2, 3] }] }" style="width:300px"></div></section>`,
+    '/components/pfpanel.html': `<section id="pf" x-data x-init="count('pf')"><div id="pfch" x-init="count('pfch')" x-chart="{ type: 'bar', series: [{ data: [1, 2, 3] }] }" style="width:300px"></div></section>`,
     '/pf-slow.js': 'window.__slow = 1',
     '/manifest.json': JSON.stringify({ name: 'onuse' }),
     '/app.js': MD_APP,
@@ -134,6 +136,11 @@ const server = await new Promise((r) => {
         if (u.pathname === '/scripts/manifest.svg.js' && ref.startsWith('/giveup/')) {
             res.writeHead(200, { 'content-type': 'text/javascript' })
             return res.end(ref === '/giveup/never' ? '/* never registers */' : 'setTimeout(() => {\n' + readFileSync(path.join(SRC, u.pathname), 'utf8') + '\n}, 11000)')
+        }
+        // Charts whose file runs but registers 3 s later, or never
+        if (u.pathname === '/scripts/manifest.charts.js' && (ref === '/pf/never' || ref === '/pf/at3')) {
+            res.writeHead(200, { 'content-type': 'text/javascript' })
+            return res.end('window.ensureChartsPluginInitialized = () => {};' + (ref === '/pf/at3' ? 'setTimeout(() => {\n' + readFileSync(path.join(SRC, u.pathname), 'utf8') + '\n}, 3000)' : ''))
         }
         if (u.pathname.startsWith('/scripts/')) {
             const f = path.join(SRC, u.pathname)
@@ -508,7 +515,8 @@ for (const p of ['/pf/s2500', '/pf/s5000', '/pf/img']) {
     check(await until(pg, done), `late DOMContentLoaded ${p}: boots`)
     const r = await pg.evaluate(() => ({ ...window.__tt, dcl: window.__ev.find((x) => x[0] === 'dcl')[1], ins: window.__ev.find((x) => x[0] === 'inserted') }))
     check(r.alpine - r.dcl < 300 && r.ready > r.alpine, `late DOMContentLoaded ${p}: Alpine starts with DOMContentLoaded, manifest:ready after it`, r)
-    if (p !== '/pf/img') check(!r.held && r.ins && r.ins[2], `late DOMContentLoaded ${p}: the component waits for its module, nothing held`, r)
+    // A module slower than 1.5 s: the content shows then, its element held until the module arrives
+    if (p !== '/pf/img') check(r.held === 1 && r.ins && r.ins[1] - r.dcl < 600, `late DOMContentLoaded ${p}: ordinary content shown by 1.5 s, the chart element held until its module`, r)
     check(quiet(logs).length === 0, `late DOMContentLoaded ${p}: logs nothing`, quiet(logs))
     await ctx.close()
 }
@@ -520,6 +528,27 @@ for (const p of ['/pf/s2500', '/pf/s5000', '/pf/img']) {
     const r = await pg.evaluate(() => ({ s: window.__sAt, e: window.__eAt, slides: performance.getEntriesByType('resource').find((x) => /manifest\.slides\.js$/.test(x.name))?.responseEnd }))
     check(r.e < r.slides - 500, 'siblings held: export starts on its own module, not behind slides', r)
     check(quiet(logs).length === 0, 'siblings held: logs nothing', quiet(logs))
+    await ctx.close()
+}
+
+// 11. A module that registers late or never
+for (const p of ['/pf/never', '/pf/at3']) {
+    const { pg, ctx, logs } = await open(p, { before: (pg) => pg.evaluateOnNewDocument(() => {
+        window.__tt = {}; const T = () => performance.now()
+        new MutationObserver(() => { if (!window.__tt.svg && document.querySelector('#pfch svg')) window.__tt.svg = T() }).observe(document, { childList: true, subtree: true })
+    }) })
+    const started = await until(pg, (p) => window.__c.pfch === 1 && (p === '/pf/never' || window.__tt.svg) && !window.ManifestPending.labels().some((l) => l === 'held' || l === 'module'), p, 15000)
+    const r = await pg.evaluate(() => ({ ins: window.__ev.find((x) => x[0] === 'inserted')?.[1], ran: performance.getEntriesByType('resource').find((x) => /manifest\.charts\.js$/.test(x.name))?.responseEnd, svg: window.__tt.svg, now: performance.now(), c: window.__c }))
+    check(started && r.ins - r.ran < 1800, `late module ${p}: ordinary content shown within 1.5 s of the file running`, r)
+    if (p === '/pf/never') {
+        check(r.now - r.ran < 10800 && r.c.pfch === 1 && r.c.pf === 1, `late module ${p}: the chart element started without it by 10 s in all, pending clear`, r)
+        const l = quiet(logs)
+        check(l.length === 1 && /charts has not started 10 s after loading/.test(l[0]), `late module ${p}: one warning`, l)
+    } else {
+        check(r.svg - r.ran > 2700 && r.svg - r.ran < 3600 && r.c.pfch === 1 && r.c.pf === 1, `late module ${p}: the chart is live when it registers, started once`, r)
+        await wait(500)
+        check((await counts(pg)).pfch === 1 && quiet(logs).length === 0, `late module ${p}: no second start, logs nothing`, quiet(logs))
+    }
     await ctx.close()
 }
 

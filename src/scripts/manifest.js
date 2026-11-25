@@ -730,6 +730,11 @@
 	// fights the first. A failed load is forgotten so a retry can still run.
 	const pluginLoads = new Map();
 	const pluginsSettled = new Set();
+	// When each file ran: one 10 s give-up per module from then, however many waits share it
+	const ranAt = new Map();
+	const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+	const sinceRan = (p) => ranAt.has(p) ? now() - ranAt.get(p) : 0;
+	const giveUpIn = (p) => Math.max(0, 10000 - sinceRan(p));
 
 	async function addScript(pluginName, version = RESOLVED_VERSION, ordered = true) {
 		const prior = pluginLoads.get(pluginName);
@@ -741,7 +746,7 @@
 		}
 		const promise = fetchPluginScript(pluginName, version, ordered);
 		pluginLoads.set(pluginName, { version, promise });
-		promise.then(() => pluginsSettled.add(pluginName), () => pluginLoads.delete(pluginName));
+		promise.then(() => { pluginsSettled.add(pluginName); ranAt.set(pluginName, now()); }, () => pluginLoads.delete(pluginName));
 		return promise;
 	}
 
@@ -1062,7 +1067,7 @@
 			};
 			load.catch(() => giveUp('failed to load'));
 			// Loaded but never registered (e.g. its own vendor file failed): don't hold forever
-			load.then(() => setTimeout(() => giveUp('has not started 10 s after loading'), 10000), () => { });
+			load.then(() => setTimeout(() => giveUp('has not started 10 s after loading'), giveUpIn(u.plugin)), () => { });
 		});
 		const start = ready.then(() => {
 			let restore = null;
@@ -1314,17 +1319,21 @@
 		// Prerender waits for the module and the adoption it schedules
 		const release = window.ManifestPending ? window.ManifestPending.hold('module') : () => { };
 		// On-use modules run as they arrive: nothing (Alpine included) queues behind them
-		return Promise.all(list.map(p => addScript(p, version, !lateEntries.some(u => u.plugin === p)).catch(error => {
+		const ready = Promise.all(list.map(p => addScript(p, version, !lateEntries.some(u => u.plugin === p)).catch(error => {
 			if (usageFailed.has(p)) return;
 			usageFailed.add(p);
 			console.warn(`[Manifest Loader] Failed to load plugin ${p}:`, error);
-		}))).then(() => Promise.all(list.map(started))).then(() => new Promise(r => setTimeout(r, 0))).then(() => { release(); return list; });
+		}))).then(() => Promise.all(list.map(started))).then(() => new Promise(r => setTimeout(r, 0)));
+		ready.then(release);
+		// Content waits at most 1.5 s: a slower module is left to the hold
+		return Promise.race([ready, new Promise(r => setTimeout(r, USED_WAIT))]).then(() => list);
 	}
-	// Its directive registered (Markdown waits for its parser first), or given up on as a hold would; only once the file ran
+	const USED_WAIT = 1500;
+	// Its directive registered (Markdown waits for its parser first), at most 1.5 s after the file ran
 	function started(p) {
 		const u = lateEntries.find(e => e.plugin === p && e.attr);
-		if (!u || !window[u.present] || usageFailed.has(p) || preloaded.includes(p) || registered.has(u.attr.slice(2))) return null;
-		return Promise.race([whenRegistered(u.attr.slice(2)), new Promise(r => setTimeout(r, 10000))]);
+		if (!u || !window[u.present] || usageFailed.has(p) || gaveUp.has(p) || preloaded.includes(p) || registered.has(u.attr.slice(2))) return null;
+		return Promise.race([whenRegistered(u.attr.slice(2)), new Promise(r => setTimeout(r, Math.max(0, USED_WAIT - sinceRan(p))))]);
 	}
 
 	function watchUsage(version) {

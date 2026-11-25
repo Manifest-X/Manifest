@@ -69,15 +69,56 @@ describe('loadUsed waits for registration', () => {
         expect(window.__manifestHeld(document.getElementById('c'))).toBe(false)
         expect(window.__c.c).toBe(1)
     })
-    it('a module that ran but never registers resolves after 10 s', async () => {
+    it('a module that ran but never registers: content after 1.5 s, held elements start at 10 s in all, one warning', async () => {
         ran('datepicker', 'ensureDatepickerPluginInitialized')
-        vi.useFakeTimers({ toFake: ['setTimeout'] })
+        const warn = console.warn
+        const said = []
+        console.warn = (...a) => said.push(a.join(' '))
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'] })
         try {
-            const out = state(window.Manifest.loadUsed('<input x-date>'))
-            await vi.advanceTimersByTimeAsync(9000)
+            const html = '<div id="d1" x-data x-init="count(\'d1\')"><b id="d1t" x-text="\'live\'"></b><input x-date></div>'
+            const out = state(window.Manifest.loadUsed(html))
+            await vi.advanceTimersByTimeAsync(1400)
             expect(out()).toBe('pending')
-            await vi.advanceTimersByTimeAsync(1500)
+            await vi.advanceTimersByTimeAsync(200)
             expect(out()).toEqual(['datepicker'])
+            document.getElementById('host').insertAdjacentHTML('beforeend', html)
+            await vi.advanceTimersByTimeAsync(10)
+            expect(document.getElementById('d1t').textContent).toBe('live')
+            expect(window.ManifestPending.labels()).toContain('held')
+            await vi.advanceTimersByTimeAsync(8200)
+            expect(window.ManifestPending.labels()).toContain('held')
+            await vi.advanceTimersByTimeAsync(300)
+            expect(window.ManifestPending.labels().filter(l => l !== 'ready')).toEqual([])
+            // Given up: later content starts at once, without another wait
+            const later = state(window.Manifest.loadUsed('<input id="d2" x-date x-data x-init="count(\'d2\')">'))
+            await vi.advanceTimersByTimeAsync(10)
+            expect(later()).toEqual([])
+            document.getElementById('host').insertAdjacentHTML('beforeend', '<input id="d2" x-date x-data x-init="count(\'d2\')">')
+            await vi.advanceTimersByTimeAsync(10)
+            expect(window.__c.d2).toBe(1)
+            expect(window.ManifestPending.labels().filter(l => l !== 'ready')).toEqual([])
+            expect(said.filter(w => w.includes('datepicker has not started')).length).toBe(1)
+        } finally { vi.useRealTimers(); console.warn = warn }
+    })
+    it('a module that registers at 3 s: content after 1.5 s, the element starts once when it registers', async () => {
+        ran('virtual', 'ensureVirtualPluginInitialized')
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'] })
+        try {
+            const html = '<div id="v1" x-virtual x-data x-init="count(\'v1\')"></div>'
+            const out = state(window.Manifest.loadUsed(html))
+            await vi.advanceTimersByTimeAsync(1600)
+            expect(out()).toEqual(['virtual'])
+            document.getElementById('host').insertAdjacentHTML('beforeend', html)
+            await vi.advanceTimersByTimeAsync(1400)
+            expect(window.__c.v1).toBeUndefined()
+            const ran = []
+            Alpine.directive('virtual', (el) => ran.push(el.id))
+            await vi.advanceTimersByTimeAsync(50)
+            expect([window.__c.v1, ran]).toEqual([1, ['v1']])
+            await vi.advanceTimersByTimeAsync(10000)
+            expect([window.__c.v1, ran]).toEqual([1, ['v1']])
+            expect(window.ManifestPending.labels().filter(l => l !== 'ready')).toEqual([])
         } finally { vi.useRealTimers() }
     })
     it('a module that never ran (blocked, no execution) does not wait', async () => {
