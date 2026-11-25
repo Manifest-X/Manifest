@@ -246,9 +246,6 @@ function escapeForSingleQuotedJsString(s) {
         .replace(/\t/g, '\\t');
 }
 
-// Framework web components (not project components) — never fetched.
-const FRAMEWORK_COMPONENT_TAGS = new Set(['code', 'code-group']);
-
 // Classic JS or module; anything else (JSON, templates) is a data block
 function isExecutableScript(el) {
     const type = (el.getAttribute('type') || '').split(';')[0].trim().toLowerCase();
@@ -305,7 +302,7 @@ window.ManifestComponentsProcessor = {
             console.debug('[Manifest Components] skipped: registry or loader unavailable', element);
             return;
         }
-        if (FRAMEWORK_COMPONENT_TAGS.has(name)) return;
+        if (loader.frameworkTags?.has(name)) return;
         if (element.hasAttribute('data-pre-rendered') || element.hasAttribute('data-processed')) {
             // Pre-rendered content skips re-fetch but still needs Alpine init.
             if (element.hasAttribute('data-pre-rendered') && window.Alpine && typeof window.Alpine.initTree === 'function') {
@@ -821,10 +818,6 @@ window.ManifestComponentsRouting = (function () {
     window.ManifestComponentsSwapping = {
         // Swap in source code for a placeholder
         async swapIn(placeholder) {
-            if (placeholder.hasAttribute('data-swapped')) {
-                console.debug('[Manifest Components] skipped swapIn: already marked data-swapped', placeholder);
-                return;
-            }
             const processor = window.ManifestComponentsProcessor;
             if (!processor) {
                 console.debug('[Manifest Components] skipped swapIn: processor unavailable', placeholder);
@@ -1063,9 +1056,6 @@ window.ManifestComponentsMutation = {
     // <x-*> tag pattern — lowercase, hyphenated.
     const TAG_RE = /^x-[a-z][a-z0-9-]*$/;
 
-    // Framework web components (not project components) — skip when scanning.
-    const FRAMEWORK_TAGS = new Set(['code', 'code-group']);
-
     // Anchors already hover-prefetched. WeakSet so detached nodes GC naturally.
     const prefetchedAnchors = new WeakSet();
 
@@ -1115,7 +1105,7 @@ window.ManifestComponentsMutation = {
             const tag = el.tagName.toLowerCase();
             if (!tag.startsWith('x-') || !TAG_RE.test(tag)) return;
             const name = tag.slice(2);
-            if (!FRAMEWORK_TAGS.has(name)) names.add(name);
+            if (!loader()?.frameworkTags?.has(name)) names.add(name);
         });
         return names;
     }
