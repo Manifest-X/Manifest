@@ -351,16 +351,19 @@ for (const [p, svgs] of [['/giveup/never', 0], ['/giveup/late', 1]]) {
     await pg.evaluate(() => {
         document.getElementById('host').innerHTML = `<div x-data="{ seen: '' }" id="xr" x-init="seen = $refs.c ? 'has' : 'no'"><div x-ref="c" x-date></div><span id="xs" x-text="seen"></span></div>
 <div x-data id="xr2"><input id="rin" x-ref="inp" x-date><button id="rb" @click="$refs.inp.focus()">f</button></div>
-<div x-data="{ t: 'init', on: false }"><div x-carousel id="form"><div class="carousel-slides"><div><input id="ti" x-model="t"><input id="tc" type="checkbox" x-model="on"></div></div></div><p id="tv" x-text="t + ':' + on"></p></div>`
+<div x-data="{ t: 'init', on: false }"><div x-carousel id="form"><div class="carousel-slides"><div><input id="ti" x-model="t"><input id="tc" type="checkbox" x-model="on"><input id="tf" type="file" @change="count('file')"></div></div></div><p id="tv" x-text="t + ':' + on"></p></div>`
     })
     await wait(100)
     await pg.click('#rb')
     await pg.type('#ti', 'typed')
     await pg.click('#tc')
+    writeFileSync(path.join(tmpdir(), 'onuse-upload.txt'), 'x')
+    await (await pg.$('#tf')).uploadFile(path.join(tmpdir(), 'onuse-upload.txt'))
     const during = await pg.evaluate(() => ({ seen: document.getElementById('xs').textContent, focused: document.activeElement && document.activeElement.id }))
     check(during.seen === 'has', '$refs: a ref inside a held element is there during the hold', during)
     check(await until(pg, () => document.getElementById('tv').textContent === 'typed:true'), 'held input: typed text and a ticked box win over the model\'s initial value', await pg.evaluate(() => [document.getElementById('ti').value, document.getElementById('tv').textContent]))
-    check(await pg.evaluate(() => document.activeElement && document.activeElement.id) === 'tc', 'held input: focus kept')
+    check(await until(pg, () => window.__c.file === 1 && !window.ManifestPending.labels().includes('held')), 'held input: a file picked while held is announced once and the hold is released', await pg.evaluate(() => [window.__c.file, window.ManifestPending.labels()]))
+    check(await pg.evaluate(() => document.activeElement && document.activeElement.id) === 'tf' || await pg.evaluate(() => document.activeElement && document.activeElement.id) === 'tc', 'held input: focus kept')
     check(quiet(logs).length === 0, '$refs and held input: logs nothing', quiet(logs))
     await ctx.close()
 }

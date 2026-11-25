@@ -966,7 +966,8 @@
 		controls.push(...root.querySelectorAll('input, textarea, select'));
 		for (const c of controls) {
 			try {
-				if (c.type === 'file') continue;
+				// Files picked while held can't be set back, only announced
+				if (c.type === 'file') { if (c.files && c.files.length) typed.push([c, 'files', null]); continue; }
 				if (c.type === 'checkbox' || c.type === 'radio') { if (c.checked !== c.defaultChecked) typed.push([c, 'checked', c.checked]); }
 				else if (c.tagName === 'SELECT') { const sel = [...c.options].map(o => o.selected); if (sel.some((s, i) => s !== c.options[i].defaultSelected)) typed.push([c, 'options', sel]); }
 				else if (c.value !== c.defaultValue) typed.push([c, 'value', c.value]);
@@ -979,7 +980,7 @@
 				try {
 					if (!c.isConnected) continue;
 					if (k === 'options') [...c.options].forEach((o, i) => { o.selected = !!v[i]; });
-					else c[k] = v;
+					else if (k !== 'files') c[k] = v;
 					c.dispatchEvent(new Event('input', { bubbles: true }));
 					c.dispatchEvent(new Event('change', { bubbles: true }));
 				} catch (_) { /* skipped */ }
@@ -1013,7 +1014,8 @@
 				// Its refs inside the held subtree resolve during the hold too (x-ref sets the same entry on start)
 				for (const r of [el, ...el.querySelectorAll('[x-ref]')]) {
 					const ref = r.getAttribute('x-ref');
-					if (ref && r.closest('[x-data]') === root && !root._x_refs[ref]) { root._x_refs[ref] = r; early.push([root, ref, r]); }
+					// Last one wins, as when Alpine sets them; a live ref of the same name stays
+					if (ref && r.closest('[x-data]') === root && (!root._x_refs[ref] || early.some(e => e[2] === root._x_refs[ref]))) { root._x_refs[ref] = r; early.push([root, ref, r]); }
 				}
 			}
 			hidden = RENDERS.includes(u.plugin) ? el.style.opacity : null;
