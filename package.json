@@ -67,7 +67,7 @@
         "test:e2e:responsive-order": "node tests/e2e/utilities-responsive-order.e2e.mjs",
         "test:e2e:delta-arming": "node tests/e2e/utilities-delta-arming.e2e.mjs",
         "test:e2e:boot-waterfall": "node tests/e2e/boot-waterfall.e2e.mjs",
-        "test:e2e:defer-churn": "node tests/e2e/defer-churn.e2e.mjs --assert",
+        "test:e2e:defer-churn": "node tests/e2e/defer-churn.e2e.mjs --assert && node tests/e2e/defer-churn.e2e.mjs --assert --cap 24",
         "test:e2e:on-use": "node tests/e2e/on-use-modules.e2e.mjs",
         "test:e2e:virtual-boot": "node tests/e2e/virtual-boot.e2e.mjs",
         "test:e2e:virtual-onuse": "node tests/e2e/virtual-boot.e2e.mjs --on-use",

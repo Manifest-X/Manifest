@@ -7,9 +7,11 @@
  * added / removed, main-thread task ms. Also: a revealed pane's menus still render promptly,
  * click-to-open latency of a never-rendered menu, and the cost of typing 30 characters.
  * Then: rows paged in with late-bound ids, a side panel that re-mounts 12 menus on every
- * select (sync and 400ms async), and closed details keeping their summary label.
+ * select (sync and 400ms async), closed details keeping their summary label, and navigation
+ * between three x-route panes (plus two x-show panes) settling to zero.
  *
- * Run: node tests/e2e/defer-churn.e2e.mjs [--clicks 12] [--throttle 6] [--json] [--assert]
+ * Run: node tests/e2e/defer-churn.e2e.mjs [--clicks 12] [--throttle 6] [--cap 24] [--json] [--assert]
+ * (--cap 24 makes the route panes the eviction victims, the navigation ping-pong case)
  * DEFER_FILE=/path/to/manifest.defer.js serves another build of the module (before/after runs).
  */
 import http from 'http'
@@ -57,6 +59,8 @@ function buildFixture() {
     // ds4 is lazy: never prewarmed, so one closed details is always stashed
     const details = Array.from({ length: 5 }, (_, i) => `<details id="ds${i}"${i === 4 ? ' x-defer.lazy' : ''}><summary>Label ${i}</summary><ul>${options('det')}</ul></details>`).join('')
     const panel = Array.from({ length: PANEL_MENUS }, (_, i) => `<button :popovertarget="'sp' + s + '_${i}'">S${i}</button><menu popover :id="'sp' + s + '_${i}'">${options('panel')}</menu>`).join('')
+    const routePanes = ['a', 'b', 'c'].map((t, k) => `<div x-route="${t}" id="R${t}"${k ? ' hidden' : ''}>${Array.from({ length: 8 }, (_, i) => `<button popovertarget="rt${t}${i}">${t}${i}</button><menu popover id="rt${t}${i}">${options('route')}</menu>`).join('')}</div>`).join('')
+        + ['x', 'y'].map((t) => `<div x-show="tab === '${t}'">${Array.from({ length: 6 }, (_, i) => `<button popovertarget="pn${t}${i}">${t}${i}</button><menu popover id="pn${t}${i}">${options('tab')}</menu>`).join('')}</div>`).join('')
     const paged = `<div id="paged" x-data="{ items: Array.from({ length: 6 }, (_, i) => i), more() { setTimeout(() => { const n = this.items.length; this.items = Array.from({ length: 20 }, (_, i) => 1000 * n + i).concat(this.items) }, 2000) } }"><button id="more" @click="more()">More</button><template x-for="it in items" :key="it"><span><button :popovertarget="'pg' + it">pg</button><menu popover :id="'pg' + it">${options('pg')}</menu></span></template></div>`
     return `<!DOCTYPE html>
 <html lang="en">
@@ -85,6 +89,9 @@ ${dialogs}
     <button id="show-pane" @click="tab = 'b'">Show pane</button>
     <div id="pane" x-show="tab === 'b'">${pane}</div>
     ${paged}
+    <button id="nav" onclick="const ids = ['Ra', 'Rb', 'Rc']; const cur = ids.findIndex((i) => !document.getElementById(i).hidden); ids.forEach((i, k) => { document.getElementById(i).hidden = k !== (cur + 1) % 3 }); window.dispatchEvent(new CustomEvent('manifest:route-change'))">Nav</button>
+    <button id="tabx" @click="tab = tab === 'x' ? 'y' : 'x'">Tab</button>
+    ${routePanes}
     <div id="side"><template x-for="s in ($store.sel.mode === 'off' || $store.sel.shown < 0 ? [] : [$store.sel.shown])" :key="s"><div>${panel}</div></template></div>
   </div>
 </div>
@@ -319,6 +326,23 @@ async function main() {
         }
         await page.evaluate(() => { Alpine.store('sel').mode = 'off' })
 
+        // I: navigations between three route panes (and x-show pane toggles) settle to zero; plain clicks between stay at zero
+        const navs = [], toggles = [], between = []
+        const step = async (sel, ms) => {
+            const c = await center(page, sel)
+            await page.evaluate(ARM)
+            await click(cdp, c.x, c.y)
+            await frames(page, ms * Math.max(1, THROTTLE / 3))
+            const r = await page.evaluate(READ)
+            return { renders: r.renders, restashes: r.restashes, warm: r.stats.warm }
+        }
+        for (let k = 0; k < 9; k++) {
+            navs.push(await step('#nav', 1700))
+            between.push(await step(`#r${(k * 3 + 2) % ROWS} td`, 600))
+            toggles.push(await step('#tabx', 1700))
+            between.push(await step(`#r${(k * 5 + 1) % ROWS} td`, 600))
+        }
+
         // H: closed details keep their own label, stashed or not
         const summaries = await page.evaluate(() => [...document.querySelectorAll('details[id^="ds"]')].map((d) => ({ id: d.id, pending: window.ManifestDefer.isPending(d), first: d.firstElementChild && d.firstElementChild.tagName, text: d.innerText.trim(), shown: !!(d.querySelector(':scope > summary') && d.querySelector(':scope > summary').getClientRects().length) })))
 
@@ -328,7 +352,7 @@ async function main() {
             deferFile: DEFER_FILE ? path.basename(path.dirname(DEFER_FILE)) + '/' + path.basename(DEFER_FILE) : 'src',
             throttle: THROTTLE, boot: { ...boot, prewarmSettledMs: bootPrewarmMs },
             perClick: { renders: avg(steady, 'renders'), restashes: avg(steady, 'restashes'), effectsCreated: avg(steady, 'created'), effectRuns: avg(steady, 'runs'), added: avg(steady, 'add'), removed: avg(steady, 'rem'), taskMs: avg(steady, 'taskMs'), maxWarm: Math.max(...clicks.map((c) => c.warm)) },
-            clicks, selected: sel, typing, firstOpenBoot, firstOpen, revealed, afterReveal: after, paging, pagedRows, remount, summaries, errors
+            clicks, selected: sel, typing, firstOpenBoot, firstOpen, revealed, afterReveal: after, paging, pagedRows, remount, summaries, navs: navs.map((n) => [n.renders, n.restashes]), toggles: toggles.map((n) => [n.renders, n.restashes]), between: between.map((n) => n.renders + n.restashes), errors
         }
         console.log(JSON_OUT ? JSON.stringify(result) : JSON.stringify(result, null, 2))
         if (ASSERT) {
@@ -349,6 +373,9 @@ async function main() {
             }
             if (summaries.some((d) => d.first !== 'SUMMARY' || d.text !== 'Label ' + d.id.slice(2) || !d.shown)) fails.push('details lost their summary: ' + JSON.stringify(summaries))
             if (!summaries.some((d) => d.pending)) fails.push('no details stayed stashed (summary case untested)')
+            if (navs.slice(-3).some((n) => n.renders || n.restashes)) fails.push('navigations do not settle: ' + JSON.stringify(navs.map((n) => [n.renders, n.restashes])))
+            if (between.some((n) => n.renders || n.restashes)) fails.push('plain clicks between navigations churned: ' + JSON.stringify(between.map((n) => [n.renders, n.restashes])))
+            if ([...navs, ...toggles].some((n) => n.warm > (CAP || 48) + 8)) fails.push('warm overshot the cap')
             if (errors.length) fails.push('page errors: ' + errors.join('; '))
             if (fails.length) { console.error('FAIL\n  ' + fails.join('\n  ')); process.exitCode = 1 } else console.error('PASS')
         }
