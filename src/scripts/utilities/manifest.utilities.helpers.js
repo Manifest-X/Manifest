@@ -145,6 +145,14 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
 
             const componentPromises = componentUrls.map(async (url) => {
                 try {
+                    // The components loader already holds or is fetching this file: share it
+                    const loader = window.ManifestComponentsLoader;
+                    const name = url.split('/').pop().replace('.html', '');
+                    const held = loader && (loader.cache?.[name] || loader._loading?.[name]);
+                    if (held) {
+                        const html = await held;
+                        if (html) { this.extractClassesFromHTML(html, staticClasses); return; }
+                    }
                     // Use root-relative URL first to avoid 404s on doc routes (e.g. /getting-started/...)
                     const rootRelative = url.startsWith('/') ? url : '/' + url;
                     const pathsToTry = [rootRelative, url];

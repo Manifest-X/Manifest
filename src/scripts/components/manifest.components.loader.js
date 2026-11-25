@@ -2,13 +2,14 @@
 // Uses cache for resolved content and _loading for in-flight promises so duplicate
 // loadComponent(name) calls share one network request.
 window.ManifestComponentsLoader = {
+    // Framework web components (not project components): never fetched
+    frameworkTags: new Set(['code', 'code-group']),
     cache: {},
     _loading: {},
     _missing: null,
     initialize() {
-        this.cache = {};
-        this._loading = {};
-        this._missing = new Set();
+        // Keeps anything fetched before init (early prefetch)
+        if (!this._missing) this._missing = new Set();
         // Preload components listed in registry.preloaded
         const registry = window.ManifestComponentsRegistry;
         if (registry && Array.isArray(registry.preloaded)) {
@@ -69,6 +70,7 @@ window.ManifestComponentsLoader = {
                     console.warn('[Manifest] Component', name, 'at', path, 'returned a full HTML document (SPA fallback?) — treated as missing');
                     return null;
                 }
+                this.prefetchNested(content);
                 // On-use plugins the component references load before it is inserted
                 if (window.Manifest && typeof window.Manifest.loadUsed === 'function') {
                     try { await window.Manifest.loadUsed(content); } catch (_) { /* never blocks the component */ }
@@ -85,5 +87,29 @@ window.ManifestComponentsLoader = {
         })();
         this._loading[name] = promise;
         return promise;
+    },
+    // Start fetching every placeholder that will swap now, so the swap loop's awaits find them loaded
+    prefetchPlaceholders(placeholders, decide) {
+        for (const el of placeholders) {
+            if (el.closest('[x-route]')) {
+                // Route-gated: only once a router can say it is active (never queue a re-run from here)
+                if (!decide || !window.ManifestRouting) continue;
+                try { if (decide(el) !== 'swap') continue; } catch (_) { continue; }
+            }
+            const name = el.localName.slice(2);
+            if (!this.frameworkTags.has(name)) this.loadComponent(name);
+        }
+    },
+    // Registered components named in a component's markup, fetched before the parent is inserted
+    prefetchNested(content) {
+        const registry = window.ManifestComponentsRegistry;
+        if (!registry || !registry.registered.size || content.indexOf('<x-') === -1) return;
+        const tag = /<x-([a-z0-9][\w-]*)\b([^>]*)>/gi;
+        let match;
+        while ((match = tag.exec(content)) !== null) {
+            const name = match[1].toLowerCase();
+            if (!registry.registered.has(name) || /\bx-route\b/.test(match[2])) continue;
+            this.loadComponent(name);
+        }
     }
 }; 

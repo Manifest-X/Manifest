@@ -51,7 +51,16 @@ window.ManifestComponentsRegistry = {
     manifest: null,
     registered: new Set(),
     preloaded: [],
-    async initialize() {
+    // One in-flight initialize at a time: the early prefetch and the main init share it
+    initialize() {
+        if (!this._initializing) {
+            const done = () => { this._initializing = null; };
+            this._initializing = this._initialize();
+            this._initializing.then(done, done);
+        }
+        return this._initializing;
+    },
+    async _initialize() {
         // Use loader-provided manifest if set; otherwise fetch it (standalone
         // usage, or a boot race where the loader/data plugin hasn't cached the
         // manifest on window yet).  This must be async — a synchronous XHR on

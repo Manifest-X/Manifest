@@ -55,7 +55,16 @@ window.ManifestComponentsRegistry = {
     manifest: null,
     registered: new Set(),
     preloaded: [],
-    async initialize() {
+    // One in-flight initialize at a time: the early prefetch and the main init share it
+    initialize() {
+        if (!this._initializing) {
+            const done = () => { this._initializing = null; };
+            this._initializing = this._initialize();
+            this._initializing.then(done, done);
+        }
+        return this._initializing;
+    },
+    async _initialize() {
         // Use loader-provided manifest if set; otherwise fetch it (standalone
         // usage, or a boot race where the loader/data plugin hasn't cached the
         // manifest on window yet).  This must be async — a synchronous XHR on
@@ -100,13 +109,14 @@ window.ManifestComponentsRegistry = {
 // Uses cache for resolved content and _loading for in-flight promises so duplicate
 // loadComponent(name) calls share one network request.
 window.ManifestComponentsLoader = {
+    // Framework web components (not project components): never fetched
+    frameworkTags: new Set(['code', 'code-group']),
     cache: {},
     _loading: {},
     _missing: null,
     initialize() {
-        this.cache = {};
-        this._loading = {};
-        this._missing = new Set();
+        // Keeps anything fetched before init (early prefetch)
+        if (!this._missing) this._missing = new Set();
         // Preload components listed in registry.preloaded
         const registry = window.ManifestComponentsRegistry;
         if (registry && Array.isArray(registry.preloaded)) {
@@ -167,6 +177,7 @@ window.ManifestComponentsLoader = {
                     console.warn('[Manifest] Component', name, 'at', path, 'returned a full HTML document (SPA fallback?) — treated as missing');
                     return null;
                 }
+                this.prefetchNested(content);
                 // On-use plugins the component references load before it is inserted
                 if (window.Manifest && typeof window.Manifest.loadUsed === 'function') {
                     try { await window.Manifest.loadUsed(content); } catch (_) { /* never blocks the component */ }
@@ -183,6 +194,30 @@ window.ManifestComponentsLoader = {
         })();
         this._loading[name] = promise;
         return promise;
+    },
+    // Start fetching every placeholder that will swap now, so the swap loop's awaits find them loaded
+    prefetchPlaceholders(placeholders, decide) {
+        for (const el of placeholders) {
+            if (el.closest('[x-route]')) {
+                // Route-gated: only once a router can say it is active (never queue a re-run from here)
+                if (!decide || !window.ManifestRouting) continue;
+                try { if (decide(el) !== 'swap') continue; } catch (_) { continue; }
+            }
+            const name = el.localName.slice(2);
+            if (!this.frameworkTags.has(name)) this.loadComponent(name);
+        }
+    },
+    // Registered components named in a component's markup, fetched before the parent is inserted
+    prefetchNested(content) {
+        const registry = window.ManifestComponentsRegistry;
+        if (!registry || !registry.registered.size || content.indexOf('<x-') === -1) return;
+        const tag = /<x-([a-z0-9][\w-]*)\b([^>]*)>/gi;
+        let match;
+        while ((match = tag.exec(content)) !== null) {
+            const name = match[1].toLowerCase();
+            if (!registry.registered.has(name) || /\bx-route\b/.test(match[2])) continue;
+            this.loadComponent(name);
+        }
     }
 }; 
 
@@ -888,6 +923,8 @@ window.ManifestComponentsRouting = (function () {
                 }
             }
             const decide = gate.gate(eventPath);
+            // One round of fetches for the whole pass, not one per placeholder
+            window.ManifestComponentsLoader?.prefetchPlaceholders?.(placeholders, gate.gate(eventPath));
             // Second pass: swap in matches. Routing is read per placeholder: it may arrive mid-pass.
             for (const placeholder of placeholders) {
                 const name = placeholder.tagName.toLowerCase().replace('x-', '');
@@ -1146,10 +1183,29 @@ async function initializeComponents() {
     window.dispatchEvent(new CustomEvent('manifest:components-ready'));
 }
 
+// Component HTML needs neither data nor Alpine: fetch it while they load (swapping still waits for data)
+async function prefetchComponents() {
+    const registry = window.ManifestComponentsRegistry;
+    const loader = window.ManifestComponentsLoader;
+    if (!registry || !loader || !loader.prefetchPlaceholders) return;
+    try {
+        await registry.initialize();
+        if (window.__manifestComponentsInitialized) return;
+        registry.preloaded.forEach(name => loader.loadComponent(name));
+        const placeholders = [];
+        for (const el of document.getElementsByTagName('*')) {
+            if (el.localName.startsWith('x-') && !el.hasAttribute('data-pre-rendered') && !el.hasAttribute('data-processed')) placeholders.push(el);
+        }
+        const gate = window.ManifestComponentsRouting;
+        loader.prefetchPlaceholders(placeholders, gate ? gate.gate() : null);
+    } catch (_) { /* a hint: the main init loads whatever this missed */ }
+}
+
 // When data plugin is loaded: wait for manifest:data-ready so $x.content is ready before components render.
 // When data plugin is absent: init immediately (no artificial delay).
 function waitForDataThenInitialize() {
     const hasDataPlugin = typeof window.ManifestDataConfig !== 'undefined';
+    if (hasDataPlugin) prefetchComponents();
 
     if (!hasDataPlugin) {
         initializeComponents();
