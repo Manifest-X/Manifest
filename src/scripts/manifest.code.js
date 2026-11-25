@@ -176,18 +176,22 @@ async function loadCodeJar() {
     return codeJarPromise;
 }
 
-// Ignore code classes/elements in the utilities scanner so it doesn't fight hljs.
-if (window.ManifestUtilities) {
-    window.ManifestUtilities.addIgnoredClassPattern(/^hljs/);
-    window.ManifestUtilities.addIgnoredClassPattern(/^language-/);
-    window.ManifestUtilities.addIgnoredClassPattern(/^copy$/);
-    window.ManifestUtilities.addIgnoredClassPattern(/^copied$/);
-    window.ManifestUtilities.addIgnoredClassPattern(/^lines$/);
-    window.ManifestUtilities.addIgnoredClassPattern(/^selected$/);
-    window.ManifestUtilities.addIgnoredClassPattern(/^expand$/);
-    window.ManifestUtilities.addIgnoredElementSelector('pre');
-    window.ManifestUtilities.addIgnoredElementSelector('code');
+// Ignore code classes/elements in the utilities scanner so it doesn't fight hljs (Utilities may run after this file)
+function ignoreInUtilities() {
+    const u = window.ManifestUtilities;
+    if (!u) return false;
+    u.addIgnoredClassPattern(/^hljs/);
+    u.addIgnoredClassPattern(/^language-/);
+    u.addIgnoredClassPattern(/^copy$/);
+    u.addIgnoredClassPattern(/^copied$/);
+    u.addIgnoredClassPattern(/^lines$/);
+    u.addIgnoredClassPattern(/^selected$/);
+    u.addIgnoredClassPattern(/^expand$/);
+    u.addIgnoredElementSelector('pre');
+    u.addIgnoredElementSelector('code');
+    return true;
 }
+if (!ignoreInUtilities()) document.addEventListener('alpine:init', ignoreInUtilities, { once: true });
 
 // ─── Language resolution ─────────────────────────────────────────────────────
 

@@ -16,7 +16,14 @@
  *    captured reference forwards; a magic read only from a script file loads its module;
  * 6. no console warning or error on any page (the only exceptions are named where they occur);
  * 7. mnfst-render (derive path, built lib/): the render pass loads what the page uses and
- *    bakes it; hydration loads the modules the baked page still needs and keeps the content.
+ *    bakes it; hydration loads the modules the baked page still needs and keeps the content;
+ * 8. component HTML fetched before DOMContentLoaded (a slow deferred script) loads its modules
+ *    before it is inserted: nothing held, over 20 loads;
+ * 9. nested holds: input typed while held reaches each handler once, in either module order;
+ * 10. with DOMContentLoaded late, a slow early module or a slow image never holds up Alpine, and
+ *    manifest:ready never fires before it; sibling held elements each wait only for their own module;
+ * 11. a module whose file runs but registers late or never: content waits at most 1.5 s, then the
+ *    hold covers the rest, and one 10 s give-up in all.
  *
  * Run: node tests/e2e/on-use-modules.e2e.mjs      (ONUSE_SRC=<dir with scripts/> to A/B)
  */
@@ -88,9 +95,25 @@ Some *text*.
     '/cfg/omit': page(`<p id="d" x-text="'d=' + $date.value"></p>`, '', 'data-omit="datepicker"'),
     '/giveup/never': page(`<main id="host" x-html="html"></main>`),
     '/giveup/late': page(`<main id="host" x-html="html"></main>`),
+    '/nest/same': page(`<form id="nf"><main id="host" x-html="html"></main></form>`),
+    '/nest/outer': page(`<form id="nf"><main id="host" x-html="html"></main></form>`),
     '/md/race': page(`<div x-data="{ src: '', tick: 0 }" id="w"><div id="md" x-markdown="src + (tick > -1 ? '' : '')"></div></div><div id="mi" x-markdown="inline">warm</div>`),
 }
+// Component HTML served at once; DOMContentLoaded waits on a slow deferred script
+const PF = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title><link rel="manifest" href="/manifest-pf.json">
+<script>window.__c = {}; window.count = (k) => { window.__c[k] = (window.__c[k] || 0) + 1 }; window.__ev = []; const T = () => performance.now(); document.addEventListener('DOMContentLoaded', () => __ev.push(['dcl', T()]))
+new MutationObserver(() => { if (!window.__ins && document.getElementById('pf')) { window.__ins = 1; __ev.push(['inserted', T(), !!window.ensureChartsPluginInitialized]) } }).observe(document, { childList: true, subtree: true })</script>
+<script src="/scripts/manifest.js" data-module-base="/scripts" data-alpine="/__alpine.js"></script><script defer src="/pf-slow.js"></script>
+</head><body x-data>${body}</body></html>`
+PAGES['/pf/xif'] = PF('<template x-if="true"><x-pfpanel></x-pfpanel></template>')
+PAGES['/pf/direct'] = PF('<x-pfpanel></x-pfpanel>')
+PAGES['/pf/s2500'] = PAGES['/pf/s5000'] = PAGES['/pf/never'] = PAGES['/pf/at3'] = PAGES['/pf/xif']
+PAGES['/pf/img'] = PF('<p id="live" x-text="\'live\'">raw</p><img src="/pf-big.svg">')
 const FILES = {
+    '/manifest-pf.json': JSON.stringify({ name: 'pf', components: ['components/pfpanel.html'], preloadedComponents: ['components/pfpanel.html'], data: { m: '/data-pf.json' } }),
+    '/data-pf.json': JSON.stringify({ v: 1 }),
+    '/components/pfpanel.html': `<section id="pf" x-data x-init="count('pf')"><div id="pfch" x-init="count('pfch')" x-chart="{ type: 'bar', series: [{ data: [1, 2, 3] }] }" style="width:300px"></div></section>`,
+    '/pf-slow.js': 'window.__slow = 1',
     '/manifest.json': JSON.stringify({ name: 'onuse' }),
     '/app.js': MD_APP,
     '/icon.svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>',
@@ -105,6 +128,8 @@ const server = await new Promise((r) => {
         if (u.pathname === '/__alpine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(ALPINE)) }
         if (u.pathname.startsWith('/ping/')) { res.writeHead(204); return res.end() }
         // Latency on the manifest, so the request order of the boot shows
+        if (u.pathname === '/pf-big.svg') return setTimeout(() => { res.writeHead(200, { 'content-type': 'image/svg+xml' }); res.end('<svg xmlns="http://www.w3.org/2000/svg"/>') }, 3000)
+        if (u.pathname === '/pf-slow.js') return setTimeout(() => { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(FILES[u.pathname]) }, 1200)
         if (u.pathname === '/manifest.json') return setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(FILES[u.pathname]) }, 250)
         if (FILES[u.pathname]) { res.writeHead(200, { 'content-type': u.pathname.endsWith('.json') ? 'application/json' : u.pathname.endsWith('.svg') ? 'image/svg+xml' : u.pathname.endsWith('.js') ? 'text/javascript' : 'text/html' }); return res.end(FILES[u.pathname]) }
         // Svg that loads but never registers, or registers 11 s after loading
@@ -112,12 +137,19 @@ const server = await new Promise((r) => {
             res.writeHead(200, { 'content-type': 'text/javascript' })
             return res.end(ref === '/giveup/never' ? '/* never registers */' : 'setTimeout(() => {\n' + readFileSync(path.join(SRC, u.pathname), 'utf8') + '\n}, 11000)')
         }
+        // Charts whose file runs but registers 3 s later, or never
+        if (u.pathname === '/scripts/manifest.charts.js' && (ref === '/pf/never' || ref === '/pf/at3')) {
+            res.writeHead(200, { 'content-type': 'text/javascript' })
+            return res.end('window.ensureChartsPluginInitialized = () => {};' + (ref === '/pf/at3' ? 'setTimeout(() => {\n' + readFileSync(path.join(SRC, u.pathname), 'utf8') + '\n}, 3000)' : ''))
+        }
         if (u.pathname.startsWith('/scripts/')) {
             const f = path.join(SRC, u.pathname)
             if (!existsSync(f)) { res.writeHead(404); return res.end() }
             const mod = /manifest\.([\w.]+)\.js$/.exec(u.pathname)
             const slow = mod && MOVED.includes(mod[1]) && (ref.startsWith('/late/') || (ref.startsWith('/md/') && mod[1] === 'code'))
-            return setTimeout(() => { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(readFileSync(f)) }, slow ? SLOW : 0)
+            const nest = { '/nest/same': { slides: 1500, export: 500 }, '/nest/outer': { slides: 300, export: 1500 } }[ref]
+            const ms = nest && mod ? nest[mod[1]] || 0 : ref.startsWith('/pf/') && mod && mod[1] === 'charts' ? (Number(ref.slice(5)) || 300) : slow ? SLOW : 0
+            return setTimeout(() => { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(readFileSync(f)) }, ms)
         }
         if (PAGES[u.pathname]) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(PAGES[u.pathname]) }
         res.writeHead(404); res.end()
@@ -450,6 +482,92 @@ for (const [p, fix] of [['/cfg/explicit', 'add data-modules="+datepicker"'], ['/
     const l = quiet(logs)
     check(l.length === 1 && l[0].includes('$date') === (p === '/cfg/explicit') && l[0].includes(fix), `misconfigured ${p}: one warning naming the fix`, l)
     check(await pg.evaluate(() => document.getElementById('d').textContent) === 'd=' && !modules.includes('datepicker'), `misconfigured ${p}: reads empty, nothing loaded`)
+    await ctx.close()
+}
+
+// 8. Component HTML that arrives before DOMContentLoaded
+for (const [p, runs] of [['/pf/xif', 20], ['/pf/direct', 5]]) {
+    const bad = []
+    for (let i = 0; i < runs; i++) {
+        const holds = []
+        const { pg, ctx, logs, modules } = await open(p, { before: (pg) => pg.evaluateOnNewDocument(() => {
+            const iv = setInterval(() => { if (!window.ManifestPending) return; clearInterval(iv); const h = window.ManifestPending.hold; window.ManifestPending.hold = function (l) { if (l === 'held') window.__ev.push(['held', performance.now()]); return h.apply(this, arguments) } }, 0)
+        }) })
+        const drawn = await until(pg, () => !!document.querySelector('#pfch svg') && window.__manifestReady)
+        const r = await pg.evaluate(() => { const e = performance.getEntriesByType('resource'); const f = (k) => e.find((x) => new URL(x.name).pathname.endsWith(k)); return { ev: window.__ev, charts: f('/manifest.charts.js')?.startTime, comp: f('/components/pfpanel.html')?.responseEnd, init: window.__c.pf } })
+        const ins = r.ev.find((x) => x[0] === 'inserted'), dcl = r.ev.find((x) => x[0] === 'dcl')
+        holds.push(...r.ev.filter((x) => x[0] === 'held'))
+        const ok = drawn && r.comp < dcl[1] && ins && ins[2] && r.charts < ins[1] && holds.length === 0 && r.init === 1 && modules.filter((m) => m === 'charts').length === 1 && quiet(logs).length === 0
+        if (!ok) bad.push({ i, drawn, ...r, charts: modules.filter((m) => m === 'charts').length, logs: quiet(logs) })
+        await ctx.close()
+    }
+    check(bad.length === 0, `prefetched component ${p}: HTML in before DOMContentLoaded, module registered before insertion, nothing held, charts once, ${runs} loads`, bad.slice(0, 2))
+}
+
+// 10. Late DOMContentLoaded: a slow early module or image never holds up Alpine
+for (const p of ['/pf/s2500', '/pf/s5000', '/pf/img']) {
+    const { pg, ctx, logs } = await open(p, { before: (pg) => pg.evaluateOnNewDocument(() => {
+        window.__tt = {}; const T = () => performance.now()
+        document.addEventListener('alpine:init', () => { window.__tt.alpine = T() }); window.addEventListener('manifest:ready', () => { window.__tt.ready = T() })
+        const iv = setInterval(() => { if (!window.ManifestPending) return; clearInterval(iv); const h = window.ManifestPending.hold; window.ManifestPending.hold = function (l) { if (l === 'held') window.__tt.held = (window.__tt.held || 0) + 1; return h.apply(this, arguments) } }, 0)
+    }) })
+    const done = p === '/pf/img' ? () => document.getElementById('live')?.textContent === 'live' && window.__manifestReady : () => !!document.querySelector('#pfch svg') && window.__manifestReady
+    check(await until(pg, done), `late DOMContentLoaded ${p}: boots`)
+    const r = await pg.evaluate(() => ({ ...window.__tt, dcl: window.__ev.find((x) => x[0] === 'dcl')[1], ins: window.__ev.find((x) => x[0] === 'inserted') }))
+    check(r.alpine - r.dcl < 300 && r.ready > r.alpine, `late DOMContentLoaded ${p}: Alpine starts with DOMContentLoaded, manifest:ready after it`, r)
+    // A module slower than 1.5 s: the content shows then, its element held until the module arrives
+    if (p !== '/pf/img') check(r.held === 1 && r.ins && r.ins[1] - r.dcl < 600, `late DOMContentLoaded ${p}: ordinary content shown by 1.5 s, the chart element held until its module`, r)
+    check(quiet(logs).length === 0, `late DOMContentLoaded ${p}: logs nothing`, quiet(logs))
+    await ctx.close()
+}
+{
+    const { pg, ctx, logs } = await open('/nest/same')
+    await until(pg, () => window.__manifestReady); await wait(200)
+    await pg.evaluate(() => { Alpine.$data(document.body).html = `<div id="sc" x-carousel x-data x-init="window.__sAt = performance.now()"><div class="carousel-slides"><div>a</div></div></div><button id="se" x-export.csv="{ data: [] }" x-data x-init="window.__eAt = performance.now()">e</button>` })
+    check(await until(pg, () => window.__sAt && window.__eAt), 'siblings held: both start')
+    const r = await pg.evaluate(() => ({ s: window.__sAt, e: window.__eAt, slides: performance.getEntriesByType('resource').find((x) => /manifest\.slides\.js$/.test(x.name))?.responseEnd }))
+    check(r.e < r.slides - 500, 'siblings held: export starts on its own module, not behind slides', r)
+    check(quiet(logs).length === 0, 'siblings held: logs nothing', quiet(logs))
+    await ctx.close()
+}
+
+// 11. A module that registers late or never
+for (const p of ['/pf/never', '/pf/at3']) {
+    const { pg, ctx, logs } = await open(p, { before: (pg) => pg.evaluateOnNewDocument(() => {
+        window.__tt = {}; const T = () => performance.now()
+        new MutationObserver(() => { if (!window.__tt.svg && document.querySelector('#pfch svg')) window.__tt.svg = T() }).observe(document, { childList: true, subtree: true })
+    }) })
+    const started = await until(pg, (p) => window.__c.pfch === 1 && (p === '/pf/never' || window.__tt.svg) && !window.ManifestPending.labels().some((l) => l === 'held' || l === 'module'), p, 15000)
+    const r = await pg.evaluate(() => ({ ins: window.__ev.find((x) => x[0] === 'inserted')?.[1], ran: performance.getEntriesByType('resource').find((x) => /manifest\.charts\.js$/.test(x.name))?.responseEnd, svg: window.__tt.svg, now: performance.now(), c: window.__c }))
+    check(started && r.ins - r.ran < 1800, `late module ${p}: ordinary content shown within 1.5 s of the file running`, r)
+    if (p === '/pf/never') {
+        check(r.now - r.ran < 10800 && r.c.pfch === 1 && r.c.pf === 1, `late module ${p}: the chart element started without it by 10 s in all, pending clear`, r)
+        const l = quiet(logs)
+        check(l.length === 1 && /charts has not started 10 s after loading/.test(l[0]), `late module ${p}: one warning`, l)
+    } else {
+        check(r.svg - r.ran > 2700 && r.svg - r.ran < 3600 && r.c.pfch === 1 && r.c.pf === 1, `late module ${p}: the chart is live when it registers, started once`, r)
+        await wait(500)
+        check((await counts(pg)).pfch === 1 && quiet(logs).length === 0, `late module ${p}: no second start, logs nothing`, quiet(logs))
+    }
+    await ctx.close()
+}
+
+// 9. Nested holds (slides outside, export inside): each handler sees typed input once
+for (const p of ['/nest/same', '/nest/outer']) {
+    const { pg, ctx, logs } = await open(p)
+    await until(pg, () => window.__manifestReady); await wait(200)
+    await pg.evaluate(() => {
+        window.__live = 0
+        document.getElementById('nf').addEventListener('input', () => window.__live++)
+        Alpine.$data(document.body).html = `<div id="ncar" x-carousel x-data="{ t: '' }" @input="count('oIn')"><div class="carousel-slides"><div @input="count('midIn')"><div id="ninner" x-export.csv="{ data: [] }" @input="count('iIn')"><input id="nfld" x-model="t" @input="count('fIn')" @change="count('fCh')"></div></div></div><p id="nv" x-text="t"></p></div>`
+    })
+    await wait(100)
+    await pg.type('#nfld', 'ab')
+    check(await until(pg, () => document.getElementById('nv')?.textContent === 'ab' && !window.ManifestPending.labels().includes('held') && !!window.ensureExportPluginInitialized), `nested ${p}: typed text reaches the model`)
+    await wait(400)
+    const c = await pg.evaluate(() => ({ ...window.__c, live: window.__live }))
+    check(['fIn', 'fCh', 'iIn', 'midIn', 'oIn'].every((k) => c[k] === 1) && c.live === 2, `nested ${p}: the control's, inner, middle and outer handlers each run once; outside sees only the live input`, c)
+    check(quiet(logs).length === 0, `nested ${p}: logs nothing`, quiet(logs))
     await ctx.close()
 }
 

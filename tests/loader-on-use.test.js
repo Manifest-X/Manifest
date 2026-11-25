@@ -277,3 +277,99 @@ describe('on-use directive modules: explicit configuration', () => {
         warn.mockRestore()
     })
 })
+
+describe('on-use directive modules: content fetched before the boot sniff', () => {
+    const holdManifest = () => {
+        let release
+        const gate = new Promise(r => { release = r })
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('manifest.json')) { await gate; return new Response('{"name":"x"}', { status: 200, headers: { 'content-type': 'application/json' } }) }
+            return new Response('', { status: 404 })
+        })
+        return release
+    }
+    // DOMContentLoaded still to come (a slow deferred script)
+    const parsing = () => {
+        Object.defineProperty(document, 'readyState', { configurable: true, get: () => 'interactive' })
+        vi.spyOn(performance, 'getEntriesByType').mockReturnValue([{ domContentLoadedEventEnd: 0 }])
+        return () => { delete document.readyState; performance.getEntriesByType.mockRestore(); document.dispatchEvent(new Event('DOMContentLoaded')) }
+    }
+    const now = async (p) => { let v = 'pending'; p.then(x => { v = x }); for (let i = 0; i < 3; i++) await Promise.resolve(); return v }
+
+    it('a call before manifest.json arrives waits, then loads the module and resolves after it', async () => {
+        const release = holdManifest()
+        boot({}, '<p>x</p>')
+        const out = window.Manifest.loadUsed('<div x-chart="c"></div>')
+        await settle(3)
+        expect(moved()).toEqual([])
+        release()
+        expect(await out).toEqual(['charts'])
+        expect(moved()).toEqual(['charts'])
+    })
+    it('a call before DOMContentLoaded loads at once', async () => {
+        const done = parsing()
+        boot({}, '<p>x</p>')
+        await settle()
+        expect(injected()).toContain('tabs')
+        const out = window.Manifest.loadUsed('<section><div x-chart="c"></div></section>')
+        expect(moved()).toEqual(['charts'])
+        done()
+        expect(await out).toEqual(['charts'])
+        await settle()
+        expect(moved()).toEqual(['charts'])
+    })
+    it('a module the boot sniff also finds loads once', async () => {
+        const done = parsing()
+        boot({}, '<div x-chart="a"></div>')
+        await settle()
+        const out = window.Manifest.loadUsed('<div x-chart="b"></div><div x-date></div>')
+        done()
+        await out
+        await settle()
+        expect(injected().filter(p => p === 'charts').length).toBe(1)
+        expect(moved().sort()).toEqual(['charts', 'datepicker'])
+    })
+    it('data-omit is respected', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => { })
+        const release = holdManifest()
+        boot({ 'data-omit': 'charts' }, '<p>x</p>')
+        const out = window.Manifest.loadUsed('<div x-chart="c"></div><div x-svg="s"></div>')
+        release()
+        expect(await out).toEqual(['svg'])
+        await settle()
+        expect(moved()).toEqual(['svg'])
+        warn.mockRestore()
+    })
+    it('with an explicit module list it returns nothing at once, never waiting', async () => {
+        const release = holdManifest()
+        boot({ 'data-modules': 'tabs' }, '<p>x</p>')
+        expect(await now(window.Manifest.loadUsed('<div x-chart="c"></div>'))).toEqual([])
+        release()
+        await settle()
+        expect(await now(window.Manifest.loadUsed('<div x-chart="c"></div>'))).toEqual([])
+        expect(moved()).toEqual([])
+    })
+})
+
+describe('on-use directive modules: execution order', () => {
+    const asyncOf = (m) => [...document.querySelectorAll(`script[src*="/lib/manifest.${m}."]`)].map(s => s.async)
+    it('a module requested through Manifest.loadUsed runs as it arrives; the boot sniff keeps order', async () => {
+        boot({}, '<div x-date></div>'); await settle()
+        await window.Manifest.loadUsed('<div x-chart></div>')
+        expect(asyncOf('charts')).toEqual([true])
+        expect(asyncOf('datepicker')).toEqual([false])
+        expect(asyncOf('tabs')).toEqual([false])
+    })
+    it('a module already requested early is not hinted again at DOMContentLoaded', async () => {
+        Object.defineProperty(document, 'readyState', { configurable: true, get: () => 'interactive' })
+        vi.spyOn(performance, 'getEntriesByType').mockReturnValue([{ domContentLoadedEventEnd: 0 }])
+        boot({}, '<div x-chart="a"></div>')
+        await settle()
+        window.Manifest.loadUsed('<div x-chart="b"></div>')
+        delete document.readyState; performance.getEntriesByType.mockRestore()
+        document.dispatchEvent(new Event('DOMContentLoaded'))
+        await settle()
+        expect(hints().some(u => u.includes('manifest.charts.'))).toBe(false)
+        expect(injected().filter(p => p === 'charts').length).toBe(1)
+    })
+})
