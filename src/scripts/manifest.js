@@ -941,7 +941,14 @@
 		for (const u of late) {
 			if (!u.magic || window[u.present]) continue;
 			const name = u.magic.slice(1);
-			magic.call(A, name, (el, utils) => { void state.v; return real[name] ? real[name](el, utils) : idle; });
+			let asked = false;
+			magic.call(A, name, (el, utils) => {
+				void state.v;
+				if (real[name]) return real[name](el, utils);
+				// Read with no markup trigger (e.g. from a script file): load it now, derive path only
+				if (!asked && usageSniff && !_omitted.includes(u.plugin)) { asked = true; fetchUsed(resolveDependencies([u.plugin]).filter(p => !usageLoaded(p))); }
+				return idle;
+			});
 		}
 		A.magic = function (name, cb) {
 			if (late.some(u => u.magic === '$' + name)) { real[name] = cb; setTimeout(() => { state.v++; }, 0); }
@@ -1061,7 +1068,9 @@
 		const loaded = USAGE_NAMES.filter(usageLoaded).concat('components', _omitted);
 		const used = detectUsagePlugins(loaded, root);
 		if (!used.length) return Promise.resolve([]);
-		const list = resolveDependencies(used).filter(p => !usageLoaded(p));
+		return fetchUsed(resolveDependencies(used).filter(p => !usageLoaded(p)), version);
+	}
+	function fetchUsed(list, version = RESOLVED_VERSION) {
 		if (!list.length) return Promise.resolve([]);
 		// Prerender waits for the module and the adoption it schedules
 		const release = window.ManifestPending ? window.ManifestPending.hold('module') : () => { };

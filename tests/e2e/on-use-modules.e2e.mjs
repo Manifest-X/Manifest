@@ -58,10 +58,12 @@ Some *text*.
 ## From x-if
 </div></div></template>`),
     '/late/component': page(`<main id="host"></main>`),
+    '/late/js-only': page(`<div id="p" x-data="probe" x-text="seen"></div>`, '<script src="/app.js"></script>'),
     '/late/magic': page(`<main id="host"></main><p id="probe" x-text="'v:' + String($date)"></p>`),
 }
 const FILES = {
     '/manifest.json': JSON.stringify({ name: 'onuse' }),
+    '/app.js': "document.addEventListener('alpine:init', () => Alpine.data('probe', () => ({ seen: '', init() { this.seen = 'read:' + String(this.$date) } })))",
     '/icon.svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>',
     '/components/widget.html': `<section id="widget"><div id="wchart" x-chart="{ type: 'bar', series: [{ data: [3, 1] }] }" style="width:300px"></div><pre id="wcode" x-code="js"><code>var w = 2</code></pre></section>`,
 }
@@ -71,7 +73,7 @@ const server = await new Promise((r) => {
         const u = new URL(req.url, 'http://x')
         requested.push(u.pathname)
         if (u.pathname === '/__alpine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(ALPINE)) }
-        if (FILES[u.pathname]) { res.writeHead(200, { 'content-type': u.pathname.endsWith('.json') ? 'application/json' : u.pathname.endsWith('.svg') ? 'image/svg+xml' : 'text/html' }); return res.end(FILES[u.pathname]) }
+        if (FILES[u.pathname]) { res.writeHead(200, { 'content-type': u.pathname.endsWith('.json') ? 'application/json' : u.pathname.endsWith('.svg') ? 'image/svg+xml' : u.pathname.endsWith('.js') ? 'text/javascript' : 'text/html' }); return res.end(FILES[u.pathname]) }
         if (u.pathname.startsWith('/scripts/')) {
             const f = path.join(SRC, u.pathname)
             if (!existsSync(f)) { res.writeHead(404); return res.end() }
@@ -229,6 +231,15 @@ await late('x-if', '/late/xif', () => { Alpine.$data(document.body).open = true 
     check(await until(pg, LATE_EFFECTS.cal, 'cal'), 'magic: datepicker loads for later content')
     check(await until(pg, () => document.getElementById('probe').textContent !== 'v:' || !!window.ensureDatepickerPluginInitialized), 'magic: the reader re-runs against the real magic')
     check(quiet(logs).length === 0, 'magic: logs nothing (no expression errors)', quiet(logs))
+    await ctx.close()
+}
+
+// A magic read only from a script file: the stand-in answers, then loads the module
+{
+    const { pg, ctx, logs, modules } = await open('/late/js-only')
+    check(await until(pg, () => !!window.ensureDatepickerPluginInitialized), 'js-only magic: reading $date from a script file loads Datepicker', modules)
+    check(await pg.evaluate(() => document.getElementById('p').textContent) === 'read:', 'js-only magic: the first read answered idle')
+    check(quiet(logs).length === 0, 'js-only magic: logs nothing', quiet(logs))
     await ctx.close()
 }
 
