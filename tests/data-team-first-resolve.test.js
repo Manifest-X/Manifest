@@ -54,34 +54,45 @@ function mockRealtime() {
     }
 }
 
-// Rows are tagged with the team the read ran under; hold(table, team) can delay a response
-async function load(auth, scope, { appwriteAuth = { teams: {} }, realtime, sources = 0, hold } = {}) {
+// The team a request was built for, read from the query actually sent
+const teamOf = (queries) => (JSON.stringify(queries).match(/teamId,([^)]+)\)/) || [])[1] || 'none'
+
+// Rows are tagged with the team in the request's query; hold(table, team) can delay a response
+async function load(auth, scope, { appwriteAuth = { teams: {} }, realtime, sources = 0, hold, extra = {}, files = [], fail } = {}) {
     window.Alpine = Alpine
     Alpine.store('auth', auth)
     window.__manifestRenderReady = false
     const data = { projects: { appwriteTableId: 'projects', appwriteDatabaseId: 'db', scope } }
     for (let i = 0; i < sources; i++) data[`s${i}`] = { appwriteTableId: `s${i}`, appwriteDatabaseId: 'db', scope: 'team' }
+    Object.assign(data, extra)
     const manifest = {
         appwrite: { projectId: 'p', endpoint: 'e', databaseId: 'db', auth: appwriteAuth },
         data
     }
-    const net = { calls: [] }
+    const net = { calls: [], lists: [] }
     window.ManifestDataAppwrite = {
         loadTableRows: async (db, table, queries) => {
-            const team = Alpine.store('auth').currentTeam?.$id || 'none'
+            const team = teamOf(queries)
             net.calls.push({ table, team, queries: JSON.stringify(queries) })
             if (hold) await hold(table, team)
+            if (fail && fail(table, team)) throw new Error('boom')
             return [{ $id: `${team}-0`, teamId: team, userId: 'u1' }, { $id: `${team}-1`, teamId: team, userId: 'u1' }]
         },
-        listBucketFiles: async () => []
+        listBucketFiles: async (bucket) => { net.lists.push(bucket); return files.map(f => ({ ...f })) }
     }
     if (realtime) window.ManifestDataRealtime = realtime
     else delete window.ManifestDataRealtime
     window.ManifestComponentsRegistry = { manifest }
-    window.Appwrite = { Query: {
-        equal: (field, value) => `equal(${field},${value})`,
-        or: (queries) => `or(${queries.join(',')})`,
-    } }
+    window.Appwrite = {
+        Query: {
+            equal: (field, value) => `equal(${field},${value})`,
+            or: (queries) => `or(${queries.join(',')})`,
+            cursorAfter: id => `cursorAfter(${id})`,
+            limit: n => `limit(${n})`,
+        },
+        Permission: { read: role => `read("${role}")` },
+        Role: { team: id => `team:${id}`, user: id => `user:${id}` },
+    }
 
     iso = isolateVm()
     const ctx = {
@@ -121,7 +132,7 @@ describe('team resolves after the listener starts', () => {
         await settle(60)
         expect(net.calls.length).toBe(1)
         await settle(POLL)
-        expect(net.calls.length).toBe(1)
+        expect(net.calls.map(c => c.queries)).toEqual(['["equal(teamId,t1)"]'])
         expect(ids()).toEqual(['t1-0', 't1-1'])
     }, 8000)
 
@@ -178,8 +189,7 @@ describe('real team changes still reload', () => {
 
         setTeam('tB')
         await settle(POLL)
-        expect(net.calls.length).toBe(2)
-        expect(net.calls[1].team).toBe('tB')
+        expect(net.calls.map(c => c.queries)).toEqual(['["equal(teamId,tA)"]', '["equal(teamId,tB)"]'])
         expect(ids()).toEqual(['tB-0', 'tB-1'])
     }, 8000)
 
@@ -271,5 +281,191 @@ describe('loads in flight across the check', () => {
         await settle(100)
         expect(ids()).toEqual(['tB-0', 'tB-1'])
         expect(net.calls.at(-1).team).toBe('tB')
+    }, 10000)
+})
+
+// Auth store whose team switches in a microtask right after the scope builder reads it
+function hookedAuth(user, team) {
+    const a = signedIn(user, team)
+    let cur = a.currentTeam
+    delete a.currentTeam
+    a._arm = null
+    Object.defineProperty(a, 'currentTeam', {
+        enumerable: true, configurable: true,
+        get() {
+            const st = new Error().stack.split('\n').slice(2, 9).join(' | ')
+            if (this._arm !== null && /buildQueries/.test(st)) {
+                const next = this._arm
+                this._arm = null
+                queueMicrotask(() => { cur = next ? { $id: next } : null; this.teams = next ? [{ $id: next }] : [] })
+            }
+            return cur
+        },
+        set(v) { cur = v }
+    })
+    return a
+}
+
+describe('team changes right after the scope build reads it', () => {
+    it('A → B during a reload: reloads for B', async () => {
+        const { net, ids, main } = await load(hookedAuth('u1', 'tA'), 'team')
+        await main.loadDataSource('projects')
+        await settle(60)
+        Alpine.store('auth')._arm = 'tB'
+        await main.loadDataSource('projects', undefined, { reload: true })
+        await settle(POLL * 2)
+        expect(net.calls.map(c => c.queries)).toEqual(['["equal(teamId,tA)"]', '["equal(teamId,tA)"]', '["equal(teamId,tB)"]'])
+        expect(ids()).toEqual(['tB-0', 'tB-1'])
+    }, 15000)
+
+    it('dual scope, null → t1 at boot: user-only read is redone with the team', async () => {
+        const { net, ids, main } = await load(hookedAuth('u1', null), ['user', 'team'])
+        Alpine.store('auth')._arm = 't1'
+        await main.loadDataSource('projects')
+        await settle(POLL * 2)
+        expect(net.calls.map(c => c.queries)).toEqual(['["equal(userId,u1)"]', '["or(equal(userId,u1),equal(teamId,t1))"]'])
+        expect(ids()).toEqual(['t1-0', 't1-1'])
+    }, 15000)
+
+    it('team scope, null → t1 at boot with no auth event to come: not stranded', async () => {
+        const { net, ids, main } = await load(hookedAuth('u1', null), 'team')
+        Alpine.store('auth')._arm = 't1'
+        await main.loadDataSource('projects')
+        await settle(POLL * 2)
+        expect(net.calls.map(c => c.queries)).toEqual(['["equal(teamId,t1)"]'])
+        expect(ids()).toEqual(['t1-0', 't1-1'])
+        expect(Alpine.store('data')._projects_state.loading).toBe(false)
+    }, 15000)
+})
+
+describe('switches inside one poll and $query', () => {
+    it('A → B → A inside one poll with a reload under B ends on A', async () => {
+        const { net, ids, main } = await load(signedIn('u1', 'tA'), 'team')
+        await main.loadDataSource('projects')
+        await settle(2100)
+        setTeam('tB')
+        await main.loadDataSource('projects', undefined, { reload: true })
+        await settle(50)
+        setTeam('tA')
+        await settle(POLL * 2)
+        expect(net.calls.map(c => c.team)).toEqual(['tA', 'tB', 'tA'])
+        expect(ids()).toEqual(['tA-0', 'tA-1'])
+    }, 15000)
+
+    it('a $query in flight across A → B never lands A rows over B', async () => {
+        const gate = deferred()
+        let holdA = false
+        const { net, ids, main } = await load(signedIn('u1', 'tA'), 'team', { hold: (t, team) => holdA && team === 'tA' ? gate.p : null })
+        await main.loadDataSource('projects')
+        await settle(60)
+        holdA = true
+        const q = window.ManifestDataProxiesAppwrite.createAppwriteMethodsHandler('projects', main.reloadDataSource)('$query', [['equal', 'kind', 'a']])
+        await settle(30)
+        setTeam('tB')
+        await settle(POLL)
+        expect(ids()).toEqual(['tB-0', 'tB-1'])
+        gate.resolve()
+        await q.catch(() => {})
+        await settle(POLL)
+        expect(ids()).toEqual(['tB-0', 'tB-1'])
+        expect(net.calls.at(-1).queries).toBe('["equal(teamId,tB)"]')
+    }, 15000)
+})
+
+describe('other source types', () => {
+    it('paged: one request at boot, reload for B on a switch', async () => {
+        const { net, ids, main } = await load(signedIn('u1'), 'team')
+        window.ManifestComponentsRegistry.manifest.data.projects.paging = { mode: 'window', size: 2 }
+        window.ManifestDataAppwrite.loadTablePage = async (db, table, queries) => {
+            const team = teamOf(queries)
+            net.calls.push({ table, team, queries: JSON.stringify(queries) })
+            return { rows: [0, 1, 2].map(i => ({ $id: `${team}-${i}`, teamId: team })), total: 3 }
+        }
+        setTeam('t1')
+        await main.loadDataSource('projects')
+        await settle(POLL)
+        expect(net.calls.map(c => c.team)).toEqual(['t1'])
+        setTeam('t2')
+        await settle(POLL)
+        expect(net.calls.map(c => c.team)).toEqual(['t1', 't2'])
+        expect(ids()).toEqual(['t2-0', 't2-1'])
+    }, 10000)
+
+    it('bucket: one list at boot, refiltered for B on a switch', async () => {
+        const files = [{ $id: 'fa', $permissions: ['read("team:tA")'] }, { $id: 'fb', $permissions: ['read("team:tB")'] }]
+        const { net, ids, main } = await load(signedIn('u1'), 'team', { files, extra: { docs: { appwriteBucketId: 'docs', scope: 'team' } } })
+        setTeam('tA')
+        await main.loadDataSource('docs')
+        await settle(POLL)
+        expect(net.lists.length).toBe(1)
+        expect(ids('docs')).toEqual(['fa'])
+        setTeam('tB')
+        await settle(POLL)
+        expect(net.lists.length).toBe(2)
+        expect(ids('docs')).toEqual(['fb'])
+    }, 10000)
+
+    it('dual scope A → B reloads with B', async () => {
+        const { net, ids, main } = await load(signedIn('u1', 'tA'), ['user', 'team'])
+        await main.loadDataSource('projects')
+        await settle(60)
+        setTeam('tB')
+        await settle(POLL)
+        expect(net.calls.map(c => c.queries)).toEqual(['["or(equal(userId,u1),equal(teamId,tA))"]', '["or(equal(userId,u1),equal(teamId,tB))"]'])
+        expect(ids()).toEqual(['tB-0', 'tB-1'])
+    }, 10000)
+})
+
+describe('edges', () => {
+    it('team → null clears the team rows, without polling reloads after', async () => {
+        const { net, ids, main } = await load(signedIn('u1', 'tA'), 'team')
+        await main.loadDataSource('projects')
+        await settle(60)
+        setTeam(null)
+        await settle(POLL)
+        expect(ids()).toEqual([])
+        await settle(POLL)
+        expect(net.calls.length).toBe(1)
+    }, 10000)
+
+    it('a failed reload after a switch settles with an error, not stuck loading or looping', async () => {
+        const { net, main } = await load(signedIn('u1', 'tA'), 'team', { fail: (t, team) => team === 'tB' })
+        await main.loadDataSource('projects')
+        await settle(60)
+        setTeam('tB')
+        await settle(POLL)
+        const state = Alpine.store('data')._projects_state
+        expect(state.loading).toBe(false)
+        expect(state.error).toBeTruthy()
+        await settle(POLL)
+        expect(net.calls.map(c => c.team)).toEqual(['tA', 'tB'])
+    }, 10000)
+
+    it('persist-hydrated rows: read at boot → one request; never read → one revalidation, once', async () => {
+        const { net, ids, main } = await load(signedIn('u1'), 'team', { sources: 2 })
+        const ds = window.ManifestDataStore
+        setTeam('t1')
+        await ds.landRows('s0', [{ $id: 'old-0', teamId: 'old' }], { mode: 'replace', ready: true, fresh: false, persistHydration: true, allowDuringInit: true })
+        await ds.landRows('s1', [{ $id: 'old-1', teamId: 'old' }], { mode: 'replace', ready: true, fresh: false, persistHydration: true, allowDuringInit: true })
+        await main.loadDataSource('s0', undefined, { reload: true })
+        await settle(POLL * 2)
+        expect(net.calls.map(c => c.table + ':' + c.team).sort()).toEqual(['s0:t1', 's1:t1'])
+        expect(ids('s0')).toEqual(['t1-0', 't1-1'])
+        expect(ids('s1')).toEqual(['t1-0', 't1-1'])
+    }, 10000)
+
+    it('a template bound to a never-read source renders the new team after a switch', async () => {
+        const { net, main } = await load(signedIn('u1', 'tA'), 'team', { sources: 6 })
+        await main.loadDataSource('s0')
+        setTeam('tB')
+        await settle(POLL)
+        const box = document.createElement('div')
+        box.innerHTML = `<span x-data x-text="($x.s5 || []).map(r => r.$id).join(',')"></span>`
+        document.body.appendChild(box)
+        Alpine.initTree(box)
+        await settle(200)
+        expect(box.querySelector('span').textContent).toBe('tB-0,tB-1')
+        expect(net.calls.filter(c => c.table === 's5').map(c => c.team)).toEqual(['tB'])
+        box.remove()
     }, 10000)
 })

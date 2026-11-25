@@ -285,7 +285,8 @@ function teamNow() {
     const team = typeof Alpine !== 'undefined' ? Alpine.store('auth')?.currentTeam : null;
     return team?.$id || team?.id || null;
 }
-function noteLoadTeam(dataSourceName, teamId = teamNow()) { loadTeams.set(dataSourceName, teamId); }
+// teamId: the team the read's own scope build used
+function noteLoadTeam(dataSourceName, teamId) { loadTeams.set(dataSourceName, teamId); }
 // Returns a close function: call it once the load has read (or given up)
 function beginTeamRead(dataSourceName) {
     teamPending.set(dataSourceName, (teamPending.get(dataSourceName) || 0) + 1);
@@ -1174,131 +1175,77 @@ function initializeStore() {
     Alpine.store('data', initialStore);
 }
 
-// Listen for team changes to reload team-scoped data sources
+// Team-scoped sources (team, teams, or either in a dual scope)
+function isTeamScope(scope) {
+    return scope === 'team' || scope === 'teams' || (Array.isArray(scope) && (scope.includes('team') || scope.includes('teams')));
+}
+
+// Each poll reloads sources read under another team than the current one
 function setupTeamChangeListener() {
     if (typeof Alpine === 'undefined') return;
 
-    let lastTeamId = null;
     let checking = false;
-    // A source's load had not picked its team at the last check: check again
-    let recheck = false;
+    let scoped = [];
+    let scopedFor = null;
+    // Sources with no recorded read (skipped, hydrated) reloaded once per team
+    const kicked = new Map();
 
     const checkTeamChange = async () => {
         if (checking) return;
         checking = true;
 
         try {
-            const authStore = Alpine.store('auth');
-            if (!authStore) {
-                checking = false;
-                return;
+            if (!Alpine.store('auth')) return;
+            const manifest = await window.ManifestDataConfig.ensureManifest();
+            if (!manifest?.data) return;
+            if (scopedFor !== manifest.data) {
+                scopedFor = manifest.data;
+                scoped = Object.getOwnPropertyNames(manifest.data)
+                    .filter(name => { const config = manifest.data[name]; return !!config && typeof config === 'object' && isTeamScope(config.scope); });
             }
 
-            const currentTeamId = teamNow();
-
-            if (currentTeamId !== lastTeamId || recheck) {
-                lastTeamId = currentTeamId;
-                recheck = false;
-
-                // Get manifest to identify team-scoped data sources
-                const manifest = await window.ManifestDataConfig.ensureManifest();
-                if (!manifest?.data) {
-                    checking = false;
-                    return;
+            const team = teamNow();
+            const raw = rawOf(Alpine.store('data')) || {};
+            let stale = null;
+            for (const name of scoped) {
+                // A load in flight records the team its build reads
+                if (teamPending.has(name)) continue;
+                if (loadTeams.has(name)) {
+                    if (loadTeams.get(name) === team) continue;
+                } else {
+                    // Never read: stays lazy; its first read builds for the current team
+                    if (raw[`_${name}_state`] === undefined && raw[name] == null) continue;
+                    if (team === null || kicked.get(name) === team) continue;
+                    kicked.set(name, team);
                 }
+                (stale || (stale = [])).push(name);
+            }
+            if (!stale) return;
 
-                // Find team-scoped data sources (both "team" and "teams" scopes, including dual scope)
-                const teamScopedDataSources = Object.getOwnPropertyNames(manifest.data).map(name => [name, manifest.data[name]])
-                    .filter(([name, config]) => {
-                        if (typeof config === 'object' && config.scope) {
-                            const scope = config.scope;
-                            // Check for "team", "teams", or array containing team/teams
-                            if (scope === 'team' || scope === 'teams') {
-                                return true;
-                            }
-                            if (Array.isArray(scope) && (scope.includes('team') || scope.includes('teams'))) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    })
-                    .map(([name]) => name)
-                    .filter(name => {
-                        if (loadTeams.has(name)) {
-                            // Read under this team already
-                            if (loadTeams.get(name) === currentTeamId) return false;
-                        } else {
-                            // Never read: stays lazy; its first read picks up the current team
-                            const raw = rawOf(Alpine.store('data')) || {};
-                            if (raw[`_${name}_state`] === undefined && raw[name] == null) {
-                                for (const key of [...dataSourceCache.keys()]) if (key.startsWith(`${name}:`)) dataSourceCache.delete(key);
-                                window.ManifestDataProxies?.clearAccessCache?.(name);
-                                return false;
-                            }
-                        }
-                        // A load in flight will read under the current team
-                        if (teamPending.has(name)) { recheck = true; return false; }
-                        return true;
+            const prefixes = stale.map(name => `${name}:`);
+            const owned = key => prefixes.some(prefix => key.startsWith(prefix));
+            for (const key of [...dataSourceCache.keys()]) if (owned(key)) dataSourceCache.delete(key);
+            for (const key of [...loadingPromises.keys()]) if (owned(key)) loadingPromises.delete(key);
+
+            const store = Alpine.store('data');
+            if (store) {
+                stale.forEach(name => { delete store[name]; });
+                touchSources(store, stale);
+            }
+            stale.forEach(name => {
+                loadTeams.delete(name);
+                window.ManifestDataProxies?.clearAccessCache?.(name);
+            });
+
+            // Reload for the current team; outranks a $query built for the old one
+            const loadDataSource = window.ManifestDataMain?.loadDataSource;
+            if (loadDataSource) {
+                stale.forEach(name => {
+                    window.ManifestDataMain?.cancelAuthRetry?.(name);
+                    Promise.resolve(loadDataSource(name, undefined, { reload: true })).catch(error => {
+                        console.error('[Manifest Data] Failed to reload data source after team change:', name, error);
                     });
-
-                if (teamScopedDataSources.length === 0) {
-                    checking = false;
-                    return;
-                }
-
-                // Clear cache for team-scoped data sources (similar to locale change)
-                teamScopedDataSources.forEach(dataSourceName => {
-                    // Clear all locale variants of this data source
-                    const keysToDelete = [];
-                    for (const key of dataSourceCache.keys()) {
-                        if (key.startsWith(`${dataSourceName}:`)) {
-                            keysToDelete.push(key);
-                        }
-                    }
-                    keysToDelete.forEach(key => dataSourceCache.delete(key));
-
-                    // Clear loading promises for this data source
-                    const promisesToDelete = [];
-                    for (const key of loadingPromises.keys()) {
-                        if (key.startsWith(`${dataSourceName}:`)) {
-                            promisesToDelete.push(key);
-                        }
-                    }
-                    promisesToDelete.forEach(key => loadingPromises.delete(key));
                 });
-
-                // Remove team-scoped data from store
-                const store = Alpine.store('data');
-                if (store) {
-                    teamScopedDataSources.forEach(dataSourceName => {
-                        delete store[dataSourceName];
-                    });
-                    touchSources(store, teamScopedDataSources);
-                }
-
-                // Clear proxy cache for these data sources
-                teamScopedDataSources.forEach(dataSourceName => {
-                    if (window.ManifestDataProxies && window.ManifestDataProxies.clearAccessCache) {
-                        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                    }
-                });
-
-                // Reload (not just cache-clear) so data is fresh for the new team
-                const loadDataSource = window.ManifestDataMain?.loadDataSource;
-                if (loadDataSource) {
-                    // Reload all team-scoped data sources with new team context
-                    Promise.all(teamScopedDataSources.map(async (dataSourceName) => {
-                        try {
-                            // This reload answers a read still waiting on an auth event
-                            window.ManifestDataMain?.cancelAuthRetry?.(dataSourceName);
-                            // Reload with new team context
-                            await loadDataSource(dataSourceName);
-                        } catch (error) {
-                            console.error('[Manifest Data] Failed to reload data source after team change:', dataSourceName, error);
-                        }
-                    })).then(() => {
-                    });
-                }
             }
         } catch (error) {
             console.error('[Manifest Data] Error handling team change:', error);
@@ -1310,9 +1257,7 @@ function setupTeamChangeListener() {
     // Wait for Alpine and auth store to be ready, then start polling
     let teamCheckIntervalId = null;
     const startPolling = () => {
-        const authStore = Alpine.store('auth');
-        if (authStore) {
-            lastTeamId = teamNow();
+        if (Alpine.store('auth')) {
             if (!teamCheckIntervalId) {
                 // Poll every 2s to limit CPU wakeups; team changes are rare
                 teamCheckIntervalId = setInterval(window.ManifestPending?.background?.(checkTeamChange) ?? checkTeamChange, 2000);
@@ -1322,11 +1267,6 @@ function setupTeamChangeListener() {
             setTimeout(window.ManifestPending?.background?.(startPolling) ?? startPolling, 100);
         }
     };
-
-    // Logout already reset scoped sources (data main); don't reload them again as a team change
-    const syncTeam = () => { lastTeamId = teamNow(); };
-    window.addEventListener('manifest:auth:logout', syncTeam);
-    window.addEventListener('manifest:auth:session-cleared', syncTeam);
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startPolling);
@@ -1739,7 +1679,6 @@ window.ManifestDataStore = {
     sourceGeneration,
     noteLoadTeam,
     beginTeamRead,
-    teamNow,
     isStaleWrite,
     resetSource,
     touchSource,

@@ -190,19 +190,13 @@ function setupAuthResetListener() {
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
 // the current team to match database team-scope behavior.
+// The result carries the team it filtered by (scopeTeam), read once with the filter.
 async function filterFilesByScope(files, scope) {
-    if (!files || !Array.isArray(files) || files.length === 0) {
-        return files;
-    }
-
-    // Get auth store
     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
-    if (!authStore) {
-        return files;
-    }
+    const hasFiles = Array.isArray(files) && files.length > 0;
 
     // Wait for auth store initialization
-    if (!authStore._initialized || authStore.isAuthenticated === undefined) {
+    if (hasFiles && authStore && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
         let attempts = 0;
         const maxAttempts = 10;
         while (attempts < maxAttempts && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
@@ -210,6 +204,16 @@ async function filterFilesByScope(files, scope) {
             attempts++;
         }
     }
+
+    // No await below: one snapshot of the team
+    const currentTeam = authStore?.currentTeam;
+    const team = currentTeam?.$id || currentTeam?.id || null;
+    const tag = (out) => Array.isArray(out) && window.ManifestDataQueries?.tagTeam ? window.ManifestDataQueries.tagTeam(out, team) : out;
+    return tag(filterFilesSnapshot(files, scope, authStore, team, hasFiles));
+}
+
+function filterFilesSnapshot(files, scope, authStore, team, hasFiles) {
+    if (!hasFiles || !authStore) return files;
 
     const isAuthenticated = authStore.isAuthenticated === true;
     if (!isAuthenticated) {
@@ -242,10 +246,8 @@ async function filterFilesByScope(files, scope) {
     }
 
     if (hasTeamScope) {
-        const currentTeam = authStore.currentTeam;
-        const teamId = currentTeam?.$id || currentTeam?.id;
-        if (teamId) {
-            expectedPermissions.push(Permission.read(Role.team(teamId)));
+        if (team) {
+            expectedPermissions.push(Permission.read(Role.team(team)));
         } else {
             // No current team - return empty array (matches database behavior)
             return [];
@@ -583,7 +585,7 @@ function pagedFilters(dataSourceName, dataSource) {
 // Fetch pages of a table: `want` rows from `after` (a row $id), `size` per request, each
 // asking for one extra row so "more" is exact. isCurrent() false stops the walk.
 // Returns { rows, total, hasMore } or null when queries can't resolve yet (auth)
-async function fetchPagedRows(dataSourceName, filters, { want, after = null, isCurrent = () => true } = {}) {
+async function fetchPagedRows(dataSourceName, filters, { want, after = null, isCurrent = () => true, onTeam } = {}) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const dataSource = manifest?.data?.[dataSourceName];
     const spec = pagingSpec(dataSource);
@@ -594,7 +596,8 @@ async function fetchPagedRows(dataSourceName, filters, { want, after = null, isC
     const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
     const base = await window.ManifestDataQueries.buildAppwriteQueries(stripPageWindow(filters), scope, scopeColumns);
     if (base === null) return null;
-    const team = window.ManifestDataStore?.teamNow?.() ?? null;
+    const team = base.scopeTeam;
+    onTeam?.(team);
     const Query = window.Appwrite.Query;
     const requireAuth = requiresIdentity(dataSource);
     const limit = Math.max(1, want || spec.size);
@@ -1160,7 +1163,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     loadIdentities.set(cacheKey, load);
     // Team listener waits for this load to pick its team instead of reloading under it
     const closeTeamRead = window.ManifestDataStore.beginTeamRead?.(dataSourceName) || (() => {});
-    const noteTeam = (...team) => { window.ManifestDataStore.noteLoadTeam?.(dataSourceName, ...team); closeTeamRead(); };
+    // team: what the scope build used (undefined: nothing read, nothing recorded)
+    const noteTeam = (team) => { if (team !== undefined) window.ManifestDataStore.noteLoadTeam?.(dataSourceName, team); closeTeamRead(); };
     const superseded = () => load.abandoned || (sourceGeneration && sourceGeneration(dataSourceName) !== generation);
 
     // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
@@ -1265,14 +1269,15 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
                     const paged = spec ? await fetchPagedRows(dataSourceName, defaults, {
                         want: pagedWant(dataSourceName, spec),
-                        isCurrent: () => !superseded() && window.ManifestDataStore.isLatestRead(dataSourceName, readToken)
+                        isCurrent: () => !superseded() && window.ManifestDataStore.isLatestRead(dataSourceName, readToken),
+                        onTeam: noteTeam
                     }) : undefined;
                     if (paged) pagedResult = { ...paged, spec, filters: defaults };
                     const queries = spec
                         ? (paged ? [] : null)
                         : await window.ManifestDataQueries.buildAppwriteQueries(defaults, scope, scopeColumns);
 
-                    if (paged) noteTeam(paged.team); else noteTeam();
+                    noteTeam(spec ? undefined : queries?.scopeTeam);
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
@@ -1349,10 +1354,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     // Filter files by scope if scope is defined (client-side filtering)
                     // This matches the database team scope behavior
-                    if (scope && files && Array.isArray(files) && files.length > 0) {
+                    if (scope) {
                         files = await filterFilesByScope(files, scope);
-                    }
-                    noteTeam();
+                        noteTeam(files.scopeTeam);
+                    } else noteTeam();
 
                     data = files;
 
