@@ -4,7 +4,8 @@
  * 2. component HTML for the first view is requested in one round, nested components in the next;
  * 3. no component file is requested more than twice (loader + utilities scan share in-flight fetches);
  * 4. the hints never delay the first view: its component requests start within two round trips
- *    of the manifest, and every component is in the DOM before Alpine starts;
+ *    of the manifest, every component lands within six round trips of it, and all are live
+ *    (initialised) by manifest:ready; page-level x-init may run before they land;
  * 5. the page still boots: data renders, every component lands, no page errors, no hint left in <head>.
  *
  * Run: node tests/e2e/boot-waterfall.e2e.mjs
@@ -22,7 +23,7 @@ const ALPINE = path.join(root, 'node_modules/alpinejs/dist/cdn.min.js')
 const INDEX = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>boot</title>
 <link rel="manifest" href="/manifest.json">
 <script src="/scripts/manifest.js" data-module-base="/scripts" data-alpine="/__alpine.js"></script>
-</head><body x-data>
+</head><body x-data x-init="window.__pageInitSees = document.querySelectorAll('.card').length">
 <x-header></x-header>
 <main><x-hero></x-hero><x-features></x-features></main>
 <x-footer></x-footer>
@@ -36,7 +37,7 @@ const FILES = {
   '/components/logo.html': '<span id="logo">logo</span>',
   '/components/hero.html': '<section>hero</section>',
   '/components/features.html': '<section><x-card></x-card><x-card></x-card></section>',
-  '/components/card.html': '<article class="card">card</article>',
+  '/components/card.html': '<article class="card" x-data x-init="window.__cardInit = (window.__cardInit || 0) + 1">card</article>',
   '/components/footer.html': '<footer id="foot">footer</footer>',
 }
 const server = await new Promise(r => { const s = http.createServer((req, res) => { const u = new URL(req.url, 'http://x'); setTimeout(() => {
@@ -51,12 +52,12 @@ for (let i = 0; i < 3; i++) {
   const ctx = await browser.createBrowserContext(); const p = await ctx.newPage()
   const errors = []; p.on('pageerror', e => errors.push(e.message))
   await p.evaluateOnNewDocument(() => { window.__t = {}; const mark = (k) => { if (!(k in window.__t)) window.__t[k] = Math.round(performance.now()) }
-    document.addEventListener('alpine:init', () => mark('alpineInit')); window.addEventListener('manifest:data-ready', () => mark('dataReady')); window.addEventListener('manifest:components-processed', () => mark('componentsProcessed')); window.addEventListener('manifest:ready', () => mark('ready'))
+    document.addEventListener('alpine:init', () => mark('alpineInit')); window.addEventListener('manifest:data-ready', () => mark('dataReady')); window.addEventListener('manifest:components-processed', () => mark('componentsProcessed')); window.addEventListener('manifest:ready', () => { mark('ready'); window.__t.cardsLiveAtReady = window.__cardInit || 0 })
     new MutationObserver(() => { if (document.getElementById('foot') && document.getElementById('logo') && document.querySelectorAll('.card').length === 2) mark('allComponentsInDom') }).observe(document, { childList: true, subtree: true }) })
   await p.goto(`http://127.0.0.1:${server.address().port}/`)
   await p.waitForFunction(() => window.__t.allComponentsInDom && window.__t.alpineInit, { timeout: 20000 }).catch(() => {})
   await new Promise(r => setTimeout(r, 800))
-  const out = await p.evaluate(() => { const res = performance.getEntriesByType('resource').map(e => ({ n: new URL(e.name).pathname, s: Math.round(e.startTime), e: Math.round(e.responseEnd), t: e.initiatorType })); const find = (k) => res.filter(r => r.n.includes(k)); return { t: window.__t, alpineStart: find('__alpine')[0]?.s, alpineFetches: find('__alpine').length, manifestEnd: find('manifest.json')[0]?.e, firstModuleStart: Math.min(...res.filter(r => r.n.startsWith('/scripts/manifest.') && r.n !== '/scripts/manifest.js').map(r => r.s)), comp: find('/components/').map(r => `${r.n.split('/').pop().replace('.html', '')}@${r.s}-${r.e}`), requests: res.length, text: document.getElementById('d')?.textContent, hintsLeft: document.querySelectorAll('link[data-mnfst-hint]').length } })
+  const out = await p.evaluate(() => { const res = performance.getEntriesByType('resource').map(e => ({ n: new URL(e.name).pathname, s: Math.round(e.startTime), e: Math.round(e.responseEnd), t: e.initiatorType })); const find = (k) => res.filter(r => r.n.includes(k)); return { t: window.__t, alpineStart: find('__alpine')[0]?.s, alpineFetches: find('__alpine').length, manifestEnd: find('manifest.json')[0]?.e, firstModuleStart: Math.min(...res.filter(r => r.n.startsWith('/scripts/manifest.') && r.n !== '/scripts/manifest.js').map(r => r.s)), comp: find('/components/').map(r => `${r.n.split('/').pop().replace('.html', '')}@${r.s}-${r.e}`), requests: res.length, text: document.getElementById('d')?.textContent, pageInitSees: window.__pageInitSees, hintsLeft: document.querySelectorAll('link[data-mnfst-hint]').length } })
   runs.push({ ...out, errors }); await ctx.close()
 }
 await browser.close(); server.close()
@@ -74,7 +75,10 @@ check(Math.max(...nested) <= Math.max(...top) + LAT * 1.5 + 60, 'nested componen
 const counts = Object.fromEntries(['header', 'hero', 'features', 'footer', 'logo', 'card'].map(n => [n, starts(n).length]))
 check(['header', 'hero', 'features', 'footer'].every(n => counts[n] === 1) && Object.values(counts).every(c => c <= 2), 'first-view component files are requested once (nested: at most twice)', counts)
 check(Math.min(...top) - r.manifestEnd < LAT * 2, 'first-view component requests start within two round trips of the manifest', { manifestEnd: r.manifestEnd, top })
-check(runs.every(x => x.t.allComponentsInDom <= x.t.alpineInit + 30), 'every component is in the DOM by the time Alpine starts', runs.map(x => [x.t.allComponentsInDom, x.t.alpineInit]))
+// Alpine no longer waits on the on-use directive modules, so it can start before components (which wait for data) land; Alpine's observer starts them
+check(runs.every(x => x.t.allComponentsInDom > 0 && x.t.allComponentsInDom - x.manifestEnd <= LAT * 6), 'every component lands within six round trips of manifest.json', runs.map(x => x.t.allComponentsInDom - x.manifestEnd))
+// Contract: page-level x-init may run before components land (it may see none of them); manifest:ready is when every first-view component is live
+check(runs.every(x => x.t.cardsLiveAtReady === 2 && x.t.allComponentsInDom <= x.t.ready), 'every first-view component is live by manifest:ready', runs.map(x => [x.t.cardsLiveAtReady, x.pageInitSees]))
 check(runs.every(x => x.hintsLeft === 0), 'no hint is left in <head> after boot', runs.map(x => x.hintsLeft))
 check(runs.every(x => x.text === 'Boot' && x.t.allComponentsInDom > 0), 'the page boots: data renders and every component lands', runs.map(x => [x.text, x.t.allComponentsInDom]))
 check(runs.every(x => x.errors.length === 0), 'no page errors', runs.flatMap(x => x.errors))

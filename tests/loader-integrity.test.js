@@ -90,6 +90,22 @@ describe('loader integrity', () => {
         expect(t.getAttribute('integrity')).toBe(MAP['manifest.tooltips.min.js'])
     })
 
+    it('on-use modules found by the boot sniff and by Manifest.loadUsed carry their hashes', async () => {
+        const core = SRC.match(/const (AVAILABLE_PLUGINS|ALWAYS_ON) = \[[^\]]*\]/g).join(' ').match(/'([\w-]+)'/g).map(s => s.slice(1, -1))
+        const full = Object.fromEntries([...core, 'charts', 'svg'].map(n => [`manifest.${n.replace(/-/g, '.')}.min.js`, sri(n)]))
+        const map = JSON.stringify({ ...MAP, ...full })
+        mapBody = map
+        boot({ integrity: 'sha384-page', 'data-plugins': '' }, stamped(map))
+        document.body.innerHTML = '<div x-chart="c"></div>'
+        await settle(40)
+        const charts = document.querySelector('script[src*="manifest.charts.min.js"]')
+        expect(charts.getAttribute('integrity')).toBe(full['manifest.charts.min.js'])
+        await window.Manifest.loadUsed('<span x-svg="s"></span>')
+        const svg = document.querySelector('script[src*="manifest.svg.min.js"]')
+        expect(svg.getAttribute('integrity')).toBe(full['manifest.svg.min.js'])
+        expect(svg.getAttribute('crossorigin')).toBe('anonymous')
+    })
+
     it('data-integrity opts in without integrity on the loader; ="off" opts out', async () => {
         boot({ 'data-integrity': '' })
         await settle()
