@@ -223,4 +223,31 @@ describe('late on-use modules', () => {
         await settle()
         expect(window.ManifestPending.labels()).not.toContain('held')
     })
+
+    it('restore skips a control its directive made read-only on start', async () => {
+        document.getElementById('host').insertAdjacentHTML('beforeend', '<div id="rw" x-data="{ v: \'model\' }"><input id="ro" x-export x-model="v"></div>')
+        await settle()
+        document.getElementById('ro').value = 'typed!'
+        Alpine.directive('export', (el) => { el.readOnly = true })
+        await settle()
+        expect(Alpine.$data(document.getElementById('rw')).v).toBe('model')
+    })
+
+    it('restore events reach handlers inside the held element once and stop at its root', async () => {
+        document.getElementById('host').insertAdjacentHTML('beforeend', `<div id="ew" x-data="{ t: '' }" @input="count('outerIn')" @change="count('outerCh')">
+            <section x-import @input="count('rootIn')" @change="count('rootCh')"><div @input="count('wrapIn')">
+                <input id="ei" x-model="t" @input="count('ctlIn')" @change="count('ctlCh')">
+                <input type="radio" name="q" id="qa" checked @input="count('qaIn')" @change="count('qa')"><input type="radio" name="q" id="qb" @change="count('qb')">
+            </div></section></div>`)
+        await settle()
+        document.getElementById('ei').value = 'v'
+        document.getElementById('qb').checked = true
+        Alpine.directive('import', () => { })
+        await settle()
+        const c = window.__c
+        expect([c.ctlIn, c.ctlCh, c.qb, c.qa, c.qaIn]).toEqual([1, 1, 1, undefined, undefined])
+        expect([c.wrapIn, c.rootIn, c.rootCh]).toEqual([2, 2, 2])
+        expect([c.outerIn, c.outerCh]).toEqual([undefined, undefined])
+        expect(Alpine.$data(document.getElementById('ew')).t).toBe('v')
+    })
 })

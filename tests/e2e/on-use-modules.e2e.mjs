@@ -368,6 +368,37 @@ for (const [p, svgs] of [['/giveup/never', 0], ['/giveup/late', 1]]) {
     await ctx.close()
 }
 
+// Restore replays stop at the held root; a control its directive made read-only is not written
+{
+    const { pg, ctx, logs } = await open('/late/innerhtml')
+    await wait(300)
+    await pg.evaluate(() => {
+        document.getElementById('host').innerHTML = `<form id="of"><div x-data="{ t: '', r: 'a', d: '2026-01-02' }"><div x-carousel id="ecar" @change="count('rootCh')"><div class="carousel-slides"><div>
+<input id="ef" type="file" @change="count('fileCh')"><input id="et" x-model="t" @input="count('tIn')">
+<input id="ra" type="radio" name="r" value="a" x-model="r" checked @change="count('raCh')"><input id="rb" type="radio" name="r" value="b" x-model="r" @change="count('rbCh')">
+</div></div></div><input id="ed" x-date x-model="d"><p id="ev" x-text="t + ':' + r + ':' + d"></p></div></form>`
+        window.__outer = { input: 0, change: 0, file: 0 }
+        const f = document.getElementById('of')
+        f.addEventListener('input', () => window.__outer.input++)
+        f.addEventListener('change', (e) => { window.__outer.change++; if (e.target.id === 'ef') window.__outer.file++ })
+    })
+    await wait(100)
+    writeFileSync(path.join(tmpdir(), 'onuse-upload.txt'), 'x')
+    await (await pg.$('#ef')).uploadFile(path.join(tmpdir(), 'onuse-upload.txt'))
+    await pg.click('#rb')
+    await pg.type('#et', 'ab')
+    await pg.type('#ed', 'typed!')
+    const live = await pg.evaluate(() => ({ ...window.__outer }))
+    check(await until(pg, () => document.getElementById('ev').textContent === 'ab:b:2026-01-02' && !window.ManifestPending.labels().includes('held')), 'restore: typed values win, the read-only date field keeps its model', await pg.evaluate(() => document.getElementById('ev').textContent))
+    await wait(300)
+    const after = await pg.evaluate(() => ({ outer: window.__outer, c: window.__c }))
+    check(JSON.stringify(after.outer) === JSON.stringify(live) && after.outer.file === 1, 'restore: listeners outside the held element see each edit once (file change once)', { live, after: after.outer })
+    check(after.c.fileCh === 1 && after.c.tIn === 1 && after.c.rbCh === 1 && !after.c.raCh, 'restore: handlers on the controls run once; the radio the pick unchecked gets none', after.c)
+    check(after.c.rootCh === 3, 'restore: a handler on the held root runs once per restored control', after.c)
+    check(quiet(logs).length === 0, 'restore: logs nothing', quiet(logs))
+    await ctx.close()
+}
+
 // 5. Magics
 {
     const { pg, ctx, logs } = await open('/late/magic')
