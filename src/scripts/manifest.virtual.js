@@ -25,13 +25,15 @@ function initializeVirtualPlugin() {
             return;
         }
         const forExpr = template.getAttribute('x-for');
-        const m = /^\s*(\S+|\(\s*\S+\s*,\s*\S+\s*\))\s+(?:in|of)\s+(.+?)\s*$/.exec(forExpr);
+        // `item in src` or `(item, index) in src`, parentheses optional (as x-for)
+        const m = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?\s+(?:in|of)\s+(.+?)\s*$/.exec(forExpr);
         if (!m) {
             console.warn('[x-virtual] could not parse x-for expression: ' + forExpr);
             return;
         }
-        const itemName = m[1].trim();
-        const sourceExpr = m[2].trim();
+        const itemName = m[1];
+        const indexName = m[2] || null;
+        const sourceExpr = m[3].trim();
         const keyExpr = template.getAttribute(':key') || template.getAttribute('x-bind:key') || `${itemName}.id`;
 
         // Strip x-for/:key so Alpine won't render the full list; keep the template as clone source.
@@ -118,11 +120,11 @@ function initializeVirtualPlugin() {
         let ready = false;                     // becomes true once container is sized
         let ro = null;
 
-        const keyFn = buildKeyFn(itemName, keyExpr);
+        const keyFn = buildKeyFn(itemName, indexName, keyExpr);
         const avgH = () => (measuredCount > 0 ? measuredSum / measuredCount : estimateH);
         const heightFor = (k) => heights.get(k) ?? avgH();
         const widthFor = (k) => widths.get(k) ?? estimateW;
-        const heightForItem = (item) => heightFn ? (Number(heightFn(item)) || estimateH) : heightFor(keyFn(item));
+        const heightForItem = (item, i) => heightFn ? (Number(heightFn(item)) || estimateH) : heightFor(keyFn(item, i));
 
         // ---- Cumulative offset model ----
 
@@ -147,7 +149,7 @@ function initializeVirtualPlugin() {
                 const item = data[i];
                 let span = spanFn ? (spanFn(item) | 0) : 1;
                 if (span < 1) span = 1; else if (span > cols) span = cols;
-                const h = heightForItem(item);
+                const h = heightForItem(item, i);
                 let bestC = 0, bestY = Infinity;
                 for (let c = 0; c + span <= cols; c++) {
                     let y = 0;
@@ -172,7 +174,7 @@ function initializeVirtualPlugin() {
             let y = 0;
             for (let i = 0; i < n; i++) {
                 cumulative[i] = y;
-                y += heightFor(keyFn(data[i]));
+                y += heightFor(keyFn(data[i], i));
             }
             cumulative[n] = y;
         }
@@ -187,7 +189,7 @@ function initializeVirtualPlugin() {
                 const start = i;
                 let lineW = 0, h = 0;
                 while (i < n) {
-                    const k = keyFn(data[i]);
+                    const k = keyFn(data[i], i);
                     const w = widthFor(k);
                     const add = lineW === 0 ? w : gx + w;
                     if (lineW > 0 && lineW + add > cw) break;   // wrap
@@ -222,7 +224,7 @@ function initializeVirtualPlugin() {
 
         // The last item is rendered: `virtual-end` fires once per data length (load the next page here)
         function notifyEnd(reached) {
-            const head = data.length ? keyFn(data[0]) : undefined;
+            const head = data.length ? keyFn(data[0], 0) : undefined;
             if (data.length < endNotifiedAt || head !== endHead) endNotifiedAt = -1;
             endHead = head;
             if (!reached || !data.length || endNotifiedAt === data.length) return;
@@ -255,14 +257,16 @@ function initializeVirtualPlugin() {
             const visible = new Set();
             const keys = [];
             const items = [];
+            const indices = [];
             for (let i = startItem; i < endItem; i++) {
                 const item = data[i];
                 if (item == null) continue;
-                const key = keyFn(item);
+                const key = keyFn(item, i);
                 if (key == null) continue;
                 visible.add(key);
                 keys.push(key);
                 items.push(item);
+                indices.push(i);
             }
             for (const [key, entry] of rendered) {
                 if (!visible.has(key)) removeRow(key, entry);
@@ -281,12 +285,12 @@ function initializeVirtualPlugin() {
                 if (cursor.parentNode !== host) cursor = botSpacer;
                 let entry = rendered.get(keys[i]);
                 if (!entry) {
-                    entry = mountRow(items[i], keys[i], cursor);
+                    entry = mountRow(items[i], keys[i], cursor, indices[i]);
                     rowNodes.add(entry.node);
                     if (entry.node.parentNode !== host) host.insertBefore(entry.node, cursor);  // root replaced itself in init
                     continue;
                 }
-                if (entry.scope[itemName] !== items[i]) entry.scope[itemName] = items[i];  // rebind by key
+                rebind(entry, items[i], indices[i]);
                 if (entry.node === cursor) cursor = nextRow(cursor.nextSibling);
                 else host.insertBefore(entry.node, cursor);
             }
@@ -321,13 +325,13 @@ function initializeVirtualPlugin() {
                 if (p.y + p.h < winTop) continue;
                 const item = data[i];
                 if (item == null) continue;
-                const key = keyFn(item);
+                const key = keyFn(item, i);
                 if (key == null) continue;
                 visible.add(key);
                 keys.push(key);
                 let entry = rendered.get(key);
-                if (!entry) entry = mountRow(item, key);
-                else if (entry.scope[itemName] !== item) entry.scope[itemName] = item;
+                if (!entry) entry = mountRow(item, key, anchor, i);
+                else rebind(entry, item, i);
                 const s = entry.node.style;
                 s.position = 'absolute';
                 s.left = p.x + 'px';
@@ -337,15 +341,21 @@ function initializeVirtualPlugin() {
             for (const [key, entry] of rendered) {
                 if (!visible.has(key)) removeRow(key, entry);
             }
-            notifyEnd(visible.has(keyFn(data[data.length - 1])));
+            notifyEnd(visible.has(keyFn(data[data.length - 1], data.length - 1)));
             scheduleMeasure(keys);
         }
 
-        function mountRow(item, key, before = anchor) {
+        // Rebind by key: same row, possibly a new item object or position
+        function rebind(entry, item, i) {
+            if (entry.scope[itemName] !== item) entry.scope[itemName] = item;
+            if (indexName && entry.scope[indexName] !== i) entry.scope[indexName] = i;
+        }
+
+        function mountRow(item, key, before = anchor, i) {
             const tpl = template.content.firstElementChild;
             const node = tpl.cloneNode(true);
             host.insertBefore(node, before);                     // connect before init
-            const scope = Alpine.reactive({ [itemName]: item });
+            const scope = Alpine.reactive(indexName ? { [itemName]: item, [indexName]: i } : { [itemName]: item });
             const removeScope = Alpine.addScopeToNode(node, scope);
             Alpine.initTree(node);
             const entry = { node, scope, removeScope };
@@ -448,7 +458,7 @@ function initializeVirtualPlugin() {
                 data = Array.isArray(value) ? value : (value ? Array.from(value) : []);
                 // Drop rendered rows whose key no longer exists.
                 const valid = new Set();
-                for (const item of data) if (item != null) valid.add(keyFn(item));
+                for (let i = 0; i < data.length; i++) if (data[i] != null) valid.add(keyFn(data[i], i));
                 for (const [key, entry] of rendered) if (!valid.has(key)) removeRow(key, entry);
                 rebuild();
                 render();
@@ -556,11 +566,11 @@ function setHeight(spacer, px) {
     if (spacer.firstElementChild && spacer.tagName === 'TR') spacer.firstElementChild.style.height = h;
 }
 
-// keyFn(item) returns the row's key. Falls back to identity on failure.
-function buildKeyFn(itemName, keyExpr) {
+// keyFn(item, index) returns the row's key. Falls back to identity on failure.
+function buildKeyFn(itemName, indexName, keyExpr) {
     try {
-        const fn = new Function(itemName, `return (${keyExpr});`);
-        return (item) => { try { return fn(item); } catch { return item; } };
+        const fn = indexName ? new Function(itemName, indexName, `return (${keyExpr});`) : new Function(itemName, `return (${keyExpr});`);
+        return (item, i) => { try { return fn(item, i); } catch { return item; } };
     } catch {
         return (item) => item;
     }
