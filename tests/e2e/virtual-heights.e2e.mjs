@@ -38,6 +38,8 @@ window.T = {
   v: () => document.getElementById('v'),
   rows: () => [...document.querySelectorAll('#v .r')],
   set(y) { window.__harness = true; this.v().scrollTop = y; window.__harness = false },
+  // True content position of the view top, from the item heights, given a first-visible record taken earlier
+  trueY(f) { let y = 0; for (const it of this.data().items) { if (it.name === f.n) return Math.round(y - f.off); y += it.h } return null },
   own(fn) { window.__harness = true; try { return fn() } finally { window.__harness = false } },
   // Probe that the offset model agrees with the DOM: a 1px scroll and back re-renders and must move the first
   // visible row by exactly 1px each way (a model offset that differs from the row's DOM position moves it more)
@@ -146,10 +148,10 @@ const churn = () => shell(`<script>window.__maps = []; const M = window.Map; win
   <script>window.heightStore = () => Math.max(0, ...window.__maps.filter((m) => m.size && [...m.keys()].every((k) => /^c\\d+-\\d+$/.test(k)) && [...m.values()].every((x) => typeof x === 'number')).map((m) => m.size))</script>`)
 
 // Varying heights 20..200 from a hash; TOP[k] is row k's true offset
-const varied = (n, overscan) => shell(`<script>window.H = (k) => 20 + ((k * 2654435761) >>> 0) % 181; window.TOP = [0]; for (let k = 0; k < ${n}; k++) TOP.push(TOP[k] + H(k))</script>
+const varied = (n, overscan, key = 'row.id') => shell(`<script>window.H = (k) => 20 + ((k * 2654435761) >>> 0) % 181; window.TOP = [0]; for (let k = 0; k < ${n}; k++) TOP.push(TOP[k] + H(k))</script>
   <div id="app" x-data="{ items: Array.from({ length: ${n} }, (_, k) => ({ id: k, name: 'n' + k, h: H(k) })) }">
   <div id="v" x-virtual="{ estimate: 40, overscan: ${overscan} }" style="height:600px;width:400px;overflow:auto">
-    <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template>
+    <template x-for="row in items" :key="${key}"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template>
   </div></div>`)
 
 const perf = (script) => shell(`<div id="app" x-data="{ items: Array.from({ length: 100000 }, (_, k) => ({ id: k, name: 'n' + k })) }">
@@ -175,7 +177,7 @@ function serve() {
                 '/masonry-fn': () => masonry(true),
                 '/gallery': () => gallery(n),
                 '/churn': () => churn(),
-                '/varied': () => varied(Number(u.searchParams.get('n')) || 3000, Number(u.searchParams.get('o')) || 3),
+                '/varied': () => varied(Number(u.searchParams.get('n')) || 3000, Number(u.searchParams.get('o')) || 3, u.searchParams.get('dup') ? 'row.id % 500' : 'row.id'),
                 '/perf': () => perf('/scripts/manifest.virtual.js'),
                 '/perf-baseline': () => perf('/baseline/scripts/manifest.virtual.js'),
             }[u.pathname]
@@ -501,23 +503,23 @@ async function main() {
                 check(same(r.a, r.b) && r.shDelta > r.grown * 2, `drift rebuild while in the middle (${anchor}): the view is unchanged (rows below were re-estimated: height +${r.shDelta} for +${r.grown} grown)`, r)
                 await done(p, `drift rebuild, ${anchor}`)
             }
-            // A prepend changes the key at index 0, so the offsets are rebuilt from scratch, as in the previous
-            // release: the prepended row and the re-estimated rows above shift the window's spacer; the model and
-            // the DOM still agree
-            {
-                const p = await open(`/varied?a=${anchor}`)
-                const r = await p.evaluate(async () => {
+            // A key change above the window (the reviewer's conditions: 20,000 rows, the middle, 40 steps down):
+            // rows before the window keep their offset steps by key, so the view holds within one row (200px max)
+            for (const [label, op, dup] of [['splice-remove, duplicate keys', (items) => items.splice(50, 1), true], ['prepend, duplicate keys', (items) => items.unshift({ id: 'u', name: 'u', h: 77 }), true], ['prepend', (items) => items.unshift({ id: 'u', name: 'u', h: 77 })], ['splice-remove', (items) => items.splice(50, 1)], ['splice-insert', (items) => items.splice(50, 0, { id: 'ins', name: 'ins', h: 77 })], ['swap', (items) => { const t = items[50]; items[50] = items[51]; items[51] = t }]]) {
+                const p = await open(`/varied?n=20000&a=${anchor}${dup ? '&dup=1' : ''}`)
+                const r = await p.evaluate(async (src) => {
                     T.set(T.v().scrollHeight / 2); await T.stable()
-                    const sp = () => parseFloat(T.v().querySelector('[data-virtual-spacer]').style.height)
-                    const a = T.first(), s0 = sp(), st0 = T.v().scrollTop
-                    T.data().items.unshift({ id: 'u', name: 'u', h: 77 }); await T.stable()
-                    return { a, b: T.first(), spacerDelta: Math.round(sp() - s0), scrollDelta: Math.round(T.v().scrollTop - st0), probe: await T.probe(), gap: T.gap() }
-                })
-                const held = r.a.n === r.b.n && r.a.off === r.b.off
-                if (anchor === 'auto') check(held && r.spacerDelta !== 0 && Math.abs(r.scrollDelta - r.spacerDelta) <= 1, 'prepend after a jump, auto: offsets rebuilt (the spacer moves), Chrome\'s anchoring follows it and keeps the row', r)
-                else check(!held && r.spacerDelta !== 0 && r.scrollDelta === 0, 'prepend after a jump, none: offsets rebuilt, the view moves by the spacer change (as in the previous release)', r)
-                check(r.probe && r.probe.down === 1 && r.probe.back === 1 && r.gap === 0, `prepend after a jump, ${anchor}: model and DOM agree, no gap`, r)
-                await done(p, `prepend, ${anchor}`)
+                    for (let i = 0; i < 40; i++) { T.set(T.v().scrollTop + 120); await frames_(2) }
+                    await T.stable()
+                    const a = T.first()
+                    ;(0, eval)('(' + src + ')')(T.data().items)
+                    await T.stable()
+                    const b = T.first()
+                    return { a, b, drift: T.trueY(b) - T.trueY(a), probe: await T.probe(), gap: T.gap() }
+                }, op.toString())
+                check(Math.abs(r.drift) <= 200, `${label} above the window (${anchor}): the view holds within one row (drift ${r.drift}px)`, r)
+                check(r.probe && r.probe.down === 1 && r.probe.back === 1 && r.gap === 0, `${label} above the window (${anchor}): model and DOM agree, no gap`, r)
+                await done(p, `${label} above the window, ${anchor}`)
             }
             // Random operations: after each, the model agrees with the DOM (1px probe), no gap, the scroll height is
             // spacers plus rows, and after a full walk the total equals the sum of the true heights
@@ -525,29 +527,35 @@ async function main() {
                 const p = await open(`/varied?a=${anchor}`)
                 let seed = 11
                 const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
-                const bad = []
+                const bad = [], drifts = []
                 for (let step = 0; step < 40; step++) {
                     const r = rnd(), a = rnd(), b = rnd()
-                    const op = await p.evaluate(async (r, a, b, step) => {
+                    const { op, away, before } = await p.evaluate(async (r, a, b, step) => {
                         const v = T.v(), items = T.data().items
+                        const before = T.first()
+                        const names = T.rows().map((x) => x.dataset.n)
+                        const lo = items.findIndex((x) => x.name === names[0]), hi = items.findIndex((x) => x.name === names[names.length - 1])
                         let op
                         if (r < 0.2) { op = 'jump'; T.set(v.scrollHeight * a) }
                         else if (r < 0.3) { op = 'scroll'; for (let i = 0; i < 10; i++) { T.set(v.scrollTop + (a < 0.5 ? -90 : 90)); await frames_(1) } }
                         else if (r < 0.45) { op = 'resizeRow'; const rows = T.rows(); const n = rows[Math.floor(a * rows.length)].dataset.n; const it = items.find((x) => x.name === n); if (it) it.h = Math.round(20 + b * 250) }
                         else if (r < 0.55) { op = 'push'; for (let i = 0; i < 10; i++) items.push({ id: 's' + step + '-' + i, name: 's' + step + '-' + i, h: 20 + i * 17 }) }
                         else if (r < 0.62) { op = 'unshift'; items.unshift({ id: 'u' + step, name: 'u' + step, h: 66 }) }
-                        else if (r < 0.7) { op = 'splice'; items.splice(Math.floor(a * items.length), 4) }
+                        else if (r < 0.7) { op = 'splice'; const at = a < 0.5 ? Math.floor(a * 2 * Math.max(0, lo - 4)) : hi + 1 + Math.floor((a - 0.5) * 2 * Math.max(0, items.length - hi - 5)); items.splice(at, 1) }   // one row: without anchoring the view may move by that row's height
                         else if (r < 0.77) { op = 'edit'; items[Math.floor(a * items.length)].name += '' }
                         else if (r < 0.88) { op = 'width'; v.style.width = Math.round(260 + a * 300) + 'px' }
                         else { op = 'height'; v.style.height = Math.round(400 + a * 300) + 'px' }
                         await T.stable(6000, 20)
-                        return op
+                        return { op, before, away: ['push', 'unshift', 'splice', 'edit', 'width', 'height'].includes(op) }
                     }, r, a, b, step)
+                    // Operations away from the window keep the view within one row (200px). Without anchoring, rows that
+                    // then mount above the view do so at their real height in place of an estimate: 400px allowed there
+                    if (away && before) { const d = await p.evaluate((f) => { const g = T.first(); return T.trueY(g) - T.trueY(f) }, before); drifts.push(d); if (Math.abs(d) > (anchor === 'none' ? 400 : 200)) bad.push({ step, op, drift: d }) }
                     const c = await p.evaluate(async () => ({ probe: await T.probe(), gap: T.gap(), sh: T.v().scrollHeight, sum: Math.round(T.total()) }))
                     if (!c.probe || c.probe.down !== 1 || c.probe.back !== 1 || c.gap !== 0 || Math.abs(c.sh - c.sum) > 1) bad.push({ step, op, ...c })
                 }
                 const fin = await p.evaluate(async () => { const r = await T.through(); return { ...r, truth: T.data().items.reduce((s, x) => s + x.h, 0) } })
-                check(bad.length === 0, `random operations (${anchor}): after each, model and DOM agree, no gap, scroll height = spacers + rows`, bad.slice(0, 4))
+                check(bad.length === 0, `random operations (${anchor}): after each, model and DOM agree, no gap, scroll height = spacers + rows; operations away from the window move the view at most ${anchor === 'none' ? 400 : 200}px (${drifts.length} checked, largest ${Math.max(0, ...drifts.map(Math.abs))}px)`, bad.slice(0, 4))
                 check(fin.total === fin.truth && fin.worst === 0, `random operations (${anchor}): after a full walk the total equals the true total`, fin)
                 await done(p, `random operations, ${anchor}`)
             }

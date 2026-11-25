@@ -231,7 +231,8 @@ function initializeVirtualPlugin() {
             sortedTop = Array.from({ length: n }, (_, i) => i).sort((a, b) => pos[a].y - pos[b].y);
         }
 
-        // Rows before the window whose key is unchanged keep their offset step: only the window down is re-estimated
+        // Rows that were before the window keep their offset step by key (an unchanged prefix is copied as is);
+        // only rows without one are estimated from the current average
         function rebuildSingle() {
             const n = raw.length;
             const prev = cumulative, prevKeys = builtKeys;
@@ -239,6 +240,25 @@ function initializeVirtualPlugin() {
             const limit = Math.min(lastStart, n, prevKeys.length, prev.length - 1);
             let p = 0;
             for (; p < limit; p++) if ((keys[p] = keyFn(raw[p], p)) !== prevKeys[p]) break;
+            const oldLimit = Math.min(lastStart, prevKeys.length, prev.length - 1);
+            let steps = null;
+            for (let i = p; i < oldLimit; i++) {
+                const k = prevKeys[i];
+                if (k == null) continue;
+                if (!steps) steps = new Map();
+                const step = prev[i + 1] - prev[i], had = steps.get(k);
+                if (had === undefined) steps.set(k, step);
+                else if (typeof had === 'number') steps.set(k, [had, step]);   // a repeated key: steps in order of occurrence
+                else had.push(step);
+            }
+            let seen = null;
+            const carried = (k) => {
+                const v = steps ? steps.get(k) : undefined;
+                if (!Array.isArray(v)) return v;
+                const j = (seen || (seen = new Map())).get(k) || 0;
+                seen.set(k, j + 1);
+                return v[j];
+            };
             cumulative = new Float64Array(n + 1);
             if (p) cumulative.set(prev.subarray(0, p + 1));
             let y = p ? prev[p] : 0;
@@ -246,7 +266,7 @@ function initializeVirtualPlugin() {
                 cumulative[i] = y;
                 const k = i === p && keys[i] !== undefined ? keys[i] : keyFn(raw[i], i);
                 keys[i] = k;
-                y += heightFor(k);
+                y += carried(k) ?? heights.get(k) ?? avgH();   // a carried step is the row's measured height if it had one
             }
             cumulative[n] = y;
             builtKeys = keys;
