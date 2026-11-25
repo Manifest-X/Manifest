@@ -348,7 +348,8 @@ async function main() {
             const st = await p.evaluate((k) => ({ over: !!(window.__tailwindCache && window.__tailwindCache.over), index: JSON.parse(localStorage.getItem(k) || 'null'), entries: Object.keys(localStorage).filter((x) => x.startsWith(k + ':')).length }), KEY)
             check('over cap: recording gave up and the block set is marked', st.over && st.index && Object.keys(st.index.over).length === 1 && st.entries === 0, JSON.stringify({ over: st.over, marked: st.index && Object.keys(st.index.over), entries: st.entries }))
             const cdp = await p.createCDPSession(); await cdp.send('Performance.enable')
-            const cost = async (path) => { const t0 = (await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration').value; await visit(p, path, 2500); return ((await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration').value - t0) * 1000 }
+            // TaskDuration restarts with each document: read it once the visit has settled
+            const cost = async (path) => { await visit(p, path, 2500); return (await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration').value * 1000 }
             const a = [], b = []
             for (let i = 0; i < 5; i++) { a.push(await cost('/over')); b.push(await cost('/over-bare')) }
             const med = (x) => x.sort((m, n) => m - n)[2]
