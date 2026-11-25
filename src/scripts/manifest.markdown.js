@@ -445,6 +445,11 @@ function parseLanguageString(languageString) {
     return attributes;
 }
 
+// On-use modules the rendered HTML needs (fenced code, charts…) load before it lands
+async function loadModulesFor(html) {
+    try { if (window.Manifest && typeof window.Manifest.loadUsed === 'function') await window.Manifest.loadUsed(html); } catch (_) { }
+}
+
 // Preload marked.js as soon as script loads
 loadMarkedJS().catch(() => {
     // Silently ignore errors during preload
@@ -568,6 +573,7 @@ async function initializeMarkdownPlugin() {
                     html = applyInlineCodeAttributes(html);
 
                     html = await maybeSanitizeMarkdownHtml(html, safe);
+                    await loadModulesFor(html);
 
                     if (element.innerHTML !== html && html.trim() !== '') {
                         const temp = document.createElement('div');
@@ -785,6 +791,7 @@ async function initializeMarkdownPlugin() {
                     html = applyInlineCodeAttributes(html);
 
                     html = await maybeSanitizeMarkdownHtml(html, safe);
+                    await loadModulesFor(html);
 
                     if (el.innerHTML !== html) {
                         // Create temporary container
@@ -881,6 +888,7 @@ async function initializeMarkdownPlugin() {
 
                         // Apply opt-in DOMPurify sanitization for x-markdown.safe
                         html = await maybeSanitizeMarkdownHtml(html, safe);
+                        await loadModulesFor(html);
 
                         // Create temporary container
                         const temp = document.createElement('div');
