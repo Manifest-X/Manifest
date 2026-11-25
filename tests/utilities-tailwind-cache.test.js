@@ -41,6 +41,8 @@ async function boot({ bodyHtml = '<div class="p-4 card"></div>', headHtml = '', 
         document.head.appendChild(style)
         state.record = record
         state.style = style
+        state.id = window.__tailwindCacheId
+        delete window.__tailwindCacheId
     }
     window.__tailwindCache = state
     const ready = new Promise((resolve) => window.addEventListener('manifest:utilities-ready', resolve, { once: true }))
@@ -74,6 +76,14 @@ describe('Tailwind cache: replay mode', () => {
         await wait(30)
         expect(loadTailwind).not.toHaveBeenCalled()
         expect(document.querySelector('style[data-tailwind-cache]')).not.toBeNull()
+    })
+
+    it('moves a replayed entry to the front of the LRU', async () => {
+        localStorage.setItem(KEY, JSON.stringify({ ids: ['other', 'mine'], sizes: { other: 1, mine: 1 } }))
+        window.__tailwindCacheId = 'mine'
+        const r = rec()
+        await boot({ record: r })
+        expect(JSON.parse(localStorage.getItem(KEY)).ids).toEqual(['mine', 'other'])
     })
 
     it('ignores framework state classes on <html>', async () => {
@@ -245,7 +255,7 @@ describe('Tailwind cache: engine mode', () => {
         expect(entries().length).toBe(1)
         window.__tailwindCache.stop()
         await boot()
-        engineArrives('/*! tailwindcss */' + 'x'.repeat(130 * 1024))
+        engineArrives('/*! tailwindcss */' + 'x'.repeat(260 * 1024))
         await wait(1400)
         expect(entries().length).toBe(0)
     })

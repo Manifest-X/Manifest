@@ -104,6 +104,15 @@ describe('loader: Tailwind engine output cache', () => {
         expect(kids.indexOf(cachedStyle())).toBeGreaterThan(kids.indexOf(late))
     })
 
+    it('is not moved for a preload hint added after it', async () => {
+        store()
+        boot()
+        const before = cachedStyle().nextElementSibling
+        document.head.appendChild(Object.assign(document.createElement('link'), { rel: 'preload', href: '/x.js' }))
+        await settle()
+        expect(cachedStyle().nextElementSibling).toBe(before)
+    })
+
     it('compares blocks as an ordered sequence', async () => {
         store({ blocks: [A, B] })
         boot({ headExtra: block(B) + block(A) })

@@ -1193,7 +1193,8 @@
 			return;
 		}
 		let next = state.style.nextElementSibling;
-		while (next && !(/^(style|link)$/.test(next.localName) && next.id !== 'manifest-styles' && next.getAttribute('type') !== 'text/tailwindcss')) next = next.nextElementSibling;
+		const isCss = (el) => (el.localName === 'style' && el.id !== 'manifest-styles' && el.getAttribute('type') !== 'text/tailwindcss') || (el.localName === 'link' && /\bstylesheet\b/i.test(el.rel));
+		while (next && !isCss(next)) next = next.nextElementSibling;
 		if (next) placeTailwindCache(state.style);
 	}
 

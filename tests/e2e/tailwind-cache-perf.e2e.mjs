@@ -4,7 +4,7 @@
  * Per load: main-thread busy (top-level tasks, navigation to settle), style recalc, time to the
  * Tailwind styles applying, CLS. Also an "inline" floor: no engine, its CSS inlined in <head>.
  *
- * Run: npm run build && node tests/e2e/tailwind-cache-perf.e2e.mjs --master <lib dir> [--runs 9] [--rates 1,6] [--page default|app|sized:<KB>]
+ * Run: npm run build && node tests/e2e/tailwind-cache-perf.e2e.mjs --master <lib dir> [--branch <lib dir>] [--runs 9] [--rates 1,6] [--page default|app|sized:<KB>]
  */
 import puppeteer from 'puppeteer'
 import path from 'path'
@@ -15,6 +15,7 @@ import { serve, pageHtml, sitePage, twClasses } from './fixtures/tailwind-cache-
 const args = process.argv.slice(2)
 const arg = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d }
 const MASTER = arg('--master')
+const BRANCH = arg('--branch')
 const RUNS = Number(arg('--runs', 9))
 const RATES = arg('--rates', '1,6').split(',').map(Number)
 const PAGE = arg('--page', 'default')
@@ -59,7 +60,7 @@ async function main() {
     const bodyFor = () => PAGE === 'app' ? sitePage({ body: APP_BODY }) : PAGE.startsWith('sized:') ? pageHtml({ classes: sizedClasses(Number(PAGE.split(':')[1])) }) : pageHtml()
     const html = bodyFor()
     const pages = { '/': html, '/inline': () => html.replace(' data-tailwind', '').replace('</head>', `<style>${inlineCss}</style></head>`) }
-    const servers = { master: await serve({ libDir: path.resolve(MASTER), pages }), branch: await serve({ pages }) }
+    const servers = { master: await serve({ libDir: path.resolve(MASTER), pages }), branch: await serve(BRANCH ? { libDir: path.resolve(BRANCH), pages } : { pages }) }
     const browser = await puppeteer.launch({ headless: 'shell', args: ['--no-sandbox', `--host-resolver-rules=MAP ${HOST} 127.0.0.1`] })
     const url = (k, p = '/') => `http://${HOST}:${servers[k].port}${p}`
     const interact = PAGE === 'app' ? async (p) => {
