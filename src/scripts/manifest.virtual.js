@@ -11,15 +11,20 @@
 
 (function () {
 
+// `item in src` or `(item, index) in src`, parentheses optional (as x-for)
+const FOR_RE = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?\s+(?:in|of)\s+(.+?)\s*$/;
+
 function hasVirtual(el) {
-    for (const attr of el.attributes) if (attr.name === 'x-virtual' || attr.name.startsWith('x-virtual.')) return true;
+    if (el.hasAttribute('x-virtual')) return true;
+    for (const attr of el.attributes) if (attr.name.startsWith('x-virtual.')) return true;
     return false;
 }
 
-// x-for and :key move to data attributes Alpine ignores
+// x-for and :key move to data attributes Alpine ignores. Only a form x-virtual can run:
+// any other stays on the template for Alpine's own x-for
 function stashFor(template) {
     const forExpr = template.getAttribute('x-for');
-    if (forExpr === null) return;
+    if (forExpr === null || !FOR_RE.test(forExpr)) return;
     template.setAttribute('data-virtual-for', forExpr);
     const key = template.getAttribute(':key') ?? template.getAttribute('x-bind:key');
     if (key !== null) template.setAttribute('data-virtual-key', key);
@@ -30,24 +35,22 @@ function stashFor(template) {
 
 function initializeVirtualPlugin() {
 
-    // Alpine queues every directive in a tree before running any: take x-for off the template
-    // as soon as its container is visited, or the whole list renders once before virtualizing
+    // Alpine queues a tree's directives before running any: x-for comes off as the container is visited
     if (typeof Alpine.interceptInit === 'function') {
         Alpine.interceptInit((el) => {
-            if (el.nodeType !== 1 || !hasVirtual(el)) return;
+            if (el.nodeType !== 1 || !hasVirtual(el) || el.hasAttribute('x-ignore')) return;
             const template = el.querySelector('template[x-for]');
             if (template) stashFor(template);
         });
     }
 
-    // Reactivity engines that instrument array iteration track "any index or length change"
-    // with one dependency; older ones need an index read per item
+    // One dependency for "any index or length change" where array iteration is instrumented; else a read per index
     const cheapIterate = Alpine.reactive([]).some !== Array.prototype.some;
     const anyItem = () => true;
     function trackList(list) {
-        if (!list || typeof list !== 'object') return;
+        if (!Array.isArray(list)) return;   // an iterator would be consumed
         void list.length;
-        if (cheapIterate) { if (typeof list.some === 'function') list.some(anyItem); return; }
+        if (cheapIterate) { list.some(anyItem); return; }
         for (let i = 0; i < list.length; i++) void list[i];
     }
 
@@ -56,17 +59,17 @@ function initializeVirtualPlugin() {
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
         const template = el.querySelector('template[x-for], template[data-virtual-for]') || el.querySelector(':scope template');
         if (template) stashFor(template);
-        if (!template || !template.getAttribute('data-virtual-for')) {
-            // Quiet on re-init of an already-virtualized container (x-for stripped first pass).
+        const forExpr = template && (template.getAttribute('data-virtual-for') ?? template.getAttribute('x-for'));
+        if (!forExpr) {
+            // Quiet on re-init of an already-virtualized container
             if (!el.querySelector('[data-virtual-spacer]')) {
                 console.warn('[x-virtual] expects a descendant <template> with x-for, e.g. <template x-for="row in $x.items" :key="row.id">…');
             }
             return;
         }
-        const forExpr = template.getAttribute('data-virtual-for');
-        // `item in src` or `(item, index) in src`, parentheses optional (as x-for)
-        const m = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?\s+(?:in|of)\s+(.+?)\s*$/.exec(forExpr);
+        const m = FOR_RE.exec(forExpr);
         if (!m) {
+            // x-for is still on the template: Alpine renders the list unvirtualized
             console.warn('[x-virtual] could not parse x-for expression: ' + forExpr);
             return;
         }
@@ -184,8 +187,9 @@ function initializeVirtualPlugin() {
             const n = data.length;
             pos = new Array(n);
             maxItemH = 0;
+            const authored = !!(spanFn || heightFn);   // author functions read live items: a changed field repacks
             for (let i = 0; i < n; i++) {
-                const item = raw[i];
+                const item = authored ? data[i] : raw[i];
                 let span = spanFn ? (spanFn(item) | 0) : 1;
                 if (span < 1) span = 1; else if (span > cols) span = cols;
                 const h = heightForItem(item, i);
@@ -275,7 +279,7 @@ function initializeVirtualPlugin() {
             if (isMasonry) return renderMasonry();
             if (!data.length) { clearRows(); setHeight(topSpacer, 0); setHeight(botSpacer, 0); return; }
             const vh = scrollEl.clientHeight;
-            if (!vh || !resolveKind()) return;                   // defer until sized
+            if (!vh || !resolveKind()) return false;             // defer until sized
             ready = true;
             const total = isGallery ? lines.length : data.length;   // after resolveKind (may enable gallery)
 
@@ -343,7 +347,7 @@ function initializeVirtualPlugin() {
         function renderMasonry() {
             if (!data.length) { clearRows(); sizer.style.height = '0px'; return; }
             const vh = scrollEl.clientHeight;
-            if (!vh) return;                                     // defer until sized
+            if (!vh) return false;                               // defer until sized
             ready = true;
             sizer.style.height = totalHeight + 'px';
 
@@ -407,6 +411,13 @@ function initializeVirtualPlugin() {
             Alpine.destroyTree && Alpine.destroyTree(entry.node);
             entry.node.remove();
             rendered.delete(key);
+        }
+
+        // Rows whose item left the list (only needed while render() is deferred)
+        function dropStaleRows() {
+            const valid = new Set();
+            for (let i = 0; i < raw.length; i++) if (raw[i] != null) valid.add(keyFn(raw[i], i));
+            for (const [key, entry] of rendered) if (!valid.has(key)) removeRow(key, entry);
         }
 
         function clearRows() {
@@ -498,7 +509,8 @@ function initializeVirtualPlugin() {
                 data = Array.isArray(value) ? value : (value ? Array.from(value) : []);
                 raw = Alpine.raw ? Alpine.raw(data) : data;
                 rebuild();
-                render();   // drops rendered rows that left the window or the list
+                // render() drops rows that left the window or the list; unsized (hidden), it cannot
+                if (render() === false && rendered.size) dropStaleRows();
             });
         });
 
@@ -605,11 +617,11 @@ function setHeight(spacer, px) {
 
 // keyFn(item, index) returns the row's key. Falls back to identity on failure.
 function buildKeyFn(itemName, indexName, keyExpr) {
-    // An item used as its own key is the same key wrapped or unwrapped
+    // Keys read the unwrapped item (a derived list holds proxies), and an item used as its own key is one key either way
     const plain = (key) => (key && typeof key === 'object' && window.Alpine && Alpine.raw ? Alpine.raw(key) : key);
     try {
         const fn = indexName ? new Function(itemName, indexName, `return (${keyExpr});`) : new Function(itemName, `return (${keyExpr});`);
-        return (item, i) => { try { return plain(fn(item, i)); } catch { return plain(item); } };
+        return (item, i) => { try { return plain(fn(plain(item), i)); } catch { return plain(item); } };
     } catch {
         return (item) => plain(item);
     }

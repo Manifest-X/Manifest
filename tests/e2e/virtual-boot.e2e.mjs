@@ -4,7 +4,10 @@
  *    x-virtual runs unless it is taken off as the container is visited);
  * 2. rows follow the source: push, removal, in-place sort/reverse, a replaced array, a filter,
  *    for both `row in items` and `(row, i) in items`;
- * 3. a source change does not read every item through the reactive proxy.
+ * 3. a source change does not read every item through the reactive proxy;
+ * 4. an x-for form x-virtual cannot run (destructuring) still renders through Alpine's own x-for;
+ * 5. an iterator source renders; rows whose items left the list go even while the container is hidden;
+ *    a masonry `height` function re-packs when an item's field changes.
  *
  * Run: node tests/e2e/virtual-boot.e2e.mjs      (VIRTUAL_SRC=<dir with scripts/> to A/B)
  */
@@ -39,6 +42,25 @@ new MutationObserver((records) => {
 <script>document.addEventListener('alpine:initialized', () => { window.__atInit = document.getElementsByClassName('r').length })</script>
 </body></html>`
 
+const EXTRA = {
+    '/destructure': `<!doctype html><html><head><script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ items: Array.from({ length: 50 }, (_, k) => ({ id: k, name: 'n' + k })) }">
+  <div id="v" x-virtual style="height:300px;overflow:auto"><template x-for="({ id, name }, i) in items" :key="id"><div class="r" x-text="name + '#' + i"></div></template></div>
+</div></body></html>`,
+    '/iterator': `<!doctype html><html><head><script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ n: 40, *gen() { for (let k = 0; k < this.n; k++) yield { id: k, name: 'g' + k } } }">
+  <div id="v" x-virtual="{ estimate: 24 }" style="height:300px;overflow:auto"><template x-for="row in gen()" :key="row.id"><div class="r" style="height:24px" x-text="row.name"></div></template></div>
+</div></body></html>`,
+    '/hidden': `<!doctype html><html><head><script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ show: true, items: Array.from({ length: 2000 }, (_, k) => ({ id: k, name: 'n' + k })) }">
+  <div id="v" x-show="show" x-virtual="{ estimate: 24 }" style="height:300px;overflow:auto"><template x-for="row in items" :key="row.id"><div class="r" style="height:24px" x-text="row.name"></div></template></div>
+</div></body></html>`,
+    '/masonry': `<!doctype html><html><head><script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ items: Array.from({ length: 60 }, (_, k) => ({ id: k, name: 'n' + k, h: 40 })) }">
+  <div id="v" x-virtual="{ mode: 'masonry', columns: 3, gap: 0, height: it => it.h }" style="height:300px;width:300px;overflow:auto;position:relative"><template x-for="row in items" :key="row.id"><div class="r" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template></div>
+</div></body></html>`,
+}
+
 function serve() {
     return new Promise((resolve) => {
         const server = http.createServer((req, res) => {
@@ -46,6 +68,7 @@ function serve() {
             if (u.pathname === '/__alpine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(ALPINE)) }
             if (u.pathname === '/scripts/manifest.virtual.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(readFileSync(path.join(SRC, 'scripts/manifest.virtual.js'))) }
             res.writeHead(200, { 'content-type': 'text/html' })
+            if (EXTRA[u.pathname]) return res.end(EXTRA[u.pathname])
             res.end(u.pathname === '/tuple' ? page('(row, i) in items', 'row.id') : page('row in items', 'row.id'))
         })
         server.listen(0, '127.0.0.1', () => resolve(server))
@@ -134,6 +157,75 @@ async function main() {
             return count
         })
         check(reads < 200, 'a source change reads only the window through the proxy', { proxyIndexReads: reads, items: N })
+        // Positive control: the counter does see proxy index reads
+        const control = await p.evaluate(() => {
+            const data = Alpine.$data(document.getElementById('app'))
+            const raw = Alpine.raw(data.items)
+            let count = 0
+            const original = Reflect.get
+            Reflect.get = function (target, key) { if (target === raw && typeof key === 'string' && String(+key) === key) count++; return original.apply(this, arguments) }
+            for (let i = 0; i < 50; i++) void data.items[i]
+            Reflect.get = original
+            return count
+        })
+        check(control === 50, 'the proxy-read counter counts (control)', control)
+        await p.close()
+
+        // 4. A form x-virtual cannot run falls back to Alpine's own x-for
+        {
+            const q = await browser.newPage()
+            const warnings = []
+            q.on('console', (m) => { if (m.type() === 'warn' || m.type() === 'warning') warnings.push(m.text()) })
+            await q.goto(base + '/destructure', { waitUntil: 'load' })
+            await wait(500)
+            const rows = await texts(q)
+            check(rows.length === 50 && rows[0] === 'n0#0' && rows[49] === 'n49#49', '/destructure: a destructured x-for still renders (unvirtualized)', { rows: rows.length, first: rows[0] })
+            check(warnings.some((w) => w.includes('could not parse')), '/destructure: and says why', warnings)
+            check(await q.evaluate(() => !document.querySelector('template[data-virtual-for]')), '/destructure: the template keeps its x-for')
+            await q.close()
+        }
+
+        // 5a. Iterator source
+        {
+            const q = await browser.newPage()
+            await q.goto(base + '/iterator', { waitUntil: 'load' })
+            await wait(500)
+            const rows = await texts(q)
+            check(rows.length > 5 && rows[0] === 'g0', '/iterator: a generator source renders', rows.slice(0, 3))
+            await q.close()
+        }
+
+        // 5b. Hidden container: rows whose items left the list are removed
+        {
+            const q = await browser.newPage()
+            await q.goto(base + '/hidden', { waitUntil: 'load' })
+            await wait(500)
+            const before = (await texts(q)).length
+            await q.evaluate(() => { const d = Alpine.$data(document.getElementById('app')); d.show = false })
+            await wait(200)
+            await q.evaluate(() => { const d = Alpine.$data(document.getElementById('app')); d.items = d.items.slice(500) })
+            await wait(300)
+            const hidden = await texts(q)
+            check(before > 5 && hidden.length === 0, '/hidden: no row is left bound to a removed item', { before, whileHidden: hidden.length })
+            await q.evaluate(() => { Alpine.$data(document.getElementById('app')).show = true })
+            await wait(400)
+            check((await texts(q))[0] === 'n500', '/hidden: shown again, the window renders from the new list', (await texts(q)).slice(0, 2))
+            await q.close()
+        }
+
+        // 5c. Masonry with an author height function re-packs on a field change
+        {
+            const q = await browser.newPage()
+            await q.goto(base + '/masonry', { waitUntil: 'load' })
+            await wait(500)
+            const top = (name) => q.evaluate((name) => { const n = [...document.querySelectorAll('#v .r')].find((x) => x.textContent === name); return n ? n.style.top + '/' + n.style.left : null }, name)
+            const start = await top('n3')
+            await q.evaluate(() => { Alpine.$data(document.getElementById('app')).items[0].h = 300 })
+            await wait(400)
+            const after = await top('n3')
+            check(start === '40px/0px' && after !== start, '/masonry: a changed item height re-packs the layout', { start, after })
+            await q.close()
+        }
     } finally {
         await browser.close()
         server.close()
