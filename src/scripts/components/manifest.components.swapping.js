@@ -141,7 +141,7 @@
             }
             const decide = gate.gate(eventPath);
             // One round of fetches for the whole pass, not one per placeholder
-            window.ManifestComponentsLoader?.prefetchPlaceholders?.(placeholders, gate.gate(eventPath));
+            window.ManifestComponentsLoader?.prefetchPlaceholders?.(placeholders, decide);
             // Second pass: swap in matches. Routing is read per placeholder: it may arrive mid-pass.
             for (const placeholder of placeholders) {
                 const name = placeholder.tagName.toLowerCase().replace('x-', '');

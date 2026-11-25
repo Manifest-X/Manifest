@@ -3,7 +3,9 @@
  * 1. Alpine and the unconditional modules are requested while manifest.json is in flight;
  * 2. component HTML for the first view is requested in one round, nested components in the next;
  * 3. no component file is requested more than twice (loader + utilities scan share in-flight fetches);
- * 4. the page still boots: data renders, every component lands, no page errors.
+ * 4. the hints never delay the first view: its component requests start within two round trips
+ *    of the manifest, and every component is in the DOM before Alpine starts;
+ * 5. the page still boots: data renders, every component lands, no page errors, no hint left in <head>.
  *
  * Run: node tests/e2e/boot-waterfall.e2e.mjs
  */
@@ -54,7 +56,7 @@ for (let i = 0; i < 3; i++) {
   await p.goto(`http://127.0.0.1:${server.address().port}/`)
   await p.waitForFunction(() => window.__t.allComponentsInDom && window.__t.alpineInit, { timeout: 20000 }).catch(() => {})
   await new Promise(r => setTimeout(r, 800))
-  const out = await p.evaluate(() => { const res = performance.getEntriesByType('resource').map(e => ({ n: new URL(e.name).pathname, s: Math.round(e.startTime), e: Math.round(e.responseEnd), t: e.initiatorType })); const find = (k) => res.filter(r => r.n.includes(k)); return { t: window.__t, alpineStart: find('__alpine')[0]?.s, alpineFetches: find('__alpine').length, manifestEnd: find('manifest.json')[0]?.e, firstModuleStart: Math.min(...res.filter(r => r.n.startsWith('/scripts/manifest.') && r.n !== '/scripts/manifest.js').map(r => r.s)), comp: find('/components/').map(r => `${r.n.split('/').pop().replace('.html', '')}@${r.s}-${r.e}`), requests: res.length, text: document.getElementById('d')?.textContent } })
+  const out = await p.evaluate(() => { const res = performance.getEntriesByType('resource').map(e => ({ n: new URL(e.name).pathname, s: Math.round(e.startTime), e: Math.round(e.responseEnd), t: e.initiatorType })); const find = (k) => res.filter(r => r.n.includes(k)); return { t: window.__t, alpineStart: find('__alpine')[0]?.s, alpineFetches: find('__alpine').length, manifestEnd: find('manifest.json')[0]?.e, firstModuleStart: Math.min(...res.filter(r => r.n.startsWith('/scripts/manifest.') && r.n !== '/scripts/manifest.js').map(r => r.s)), comp: find('/components/').map(r => `${r.n.split('/').pop().replace('.html', '')}@${r.s}-${r.e}`), requests: res.length, text: document.getElementById('d')?.textContent, hintsLeft: document.querySelectorAll('link[data-mnfst-hint]').length } })
   runs.push({ ...out, errors }); await ctx.close()
 }
 await browser.close(); server.close()
@@ -70,7 +72,10 @@ check(Math.max(...top) - Math.min(...top) < LAT / 2, 'first-view components are 
 const nested = ['logo', 'card'].map(n => Math.min(...starts(n)))
 check(Math.max(...nested) <= Math.max(...top) + LAT * 1.5 + 60, 'nested components follow within one round', { top, nested })
 const counts = Object.fromEntries(['header', 'hero', 'features', 'footer', 'logo', 'card'].map(n => [n, starts(n).length]))
-check(Object.values(counts).every(c => c <= 2), 'no component file is requested more than twice', counts)
+check(['header', 'hero', 'features', 'footer'].every(n => counts[n] === 1) && Object.values(counts).every(c => c <= 2), 'first-view component files are requested once (nested: at most twice)', counts)
+check(Math.min(...top) - r.manifestEnd < LAT * 2, 'first-view component requests start within two round trips of the manifest', { manifestEnd: r.manifestEnd, top })
+check(runs.every(x => x.t.allComponentsInDom <= x.t.alpineInit + 30), 'every component is in the DOM by the time Alpine starts', runs.map(x => [x.t.allComponentsInDom, x.t.alpineInit]))
+check(runs.every(x => x.hintsLeft === 0), 'no hint is left in <head> after boot', runs.map(x => x.hintsLeft))
 check(runs.every(x => x.text === 'Boot' && x.t.allComponentsInDom > 0), 'the page boots: data renders and every component lands', runs.map(x => [x.text, x.t.allComponentsInDom]))
 check(runs.every(x => x.errors.length === 0), 'no page errors', runs.flatMap(x => x.errors))
 console.log(JSON.stringify({ latency: LAT, alpineInit: runs.map(x => x.t.alpineInit), allComponentsInDom: runs.map(x => x.t.allComponentsInDom), ready: runs.map(x => x.t.ready), requests: runs.map(x => x.requests) }))

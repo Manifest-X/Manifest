@@ -6,6 +6,7 @@ window.ManifestComponentsLoader = {
     frameworkTags: new Set(['code', 'code-group']),
     cache: {},
     _loading: {},
+    _raw: {},   // markup per name as soon as it is fetched (before on-use modules load)
     _missing: null,
     initialize() {
         // Keeps anything fetched before init (early prefetch)
@@ -49,6 +50,8 @@ window.ManifestComponentsLoader = {
         // Version stamp (publish-injected `deployment`, or authored `version`) busts browser-cached component HTML
         const stamp = mf.deployment || mf.version;
         if (stamp) url += (url.includes('?') ? '&' : '?') + 'v=' + encodeURIComponent(String(stamp));
+        let settleRaw;
+        this._raw[name] = new Promise(resolve => { settleRaw = resolve; });
         const promise = (async () => {
             try {
                 const response = await fetch(url);
@@ -70,6 +73,7 @@ window.ManifestComponentsLoader = {
                     console.warn('[Manifest] Component', name, 'at', path, 'returned a full HTML document (SPA fallback?) — treated as missing');
                     return null;
                 }
+                settleRaw(content);
                 this.prefetchNested(content);
                 // On-use plugins the component references load before it is inserted
                 if (window.Manifest && typeof window.Manifest.loadUsed === 'function') {
@@ -82,6 +86,7 @@ window.ManifestComponentsLoader = {
                 console.warn('[Manifest] Failed to load component', name, 'from', path + ':', error.message);
                 return null;
             } finally {
+                settleRaw(null);
                 delete this._loading[name];
             }
         })();
@@ -104,11 +109,14 @@ window.ManifestComponentsLoader = {
     prefetchNested(content) {
         const registry = window.ManifestComponentsRegistry;
         if (!registry || !registry.registered.size || content.indexOf('<x-') === -1) return;
-        const tag = /<x-([a-z0-9][\w-]*)\b([^>]*)>/gi;
-        let match;
-        while ((match = tag.exec(content)) !== null) {
-            const name = match[1].toLowerCase();
-            if (!registry.registered.has(name) || /\bx-route\b/.test(match[2])) continue;
+        // Parsed inert: comments, scripts and nested <template> contents are not walked
+        const template = document.createElement('template');
+        template.innerHTML = content;
+        for (const el of template.content.querySelectorAll('*')) {
+            if (!el.localName.startsWith('x-')) continue;
+            const name = el.localName.slice(2);
+            // Route-gated (own or ancestor x-route): decided when it is inserted
+            if (!registry.registered.has(name) || el.closest('[x-route]')) continue;
             this.loadComponent(name);
         }
     }

@@ -51,6 +51,7 @@ window.ManifestComponentsRegistry = {
     manifest: null,
     registered: new Set(),
     preloaded: [],
+    _initializing: null,
     // One in-flight initialize at a time: the early prefetch and the main init share it
     initialize() {
         if (!this._initializing) {

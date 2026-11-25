@@ -60,7 +60,10 @@ describe('loader fetch hints', () => {
         expect(preloads).toContain(`${BASE}/manifest.defer.min.js`)
         expect(preloads.some(h => /alpinejs@[^/]+\/dist\/cdn\.min\.js$/.test(h))).toBe(true)
         expect(new Set(preloads).size).toBe(preloads.length)
-        for (const link of document.head.querySelectorAll('link[data-mnfst-hint][rel="preload"]')) expect(link.getAttribute('as')).toBe('script')
+        for (const link of document.head.querySelectorAll('link[data-mnfst-hint][rel="preload"]')) {
+            expect(link.getAttribute('as')).toBe('script')
+            expect(link.getAttribute('fetchpriority')).toBe('low') // never ahead of the manifest-decided modules
+        }
         expect(document.querySelectorAll('script[src*="manifest.toasts"]').length).toBe(0)
         expect(manifestRequestedBeforeHints).toBe(true)
     })
@@ -101,6 +104,33 @@ describe('loader fetch hints', () => {
     it('issues no hints with integrity checks on', () => {
         boot({ 'data-integrity': '' })
         expect(document.head.querySelectorAll('link[data-mnfst-hint]').length).toBe(0)
+    })
+
+    it('issues no hints in a prerender pass, and removes them once Alpine starts', () => {
+        window.__manifestRender = true
+        try {
+            boot()
+            expect(document.head.querySelectorAll('link[data-mnfst-hint]').length).toBe(0)
+        } finally { delete window.__manifestRender }
+        delete window.__manifestLoaderStarted
+        boot()
+        expect(document.head.querySelectorAll('link[data-mnfst-hint]').length).toBeGreaterThan(5)
+        document.dispatchEvent(new Event('alpine:init'))
+        expect(document.head.querySelectorAll('link[data-mnfst-hint]').length).toBe(0)
+    })
+
+    it('the modules the manifest decides on are injected at high priority', async () => {
+        vi.stubGlobal('fetch', vi.fn(async (url) => {
+            if (String(url).endsWith('/manifest.json')) return new Response(JSON.stringify({ components: ['components/a.html'], data: { a: '/a.json' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+            return new Response('', { status: 404 })
+        }))
+        boot()
+        for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 0))
+        const tag = (name) => document.querySelector(`script[src="${BASE}/manifest.${name}.min.js"]`)
+        expect(tag('components')?.getAttribute('fetchpriority')).toBe('high')
+        expect(tag('data')?.getAttribute('fetchpriority')).toBe('high')
+        expect(tag('toasts')).not.toBeNull()
+        expect(tag('toasts').hasAttribute('fetchpriority')).toBe(false)
     })
 
     it('uses the module base when one is set, with no preconnect', () => {

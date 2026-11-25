@@ -19,6 +19,7 @@ const served = {
     '/components/hero.html': '<section>hero</section>',
     '/components/footer.html': '<footer>footer</footer>',
     '/components/admin.html': '<div>admin</div>',
+    '/components/layout.html': '<div x-route="admin"><section><x-admin></x-admin></section></div><!-- <x-footer></x-footer> --><template x-if="open"><x-hero></x-hero></template><p :class="a > b" title="x">t</p><x-logo></x-logo>',
 }
 let started, inFlight, maxInFlight
 globalThis.fetch = async (url) => {
@@ -44,7 +45,7 @@ beforeEach(async () => {
     started = []; inFlight = 0; maxInFlight = 0
     delete window.ManifestRouting
     const loader = window.ManifestComponentsLoader
-    loader.cache = {}; loader._loading = {}
+    loader.cache = {}; loader._loading = {}; loader._raw = {}; loader._missing = new Set()
     await window.ManifestComponentsRegistry.initialize()
 })
 
@@ -73,6 +74,29 @@ describe('component prefetch', () => {
         expect(loader.cache.logo).toContain('logo')
         expect(count('admin')).toBe(0)
         expect(count('unlisted')).toBe(0)
+    })
+
+    it('nested prefetch skips components under a route-gated ancestor, in comments and in templates', async () => {
+        const loader = window.ManifestComponentsLoader
+        await loader.loadComponent('layout')
+        await wait(40)
+        expect(started).toEqual(['/components/layout.html', '/components/logo.html'])
+    })
+
+    it('exposes the markup as soon as it is fetched, before on-use modules finish loading', async () => {
+        const loader = window.ManifestComponentsLoader
+        let release
+        window.Manifest = { loadUsed: () => new Promise(r => { release = r }) }
+        try {
+            const loading = loader.loadComponent('hero')
+            const raw = await loader._raw.hero
+            expect(raw).toContain('hero')
+            expect(loader.cache.hero).toBeUndefined()
+            release()
+            expect(await loading).toContain('hero')
+        } finally { delete window.Manifest }
+        loader.loadComponent('missing-one')
+        expect(await loader._raw['missing-one']).toBe(null)
     })
 
     it('leaves route-gated placeholders until a router can decide', async () => {
