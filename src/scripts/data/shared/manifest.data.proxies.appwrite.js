@@ -437,6 +437,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     if (appwriteQueries === null) {
                         throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
                     }
+                    const queryTeam = window.ManifestDataStore?.teamNow?.() ?? null;
                     // Dedupe key: source + serialized queries (never across different queries)
                     const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
                     const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
@@ -471,6 +472,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                     if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
                         window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
                         if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
+                        window.ManifestDataStore?.noteLoadTeam?.(dataSourceName, paged ? paged.team : queryTeam);
                         await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
                     }
                     return result;

@@ -4,19 +4,27 @@
 // manifest.data.queries.js) skips the network read and waits here instead of
 // sending a broken/empty-equal query. Retries once when auth settles further;
 // dedup by key so a source pending across repeated loads doesn't stack listeners.
-const pendingAuthRetries = new Set();
+const pendingAuthRetries = new Map();
 const AUTH_RETRY_EVENTS = ['manifest:auth:initialized', 'manifest:auth:teams-loaded', 'manifest:auth:login', 'manifest:auth:anonymous'];
 function scheduleAuthRetry(dataSourceName, locale) {
     if (typeof window === 'undefined') return;
     const key = `${dataSourceName}:${locale}`;
     if (pendingAuthRetries.has(key)) return;
-    pendingAuthRetries.add(key);
-    const retry = () => {
+    const disarm = () => {
         pendingAuthRetries.delete(key);
         AUTH_RETRY_EVENTS.forEach(type => window.removeEventListener(type, retry));
+    };
+    const retry = () => {
+        disarm();
         loadDataSource(dataSourceName, locale, { reload: true });
     };
+    pendingAuthRetries.set(key, disarm);
     AUTH_RETRY_EVENTS.forEach(type => window.addEventListener(type, retry));
+}
+
+// Another path reloads the source (team listener): drop its waiting retries
+function cancelAuthRetry(dataSourceName) {
+    for (const [key, disarm] of [...pendingAuthRetries]) if (key.startsWith(`${dataSourceName}:`)) disarm();
 }
 
 // Teams known for this identity: login/anonymous dispatch after teams load, teams-loaded after the background load.
@@ -586,6 +594,7 @@ async function fetchPagedRows(dataSourceName, filters, { want, after = null, isC
     const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
     const base = await window.ManifestDataQueries.buildAppwriteQueries(stripPageWindow(filters), scope, scopeColumns);
     if (base === null) return null;
+    const team = window.ManifestDataStore?.teamNow?.() ?? null;
     const Query = window.Appwrite.Query;
     const requireAuth = requiresIdentity(dataSource);
     const limit = Math.max(1, want || spec.size);
@@ -606,7 +615,7 @@ async function fetchPagedRows(dataSourceName, filters, { want, after = null, isC
         if (!hasMore || !got.length || !isCurrent()) break;
         cursor = got[got.length - 1].$id;
     }
-    return { rows, total, hasMore };
+    return { rows, total, hasMore, team };
 }
 
 // A page landed: move the cursor to its last server row and publish $hasMore / $total.
@@ -1149,6 +1158,9 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
     const load = { identity: confirmedIdentity(), bound: undefined, abandoned: false, replacement: null };
     loadIdentities.set(cacheKey, load);
+    // Team listener waits for this load to pick its team instead of reloading under it
+    const closeTeamRead = window.ManifestDataStore.beginTeamRead?.(dataSourceName) || (() => {});
+    const noteTeam = (...team) => { window.ManifestDataStore.noteLoadTeam?.(dataSourceName, ...team); closeTeamRead(); };
     const superseded = () => load.abandoned || (sourceGeneration && sourceGeneration(dataSourceName) !== generation);
 
     // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
@@ -1260,6 +1272,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         ? (paged ? [] : null)
                         : await window.ManifestDataQueries.buildAppwriteQueries(defaults, scope, scopeColumns);
 
+                    if (paged) noteTeam(paged.team); else noteTeam();
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
@@ -1320,6 +1333,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     // Not ready (a $auth. arg in queriesConfig unresolved): skip, retry on an auth event
                     if (queries === null) {
+                        noteTeam();
                         scheduleAuthRetry(dataSourceName, locale);
                         if (settleUnresolved(manifest)) landed = true;
                         return null;
@@ -1336,9 +1350,9 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     // Filter files by scope if scope is defined (client-side filtering)
                     // This matches the database team scope behavior
                     if (scope && files && Array.isArray(files) && files.length > 0) {
-                        const originalCount = files.length;
                         files = await filterFilesByScope(files, scope);
                     }
+                    noteTeam();
 
                     data = files;
 
@@ -1548,7 +1562,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!landed && keepRows && !isInitializing && !superseded()) setSourceState(dataSourceName, { loading: false });
         }
     });
-    const done = () => { settled(); deferredLoads.delete(cacheKey); if (loadIdentities.get(cacheKey) === load) loadIdentities.delete(cacheKey); };
+    const done = () => { closeTeamRead(); settled(); deferredLoads.delete(cacheKey); if (loadIdentities.get(cacheKey) === load) loadIdentities.delete(cacheKey); };
     run.then(done, done);
     const result = followReplacement(load, run);
     if (replaced) replaced.replacement = result;
@@ -1741,6 +1755,7 @@ async function initializeDataSourcesPlugin() {
         _loadDataSource: reloadDataSource, // Internal: every user is a reload-after-mutation
         filterFilesByScope, // Export for use by getFilesForEntry
         requiresIdentity,
+        cancelAuthRetry,
         setActiveQuery,
         forgetLiveSource,
         reloadSource,
