@@ -308,9 +308,10 @@ describe('prewarm', () => {
         expect(menu.__mnfstDefer.urgent).toBe(false)
         drain()
         expect(window.counts.revealed).toBeUndefined() // paused at the cap, not near anything: stays pending
+        // The click comes first; the pane it reveals reports on screen right after
+        document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
         const box = { top: 10, bottom: 200, left: 10, right: 300, width: 290, height: 190 }
         ioInstances.forEach((io) => io.cb([{ target: host.querySelector('#pane'), boundingClientRect: box, isIntersecting: true }]))
-        document.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientX: 50, clientY: 50 }))
         await new Promise((r) => setTimeout(r, 200))
         expect(menu.__mnfstDefer.urgent).toBe(true)
         runIdle()
