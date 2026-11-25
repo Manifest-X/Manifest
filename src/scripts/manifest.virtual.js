@@ -22,12 +22,14 @@ function hasVirtual(el) {
 }
 
 // The virtualized template: one marked data-virtual, else the first outside <thead>/<tfoot>, else the first
-function pickTemplate(el) {
+function pickTemplate(el, warn) {
     const all = el.querySelectorAll('template[x-for], template[data-virtual-for]');
     if (all.length < 2) return all[0] || null;
     for (const t of all) if (t.hasAttribute('data-virtual')) return t;
-    for (const t of all) if (!inTableHead(t, el)) return t;
-    return all[0];
+    const body = [...all].filter((t) => !inTableHead(t, el));
+    // Only document order decided: say how to make it explicit
+    if (warn && body.length !== 1) console.warn('[x-virtual] several x-for templates inside and none marked: virtualizing the first. Mark the rows template with data-virtual', el);
+    return body[0] || all[0];
 }
 function inTableHead(t, el) {
     for (let n = t.parentElement; n && n !== el; n = n.parentElement) if (n.tagName === 'THEAD' || n.tagName === 'TFOOT') return true;
@@ -71,7 +73,7 @@ function initializeVirtualPlugin() {
     Alpine.directive('virtual', (el, { expression }, { evaluate, evaluateLater, effect, cleanup }) => {
 
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
-        const template = pickTemplate(el) || el.querySelector(':scope template');
+        const template = pickTemplate(el, true) || el.querySelector(':scope template');
         if (template) stashFor(template);
         const forExpr = template && (template.getAttribute('data-virtual-for') ?? template.getAttribute('x-for'));
         if (!forExpr) {

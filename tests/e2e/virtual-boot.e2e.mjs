@@ -9,7 +9,8 @@
  * 5. an iterator source renders; rows whose items left the list go even while the container is hidden;
  *    a masonry `height` function re-packs when an item's field changes;
  * 6. the virtualized template: a <thead> x-for before the rows is left to Alpine, a template marked
- *    data-virtual wins, and with neither the first x-for is still the one virtualized.
+ *    data-virtual wins, and with neither the first x-for is still the one virtualized, with one warning
+ *    naming the marker (none when a marker or the <thead> rule decided, or for a single template).
  *
  * Run: node tests/e2e/virtual-boot.e2e.mjs      (VIRTUAL_SRC=<dir with scripts/> to A/B)
  */
@@ -105,8 +106,9 @@ async function main() {
             const tuple = route === '/tuple'
             const label = (name, i) => (tuple ? `${name}#${i}` : name)
             const p = await browser.newPage()
-            const errors = []
+            const errors = [], warns = []
             p.on('pageerror', (e) => errors.push(e.message))
+            p.on('console', (m) => { if (m.text().includes('data-virtual')) warns.push(m.text()) })
             await p.goto(base + route, { waitUntil: 'load' })
             await wait(600)
             const boot = await p.evaluate(() => ({ atInit: window.__atInit, peak: window.__peak, created: window.__created, now: document.getElementsByClassName('r').length }))
@@ -153,6 +155,7 @@ async function main() {
             await wait(300)
             check((await texts(p)).length === 0, `${route}: an emptied list renders nothing`)
             check(errors.length === 0, `${route}: no page errors`, errors)
+            check(warns.length === 0, `${route}: a single template gives no ambiguity warning`, warns)
             await p.close()
         }
 
@@ -245,12 +248,15 @@ async function main() {
         // 6. Which template is virtualized when the container holds two x-for lists
         for (const [route, label] of [['/thead', 'a <thead> x-for before the rows template'], ['/marked', 'the template marked data-virtual, after a header x-for'], ['/first', 'no marker: the first x-for, as before']]) {
             const q = await browser.newPage()
-            const errors = []
+            const errors = [], warns = []
             q.on('pageerror', (e) => errors.push(e.message))
+            q.on('console', (m) => { if ((m.type() === 'warn' || m.type() === 'warning') && m.text().includes('data-virtual')) warns.push(m.text()) })
             await q.goto(base + route, { waitUntil: 'load' })
             await wait(500)
             const got = await q.evaluate(() => ({ peak: window.__peak, rows: document.getElementsByClassName('r').length, head: [...document.querySelectorAll('#v .h')].map((n) => n.textContent).join(','), first: document.querySelector('#v .r')?.textContent }))
             check(got.peak < 100 && got.rows > 5 && got.first?.startsWith('n0') && got.head === 'a,b' && errors.length === 0, `${route}: ${label} — rows virtualized, the other list rendered by Alpine`, { ...got, errors })
+            const expect = route === '/first' ? 1 : 0
+            check(warns.length === expect, `${route}: ${expect ? 'one warning naming data-virtual (only order decided)' : 'no ambiguity warning'}`, warns)
             await q.close()
         }
     } finally {
