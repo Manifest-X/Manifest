@@ -82,6 +82,29 @@ describe('data-omit on the derive path', () => {
         expect(list).not.toContain('components')
     })
 
+    it('warns once when the page uses a module it omits, and stays quiet otherwise', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        try {
+            await boot({ 'data-omit': 'chat,toasts' }, '<div x-text="$chat.status"></div>')
+            const said = warn.mock.calls.map(c => String(c[0])).filter(m => m.includes('data-omit'))
+            expect(said).toHaveLength(1)
+            expect(said[0]).toContain('chat')
+            expect(said[0]).not.toContain('toasts')
+            warn.mockClear()
+            for (const k of ['__manifestLoaded', '__manifestPromise', '__manifestLoaderStarted', '__manifestReady', 'Manifest']) delete window[k]
+            await boot({ 'data-omit': 'chat' }, '<p>plain</p>')
+            expect(warn.mock.calls.map(c => String(c[0])).filter(m => m.includes('data-omit'))).toHaveLength(0)
+        } finally { warn.mockRestore() }
+    })
+
+    it('omit names are case-insensitive and accept renamed modules', async () => {
+        await boot({ 'data-omit': ' Toasts , text-edit ' }, '<div x-rich-text></div>')
+        const list = injected()
+        expect(list).not.toContain('toasts')
+        expect(list).not.toContain('rich-text')
+        expect(list).toContain('tooltips')
+    })
+
     it('the post-boot usage sniff does not re-add an omitted module, and still loads others', async () => {
         await boot({ 'data-omit': 'chat' }, '<main id=m></main>')
         document.getElementById('m').insertAdjacentHTML('beforeend', '<div x-text="$chat.status"></div><div x-submit></div>')

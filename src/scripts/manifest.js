@@ -481,7 +481,7 @@
 	// candidate per CDN host, tried in order.
 	let _pluginBase = null;
 	function setPluginBase(b) { _pluginBase = b || null; }
-	// data-omit: never loaded from any source, unless a loaded module depends on it
+	// data-omit: never loaded by the loader itself, unless a loaded module depends on it (Manifest.loadPlugin still can)
 	let _omitted = [];
 	const notOmitted = (list) => _omitted.length ? list.filter(p => !_omitted.includes(p)) : list;
 	function getPluginUrlCandidates(pluginName, version = RESOLVED_VERSION) {
@@ -1077,7 +1077,8 @@
 		}
 
 		// Remove omitted plugins (supports both core and Appwrite plugins)
-		const omitted = omit ? omit.split(',').map(p => p.trim()).filter(p => p && !ALWAYS_ON.includes(p)) : [];
+		const OMIT_ALIASES = { native: 'device', 'text-edit': 'rich-text' };
+		const omitted = omit ? omit.split(',').map(p => p.trim().toLowerCase()).map(p => OMIT_ALIASES[p] || p).filter(p => p && !ALWAYS_ON.includes(p)) : [];
 		if (omitted.length > 0 && pluginList.length > 0) {
 			pluginList = pluginList.filter(p => !omitted.includes(p));
 		}
@@ -1489,6 +1490,9 @@
 			whenDomReady(async () => {
 				if (config.deriveFromManifest) {
 					try {
+						// An omitted module the page uses fails far from the cause: say so once
+						const blocked = _omitted.length ? detectUsagePlugins(pluginsToLoad).filter(p => _omitted.includes(p)) : [];
+						if (blocked.length) console.warn(`[Manifest Loader] data-omit lists ${blocked.join(', ')}, but this page uses ${blocked.length > 1 ? 'them' : 'it'}. Not loaded: remove ${blocked.length > 1 ? 'them' : 'it'} from data-omit to load.`);
 						const used = detectUsagePlugins([...pluginsToLoad, ..._omitted]);
 						if (used.length > 0) {
 							const late = resolveDependencies(used).filter(p => !pluginsToLoad.includes(p));
