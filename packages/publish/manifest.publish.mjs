@@ -20,8 +20,13 @@ let jsonMode = false;
 function log(msg) {
   (jsonMode ? process.stderr : process.stdout).write(msg + '\n');
 }
-function fail(msg, code = 'failed') {
-  if (jsonMode) process.stdout.write(JSON.stringify({ ok: false, error: code, message: msg }) + '\n');
+// Our codes are lowercase snake_case; Node's (ENOENT, ERR_…) are reported as "failed".
+function publicCode(code) {
+  return typeof code === 'string' && /^[a-z][a-z_]*$/.test(code) ? code : 'failed';
+}
+
+function fail(msg, code) {
+  if (jsonMode) process.stdout.write(JSON.stringify({ ok: false, error: publicCode(code), message: msg }) + '\n');
   console.error('mnfst-publish: ' + msg);
   process.exit(1);
 }
@@ -876,7 +881,7 @@ export function isJsonMode() {
 /** The --json failure object for an error. */
 export function jsonFailure(err) {
   const message = err && err.message ? err.message : String(err);
-  return { ok: false, error: (err && err.code) || 'failed', message };
+  return { ok: false, error: publicCode(err && err.code), message };
 }
 
 /** manifest_promote arguments for these options. */
@@ -1027,7 +1032,7 @@ export async function main() {
     fail(e.message, e.code);
   }
   if (opts.help) {
-    for (const line of USAGE) log(line);
+    for (const line of USAGE) console.log(line);
     return;
   }
   if (opts.version) {
@@ -1170,7 +1175,7 @@ export async function main() {
     upJson = await uploadBundle(uploadUrl, zip);
   } catch (e) {
     if (e.code === 'link_expired') {
-      fail(/--no-render/.test(e.message) || !recovery.rendered ? e.message : `${e.message} ${noRenderHint(recovery.outputDir)}`);
+      fail(/--no-render/.test(e.message) || !recovery.rendered ? e.message : `${e.message} ${noRenderHint(recovery.outputDir)}`, e.code);
     }
     fail(e.message, e.code);
   }

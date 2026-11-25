@@ -4,7 +4,7 @@
  * server refusal codes into --json.
  */
 import { describe, it, expect } from 'vitest'
-import { parseArgs, runPromote, listSummary, packageVersion, codedError } from '../packages/publish/manifest.publish.mjs'
+import { parseArgs, runPromote, listSummary, packageVersion, codedError, jsonFailure } from '../packages/publish/manifest.publish.mjs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
@@ -104,6 +104,16 @@ describe('--list', () => {
 })
 
 describe('refusal codes', () => {
+    it("Node's own error codes are reported as failed", () => {
+        const e = new Error('no such file')
+        e.code = 'ENOENT'
+        expect(jsonFailure(e).error).toBe('failed')
+        const n = new Error('x')
+        n.code = 'ERR_MODULE_NOT_FOUND'
+        expect(jsonFailure(n).error).toBe('failed')
+        expect(jsonFailure(codedError('live_moved', 'm')).error).toBe('live_moved')
+    })
+
     it('a server refusal keeps its code through runPromote', async () => {
         const callToolImpl = async () => { throw codedError('live_moved', 'Production is serving dep_x, not dep_y.') }
         await expect(runPromote({ deployment: 'd', expectLive: 'dep_y' }, { url: 'u', key: 'k', callToolImpl, toolParamsImpl: async () => ['deployment_id', 'expect_live'] }))
