@@ -177,7 +177,8 @@ describe('revealed pane', () => {
         expect(window.ManifestDefer.isPending(menu)).toBe(false)
     })
 
-    it('a slot freed by an open lets plain prewarm refill to the cap, never past it', async () => {
+    it('a slot freed by an open refills by plain prewarm after the gesture window, never past the cap', async () => {
+        await wait(1600)
         drain()
         expect(st().warm).toBe(CAP) // the open above took a stashed container: warm unchanged
         const warmMenu = Array.from(host.querySelectorAll('menu')).find((m) => m.__mnfstDefer.rendered && m.__mnfstDefer.pristine)

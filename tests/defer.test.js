@@ -80,8 +80,9 @@ describe('automatic detection', () => {
             const el = host.querySelector('#' + id)
             expect(el.__mnfstDefer, id).toBeTruthy()
             expect(stash(el), id).toBeTruthy()
-            expect(el.children.length, id).toBe(1)
+            expect(el.children.length, id).toBe(id === 't' ? 2 : 1) // details keeps its summary
         }
+        expect(host.querySelector('#t > summary').textContent).toBe('S')
         for (const id of ['d-open', 't-open', 'r', 'p1', 'empty', 'plain']) {
             expect(host.querySelector('#' + id).__mnfstDefer, id).toBeFalsy()
         }
@@ -283,7 +284,8 @@ describe('prewarm', () => {
         expect(window.ManifestDefer.isPending(document.getElementById('away'))).toBe(true)
     })
 
-    it('keeps at most the cap warm, re-stashing the least reachable unopened container', () => {
+    it('keeps at most the cap warm, re-stashing the least reachable unopened container', async () => {
+        await new Promise((r) => setTimeout(r, 1600)) // plain prewarm waits out earlier tests' gesture windows
         drain()
         const cap = window.ManifestDefer.stats().cap
         const warmBefore = window.ManifestDefer.stats().warm
