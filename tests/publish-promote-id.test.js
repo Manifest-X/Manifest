@@ -208,7 +208,7 @@ describe('--json output', () => {
         expect(r.status).toBe(1)
         const lines = r.stdout.trim().split('\n')
         expect(lines).toHaveLength(1)
-        expect(JSON.parse(lines[0])).toMatchObject({ ok: false, error: 'failed', message: expect.stringMatching(/only applies to staging/) })
+        expect(JSON.parse(lines[0])).toMatchObject({ ok: false, error: 'usage', message: expect.stringMatching(/only applies to staging/) })
     })
 
     it('an uncaught error in json mode is reported as JSON by the bin', () => {
