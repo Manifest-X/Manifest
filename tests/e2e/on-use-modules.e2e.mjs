@@ -86,7 +86,9 @@ Some *text*.
 <div id="c" x-data="cap"><button id="run" @click="run()">Run</button></div><div id="i" x-data="imp"><button id="pick" @click="pick()">Import</button></div>`, '<script src="/app.js"></script>'),
     '/cfg/explicit': page(`<p id="d" x-text="'d=' + $date.value"></p>`, '', 'data-modules="tooltips"'),
     '/cfg/omit': page(`<p id="d" x-text="'d=' + $date.value"></p>`, '', 'data-omit="datepicker"'),
-    '/md/race': page(`<div x-data="{ src: '' }" id="w"><div id="md" x-markdown="src"></div></div><div id="mi" x-markdown="inline">warm</div>`),
+    '/giveup/never': page(`<main id="host" x-html="html"></main>`),
+    '/giveup/late': page(`<main id="host" x-html="html"></main>`),
+    '/md/race': page(`<div x-data="{ src: '', tick: 0 }" id="w"><div id="md" x-markdown="src + (tick > -1 ? '' : '')"></div></div><div id="mi" x-markdown="inline">warm</div>`),
 }
 const FILES = {
     '/manifest.json': JSON.stringify({ name: 'onuse' }),
@@ -105,6 +107,11 @@ const server = await new Promise((r) => {
         // Latency on the manifest, so the request order of the boot shows
         if (u.pathname === '/manifest.json') return setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(FILES[u.pathname]) }, 250)
         if (FILES[u.pathname]) { res.writeHead(200, { 'content-type': u.pathname.endsWith('.json') ? 'application/json' : u.pathname.endsWith('.svg') ? 'image/svg+xml' : u.pathname.endsWith('.js') ? 'text/javascript' : 'text/html' }); return res.end(FILES[u.pathname]) }
+        // Svg that loads but never registers, or registers 11 s after loading
+        if (u.pathname === '/scripts/manifest.svg.js' && ref.startsWith('/giveup/')) {
+            res.writeHead(200, { 'content-type': 'text/javascript' })
+            return res.end(ref === '/giveup/never' ? '/* never registers */' : 'setTimeout(() => {\n' + readFileSync(path.join(SRC, u.pathname), 'utf8') + '\n}, 11000)')
+        }
         if (u.pathname.startsWith('/scripts/')) {
             const f = path.join(SRC, u.pathname)
             if (!existsSync(f)) { res.writeHead(404); return res.end() }
@@ -317,6 +324,46 @@ await mdRace('a newer render wins over an older one waiting for Code', `(() => {
 await mdRace('three rapid changes end on the last', `(() => { const d = Alpine.$data(document.getElementById('w')); d.src = ${JSON.stringify(FENCE('A'))}; setTimeout(() => { d.src = ${JSON.stringify(FENCE('B'))} }, 30); setTimeout(() => { d.src = '# C' }, 60) })()`, { md: 'C' })
 await mdRace('inline content changed mid-render ends on the latest', `(() => { const el = document.getElementById('mi'); el.textContent = ${JSON.stringify(FENCE('One'))}; setTimeout(() => { el.textContent = '# Two' }, 40) })()`, { mi: 'Two' })
 await mdRace('a change during a failed Code load still ends on the last', `(() => { const d = Alpine.$data(document.getElementById('w')); d.src = ${JSON.stringify(FENCE('Broken'))}; setTimeout(() => { d.src = '# After' }, 50) })()`, { md: 'After' }, { abortCode: true, allow: /Failed to load (plugin code|resource)|manifest\.code\.js/ })
+await mdRace('the same content again while Code loads still renders', `(() => { const d = Alpine.$data(document.getElementById('w')); d.src = ${JSON.stringify(FENCE('Alpha'))}; setTimeout(() => { d.tick++ }, 50) })()`, { md: 'Alpha' })
+await mdRace('A, B, then A again ends on A', `(() => { const d = Alpine.$data(document.getElementById('w')); d.src = ${JSON.stringify(FENCE('Alpha'))}; setTimeout(() => { d.src = '# Beta' }, 50); setTimeout(() => { d.src = ${JSON.stringify(FENCE('Alpha'))} }, 120) })()`, { md: 'Alpha' })
+
+// A module that loads but never registers, or registers after the 10 s give-up
+for (const [p, svgs] of [['/giveup/never', 0], ['/giveup/late', 1]]) {
+    const { pg, ctx, logs } = await open(p)
+    await wait(300)
+    await pg.evaluate(() => { Alpine.$data(document.body).html = `<div id="w" x-data="{ c: 0 }" x-init="count('gw')"><span id="sv" x-svg="'/icon.svg'" x-init="count('gs')"></span><b id="gt" x-text="'c=' + c"></b></div>` })
+    await wait(9000)
+    const held = await pg.evaluate(() => ({ gs: window.__c.gs || 0, pend: window.ManifestPending.labels() }))
+    check(held.gs === 0 && held.pend.includes('held'), `give-up ${p}: held before 10 s`, held)
+    await wait(SLOW + 4500)
+    const r = await pg.evaluate(() => ({ c: window.__c, svgs: document.querySelectorAll('#sv svg').length, pend: window.ManifestPending.labels(), text: document.getElementById('gt').textContent }))
+    check(r.c.gw === 1 && r.c.gs === 1 && r.text === 'c=0' && !r.pend.includes('held'), `give-up ${p}: started exactly once, ManifestPending released`, r)
+    check(r.svgs === svgs, `give-up ${p}: ${svgs ? 'the late directive applied once' : 'no directive ever applied'}`, r)
+    const l = quiet(logs)
+    check(l.length === 1 && /svg has not started 10 s after loading: starting the elements that use it now; it applies to them if it starts later/.test(l[0]), `give-up ${p}: one accurate warning`, l)
+    await ctx.close()
+}
+
+// $refs into a held element, and input typed while held
+{
+    const { pg, ctx, logs } = await open('/late/innerhtml')
+    await wait(300)
+    await pg.evaluate(() => {
+        document.getElementById('host').innerHTML = `<div x-data="{ seen: '' }" id="xr" x-init="seen = $refs.c ? 'has' : 'no'"><div x-ref="c" x-date></div><span id="xs" x-text="seen"></span></div>
+<div x-data id="xr2"><input id="rin" x-ref="inp" x-date><button id="rb" @click="$refs.inp.focus()">f</button></div>
+<div x-data="{ t: 'init', on: false }"><div x-carousel id="form"><div class="carousel-slides"><div><input id="ti" x-model="t"><input id="tc" type="checkbox" x-model="on"></div></div></div><p id="tv" x-text="t + ':' + on"></p></div>`
+    })
+    await wait(100)
+    await pg.click('#rb')
+    await pg.type('#ti', 'typed')
+    await pg.click('#tc')
+    const during = await pg.evaluate(() => ({ seen: document.getElementById('xs').textContent, focused: document.activeElement && document.activeElement.id }))
+    check(during.seen === 'has', '$refs: a ref inside a held element is there during the hold', during)
+    check(await until(pg, () => document.getElementById('tv').textContent === 'typed:true'), 'held input: typed text and a ticked box win over the model\'s initial value', await pg.evaluate(() => [document.getElementById('ti').value, document.getElementById('tv').textContent]))
+    check(await pg.evaluate(() => document.activeElement && document.activeElement.id) === 'tc', 'held input: focus kept')
+    check(quiet(logs).length === 0, '$refs and held input: logs nothing', quiet(logs))
+    await ctx.close()
+}
 
 // 5. Magics
 {

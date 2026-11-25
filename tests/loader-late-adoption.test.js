@@ -154,4 +154,37 @@ describe('late on-use modules', () => {
         expect(warnings.filter(w => w.includes('svg failed to load')).length).toBe(1)
         spy.mockRestore()
     })
+
+    it('a module that loads but never registers: held elements start once after 10 s', async () => {
+        window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true
+        vi.useFakeTimers({ toFake: ['setTimeout'] })
+        try {
+            document.getElementById('host').insertAdjacentHTML('beforeend', '<div id="g1" x-data x-init="count(\'g1\')" x-combobox="o"><i x-init="count(\'g1kid\')"></i></div>')
+            await vi.advanceTimersByTimeAsync(9000)
+            expect(window.__c.g1).toBeUndefined()
+            expect(window.ManifestPending.labels()).toContain('held')
+            await vi.advanceTimersByTimeAsync(1500)
+            expect(window.__c.g1).toBe(1)
+            expect(window.__c.g1kid).toBe(1)
+            expect(window.ManifestPending.labels()).not.toContain('held')
+            // Not held again
+            await vi.advanceTimersByTimeAsync(20000)
+            expect(window.__c.g1).toBe(1)
+            expect(warnings.filter(w => w.includes('combobox has not started 10 s after loading')).length).toBe(1)
+        } finally { vi.useRealTimers() }
+    })
+
+    it('if it registers after the give-up, its directive applies once', async () => {
+        const ran = []
+        Alpine.directive('combobox', (el) => ran.push(el.id))
+        await settle()
+        expect(ran).toEqual(['g1'])
+        expect(window.__c.g1).toBe(1)
+    })
+
+    it('a ref inside a held element resolves during the hold and after it', async () => {
+        document.getElementById('host').insertAdjacentHTML('beforeend', '<div id="rr" x-data="{ seen: \'\' }" x-init="seen = $refs.r ? \'has\' : \'no\'"><div x-ref="r" x-colorpicker></div><span id="rs" x-text="seen"></span></div>')
+        await settle()
+        expect(document.getElementById('rs').textContent).toBe('has')
+    })
 })
