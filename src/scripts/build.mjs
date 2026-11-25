@@ -61,6 +61,7 @@ const CONFIG = {
         'manifest.utilities.static.js',
         'manifest.utilities.observation.js',
         'manifest.utilities.device.js',
+        'manifest.utilities.tailwind-cache.js',
         'manifest.utilities.init.js'
     ],
 

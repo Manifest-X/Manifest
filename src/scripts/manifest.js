@@ -1121,6 +1121,32 @@
 		}
 	}
 
+	// Tailwind engine output cache: written and watched by the utilities module (manifest.utilities.tailwind-cache.js)
+	const TAILWIND_CACHE_KEY = 'tailwind-engine-cache:v1';
+	const TAILWIND_CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+	function replayTailwindCache(cfg) {
+		try {
+			if (window.__manifestRender === true || window.__mnfstRun || isDevHost(location.hostname)) return false;
+			if (!cfg.plugins.includes('utilities') || staticUtilitiesFullyCovered()) return false;
+			if (document.querySelector('[data-mnfst-utilities], link[href*="prerender.tailwind.css"], link[href*="prerender.utilities.css"]')) return false;
+			const state = window.__tailwindCache = { key: TAILWIND_CACHE_KEY, v: `${LOADER_VERSION}|${cfg.version}|4.3.1`, record: null, armed: false };
+			const rec = JSON.parse(localStorage.getItem(TAILWIND_CACHE_KEY) || 'null');
+			if (!rec || rec.v !== state.v || typeof rec.css !== 'string' || !Array.isArray(rec.tokens) || !Array.isArray(rec.blocks)) return false;
+			if (!(Date.now() - rec.t < TAILWIND_CACHE_MAX_AGE)) return false;
+			// Blocks already parsed must be ones the cache was built from
+			for (const s of document.querySelectorAll('style[type="text/tailwindcss"]')) if (!rec.blocks.includes(s.textContent)) return false;
+			const style = document.createElement('style');
+			style.setAttribute('data-tailwind-cache', '');
+			style.textContent = rec.css;
+			document.head.appendChild(style);
+			state.record = rec;
+			state.style = style;
+			return true;
+		} catch (e) {
+			return false;
+		}
+	}
+
 	// Load custom Tailwind CDN script, falling through the CDN chain on error
 	async function loadTailwind(version = RESOLVED_VERSION) {
 		const urls = CDN_HOSTS.map(h => `${getBaseUrl(version, h)}/${hostFile(h, 'manifest.tailwind.min.js')}`);
@@ -1469,10 +1495,12 @@
 					console.warn(`[Manifest Loader] Failed to load plugin ${pluginName}:`, error);
 				});
 			});
-			if (config.tailwind && !staticUtilitiesFullyCovered()) {
+			if (config.tailwind && !staticUtilitiesFullyCovered() && !tailwindReplayed) {
 				pluginPromises.push(loadTailwind(config.version).catch(() => { }));
 			}
 			await Promise.all(pluginPromises);
+			// Utilities module never armed the cache watcher: run the engine as usual
+			if (tailwindReplayed && !window.__tailwindCache.armed) window.__tailwindCache.load = loadTailwind(config.version).catch(() => { });
 			if (manifestPromise) {
 				manifest = await manifestPromise;
 			}
@@ -1552,6 +1580,7 @@
 			check();
 		}
 
+		const tailwindReplayed = !!config.tailwind && replayTailwindCache(config);
 		hintEarlyFetches();
 		loadPlugins();
 	}

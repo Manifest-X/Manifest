@@ -71,6 +71,8 @@ const compiler = (existingCompiler && existingCompiler.styleElement && existingC
 // Expose utilities compiler for optional integration
 window.ManifestUtilities = compiler;
 
+armTailwindCache();
+
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
     });
