@@ -200,12 +200,33 @@ describe('loader: Tailwind engine output cache', () => {
         const text = ['', '/app/'].join('\u0000')
         let h = 0x811c9dc5
         for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
-        index.skip = [(h >>> 0).toString(36)]
+        index.skip = { [(h >>> 0).toString(36)]: Date.now() }
         localStorage.setItem(KEY, JSON.stringify(index))
         boot()
         await settle()
         expect(cachedStyle()).toBeNull()
         expect(engineScripts()).toBe(1)
+    })
+
+    it('replays again once a skipped path is older than 7 days', async () => {
+        store()
+        const index = JSON.parse(localStorage.getItem(KEY))
+        const text = ['', '/app/'].join('\u0000')
+        let h = 0x811c9dc5
+        for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
+        index.skip = { [(h >>> 0).toString(36)]: Date.now() - 8 * 24 * 3600 * 1000 }
+        localStorage.setItem(KEY, JSON.stringify(index))
+        boot()
+        await settle()
+        expect(cachedStyle()).not.toBeNull()
+        expect(engineScripts()).toBe(0)
+    })
+
+    it('does not fetch the engine at all on a replay', async () => {
+        store()
+        boot()
+        await settle()
+        expect(fetch.mock.calls.some(([u]) => /tailwind/.test(String(u)))).toBe(false)
     })
 
     it('never replays an entry recorded from a page with a block in <body>', async () => {

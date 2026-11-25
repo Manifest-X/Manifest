@@ -248,29 +248,48 @@ describe('Tailwind cache: engine mode', () => {
         expect(Object.keys(localStorage).filter(k => k.startsWith(KEY + ':')).length).toBe(4)
     }, 20000)
 
-    it('after a block change, stores nothing until the engine has rebuilt and been shown the tokens again', async () => {
+    it('stops recording for the page view when a block is added (no later sheet is attributable to a full build)', async () => {
         const { state } = await boot()
         const engine = engineArrives(CSS)
         await wait(1300)
         const first = state.saved
         expect(first).toBeTruthy()
-        const el = document.querySelector('.card')
-        el.classList.add('tracking-wide')
-        el.classList.remove('tracking-wide')
-        await wait(400)
         document.head.insertAdjacentHTML('beforeend', block('@theme { --c: 1; }'))
         await wait(20)
+        engine.textContent = CSS + ' .x{}'
+        document.body.insertAdjacentHTML('beforeend', '<span class="pt-3"></span>')
+        await wait(1300)
         window.dispatchEvent(new Event('pagehide'))
         expect(state.saved).toBe(first)
-        const carriers = []
-        new MutationObserver((ms) => ms.forEach(m => m.addedNodes.forEach(n => n.hasAttribute?.('data-tailwind-seed') && carriers.push(n.getAttribute('class'))))).observe(document.head, { childList: true })
-        engine.textContent = CSS + ' .x{}'
-        await wait(600)
-        expect(carriers.join(' ')).toContain('tracking-wide')
-        window.dispatchEvent(new Event('pagehide'))
-        expect(state.saved.blocks).toEqual(['@theme { --c: 1; }'])
-        expect(state.saved.tokens).toContain('tracking-wide')
+        expect(state.recordingEnded).toBe('blocks')
+        expect(entries().length).toBe(1)
     })
+
+    for (const how of ['removed', 'unmounted with its component', 'given another type']) {
+        it(`stops recording for the page view when a block is ${how} (the engine does not rebuild)`, async () => {
+            const { state } = await boot({ headHtml: block(A) })
+            const engine = engineArrives(CSS)
+            await wait(1300)
+            const first = state.saved
+            expect(first).toBeTruthy()
+            document.body.insertAdjacentHTML('beforeend', `<div id="cmp">${block(B)}</div>`)
+            const added = document.querySelector('#cmp style')
+            await wait(20)
+            engine.textContent = CSS + ' :root{--color-b:blue}'
+            await wait(20)
+            if (how === 'removed') added.remove()
+            else if (how === 'given another type') added.setAttribute('type', 'text/css')
+            else document.getElementById('cmp').remove()
+            await wait(20)
+            document.body.insertAdjacentHTML('beforeend', '<span class="pt-7"></span>')
+            engine.textContent = CSS + ' :root{--color-b:blue} .pt-7{}'
+            await wait(1300)
+            window.dispatchEvent(new Event('pagehide'))
+            const stale = entries().filter(e => e.css.includes('--color-b:blue') && e.blocks.join() === A)
+            expect(stale).toEqual([])
+            expect(state.recordingEnded).toBe('blocks')
+        })
+    }
 
     it('over the cap: stops recording at once, marks the block set, and a later visit skips recording', async () => {
         const { state } = await boot()
