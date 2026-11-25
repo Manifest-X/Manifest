@@ -3,8 +3,9 @@
  *
  * x-defer gesture follow-ups: a re-anchor to a late-found invoker is not a reveal; slots freed
  * inside a gesture window are not refilled by plain prewarm; a real reveal or a navigation
- * clears the evicted flag; a restarted pass chain keeps pending reveals; a details element
- * keeps its summary out of the stash.
+ * clears the evicted flag of a container evicted while reachable, once; navigating between
+ * routes settles; a restarted pass chain keeps pending reveals for one urgent window; a details
+ * element keeps its summary out of the stash.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeAll } from 'vitest'
@@ -25,7 +26,7 @@ window.cancelIdleCallback = (id) => { const i = idleQueue.findIndex((x) => x.id 
 const BATCH = { didTimeout: false, timeRemaining: () => 50 }
 const drain = () => { let n = 0; while (idleQueue.length) { if (n++ > 1000) throw new Error('idle queue never empties'); idleQueue.shift().fn(BATCH) } }
 
-// Controllable IntersectionObserver: elements inside a [data-off] subtree have no box
+// Controllable IntersectionObserver: elements inside a [data-off] or [hidden] subtree have no box
 const observers = []
 window.IntersectionObserver = class {
     constructor(cb) { this.cb = cb; this.targets = new Set(); observers.push(this) }
@@ -35,11 +36,13 @@ window.IntersectionObserver = class {
 }
 const NEAR = { top: 40, bottom: 60, left: 10, right: 110, width: 100, height: 20 }
 const NONE = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }
+const OFF = { top: 5000, bottom: 5020, left: 10, right: 110, width: 100, height: 20 }
+const offscreen = new Set()
 function report() {
     for (const io of observers) {
         const entries = Array.from(io.targets).map((target) => {
-            const r = target.closest('[data-off]') ? NONE : NEAR
-            return { target, boundingClientRect: r, isIntersecting: r.width > 0 }
+            const r = target.closest('[data-off], [hidden]') ? NONE : (offscreen.has(target) ? OFF : NEAR)
+            return { target, boundingClientRect: r, isIntersecting: r.width > 0 && r.top < 1000 }
         })
         if (entries.length) io.cb(entries)
     }
@@ -110,6 +113,26 @@ describe('late-found invokers', () => {
     }, budget(10000))
 })
 
+describe('late-found invokers, already observed', () => {
+    it('re-anchoring to an invoker that is already an observed anchor is not a reveal either', async () => {
+        await wait(1600)
+        drain()
+        // The div is m1's parent (an observed anchor) and, once m2 gets its id, m2's invoker
+        const host = mount(`<div popovertarget="shared"><menu popover id="m1"><li>a</li></menu></div><div><menu popover><li>b</li></menu></div>`)
+        report()
+        drain()
+        const m2 = host.querySelectorAll('menu')[1]
+        m2.id = 'shared'
+        await wait(1600)
+        drain()
+        const rec = m2.__mnfstDefer
+        pointer()
+        await wait(700)
+        expect(rec.invoker && rec.invoker.tagName).toBe('DIV')
+        expect(rec.urgent).toBe(false)
+    }, budget(10000))
+})
+
 describe('gesture window', () => {
     it('a warm slot freed during a gesture is not refilled by plain prewarm until the window ends', async () => {
         await wait(1600)
@@ -139,7 +162,7 @@ describe('evicted flag', () => {
         drain()
         const recs = Array.from(host.querySelectorAll('menu')).map((m) => m.__mnfstDefer)
         expect(recs.every((r) => !r.rendered)).toBe(true)
-        recs.forEach((r) => { r.evicted = true }) // evicted in an earlier session of churn
+        recs.forEach((r) => { r.evicted = true; r.evictedReachable = true }) // evicted earlier while reachable
         await wait(1600)
         pointer()
         host.firstElementChild.removeAttribute('data-off') // the click shows the pane
@@ -150,13 +173,73 @@ describe('evicted flag', () => {
         expect(recs.every((r) => r.rendered)).toBe(true)
     }, budget(10000))
 
-    it('a navigation clears the evicted flag', () => {
-        const host = mount(menus(1, 'nav'))
-        const rec = host.querySelector('menu').__mnfstDefer
-        rec.evicted = true
+    it('a navigation clears the flag once, and only for a container evicted while reachable', () => {
+        const host = mount(menus(2, 'nav'))
+        const [a, b] = Array.from(host.querySelectorAll('menu')).map((m) => m.__mnfstDefer)
+        a.evicted = true; a.evictedReachable = true
+        b.evicted = true; b.evictedReachable = false // evicted after its route was left
         window.dispatchEvent(new CustomEvent('manifest:route-change'))
-        expect(rec.evicted).toBe(false)
+        expect(a.evicted).toBe(false)
+        expect(b.evicted).toBe(true)
+        a.evicted = true
+        window.dispatchEvent(new CustomEvent('manifest:route-change'))
+        expect(a.evicted).toBe(true)
     })
+})
+
+describe('navigation between routes', () => {
+    it('settles: after a few navigations a route change renders and evicts nothing', async () => {
+        await wait(1600)
+        drain()
+        const host = mount(['a', 'b', 'c'].map((t, k) => `<div x-route="${t}" id="R${t}"${k ? ' hidden' : ''}>${menus(3, 'rt' + t)}</div>`).join(''))
+        report()
+        drain()
+        await wait(1600)
+        drain()
+        const per = []
+        for (let k = 1; k <= 9; k++) {
+            per.push(await counted(async () => {
+                pointer()
+                host.querySelectorAll('[x-route]').forEach((r, i) => { r.hidden = i !== k % 3 })
+                window.dispatchEvent(new CustomEvent('manifest:route-change'))
+                await wait(80)
+                report()
+                await wait(700)
+                drain()
+                await wait(800) // past the urgent window before the next navigation
+            }))
+        }
+        expect(per.slice(-3)).toEqual([{ renders: 0, restashes: 0 }, { renders: 0, restashes: 0 }, { renders: 0, restashes: 0 }])
+        expect(st().warm).toBeLessThanOrEqual(CAP)
+        // the shown route's menus still open from their stash
+        const shown = host.querySelector('[x-route]:not([hidden]) menu')
+        shown.dispatchEvent(Object.assign(new Event('beforetoggle'), { newState: 'open' }))
+        expect(shown.querySelectorAll('li').length).toBe(1)
+    }, budget(30000))
+})
+
+describe('carried reveals', () => {
+    it('a reveal carried through back-to-back gestures expires after the urgent window', async () => {
+        await wait(1600)
+        drain()
+        const host = mount(`<div data-off>${menus(1, 'age')}</div>`)
+        report()
+        drain()
+        const btn = host.querySelector('button'), rec = host.querySelector('menu').__mnfstDefer
+        await wait(1600)
+        pointer()
+        host.firstElementChild.removeAttribute('data-off')
+        report() // shown: a reveal
+        offscreen.add(btn)
+        report() // scrolled away before a pass promotes it
+        await wait(80)
+        expect(rec.urgent).toBe(false)
+        for (let k = 0; k < 6; k++) { await wait(400); pointer() } // passes restart before the last one runs
+        offscreen.delete(btn)
+        report() // scrolled back on screen
+        await wait(700)
+        expect(rec.urgent).toBe(false)
+    }, budget(15000))
 })
 
 describe('restarted pass chain', () => {
