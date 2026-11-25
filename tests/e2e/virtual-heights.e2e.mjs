@@ -23,16 +23,36 @@ const SRC = process.env.VIRTUAL_SRC || path.join(ROOT, 'src')
 const BASELINE = process.env.VIRTUAL_BASELINE || null
 const ALPINE = path.join(ROOT, 'node_modules', 'alpinejs', 'dist', 'cdn.js')
 
-// scrollTop writes on #v are counted unless the test itself makes them (T.set)
+// Scroll writes on #v are counted unless the test itself makes them (T.set, T.own): the scrollTop setter,
+// scrollTo/scrollBy/scroll on #v, and scrollIntoView on #v or anything inside it
 const HELPERS = `<script>
 window.__writes = 0; window.__harness = false
 const sd = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
 Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get() { return sd.get.call(this) }, set(x) { if (this.id === 'v' && !window.__harness) window.__writes++; sd.set.call(this, x) } })
+for (const m of ['scrollTo', 'scrollBy', 'scroll', 'scrollIntoView']) {
+  const f = Element.prototype[m]
+  Element.prototype[m] = function () { if (!window.__harness && (this.id === 'v' || (m === 'scrollIntoView' && this.closest && this.closest('#v')))) window.__writes++; return f.apply(this, arguments) }
+}
 window.frames_ = (k = 3) => new Promise((r) => { const f = () => (--k <= 0 ? r() : requestAnimationFrame(f)); requestAnimationFrame(f) })
 window.T = {
   v: () => document.getElementById('v'),
   rows: () => [...document.querySelectorAll('#v .r')],
   set(y) { window.__harness = true; this.v().scrollTop = y; window.__harness = false },
+  own(fn) { window.__harness = true; try { return fn() } finally { window.__harness = false } },
+  // Probe that the offset model agrees with the DOM: a 1px scroll and back re-renders and must move the first
+  // visible row by exactly 1px each way (a model offset that differs from the row's DOM position moves it more)
+  async probe() {
+    const v = this.v(), top = () => v.getBoundingClientRect().top + v.clientTop
+    const f = this.first(); if (!f) return null
+    const node = () => document.querySelector('#v .r[data-n="' + f.n + '"]')
+    const y0 = this.rect(node()).top - top()
+    this.set(v.scrollTop + 1); await frames_(3)
+    const n1 = node(); const y1 = n1 ? this.rect(n1).top - top() : null
+    this.set(v.scrollTop - 1); await frames_(3)
+    const n2 = node(); const y2 = n2 ? this.rect(n2).top - top() : null
+    return { n: f.n, down: y1 === null ? null : Math.round((y0 - y1) * 10) / 10, back: y2 === null || y1 === null ? null : Math.round((y2 - y1) * 10) / 10 }
+  },
+  total: () => [...document.querySelectorAll('#v [data-virtual-spacer]')].reduce((a, s) => a + parseFloat(s.style.height), 0) + [...document.querySelectorAll('#v .r')].reduce((a, r) => a + r.getBoundingClientRect().height, 0),
   rect: (r) => (getComputedStyle(r).display === 'contents' ? r.firstElementChild : r).getBoundingClientRect(),
   first() {
     const top = this.v().getBoundingClientRect().top + this.v().clientTop
@@ -155,7 +175,7 @@ function serve() {
                 '/masonry-fn': () => masonry(true),
                 '/gallery': () => gallery(n),
                 '/churn': () => churn(),
-                '/varied': () => varied(3000, Number(u.searchParams.get('o')) || 3),
+                '/varied': () => varied(Number(u.searchParams.get('n')) || 3000, Number(u.searchParams.get('o')) || 3),
                 '/perf': () => perf('/scripts/manifest.virtual.js'),
                 '/perf-baseline': () => perf('/baseline/scripts/manifest.virtual.js'),
             }[u.pathname]
@@ -180,7 +200,8 @@ async function main() {
         p.errors = []
         p.on('pageerror', (e) => p.errors.push(e.message))
         await p.goto(base + route, { waitUntil: 'load' })
-        await wait(500)
+        await p.waitForFunction(() => window.Alpine && document.querySelector('#v [data-virtual-spacer]') && window.T, { timeout: 10000 })
+        await p.evaluate(() => T.stable())
         return p
     }
     const stable = (p) => p.evaluate(() => T.stable())
@@ -238,7 +259,8 @@ async function main() {
             await p.evaluate(() => { T.data().items[148].h = 230 })
             const settled = await stable(p)
             const after = await p.evaluate(() => T.first())
-            console.log(`info  grow above after a jump, ${anchor}: first visible`, JSON.stringify(before), '->', JSON.stringify(after))
+            if (anchor === 'auto') check(after.n === before.n && after.off === before.off, 'grow above after a jump, auto: the browser keeps the first visible row', { before, after })
+            else check(after.n === 'n148' && after.off === -60, 'grow above after a jump, none: the content moves down by exactly the growth', { before, after })
             const r = await p.evaluate(() => T.through())
             check(settled && r.total === 299 * 30 + 230 && r.worst === 0, `grow above after a jump, ${anchor}: settles; true total, no gap`, r)
             await done(p, `grow above after a jump, ${anchor}`)
@@ -278,17 +300,17 @@ async function main() {
             const sh0 = await p.evaluate(() => T.v().scrollHeight)
             // Chrome does not anchor across the resize itself: the frame after it is what the browser shows
             const native = await p.evaluate(async () => { T.v().style.width = '160px'; await frames_(1); return T.first() })
-            await wait(300)
-            await stable(p)
+            await p.evaluate(() => T.stable(6000, 20))
             const after = await p.evaluate(() => T.first())
             if (anchor === 'auto') check(native.n === after.n && Math.abs(native.off - after.off) <= 1, 'text rows, narrower container (auto): re-measuring moves the view no further than the browser\'s own re-wrap', { before, native, after })
-            else console.log('info  text rows, narrower container (none): first visible', JSON.stringify(before), '->', JSON.stringify(after), '(rendered rows above the view re-wrap; nothing holds the view)')
+            // Without anchoring, the rendered rows above the view (overscan 3) re-wrap in place, and rows mounted above
+            // with heights from the old width add their difference: bounded by two overscans of rows
+            else check(+after.n.slice(1) >= +before.n.slice(1) - 6 && +after.n.slice(1) <= +before.n.slice(1), 'text rows, narrower container (none): the first visible row moves back at most 6 rows (2 x overscan)', { before, after })
             const r = await p.evaluate(() => T.through())
             const t = await truth(p)
             check(r.total === t && r.worst === 0, `text rows, narrower container (${anchor}): after scrolling through, the total converges to the true total`, { ...r, truth: t, before: sh0 })
             await p.evaluate(() => { T.v().style.width = '400px' })
-            await wait(300)
-            await stable(p)
+            await p.evaluate(() => T.stable(6000, 20))
             const r2 = await p.evaluate(() => T.through())
             const t2 = await truth(p)
             check(r2.total === t2 && r2.worst === 0, `text rows, wider again (${anchor}): true total, no gap`, { ...r2, truth: t2 })
@@ -356,7 +378,7 @@ async function main() {
             const smooth = await p.evaluate(async () => {
                 for (let i = 0; i < 5; i++) { T.set(1e9); await T.stable(3000, 4) }
                 const v = T.v()
-                v.scrollTo({ top: 0, behavior: 'smooth' })
+                T.own(() => v.scrollTo({ top: 0, behavior: 'smooth' }))
                 const t0 = performance.now()
                 while (v.scrollTop > 0 && performance.now() - t0 < 8000) await frames_(2)
                 await T.stable()
@@ -376,15 +398,16 @@ async function main() {
                     const target = T.rows()[0], n = target.dataset.n
                     const st0 = T.v().scrollTop
                     const dist = Math.round(T.v().getBoundingClientRect().top - target.getBoundingClientRect().top)
-                    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                    await new Promise((r) => setTimeout(r, 300))
+                    T.own(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+                    await frames_(4)
                     await T.stable(8000, 10)
                     return { n, dist, travelled: Math.round(st0 - T.v().scrollTop), first: T.first() }
                 }, measured)
                 if (measured) check(siv.dist > 2000 && siv.first.n === siv.n && Math.abs(siv.first.off) <= 2, `varied, ${anchor}: scrollIntoView({ behavior: 'smooth' }) on a row ${siv.dist}px away, rows between measured, lands on it`, siv)
                 else {
                     check(siv.dist > 2000 && Math.abs(siv.travelled - siv.dist) <= 2, `varied, ${anchor}: scrollIntoView({ behavior: 'smooth' }) through unmeasured rows runs its whole distance (not cancelled)`, siv)
-                    console.log(`info  varied, ${anchor}: unmeasured scrollIntoView target ${siv.n}, landed with first visible`, JSON.stringify(siv.first))
+                    // Rows mounting on the way are placed by estimate: it lands within 5 rows of the target
+                    check(Math.abs(+siv.first.n.slice(1) - +siv.n.slice(1)) <= 5, `varied, ${anchor}: through unmeasured rows it lands within 5 rows of the target`, siv)
                 }
                 await done(q, `varied scrollIntoView (${measured ? 'measured' : 'unmeasured'}), ${anchor}`)
             }
@@ -405,9 +428,129 @@ async function main() {
             let maxBack = 0
             for (let i = 1; i < rec.length; i++) maxBack = Math.max(maxBack, rec[i] - rec[i - 1])
             const travelled = Math.round(rec[0] - rec[rec.length - 1])
-            if (anchor === 'auto') check(maxBack <= 200 && travelled > 5000, `varied, auto: wheel up from the end makes monotonic progress (largest reversal ${Math.round(maxBack)}px, one row is up to 200)`, { maxBack: Math.round(maxBack), travelled, frames: rec.length })
-            else console.log(`info  varied, none: wheel up from the end, largest reversal ${Math.round(maxBack)}px, travelled ${travelled}px over ${rec.length} frames`)
+            check(maxBack <= 200 && travelled > 5000, `varied, ${anchor}: wheel up from the end makes monotonic progress (largest reversal ${Math.round(maxBack)}px, one row is up to 200)`, { maxBack: Math.round(maxBack), travelled, frames: rec.length })
             await done(w, `varied wheel up, ${anchor}`)
+        }
+
+        // Source and size changes after a jump keep the view: rows before the window keep their offset steps
+        for (const anchor of ['auto', 'none']) {
+            const same = (a, b) => a && b && a.n === b.n && a.off === b.off
+            // Infinite scroll: jump to the end, wheel up a little, a page arrives
+            {
+                const p = await open(`/varied?n=20000&a=${anchor}`)
+                const r = await p.evaluate(async () => {
+                    window.__ends = []
+                    T.v().addEventListener('virtual-end', (e) => __ends.push(e.detail.length))
+                    for (let i = 0; i < 5; i++) { T.set(1e9); await T.stable(3000, 4) }
+                    for (let i = 0; i < 40; i++) { T.set(T.v().scrollTop - 120); await frames_(2) }
+                    await T.stable()
+                    const before = T.first()
+                    const items = T.data().items
+                    for (let i = 0; i < 50; i++) items.push({ id: 'x' + i, name: 'x' + i, h: 100 })
+                    await T.stable()
+                    const after = T.first(), endsAfterPush = __ends.filter((n) => n === 20050).length
+                    for (let i = 0; i < 6; i++) { T.set(1e9); await T.stable(3000, 4) }
+                    return { before, after, endsAfterPush, endsAtEnd: __ends.filter((n) => n === 20050).length }
+                })
+                check(same(r.before, r.after) && r.endsAfterPush === 0 && r.endsAtEnd === 1, `infinite scroll, ${anchor}: a pushed page keeps the view; virtual-end fires once for the new length when its end is reached`, r)
+                await done(p, `infinite scroll, ${anchor}`)
+            }
+            // Jump to the middle, push 1 then 100 (a chat, a live feed)
+            {
+                const p = await open(`/varied?a=${anchor}`)
+                const r = await p.evaluate(async () => {
+                    T.set(T.v().scrollHeight / 2); await T.stable()
+                    const a = T.first()
+                    T.data().items.push({ id: 'one', name: 'one', h: 50 }); await T.stable()
+                    const b = T.first()
+                    for (let i = 0; i < 100; i++) T.data().items.push({ id: 'm' + i, name: 'm' + i, h: 60 })
+                    await T.stable()
+                    return { a, b, c: T.first() }
+                })
+                check(same(r.a, r.b) && same(r.a, r.c), `jump to the middle, ${anchor}: pushing 1 then 100 items keeps the first visible row and its offset`, r)
+                await done(p, `push after a jump, ${anchor}`)
+            }
+            // Rows grown at the top, jump to the middle, then a container height change, and separately a push
+            for (const trigger of ['height', 'push']) {
+                const p = await open(`/varied?a=${anchor}`)
+                const r = await p.evaluate(async (trigger) => {
+                    for (let k = 0; k < 6; k++) T.data().items[k].h += 150
+                    await T.stable()
+                    T.set(T.v().scrollHeight / 2); await T.stable()
+                    const a = T.first()
+                    if (trigger === 'height') { T.v().style.height = '560px'; await T.stable(6000, 20) }
+                    else { T.data().items.push({ id: 'z', name: 'z', h: 80 }); await T.stable() }
+                    return { a, b: T.first() }
+                }, trigger)
+                check(same(r.a, r.b), `rows grown at the top, jump to the middle, then a ${trigger === 'height' ? 'container height change' : 'push'} (${anchor}): the view is unchanged`, r)
+                await done(p, `grown top then ${trigger}, ${anchor}`)
+            }
+            // A drift rebuild: rows from the first visible one down grow a lot, so the estimate for unmeasured rows
+            // moves past 10% and everything below the window is re-estimated
+            {
+                const p = await open(`/varied?a=${anchor}`)
+                const r = await p.evaluate(async () => {
+                    T.set(T.v().scrollHeight / 2); await T.stable()
+                    const a = T.first(), sh0 = T.v().scrollHeight
+                    const k0 = +a.n.slice(1)
+                    let grown = 0
+                    for (let k = k0; k < k0 + 12; k++) { T.data().items[k].h += 600; grown += 600 }
+                    await T.stable()
+                    return { a, b: T.first(), grown, shDelta: T.v().scrollHeight - sh0 }
+                })
+                check(same(r.a, r.b) && r.shDelta > r.grown * 2, `drift rebuild while in the middle (${anchor}): the view is unchanged (rows below were re-estimated: height +${r.shDelta} for +${r.grown} grown)`, r)
+                await done(p, `drift rebuild, ${anchor}`)
+            }
+            // A prepend changes the key at index 0, so the offsets are rebuilt from scratch, as in the previous
+            // release: the prepended row and the re-estimated rows above shift the window's spacer; the model and
+            // the DOM still agree
+            {
+                const p = await open(`/varied?a=${anchor}`)
+                const r = await p.evaluate(async () => {
+                    T.set(T.v().scrollHeight / 2); await T.stable()
+                    const sp = () => parseFloat(T.v().querySelector('[data-virtual-spacer]').style.height)
+                    const a = T.first(), s0 = sp(), st0 = T.v().scrollTop
+                    T.data().items.unshift({ id: 'u', name: 'u', h: 77 }); await T.stable()
+                    return { a, b: T.first(), spacerDelta: Math.round(sp() - s0), scrollDelta: Math.round(T.v().scrollTop - st0), probe: await T.probe(), gap: T.gap() }
+                })
+                const held = r.a.n === r.b.n && r.a.off === r.b.off
+                if (anchor === 'auto') check(held && r.spacerDelta !== 0 && Math.abs(r.scrollDelta - r.spacerDelta) <= 1, 'prepend after a jump, auto: offsets rebuilt (the spacer moves), Chrome\'s anchoring follows it and keeps the row', r)
+                else check(!held && r.spacerDelta !== 0 && r.scrollDelta === 0, 'prepend after a jump, none: offsets rebuilt, the view moves by the spacer change (as in the previous release)', r)
+                check(r.probe && r.probe.down === 1 && r.probe.back === 1 && r.gap === 0, `prepend after a jump, ${anchor}: model and DOM agree, no gap`, r)
+                await done(p, `prepend, ${anchor}`)
+            }
+            // Random operations: after each, the model agrees with the DOM (1px probe), no gap, the scroll height is
+            // spacers plus rows, and after a full walk the total equals the sum of the true heights
+            {
+                const p = await open(`/varied?a=${anchor}`)
+                let seed = 11
+                const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+                const bad = []
+                for (let step = 0; step < 40; step++) {
+                    const r = rnd(), a = rnd(), b = rnd()
+                    const op = await p.evaluate(async (r, a, b, step) => {
+                        const v = T.v(), items = T.data().items
+                        let op
+                        if (r < 0.2) { op = 'jump'; T.set(v.scrollHeight * a) }
+                        else if (r < 0.3) { op = 'scroll'; for (let i = 0; i < 10; i++) { T.set(v.scrollTop + (a < 0.5 ? -90 : 90)); await frames_(1) } }
+                        else if (r < 0.45) { op = 'resizeRow'; const rows = T.rows(); const n = rows[Math.floor(a * rows.length)].dataset.n; const it = items.find((x) => x.name === n); if (it) it.h = Math.round(20 + b * 250) }
+                        else if (r < 0.55) { op = 'push'; for (let i = 0; i < 10; i++) items.push({ id: 's' + step + '-' + i, name: 's' + step + '-' + i, h: 20 + i * 17 }) }
+                        else if (r < 0.62) { op = 'unshift'; items.unshift({ id: 'u' + step, name: 'u' + step, h: 66 }) }
+                        else if (r < 0.7) { op = 'splice'; items.splice(Math.floor(a * items.length), 4) }
+                        else if (r < 0.77) { op = 'edit'; items[Math.floor(a * items.length)].name += '' }
+                        else if (r < 0.88) { op = 'width'; v.style.width = Math.round(260 + a * 300) + 'px' }
+                        else { op = 'height'; v.style.height = Math.round(400 + a * 300) + 'px' }
+                        await T.stable(6000, 20)
+                        return op
+                    }, r, a, b, step)
+                    const c = await p.evaluate(async () => ({ probe: await T.probe(), gap: T.gap(), sh: T.v().scrollHeight, sum: Math.round(T.total()) }))
+                    if (!c.probe || c.probe.down !== 1 || c.probe.back !== 1 || c.gap !== 0 || Math.abs(c.sh - c.sum) > 1) bad.push({ step, op, ...c })
+                }
+                const fin = await p.evaluate(async () => { const r = await T.through(); return { ...r, truth: T.data().items.reduce((s, x) => s + x.h, 0) } })
+                check(bad.length === 0, `random operations (${anchor}): after each, model and DOM agree, no gap, scroll height = spacers + rows`, bad.slice(0, 4))
+                check(fin.total === fin.truth && fin.worst === 0, `random operations (${anchor}): after a full walk the total equals the true total`, fin)
+                await done(p, `random operations, ${anchor}`)
+            }
         }
 
         // A long-lived list with churn: the height store stays bounded by the list, not by every key ever seen
@@ -420,10 +563,8 @@ async function main() {
             })
             check(sizes.every((n) => n > 0 && n <= 2 * 100 + 100 + 30), 'churn: 150 replaced pages keep the height store bounded', sizes)
             // A page of 600 tall rows, all rendered once (a container tall enough for them) so all are measured
-            await p.evaluate(async () => { T.data().page(600, 100); await frames_(3); T.v().style.height = '70000px' })
-            await wait(300)
-            const measured = await p.evaluate(async () => { await T.stable(); const n = heightStore(); T.v().style.height = '300px'; return n })
-            await wait(300)
+            await p.evaluate(async () => { T.data().page(600, 100); await frames_(3); T.v().style.height = '70000px'; await T.stable(6000, 20) })
+            const measured = await p.evaluate(async () => { const n = heightStore(); T.v().style.height = '300px'; await T.stable(6000, 20); return n })
             check(measured >= 600, 'churn: the tall page was measured in full (setup)', measured)
             // Stale keys stop counting toward the estimate for unmeasured rows
             await p.evaluate(async () => { T.data().page(200, 20); await T.stable() })

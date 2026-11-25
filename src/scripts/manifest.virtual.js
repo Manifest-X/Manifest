@@ -180,7 +180,7 @@ function initializeVirtualPlugin() {
         let destroyed = false;
         let lastStart = 0;                     // last render's first unit
         let builtAvg = 0;                      // the unmeasured-row estimate at the last full rebuild
-        let aboveAvg = null;                   // estimate for unmeasured rows before the window, held until the source changes
+        let builtKeys = [];                    // key at each index when the offsets were last built
 
         const keyFn = buildKeyFn(itemName, indexName, keyExpr);
         const avgH = () => (measuredCount > 0 ? measuredSum / measuredCount : estimateH);
@@ -231,18 +231,25 @@ function initializeVirtualPlugin() {
             sortedTop = Array.from({ length: n }, (_, i) => i).sort((a, b) => pos[a].y - pos[b].y);
         }
 
+        // Rows before the window whose key is unchanged keep their offset step: only the window down is re-estimated
         function rebuildSingle() {
-            const n = data.length;
+            const n = raw.length;
+            const prev = cumulative, prevKeys = builtKeys;
+            const keys = new Array(n);
+            const limit = Math.min(lastStart, n, prevKeys.length, prev.length - 1);
+            let p = 0;
+            for (; p < limit; p++) if ((keys[p] = keyFn(raw[p], p)) !== prevKeys[p]) break;
             cumulative = new Float64Array(n + 1);
-            let y = 0;
-            // Rows before the window keep their estimate: a new measurement moves nothing above the view
-            const held = aboveAvg === null ? 0 : Math.min(lastStart, n);
-            for (let i = 0; i < n; i++) {
+            if (p) cumulative.set(prev.subarray(0, p + 1));
+            let y = p ? prev[p] : 0;
+            for (let i = p; i < n; i++) {
                 cumulative[i] = y;
-                const k = keyFn(raw[i], i);
-                y += i < held ? (heights.get(k) ?? aboveAvg) : heightFor(k);
+                const k = i === p && keys[i] !== undefined ? keys[i] : keyFn(raw[i], i);
+                keys[i] = k;
+                y += heightFor(k);
             }
             cumulative[n] = y;
+            builtKeys = keys;
             builtAvg = avgH();
         }
 
@@ -338,7 +345,6 @@ function initializeVirtualPlugin() {
             if (endUnit > total) endUnit = total;
 
             lastStart = startUnit;
-            if (aboveAvg === null || startUnit === 0) aboveAvg = avgH();
             setHeight(topSpacer, cumulative[startUnit]);
             setHeight(botSpacer, cumulative[total] - cumulative[endUnit]);
 
@@ -629,7 +635,6 @@ function initializeVirtualPlugin() {
                 trackList(value);
                 data = Array.isArray(value) ? value : (value ? Array.from(value) : []);
                 raw = Alpine.raw ? Alpine.raw(data) : data;
-                aboveAvg = null;
                 if (heights.size > raw.length * 2 + 100) forgetLeft();   // amortised: only once the store outgrows the list
                 rebuild();
                 // render() drops rows that left the window or the list; unsized (hidden), it cannot
