@@ -102,6 +102,8 @@ TailwindCompiler.prototype.addCriticalBlockingStylesSync = function () {
             // Ignore errors
         }
 
+        dropGeneratedThemeVars(cssVariables);
+
         // 5. Scan for classes that need utilities
         const classesToGenerate = new Set();
         try {
@@ -323,6 +325,8 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
             // Ignore errors accessing computed styles
         }
 
+        dropGeneratedThemeVars(cssVariables);
+
         // Method 4: Scan HTML source directly for class attributes
         try {
             const htmlSource = document.documentElement.outerHTML;
@@ -387,3 +391,15 @@ TailwindCompiler.prototype.generateSynchronousUtilities = function () {
     }
 };
 
+
+// Tailwind's own theme (engine or cached output) is Tailwind's to apply, as in a full compile
+function dropGeneratedThemeVars(cssVariables) {
+    try {
+        for (const style of document.querySelectorAll('style')) {
+            if (!isGeneratedUtilitiesStyle(style)) continue;
+            const re = /--([\w-]+)\s*:/g;
+            let m;
+            while ((m = re.exec(style.textContent || '')) !== null) cssVariables.delete(m[1]);
+        }
+    } catch (e) { /* keep what was found */ }
+}
